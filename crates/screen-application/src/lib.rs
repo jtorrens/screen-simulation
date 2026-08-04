@@ -51,28 +51,14 @@ impl DeviceSignalRaster {
         Ok(())
     }
 
-    fn sample_bilinear(&self, uv: Vec2) -> DeviceRgb {
-        let x = (uv.x * self.width as f32 - 0.5).clamp(0.0, self.width.saturating_sub(1) as f32);
-        let y = (uv.y * self.height as f32 - 0.5).clamp(0.0, self.height.saturating_sub(1) as f32);
-        let x0 = x.floor() as u32;
-        let y0 = y.floor() as u32;
-        let x1 = (x0 + 1).min(self.width - 1);
-        let y1 = (y0 + 1).min(self.height - 1);
-        let at = |column, row| {
-            self.pixels[(u64::from(row) * u64::from(self.width) + u64::from(column)) as usize]
-        };
-        let mix = |a: DeviceRgb, b: DeviceRgb, t: f32| {
-            DeviceRgb::new(
-                a.r + (b.r - a.r) * t,
-                a.g + (b.g - a.g) * t,
-                a.b + (b.b - a.b) * t,
-            )
-        };
-        mix(
-            mix(at(x0, y0), at(x1, y0), x.fract()),
-            mix(at(x0, y1), at(x1, y1), x.fract()),
-            y.fract(),
-        )
+    fn sample_native_pixel(&self, uv: Vec2) -> DeviceRgb {
+        let x = (uv.x * self.width as f32)
+            .floor()
+            .clamp(0.0, self.width.saturating_sub(1) as f32) as u32;
+        let y = (uv.y * self.height as f32)
+            .floor()
+            .clamp(0.0, self.height.saturating_sub(1) as f32) as u32;
+        self.pixels[(u64::from(y) * u64::from(self.width) + u64::from(x)) as usize]
     }
 }
 
@@ -368,7 +354,7 @@ pub fn prepare_raster_from_device_signal(
     prepare_raster_with_signal(request, width, height, &|device_uv| {
         source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
             .map_or(DeviceRgb::BLACK, |source_uv| {
-                source.sample_bilinear(source_uv)
+                source.sample_native_pixel(source_uv)
             })
     })
 }
@@ -391,7 +377,7 @@ pub fn evaluate_linear_optics_from_device_signal(
         &|device_uv| {
             source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
                 .map_or(DeviceRgb::BLACK, |source_uv| {
-                    source.sample_bilinear(source_uv)
+                    source.sample_native_pixel(source_uv)
                 })
         },
     )
@@ -493,11 +479,23 @@ fn evaluate_optical_raster_with_signal(
         .enumerate()
         .for_each(|(row, output_row)| {
             for (column, output) in output_row.iter_mut().enumerate() {
-                const SENSOR_BOX: [Vec2; 4] = [
-                    Vec2 { x: 0.25, y: 0.25 },
-                    Vec2 { x: 0.75, y: 0.25 },
-                    Vec2 { x: 0.25, y: 0.75 },
-                    Vec2 { x: 0.75, y: 0.75 },
+                const SENSOR_BOX: [Vec2; 16] = [
+                    Vec2 { x: 0.125, y: 0.125 },
+                    Vec2 { x: 0.375, y: 0.125 },
+                    Vec2 { x: 0.625, y: 0.125 },
+                    Vec2 { x: 0.875, y: 0.125 },
+                    Vec2 { x: 0.125, y: 0.375 },
+                    Vec2 { x: 0.375, y: 0.375 },
+                    Vec2 { x: 0.625, y: 0.375 },
+                    Vec2 { x: 0.875, y: 0.375 },
+                    Vec2 { x: 0.125, y: 0.625 },
+                    Vec2 { x: 0.375, y: 0.625 },
+                    Vec2 { x: 0.625, y: 0.625 },
+                    Vec2 { x: 0.875, y: 0.625 },
+                    Vec2 { x: 0.125, y: 0.875 },
+                    Vec2 { x: 0.375, y: 0.875 },
+                    Vec2 { x: 0.625, y: 0.875 },
+                    Vec2 { x: 0.875, y: 0.875 },
                 ];
                 let aperture_samples = SENSOR_BOX.map(|offset| {
                     let viewport_ndc = Vec2 {
@@ -512,13 +510,8 @@ fn evaluate_optical_raster_with_signal(
                         viewport_ndc,
                     )
                 });
-                *output = integrate_aperture_samples(
-                    &aperture_samples,
-                    view,
-                    request.panel,
-                    subpixels_resolved_at_center,
-                    signal_at,
-                );
+                *output =
+                    integrate_aperture_samples(&aperture_samples, view, request.panel, signal_at);
             }
         });
     let inspection_field_meters = request.inspection.map(|region| {
@@ -542,9 +535,9 @@ fn integrate_aperture_samples(
     spatial_samples: &[[OpticalSample; APERTURE_SAMPLE_COUNT]],
     view: DiagnosticView,
     panel: LcdProfile,
-    subpixels_resolved: bool,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
 ) -> LinearOpticalPixel {
+    let subpixels_resolved = subpixels_resolved_for_samples(spatial_samples, panel);
     let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
     let mut on_panel = false;
     for optical_sample in spatial_samples.iter().flatten() {
@@ -603,6 +596,37 @@ fn integrate_aperture_samples(
         acescg_irradiance: average,
         on_panel,
     }
+}
+
+fn subpixels_resolved_for_samples(
+    spatial_samples: &[[OpticalSample; APERTURE_SAMPLE_COUNT]],
+    panel: LcdProfile,
+) -> bool {
+    (0..3).all(|channel| {
+        let mut minimum = Vec2 {
+            x: f32::INFINITY,
+            y: f32::INFINITY,
+        };
+        let mut maximum = Vec2 {
+            x: f32::NEG_INFINITY,
+            y: f32::NEG_INFINITY,
+        };
+        let mut count = 0;
+        for uv in spatial_samples
+            .iter()
+            .flatten()
+            .filter_map(|sample| sample.panel_uv[channel])
+        {
+            minimum.x = minimum.x.min(uv.x);
+            minimum.y = minimum.y.min(uv.y);
+            maximum.x = maximum.x.max(uv.x);
+            maximum.y = maximum.y.max(uv.y);
+            count += 1;
+        }
+        count > 0
+            && (maximum.x - minimum.x) * panel.native_width as f32 <= 1.0 / 3.0
+            && (maximum.y - minimum.y) * panel.native_height as f32 <= 1.0
+    })
 }
 
 pub fn inspection_region_from_drag(
@@ -978,19 +1002,23 @@ mod tests {
             emission_cosine: [1.0; 3],
             irradiance_weight: [1.0; 3],
         };
-        let spatial = [[optical; APERTURE_SAMPLE_COUNT]];
+        let resolved_spatial = [[optical; APERTURE_SAMPLE_COUNT]];
         let resolved = integrate_aperture_samples(
-            &spatial,
+            &resolved_spatial,
             DiagnosticView::Composite,
             request.optics.panel,
-            true,
             &|_| DeviceRgb::WHITE,
         );
+        let mut offset = optical;
+        offset.panel_uv = [Some(Vec2 { x: 0.51, y: 0.51 }); 3];
+        let unresolved_spatial = [
+            [optical; APERTURE_SAMPLE_COUNT],
+            [offset; APERTURE_SAMPLE_COUNT],
+        ];
         let unresolved = integrate_aperture_samples(
-            &spatial,
+            &unresolved_spatial,
             DiagnosticView::Composite,
             request.optics.panel,
-            false,
             &|_| DeviceRgb::WHITE,
         );
         assert_eq!(resolved.acescg_irradiance, LinearRgb::new(0.0, 0.0, 0.0));
