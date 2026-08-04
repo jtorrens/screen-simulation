@@ -12,6 +12,49 @@ use screen_geometry::{
 use screen_panel::{LcdProfile, PanelError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RasterPlacement {
+    Fit,
+    FillCrop,
+    Stretch,
+    OneToOne,
+}
+
+/// Maps a device-native sample position to source UV. `None` is authored empty area,
+/// not a substitute sample or decoder fallback.
+pub fn source_uv_for_device_uv(
+    source_raster: [u32; 2],
+    device_raster: [u32; 2],
+    placement: RasterPlacement,
+    device_uv: Vec2,
+) -> Option<Vec2> {
+    if source_raster.contains(&0) || device_raster.contains(&0) {
+        return None;
+    }
+    let source_aspect = source_raster[0] as f32 / source_raster[1] as f32;
+    let device_aspect = device_raster[0] as f32 / device_raster[1] as f32;
+    let centered = |scale_x: f32, scale_y: f32| Vec2 {
+        x: (device_uv.x - 0.5) * scale_x + 0.5,
+        y: (device_uv.y - 0.5) * scale_y + 0.5,
+    };
+    let source_uv = match placement {
+        RasterPlacement::Stretch => device_uv,
+        RasterPlacement::Fit if source_aspect > device_aspect => {
+            centered(1.0, source_aspect / device_aspect)
+        }
+        RasterPlacement::Fit => centered(device_aspect / source_aspect, 1.0),
+        RasterPlacement::FillCrop if source_aspect > device_aspect => {
+            centered(device_aspect / source_aspect, 1.0)
+        }
+        RasterPlacement::FillCrop => centered(1.0, source_aspect / device_aspect),
+        RasterPlacement::OneToOne => centered(
+            device_raster[0] as f32 / source_raster[0] as f32,
+            device_raster[1] as f32 / source_raster[1] as f32,
+        ),
+    };
+    ((0.0..=1.0).contains(&source_uv.x) && (0.0..=1.0).contains(&source_uv.y)).then_some(source_uv)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagnosticView {
     Composite,
     DeviceSignal,
@@ -375,6 +418,47 @@ mod tests {
         let raster = prepare_raster(request, 320, 180).expect("valid raster");
         assert!(!raster.subpixels_resolved_at_center);
         assert!(raster.pixels.iter().any(|pixel| pixel.on_panel));
+    }
+
+    #[test]
+    fn raster_placement_is_explicit_and_deterministic() {
+        let center = Vec2 { x: 0.5, y: 0.5 };
+        assert_eq!(
+            source_uv_for_device_uv(
+                [1920, 1080],
+                [3840, 2160],
+                RasterPlacement::OneToOne,
+                center
+            ),
+            Some(center)
+        );
+        assert_eq!(
+            source_uv_for_device_uv(
+                [1920, 1080],
+                [3840, 2160],
+                RasterPlacement::OneToOne,
+                Vec2 { x: 0.1, y: 0.5 }
+            ),
+            None
+        );
+        assert!(
+            source_uv_for_device_uv(
+                [1080, 1080],
+                [1920, 1080],
+                RasterPlacement::Fit,
+                Vec2 { x: 0.05, y: 0.5 }
+            )
+            .is_none()
+        );
+        assert!(
+            source_uv_for_device_uv(
+                [1080, 1080],
+                [1920, 1080],
+                RasterPlacement::FillCrop,
+                Vec2 { x: 0.05, y: 0.5 }
+            )
+            .is_some()
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 Status: normative.
 
-Spatial resolution and color meaning are independent. A device-native source establishes one source pixel per device pixel; it does not establish what its RGB code values mean.
+Spatial resolution and color meaning are independent. A device-native source establishes one source pixel per device pixel under `OneToOne`; it does not establish what its RGB code values mean. Sources of any raster size require an explicit placement policy before panel evaluation.
 
 The current boundary is:
 

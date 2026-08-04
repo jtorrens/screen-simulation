@@ -4,7 +4,7 @@ Status: normative.
 
 ## Product boundary
 
-The application consumes an explicitly interpreted animated raster at the device's exact native resolution and evaluates a physical fixed-pixel LCD through animated screen/camera geometry and ideal final sampling. ProRes 4444 is the production input and OpenEXR sequences are the reference input. Neither codec chooses color interpretation.
+The application consumes an explicitly interpreted animated raster and evaluates a physical fixed-pixel LCD through animated screen/camera geometry and ideal final sampling. The FFmpeg adapter accepts the video and still-image formats enabled in the one shipped decoder configuration, including H.264 and ProRes. ProRes 4444 is a recommended high-quality production source, not an input restriction. OpenEXR sequences use the explicit OpenEXR adapter. No codec or container chooses color interpretation.
 
 The current processing chain is:
 
@@ -45,4 +45,4 @@ Domain packages expose narrow capabilities and do not depend on sibling implemen
 
 ## Current scope
 
-The current implementation target is one source clip per simulation shot, one project-owned complete LCD profile, internally authored animated camera and screen tracks, an RGB/BGR stripe panel, physical projection, ideal sampling, debug views and still export. Source resolution must equal device native resolution. Alpha is resolved to explicit opaque device RGB before panel evaluation.
+The current implementation target is one source clip per simulation shot, one project-owned complete LCD profile, internally authored animated camera and screen tracks, an RGB/BGR stripe panel, physical projection, ideal sampling, debug views and still export. A source whose raster differs from the device native raster requires one authored placement policy: `Fit`, `FillCrop`, `Stretch`, or `OneToOne`. Alpha is resolved to explicit opaque device RGB before panel evaluation.
