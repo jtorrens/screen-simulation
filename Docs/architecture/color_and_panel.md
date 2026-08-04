@@ -20,6 +20,8 @@ The source transform and panel EOTF must never linearize the same signal twice. 
 
 Metadata may propose a source interpretation. The persisted authored selection is authoritative. Missing, conflicting, or unknown required interpretation blocks evaluation. `Identity` is a valid explicit Source-to-Device selection; it is never an implicit fallback.
 
+Alpha association is an independent authored decision. `Auto` accepts only unambiguous association metadata; otherwise evaluation blocks. `Straight` and `Premultiplied` are explicit overrides for absent or incorrect metadata. The current opaque target is composition over explicit black: straight RGB is multiplied by alpha, while premultiplied RGB is already associated. Alpha interpretation never selects an IDT.
+
 The current panel is a fixed-pixel LCD with complete native raster, physical active width and height, derived pixel pitch/PPI, RGB or BGR stripe layout, subpixel geometry, black matrix, EOTF, channel efficiency, black level, white level and point white. PPI and pixel pitch are derived from native raster and active dimensions and cannot contradict them.
 
 Panel samples below the resolved camera footprint are spatially integrated. Individual subpixels and black matrix are evaluated only when the physical projection resolves their device-native position; a diagnostic view never replaces the native raster with a lower-resolution representative grid.

@@ -101,6 +101,11 @@ export component MainWindow inherits Window {
     in-out property <string> source-details: "3840 × 2160 · authored diagnostic";
     in-out property <string> source-interpretation: "Explicit device signal";
     in-out property <int> placement-index: 0;
+    in-out property <int> idt-index: 0;
+    in-out property <int> alpha-index: 0;
+    in-out property <int> project-fps-index: 1;
+    in-out property <int> custom-fps-numerator: 24;
+    in-out property <int> custom-fps-denominator: 1;
     private property <bool> zoom-key-held: false;
 
     callback inspect(float, float, float, float);
@@ -123,7 +128,7 @@ export component MainWindow inherits Window {
     }
 
     Timer {
-        interval: 42ms;
+        interval: 250ms;
         running: true;
         triggered => {
             root.tick();
@@ -343,7 +348,7 @@ export component MainWindow inherits Window {
 
                     VerticalLayout {
                         padding: 18px;
-                        spacing: 12px;
+                        spacing: 5px;
 
                         Text {
                             text: "SCENE INSPECTOR";
@@ -361,6 +366,30 @@ export component MainWindow inherits Window {
                         Text { text: root.source-title; color: #c3ccda; overflow: elide; }
                         Text { text: root.source-details; color: #8794a9; overflow: elide; }
                         Text { text: root.source-interpretation; color: #d59b68; overflow: elide; }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "IDT"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["Select IDT…", "Identity (device signal)"];
+                                current-index <=> root.idt-index;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Alpha"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["Auto (metadata)", "Straight", "Premultiplied"];
+                                current-index <=> root.alpha-index;
+                            }
+                        }
+
+                        Text {
+                            text: "Alpha target · opaque black";
+                            color: #71819b;
+                            font-size: 11px;
+                        }
 
                         HorizontalLayout {
                             height: 34px;
@@ -524,10 +553,52 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    Text {
-                        text: "24 fps";
-                        color: #77859b;
-                        vertical-alignment: center;
+                    Text { text: "Project FPS"; color: #77859b; vertical-alignment: center; }
+
+                    ComboBox {
+                        width: 150px;
+                        model: ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60", "Custom"];
+                        current-index <=> root.project-fps-index;
+                    }
+
+                    Rectangle {
+                        visible: root.project-fps-index == 8;
+                        width: 120px;
+                        height: 30px;
+                        background: #252b35;
+                        border-width: 1px;
+                        border-color: #454d5c;
+                        border-radius: 4px;
+
+                        HorizontalLayout {
+                            padding-left: 5px;
+                            padding-right: 5px;
+                            TextInput {
+                                text: root.custom-fps-numerator;
+                                input-type: number;
+                                color: #e6ebf3;
+                                horizontal-alignment: right;
+                                single-line: true;
+                                accepted => {
+                                    if (self.text.is-float()) {
+                                        root.custom-fps-numerator = round(self.text.to-float());
+                                    }
+                                }
+                            }
+                            Text { text: "/"; color: #77859b; vertical-alignment: center; }
+                            TextInput {
+                                text: root.custom-fps-denominator;
+                                input-type: number;
+                                color: #e6ebf3;
+                                horizontal-alignment: right;
+                                single-line: true;
+                                accepted => {
+                                    if (self.text.is-float()) {
+                                        root.custom-fps-denominator = round(self.text.to-float());
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

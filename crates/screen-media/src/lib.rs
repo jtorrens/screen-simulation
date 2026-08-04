@@ -31,6 +31,13 @@ pub enum AlphaPresence {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlphaInterpretation {
+    Auto,
+    Straight,
+    Premultiplied,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameCadence {
     Constant { frame_rate: RationalTime },
     Variable,

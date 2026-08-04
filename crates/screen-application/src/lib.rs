@@ -3,12 +3,15 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use screen_color::{DiagnosticDisplayTransform, PreviewRgb};
+use screen_color::{
+    DiagnosticDisplayTransform, PreviewRgb, SourceColorInterpretation, source_to_device,
+};
 use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_geometry::{
     CameraRig, CameraSample, GeometryError, PanelRegion, ProjectedScreen, panel_uv_at_viewport,
     project_scene_point, project_screen,
 };
+use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{LcdProfile, PanelError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +20,81 @@ pub enum RasterPlacement {
     FillCrop,
     Stretch,
     OneToOne,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeviceSignalRaster {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<DeviceRgb>,
+}
+
+impl DeviceSignalRaster {
+    pub fn validate(&self) -> Result<(), ApplicationError> {
+        if self.width == 0 || self.height == 0 {
+            return Err(ApplicationError::EmptyDeviceSignalRaster);
+        }
+        let expected = u64::from(self.width) * u64::from(self.height);
+        if self.pixels.len() as u64 != expected {
+            return Err(ApplicationError::DeviceSignalPixelCountMismatch {
+                expected,
+                actual: self.pixels.len() as u64,
+            });
+        }
+        Ok(())
+    }
+
+    fn sample_nearest(&self, uv: Vec2) -> DeviceRgb {
+        let x = (uv.x * self.width as f32)
+            .floor()
+            .clamp(0.0, self.width.saturating_sub(1) as f32) as u32;
+        let y = (uv.y * self.height as f32)
+            .floor()
+            .clamp(0.0, self.height.saturating_sub(1) as f32) as u32;
+        self.pixels[(u64::from(y) * u64::from(self.width) + u64::from(x)) as usize]
+    }
+}
+
+pub fn decoded_frame_to_device_signal(
+    frame: &DecodedFrame,
+    alpha_presence: AlphaPresence,
+    alpha_interpretation: AlphaInterpretation,
+    color_interpretation: SourceColorInterpretation,
+) -> Result<DeviceSignalRaster, ApplicationError> {
+    let expected = frame.raster.pixel_count();
+    if frame.pixels.len() as u64 != expected {
+        return Err(ApplicationError::DecodedPixelCountMismatch {
+            expected,
+            actual: frame.pixels.len() as u64,
+        });
+    }
+    if alpha_presence == AlphaPresence::Present && alpha_interpretation == AlphaInterpretation::Auto
+    {
+        return Err(ApplicationError::AlphaAssociationUnresolved);
+    }
+    let pixels = frame
+        .pixels
+        .iter()
+        .map(|pixel| {
+            let association = match (alpha_presence, alpha_interpretation) {
+                (AlphaPresence::Present, AlphaInterpretation::Straight) => pixel.a,
+                _ => 1.0,
+            };
+            source_to_device(
+                color_interpretation,
+                [
+                    pixel.r * association,
+                    pixel.g * association,
+                    pixel.b * association,
+                ],
+            )
+        })
+        .collect();
+    Ok(DeviceSignalRaster {
+        width: frame.raster.width,
+        height: frame.raster.height,
+        pixels,
+    })
 }
 
 /// Maps a device-native sample position to source UV. `None` is authored empty area,
@@ -157,10 +235,41 @@ pub fn prepare_raster(
     width: u16,
     height: u16,
 ) -> Result<PreparedRaster, ApplicationError> {
+    prepare_raster_with_signal(request, width, height, &|uv| {
+        diagnostic_signal(uv, request.time)
+    })
+}
+
+pub fn prepare_raster_from_device_signal(
+    request: SimulationRequest,
+    width: u16,
+    height: u16,
+    source: &DeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<PreparedRaster, ApplicationError> {
+    source.validate()?;
+    let source_raster = [source.width, source.height];
+    let device_raster = [request.panel.native_width, request.panel.native_height];
+    prepare_raster_with_signal(request, width, height, &|device_uv| {
+        source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
+            .map_or(DeviceRgb::BLACK, |source_uv| {
+                source.sample_nearest(source_uv)
+            })
+    })
+}
+
+fn prepare_raster_with_signal(
+    request: SimulationRequest,
+    width: u16,
+    height: u16,
+    signal_at: &dyn Fn(Vec2) -> DeviceRgb,
+) -> Result<PreparedRaster, ApplicationError> {
     if width == 0 || height == 0 {
         return Err(ApplicationError::EmptyPreviewRaster);
     }
-    let frame = prepare_frame(request)?;
+    let mut frame = prepare_frame(request)?;
+    frame.representative_signal = signal_at(Vec2 { x: 0.5, y: 0.5 });
+    frame.representative_emission = request.panel.emitted_radiance(frame.representative_signal);
     let display = DiagnosticDisplayTransform {
         reference_white_nits: 100.0,
     };
@@ -189,7 +298,7 @@ pub fn prepare_raster(
                 pixels.push(outside_panel());
                 continue;
             }
-            let signal = diagnostic_signal(uv, request.time);
+            let signal = signal_at(uv);
             let preview = match request.view {
                 DiagnosticView::DeviceSignal => PreviewRgb {
                     r: signal.r,
@@ -331,6 +440,10 @@ pub enum ApplicationError {
     EmptyPreviewRaster,
     InspectionMustStartOnPanel,
     ViewRayMissesPanel,
+    EmptyDeviceSignalRaster,
+    DeviceSignalPixelCountMismatch { expected: u64, actual: u64 },
+    DecodedPixelCountMismatch { expected: u64, actual: u64 },
+    AlphaAssociationUnresolved,
     Panel(PanelError),
     Geometry(GeometryError),
 }
@@ -346,6 +459,20 @@ impl fmt::Display for ApplicationError {
             Self::ViewRayMissesPanel => {
                 formatter.write_str("camera ray does not reach the panel plane")
             }
+            Self::EmptyDeviceSignalRaster => {
+                formatter.write_str("device signal raster must be non-empty")
+            }
+            Self::DeviceSignalPixelCountMismatch { expected, actual } => write!(
+                formatter,
+                "device signal raster has {actual} pixels but requires {expected}"
+            ),
+            Self::DecodedPixelCountMismatch { expected, actual } => write!(
+                formatter,
+                "decoded source has {actual} pixels but requires {expected}"
+            ),
+            Self::AlphaAssociationUnresolved => formatter.write_str(
+                "alpha metadata does not identify Straight or Premultiplied association",
+            ),
             Self::Panel(error) => write!(formatter, "invalid panel: {error}"),
             Self::Geometry(error) => write!(formatter, "invalid camera: {error}"),
         }
@@ -459,6 +586,47 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn alpha_association_is_resolved_before_panel_evaluation() {
+        use screen_media::{DecodedRgba, RasterSize};
+
+        let frame = DecodedFrame {
+            raster: RasterSize::new(1, 1).expect("valid raster"),
+            timestamp: RationalTime::new(0, 24).expect("valid time"),
+            pixels: vec![DecodedRgba {
+                r: 0.8,
+                g: 0.4,
+                b: 0.2,
+                a: 0.5,
+            }],
+        };
+        assert_eq!(
+            decoded_frame_to_device_signal(
+                &frame,
+                AlphaPresence::Present,
+                AlphaInterpretation::Auto,
+                SourceColorInterpretation::IdentityDeviceSignal,
+            ),
+            Err(ApplicationError::AlphaAssociationUnresolved)
+        );
+        let straight = decoded_frame_to_device_signal(
+            &frame,
+            AlphaPresence::Present,
+            AlphaInterpretation::Straight,
+            SourceColorInterpretation::IdentityDeviceSignal,
+        )
+        .expect("explicit straight alpha");
+        let premultiplied = decoded_frame_to_device_signal(
+            &frame,
+            AlphaPresence::Present,
+            AlphaInterpretation::Premultiplied,
+            SourceColorInterpretation::IdentityDeviceSignal,
+        )
+        .expect("explicit premultiplied alpha");
+        assert_eq!(straight.pixels[0], DeviceRgb::new(0.4, 0.2, 0.1));
+        assert_eq!(premultiplied.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
     }
 
     #[test]

@@ -6,7 +6,7 @@ The canonical scene is right-handed. `+X` is right, `+Y` is up and `+Z` points f
 
 Scene translation and physical screen dimensions use meters. Focal length and sensor aperture use millimeters. Persisted values always name their unit through the owning contract rather than relying on UI labels.
 
-Project, source, camera and screen time use exact rational values. Floating-point seconds are not an authored or selection boundary. Panel refresh remains distinct from project and source frame rates.
+Project, source, camera and screen time use exact rational values. Project frame rate is an authored positive rational value and remains distinct from source cadence and panel refresh. A project frame maps to time by exact rational division; floating-point seconds are not an authored or media-selection boundary.
 
 Camera and screen motion use the same current keyframed transform contract. Translation is canonical in meters and rotation is canonical as a normalized quaternion. UI yaw, pitch and roll are editing projections, not persisted authority. Every keyframe has a stable id, rational time, exact value and explicit `hold`, `linear`, or `smooth` interpolation.
 

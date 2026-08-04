@@ -10,6 +10,39 @@ pub struct RationalTime {
     denominator: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameRate {
+    numerator: u32,
+    denominator: u32,
+}
+
+impl FrameRate {
+    pub fn new(numerator: u32, denominator: u32) -> Result<Self, ContractError> {
+        if numerator == 0 || denominator == 0 {
+            return Err(ContractError::NonPositiveFrameRate);
+        }
+        Ok(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    pub const fn numerator(self) -> u32 {
+        self.numerator
+    }
+
+    pub const fn denominator(self) -> u32 {
+        self.denominator
+    }
+
+    pub fn time_at_frame(self, frame: i64) -> Result<RationalTime, ContractError> {
+        let numerator = frame
+            .checked_mul(i64::from(self.denominator))
+            .ok_or(ContractError::TimeOverflow)?;
+        RationalTime::new(numerator, self.numerator)
+    }
+}
+
 impl RationalTime {
     pub fn new(numerator: i64, denominator: u32) -> Result<Self, ContractError> {
         if denominator == 0 {
@@ -85,6 +118,8 @@ impl LinearRgb {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContractError {
     ZeroDenominator,
+    NonPositiveFrameRate,
+    TimeOverflow,
 }
 
 impl fmt::Display for ContractError {
@@ -93,6 +128,10 @@ impl fmt::Display for ContractError {
             Self::ZeroDenominator => {
                 formatter.write_str("rational time denominator must be non-zero")
             }
+            Self::NonPositiveFrameRate => {
+                formatter.write_str("frame rate numerator and denominator must be positive")
+            }
+            Self::TimeOverflow => formatter.write_str("exact frame time exceeds its numeric range"),
         }
     }
 }
@@ -114,5 +153,13 @@ mod tests {
         assert_eq!(time.numerator(), 24_000);
         assert_eq!(time.denominator(), 24_000);
         assert_eq!(time.as_seconds(), 1.0);
+    }
+
+    #[test]
+    fn frame_rate_preserves_fractional_project_time() {
+        let rate = FrameRate::new(24_000, 1_001).expect("valid rate");
+        let time = rate.time_at_frame(24_000).expect("valid frame time");
+        assert_eq!(time.numerator(), 24_024_000);
+        assert_eq!(time.denominator(), 24_000);
     }
 }

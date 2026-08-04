@@ -2,7 +2,18 @@
 
 #![forbid(unsafe_code)]
 
-use screen_contracts::LinearRgb;
+use screen_contracts::{DeviceRgb, LinearRgb};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceColorInterpretation {
+    IdentityDeviceSignal,
+}
+
+pub fn source_to_device(interpretation: SourceColorInterpretation, rgb: [f32; 3]) -> DeviceRgb {
+    match interpretation {
+        SourceColorInterpretation::IdentityDeviceSignal => DeviceRgb::new(rgb[0], rgb[1], rgb[2]),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreviewRgb {
@@ -48,5 +59,16 @@ mod tests {
         let bright = transform.scene_linear_to_srgb(LinearRgb::new(1_000.0, 1_000.0, 1_000.0));
         assert!(bright.r > dim.r);
         assert!(bright.r < 1.0);
+    }
+
+    #[test]
+    fn identity_device_interpretation_preserves_code_values() {
+        assert_eq!(
+            source_to_device(
+                SourceColorInterpretation::IdentityDeviceSignal,
+                [-0.1, 0.5, 1.2]
+            ),
+            DeviceRgb::new(-0.1, 0.5, 1.2)
+        );
     }
 }
