@@ -18,4 +18,4 @@ On macOS, generate the local test application with:
 python3 scripts/package_macos.py
 ```
 
-The signed development bundle is written to `dist/Screen Simulation.app`. It is a local test build, not a notarized distribution package.
+The signed development bundle is written to `dist/Screen Simulation.app`. The packager embeds the exact non-system dynamic libraries used by the local build and verifies that no Homebrew or other machine-specific load path remains. It is a local test build, not a notarized or redistributable package; the release FFmpeg configuration and third-party licensing set are not yet finalized.
