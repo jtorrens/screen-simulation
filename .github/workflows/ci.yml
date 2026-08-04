@@ -18,6 +18,12 @@ jobs:
         with:
           toolchain: 1.97.1
           components: clippy,rustfmt
+      - name: Restore pinned Windows FFmpeg build
+        if: runner.os == 'Windows'
+        uses: actions/cache@v5
+        with:
+          path: C:\vcpkg\installed
+          key: windows-vcpkg-43c031bb61de2471c178fca57bc5a057b1b9eb73-ffmpeg-core-avcodec-avformat-swscale-v1
       - name: Install FFmpeg development libraries (macOS)
         if: runner.os == 'macOS'
         run: |
