@@ -38,6 +38,59 @@ const PREVIEW_HEIGHT: u16 = 540;
 
 slint::include_modules!();
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RenderControls {
+    white_nits: f32,
+    gamma: f32,
+    black_matrix: f32,
+    distance_m: f32,
+    focal_mm: f32,
+    focus_distance_m: f32,
+    f_stop: f32,
+    preview_exposure_ev: f32,
+    yaw_degrees: f32,
+    camera_interpolation_index: i32,
+    stripe_index: i32,
+    view_index: i32,
+    frame_number: i32,
+    placement_index: i32,
+    idt_index: i32,
+    alpha_index: i32,
+    matrix_index: i32,
+    range_index: i32,
+    sample_policy_index: i32,
+    project_fps_index: i32,
+    custom_fps_numerator: i32,
+    custom_fps_denominator: i32,
+}
+
+fn render_controls(window: &MainWindow) -> RenderControls {
+    RenderControls {
+        white_nits: window.get_white_nits(),
+        gamma: window.get_gamma(),
+        black_matrix: window.get_black_matrix(),
+        distance_m: window.get_distance_m(),
+        focal_mm: window.get_focal_mm(),
+        focus_distance_m: window.get_focus_distance_m(),
+        f_stop: window.get_f_stop(),
+        preview_exposure_ev: window.get_preview_exposure_ev(),
+        yaw_degrees: window.get_yaw_degrees(),
+        camera_interpolation_index: window.get_camera_interpolation_index(),
+        stripe_index: window.get_stripe_index(),
+        view_index: window.get_view_index(),
+        frame_number: window.get_frame_number(),
+        placement_index: window.get_placement_index(),
+        idt_index: window.get_idt_index(),
+        alpha_index: window.get_alpha_index(),
+        matrix_index: window.get_matrix_index(),
+        range_index: window.get_range_index(),
+        sample_policy_index: window.get_sample_policy_index(),
+        project_fps_index: window.get_project_fps_index(),
+        custom_fps_numerator: window.get_custom_fps_numerator(),
+        custom_fps_denominator: window.get_custom_fps_denominator(),
+    }
+}
+
 struct InteractionState {
     inspection: Option<PanelRegion>,
     source: Option<LoadedSource>,
@@ -47,6 +100,7 @@ struct InteractionState {
     camera: CameraRig,
     screen: ScreenTrack,
     next_camera_key_id: u64,
+    last_render_controls: Option<RenderControls>,
 }
 
 struct LoadedSource {
@@ -107,6 +161,7 @@ impl InteractionState {
                 }],
             },
             next_camera_key_id: 1,
+            last_render_controls: None,
         }
     }
 }
@@ -291,6 +346,7 @@ fn simulation_request(
 }
 
 fn render_preview(window: &MainWindow, state: &mut InteractionState) {
+    state.last_render_controls = Some(render_controls(window));
     let started = Instant::now();
     let request = match simulation_request(window, state.inspection, &state.camera, &state.screen) {
         Ok(request) => request,
@@ -810,7 +866,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 state.playback_accumulator_seconds = 0.0;
             }
-            if frame_advanced {
+            let controls_changed = state.last_render_controls != Some(render_controls(&window));
+            if frame_advanced || controls_changed {
                 render_preview(&window, &mut state);
             }
         });
