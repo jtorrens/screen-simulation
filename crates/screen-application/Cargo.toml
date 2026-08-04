@@ -6,9 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+rayon = "1.11"
 screen-color = { path = "../screen-color" }
 screen-contracts = { path = "../screen-contracts" }
 screen-geometry = { path = "../screen-geometry" }
 screen-media = { path = "../screen-media" }
 screen-panel = { path = "../screen-panel" }
-

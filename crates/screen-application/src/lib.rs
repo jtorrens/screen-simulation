@@ -3,11 +3,13 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
+use rayon::prelude::*;
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_geometry::{
-    CameraSample, CameraTrack, GeometryError, PanelRegion, ProjectedScreen, panel_uv_at_viewport,
-    project_scene_point, project_screen,
+    APERTURE_SAMPLE_COUNT, CameraSample, CameraTrack, GeometryError, OpticalSample, PanelRegion,
+    ProjectedScreen, panel_uv_aperture_samples, panel_uv_at_viewport, project_scene_point,
+    project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{LcdProfile, PanelError};
@@ -172,6 +174,7 @@ pub struct SimulationRequest {
     pub camera: CameraTrack,
     pub inspection: Option<PanelRegion>,
     pub view: DiagnosticView,
+    pub preview_exposure_ev: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -212,6 +215,9 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
     if request.viewport_aspect <= 0.0 {
         return Err(ApplicationError::InvalidViewportAspect);
     }
+    if !request.preview_exposure_ev.is_finite() {
+        return Err(ApplicationError::InvalidPreviewExposure);
+    }
     let panel = request.panel.validate().map_err(ApplicationError::Panel)?;
     request
         .camera
@@ -234,6 +240,13 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
             .sample(request.time)
             .map_err(ApplicationError::Geometry)?
     };
+    let sensor_aspect = camera.sensor_width.0 / camera.sensor_height.0;
+    if (sensor_aspect - request.viewport_aspect).abs() > 1.0e-4 {
+        return Err(ApplicationError::SensorViewportAspectMismatch {
+            sensor_aspect,
+            viewport_aspect: request.viewport_aspect,
+        });
+    }
     let projected_screen = project_screen(
         camera,
         panel.active_width,
@@ -290,7 +303,7 @@ fn prepare_raster_with_signal(
     request: SimulationRequest,
     width: u16,
     height: u16,
-    signal_at: &dyn Fn(Vec2) -> DeviceRgb,
+    signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
 ) -> Result<PreparedRaster, ApplicationError> {
     if width == 0 || height == 0 {
         return Err(ApplicationError::EmptyPreviewRaster);
@@ -305,54 +318,43 @@ fn prepare_raster_with_signal(
         .ok_or(ApplicationError::ViewRayMissesPanel)?
         * 100.0;
     let subpixels_resolved_at_center = preview_scale_percent >= 300.0;
-    let mut pixels = Vec::with_capacity(usize::from(width) * usize::from(height));
-    for row in 0..height {
-        for column in 0..width {
-            let viewport_ndc = Vec2 {
-                x: (f32::from(column) + 0.5) / f32::from(width) * 2.0 - 1.0,
-                y: (f32::from(row) + 0.5) / f32::from(height) * 2.0 - 1.0,
-            };
-            let Some(uv) = panel_uv_at_viewport(
-                frame.camera,
-                request.panel.active_width,
-                request.panel.active_height,
-                request.viewport_aspect,
-                viewport_ndc,
-            ) else {
-                pixels.push(outside_panel());
-                continue;
-            };
-            if !(0.0..=1.0).contains(&uv.x) || !(0.0..=1.0).contains(&uv.y) {
-                pixels.push(outside_panel());
-                continue;
+    let mut pixels = vec![
+        PreviewPixel {
+            rgb: PreviewRgb {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+            },
+            on_panel: false,
+        };
+        usize::from(width) * usize::from(height)
+    ];
+    pixels
+        .par_chunks_mut(usize::from(width))
+        .enumerate()
+        .for_each(|(row, output_row)| {
+            for (column, output) in output_row.iter_mut().enumerate() {
+                let viewport_ndc = Vec2 {
+                    x: (column as f32 + 0.5) / f32::from(width) * 2.0 - 1.0,
+                    y: (row as f32 + 0.5) / f32::from(height) * 2.0 - 1.0,
+                };
+                let aperture_samples = panel_uv_aperture_samples(
+                    frame.camera,
+                    request.panel.active_width,
+                    request.panel.active_height,
+                    viewport_ndc,
+                );
+                *output = integrate_aperture_samples(
+                    aperture_samples,
+                    request.view,
+                    request.panel,
+                    subpixels_resolved_at_center,
+                    signal_at,
+                    display,
+                    request.preview_exposure_ev,
+                );
             }
-            let signal = signal_at(uv);
-            let preview = match request.view {
-                DiagnosticView::DeviceSignal => PreviewRgb {
-                    r: signal.r,
-                    g: signal.g,
-                    b: signal.b,
-                },
-                DiagnosticView::Composite | DiagnosticView::EmittedRadiance => {
-                    display.scene_linear_to_srgb(request.panel.emitted_radiance(signal))
-                }
-                DiagnosticView::Subpixels if subpixels_resolved_at_center => {
-                    let pixel_uv = Vec2 {
-                        x: (uv.x * request.panel.native_width as f32).fract(),
-                        y: (uv.y * request.panel.native_height as f32).fract(),
-                    };
-                    display.scene_linear_to_srgb(request.panel.emission_at_pixel(signal, pixel_uv))
-                }
-                DiagnosticView::Subpixels => {
-                    display.scene_linear_to_srgb(request.panel.emitted_radiance(signal))
-                }
-            };
-            pixels.push(PreviewPixel {
-                rgb: preview,
-                on_panel: true,
-            });
-        }
-    }
+        });
     let inspection_field_meters = request.inspection.map(|region| {
         [
             (region.max.x - region.min.x) * request.panel.active_width.0,
@@ -368,6 +370,82 @@ fn prepare_raster_with_signal(
         inspection_field_meters,
         subpixels_resolved_at_center,
     })
+}
+
+fn integrate_aperture_samples(
+    samples: [OpticalSample; APERTURE_SAMPLE_COUNT],
+    view: DiagnosticView,
+    panel: LcdProfile,
+    subpixels_resolved: bool,
+    signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+    display: DiagnosticDisplayTransform,
+    preview_exposure_ev: f32,
+) -> PreviewPixel {
+    let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
+    let mut on_panel = false;
+    for optical_sample in samples {
+        for channel in 0..3 {
+            let Some(uv) = optical_sample.panel_uv[channel]
+                .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
+            else {
+                continue;
+            };
+            on_panel = true;
+            let signal = signal_at(uv);
+            let value = match view {
+                DiagnosticView::DeviceSignal => LinearRgb::new(signal.r, signal.g, signal.b),
+                DiagnosticView::Composite | DiagnosticView::EmittedRadiance => {
+                    panel.emitted_radiance(signal)
+                }
+                DiagnosticView::Subpixels if subpixels_resolved => {
+                    let pixel_uv = Vec2 {
+                        x: (uv.x * panel.native_width as f32).fract(),
+                        y: (uv.y * panel.native_height as f32).fract(),
+                    };
+                    panel.emission_at_pixel(signal, pixel_uv)
+                }
+                DiagnosticView::Subpixels => panel.emitted_radiance(signal),
+            };
+            let optical_weight = if view == DiagnosticView::DeviceSignal {
+                1.0
+            } else {
+                optical_sample.irradiance_weight[channel]
+            };
+            let weighted = match channel {
+                0 => value.r,
+                1 => value.g,
+                _ => value.b,
+            } * optical_weight;
+            match channel {
+                0 => sum.r += weighted,
+                1 => sum.g += weighted,
+                _ => sum.b += weighted,
+            }
+        }
+    }
+    let scale = 1.0 / APERTURE_SAMPLE_COUNT as f32;
+    let preview_gain = if view == DiagnosticView::DeviceSignal {
+        1.0
+    } else {
+        preview_exposure_ev.exp2()
+    };
+    let average = LinearRgb::new(
+        sum.r * scale * preview_gain,
+        sum.g * scale * preview_gain,
+        sum.b * scale * preview_gain,
+    );
+    PreviewPixel {
+        rgb: if view == DiagnosticView::DeviceSignal {
+            PreviewRgb {
+                r: average.r,
+                g: average.g,
+                b: average.b,
+            }
+        } else {
+            display.scene_linear_to_srgb(average)
+        },
+        on_panel,
+    }
 }
 
 pub fn inspection_region_from_drag(
@@ -432,17 +510,6 @@ fn projected_device_pixel_width(
     Some((second.x - first.x).hypot(second.y - first.y) * f32::from(preview_width) * 0.5)
 }
 
-fn outside_panel() -> PreviewPixel {
-    PreviewPixel {
-        rgb: PreviewRgb {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-        },
-        on_panel: false,
-    }
-}
-
 /// Current vertical-slice device signal. This is explicit authored diagnostic content,
 /// not a media fallback and not reachable from media decoding.
 pub fn diagnostic_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
@@ -462,15 +529,26 @@ pub fn diagnostic_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
     )
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ApplicationError {
     InvalidViewportAspect,
+    InvalidPreviewExposure,
+    SensorViewportAspectMismatch {
+        sensor_aspect: f32,
+        viewport_aspect: f32,
+    },
     EmptyPreviewRaster,
     InspectionMustStartOnPanel,
     ViewRayMissesPanel,
     EmptyDeviceSignalRaster,
-    DeviceSignalPixelCountMismatch { expected: u64, actual: u64 },
-    DecodedPixelCountMismatch { expected: u64, actual: u64 },
+    DeviceSignalPixelCountMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    DecodedPixelCountMismatch {
+        expected: u64,
+        actual: u64,
+    },
     DecodedPixelStorageTooLarge,
     AlphaAssociationUnresolved,
     Color(ColorError),
@@ -482,6 +560,16 @@ impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidViewportAspect => formatter.write_str("viewport aspect must be positive"),
+            Self::InvalidPreviewExposure => {
+                formatter.write_str("preview exposure EV must be finite")
+            }
+            Self::SensorViewportAspectMismatch {
+                sensor_aspect,
+                viewport_aspect,
+            } => write!(
+                formatter,
+                "sensor aspect {sensor_aspect:.6} does not match authored viewport aspect {viewport_aspect:.6}"
+            ),
             Self::EmptyPreviewRaster => formatter.write_str("preview raster must be non-empty"),
             Self::InspectionMustStartOnPanel => {
                 formatter.write_str("inspection selection must start on the panel")
@@ -550,11 +638,19 @@ mod tests {
                     rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
                     focal_length: Millimeters(50.0),
                     sensor_width: Millimeters(36.0),
+                    sensor_height: Millimeters(20.25),
+                    lens_shift: Vec2 { x: 0.0, y: 0.0 },
+                    focus_distance: Meters(0.8),
+                    f_stop: 8.0,
+                    near_clip: Meters(0.01),
+                    far_clip: Meters(100.0),
+                    lens: screen_geometry::LensModel::REFERENCE_PHOTOGRAPHIC,
                     interpolation: screen_geometry::KeyframeInterpolation::Smooth,
                 }],
             },
             inspection: None,
             view: DiagnosticView::Composite,
+            preview_exposure_ev: 6.0,
         }
     }
 
@@ -579,6 +675,23 @@ mod tests {
             prepare_frame(invalid),
             Err(ApplicationError::Panel(PanelError::EmptyNativeRaster))
         );
+    }
+
+    #[test]
+    fn sensor_and_output_aspects_require_an_explicit_match() {
+        let mut request = request();
+        request.camera.keyframes[0].sensor_height = Millimeters(24.0);
+        assert!(matches!(
+            prepare_frame(request),
+            Err(ApplicationError::SensorViewportAspectMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn parallel_optical_reference_is_deterministic() {
+        let first = prepare_raster(request(), 96, 54).expect("first optical render");
+        let second = prepare_raster(request(), 96, 54).expect("second optical render");
+        assert_eq!(first, second);
     }
 
     #[test]

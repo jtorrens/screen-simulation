@@ -16,7 +16,7 @@ media source
 → device signal
 → procedural LCD emission
 → animated screen/camera projection
-→ ideal final sampling
+→ deterministic thin-lens aperture integration
 → explicit preview or still-output transform
 ```
 

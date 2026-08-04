@@ -18,7 +18,7 @@ use screen_color::{
 };
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_geometry::{
-    CameraKeyframe, CameraTrack, KeyframeInterpolation, PanelRegion, Quaternion,
+    CameraKeyframe, CameraTrack, KeyframeInterpolation, LensModel, PanelRegion, Quaternion,
 };
 use screen_media::{
     AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, FrameSelectionPolicy,
@@ -76,10 +76,14 @@ impl InteractionState {
                 keyframes: vec![camera_keyframe(
                     "camera-key-0".to_owned(),
                     RationalTime::new(0, 1).expect("initial camera time is valid"),
-                    0.82,
-                    0.0,
-                    50.0,
-                    KeyframeInterpolation::Smooth,
+                    CameraEdit {
+                        distance: 0.82,
+                        yaw_degrees: 0.0,
+                        focal_mm: 50.0,
+                        focus_distance_m: 0.82,
+                        f_stop: 8.0,
+                        interpolation: KeyframeInterpolation::Smooth,
+                    },
                 )],
             },
             next_camera_key_id: 1,
@@ -87,27 +91,37 @@ impl InteractionState {
     }
 }
 
-fn camera_keyframe(
-    id: String,
-    time: RationalTime,
+#[derive(Clone, Copy)]
+struct CameraEdit {
     distance: f32,
     yaw_degrees: f32,
     focal_mm: f32,
+    focus_distance_m: f32,
+    f_stop: f32,
     interpolation: KeyframeInterpolation,
-) -> CameraKeyframe {
-    let yaw = yaw_degrees.to_radians();
+}
+
+fn camera_keyframe(id: String, time: RationalTime, edit: CameraEdit) -> CameraKeyframe {
+    let yaw = edit.yaw_degrees.to_radians();
     CameraKeyframe {
         id,
         time,
         position: Vec3 {
-            x: distance * yaw.sin(),
+            x: edit.distance * yaw.sin(),
             y: 0.0,
-            z: distance * yaw.cos(),
+            z: edit.distance * yaw.cos(),
         },
-        rotation: Quaternion::from_yaw_degrees(yaw_degrees),
-        focal_length: Millimeters(focal_mm),
+        rotation: Quaternion::from_yaw_degrees(edit.yaw_degrees),
+        focal_length: Millimeters(edit.focal_mm),
         sensor_width: Millimeters(36.0),
-        interpolation,
+        sensor_height: Millimeters(20.25),
+        lens_shift: Vec2 { x: 0.0, y: 0.0 },
+        focus_distance: Meters(edit.focus_distance_m),
+        f_stop: edit.f_stop,
+        near_clip: Meters(0.01),
+        far_clip: Meters(100.0),
+        lens: LensModel::REFERENCE_PHOTOGRAPHIC,
+        interpolation: edit.interpolation,
     }
 }
 
@@ -224,6 +238,7 @@ fn simulation_request(
         camera: camera.clone(),
         inspection,
         view,
+        preview_exposure_ev: window.get_preview_exposure_ev(),
     })
 }
 
@@ -662,10 +677,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     state.camera.keyframes[index] = camera_keyframe(
                         id,
                         time,
-                        window.get_distance_m(),
-                        window.get_yaw_degrees(),
-                        window.get_focal_mm(),
-                        interpolation,
+                        CameraEdit {
+                            distance: window.get_distance_m(),
+                            yaw_degrees: window.get_yaw_degrees(),
+                            focal_mm: window.get_focal_mm(),
+                            focus_distance_m: window.get_focus_distance_m(),
+                            f_stop: window.get_f_stop(),
+                            interpolation,
+                        },
                     );
                 }
                 Err(index) => {
@@ -676,10 +695,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         camera_keyframe(
                             id,
                             time,
-                            window.get_distance_m(),
-                            window.get_yaw_degrees(),
-                            window.get_focal_mm(),
-                            interpolation,
+                            CameraEdit {
+                                distance: window.get_distance_m(),
+                                yaw_degrees: window.get_yaw_degrees(),
+                                focal_mm: window.get_focal_mm(),
+                                focus_distance_m: window.get_focus_distance_m(),
+                                f_stop: window.get_f_stop(),
+                                interpolation,
+                            },
                         ),
                     );
                 }

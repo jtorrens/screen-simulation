@@ -86,6 +86,9 @@ export component MainWindow inherits Window {
     in-out property <float> black-matrix: 0.12;
     in-out property <float> distance-m: 0.82;
     in-out property <float> focal-mm: 50;
+    in-out property <float> focus-distance-m: 0.82;
+    in-out property <float> f-stop: 8;
+    in-out property <float> preview-exposure-ev: 6;
     in-out property <float> yaw-degrees: 0;
     in-out property <int> camera-key-count: 1;
     in-out property <int> camera-interpolation-index: 2;
@@ -135,7 +138,8 @@ export component MainWindow inherits Window {
     }
 
     Timer {
-        interval: 250ms;
+        // CPU optical reference evaluation leaves event-loop time between deterministic frames.
+        interval: 1000ms;
         running: true;
         triggered => {
             root.tick();
@@ -516,6 +520,25 @@ export component MainWindow inherits Window {
                             suffix: "°";
                         }
 
+                        ValueRow {
+                            label: "Focus";
+                            minimum: 0.1;
+                            maximum: 5;
+                            step: 0.01;
+                            value <=> root.focus-distance-m;
+                            numeric-value: round(root.focus-distance-m * 100) / 100;
+                            suffix: "m";
+                        }
+
+                        ValueRow {
+                            label: "F-stop";
+                            minimum: 1.0;
+                            maximum: 22;
+                            step: 0.1;
+                            value <=> root.f-stop;
+                            numeric-value: round(root.f-stop * 10) / 10;
+                        }
+
                         HorizontalLayout {
                             height: 34px;
                             spacing: 8px;
@@ -550,6 +573,16 @@ export component MainWindow inherits Window {
 
                         Rectangle { height: 1px; background: #303744; }
                         Text { text: "DIAGNOSTIC VIEW"; color: #71819b; font-size: 11px; }
+
+                        ValueRow {
+                            label: "Preview EV";
+                            minimum: -4;
+                            maximum: 12;
+                            step: 0.1;
+                            value <=> root.preview-exposure-ev;
+                            numeric-value: round(root.preview-exposure-ev * 10) / 10;
+                            suffix: "EV";
+                        }
 
                         ComboBox {
                             model: ["Composite", "Device signal", "RGB subpixels", "Emitted radiance"];

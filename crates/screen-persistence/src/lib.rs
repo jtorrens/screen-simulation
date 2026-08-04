@@ -202,7 +202,19 @@ pub struct CameraIntrinsicsKeyframe {
     pub f_stop: f32,
     pub near_clip_meters: f32,
     pub far_clip_meters: f32,
+    pub lens: LensDocument,
     pub interpolation: InterpolationSelection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LensDocument {
+    pub radial_distortion: [f32; 3],
+    pub tangential_distortion: [f32; 2],
+    pub longitudinal_chromatic_meters: [f32; 3],
+    pub lateral_chromatic_scale: [f32; 3],
+    pub vignetting_strength: f32,
+    pub transmission_rgb: [f32; 3],
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -554,6 +566,18 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
         if !values.iter().all(|value| value.is_finite()) {
             return Err(PersistenceError::NonFiniteNumber);
         }
+        let lens_values = keyframe
+            .lens
+            .radial_distortion
+            .into_iter()
+            .chain(keyframe.lens.tangential_distortion)
+            .chain(keyframe.lens.longitudinal_chromatic_meters)
+            .chain(keyframe.lens.lateral_chromatic_scale)
+            .chain([keyframe.lens.vignetting_strength])
+            .chain(keyframe.lens.transmission_rgb);
+        if !lens_values.clone().all(f32::is_finite) {
+            return Err(PersistenceError::NonFiniteNumber);
+        }
         if keyframe.focal_length_mm <= 0.0
             || keyframe.sensor_width_mm <= 0.0
             || keyframe.sensor_height_mm <= 0.0
@@ -561,6 +585,17 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
             || keyframe.f_stop <= 0.0
             || keyframe.near_clip_meters <= 0.0
             || keyframe.far_clip_meters <= keyframe.near_clip_meters
+            || !(0.0..=1.0).contains(&keyframe.lens.vignetting_strength)
+            || keyframe
+                .lens
+                .lateral_chromatic_scale
+                .into_iter()
+                .any(|value| value <= 0.0)
+            || keyframe
+                .lens
+                .transmission_rgb
+                .into_iter()
+                .any(|value| !(0.0..=1.0).contains(&value))
         {
             return Err(PersistenceError::InvalidCameraIntrinsics);
         }
@@ -824,6 +859,14 @@ mod tests {
                     f_stop: 8.0,
                     near_clip_meters: 0.01,
                     far_clip_meters: 100.0,
+                    lens: LensDocument {
+                        radial_distortion: [-0.035, 0.008, 0.0],
+                        tangential_distortion: [0.000_4, -0.000_3],
+                        longitudinal_chromatic_meters: [0.001_2, 0.0, -0.001_5],
+                        lateral_chromatic_scale: [1.000_8, 1.0, 0.999_1],
+                        vignetting_strength: 0.65,
+                        transmission_rgb: [0.92, 0.94, 0.95],
+                    },
                     interpolation: InterpolationSelection::Linear,
                 }],
             },
