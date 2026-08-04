@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use screen_contracts::RationalTime;
+use screen_contracts::{EncodedColorMetadata, RationalTime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RasterSize {
@@ -58,6 +58,7 @@ pub struct MediaDescriptor {
     pub alpha: AlphaPresence,
     pub codec_name: String,
     pub pixel_format_name: String,
+    pub color_metadata: EncodedColorMetadata,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

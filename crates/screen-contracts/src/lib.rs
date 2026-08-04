@@ -17,6 +17,59 @@ pub struct FrameRate {
     denominator: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ColorPrimaries {
+    Bt709,
+    Bt2020,
+    P3D65,
+    Other(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferCharacteristic {
+    Bt709,
+    Srgb,
+    Gamma22,
+    Gamma28,
+    Linear,
+    Pq,
+    Hlg,
+    Other(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MatrixCoefficients {
+    Rgb,
+    Bt709,
+    Bt2020Ncl,
+    Bt2020Cl,
+    Other(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignalRange {
+    Limited,
+    Full,
+    Other(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EncodedColorMetadata {
+    pub primaries: Option<ColorPrimaries>,
+    pub transfer: Option<TransferCharacteristic>,
+    pub matrix: Option<MatrixCoefficients>,
+    pub range: Option<SignalRange>,
+}
+
+impl EncodedColorMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.primaries.is_none()
+            && self.transfer.is_none()
+            && self.matrix.is_none()
+            && self.range.is_none()
+    }
+}
+
 impl FrameRate {
     pub fn new(numerator: u32, denominator: u32) -> Result<Self, ContractError> {
         if numerator == 0 || denominator == 0 {

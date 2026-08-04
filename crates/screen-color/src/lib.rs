@@ -4,7 +4,10 @@
 
 use core::fmt;
 use ocio_rs::{CPUProcessor, Config, TransformDirection};
-use screen_contracts::{DeviceRgb, LinearRgb};
+use screen_contracts::{
+    ColorPrimaries, DeviceRgb, EncodedColorMetadata, LinearRgb, MatrixCoefficients,
+    TransferCharacteristic,
+};
 
 pub const OCIO_CONFIGURATION_ID: &str = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
 
@@ -90,6 +93,22 @@ impl DeviceColorTarget {
 pub enum SourceColorInterpretation {
     IdentityDeviceSignal,
     Ocio(OcioInputTransform),
+}
+
+pub fn propose_ocio_input(metadata: &EncodedColorMetadata) -> Option<OcioInputTransform> {
+    match (&metadata.primaries, &metadata.transfer, &metadata.matrix) {
+        (
+            Some(ColorPrimaries::Bt709),
+            Some(TransferCharacteristic::Srgb),
+            Some(MatrixCoefficients::Rgb | MatrixCoefficients::Bt709),
+        ) => Some(OcioInputTransform::SrgbEncodedRec709),
+        (
+            Some(ColorPrimaries::Bt709),
+            Some(TransferCharacteristic::Bt709),
+            Some(MatrixCoefficients::Bt709),
+        ) => Some(OcioInputTransform::CameraRec709),
+        _ => None,
+    }
 }
 
 pub struct ColorEngine {
@@ -306,5 +325,24 @@ mod tests {
             processor.apply_rgba_buffer(&mut [0.0; 3]),
             Err(ColorError::InvalidRgbaBufferLength(3))
         );
+    }
+
+    #[test]
+    fn complete_rec709_metadata_proposes_but_does_not_select_an_input() {
+        let metadata = EncodedColorMetadata {
+            primaries: Some(ColorPrimaries::Bt709),
+            transfer: Some(TransferCharacteristic::Bt709),
+            matrix: Some(MatrixCoefficients::Bt709),
+            range: None,
+        };
+        assert_eq!(
+            propose_ocio_input(&metadata),
+            Some(OcioInputTransform::CameraRec709)
+        );
+        let incomplete = EncodedColorMetadata {
+            matrix: None,
+            ..metadata
+        };
+        assert_eq!(propose_ocio_input(&incomplete), None);
     }
 }

@@ -7,7 +7,10 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use ffmpeg_next as ffmpeg;
-use screen_contracts::RationalTime;
+use screen_contracts::{
+    ColorPrimaries, EncodedColorMetadata, MatrixCoefficients, RationalTime, SignalRange,
+    TransferCharacteristic,
+};
 use screen_media::{
     AlphaPresence, DecodedFrame, DecodedRgba, FrameCadence, FrameSelectionPolicy, MediaDescriptor,
     RasterSize,
@@ -47,6 +50,12 @@ pub fn probe_media(path: &Path) -> Result<MediaDescriptor, PlatformMediaError> {
         .transpose()
         .map_err(|error| PlatformMediaError::InvalidVideoStream(error.to_string()))?;
     let pixel_descriptor = decoder.format().descriptor();
+    let color_metadata = EncodedColorMetadata {
+        primaries: declared_primaries(decoder.color_primaries()),
+        transfer: declared_transfer(decoder.color_transfer_characteristic()),
+        matrix: declared_matrix(decoder.color_space()),
+        range: declared_range(decoder.color_range()),
+    };
     Ok(MediaDescriptor {
         raster,
         cadence,
@@ -63,7 +72,63 @@ pub fn probe_media(path: &Path) -> Result<MediaDescriptor, PlatformMediaError> {
             || "unknown".to_owned(),
             |descriptor| descriptor.name().to_owned(),
         ),
+        color_metadata,
     })
+}
+
+fn declared_primaries(value: ffmpeg::util::color::Primaries) -> Option<ColorPrimaries> {
+    use ffmpeg::util::color::Primaries;
+    match value {
+        Primaries::Unspecified => None,
+        Primaries::BT709 => Some(ColorPrimaries::Bt709),
+        Primaries::BT2020 => Some(ColorPrimaries::Bt2020),
+        Primaries::SMPTE432 => Some(ColorPrimaries::P3D65),
+        other => Some(ColorPrimaries::Other(
+            other.name().unwrap_or("unrecognized primaries").to_owned(),
+        )),
+    }
+}
+
+fn declared_transfer(
+    value: ffmpeg::util::color::TransferCharacteristic,
+) -> Option<TransferCharacteristic> {
+    use ffmpeg::util::color::TransferCharacteristic as FfmpegTransfer;
+    match value {
+        FfmpegTransfer::Unspecified => None,
+        FfmpegTransfer::BT709 => Some(TransferCharacteristic::Bt709),
+        FfmpegTransfer::IEC61966_2_1 => Some(TransferCharacteristic::Srgb),
+        FfmpegTransfer::GAMMA22 => Some(TransferCharacteristic::Gamma22),
+        FfmpegTransfer::GAMMA28 => Some(TransferCharacteristic::Gamma28),
+        FfmpegTransfer::Linear => Some(TransferCharacteristic::Linear),
+        FfmpegTransfer::SMPTE2084 => Some(TransferCharacteristic::Pq),
+        FfmpegTransfer::ARIB_STD_B67 => Some(TransferCharacteristic::Hlg),
+        other => Some(TransferCharacteristic::Other(
+            other.name().unwrap_or("unrecognized transfer").to_owned(),
+        )),
+    }
+}
+
+fn declared_matrix(value: ffmpeg::util::color::Space) -> Option<MatrixCoefficients> {
+    use ffmpeg::util::color::Space;
+    match value {
+        Space::Unspecified => None,
+        Space::RGB => Some(MatrixCoefficients::Rgb),
+        Space::BT709 => Some(MatrixCoefficients::Bt709),
+        Space::BT2020NCL => Some(MatrixCoefficients::Bt2020Ncl),
+        Space::BT2020CL => Some(MatrixCoefficients::Bt2020Cl),
+        other => Some(MatrixCoefficients::Other(
+            other.name().unwrap_or("unrecognized matrix").to_owned(),
+        )),
+    }
+}
+
+fn declared_range(value: ffmpeg::util::color::Range) -> Option<SignalRange> {
+    use ffmpeg::util::color::Range;
+    match value {
+        Range::Unspecified => None,
+        Range::MPEG => Some(SignalRange::Limited),
+        Range::JPEG => Some(SignalRange::Full),
+    }
 }
 
 pub fn decode_frame_at_time(
@@ -356,6 +421,7 @@ mod tests {
             alpha: AlphaPresence::Absent,
             codec_name: "test".to_owned(),
             pixel_format_name: "rgba64le".to_owned(),
+            color_metadata: EncodedColorMetadata::default(),
         }
     }
 
@@ -425,5 +491,26 @@ mod tests {
             .1,
             earlier
         );
+    }
+
+    #[test]
+    fn ffmpeg_color_declarations_map_to_typed_metadata_without_selecting_an_idt() {
+        use ffmpeg::util::color::{Primaries, Range, Space, TransferCharacteristic as Transfer};
+
+        assert_eq!(
+            declared_primaries(Primaries::BT709),
+            Some(ColorPrimaries::Bt709)
+        );
+        assert_eq!(
+            declared_transfer(Transfer::BT709),
+            Some(TransferCharacteristic::Bt709)
+        );
+        assert_eq!(
+            declared_matrix(Space::BT709),
+            Some(MatrixCoefficients::Bt709)
+        );
+        assert_eq!(declared_range(Range::MPEG), Some(SignalRange::Limited));
+        assert_eq!(declared_primaries(Primaries::Unspecified), None);
+        assert_eq!(declared_transfer(Transfer::Unspecified), None);
     }
 }

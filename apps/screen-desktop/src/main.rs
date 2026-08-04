@@ -14,7 +14,7 @@ use screen_application::{
 };
 use screen_color::{
     ColorEngine, DeviceColorTarget, OcioInputTransform, SourceColorInterpretation,
-    SourceToDeviceProcessor,
+    SourceToDeviceProcessor, propose_ocio_input,
 };
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2};
 use screen_geometry::{CameraRig, PanelRegion};
@@ -461,7 +461,22 @@ fn present_source(window: &MainWindow, path: &Path, descriptor: &MediaDescriptor
         )
         .into(),
     );
-    window.set_source_interpretation("IDT selection required · evaluation blocked".into());
+    let interpretation_status = propose_ocio_input(&descriptor.color_metadata).map_or_else(
+        || {
+            if descriptor.color_metadata.is_empty() {
+                "No declared color metadata · choose IDT to authorize".to_owned()
+            } else {
+                "Declared color metadata is not decisive · choose IDT to authorize".to_owned()
+            }
+        },
+        |proposal| {
+            format!(
+                "Metadata proposes {} · choose IDT to authorize",
+                proposal.label()
+            )
+        },
+    );
+    window.set_source_interpretation(interpretation_status.into());
     window.set_error_text("".into());
 }
 
