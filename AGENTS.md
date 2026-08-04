@@ -42,7 +42,7 @@ These rules apply to every task in this repository.
 - Application owns the current phase's immutable simulation request and orchestration through narrow domain ports.
 - Persistence owns strict current project documents and portable references. It does not decode, resolve color, simulate, or render.
 - Platform owns replaceable macOS/Windows media, GPU, display, and filesystem adapters.
-- Desktop is the only executable composition root. Its UI shell displays immutable prepared state and contains no domain rules.
+- Executable and host adapters are composition roots. The current workspace contains only Desktop, whose Slint shell displays immutable prepared state and contains no domain rules. Any later host adapter must consume the same Application evaluator and cannot duplicate domain semantics.
 - Cross-domain workflows use narrow typed ports. Do not introduce a universal engine, service locator, general repository, catch-all project facade, or runtime registry with semantic conditions.
 
 ## Deterministic boundaries

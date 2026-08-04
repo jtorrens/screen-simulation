@@ -13,7 +13,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ACTIVE_TEXT_SUFFIXES = {".json", ".md", ".py", ".rs", ".toml", ".yml", ".yaml"}
+ACTIVE_TEXT_SUFFIXES = {".json", ".md", ".py", ".rs", ".slint", ".toml", ".yml", ".yaml"}
 
 
 class ValidationError(RuntimeError):
@@ -162,7 +162,7 @@ def validate_retired_surfaces(paths: list[str]) -> None:
     if not identifiers:
         return
     for relative_path in paths:
-        if relative_path.startswith("Docs/old/"):
+        if relative_path == "architecture/retired.json" or relative_path.startswith("Docs/old/"):
             continue
         path = ROOT / relative_path
         if path.suffix.lower() not in ACTIVE_TEXT_SUFFIXES:
@@ -189,4 +189,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

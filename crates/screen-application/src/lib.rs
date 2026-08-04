@@ -36,7 +36,7 @@ pub struct PreparedFrame {
     pub viewport_aspect: f32,
     pub camera: CameraSample,
     pub inspection: Option<PanelRegion>,
-    pub projected_screen: ProjectedScreen,
+    pub projected_screen: Option<ProjectedScreen>,
     pub native_raster: [u32; 2],
     pub active_size_meters: [f32; 2],
     pub pixel_pitch_meters: f32,
@@ -350,7 +350,11 @@ mod tests {
         let frame = prepare_frame(request()).expect("valid request");
         assert_eq!(frame.native_raster, [1920, 1080]);
         assert!(frame.pixels_per_inch > 90.0);
-        assert!(frame.projected_screen.facing_ratio > 0.9);
+        assert!(
+            frame
+                .projected_screen
+                .is_some_and(|screen| screen.facing_ratio > 0.9)
+        );
         assert!(frame.representative_emission.b > frame.representative_emission.g);
     }
 
@@ -384,6 +388,19 @@ mod tests {
         let raster = prepare_raster(request, 320, 180).expect("valid inspection raster");
         assert!(raster.subpixels_resolved_at_center);
         assert!(raster.inspection_field_meters.is_some());
+    }
+
+    #[test]
+    fn deep_oblique_inspection_does_not_require_the_full_panel_outline() {
+        let mut request = request();
+        request.time = RationalTime::new(48, 24).expect("valid time");
+        request.inspection = Some(PanelRegion {
+            min: Vec2 { x: 0.499, y: 0.499 },
+            max: Vec2 { x: 0.501, y: 0.501 },
+        });
+        let raster = prepare_raster(request, 320, 180).expect("valid deep inspection raster");
+        assert!(raster.frame.projected_screen.is_none());
+        assert!(raster.pixels.iter().any(|pixel| pixel.on_panel));
     }
 
     #[test]

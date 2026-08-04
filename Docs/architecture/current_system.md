@@ -23,7 +23,7 @@ Every arrow is a typed boundary. A consumer receives a complete validated result
 
 ## Technology
 
-The cross-platform implementation uses Rust 1.97.1. GPU work uses `wgpu` and WGSL, selecting Metal on macOS and Direct3D 12 on Windows. The technical desktop UI uses `egui`. Media decode uses one bundled FFmpeg configuration on both platforms. OpenColorIO remains behind a narrow C++ boundary with a CPU reference processor. OpenEXR remains behind its own format adapter.
+The cross-platform implementation uses Rust 1.97.1. GPU work uses `wgpu` and WGSL, selecting Metal on macOS and Direct3D 12 on Windows. The technical desktop UI uses Slint with one compiled `fluent-dark` style and its WGPU renderer on both platforms. Slint remains confined to `screen-desktop`; domain and application packages expose no UI types. The desktop bundle includes the required Slint attribution through the standard `AboutSlint` component. Media decode uses one bundled FFmpeg configuration on both platforms. OpenColorIO remains behind a narrow C++ boundary with a CPU reference processor. OpenEXR remains behind its own format adapter.
 
 The initial supported systems are Apple Silicon on macOS 14 or later and x86-64 on Windows 11.
 
@@ -38,10 +38,10 @@ screen-geometry        camera/screen tracks and physical projection
 screen-application     immutable request preparation and orchestration
 screen-persistence     strict portable project documents
 screen-platform        replaceable OS, GPU, media and filesystem adapters
-screen-desktop         sole executable composition root and UI shell
+screen-desktop         current composition root and Slint UI shell
 ```
 
-Domain packages expose narrow capabilities and do not depend on sibling implementation details. The exact allowed package edges are executable in `architecture/domains.json`. `screen-desktop` is the only executable allowed to construct several concrete domains.
+Domain packages expose narrow capabilities and do not depend on sibling implementation details. The exact allowed package edges are executable in `architecture/domains.json`. Executable and host adapters are composition roots; the current workspace contains only `screen-desktop`. Any later adapter must translate its host boundary into the same immutable Application requests and cannot introduce another evaluator, domain semantics or UI types into the core.
 
 ## Current scope
 

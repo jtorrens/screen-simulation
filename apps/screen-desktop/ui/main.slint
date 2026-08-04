@@ -1,0 +1,516 @@
+import { AboutSlint, Button, ComboBox, Slider } from "std-widgets.slint";
+
+component ValueRow inherits Rectangle {
+    in property <string> label;
+    in property <float> minimum;
+    in property <float> maximum;
+    in property <float> step;
+    in-out property <float> value;
+    in property <string> numeric-value;
+    in property <string> suffix;
+
+    height: 38px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 10px;
+
+        Text {
+            text: root.label;
+            color: #aeb7c8;
+            width: 84px;
+            vertical-alignment: center;
+        }
+
+        Slider {
+            minimum: root.minimum;
+            maximum: root.maximum;
+            step: root.step;
+            value <=> root.value;
+            width: 124px;
+        }
+
+        Rectangle {
+            width: 70px;
+            height: 30px;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: value-input.has-focus ? #6aa1ff : #454d5c;
+            background: #252b35;
+
+            value-input := TextInput {
+                x: 5px;
+                y: 1px;
+                width: parent.width - (root.suffix == "" ? 10px : 30px);
+                height: parent.height - 2px;
+                text: root.numeric-value;
+                input-type: number;
+                color: #e6ebf3;
+                selection-background-color: #3677d7;
+                selection-foreground-color: #ffffff;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                single-line: true;
+                accepted => {
+                    if (self.text.is-float()) {
+                        root.value = clamp(self.text.to-float(), root.minimum, root.maximum);
+                    }
+                }
+            }
+
+            Text {
+                text: root.suffix;
+                visible: root.suffix != "";
+                x: parent.width - 22px;
+                width: 18px;
+                height: parent.height;
+                color: #8490a3;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Screen Simulation";
+    preferred-width: 1440px;
+    preferred-height: 900px;
+    min-width: 1080px;
+    min-height: 680px;
+    background: #0d1015;
+    forward-focus: key-handler;
+
+    in-out property <float> white-nits: 600;
+    in-out property <float> gamma: 2.2;
+    in-out property <float> black-matrix: 0.12;
+    in-out property <float> distance-m: 0.82;
+    in-out property <float> focal-mm: 50;
+    in-out property <float> orbit-degrees: 18;
+    in-out property <int> stripe-index: 0;
+    in-out property <int> view-index: 0;
+    in-out property <bool> playing: true;
+    in-out property <int> frame-number: 0;
+    in-out property <image> preview-image;
+    in-out property <string> scale-text: "PREVIEW —";
+    in-out property <string> render-text: "Preparing physical preview…";
+    in-out property <string> inspection-text: "FIT · MAIN CAMERA";
+    in-out property <string> hint-text: "Hold Z and drag · physical inspection camera";
+    in-out property <string> error-text: "";
+    private property <bool> zoom-key-held: false;
+
+    callback inspect(float, float, float, float);
+    callback reset-inspection();
+    callback tick();
+
+    MenuBar {
+        Menu {
+            title: "Help";
+
+            MenuItem {
+                title: "About Screen Simulation…";
+                activated => {
+                    about-popup.show();
+                }
+            }
+
+        }
+    }
+
+    Timer {
+        interval: 42ms;
+        running: true;
+        triggered => {
+            root.tick();
+        }
+    }
+
+    about-popup := PopupWindow {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 430px;
+        height: 320px;
+        close-policy: PopupClosePolicy.no-auto-close;
+
+        Rectangle {
+            background: #151922;
+            border-width: 1px;
+            border-color: #465064;
+            border-radius: 8px;
+
+            VerticalLayout {
+                padding: 24px;
+                spacing: 14px;
+                alignment: center;
+
+                Text {
+                    text: "SCREEN SIMULATION";
+                    color: #e7edf7;
+                    font-size: 20px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Version 0.1.0 · Physical screen imaging";
+                    color: #aeb7c8;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Rust · Slint · WGPU\nMetal on macOS · Direct3D 12 on Windows";
+                    color: #7f8da4;
+                    horizontal-alignment: center;
+                }
+
+                AboutSlint {
+                    height: 92px;
+                }
+
+                Button {
+                    text: "Close";
+                    clicked => {
+                        about-popup.close();
+                    }
+                }
+            }
+        }
+    }
+
+    key-handler := FocusScope {
+        capture-key-pressed(event) => {
+            if (event.text == Key.Escape || ((event.text == "z" || event.text == "Z") && event.modifiers.shift)) {
+                root.zoom-key-held = false;
+                root.reset-inspection();
+                return accept;
+            }
+            if (event.text == "z" || event.text == "Z") {
+                root.zoom-key-held = true;
+                return accept;
+            }
+            return reject;
+        }
+
+        capture-key-released(event) => {
+            if (event.text == "z" || event.text == "Z") {
+                root.zoom-key-held = false;
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            spacing: 0px;
+
+            Rectangle {
+                height: 54px;
+                background: #141820;
+                border-width: 1px;
+                border-color: #2a303b;
+
+                HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    spacing: 12px;
+
+                    Text {
+                        text: "SCREEN SIMULATION";
+                        color: #e7edf7;
+                        font-size: 16px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: "PHYSICAL LCD";
+                        color: #6aa1ff;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    Text {
+                        text: root.render-text;
+                        color: #98a4b8;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 0px;
+
+                Rectangle {
+                    background: #090c10;
+                    horizontal-stretch: 1;
+
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            height: 24px;
+
+                            Text {
+                                text: "PHYSICAL CAMERA PREVIEW";
+                                color: #b8c4d8;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            Text {
+                                text: root.inspection-text + " · " + root.scale-text;
+                                color: #78a8f4;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle { vertical-stretch: 1; }
+
+                        preview := Rectangle {
+                            height: self.width * 9 / 16;
+                            clip: true;
+                            background: #06080b;
+                            border-width: 1px;
+                            border-color: #313947;
+
+                            Image {
+                                source: root.preview-image;
+                                width: 100%;
+                                height: 100%;
+                                image-fit: fill;
+                            }
+
+                            Rectangle {
+                                visible: drag-area.pressed && root.zoom-key-held;
+                                x: min(drag-area.pressed-x, drag-area.mouse-x);
+                                y: min(drag-area.pressed-y, drag-area.mouse-y);
+                                width: abs(drag-area.mouse-x - drag-area.pressed-x);
+                                height: abs(drag-area.mouse-y - drag-area.pressed-y);
+                                border-width: 2px;
+                                border-color: #6da4ff;
+                                background: #286fd82c;
+                            }
+
+                            drag-area := TouchArea {
+                                mouse-cursor: root.zoom-key-held ? crosshair : default;
+                                pointer-event(event) => {
+                                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.zoom-key-held) {
+                                        if (abs(self.mouse-x - self.pressed-x) >= 4px && abs(self.mouse-y - self.pressed-y) >= 4px) {
+                                            root.inspect(
+                                                self.pressed-x / preview.width,
+                                                self.pressed-y / preview.height,
+                                                self.mouse-x / preview.width,
+                                                self.mouse-y / preview.height
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { vertical-stretch: 1; }
+
+                        Rectangle {
+                            height: 34px;
+                            background: transparent;
+
+                            Text {
+                                text: root.error-text != "" ? root.error-text : root.hint-text;
+                                color: root.error-text != "" ? #f28e6b : #718098;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: 334px;
+                    background: #151922;
+                    border-width: 1px;
+                    border-color: #303744;
+
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
+
+                        Text {
+                            text: "SCENE INSPECTOR";
+                            color: #e2e8f2;
+                            font-size: 13px;
+                            font-weight: 700;
+                        }
+
+                        Text { text: "SOURCE"; color: #71819b; font-size: 11px; }
+                        Text { text: "Procedural diagnostic · 3840 × 2160"; color: #c3ccda; }
+                        Text { text: "Explicit device signal"; color: #8794a9; }
+                        Rectangle { height: 1px; background: #303744; }
+
+                        Text { text: "LCD PANEL"; color: #71819b; font-size: 11px; }
+
+                        ValueRow {
+                            label: "White";
+                            minimum: 100;
+                            maximum: 1500;
+                            step: 1;
+                            value <=> root.white-nits;
+                            numeric-value: round(root.white-nits);
+                            suffix: "nit";
+                        }
+
+                        ValueRow {
+                            label: "EOTF γ";
+                            minimum: 1.6;
+                            maximum: 2.8;
+                            step: 0.01;
+                            value <=> root.gamma;
+                            numeric-value: round(root.gamma * 100) / 100;
+                        }
+
+                        ValueRow {
+                            label: "Black matrix";
+                            minimum: 0.02;
+                            maximum: 0.30;
+                            step: 0.01;
+                            value <=> root.black-matrix;
+                            numeric-value: round(root.black-matrix * 100) / 100;
+                        }
+
+                        HorizontalLayout {
+                            height: 34px;
+
+                            Text {
+                                text: "Stripe order";
+                                color: #aeb7c8;
+                                width: 94px;
+                                vertical-alignment: center;
+                            }
+
+                            ComboBox {
+                                model: ["RGB", "BGR"];
+                                current-index <=> root.stripe-index;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #303744; }
+                        Text { text: "CAMERA"; color: #71819b; font-size: 11px; }
+
+                        ValueRow {
+                            label: "Distance";
+                            minimum: 0.5;
+                            maximum: 1.5;
+                            step: 0.01;
+                            value <=> root.distance-m;
+                            numeric-value: round(root.distance-m * 100) / 100;
+                            suffix: "m";
+                        }
+
+                        ValueRow {
+                            label: "Focal";
+                            minimum: 24;
+                            maximum: 85;
+                            step: 0.1;
+                            value <=> root.focal-mm;
+                            numeric-value: round(root.focal-mm * 10) / 10;
+                            suffix: "mm";
+                        }
+
+                        ValueRow {
+                            label: "Orbit";
+                            minimum: 0;
+                            maximum: 35;
+                            step: 0.1;
+                            value <=> root.orbit-degrees;
+                            numeric-value: round(root.orbit-degrees * 10) / 10;
+                            suffix: "°";
+                        }
+
+                        HorizontalLayout {
+                            height: 30px;
+
+                            Text {
+                                text: "Sensor";
+                                color: #aeb7c8;
+                                width: 94px;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            Text {
+                                text: "36.0 mm";
+                                color: #c3ccda;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #303744; }
+                        Text { text: "DIAGNOSTIC VIEW"; color: #71819b; font-size: 11px; }
+
+                        ComboBox {
+                            model: ["Composite", "Device signal", "RGB subpixels", "Emitted radiance"];
+                            current-index <=> root.view-index;
+                        }
+
+                        Rectangle { vertical-stretch: 1; }
+
+                        Text {
+                            text: "Screen Simulation 0.1.0";
+                            color: #66748a;
+                            font-size: 11px;
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 70px;
+                background: #141820;
+                border-width: 1px;
+                border-color: #2a303b;
+
+                HorizontalLayout {
+                    padding-left: 18px;
+                    padding-right: 18px;
+                    spacing: 12px;
+
+                    Button {
+                        text: root.playing ? "Pause" : "Play";
+                        clicked => {
+                            root.playing = !root.playing;
+                        }
+                    }
+
+                    Text {
+                        text: "Frame " + root.frame-number + " / 96";
+                        color: #d4dce9;
+                        vertical-alignment: center;
+                        width: 110px;
+                    }
+
+                    Slider {
+                        minimum: 0;
+                        maximum: 96;
+                        step: 1;
+                        value: root.frame-number;
+                        changed(value) => {
+                            root.frame-number = round(value);
+                        }
+                    }
+
+                    Text {
+                        text: "24 fps";
+                        color: #77859b;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

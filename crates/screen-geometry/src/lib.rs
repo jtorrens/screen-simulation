@@ -165,20 +165,21 @@ pub fn project_screen(
     active_width: Meters,
     active_height: Meters,
     viewport_aspect: f32,
-) -> ProjectedScreen {
-    let corners = PanelRegion {
+) -> Option<ProjectedScreen> {
+    let [top_left, top_right, bottom_right, bottom_left] = PanelRegion {
         min: Vec2 { x: 0.0, y: 0.0 },
         max: Vec2 { x: 1.0, y: 1.0 },
     }
-    .scene_corners(active_width, active_height)
-    .map(|point| {
-        project_scene_point(camera, point, viewport_aspect)
-            .expect("a validated frontal camera projects the screen plane")
-    });
-    ProjectedScreen {
-        corners,
+    .scene_corners(active_width, active_height);
+    Some(ProjectedScreen {
+        corners: [
+            project_scene_point(camera, top_left, viewport_aspect)?,
+            project_scene_point(camera, top_right, viewport_aspect)?,
+            project_scene_point(camera, bottom_right, viewport_aspect)?,
+            project_scene_point(camera, bottom_left, viewport_aspect)?,
+        ],
         facing_ratio: camera.yaw_degrees.to_radians().cos().abs(),
-    }
+    })
 }
 
 pub fn project_scene_point(
