@@ -574,7 +574,13 @@ fn evaluate_optical_raster_with_signal(
         .enumerate()
         .for_each(|(row, output_row)| {
             for (column, output) in output_row.iter_mut().enumerate() {
-                const SENSOR_BOX: [Vec2; 16] = [
+                const FOOTPRINT_CORNERS: [Vec2; 4] = [
+                    Vec2 { x: 0.001, y: 0.001 },
+                    Vec2 { x: 0.999, y: 0.001 },
+                    Vec2 { x: 0.001, y: 0.999 },
+                    Vec2 { x: 0.999, y: 0.999 },
+                ];
+                const RESOLVED_SENSOR_BOX: [Vec2; 16] = [
                     Vec2 { x: 0.125, y: 0.125 },
                     Vec2 { x: 0.375, y: 0.125 },
                     Vec2 { x: 0.625, y: 0.125 },
@@ -592,7 +598,7 @@ fn evaluate_optical_raster_with_signal(
                     Vec2 { x: 0.625, y: 0.875 },
                     Vec2 { x: 0.875, y: 0.875 },
                 ];
-                let aperture_samples = SENSOR_BOX.map(|offset| {
+                let trace = |offset: Vec2| {
                     let viewport_ndc = Vec2 {
                         x: (column as f32 + offset.x) / f32::from(width) * 2.0 - 1.0,
                         y: (row as f32 + offset.y) / f32::from(height) * 2.0 - 1.0,
@@ -604,7 +610,20 @@ fn evaluate_optical_raster_with_signal(
                         request.panel.active_height,
                         viewport_ndc,
                     )
-                });
+                };
+                let footprint = FOOTPRINT_CORNERS.map(trace);
+                if !subpixels_resolved_for_samples(&footprint, request.panel) {
+                    *output = integrate_aperture_samples(
+                        &footprint,
+                        view,
+                        request.panel,
+                        panel_evaluator,
+                        signal_at,
+                        signal_area,
+                    );
+                    continue;
+                }
+                let aperture_samples = RESOLVED_SENSOR_BOX.map(trace);
                 *output = integrate_aperture_samples(
                     &aperture_samples,
                     view,
