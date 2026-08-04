@@ -12,6 +12,41 @@ pub enum StripeLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Chromaticity {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelColorimetry {
+    pub red: Chromaticity,
+    pub green: Chromaticity,
+    pub blue: Chromaticity,
+    pub white: Chromaticity,
+}
+
+impl PanelColorimetry {
+    pub const SRGB_D65: Self = Self {
+        red: Chromaticity {
+            x: 0.6400,
+            y: 0.3300,
+        },
+        green: Chromaticity {
+            x: 0.3000,
+            y: 0.6000,
+        },
+        blue: Chromaticity {
+            x: 0.1500,
+            y: 0.0600,
+        },
+        white: Chromaticity {
+            x: 0.3127,
+            y: 0.3290,
+        },
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SubpixelEmission {
     pub stripes: [LinearRgb; 3],
 }
@@ -28,6 +63,8 @@ pub struct LcdProfile {
     pub black_level_nits: f32,
     pub white_level_nits: f32,
     pub channel_efficiency: LinearRgb,
+    pub colorimetry: PanelColorimetry,
+    pub angular_emission_power: LinearRgb,
 }
 
 impl LcdProfile {
@@ -35,16 +72,24 @@ impl LcdProfile {
         if self.native_width == 0 || self.native_height == 0 {
             return Err(PanelError::EmptyNativeRaster);
         }
-        if self.active_width.0 <= 0.0 || self.active_height.0 <= 0.0 {
+        if !self.active_width.0.is_finite()
+            || !self.active_height.0.is_finite()
+            || self.active_width.0 <= 0.0
+            || self.active_height.0 <= 0.0
+        {
             return Err(PanelError::NonPositiveActiveArea);
         }
         if !(0.0..1.0).contains(&self.black_matrix_fraction) {
             return Err(PanelError::InvalidBlackMatrix);
         }
-        if self.eotf_gamma <= 0.0 {
+        if !self.eotf_gamma.is_finite() || self.eotf_gamma <= 0.0 {
             return Err(PanelError::InvalidEotf);
         }
-        if self.black_level_nits < 0.0 || self.white_level_nits <= self.black_level_nits {
+        if !self.black_level_nits.is_finite()
+            || !self.white_level_nits.is_finite()
+            || self.black_level_nits < 0.0
+            || self.white_level_nits <= self.black_level_nits
+        {
             return Err(PanelError::InvalidLuminanceRange);
         }
         if [
@@ -53,9 +98,22 @@ impl LcdProfile {
             self.channel_efficiency.b,
         ]
         .into_iter()
-        .any(|value| value <= 0.0)
+        .any(|value| !value.is_finite() || value <= 0.0)
         {
             return Err(PanelError::InvalidChannelEfficiency);
+        }
+        if !colorimetry_is_valid(self.colorimetry) {
+            return Err(PanelError::InvalidColorimetry);
+        }
+        if [
+            self.angular_emission_power.r,
+            self.angular_emission_power.g,
+            self.angular_emission_power.b,
+        ]
+        .into_iter()
+        .any(|value| !value.is_finite() || value < 0.0)
+        {
+            return Err(PanelError::InvalidAngularResponse);
         }
         Ok(self)
     }
@@ -72,10 +130,11 @@ impl LcdProfile {
         self.active_width.0 / self.native_width as f32
     }
 
-    pub fn emitted_radiance(self, signal: DeviceRgb) -> LinearRgb {
+    pub fn native_emission(self, signal: DeviceRgb) -> LinearRgb {
         let span = self.white_level_nits - self.black_level_nits;
         let channel = |value: f32, efficiency: f32| {
-            (self.black_level_nits + span * value.max(0.0).powf(self.eotf_gamma)) * efficiency
+            let powered = value.abs().powf(self.eotf_gamma).copysign(value);
+            (self.black_level_nits + span * powered) * efficiency
         };
         LinearRgb::new(
             channel(signal.r, self.channel_efficiency.r),
@@ -84,8 +143,30 @@ impl LcdProfile {
         )
     }
 
+    pub fn native_to_acescg(self, native: LinearRgb) -> LinearRgb {
+        let matrix = native_to_acescg_matrix(self.colorimetry);
+        LinearRgb::new(
+            matrix[0][0] * native.r + matrix[0][1] * native.g + matrix[0][2] * native.b,
+            matrix[1][0] * native.r + matrix[1][1] * native.g + matrix[1][2] * native.b,
+            matrix[2][0] * native.r + matrix[2][1] * native.g + matrix[2][2] * native.b,
+        )
+    }
+
+    pub fn emitted_radiance(self, signal: DeviceRgb) -> LinearRgb {
+        self.native_to_acescg(self.native_emission(signal))
+    }
+
+    pub fn angular_attenuation(self, emission_cosine: f32) -> LinearRgb {
+        let cosine = emission_cosine.clamp(0.0, 1.0);
+        LinearRgb::new(
+            cosine.powf(self.angular_emission_power.r),
+            cosine.powf(self.angular_emission_power.g),
+            cosine.powf(self.angular_emission_power.b),
+        )
+    }
+
     pub fn subpixel_emission(self, signal: DeviceRgb) -> SubpixelEmission {
-        let emission = self.emitted_radiance(signal);
+        let emission = self.native_emission(signal);
         let visible_area = (1.0 - self.black_matrix_fraction).powi(2);
         let stripe_compensation = 3.0 / visible_area;
         let red = LinearRgb::new(emission.r * stripe_compensation, 0.0, 0.0);
@@ -100,6 +181,14 @@ impl LcdProfile {
     }
 
     pub fn emission_at_pixel(
+        self,
+        signal: DeviceRgb,
+        pixel_uv: screen_contracts::Vec2,
+    ) -> LinearRgb {
+        self.native_to_acescg(self.native_emission_at_pixel(signal, pixel_uv))
+    }
+
+    pub fn native_emission_at_pixel(
         self,
         signal: DeviceRgb,
         pixel_uv: screen_contracts::Vec2,
@@ -119,6 +208,106 @@ impl LcdProfile {
     }
 }
 
+fn colorimetry_is_valid(color: PanelColorimetry) -> bool {
+    let points = [color.red, color.green, color.blue, color.white];
+    points
+        .into_iter()
+        .all(|p| p.x.is_finite() && p.y.is_finite() && p.x > 0.0 && p.y > 0.0 && p.x + p.y < 1.0)
+        && inverse3(primary_xyz_columns(color)).is_some()
+}
+
+fn xy_to_xyz(value: Chromaticity) -> [f32; 3] {
+    [value.x / value.y, 1.0, (1.0 - value.x - value.y) / value.y]
+}
+
+fn primary_xyz_columns(color: PanelColorimetry) -> [[f32; 3]; 3] {
+    let r = xy_to_xyz(color.red);
+    let g = xy_to_xyz(color.green);
+    let b = xy_to_xyz(color.blue);
+    [[r[0], g[0], b[0]], [r[1], g[1], b[1]], [r[2], g[2], b[2]]]
+}
+
+fn native_to_acescg_matrix(color: PanelColorimetry) -> [[f32; 3]; 3] {
+    let primaries = primary_xyz_columns(color);
+    let white_xyz = xy_to_xyz(color.white);
+    let scales = mat_vec(
+        inverse3(primaries).expect("validated colorimetry"),
+        white_xyz,
+    );
+    let native_to_xyz = core::array::from_fn(|row| {
+        core::array::from_fn(|column| primaries[row][column] * scales[column])
+    });
+
+    const BRADFORD: [[f32; 3]; 3] = [
+        [0.8951, 0.2664, -0.1614],
+        [-0.7502, 1.7135, 0.0367],
+        [0.0389, -0.0685, 1.0296],
+    ];
+    const BRADFORD_INV: [[f32; 3]; 3] = [
+        [0.986_992_9, -0.147_054_3, 0.159_962_7],
+        [0.432_305_3, 0.518_360_3, 0.049_291_2],
+        [-0.008_528_7, 0.040_042_8, 0.968_486_7],
+    ];
+    const D60: [f32; 3] = [0.952_646_1, 1.0, 1.008_825_2];
+    const XYZ_D60_TO_ACESCG: [[f32; 3]; 3] = [
+        [1.641_023_4, -0.324_803_3, -0.236_424_7],
+        [-0.663_662_9, 1.615_331_6, 0.016_756_35],
+        [0.011_721_89, -0.008_284_442, 0.988_394_86],
+    ];
+    let source_cones = mat_vec(BRADFORD, white_xyz);
+    let target_cones = mat_vec(BRADFORD, D60);
+    let diagonal = [
+        [target_cones[0] / source_cones[0], 0.0, 0.0],
+        [0.0, target_cones[1] / source_cones[1], 0.0],
+        [0.0, 0.0, target_cones[2] / source_cones[2]],
+    ];
+    let adaptation = mat_mul(BRADFORD_INV, mat_mul(diagonal, BRADFORD));
+    mat_mul(XYZ_D60_TO_ACESCG, mat_mul(adaptation, native_to_xyz))
+}
+
+fn mat_vec(matrix: [[f32; 3]; 3], vector: [f32; 3]) -> [f32; 3] {
+    core::array::from_fn(|row| {
+        matrix[row][0] * vector[0] + matrix[row][1] * vector[1] + matrix[row][2] * vector[2]
+    })
+}
+
+fn mat_mul(left: [[f32; 3]; 3], right: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    core::array::from_fn(|row| {
+        core::array::from_fn(|column| {
+            left[row][0] * right[0][column]
+                + left[row][1] * right[1][column]
+                + left[row][2] * right[2][column]
+        })
+    })
+}
+
+fn inverse3(matrix: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+    let determinant = matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
+        - matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0])
+        + matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]);
+    if !determinant.is_finite() || determinant.abs() < 1.0e-8 {
+        return None;
+    }
+    let inverse = 1.0 / determinant;
+    Some([
+        [
+            (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1]) * inverse,
+            (matrix[0][2] * matrix[2][1] - matrix[0][1] * matrix[2][2]) * inverse,
+            (matrix[0][1] * matrix[1][2] - matrix[0][2] * matrix[1][1]) * inverse,
+        ],
+        [
+            (matrix[1][2] * matrix[2][0] - matrix[1][0] * matrix[2][2]) * inverse,
+            (matrix[0][0] * matrix[2][2] - matrix[0][2] * matrix[2][0]) * inverse,
+            (matrix[0][2] * matrix[1][0] - matrix[0][0] * matrix[1][2]) * inverse,
+        ],
+        [
+            (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]) * inverse,
+            (matrix[0][1] * matrix[2][0] - matrix[0][0] * matrix[2][1]) * inverse,
+            (matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0]) * inverse,
+        ],
+    ])
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanelError {
     EmptyNativeRaster,
@@ -127,6 +316,8 @@ pub enum PanelError {
     InvalidEotf,
     InvalidLuminanceRange,
     InvalidChannelEfficiency,
+    InvalidColorimetry,
+    InvalidAngularResponse,
 }
 
 impl fmt::Display for PanelError {
@@ -140,6 +331,12 @@ impl fmt::Display for PanelError {
                 "LCD white level must be greater than a non-negative black level"
             }
             Self::InvalidChannelEfficiency => "LCD channel efficiencies must be positive",
+            Self::InvalidColorimetry => {
+                "panel primaries and white point must form a finite non-degenerate color space"
+            }
+            Self::InvalidAngularResponse => {
+                "panel angular-emission powers must be finite and non-negative"
+            }
         };
         formatter.write_str(message)
     }
@@ -163,6 +360,8 @@ mod tests {
             black_level_nits: 0.08,
             white_level_nits: 600.0,
             channel_efficiency: LinearRgb::new(1.0, 0.96, 0.9),
+            colorimetry: PanelColorimetry::SRGB_D65,
+            angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
         }
     }
 
@@ -175,10 +374,25 @@ mod tests {
 
     #[test]
     fn eotf_preserves_values_above_one() {
-        let emission = profile().emitted_radiance(DeviceRgb::new(1.2, 0.5, 0.0));
+        let emission = profile().native_emission(DeviceRgb::new(1.2, 0.5, 0.0));
         assert!(emission.r > profile().white_level_nits);
         assert!(emission.g > profile().black_level_nits);
         assert_eq!(emission.b, profile().black_level_nits * 0.9);
+    }
+
+    #[test]
+    fn eotf_preserves_negative_linear_excursions() {
+        let emission = profile().native_emission(DeviceRgb::new(-0.25, 0.0, 0.0));
+        assert!(emission.r < 0.0);
+    }
+
+    #[test]
+    fn declared_white_adapts_to_neutral_acescg() {
+        let mut profile = profile();
+        profile.channel_efficiency = LinearRgb::new(1.0, 1.0, 1.0);
+        let white = profile.emitted_radiance(DeviceRgb::WHITE);
+        assert!((white.r - white.g).abs() < 1.0);
+        assert!((white.g - white.b).abs() < 1.0);
     }
 
     #[test]

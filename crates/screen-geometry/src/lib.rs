@@ -4,6 +4,7 @@
 
 use core::fmt;
 use screen_contracts::{Meters, Millimeters, RationalTime, Vec2, Vec3};
+use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyframeInterpolation {
@@ -71,14 +72,106 @@ impl Quaternion {
         let t = scale(cross(q, value), 2.0);
         add(value, add(scale(t, self.w), cross(q, t)))
     }
+
+    fn inverse_rotate(self, value: Vec3) -> Vec3 {
+        Quaternion {
+            x: -self.x,
+            y: -self.y,
+            z: -self.z,
+            w: self.w,
+        }
+        .rotate(value)
+    }
+
+    fn slerp(self, mut other: Self, amount: f32) -> Self {
+        let mut cosine = self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w;
+        if cosine < 0.0 {
+            cosine = -cosine;
+            other = Self {
+                x: -other.x,
+                y: -other.y,
+                z: -other.z,
+                w: -other.w,
+            };
+        }
+        if cosine > 0.999_5 {
+            return Self {
+                x: self.x + (other.x - self.x) * amount,
+                y: self.y + (other.y - self.y) * amount,
+                z: self.z + (other.z - self.z) * amount,
+                w: self.w + (other.w - self.w) * amount,
+            }
+            .normalized();
+        }
+        let angle = cosine.clamp(-1.0, 1.0).acos();
+        let denominator = angle.sin();
+        let left = ((1.0 - amount) * angle).sin() / denominator;
+        let right = (amount * angle).sin() / denominator;
+        Self {
+            x: self.x * left + other.x * right,
+            y: self.y * left + other.y * right,
+            z: self.z * left + other.z * right,
+            w: self.w * left + other.w * right,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CameraKeyframe {
+pub struct TransformKeyframe {
     pub id: String,
     pub time: RationalTime,
-    pub position: Vec3,
+    pub translation: Vec3,
     pub rotation: Quaternion,
+    pub interpolation: KeyframeInterpolation,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransformTrack {
+    pub keyframes: Vec<TransformKeyframe>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransformSample {
+    pub translation: Vec3,
+    pub rotation: Quaternion,
+}
+
+pub type ScreenTrack = TransformTrack;
+pub type ScreenSample = TransformSample;
+
+impl TransformSample {
+    pub const IDENTITY: Self = Self {
+        translation: Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        rotation: Quaternion {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+    };
+
+    pub fn local_to_world(self, point: Vec3) -> Vec3 {
+        add(self.translation, self.rotation.rotate(point))
+    }
+
+    fn world_to_local_point(self, point: Vec3) -> Vec3 {
+        self.rotation
+            .inverse_rotate(subtract(point, self.translation))
+    }
+
+    fn world_to_local_vector(self, vector: Vec3) -> Vec3 {
+        self.rotation.inverse_rotate(vector)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CameraIntrinsicsKeyframe {
+    pub id: String,
+    pub time: RationalTime,
     pub focal_length: Millimeters,
     pub sensor_width: Millimeters,
     pub sensor_height: Millimeters,
@@ -92,23 +185,31 @@ pub struct CameraKeyframe {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CameraTrack {
-    pub keyframes: Vec<CameraKeyframe>,
+pub struct CameraIntrinsicsTrack {
+    pub keyframes: Vec<CameraIntrinsicsKeyframe>,
 }
 
-impl CameraTrack {
+#[derive(Clone, Debug, PartialEq)]
+pub struct CameraRig {
+    pub transform: TransformTrack,
+    pub intrinsics: CameraIntrinsicsTrack,
+}
+
+impl TransformTrack {
     pub fn validate(&self) -> Result<(), GeometryError> {
         if self.keyframes.is_empty() {
-            return Err(GeometryError::EmptyCameraTrack);
+            return Err(GeometryError::EmptyTransformTrack);
         }
-        let mut prior: Option<&CameraKeyframe> = None;
+        let mut ids = HashSet::new();
+        let mut prior_time = None;
         for key in &self.keyframes {
             if key.id.is_empty()
-                || !key.position.x.is_finite()
-                || !key.position.y.is_finite()
-                || !key.position.z.is_finite()
+                || !ids.insert(key.id.as_str())
+                || !key.translation.x.is_finite()
+                || !key.translation.y.is_finite()
+                || !key.translation.z.is_finite()
             {
-                return Err(GeometryError::InvalidCameraKeyframe);
+                return Err(GeometryError::InvalidTransformKeyframe);
             }
             let magnitude = key.rotation.x * key.rotation.x
                 + key.rotation.y * key.rotation.y
@@ -117,46 +218,26 @@ impl CameraTrack {
             if !magnitude.is_finite() || (magnitude - 1.0).abs() > 1.0e-4 {
                 return Err(GeometryError::InvalidCameraRotation);
             }
-            if key.focal_length.0 <= 0.0
-                || key.sensor_width.0 <= 0.0
-                || key.sensor_height.0 <= 0.0
-                || key.focus_distance.0 <= 0.0
-                || key.f_stop <= 0.0
-                || key.near_clip.0 <= 0.0
-                || key.far_clip.0 <= key.near_clip.0
-                || !key.lens_shift.x.is_finite()
-                || !key.lens_shift.y.is_finite()
-                || !lens_is_valid(key.lens)
-                || key
-                    .lens
-                    .longitudinal_chromatic_meters
-                    .into_iter()
-                    .any(|offset| key.focus_distance.0 + offset <= 0.0)
-            {
-                return Err(GeometryError::NonPositiveIntrinsics);
+            if prior_time.is_some_and(|previous| previous >= key.time) {
+                return Err(GeometryError::UnorderedTransformKeyframes);
             }
-            if let Some(previous) = prior
-                && (previous.time >= key.time || previous.id == key.id)
-            {
-                return Err(GeometryError::UnorderedCameraKeyframes);
-            }
-            prior = Some(key);
+            prior_time = Some(key.time);
         }
         Ok(())
     }
 
-    pub fn sample(&self, time: RationalTime) -> Result<CameraSample, GeometryError> {
+    pub fn sample(&self, time: RationalTime) -> Result<TransformSample, GeometryError> {
         self.validate()?;
         let right = self.keyframes.partition_point(|key| key.time <= time);
         if right == 0 {
-            return Ok(sample_key(&self.keyframes[0]));
+            return Ok(transform_sample(&self.keyframes[0]));
         }
         if right == self.keyframes.len() {
-            return Ok(sample_key(&self.keyframes[right - 1]));
+            return Ok(transform_sample(&self.keyframes[right - 1]));
         }
         let left = &self.keyframes[right - 1];
         if left.interpolation == KeyframeInterpolation::Hold {
-            return Ok(sample_key(left));
+            return Ok(transform_sample(left));
         }
         let next = &self.keyframes[right];
         let span = next.time.as_seconds() - left.time.as_seconds();
@@ -165,18 +246,89 @@ impl CameraTrack {
             amount = amount * amount * (3.0 - 2.0 * amount);
         }
         let lerp = |a: f32, b: f32| a + (b - a) * amount;
-        let quaternion_dot = left.rotation.x * next.rotation.x
-            + left.rotation.y * next.rotation.y
-            + left.rotation.z * next.rotation.z
-            + left.rotation.w * next.rotation.w;
-        let next_sign = if quaternion_dot < 0.0 { -1.0 } else { 1.0 };
-        let rotation = Quaternion {
-            x: lerp(left.rotation.x, next.rotation.x * next_sign),
-            y: lerp(left.rotation.y, next.rotation.y * next_sign),
-            z: lerp(left.rotation.z, next.rotation.z * next_sign),
-            w: lerp(left.rotation.w, next.rotation.w * next_sign),
+        let rotation = left.rotation.slerp(next.rotation, amount);
+        Ok(TransformSample {
+            translation: Vec3 {
+                x: lerp(left.translation.x, next.translation.x),
+                y: lerp(left.translation.y, next.translation.y),
+                z: lerp(left.translation.z, next.translation.z),
+            },
+            rotation,
+        })
+    }
+}
+
+impl CameraIntrinsicsTrack {
+    pub fn validate(&self) -> Result<(), GeometryError> {
+        if self.keyframes.is_empty() {
+            return Err(GeometryError::EmptyCameraIntrinsicsTrack);
         }
-        .normalized();
+        let mut ids = HashSet::new();
+        let mut prior_time = None;
+        for key in &self.keyframes {
+            let scalars = [
+                key.focal_length.0,
+                key.sensor_width.0,
+                key.sensor_height.0,
+                key.lens_shift.x,
+                key.lens_shift.y,
+                key.focus_distance.0,
+                key.f_stop,
+                key.near_clip.0,
+                key.far_clip.0,
+            ];
+            if key.id.is_empty()
+                || !ids.insert(key.id.as_str())
+                || scalars.into_iter().any(|v| !v.is_finite())
+            {
+                return Err(GeometryError::InvalidCameraIntrinsicsKeyframe);
+            }
+            if key.focal_length.0 <= 0.0
+                || key.sensor_width.0 <= 0.0
+                || key.sensor_height.0 <= 0.0
+                || key.focus_distance.0 <= 0.0
+                || key.f_stop <= 0.0
+                || key.near_clip.0 <= 0.0
+                || key.far_clip.0 <= key.near_clip.0
+                || key.lens_shift.x.abs() > 0.5
+                || key.lens_shift.y.abs() > 0.5
+                || !lens_is_valid_for_gate(key.lens, key.lens_shift)
+                || key
+                    .lens
+                    .longitudinal_chromatic_meters
+                    .into_iter()
+                    .any(|offset| key.focus_distance.0 + offset <= 0.0)
+            {
+                return Err(GeometryError::NonPositiveIntrinsics);
+            }
+            if prior_time.is_some_and(|previous| previous >= key.time) {
+                return Err(GeometryError::UnorderedCameraIntrinsicsKeyframes);
+            }
+            prior_time = Some(key.time);
+        }
+        Ok(())
+    }
+
+    fn sample(&self, time: RationalTime) -> Result<ResolvedOptics, GeometryError> {
+        self.validate()?;
+        let right = self.keyframes.partition_point(|key| key.time <= time);
+        if right == 0 {
+            return Ok(resolved_optics(&self.keyframes[0]));
+        }
+        if right == self.keyframes.len() {
+            return Ok(resolved_optics(&self.keyframes[right - 1]));
+        }
+        let left = &self.keyframes[right - 1];
+        if left.interpolation == KeyframeInterpolation::Hold {
+            return Ok(resolved_optics(left));
+        }
+        let next = &self.keyframes[right];
+        let span = next.time.as_seconds() - left.time.as_seconds();
+        let mut amount = ((time.as_seconds() - left.time.as_seconds()) / span) as f32;
+        if left.interpolation == KeyframeInterpolation::Smooth {
+            amount = amount * amount * (3.0 - 2.0 * amount);
+        }
+        let lerp = |a: f32, b: f32| a + (b - a) * amount;
         let optics = ResolvedOptics {
             focal_length: Millimeters(lerp(left.focal_length.0, next.focal_length.0)),
             sensor_width: Millimeters(lerp(left.sensor_width.0, next.sensor_width.0)),
@@ -191,17 +343,25 @@ impl CameraTrack {
             far_clip: Meters(lerp(left.far_clip.0, next.far_clip.0)),
             lens: interpolate_lens(left.lens, next.lens, &lerp),
         };
-        if !lens_is_valid(optics.lens) {
+        if !lens_is_valid_for_gate(optics.lens, optics.lens_shift) {
             return Err(GeometryError::InvalidResolvedLens);
         }
+        Ok(optics)
+    }
+}
+
+impl CameraRig {
+    pub fn validate(&self) -> Result<(), GeometryError> {
+        self.transform.validate()?;
+        self.intrinsics.validate()
+    }
+
+    pub fn sample(&self, time: RationalTime) -> Result<CameraSample, GeometryError> {
+        let pose = self.transform.sample(time)?;
         Ok(camera_sample(
-            Vec3 {
-                x: lerp(left.position.x, next.position.x),
-                y: lerp(left.position.y, next.position.y),
-                z: lerp(left.position.z, next.position.z),
-            },
-            rotation,
-            optics,
+            pose.translation,
+            pose.rotation,
+            self.intrinsics.sample(time)?,
         ))
     }
 
@@ -211,14 +371,18 @@ impl CameraTrack {
         region: PanelRegion,
         active_width: Meters,
         active_height: Meters,
+        screen: ScreenSample,
         viewport_aspect: f32,
     ) -> Result<CameraSample, GeometryError> {
         region.validate()?;
-        let target = Vec2 {
+        let target = screen.local_to_world(Vec3 {
             x: (region.min.x + region.max.x - 1.0) * active_width.0 * 0.5,
             y: (1.0 - region.min.y - region.max.y) * active_height.0 * 0.5,
-        };
-        let corners = region.scene_corners(active_width, active_height);
+            z: 0.0,
+        });
+        let corners = region
+            .local_corners(active_width, active_height)
+            .map(|point| screen.local_to_world(point));
         let source = self.sample(time)?;
         let fits = |distance: Meters| {
             let sample = inspection_sample(source, target, distance);
@@ -253,22 +417,25 @@ impl CameraTrack {
     }
 }
 
-fn sample_key(key: &CameraKeyframe) -> CameraSample {
-    camera_sample(
-        key.position,
-        key.rotation,
-        ResolvedOptics {
-            focal_length: key.focal_length,
-            sensor_width: key.sensor_width,
-            sensor_height: key.sensor_height,
-            lens_shift: key.lens_shift,
-            focus_distance: key.focus_distance,
-            f_stop: key.f_stop,
-            near_clip: key.near_clip,
-            far_clip: key.far_clip,
-            lens: key.lens,
-        },
-    )
+fn transform_sample(key: &TransformKeyframe) -> TransformSample {
+    TransformSample {
+        translation: key.translation,
+        rotation: key.rotation,
+    }
+}
+
+fn resolved_optics(key: &CameraIntrinsicsKeyframe) -> ResolvedOptics {
+    ResolvedOptics {
+        focal_length: key.focal_length,
+        sensor_width: key.sensor_width,
+        sensor_height: key.sensor_height,
+        lens_shift: key.lens_shift,
+        focus_distance: key.focus_distance,
+        f_stop: key.f_stop,
+        near_clip: key.near_clip,
+        far_clip: key.far_clip,
+        lens: key.lens,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -290,6 +457,56 @@ fn camera_sample(position: Vec3, rotation: Quaternion, optics: ResolvedOptics) -
         y: 0.0,
         z: -1.0,
     });
+    let right = rotation.rotate(Vec3 {
+        x: 1.0,
+        y: 0.0,
+        z: 0.0,
+    });
+    let up = rotation.rotate(Vec3 {
+        x: 0.0,
+        y: 1.0,
+        z: 0.0,
+    });
+    let world_to_view = [
+        right.x,
+        right.y,
+        right.z,
+        -dot(right, position),
+        up.x,
+        up.y,
+        up.z,
+        -dot(up, position),
+        forward.x,
+        forward.y,
+        forward.z,
+        -dot(forward, position),
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ];
+    let sx = 2.0 * optics.focal_length.0 / optics.sensor_width.0;
+    let sy = 2.0 * optics.focal_length.0 / optics.sensor_height.0;
+    let near = optics.near_clip.0;
+    let far = optics.far_clip.0;
+    let ideal_view_to_clip = [
+        sx,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        sy,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        (far + near) / (far - near),
+        -2.0 * far * near / (far - near),
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+    ];
     CameraSample {
         position,
         target: add(position, forward),
@@ -304,21 +521,28 @@ fn camera_sample(position: Vec3, rotation: Quaternion, optics: ResolvedOptics) -
         far_clip: optics.far_clip,
         lens: optics.lens,
         rotation,
+        world_to_view,
+        ideal_view_to_clip,
     }
 }
 
-fn inspection_sample(source: CameraSample, target: Vec2, distance: Meters) -> CameraSample {
+fn inspection_sample(source: CameraSample, target: Vec3, distance: Meters) -> CameraSample {
     let forward = normalize(subtract(source.target, source.position));
-    let target = Vec3 {
-        x: target.x,
-        y: target.y,
-        z: 0.0,
-    };
-    CameraSample {
-        position: subtract(target, scale(forward, distance.0)),
-        target,
-        ..source
-    }
+    camera_sample(
+        subtract(target, scale(forward, distance.0)),
+        source.rotation,
+        ResolvedOptics {
+            focal_length: source.focal_length,
+            sensor_width: source.sensor_width,
+            sensor_height: source.sensor_height,
+            lens_shift: source.lens_shift,
+            focus_distance: distance,
+            f_stop: source.f_stop,
+            near_clip: source.near_clip,
+            far_clip: source.far_clip,
+            lens: source.lens,
+        },
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -345,7 +569,7 @@ impl PanelRegion {
         uv.x >= self.min.x && uv.x <= self.max.x && uv.y >= self.min.y && uv.y <= self.max.y
     }
 
-    fn scene_corners(self, width: Meters, height: Meters) -> [Vec3; 4] {
+    fn local_corners(self, width: Meters, height: Meters) -> [Vec3; 4] {
         let point = |uv: Vec2| Vec3 {
             x: (uv.x - 0.5) * width.0,
             y: (0.5 - uv.y) * height.0,
@@ -381,9 +605,13 @@ pub struct CameraSample {
     pub far_clip: Meters,
     pub rotation: Quaternion,
     pub lens: LensModel,
+    /// Row-major world-to-view matrix; +Z is forward in canonical view space.
+    pub world_to_view: [f32; 16],
+    /// Row-major ideal pinhole view-to-clip matrix before lens distortion and shift.
+    pub ideal_view_to_clip: [f32; 16],
 }
 
-fn lens_is_valid(lens: LensModel) -> bool {
+fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
     lens.radial_distortion
         .into_iter()
         .chain(lens.tangential_distortion)
@@ -396,12 +624,12 @@ fn lens_is_valid(lens: LensModel) -> bool {
         && lens
             .lateral_chromatic_scale
             .into_iter()
-            .all(|value| value > 0.0)
+            .all(|value| (0.5..=1.5).contains(&value))
         && lens
             .transmission_rgb
             .into_iter()
             .all(|value| (0.0..=1.0).contains(&value))
-        && distortion_is_invertible(lens)
+        && distortion_is_invertible(lens, lens_shift)
 }
 
 fn interpolate_lens(
@@ -437,6 +665,7 @@ pub struct ProjectedScreen {
 
 pub fn project_screen(
     camera: CameraSample,
+    screen: ScreenSample,
     active_width: Meters,
     active_height: Meters,
     viewport_aspect: f32,
@@ -445,7 +674,8 @@ pub fn project_screen(
         min: Vec2 { x: 0.0, y: 0.0 },
         max: Vec2 { x: 1.0, y: 1.0 },
     }
-    .scene_corners(active_width, active_height);
+    .local_corners(active_width, active_height)
+    .map(|point| screen.local_to_world(point));
     Some(ProjectedScreen {
         corners: [
             project_scene_point(camera, top_left, viewport_aspect)?,
@@ -453,7 +683,15 @@ pub fn project_screen(
             project_scene_point(camera, bottom_right, viewport_aspect)?,
             project_scene_point(camera, bottom_left, viewport_aspect)?,
         ],
-        facing_ratio: camera.yaw_degrees.to_radians().cos().abs(),
+        facing_ratio: {
+            let normal = screen.rotation.rotate(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            });
+            let to_camera = normalize(subtract(camera.position, screen.translation));
+            dot(normal, to_camera).max(0.0)
+        },
     })
 }
 
@@ -484,6 +722,7 @@ pub fn project_scene_point(
 /// Intersects a viewport position in normalized device coordinates with the unbounded panel plane.
 pub fn panel_uv_at_viewport(
     camera: CameraSample,
+    screen: ScreenSample,
     active_width: Meters,
     active_height: Meters,
     _viewport_aspect: f32,
@@ -495,15 +734,17 @@ pub fn panel_uv_at_viewport(
             y: -viewport_ndc.y - 2.0 * camera.lens_shift.y,
         },
         camera.lens,
-    );
+    )?;
     panel_uv_for_lens_sample(
         camera,
+        screen,
         active_width,
         active_height,
         ideal,
         Vec2 { x: 0.0, y: 0.0 },
         1,
     )
+    .map(|hit| hit.0)
 }
 
 pub const APERTURE_SAMPLE_COUNT: usize = 8;
@@ -511,11 +752,13 @@ pub const APERTURE_SAMPLE_COUNT: usize = 8;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OpticalSample {
     pub panel_uv: [Option<Vec2>; 3],
+    pub emission_cosine: [f32; 3],
     pub irradiance_weight: [f32; 3],
 }
 
 pub fn panel_uv_aperture_samples(
     camera: CameraSample,
+    screen: ScreenSample,
     active_width: Meters,
     active_height: Meters,
     viewport_ndc: Vec2,
@@ -548,17 +791,24 @@ pub fn panel_uv_aperture_samples(
             y: -0.861,
         },
     ];
-    let ideal = inverse_distortion(
+    let Some(ideal) = inverse_distortion(
         Vec2 {
             x: viewport_ndc.x + 2.0 * camera.lens_shift.x,
             y: -viewport_ndc.y - 2.0 * camera.lens_shift.y,
         },
         camera.lens,
-    );
+    ) else {
+        return [OpticalSample {
+            panel_uv: [None; 3],
+            emission_cosine: [0.0; 3],
+            irradiance_weight: [0.0; 3],
+        }; APERTURE_SAMPLE_COUNT];
+    };
     DISK.map(|lens_sample| {
-        let panel_uv = core::array::from_fn(|channel| {
+        let hits = core::array::from_fn(|channel| {
             panel_uv_for_lens_sample(
                 camera,
+                screen,
                 active_width,
                 active_height,
                 ideal,
@@ -573,7 +823,8 @@ pub fn panel_uv_aperture_samples(
         let vignette = 1.0 + (natural - 1.0) * camera.lens.vignetting_strength;
         let aperture_throughput = 1.0 / (camera.f_stop * camera.f_stop);
         OpticalSample {
-            panel_uv,
+            panel_uv: hits.map(|hit| hit.map(|value| value.0)),
+            emission_cosine: hits.map(|hit| hit.map_or(0.0, |value| value.1)),
             irradiance_weight: core::array::from_fn(|channel| {
                 aperture_throughput * vignette * camera.lens.transmission_rgb[channel]
             }),
@@ -583,12 +834,13 @@ pub fn panel_uv_aperture_samples(
 
 fn panel_uv_for_lens_sample(
     camera: CameraSample,
+    screen: ScreenSample,
     active_width: Meters,
     active_height: Meters,
     ideal_sensor: Vec2,
     lens_sample: Vec2,
     channel: usize,
-) -> Option<Vec2> {
+) -> Option<(Vec2, f32)> {
     let (right, up, forward) = camera_basis(camera);
     let mut ideal = ideal_sensor;
     ideal.x *= camera.lens.lateral_chromatic_scale[channel];
@@ -619,22 +871,28 @@ fn panel_uv_for_lens_sample(
         ),
     );
     let ray = normalize(subtract(focus_point, lens_origin));
-    if ray.z.abs() < 1.0e-8 {
+    let local_origin = screen.world_to_local_point(lens_origin);
+    let local_ray = screen.world_to_local_vector(ray);
+    if local_ray.z.abs() < 1.0e-8 {
         return None;
     }
-    let distance = -lens_origin.z / ray.z;
+    let distance = -local_origin.z / local_ray.z;
     if distance <= 0.0 {
         return None;
     }
-    let point = add(lens_origin, scale(ray, distance));
-    let depth = dot(subtract(point, camera.position), forward);
+    let local_point = add(local_origin, scale(local_ray, distance));
+    let world_point = screen.local_to_world(local_point);
+    let depth = dot(subtract(world_point, camera.position), forward);
     if depth < camera.near_clip.0 || depth > camera.far_clip.0 {
         return None;
     }
-    Some(Vec2 {
-        x: point.x / active_width.0 + 0.5,
-        y: 0.5 - point.y / active_height.0,
-    })
+    Some((
+        Vec2 {
+            x: local_point.x / active_width.0 + 0.5,
+            y: 0.5 - local_point.y / active_height.0,
+        },
+        (-local_ray.z).clamp(0.0, 1.0),
+    ))
 }
 
 fn distort(point: Vec2, lens: LensModel) -> Vec2 {
@@ -655,33 +913,89 @@ fn distort(point: Vec2, lens: LensModel) -> Vec2 {
     }
 }
 
-fn inverse_distortion(observed: Vec2, lens: LensModel) -> Vec2 {
+fn inverse_distortion(observed: Vec2, lens: LensModel) -> Option<Vec2> {
     let mut ideal = observed;
-    for _ in 0..6 {
+    const EPSILON: f32 = 1.0e-4;
+    for _ in 0..12 {
         let projected = distort(ideal, lens);
-        ideal.x += observed.x - projected.x;
-        ideal.y += observed.y - projected.y;
+        let residual = Vec2 {
+            x: observed.x - projected.x,
+            y: observed.y - projected.y,
+        };
+        if residual.x.abs().max(residual.y.abs()) < 1.0e-6 {
+            return Some(ideal);
+        }
+        let dx = distort(
+            Vec2 {
+                x: ideal.x + EPSILON,
+                y: ideal.y,
+            },
+            lens,
+        );
+        let dy = distort(
+            Vec2 {
+                x: ideal.x,
+                y: ideal.y + EPSILON,
+            },
+            lens,
+        );
+        let j00 = (dx.x - projected.x) / EPSILON;
+        let j10 = (dx.y - projected.y) / EPSILON;
+        let j01 = (dy.x - projected.x) / EPSILON;
+        let j11 = (dy.y - projected.y) / EPSILON;
+        let determinant = j00 * j11 - j01 * j10;
+        if !determinant.is_finite() || determinant <= 1.0e-8 {
+            return None;
+        }
+        ideal.x += (j11 * residual.x - j01 * residual.y) / determinant;
+        ideal.y += (-j10 * residual.x + j00 * residual.y) / determinant;
+        if !ideal.x.is_finite() || !ideal.y.is_finite() {
+            return None;
+        }
     }
-    ideal
+    let residual = distort(ideal, lens);
+    ((residual.x - observed.x)
+        .abs()
+        .max((residual.y - observed.y).abs())
+        < 1.0e-5)
+        .then_some(ideal)
 }
 
-fn distortion_is_invertible(lens: LensModel) -> bool {
+fn distortion_is_invertible(lens: LensModel, lens_shift: Vec2) -> bool {
     const GRID: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
     const EPSILON: f32 = 1.0e-3;
     GRID.into_iter().all(|x| {
         GRID.into_iter().all(|y| {
-            let ideal = Vec2 { x, y };
-            let observed = distort(ideal, lens);
-            let recovered = inverse_distortion(observed, lens);
-            let dx = distort(Vec2 { x: x + EPSILON, y }, lens);
-            let dy = distort(Vec2 { x, y: y + EPSILON }, lens);
-            let determinant = ((dx.x - observed.x) * (dy.y - observed.y)
-                - (dx.y - observed.y) * (dy.x - observed.x))
+            let observed = Vec2 {
+                x: x + 2.0 * lens_shift.x,
+                y: y + 2.0 * lens_shift.y,
+            };
+            let Some(recovered) = inverse_distortion(observed, lens) else {
+                return false;
+            };
+            let projected = distort(recovered, lens);
+            let dx = distort(
+                Vec2 {
+                    x: recovered.x + EPSILON,
+                    y: recovered.y,
+                },
+                lens,
+            );
+            let dy = distort(
+                Vec2 {
+                    x: recovered.x,
+                    y: recovered.y + EPSILON,
+                },
+                lens,
+            );
+            let origin = distort(recovered, lens);
+            let determinant = ((dx.x - origin.x) * (dy.y - origin.y)
+                - (dx.y - origin.y) * (dy.x - origin.x))
                 / (EPSILON * EPSILON);
             recovered.x.is_finite()
                 && recovered.y.is_finite()
-                && (recovered.x - x).abs() < 1.0e-4
-                && (recovered.y - y).abs() < 1.0e-4
+                && (projected.x - observed.x).abs() < 1.0e-4
+                && (projected.y - observed.y).abs() < 1.0e-4
                 && determinant > 0.0
         })
     })
@@ -749,10 +1063,13 @@ fn normalize(value: Vec3) -> Vec3 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryError {
-    EmptyCameraTrack,
-    InvalidCameraKeyframe,
+    EmptyTransformTrack,
+    EmptyCameraIntrinsicsTrack,
+    InvalidTransformKeyframe,
+    InvalidCameraIntrinsicsKeyframe,
     InvalidCameraRotation,
-    UnorderedCameraKeyframes,
+    UnorderedTransformKeyframes,
+    UnorderedCameraIntrinsicsKeyframes,
     InvalidResolvedLens,
     NonPositiveIntrinsics,
     InvalidInspectionRegion,
@@ -762,11 +1079,18 @@ pub enum GeometryError {
 impl fmt::Display for GeometryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::EmptyCameraTrack => "camera track requires at least one keyframe",
-            Self::InvalidCameraKeyframe => "camera keyframe is invalid",
+            Self::EmptyTransformTrack => "transform track requires at least one keyframe",
+            Self::EmptyCameraIntrinsicsTrack => {
+                "camera intrinsics track requires at least one keyframe"
+            }
+            Self::InvalidTransformKeyframe => "transform keyframe is invalid or has a duplicate id",
+            Self::InvalidCameraIntrinsicsKeyframe => {
+                "camera intrinsics keyframe is invalid or has a duplicate id"
+            }
             Self::InvalidCameraRotation => "camera keyframe quaternion must be normalized",
-            Self::UnorderedCameraKeyframes => {
-                "camera keyframes must have unique ids and increasing times"
+            Self::UnorderedTransformKeyframes => "transform keyframes must have increasing times",
+            Self::UnorderedCameraIntrinsicsKeyframes => {
+                "camera intrinsics keyframes must have increasing times"
             }
             Self::InvalidResolvedLens => "interpolated lens model is not invertible",
             Self::NonPositiveIntrinsics => "camera focal length and sensor width must be positive",
@@ -784,29 +1108,45 @@ impl std::error::Error for GeometryError {}
 mod tests {
     use super::*;
 
-    fn rig() -> CameraTrack {
-        let key = |id: &str, frame, yaw: f32| CameraKeyframe {
-            id: id.to_owned(),
-            time: RationalTime::new(frame, 24).expect("valid time"),
-            position: Vec3 {
-                x: 0.8 * yaw.to_radians().sin(),
-                y: 0.0,
-                z: 0.8 * yaw.to_radians().cos(),
-            },
-            rotation: Quaternion::from_yaw_degrees(yaw),
-            focal_length: Millimeters(50.0),
-            sensor_width: Millimeters(36.0),
-            sensor_height: Millimeters(20.25),
-            lens_shift: Vec2 { x: 0.0, y: 0.0 },
-            focus_distance: Meters(0.8),
-            f_stop: 8.0,
-            near_clip: Meters(0.01),
-            far_clip: Meters(100.0),
-            lens: LensModel::REFERENCE_PHOTOGRAPHIC,
-            interpolation: KeyframeInterpolation::Smooth,
+    fn rig() -> CameraRig {
+        let keys = |id: &str, frame, yaw: f32| {
+            (
+                TransformKeyframe {
+                    id: format!("{id}-transform"),
+                    time: RationalTime::new(frame, 24).expect("valid time"),
+                    translation: Vec3 {
+                        x: 0.8 * yaw.to_radians().sin(),
+                        y: 0.0,
+                        z: 0.8 * yaw.to_radians().cos(),
+                    },
+                    rotation: Quaternion::from_yaw_degrees(yaw),
+                    interpolation: KeyframeInterpolation::Smooth,
+                },
+                CameraIntrinsicsKeyframe {
+                    id: format!("{id}-intrinsics"),
+                    time: RationalTime::new(frame, 24).expect("valid time"),
+                    focal_length: Millimeters(50.0),
+                    sensor_width: Millimeters(36.0),
+                    sensor_height: Millimeters(20.25),
+                    lens_shift: Vec2 { x: 0.0, y: 0.0 },
+                    focus_distance: Meters(0.8),
+                    f_stop: 8.0,
+                    near_clip: Meters(0.01),
+                    far_clip: Meters(100.0),
+                    lens: LensModel::REFERENCE_PHOTOGRAPHIC,
+                    interpolation: KeyframeInterpolation::Smooth,
+                },
+            )
         };
-        CameraTrack {
-            keyframes: vec![key("start", 0, -18.0), key("middle", 48, 18.0)],
+        let (a_t, a_i) = keys("start", 0, -18.0);
+        let (b_t, b_i) = keys("middle", 48, 18.0);
+        CameraRig {
+            transform: TransformTrack {
+                keyframes: vec![a_t, b_t],
+            },
+            intrinsics: CameraIntrinsicsTrack {
+                keyframes: vec![a_i, b_i],
+            },
         }
     }
 
@@ -835,10 +1175,50 @@ mod tests {
             z: 0.0,
         };
         let projected = project_scene_point(camera, point, 16.0 / 9.0).expect("visible point");
-        let uv = panel_uv_at_viewport(camera, width, height, 16.0 / 9.0, projected)
-            .expect("panel intersection");
+        let uv = panel_uv_at_viewport(
+            camera,
+            ScreenSample::IDENTITY,
+            width,
+            height,
+            16.0 / 9.0,
+            projected,
+        )
+        .expect("panel intersection");
         assert!((uv.x - 0.7).abs() < 0.000_1);
         assert!((uv.y - 0.676_470_6).abs() < 0.000_1);
+    }
+
+    #[test]
+    fn transformed_screen_round_trips_in_its_local_coordinates() {
+        let camera = rig()
+            .sample(RationalTime::new(24, 24).expect("valid time"))
+            .expect("sample");
+        let screen = ScreenSample {
+            translation: Vec3 {
+                x: 0.04,
+                y: -0.02,
+                z: -0.08,
+            },
+            rotation: Quaternion::from_yaw_degrees(12.0),
+        };
+        let local = Vec3 {
+            x: 0.09,
+            y: -0.04,
+            z: 0.0,
+        };
+        let projected = project_scene_point(camera, screen.local_to_world(local), 16.0 / 9.0)
+            .expect("visible point");
+        let uv = panel_uv_at_viewport(
+            camera,
+            screen,
+            Meters(0.6),
+            Meters(0.34),
+            16.0 / 9.0,
+            projected,
+        )
+        .expect("transformed panel hit");
+        assert!((uv.x - 0.65).abs() < 2.0e-4);
+        assert!((uv.y - (0.5 + 0.04 / 0.34)).abs() < 2.0e-4);
     }
 
     #[test]
@@ -853,6 +1233,7 @@ mod tests {
                 region,
                 Meters(0.6),
                 Meters(0.34),
+                ScreenSample::IDENTITY,
                 16.0 / 9.0,
             )
             .expect("region can be framed");
@@ -865,8 +1246,13 @@ mod tests {
         let camera = rig()
             .sample(RationalTime::new(0, 24).expect("valid time"))
             .expect("camera sample");
-        let samples =
-            panel_uv_aperture_samples(camera, Meters(0.6), Meters(0.34), Vec2 { x: 0.0, y: 0.0 });
+        let samples = panel_uv_aperture_samples(
+            camera,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.0, y: 0.0 },
+        );
         let center = samples[0].panel_uv[1].expect("chief ray reaches panel");
         for sample in samples.into_iter().filter_map(|sample| sample.panel_uv[1]) {
             assert!((sample.x - center.x).abs() < 1.0e-5);
@@ -877,13 +1263,18 @@ mod tests {
     #[test]
     fn defocus_spreads_aperture_rays_and_clipping_rejects_the_panel() {
         let mut track = rig();
-        track.keyframes[0].focus_distance = Meters(0.4);
-        track.keyframes[0].f_stop = 1.4;
+        track.intrinsics.keyframes[0].focus_distance = Meters(0.4);
+        track.intrinsics.keyframes[0].f_stop = 1.4;
         let camera = track
             .sample(RationalTime::new(0, 24).expect("valid time"))
             .expect("camera sample");
-        let samples =
-            panel_uv_aperture_samples(camera, Meters(0.6), Meters(0.34), Vec2 { x: 0.0, y: 0.0 });
+        let samples = panel_uv_aperture_samples(
+            camera,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.0, y: 0.0 },
+        );
         let center = samples[0].panel_uv[1].expect("chief ray reaches panel");
         assert!(
             samples
@@ -894,14 +1285,20 @@ mod tests {
                 })
         );
 
-        track.keyframes[0].far_clip = Meters(0.5);
+        track.intrinsics.keyframes[0].far_clip = Meters(0.5);
         let clipped = track
             .sample(RationalTime::new(0, 24).expect("valid time"))
             .expect("camera sample");
         assert!(
-            panel_uv_aperture_samples(clipped, Meters(0.6), Meters(0.34), Vec2 { x: 0.0, y: 0.0 })
-                .iter()
-                .all(|sample| sample.panel_uv.iter().all(Option::is_none))
+            panel_uv_aperture_samples(
+                clipped,
+                ScreenSample::IDENTITY,
+                Meters(0.6),
+                Meters(0.34),
+                Vec2 { x: 0.0, y: 0.0 }
+            )
+            .iter()
+            .all(|sample| sample.panel_uv.iter().all(Option::is_none))
         );
     }
 
@@ -910,10 +1307,20 @@ mod tests {
         let camera = rig()
             .sample(RationalTime::new(0, 24).expect("valid time"))
             .expect("camera sample");
-        let center =
-            panel_uv_aperture_samples(camera, Meters(0.6), Meters(0.34), Vec2 { x: 0.0, y: 0.0 });
-        let edge =
-            panel_uv_aperture_samples(camera, Meters(0.6), Meters(0.34), Vec2 { x: 0.75, y: 0.6 });
+        let center = panel_uv_aperture_samples(
+            camera,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let edge = panel_uv_aperture_samples(
+            camera,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.75, y: 0.6 },
+        );
         let edge_sample = edge[0];
         let red = edge_sample.panel_uv[0].expect("red reaches panel");
         let blue = edge_sample.panel_uv[2].expect("blue reaches panel");
@@ -924,17 +1331,23 @@ mod tests {
     #[test]
     fn f_number_controls_physical_optical_throughput() {
         let mut track = rig();
-        track.keyframes[0].f_stop = 4.0;
+        track.intrinsics.keyframes[0].f_stop = 4.0;
         let f4 = track
             .sample(RationalTime::new(0, 24).expect("valid time"))
             .expect("f4 sample");
-        track.keyframes[0].f_stop = 8.0;
+        track.intrinsics.keyframes[0].f_stop = 8.0;
         let f8 = track
             .sample(RationalTime::new(0, 24).expect("valid time"))
             .expect("f8 sample");
         let weight = |camera| {
-            panel_uv_aperture_samples(camera, Meters(0.6), Meters(0.34), Vec2 { x: 0.0, y: 0.0 })[0]
-                .irradiance_weight[1]
+            panel_uv_aperture_samples(
+                camera,
+                ScreenSample::IDENTITY,
+                Meters(0.6),
+                Meters(0.34),
+                Vec2 { x: 0.0, y: 0.0 },
+            )[0]
+            .irradiance_weight[1]
         };
         assert!((weight(f4) / weight(f8) - 4.0).abs() < 1.0e-4);
     }
@@ -943,15 +1356,35 @@ mod tests {
     fn distortion_inverse_round_trips_and_folding_models_are_rejected() {
         let lens = LensModel::REFERENCE_PHOTOGRAPHIC;
         let ideal = Vec2 { x: 0.8, y: -0.7 };
-        let recovered = inverse_distortion(distort(ideal, lens), lens);
+        let recovered =
+            inverse_distortion(distort(ideal, lens), lens).expect("invertible reference lens");
         assert!((recovered.x - ideal.x).abs() < 1.0e-4);
         assert!((recovered.y - ideal.y).abs() < 1.0e-4);
 
         let mut track = rig();
-        track.keyframes[0].lens.radial_distortion = [-2.0, 0.0, 0.0];
+        track.intrinsics.keyframes[0].lens.radial_distortion = [-2.0, 0.0, 0.0];
         assert!(matches!(
             track.validate(),
             Err(GeometryError::NonPositiveIntrinsics)
+        ));
+    }
+
+    #[test]
+    fn domain_validation_rejects_non_finite_intrinsics_and_non_adjacent_duplicate_ids() {
+        let mut camera = rig();
+        camera.intrinsics.keyframes[0].focal_length = Millimeters(f32::NAN);
+        assert!(matches!(
+            camera.validate(),
+            Err(GeometryError::InvalidCameraIntrinsicsKeyframe)
+        ));
+
+        let mut transforms = rig().transform;
+        let mut third = transforms.keyframes[0].clone();
+        third.time = RationalTime::new(96, 24).expect("valid time");
+        transforms.keyframes.push(third);
+        assert!(matches!(
+            transforms.validate(),
+            Err(GeometryError::InvalidTransformKeyframe)
         ));
     }
 }

@@ -2,14 +2,16 @@
 
 #![deny(unsafe_code)]
 
+pub mod project_mapping;
+
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
 use screen_application::{
-    ApplicationError, DeviceSignalRaster, DiagnosticView, RasterPlacement, SimulationRequest,
-    decoded_frame_to_device_signal, inspection_region_from_drag, prepare_raster,
+    ApplicationError, DeviceSignalRaster, DiagnosticView, OpticalRequest, RasterPlacement,
+    SimulationRequest, decoded_frame_to_device_signal, inspection_region_from_drag, prepare_raster,
     prepare_raster_from_device_signal,
 };
 use screen_color::{
@@ -18,14 +20,15 @@ use screen_color::{
 };
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_geometry::{
-    CameraKeyframe, CameraTrack, KeyframeInterpolation, LensModel, PanelRegion, Quaternion,
+    CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, LensModel,
+    PanelRegion, Quaternion, ScreenTrack, TransformKeyframe, TransformTrack,
 };
 use screen_media::{
     AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, FrameSelectionPolicy,
     MediaDescriptor, ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix,
     SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
 };
-use screen_panel::{LcdProfile, StripeLayout};
+use screen_panel::{LcdProfile, PanelColorimetry, StripeLayout};
 use screen_platform::{decode_frame_at_time, probe_media};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
@@ -41,7 +44,8 @@ struct InteractionState {
     color_engine: ColorEngine,
     last_tick: Instant,
     playback_accumulator_seconds: f64,
-    camera: CameraTrack,
+    camera: CameraRig,
+    screen: ScreenTrack,
     next_camera_key_id: u64,
 }
 
@@ -72,19 +76,35 @@ impl InteractionState {
             color_engine,
             last_tick: Instant::now(),
             playback_accumulator_seconds: 0.0,
-            camera: CameraTrack {
-                keyframes: vec![camera_keyframe(
-                    "camera-key-0".to_owned(),
-                    RationalTime::new(0, 1).expect("initial camera time is valid"),
-                    CameraEdit {
-                        distance: 0.82,
-                        yaw_degrees: 0.0,
-                        focal_mm: 50.0,
-                        focus_distance_m: 0.82,
-                        f_stop: 8.0,
-                        interpolation: KeyframeInterpolation::Smooth,
+            camera: camera_rig(vec![camera_keyframes(
+                "camera-key-0".to_owned(),
+                RationalTime::new(0, 1).expect("initial camera time is valid"),
+                CameraEdit {
+                    distance: 0.82,
+                    yaw_degrees: 0.0,
+                    focal_mm: 50.0,
+                    focus_distance_m: 0.82,
+                    f_stop: 8.0,
+                    interpolation: KeyframeInterpolation::Smooth,
+                },
+            )]),
+            screen: TransformTrack {
+                keyframes: vec![TransformKeyframe {
+                    id: "screen-transform-0".to_owned(),
+                    time: RationalTime::new(0, 1).expect("initial screen time is valid"),
+                    translation: Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
                     },
-                )],
+                    rotation: Quaternion {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                        w: 1.0,
+                    },
+                    interpolation: KeyframeInterpolation::Hold,
+                }],
             },
             next_camera_key_id: 1,
         }
@@ -101,27 +121,50 @@ struct CameraEdit {
     interpolation: KeyframeInterpolation,
 }
 
-fn camera_keyframe(id: String, time: RationalTime, edit: CameraEdit) -> CameraKeyframe {
+fn camera_keyframes(
+    id: String,
+    time: RationalTime,
+    edit: CameraEdit,
+) -> (TransformKeyframe, CameraIntrinsicsKeyframe) {
     let yaw = edit.yaw_degrees.to_radians();
-    CameraKeyframe {
-        id,
-        time,
-        position: Vec3 {
-            x: edit.distance * yaw.sin(),
-            y: 0.0,
-            z: edit.distance * yaw.cos(),
+    (
+        TransformKeyframe {
+            id: format!("{id}-transform"),
+            time,
+            translation: Vec3 {
+                x: edit.distance * yaw.sin(),
+                y: 0.0,
+                z: edit.distance * yaw.cos(),
+            },
+            rotation: Quaternion::from_yaw_degrees(edit.yaw_degrees),
+            interpolation: edit.interpolation,
         },
-        rotation: Quaternion::from_yaw_degrees(edit.yaw_degrees),
-        focal_length: Millimeters(edit.focal_mm),
-        sensor_width: Millimeters(36.0),
-        sensor_height: Millimeters(20.25),
-        lens_shift: Vec2 { x: 0.0, y: 0.0 },
-        focus_distance: Meters(edit.focus_distance_m),
-        f_stop: edit.f_stop,
-        near_clip: Meters(0.01),
-        far_clip: Meters(100.0),
-        lens: LensModel::REFERENCE_PHOTOGRAPHIC,
-        interpolation: edit.interpolation,
+        CameraIntrinsicsKeyframe {
+            id: format!("{id}-intrinsics"),
+            time,
+            focal_length: Millimeters(edit.focal_mm),
+            sensor_width: Millimeters(36.0),
+            sensor_height: Millimeters(20.25),
+            lens_shift: Vec2 { x: 0.0, y: 0.0 },
+            focus_distance: Meters(edit.focus_distance_m),
+            f_stop: edit.f_stop,
+            near_clip: Meters(0.01),
+            far_clip: Meters(100.0),
+            lens: LensModel::REFERENCE_PHOTOGRAPHIC,
+            interpolation: edit.interpolation,
+        },
+    )
+}
+
+fn camera_rig(keys: Vec<(TransformKeyframe, CameraIntrinsicsKeyframe)>) -> CameraRig {
+    let (transform, intrinsics): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
+    CameraRig {
+        transform: TransformTrack {
+            keyframes: transform,
+        },
+        intrinsics: CameraIntrinsicsTrack {
+            keyframes: intrinsics,
+        },
     }
 }
 
@@ -205,7 +248,8 @@ fn decode_interpretation_description(interpretation: ResolvedSourceDecode) -> &'
 fn simulation_request(
     window: &MainWindow,
     inspection: Option<PanelRegion>,
-    camera: &CameraTrack,
+    camera: &CameraRig,
+    screen: &ScreenTrack,
 ) -> Result<SimulationRequest, String> {
     let frame_rate = project_frame_rate(window)?;
     let view = match window.get_view_index() {
@@ -215,28 +259,33 @@ fn simulation_request(
         _ => DiagnosticView::Composite,
     };
     Ok(SimulationRequest {
-        time: frame_rate
-            .time_at_frame(i64::from(window.get_frame_number()))
-            .map_err(|error| error.to_string())?,
-        viewport_aspect: f32::from(PREVIEW_WIDTH) / f32::from(PREVIEW_HEIGHT),
-        panel: LcdProfile {
-            native_width: 3840,
-            native_height: 2160,
-            active_width: Meters(0.596_736),
-            active_height: Meters(0.335_664),
-            stripe_layout: if window.get_stripe_index() == 1 {
-                StripeLayout::Bgr
-            } else {
-                StripeLayout::Rgb
+        optics: OpticalRequest {
+            time: frame_rate
+                .time_at_frame(i64::from(window.get_frame_number()))
+                .map_err(|error| error.to_string())?,
+            viewport_aspect: f32::from(PREVIEW_WIDTH) / f32::from(PREVIEW_HEIGHT),
+            panel: LcdProfile {
+                native_width: 3840,
+                native_height: 2160,
+                active_width: Meters(0.596_736),
+                active_height: Meters(0.335_664),
+                stripe_layout: if window.get_stripe_index() == 1 {
+                    StripeLayout::Bgr
+                } else {
+                    StripeLayout::Rgb
+                },
+                black_matrix_fraction: window.get_black_matrix(),
+                eotf_gamma: window.get_gamma(),
+                black_level_nits: 0.08,
+                white_level_nits: window.get_white_nits(),
+                channel_efficiency: LinearRgb::new(1.0, 0.96, 0.9),
+                colorimetry: PanelColorimetry::SRGB_D65,
+                angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
             },
-            black_matrix_fraction: window.get_black_matrix(),
-            eotf_gamma: window.get_gamma(),
-            black_level_nits: 0.08,
-            white_level_nits: window.get_white_nits(),
-            channel_efficiency: LinearRgb::new(1.0, 0.96, 0.9),
+            camera: camera.clone(),
+            screen: screen.clone(),
+            inspection,
         },
-        camera: camera.clone(),
-        inspection,
         view,
         preview_exposure_ev: window.get_preview_exposure_ev(),
     })
@@ -244,7 +293,7 @@ fn simulation_request(
 
 fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     let started = Instant::now();
-    let request = match simulation_request(window, state.inspection, &state.camera) {
+    let request = match simulation_request(window, state.inspection, &state.camera, &state.screen) {
         Ok(request) => request,
         Err(error) => {
             block_preview(window, &error);
@@ -287,7 +336,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             };
             let sample_policy = frame_selection_policy(window);
             let sample_key = DecodedSampleKey {
-                requested_time: request.time,
+                requested_time: request.optics.time,
                 sample_policy,
                 interpretation: decode_interpretation,
             };
@@ -379,9 +428,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 None => "FIT · MAIN CAMERA".into(),
             });
             window.set_hint_text(
-                if raster.frame.view == DiagnosticView::Subpixels
-                    && !raster.subpixels_resolved_at_center
-                {
+                if window.get_view_index() == 2 && !raster.subpixels_resolved_at_center {
                     "Hold Z and drag on the panel to resolve physical subpixels".into()
                 } else if raster.frame.inspection.is_some() {
                     "Esc or Shift+Z · return to main camera".into()
@@ -618,14 +665,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 y: y * 2.0 - 1.0,
             };
             let current_inspection = state.borrow().inspection;
-            let request =
-                match simulation_request(&window, current_inspection, &state.borrow().camera) {
-                    Ok(request) => request,
-                    Err(error) => {
-                        window.set_error_text(error.into());
-                        return;
-                    }
-                };
+            let request = match simulation_request(
+                &window,
+                current_inspection,
+                &state.borrow().camera,
+                &state.borrow().screen,
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    window.set_error_text(error.into());
+                    return;
+                }
+            };
             match inspection_region_from_drag(
                 request,
                 to_ndc(start_x, start_y),
@@ -669,12 +720,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut state = state.borrow_mut();
             match state
                 .camera
+                .transform
                 .keyframes
                 .binary_search_by_key(&time, |item| item.time)
             {
                 Ok(index) => {
-                    let id = state.camera.keyframes[index].id.clone();
-                    state.camera.keyframes[index] = camera_keyframe(
+                    let id = format!("camera-key-{}", index);
+                    let (transform, intrinsics) = camera_keyframes(
                         id,
                         time,
                         CameraEdit {
@@ -686,28 +738,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             interpolation,
                         },
                     );
+                    state.camera.transform.keyframes[index] = transform;
+                    state.camera.intrinsics.keyframes[index] = intrinsics;
                 }
                 Err(index) => {
                     let id = format!("camera-key-{}", state.next_camera_key_id);
                     state.next_camera_key_id += 1;
-                    state.camera.keyframes.insert(
-                        index,
-                        camera_keyframe(
-                            id,
-                            time,
-                            CameraEdit {
-                                distance: window.get_distance_m(),
-                                yaw_degrees: window.get_yaw_degrees(),
-                                focal_mm: window.get_focal_mm(),
-                                focus_distance_m: window.get_focus_distance_m(),
-                                f_stop: window.get_f_stop(),
-                                interpolation,
-                            },
-                        ),
+                    let (transform, intrinsics) = camera_keyframes(
+                        id,
+                        time,
+                        CameraEdit {
+                            distance: window.get_distance_m(),
+                            yaw_degrees: window.get_yaw_degrees(),
+                            focal_mm: window.get_focal_mm(),
+                            focus_distance_m: window.get_focus_distance_m(),
+                            f_stop: window.get_f_stop(),
+                            interpolation,
+                        },
                     );
+                    state.camera.transform.keyframes.insert(index, transform);
+                    state.camera.intrinsics.keyframes.insert(index, intrinsics);
                 }
             }
-            window.set_camera_key_count(state.camera.keyframes.len() as i32);
+            window.set_camera_key_count(state.camera.transform.keyframes.len() as i32);
             state.inspection = None;
             render_preview(&window, &mut state);
         });

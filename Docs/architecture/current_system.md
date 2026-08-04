@@ -14,9 +14,10 @@ media source
 → decoded source frame
 → explicit source-to-device interpretation
 → device signal
-→ procedural LCD emission
-→ animated screen/camera projection
-→ deterministic thin-lens aperture integration
+→ colorimetrically declared, angle-dependent LCD emission
+→ independently animated screen/camera projection
+→ deterministic sensor-footprint and thin-lens integration
+→ immutable linear ACEScg optical result
 → explicit preview or still-output transform
 ```
 
@@ -48,4 +49,4 @@ Domain packages expose narrow capabilities and do not depend on sibling implemen
 
 ## Current scope
 
-The current implementation target is one source clip per simulation shot, one authored rational project frame rate, one project-owned complete LCD profile, internally authored animated camera and screen tracks, an RGB/BGR stripe panel, physical projection, ideal sampling, debug views and still export. A source whose raster differs from the device native raster requires one authored placement policy: `Fit`, `FillCrop`, `Stretch`, or `OneToOne`. Pixel decode matrix, pixel decode range, source IDT and alpha association are independent explicit decisions. Alpha is resolved to the current explicit opaque-black target before panel evaluation.
+The current implementation target is one source clip per simulation shot, one authored rational project frame rate, one project-owned complete LCD profile, internally authored independent camera-transform, camera-intrinsics and screen-transform tracks, an RGB/BGR stripe panel, transformed physical projection, deterministic reference sampling, a public linear optical result, debug views and still export. A source whose raster differs from the device native raster requires one authored placement policy: `Fit`, `FillCrop`, `Stretch`, or `OneToOne`. Pixel decode matrix, pixel decode range, source IDT and alpha association are independent explicit decisions. Alpha is resolved to the current explicit opaque-black target before panel evaluation.

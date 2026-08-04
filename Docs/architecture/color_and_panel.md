@@ -12,8 +12,10 @@ decoded encoded RGB
 → explicit Source-to-Device transform
 → nonlinear device signal RGB
 → panel EOTF, black/white levels and channel response
-→ physical RGB subpixel emission
-→ linear emitted radiance in ACEScg
+→ physical native-primary subpixel emission and angular response
+→ per-emitter lens integration
+→ explicit native-primary/white-point conversion
+→ linear relative irradiance in ACEScg
 ```
 
 The source transform and panel EOTF must never linearize the same signal twice. `screen-color` resolves named transformations and reference processing. `screen-panel` alone converts the final device signal into physical emission.
@@ -22,8 +24,8 @@ Media transports declared primaries, transfer characteristic, matrix coefficient
 
 Alpha association is an independent authored decision. `Auto` accepts only unambiguous association metadata; otherwise evaluation blocks. `Straight` and `Premultiplied` are explicit overrides for absent or incorrect metadata. Before the source color processor, straight RGB remains unassociated and premultiplied RGB is unassociated explicitly; zero-alpha samples resolve to zero unassociated RGB. After the color processor, both representations are associated with their unchanged alpha over the current explicit opaque-black target. Alpha interpretation never selects an IDT.
 
-The current panel is a fixed-pixel LCD with complete native raster, physical active width and height, derived pixel pitch/PPI, RGB or BGR stripe layout, subpixel geometry, black matrix, EOTF, channel efficiency, black level, white level and point white. PPI and pixel pitch are derived from native raster and active dimensions and cannot contradict them.
+The current panel is a fixed-pixel LCD with complete native raster, physical active width and height, derived pixel pitch/PPI, RGB or BGR stripe layout, subpixel geometry, black matrix, EOTF, channel efficiency, black level, white level, native-primary chromaticities, white-point chromaticity and per-emitter angular falloff. PPI and pixel pitch are derived from native raster and active dimensions and cannot contradict them. Native emission is converted through XYZ with chromatic adaptation to the ACEScg D60 basis only after channel-dependent optical evaluation.
 
-Panel samples below the resolved camera footprint are spatially integrated. Individual subpixels and black matrix are evaluated only when the physical projection resolves their device-native position; a diagnostic view never replaces the native raster with a lower-resolution representative grid.
+Every physical Composite sample evaluates the same native panel geometry. The current CPU reference integrates a deterministic 2x2 sensor-pixel box pattern together with the aperture pattern; unresolved periodic subpixel/black-matrix structure uses its exact area average, while resolved structure evaluates native stripe position. Diagnostic views change presentation and inspection only; they never substitute another panel model.
 
 Internal emission and composition use linear float values. Negative and above-one values remain valid until an explicit display or output transform permits clipping or quantization.

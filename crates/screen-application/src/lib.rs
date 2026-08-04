@@ -7,9 +7,9 @@ use rayon::prelude::*;
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_geometry::{
-    APERTURE_SAMPLE_COUNT, CameraSample, CameraTrack, GeometryError, OpticalSample, PanelRegion,
-    ProjectedScreen, panel_uv_aperture_samples, panel_uv_at_viewport, project_scene_point,
-    project_screen,
+    APERTURE_SAMPLE_COUNT, CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion,
+    ProjectedScreen, ScreenSample, ScreenTrack, panel_uv_aperture_samples, panel_uv_at_viewport,
+    project_scene_point, project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{LcdProfile, PanelError};
@@ -41,17 +41,38 @@ impl DeviceSignalRaster {
                 actual: self.pixels.len() as u64,
             });
         }
+        if self
+            .pixels
+            .iter()
+            .any(|pixel| !pixel.r.is_finite() || !pixel.g.is_finite() || !pixel.b.is_finite())
+        {
+            return Err(ApplicationError::NonFiniteDeviceSignal);
+        }
         Ok(())
     }
 
-    fn sample_nearest(&self, uv: Vec2) -> DeviceRgb {
-        let x = (uv.x * self.width as f32)
-            .floor()
-            .clamp(0.0, self.width.saturating_sub(1) as f32) as u32;
-        let y = (uv.y * self.height as f32)
-            .floor()
-            .clamp(0.0, self.height.saturating_sub(1) as f32) as u32;
-        self.pixels[(u64::from(y) * u64::from(self.width) + u64::from(x)) as usize]
+    fn sample_bilinear(&self, uv: Vec2) -> DeviceRgb {
+        let x = (uv.x * self.width as f32 - 0.5).clamp(0.0, self.width.saturating_sub(1) as f32);
+        let y = (uv.y * self.height as f32 - 0.5).clamp(0.0, self.height.saturating_sub(1) as f32);
+        let x0 = x.floor() as u32;
+        let y0 = y.floor() as u32;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+        let at = |column, row| {
+            self.pixels[(u64::from(row) * u64::from(self.width) + u64::from(column)) as usize]
+        };
+        let mix = |a: DeviceRgb, b: DeviceRgb, t: f32| {
+            DeviceRgb::new(
+                a.r + (b.r - a.r) * t,
+                a.g + (b.g - a.g) * t,
+                a.b + (b.b - a.b) * t,
+            )
+        };
+        mix(
+            mix(at(x0, y0), at(x1, y0), x.fract()),
+            mix(at(x0, y1), at(x1, y1), x.fract()),
+            y.fract(),
+        )
     }
 }
 
@@ -167,22 +188,34 @@ pub enum DiagnosticView {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct SimulationRequest {
+pub struct OpticalRequest {
     pub time: RationalTime,
     pub viewport_aspect: f32,
     pub panel: LcdProfile,
-    pub camera: CameraTrack,
+    pub camera: CameraRig,
+    pub screen: ScreenTrack,
     pub inspection: Option<PanelRegion>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimulationRequest {
+    pub optics: OpticalRequest,
     pub view: DiagnosticView,
     pub preview_exposure_ev: f32,
+}
+
+impl SimulationRequest {
+    pub fn optical_request(&self) -> OpticalRequest {
+        self.optics.clone()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedFrame {
     pub time: RationalTime,
-    pub view: DiagnosticView,
     pub viewport_aspect: f32,
     pub camera: CameraSample,
+    pub screen: ScreenSample,
     pub inspection: Option<PanelRegion>,
     pub projected_screen: Option<ProjectedScreen>,
     pub native_raster: [u32; 2],
@@ -200,6 +233,23 @@ pub struct PreviewPixel {
     pub on_panel: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinearOpticalPixel {
+    pub acescg_irradiance: LinearRgb,
+    pub on_panel: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinearOpticalRaster {
+    pub frame: PreparedFrame,
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<LinearOpticalPixel>,
+    pub projected_device_pixel_percent: f32,
+    pub inspection_field_meters: Option<[f32; 2]>,
+    pub subpixels_resolved_at_center: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedRaster {
     pub frame: PreparedFrame,
@@ -211,17 +261,22 @@ pub struct PreparedRaster {
     pub subpixels_resolved_at_center: bool,
 }
 
-pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, ApplicationError> {
-    if request.viewport_aspect <= 0.0 {
+pub fn prepare_frame(request: OpticalRequest) -> Result<PreparedFrame, ApplicationError> {
+    if !request.viewport_aspect.is_finite() || request.viewport_aspect <= 0.0 {
         return Err(ApplicationError::InvalidViewportAspect);
-    }
-    if !request.preview_exposure_ev.is_finite() {
-        return Err(ApplicationError::InvalidPreviewExposure);
     }
     let panel = request.panel.validate().map_err(ApplicationError::Panel)?;
     request
         .camera
         .validate()
+        .map_err(ApplicationError::Geometry)?;
+    request
+        .screen
+        .validate()
+        .map_err(ApplicationError::Geometry)?;
+    let screen = request
+        .screen
+        .sample(request.time)
         .map_err(ApplicationError::Geometry)?;
     let camera = if let Some(region) = request.inspection {
         request
@@ -231,6 +286,7 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
                 region,
                 panel.active_width,
                 panel.active_height,
+                screen,
                 request.viewport_aspect,
             )
             .map_err(ApplicationError::Geometry)?
@@ -249,6 +305,7 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
     }
     let projected_screen = project_screen(
         camera,
+        screen,
         panel.active_width,
         panel.active_height,
         request.viewport_aspect,
@@ -256,9 +313,9 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
     let signal = diagnostic_signal(Vec2 { x: 0.5, y: 0.5 }, request.time);
     Ok(PreparedFrame {
         time: request.time,
-        view: request.view,
         viewport_aspect: request.viewport_aspect,
         camera,
+        screen,
         inspection: request.inspection,
         projected_screen,
         native_raster: [panel.native_width, panel.native_height],
@@ -277,8 +334,22 @@ pub fn prepare_raster(
     height: u16,
 ) -> Result<PreparedRaster, ApplicationError> {
     prepare_raster_with_signal(request.clone(), width, height, &|uv| {
-        diagnostic_signal(uv, request.time)
+        diagnostic_signal(uv, request.optics.time)
     })
+}
+
+pub fn evaluate_linear_optics(
+    request: OpticalRequest,
+    width: u16,
+    height: u16,
+) -> Result<LinearOpticalRaster, ApplicationError> {
+    evaluate_optical_raster_with_signal(
+        request.clone(),
+        width,
+        height,
+        DiagnosticView::Composite,
+        &|uv| diagnostic_signal(uv, request.time),
+    )
 }
 
 pub fn prepare_raster_from_device_signal(
@@ -290,13 +361,40 @@ pub fn prepare_raster_from_device_signal(
 ) -> Result<PreparedRaster, ApplicationError> {
     source.validate()?;
     let source_raster = [source.width, source.height];
-    let device_raster = [request.panel.native_width, request.panel.native_height];
+    let device_raster = [
+        request.optics.panel.native_width,
+        request.optics.panel.native_height,
+    ];
     prepare_raster_with_signal(request, width, height, &|device_uv| {
         source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
             .map_or(DeviceRgb::BLACK, |source_uv| {
-                source.sample_nearest(source_uv)
+                source.sample_bilinear(source_uv)
             })
     })
+}
+
+pub fn evaluate_linear_optics_from_device_signal(
+    request: OpticalRequest,
+    width: u16,
+    height: u16,
+    source: &DeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<LinearOpticalRaster, ApplicationError> {
+    source.validate()?;
+    let source_raster = [source.width, source.height];
+    let device_raster = [request.panel.native_width, request.panel.native_height];
+    evaluate_optical_raster_with_signal(
+        request,
+        width,
+        height,
+        DiagnosticView::Composite,
+        &|device_uv| {
+            source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
+                .map_or(DeviceRgb::BLACK, |source_uv| {
+                    source.sample_bilinear(source_uv)
+                })
+        },
+    )
 }
 
 fn prepare_raster_with_signal(
@@ -305,26 +403,87 @@ fn prepare_raster_with_signal(
     height: u16,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
 ) -> Result<PreparedRaster, ApplicationError> {
+    if !request.preview_exposure_ev.is_finite() {
+        return Err(ApplicationError::InvalidPreviewExposure);
+    }
+    let linear = evaluate_optical_raster_with_signal(
+        request.optical_request(),
+        width,
+        height,
+        request.view,
+        signal_at,
+    )?;
+    let display = DiagnosticDisplayTransform {
+        reference_white_nits: 100.0,
+    };
+    let preview_gain = if request.view == DiagnosticView::DeviceSignal {
+        1.0
+    } else {
+        request.preview_exposure_ev.exp2()
+    };
+    let pixels = linear
+        .pixels
+        .iter()
+        .map(|pixel| {
+            let value = LinearRgb::new(
+                pixel.acescg_irradiance.r * preview_gain,
+                pixel.acescg_irradiance.g * preview_gain,
+                pixel.acescg_irradiance.b * preview_gain,
+            );
+            PreviewPixel {
+                rgb: if request.view == DiagnosticView::DeviceSignal {
+                    PreviewRgb {
+                        r: value.r,
+                        g: value.g,
+                        b: value.b,
+                    }
+                } else {
+                    display.scene_linear_to_srgb(value)
+                },
+                on_panel: pixel.on_panel,
+            }
+        })
+        .collect();
+    Ok(PreparedRaster {
+        frame: linear.frame,
+        width: linear.width,
+        height: linear.height,
+        pixels,
+        preview_scale_percent: linear.projected_device_pixel_percent,
+        inspection_field_meters: linear.inspection_field_meters,
+        subpixels_resolved_at_center: linear.subpixels_resolved_at_center,
+    })
+}
+
+fn evaluate_optical_raster_with_signal(
+    request: OpticalRequest,
+    width: u16,
+    height: u16,
+    view: DiagnosticView,
+    signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+) -> Result<LinearOpticalRaster, ApplicationError> {
     if width == 0 || height == 0 {
         return Err(ApplicationError::EmptyPreviewRaster);
     }
     let mut frame = prepare_frame(request.clone())?;
+    let raster_aspect = f32::from(width) / f32::from(height);
+    if (raster_aspect - frame.viewport_aspect).abs() > 1.0e-4 {
+        return Err(ApplicationError::RasterViewportAspectMismatch {
+            raster_aspect,
+            viewport_aspect: frame.viewport_aspect,
+        });
+    }
     frame.representative_signal = signal_at(Vec2 { x: 0.5, y: 0.5 });
     frame.representative_emission = request.panel.emitted_radiance(frame.representative_signal);
-    let display = DiagnosticDisplayTransform {
-        reference_white_nits: 100.0,
-    };
     let preview_scale_percent = projected_device_pixel_width(&frame, request.panel, width)
         .ok_or(ApplicationError::ViewRayMissesPanel)?
         * 100.0;
-    let subpixels_resolved_at_center = preview_scale_percent >= 300.0;
+    let subpixels_resolved_at_center =
+        optical_footprint_device_pixels(&frame, request.panel, width, height)
+            .is_some_and(|footprint| footprint[0] <= 1.0 / 3.0 && footprint[1] <= 1.0);
     let mut pixels = vec![
-        PreviewPixel {
-            rgb: PreviewRgb {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-            },
+        LinearOpticalPixel {
+            acescg_irradiance: LinearRgb::new(0.0, 0.0, 0.0),
             on_panel: false,
         };
         usize::from(width) * usize::from(height)
@@ -334,24 +493,31 @@ fn prepare_raster_with_signal(
         .enumerate()
         .for_each(|(row, output_row)| {
             for (column, output) in output_row.iter_mut().enumerate() {
-                let viewport_ndc = Vec2 {
-                    x: (column as f32 + 0.5) / f32::from(width) * 2.0 - 1.0,
-                    y: (row as f32 + 0.5) / f32::from(height) * 2.0 - 1.0,
-                };
-                let aperture_samples = panel_uv_aperture_samples(
-                    frame.camera,
-                    request.panel.active_width,
-                    request.panel.active_height,
-                    viewport_ndc,
-                );
+                const SENSOR_BOX: [Vec2; 4] = [
+                    Vec2 { x: 0.25, y: 0.25 },
+                    Vec2 { x: 0.75, y: 0.25 },
+                    Vec2 { x: 0.25, y: 0.75 },
+                    Vec2 { x: 0.75, y: 0.75 },
+                ];
+                let aperture_samples = SENSOR_BOX.map(|offset| {
+                    let viewport_ndc = Vec2 {
+                        x: (column as f32 + offset.x) / f32::from(width) * 2.0 - 1.0,
+                        y: (row as f32 + offset.y) / f32::from(height) * 2.0 - 1.0,
+                    };
+                    panel_uv_aperture_samples(
+                        frame.camera,
+                        frame.screen,
+                        request.panel.active_width,
+                        request.panel.active_height,
+                        viewport_ndc,
+                    )
+                });
                 *output = integrate_aperture_samples(
-                    aperture_samples,
-                    request.view,
+                    &aperture_samples,
+                    view,
                     request.panel,
                     subpixels_resolved_at_center,
                     signal_at,
-                    display,
-                    request.preview_exposure_ev,
                 );
             }
         });
@@ -361,29 +527,27 @@ fn prepare_raster_with_signal(
             (region.max.y - region.min.y) * request.panel.active_height.0,
         ]
     });
-    Ok(PreparedRaster {
+    Ok(LinearOpticalRaster {
         frame,
         width,
         height,
         pixels,
-        preview_scale_percent,
+        projected_device_pixel_percent: preview_scale_percent,
         inspection_field_meters,
         subpixels_resolved_at_center,
     })
 }
 
 fn integrate_aperture_samples(
-    samples: [OpticalSample; APERTURE_SAMPLE_COUNT],
+    spatial_samples: &[[OpticalSample; APERTURE_SAMPLE_COUNT]],
     view: DiagnosticView,
     panel: LcdProfile,
     subpixels_resolved: bool,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
-    display: DiagnosticDisplayTransform,
-    preview_exposure_ev: f32,
-) -> PreviewPixel {
+) -> LinearOpticalPixel {
     let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
     let mut on_panel = false;
-    for optical_sample in samples {
+    for optical_sample in spatial_samples.iter().flatten() {
         for channel in 0..3 {
             let Some(uv) = optical_sample.panel_uv[channel]
                 .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
@@ -394,22 +558,27 @@ fn integrate_aperture_samples(
             let signal = signal_at(uv);
             let value = match view {
                 DiagnosticView::DeviceSignal => LinearRgb::new(signal.r, signal.g, signal.b),
-                DiagnosticView::Composite | DiagnosticView::EmittedRadiance => {
-                    panel.emitted_radiance(signal)
-                }
-                DiagnosticView::Subpixels if subpixels_resolved => {
+                DiagnosticView::Composite
+                | DiagnosticView::EmittedRadiance
+                | DiagnosticView::Subpixels
+                    if subpixels_resolved =>
+                {
                     let pixel_uv = Vec2 {
                         x: (uv.x * panel.native_width as f32).fract(),
                         y: (uv.y * panel.native_height as f32).fract(),
                     };
-                    panel.emission_at_pixel(signal, pixel_uv)
+                    panel.native_emission_at_pixel(signal, pixel_uv)
                 }
-                DiagnosticView::Subpixels => panel.emitted_radiance(signal),
+                DiagnosticView::Composite
+                | DiagnosticView::EmittedRadiance
+                | DiagnosticView::Subpixels => panel.native_emission(signal),
             };
             let optical_weight = if view == DiagnosticView::DeviceSignal {
                 1.0
             } else {
-                optical_sample.irradiance_weight[channel]
+                let angular = panel.angular_attenuation(optical_sample.emission_cosine[channel]);
+                let angular_channel = [angular.r, angular.g, angular.b][channel];
+                optical_sample.irradiance_weight[channel] * angular_channel
             };
             let weighted = match channel {
                 0 => value.r,
@@ -423,27 +592,15 @@ fn integrate_aperture_samples(
             }
         }
     }
-    let scale = 1.0 / APERTURE_SAMPLE_COUNT as f32;
-    let preview_gain = if view == DiagnosticView::DeviceSignal {
-        1.0
+    let scale = 1.0 / (APERTURE_SAMPLE_COUNT * spatial_samples.len()) as f32;
+    let native_average = LinearRgb::new(sum.r * scale, sum.g * scale, sum.b * scale);
+    let average = if view == DiagnosticView::DeviceSignal {
+        native_average
     } else {
-        preview_exposure_ev.exp2()
+        panel.native_to_acescg(native_average)
     };
-    let average = LinearRgb::new(
-        sum.r * scale * preview_gain,
-        sum.g * scale * preview_gain,
-        sum.b * scale * preview_gain,
-    );
-    PreviewPixel {
-        rgb: if view == DiagnosticView::DeviceSignal {
-            PreviewRgb {
-                r: average.r,
-                g: average.g,
-                b: average.b,
-            }
-        } else {
-            display.scene_linear_to_srgb(average)
-        },
+    LinearOpticalPixel {
+        acescg_irradiance: average,
         on_panel,
     }
 }
@@ -453,13 +610,14 @@ pub fn inspection_region_from_drag(
     start_ndc: Vec2,
     end_ndc: Vec2,
 ) -> Result<PanelRegion, ApplicationError> {
-    let frame = prepare_frame(request.clone())?;
+    let frame = prepare_frame(request.optical_request())?;
     let intersect = |point| {
         panel_uv_at_viewport(
             frame.camera,
-            request.panel.active_width,
-            request.panel.active_height,
-            request.viewport_aspect,
+            frame.screen,
+            request.optics.panel.active_width,
+            request.optics.panel.active_height,
+            request.optics.viewport_aspect,
             point,
         )
         .ok_or(ApplicationError::ViewRayMissesPanel)
@@ -493,10 +651,12 @@ fn projected_device_pixel_width(
             x: (region.min.x + region.max.x) * 0.5,
             y: (region.min.y + region.max.y) * 0.5,
         });
-    let point = |uv: Vec2| Vec3 {
-        x: (uv.x - 0.5) * panel.active_width.0,
-        y: (0.5 - uv.y) * panel.active_height.0,
-        z: 0.0,
+    let point = |uv: Vec2| {
+        frame.screen.local_to_world(Vec3 {
+            x: (uv.x - 0.5) * panel.active_width.0,
+            y: (0.5 - uv.y) * panel.active_height.0,
+            z: 0.0,
+        })
     };
     let first = project_scene_point(frame.camera, point(center_uv), frame.viewport_aspect)?;
     let second = project_scene_point(
@@ -508,6 +668,61 @@ fn projected_device_pixel_width(
         frame.viewport_aspect,
     )?;
     Some((second.x - first.x).hypot(second.y - first.y) * f32::from(preview_width) * 0.5)
+}
+
+fn optical_footprint_device_pixels(
+    frame: &PreparedFrame,
+    panel: LcdProfile,
+    preview_width: u16,
+    preview_height: u16,
+) -> Option<[f32; 2]> {
+    let positions = [
+        Vec2 { x: 0.0, y: 0.0 },
+        Vec2 {
+            x: 2.0 / f32::from(preview_width),
+            y: 0.0,
+        },
+        Vec2 {
+            x: 0.0,
+            y: 2.0 / f32::from(preview_height),
+        },
+    ];
+    let mut minimum = [Vec2 {
+        x: f32::INFINITY,
+        y: f32::INFINITY,
+    }; 3];
+    let mut maximum = [Vec2 {
+        x: f32::NEG_INFINITY,
+        y: f32::NEG_INFINITY,
+    }; 3];
+    let mut count = 0;
+    for sample in positions.into_iter().flat_map(|position| {
+        panel_uv_aperture_samples(
+            frame.camera,
+            frame.screen,
+            panel.active_width,
+            panel.active_height,
+            position,
+        )
+    }) {
+        for (channel, uv) in sample.panel_uv.into_iter().enumerate() {
+            if let Some(uv) = uv {
+                minimum[channel].x = minimum[channel].x.min(uv.x);
+                minimum[channel].y = minimum[channel].y.min(uv.y);
+                maximum[channel].x = maximum[channel].x.max(uv.x);
+                maximum[channel].y = maximum[channel].y.max(uv.y);
+                count += 1;
+            }
+        }
+    }
+    (count > 0).then_some([
+        (0..3)
+            .map(|channel| (maximum[channel].x - minimum[channel].x) * panel.native_width as f32)
+            .fold(0.0, f32::max),
+        (0..3)
+            .map(|channel| (maximum[channel].y - minimum[channel].y) * panel.native_height as f32)
+            .fold(0.0, f32::max),
+    ])
 }
 
 /// Current vertical-slice device signal. This is explicit authored diagnostic content,
@@ -537,10 +752,15 @@ pub enum ApplicationError {
         sensor_aspect: f32,
         viewport_aspect: f32,
     },
+    RasterViewportAspectMismatch {
+        raster_aspect: f32,
+        viewport_aspect: f32,
+    },
     EmptyPreviewRaster,
     InspectionMustStartOnPanel,
     ViewRayMissesPanel,
     EmptyDeviceSignalRaster,
+    NonFiniteDeviceSignal,
     DeviceSignalPixelCountMismatch {
         expected: u64,
         actual: u64,
@@ -570,6 +790,13 @@ impl fmt::Display for ApplicationError {
                 formatter,
                 "sensor aspect {sensor_aspect:.6} does not match authored viewport aspect {viewport_aspect:.6}"
             ),
+            Self::RasterViewportAspectMismatch {
+                raster_aspect,
+                viewport_aspect,
+            } => write!(
+                formatter,
+                "raster aspect {raster_aspect:.6} does not match authored viewport aspect {viewport_aspect:.6}"
+            ),
             Self::EmptyPreviewRaster => formatter.write_str("preview raster must be non-empty"),
             Self::InspectionMustStartOnPanel => {
                 formatter.write_str("inspection selection must start on the panel")
@@ -579,6 +806,9 @@ impl fmt::Display for ApplicationError {
             }
             Self::EmptyDeviceSignalRaster => {
                 formatter.write_str("device signal raster must be non-empty")
+            }
+            Self::NonFiniteDeviceSignal => {
+                formatter.write_str("device signal raster must contain only finite RGB values")
             }
             Self::DeviceSignalPixelCountMismatch { expected, actual } => write!(
                 formatter,
@@ -608,47 +838,73 @@ mod tests {
     use super::*;
     use screen_color::{ColorEngine, DeviceColorTarget, SourceColorInterpretation};
     use screen_contracts::{Meters, Millimeters};
-    use screen_panel::StripeLayout;
+    use screen_panel::{PanelColorimetry, StripeLayout};
 
     fn request() -> SimulationRequest {
         SimulationRequest {
-            time: RationalTime::new(24, 24).expect("valid time"),
-            viewport_aspect: 16.0 / 9.0,
-            panel: LcdProfile {
-                native_width: 1920,
-                native_height: 1080,
-                active_width: Meters(0.531),
-                active_height: Meters(0.299),
-                stripe_layout: StripeLayout::Rgb,
-                black_matrix_fraction: 0.1,
-                eotf_gamma: 2.2,
-                black_level_nits: 0.05,
-                white_level_nits: 500.0,
-                channel_efficiency: LinearRgb::new(1.0, 0.95, 0.9),
-            },
-            camera: CameraTrack {
-                keyframes: vec![screen_geometry::CameraKeyframe {
-                    id: "camera-key-0".to_owned(),
-                    time: RationalTime::new(0, 24).expect("valid time"),
-                    position: Vec3 {
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.8,
+            optics: OpticalRequest {
+                time: RationalTime::new(24, 24).expect("valid time"),
+                viewport_aspect: 16.0 / 9.0,
+                panel: LcdProfile {
+                    native_width: 1920,
+                    native_height: 1080,
+                    active_width: Meters(0.531),
+                    active_height: Meters(0.299),
+                    stripe_layout: StripeLayout::Rgb,
+                    black_matrix_fraction: 0.1,
+                    eotf_gamma: 2.2,
+                    black_level_nits: 0.05,
+                    white_level_nits: 500.0,
+                    channel_efficiency: LinearRgb::new(1.0, 0.95, 0.9),
+                    colorimetry: PanelColorimetry::SRGB_D65,
+                    angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+                },
+                camera: CameraRig {
+                    transform: screen_geometry::TransformTrack {
+                        keyframes: vec![screen_geometry::TransformKeyframe {
+                            id: "camera-transform-0".to_owned(),
+                            time: RationalTime::new(0, 24).expect("valid time"),
+                            translation: Vec3 {
+                                x: 0.0,
+                                y: 0.0,
+                                z: 0.8,
+                            },
+                            rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
+                            interpolation: screen_geometry::KeyframeInterpolation::Smooth,
+                        }],
                     },
-                    rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
-                    focal_length: Millimeters(50.0),
-                    sensor_width: Millimeters(36.0),
-                    sensor_height: Millimeters(20.25),
-                    lens_shift: Vec2 { x: 0.0, y: 0.0 },
-                    focus_distance: Meters(0.8),
-                    f_stop: 8.0,
-                    near_clip: Meters(0.01),
-                    far_clip: Meters(100.0),
-                    lens: screen_geometry::LensModel::REFERENCE_PHOTOGRAPHIC,
-                    interpolation: screen_geometry::KeyframeInterpolation::Smooth,
-                }],
+                    intrinsics: screen_geometry::CameraIntrinsicsTrack {
+                        keyframes: vec![screen_geometry::CameraIntrinsicsKeyframe {
+                            id: "camera-intrinsics-0".to_owned(),
+                            time: RationalTime::new(0, 24).expect("valid time"),
+                            focal_length: Millimeters(50.0),
+                            sensor_width: Millimeters(36.0),
+                            sensor_height: Millimeters(20.25),
+                            lens_shift: Vec2 { x: 0.0, y: 0.0 },
+                            focus_distance: Meters(0.8),
+                            f_stop: 8.0,
+                            near_clip: Meters(0.01),
+                            far_clip: Meters(100.0),
+                            lens: screen_geometry::LensModel::REFERENCE_PHOTOGRAPHIC,
+                            interpolation: screen_geometry::KeyframeInterpolation::Smooth,
+                        }],
+                    },
+                },
+                screen: screen_geometry::TransformTrack {
+                    keyframes: vec![screen_geometry::TransformKeyframe {
+                        id: "screen-transform-0".to_owned(),
+                        time: RationalTime::new(0, 24).expect("valid time"),
+                        translation: Vec3 {
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                        rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
+                        interpolation: screen_geometry::KeyframeInterpolation::Hold,
+                    }],
+                },
+                inspection: None,
             },
-            inspection: None,
             view: DiagnosticView::Composite,
             preview_exposure_ev: 6.0,
         }
@@ -656,7 +912,7 @@ mod tests {
 
     #[test]
     fn prepares_one_immutable_cross_domain_result() {
-        let frame = prepare_frame(request()).expect("valid request");
+        let frame = prepare_frame(request().optical_request()).expect("valid request");
         assert_eq!(frame.native_raster, [1920, 1080]);
         assert!(frame.pixels_per_inch > 90.0);
         assert!(
@@ -670,9 +926,9 @@ mod tests {
     #[test]
     fn invalid_panel_fails_at_request_boundary() {
         let mut invalid = request();
-        invalid.panel.native_width = 0;
+        invalid.optics.panel.native_width = 0;
         assert_eq!(
-            prepare_frame(invalid),
+            prepare_frame(invalid.optical_request()),
             Err(ApplicationError::Panel(PanelError::EmptyNativeRaster))
         );
     }
@@ -680,9 +936,9 @@ mod tests {
     #[test]
     fn sensor_and_output_aspects_require_an_explicit_match() {
         let mut request = request();
-        request.camera.keyframes[0].sensor_height = Millimeters(24.0);
+        request.optics.camera.intrinsics.keyframes[0].sensor_height = Millimeters(24.0);
         assert!(matches!(
-            prepare_frame(request),
+            prepare_frame(request.optical_request()),
             Err(ApplicationError::SensorViewportAspectMismatch { .. })
         ));
     }
@@ -695,12 +951,50 @@ mod tests {
     }
 
     #[test]
+    fn linear_optical_output_is_independent_of_preview_exposure() {
+        let mut preview = request();
+        let first =
+            evaluate_linear_optics(preview.optical_request(), 32, 18).expect("linear render");
+        preview.preview_exposure_ev = -12.0;
+        let second =
+            evaluate_linear_optics(preview.optical_request(), 32, 18).expect("linear render");
+        assert_eq!(first, second);
+    }
+
+    #[test]
     fn fit_subpixel_view_integrates_unresolved_device_pixels() {
         let mut request = request();
         request.view = DiagnosticView::Subpixels;
         let raster = prepare_raster(request, 320, 180).expect("valid raster");
         assert!(!raster.subpixels_resolved_at_center);
         assert!(raster.pixels.iter().any(|pixel| pixel.on_panel));
+    }
+
+    #[test]
+    fn composite_uses_physical_black_matrix_when_resolved() {
+        let request = request();
+        let optical = OpticalSample {
+            panel_uv: [Some(Vec2 { x: 0.5, y: 0.5 }); 3],
+            emission_cosine: [1.0; 3],
+            irradiance_weight: [1.0; 3],
+        };
+        let spatial = [[optical; APERTURE_SAMPLE_COUNT]];
+        let resolved = integrate_aperture_samples(
+            &spatial,
+            DiagnosticView::Composite,
+            request.optics.panel,
+            true,
+            &|_| DeviceRgb::WHITE,
+        );
+        let unresolved = integrate_aperture_samples(
+            &spatial,
+            DiagnosticView::Composite,
+            request.optics.panel,
+            false,
+            &|_| DeviceRgb::WHITE,
+        );
+        assert_eq!(resolved.acescg_irradiance, LinearRgb::new(0.0, 0.0, 0.0));
+        assert!(unresolved.acescg_irradiance.g > 0.0);
     }
 
     #[test]
@@ -834,8 +1128,14 @@ mod tests {
     #[test]
     fn inspection_camera_resolves_physical_subpixels() {
         let mut request = request();
+        request.optics.camera.intrinsics.keyframes[0]
+            .lens
+            .longitudinal_chromatic_meters = [0.0; 3];
+        request.optics.camera.intrinsics.keyframes[0]
+            .lens
+            .lateral_chromatic_scale = [1.0; 3];
         request.view = DiagnosticView::Subpixels;
-        request.inspection = Some(PanelRegion {
+        request.optics.inspection = Some(PanelRegion {
             min: Vec2 { x: 0.499, y: 0.499 },
             max: Vec2 { x: 0.501, y: 0.501 },
         });
@@ -847,15 +1147,16 @@ mod tests {
     #[test]
     fn deep_oblique_inspection_does_not_require_the_full_panel_outline() {
         let mut request = request();
-        request.time = RationalTime::new(48, 24).expect("valid time");
+        request.optics.time = RationalTime::new(48, 24).expect("valid time");
         let yaw = 80.0_f32.to_radians();
-        request.camera.keyframes[0].position = Vec3 {
+        request.optics.camera.transform.keyframes[0].translation = Vec3 {
             x: 0.8 * yaw.sin(),
             y: 0.0,
             z: 0.8 * yaw.cos(),
         };
-        request.camera.keyframes[0].rotation = screen_geometry::Quaternion::from_yaw_degrees(80.0);
-        request.inspection = Some(PanelRegion {
+        request.optics.camera.transform.keyframes[0].rotation =
+            screen_geometry::Quaternion::from_yaw_degrees(80.0);
+        request.optics.inspection = Some(PanelRegion {
             min: Vec2 { x: 0.499, y: 0.499 },
             max: Vec2 { x: 0.501, y: 0.501 },
         });

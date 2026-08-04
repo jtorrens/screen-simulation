@@ -5,6 +5,7 @@
 use core::fmt;
 use screen_contracts::{FrameRate, RationalTime};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -155,6 +156,9 @@ pub struct DeviceDocument {
     pub black_level_nits: f32,
     pub white_level_nits: f32,
     pub channel_efficiency: [f32; 3],
+    pub primary_xy: [[f32; 2]; 3],
+    pub white_xy: [f32; 2],
+    pub angular_emission_power: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -514,8 +518,12 @@ fn validate_keyframes(keyframes: &[TransformKeyframe]) -> Result<(), Persistence
         return Err(PersistenceError::EmptyAnimationTrack);
     }
     let mut prior: Option<ExactTime> = None;
+    let mut ids = HashSet::new();
     for keyframe in keyframes {
         validate_id(&keyframe.keyframe_id)?;
+        if !ids.insert(keyframe.keyframe_id.as_str()) {
+            return Err(PersistenceError::DuplicateKeyframeId);
+        }
         validate_time(keyframe.time)?;
         if !keyframe
             .translation_meters
@@ -549,8 +557,12 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
         return Err(PersistenceError::EmptyAnimationTrack);
     }
     let mut prior: Option<ExactTime> = None;
+    let mut ids = HashSet::new();
     for keyframe in keyframes {
         validate_id(&keyframe.keyframe_id)?;
+        if !ids.insert(keyframe.keyframe_id.as_str()) {
+            return Err(PersistenceError::DuplicateKeyframeId);
+        }
         validate_time(keyframe.time)?;
         let values = [
             keyframe.focal_length_mm,
@@ -585,12 +597,14 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
             || keyframe.f_stop <= 0.0
             || keyframe.near_clip_meters <= 0.0
             || keyframe.far_clip_meters <= keyframe.near_clip_meters
+            || keyframe.lens_shift[0].abs() > 0.5
+            || keyframe.lens_shift[1].abs() > 0.5
             || !(0.0..=1.0).contains(&keyframe.lens.vignetting_strength)
             || keyframe
                 .lens
                 .lateral_chromatic_scale
                 .into_iter()
-                .any(|value| value <= 0.0)
+                .any(|value| !(0.5..=1.5).contains(&value))
             || keyframe
                 .lens
                 .transmission_rgb
@@ -618,6 +632,17 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
         device.channel_efficiency[0],
         device.channel_efficiency[1],
         device.channel_efficiency[2],
+        device.primary_xy[0][0],
+        device.primary_xy[0][1],
+        device.primary_xy[1][0],
+        device.primary_xy[1][1],
+        device.primary_xy[2][0],
+        device.primary_xy[2][1],
+        device.white_xy[0],
+        device.white_xy[1],
+        device.angular_emission_power[0],
+        device.angular_emission_power[1],
+        device.angular_emission_power[2],
     ];
     if !values.iter().all(|value| value.is_finite()) {
         return Err(PersistenceError::NonFiniteNumber);
@@ -631,6 +656,15 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
         || device.black_level_nits < 0.0
         || device.white_level_nits <= device.black_level_nits
         || device.channel_efficiency.iter().any(|value| *value <= 0.0)
+        || device
+            .primary_xy
+            .iter()
+            .chain([&device.white_xy])
+            .any(|xy| xy[0] <= 0.0 || xy[1] <= 0.0 || xy[0] + xy[1] >= 1.0)
+        || device
+            .angular_emission_power
+            .iter()
+            .any(|value| *value < 0.0)
     {
         return Err(PersistenceError::InvalidDeviceProfile);
     }
@@ -674,6 +708,7 @@ pub enum PersistenceError {
     InvalidExactTime,
     EmptyAnimationTrack,
     UnorderedKeyframes,
+    DuplicateKeyframeId,
     NonNormalizedQuaternion,
     InvalidCameraIntrinsics,
     InvalidDeviceProfile,
@@ -734,7 +769,10 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("animation track requires at least one keyframe")
             }
             Self::UnorderedKeyframes => {
-                formatter.write_str("keyframes must have unique strictly increasing times")
+                formatter.write_str("keyframes must have strictly increasing times")
+            }
+            Self::DuplicateKeyframeId => {
+                formatter.write_str("keyframe ids must be unique within their track")
             }
             Self::NonNormalizedQuaternion => {
                 formatter.write_str("rotation quaternion must be normalized")
@@ -839,6 +877,9 @@ mod tests {
                 black_level_nits: 0.08,
                 white_level_nits: 600.0,
                 channel_efficiency: [1.0, 0.96, 0.9],
+                primary_xy: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
+                white_xy: [0.3127, 0.3290],
+                angular_emission_power: [1.7, 1.5, 1.8],
             },
             camera: CameraDocument {
                 schema: "screen_simulation_camera".into(),
