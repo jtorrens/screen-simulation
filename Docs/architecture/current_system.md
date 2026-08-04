@@ -21,6 +21,8 @@ media source
 
 Every arrow is a typed boundary. A consumer receives a complete validated result and never reconstructs the prior owner's semantics.
 
+Media sample selection consumes exact project time. The selected decoded sample is the latest timestamped frame whose presentation timestamp does not exceed that time. Negative time, missing timestamps, unknown-duration access beyond the exact initial sample, and time at or beyond a known source duration fail explicitly. The current evaluator has no implicit hold, loop, or nearest-frame mode.
+
 ## Technology
 
 The cross-platform implementation uses Rust 1.97.1. GPU work uses `wgpu` and WGSL, selecting Metal on macOS and Direct3D 12 on Windows. The technical desktop UI uses Slint with one compiled `fluent-dark` style and its WGPU renderer on both platforms. Slint remains confined to `screen-desktop`; domain and application packages expose no UI types. The desktop bundle includes the required Slint attribution through the standard `AboutSlint` component. Media decode uses one bundled FFmpeg configuration on both platforms. OpenColorIO remains behind a narrow C++ boundary with a CPU reference processor. OpenEXR remains behind its own format adapter.

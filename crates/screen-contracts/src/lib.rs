@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use core::cmp::Ordering;
 use core::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +65,19 @@ impl RationalTime {
 
     pub fn as_seconds(self) -> f64 {
         self.numerator as f64 / f64::from(self.denominator)
+    }
+}
+
+impl PartialOrd for RationalTime {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RationalTime {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (i128::from(self.numerator) * i128::from(other.denominator))
+            .cmp(&(i128::from(other.numerator) * i128::from(self.denominator)))
     }
 }
 
@@ -161,5 +175,12 @@ mod tests {
         let time = rate.time_at_frame(24_000).expect("valid frame time");
         assert_eq!(time.numerator(), 24_024_000);
         assert_eq!(time.denominator(), 24_000);
+    }
+
+    #[test]
+    fn rational_time_compares_without_float_conversion() {
+        let film = RationalTime::new(1_001, 24_000).expect("valid time");
+        let video = RationalTime::new(1, 24).expect("valid time");
+        assert!(film > video);
     }
 }

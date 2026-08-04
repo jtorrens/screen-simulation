@@ -3,7 +3,7 @@
 #![deny(unsafe_code)]
 
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -13,13 +13,13 @@ use screen_application::{
     prepare_raster_from_device_signal,
 };
 use screen_color::SourceColorInterpretation;
-use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, Vec2};
+use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2};
 use screen_geometry::{CameraRig, PanelRegion};
 use screen_media::{
     AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, MediaDescriptor,
 };
 use screen_panel::{LcdProfile, StripeLayout};
-use screen_platform::decode_first_frame;
+use screen_platform::decode_frame_at_time;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 const DURATION_FRAMES: u32 = 96;
@@ -36,7 +36,10 @@ struct InteractionState {
 }
 
 struct LoadedSource {
+    path: PathBuf,
     descriptor: MediaDescriptor,
+    requested_time: RationalTime,
+    decoded_timestamp: RationalTime,
     straight_over_black: DeviceSignalRaster,
     premultiplied_over_black: DeviceSignalRaster,
 }
@@ -119,7 +122,7 @@ fn simulation_request(
     })
 }
 
-fn render_preview(window: &MainWindow, state: &InteractionState) {
+fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     let started = Instant::now();
     let request = match simulation_request(window, state.inspection) {
         Ok(request) => request,
@@ -128,24 +131,33 @@ fn render_preview(window: &MainWindow, state: &InteractionState) {
             return;
         }
     };
-    let prepared = match &state.source {
+    let prepared = match &mut state.source {
         None => prepare_raster(request, PREVIEW_WIDTH, PREVIEW_HEIGHT),
         Some(source) => {
             if window.get_idt_index() == 0 {
                 block_preview(window, "Select an authoritative source IDT");
                 return;
             }
+            if source.descriptor.alpha == AlphaPresence::Present
+                && !matches!(window.get_alpha_index(), 1 | 2)
+            {
+                block_preview(
+                    window,
+                    "Alpha metadata cannot resolve association; choose Straight or Premultiplied",
+                );
+                return;
+            }
+            if source.requested_time != request.time
+                && let Err(error) = refresh_loaded_source(source, request.time)
+            {
+                block_preview(window, &error);
+                return;
+            }
             let signal = match (source.descriptor.alpha, window.get_alpha_index()) {
                 (AlphaPresence::Absent, _) => &source.straight_over_black,
                 (AlphaPresence::Present, 1) => &source.straight_over_black,
                 (AlphaPresence::Present, 2) => &source.premultiplied_over_black,
-                (AlphaPresence::Present, _) => {
-                    block_preview(
-                        window,
-                        "Alpha metadata cannot resolve association; choose Straight or Premultiplied",
-                    );
-                    return;
-                }
+                _ => unreachable!("alpha association was validated before sample refresh"),
             };
             let placement = match window.get_placement_index() {
                 1 => RasterPlacement::FillCrop,
@@ -238,8 +250,14 @@ fn render_preview(window: &MainWindow, state: &InteractionState) {
                     }
                     AlphaPresence::Present => "premultiplied → opaque black",
                 };
-                window
-                    .set_source_interpretation(format!("Identity device signal · {alpha}").into());
+                window.set_source_interpretation(
+                    format!(
+                        "Identity device signal · {alpha} · sample {}/{} s",
+                        source.decoded_timestamp.numerator(),
+                        source.decoded_timestamp.denominator()
+                    )
+                    .into(),
+                );
             }
         }
         Err(error) => window.set_error_text(error.to_string().into()),
@@ -253,15 +271,23 @@ fn block_preview(window: &MainWindow, message: &str) {
 }
 
 fn load_source(window: &MainWindow, state: &mut InteractionState, path: &Path) {
-    match decode_first_frame(path) {
+    let requested_time = match simulation_request(window, state.inspection) {
+        Ok(request) => request.time,
+        Err(error) => {
+            window.set_error_text(error.into());
+            return;
+        }
+    };
+    match decode_frame_at_time(path, requested_time) {
         Ok((descriptor, frame)) => {
-            let loaded = match prepare_loaded_source(descriptor, frame) {
-                Ok(loaded) => loaded,
-                Err(error) => {
-                    window.set_error_text(error.to_string().into());
-                    return;
-                }
-            };
+            let loaded =
+                match prepare_loaded_source(path.to_owned(), descriptor, frame, requested_time) {
+                    Ok(loaded) => loaded,
+                    Err(error) => {
+                        window.set_error_text(error.to_string().into());
+                        return;
+                    }
+                };
             present_source(window, path, &loaded.descriptor);
             state.source = Some(loaded);
             state.inspection = None;
@@ -274,8 +300,10 @@ fn load_source(window: &MainWindow, state: &mut InteractionState, path: &Path) {
 }
 
 fn prepare_loaded_source(
+    path: PathBuf,
     descriptor: MediaDescriptor,
     frame: DecodedFrame,
+    requested_time: RationalTime,
 ) -> Result<LoadedSource, ApplicationError> {
     let straight_over_black = decoded_frame_to_device_signal(
         &frame,
@@ -290,10 +318,28 @@ fn prepare_loaded_source(
         SourceColorInterpretation::IdentityDeviceSignal,
     )?;
     Ok(LoadedSource {
+        path,
         descriptor,
+        requested_time,
+        decoded_timestamp: frame.timestamp,
         straight_over_black,
         premultiplied_over_black,
     })
+}
+
+fn refresh_loaded_source(
+    source: &mut LoadedSource,
+    requested_time: RationalTime,
+) -> Result<(), String> {
+    let (descriptor, frame) =
+        decode_frame_at_time(&source.path, requested_time).map_err(|error| error.to_string())?;
+    if descriptor != source.descriptor {
+        return Err("source descriptor changed on disk; reopen the source explicitly".to_owned());
+    }
+    let refreshed = prepare_loaded_source(source.path.clone(), descriptor, frame, requested_time)
+        .map_err(|error| error.to_string())?;
+    *source = refreshed;
+    Ok(())
 }
 
 fn present_source(window: &MainWindow, path: &Path, descriptor: &MediaDescriptor) {
@@ -375,8 +421,9 @@ fn main() -> Result<(), slint::PlatformError> {
                 to_ndc(end_x, end_y),
             ) {
                 Ok(region) => {
-                    state.borrow_mut().inspection = Some(region);
-                    render_preview(&window, &state.borrow());
+                    let mut state = state.borrow_mut();
+                    state.inspection = Some(region);
+                    render_preview(&window, &mut state);
                 }
                 Err(error) => window.set_error_text(error.to_string().into()),
             }
@@ -389,8 +436,9 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(window) = weak_window.upgrade() else {
                 return;
             };
-            state.borrow_mut().inspection = None;
-            render_preview(&window, &state.borrow());
+            let mut state = state.borrow_mut();
+            state.inspection = None;
+            render_preview(&window, &mut state);
         });
     }
     {
@@ -422,13 +470,13 @@ fn main() -> Result<(), slint::PlatformError> {
             } else {
                 state.playback_accumulator_seconds = 0.0;
             }
-            render_preview(&window, &state);
+            render_preview(&window, &mut state);
         });
     }
 
     if let Some(path) = std::env::args_os().nth(1) {
         load_source(&window, &mut state.borrow_mut(), Path::new(&path));
     }
-    render_preview(&window, &state.borrow());
+    render_preview(&window, &mut state.borrow_mut());
     window.run()
 }

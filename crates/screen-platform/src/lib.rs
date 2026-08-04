@@ -65,10 +65,23 @@ pub fn probe_media(path: &Path) -> Result<MediaDescriptor, PlatformMediaError> {
     })
 }
 
-pub fn decode_first_frame(
+pub fn decode_frame_at_time(
     path: &Path,
+    requested_time: RationalTime,
 ) -> Result<(MediaDescriptor, DecodedFrame), PlatformMediaError> {
     let descriptor = probe_media(path)?;
+    if requested_time.numerator() < 0 {
+        return Err(PlatformMediaError::NegativeRequestedTime);
+    }
+    match descriptor.duration {
+        Some(duration) if requested_time >= duration => {
+            return Err(PlatformMediaError::RequestedTimeOutsideSource);
+        }
+        None if requested_time.numerator() != 0 => {
+            return Err(PlatformMediaError::UnboundedSourceTime);
+        }
+        _ => {}
+    }
     let mut context = ffmpeg::format::input(path)
         .map_err(|error| PlatformMediaError::CannotOpen(error.to_string()))?;
     let stream = context
@@ -94,6 +107,14 @@ pub fn decode_first_frame(
     )
     .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
 
+    let seek_timestamp = time_in_ffmpeg_base(requested_time)?;
+    if seek_timestamp > 0 {
+        context
+            .seek(seek_timestamp, ..seek_timestamp)
+            .map_err(|error| PlatformMediaError::Seek(error.to_string()))?;
+    }
+
+    let mut candidate = None;
     for (packet_stream, packet) in context.packets() {
         if packet_stream.index() != stream_index {
             continue;
@@ -101,16 +122,35 @@ pub fn decode_first_frame(
         decoder
             .send_packet(&packet)
             .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
-        if let Some(frame) = receive_frame(&mut decoder, &mut scaler, time_base)? {
-            return Ok((descriptor, frame));
+        while let Some(frame) = receive_frame(&mut decoder, &mut scaler, time_base)? {
+            if frame.timestamp > requested_time {
+                return candidate
+                    .map(|frame| (descriptor, frame))
+                    .ok_or(PlatformMediaError::NoSampleAtRequestedTime);
+            }
+            candidate = Some(frame);
         }
     }
     decoder
         .send_eof()
         .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
-    receive_frame(&mut decoder, &mut scaler, time_base)?
+    while let Some(frame) = receive_frame(&mut decoder, &mut scaler, time_base)? {
+        if frame.timestamp > requested_time {
+            break;
+        }
+        candidate = Some(frame);
+    }
+    candidate
         .map(|frame| (descriptor, frame))
-        .ok_or(PlatformMediaError::NoDecodedFrame)
+        .ok_or(PlatformMediaError::NoSampleAtRequestedTime)
+}
+
+fn time_in_ffmpeg_base(time: RationalTime) -> Result<i64, PlatformMediaError> {
+    let scaled = i128::from(time.numerator())
+        .checked_mul(i128::from(ffmpeg::ffi::AV_TIME_BASE))
+        .ok_or(PlatformMediaError::TimestampOverflow)?
+        / i128::from(time.denominator());
+    i64::try_from(scaled).map_err(|_| PlatformMediaError::TimestampOverflow)
 }
 
 fn receive_frame(
@@ -126,7 +166,9 @@ fn receive_frame(
     scaler
         .run(&decoded, &mut rgba)
         .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
-    let timestamp = decoded.timestamp().unwrap_or(0);
+    let timestamp = decoded
+        .timestamp()
+        .ok_or(PlatformMediaError::MissingFrameTimestamp)?;
     let exact_timestamp = timestamp
         .checked_mul(i64::from(time_base.numerator()))
         .ok_or(PlatformMediaError::TimestampOverflow)?;
@@ -195,7 +237,12 @@ pub enum PlatformMediaError {
     NoVideoStream,
     InvalidVideoStream(String),
     Decode(String),
-    NoDecodedFrame,
+    Seek(String),
+    NegativeRequestedTime,
+    RequestedTimeOutsideSource,
+    UnboundedSourceTime,
+    NoSampleAtRequestedTime,
+    MissingFrameTimestamp,
     TimestampOverflow,
     FrameTooLarge,
     InvalidDecodedStorage,
@@ -215,7 +262,22 @@ impl fmt::Display for PlatformMediaError {
                 write!(formatter, "invalid video stream: {message}")
             }
             Self::Decode(message) => write!(formatter, "FFmpeg decode failed: {message}"),
-            Self::NoDecodedFrame => formatter.write_str("the source produced no decoded frame"),
+            Self::Seek(message) => write!(formatter, "FFmpeg seek failed: {message}"),
+            Self::NegativeRequestedTime => {
+                formatter.write_str("source sample time must be non-negative")
+            }
+            Self::RequestedTimeOutsideSource => {
+                formatter.write_str("requested project time lies outside the source duration")
+            }
+            Self::UnboundedSourceTime => formatter.write_str(
+                "source duration is unknown, so only its exact initial sample can be selected",
+            ),
+            Self::NoSampleAtRequestedTime => {
+                formatter.write_str("source has no sample at the requested project time")
+            }
+            Self::MissingFrameTimestamp => {
+                formatter.write_str("decoded source frame has no timestamp")
+            }
             Self::TimestampOverflow => {
                 formatter.write_str("decoded frame timestamp exceeds the exact time contract")
             }
