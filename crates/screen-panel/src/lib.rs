@@ -86,15 +86,36 @@ impl LcdProfile {
 
     pub fn subpixel_emission(self, signal: DeviceRgb) -> SubpixelEmission {
         let emission = self.emitted_radiance(signal);
-        let red = LinearRgb::new(emission.r, 0.0, 0.0);
-        let green = LinearRgb::new(0.0, emission.g, 0.0);
-        let blue = LinearRgb::new(0.0, 0.0, emission.b);
+        let visible_area = (1.0 - self.black_matrix_fraction).powi(2);
+        let stripe_compensation = 3.0 / visible_area;
+        let red = LinearRgb::new(emission.r * stripe_compensation, 0.0, 0.0);
+        let green = LinearRgb::new(0.0, emission.g * stripe_compensation, 0.0);
+        let blue = LinearRgb::new(0.0, 0.0, emission.b * stripe_compensation);
         SubpixelEmission {
             stripes: match self.stripe_layout {
                 StripeLayout::Rgb => [red, green, blue],
                 StripeLayout::Bgr => [blue, green, red],
             },
         }
+    }
+
+    pub fn emission_at_pixel(
+        self,
+        signal: DeviceRgb,
+        pixel_uv: screen_contracts::Vec2,
+    ) -> LinearRgb {
+        let margin = self.black_matrix_fraction * 0.5;
+        if pixel_uv.x < margin
+            || pixel_uv.x > 1.0 - margin
+            || pixel_uv.y < margin
+            || pixel_uv.y > 1.0 - margin
+        {
+            return LinearRgb::new(0.0, 0.0, 0.0);
+        }
+        let stripe_position = ((pixel_uv.x - margin) / (1.0 - 2.0 * margin) * 3.0)
+            .floor()
+            .clamp(0.0, 2.0) as usize;
+        self.subpixel_emission(signal).stripes[stripe_position]
     }
 }
 
@@ -168,5 +189,12 @@ mod tests {
         assert!(stripes[0].b > 0.0);
         assert!(stripes[1].g > 0.0);
         assert!(stripes[2].r > 0.0);
+    }
+
+    #[test]
+    fn black_matrix_emits_no_light() {
+        let emission = profile()
+            .emission_at_pixel(DeviceRgb::WHITE, screen_contracts::Vec2 { x: 0.01, y: 0.5 });
+        assert_eq!(emission, LinearRgb::new(0.0, 0.0, 0.0));
     }
 }

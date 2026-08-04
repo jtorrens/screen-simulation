@@ -12,5 +12,6 @@ Camera and screen motion use the same current keyframed transform contract. Tran
 
 Camera intrinsics own focal length, sensor aperture, lens shift, focus distance, f-stop and clipping planes. The resolver is the single owner of interpolation and emits one immutable camera sample containing world, view and projection matrices plus resolved intrinsics. Geometry consumes that sample and never reads animation tracks directly.
 
-The current version authors camera animation inside the application. External camera files do not have a runtime evaluation route.
+The current evaluator is an ideal pinhole camera with infinite depth of field. A transient inspection camera may be framed from an explicit physical region of the panel. It is resolved by the same geometry and projection path as the authored camera, preserves the current focal length, sensor and incidence angle, and changes physical position to frame the region. Inspection state is workstation interaction state and is not a persisted project camera.
 
+The current version authors camera animation inside the application. External camera files do not have a runtime evaluation route.

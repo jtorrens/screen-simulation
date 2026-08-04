@@ -22,5 +22,6 @@ Metadata may propose a source interpretation. The persisted authored selection i
 
 The current panel is a fixed-pixel LCD with complete native raster, physical active width and height, derived pixel pitch/PPI, RGB or BGR stripe layout, subpixel geometry, black matrix, EOTF, channel efficiency, black level, white level and point white. PPI and pixel pitch are derived from native raster and active dimensions and cannot contradict them.
 
-Internal emission and composition use linear float values. Negative and above-one values remain valid until an explicit display or output transform permits clipping or quantization.
+Panel samples below the resolved camera footprint are spatially integrated. Individual subpixels and black matrix are evaluated only when the physical projection resolves their device-native position; a diagnostic view never replaces the native raster with a lower-resolution representative grid.
 
+Internal emission and composition use linear float values. Negative and above-one values remain valid until an explicit display or output transform permits clipping or quantization.

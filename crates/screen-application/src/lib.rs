@@ -4,8 +4,11 @@
 
 use core::fmt;
 use screen_color::{DiagnosticDisplayTransform, PreviewRgb};
-use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2};
-use screen_geometry::{CameraRig, GeometryError, ProjectedScreen, project_screen};
+use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
+use screen_geometry::{
+    CameraRig, CameraSample, GeometryError, PanelRegion, ProjectedScreen, panel_uv_at_viewport,
+    project_scene_point, project_screen,
+};
 use screen_panel::{LcdProfile, PanelError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +25,7 @@ pub struct SimulationRequest {
     pub viewport_aspect: f32,
     pub panel: LcdProfile,
     pub camera: CameraRig,
+    pub inspection: Option<PanelRegion>,
     pub view: DiagnosticView,
 }
 
@@ -29,6 +33,9 @@ pub struct SimulationRequest {
 pub struct PreparedFrame {
     pub time: RationalTime,
     pub view: DiagnosticView,
+    pub viewport_aspect: f32,
+    pub camera: CameraSample,
+    pub inspection: Option<PanelRegion>,
     pub projected_screen: ProjectedScreen,
     pub native_raster: [u32; 2],
     pub active_size_meters: [f32; 2],
@@ -40,24 +47,20 @@ pub struct PreparedFrame {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PreparedVisualCell {
-    pub corners: [Vec2; 4],
-    pub preview: PreviewRgb,
-    pub subpixels: [PreparedSubpixel; 3],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PreparedSubpixel {
-    pub corners: [Vec2; 4],
-    pub preview: PreviewRgb,
+pub struct PreviewPixel {
+    pub rgb: PreviewRgb,
+    pub on_panel: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct PreparedVisual {
+pub struct PreparedRaster {
     pub frame: PreparedFrame,
-    pub columns: u16,
-    pub rows: u16,
-    pub cells: Vec<PreparedVisualCell>,
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<PreviewPixel>,
+    pub preview_scale_percent: f32,
+    pub inspection_field_meters: Option<[f32; 2]>,
+    pub subpixels_resolved_at_center: bool,
 }
 
 pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, ApplicationError> {
@@ -65,13 +68,25 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
         return Err(ApplicationError::InvalidViewportAspect);
     }
     let panel = request.panel.validate().map_err(ApplicationError::Panel)?;
-    let camera = request
+    let camera_rig = request
         .camera
         .validate()
         .map_err(ApplicationError::Geometry)?;
-    let camera_sample = camera.sample(request.time);
+    let camera = if let Some(region) = request.inspection {
+        camera_rig
+            .fit_panel_region(
+                request.time,
+                region,
+                panel.active_width,
+                panel.active_height,
+                request.viewport_aspect,
+            )
+            .map_err(ApplicationError::Geometry)?
+    } else {
+        camera_rig.sample(request.time)
+    };
     let projected_screen = project_screen(
-        camera_sample,
+        camera,
         panel.active_width,
         panel.active_height,
         request.viewport_aspect,
@@ -80,6 +95,9 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
     Ok(PreparedFrame {
         time: request.time,
         view: request.view,
+        viewport_aspect: request.viewport_aspect,
+        camera,
+        inspection: request.inspection,
         projected_screen,
         native_raster: [panel.native_width, panel.native_height],
         active_size_meters: [panel.active_width.0, panel.active_height.0],
@@ -87,130 +105,161 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
         pixels_per_inch: panel.pixels_per_inch(),
         representative_signal: signal,
         representative_emission: panel.emitted_radiance(signal),
-        camera_yaw_degrees: camera_sample.yaw_degrees,
+        camera_yaw_degrees: camera.yaw_degrees,
     })
 }
 
-pub fn prepare_visual(
+pub fn prepare_raster(
     request: SimulationRequest,
-    columns: u16,
-    rows: u16,
-) -> Result<PreparedVisual, ApplicationError> {
-    if columns == 0 || rows == 0 {
-        return Err(ApplicationError::EmptyVisualGrid);
+    width: u16,
+    height: u16,
+) -> Result<PreparedRaster, ApplicationError> {
+    if width == 0 || height == 0 {
+        return Err(ApplicationError::EmptyPreviewRaster);
     }
     let frame = prepare_frame(request)?;
     let display = DiagnosticDisplayTransform {
         reference_white_nits: 100.0,
     };
-    let mut cells = Vec::with_capacity(usize::from(columns) * usize::from(rows));
-    for row in 0..rows {
-        for column in 0..columns {
-            let uv_min = Vec2 {
-                x: f32::from(column) / f32::from(columns),
-                y: f32::from(row) / f32::from(rows),
+    let preview_scale_percent = projected_device_pixel_width(&frame, request.panel, width)
+        .ok_or(ApplicationError::ViewRayMissesPanel)?
+        * 100.0;
+    let subpixels_resolved_at_center = preview_scale_percent >= 300.0;
+    let mut pixels = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for row in 0..height {
+        for column in 0..width {
+            let viewport_ndc = Vec2 {
+                x: (f32::from(column) + 0.5) / f32::from(width) * 2.0 - 1.0,
+                y: (f32::from(row) + 0.5) / f32::from(height) * 2.0 - 1.0,
             };
-            let uv_max = Vec2 {
-                x: f32::from(column + 1) / f32::from(columns),
-                y: f32::from(row + 1) / f32::from(rows),
+            let Some(uv) = panel_uv_at_viewport(
+                frame.camera,
+                request.panel.active_width,
+                request.panel.active_height,
+                request.viewport_aspect,
+                viewport_ndc,
+            ) else {
+                pixels.push(outside_panel());
+                continue;
             };
-            let center = Vec2 {
-                x: (uv_min.x + uv_max.x) * 0.5,
-                y: (uv_min.y + uv_max.y) * 0.5,
-            };
-            let signal = diagnostic_signal(center, request.time);
-            let emission = request.panel.emitted_radiance(signal);
+            if !(0.0..=1.0).contains(&uv.x) || !(0.0..=1.0).contains(&uv.y) {
+                pixels.push(outside_panel());
+                continue;
+            }
+            let signal = diagnostic_signal(uv, request.time);
             let preview = match request.view {
                 DiagnosticView::DeviceSignal => PreviewRgb {
                     r: signal.r,
                     g: signal.g,
                     b: signal.b,
                 },
-                DiagnosticView::Composite
-                | DiagnosticView::Subpixels
-                | DiagnosticView::EmittedRadiance => display.scene_linear_to_srgb(emission),
-            };
-            let stripes = request.panel.subpixel_emission(signal).stripes;
-            let corners = [
-                interpolate_screen(frame.projected_screen, uv_min),
-                interpolate_screen(
-                    frame.projected_screen,
-                    Vec2 {
-                        x: uv_max.x,
-                        y: uv_min.y,
-                    },
-                ),
-                interpolate_screen(frame.projected_screen, uv_max),
-                interpolate_screen(
-                    frame.projected_screen,
-                    Vec2 {
-                        x: uv_min.x,
-                        y: uv_max.y,
-                    },
-                ),
-            ];
-            let margin = request.panel.black_matrix_fraction * 0.5;
-            let visible_width = 1.0 - request.panel.black_matrix_fraction;
-            let stripe_width = visible_width / 3.0;
-            let subpixels = core::array::from_fn(|index| {
-                let x_min = margin + stripe_width * index as f32;
-                let x_max = margin + stripe_width * (index + 1) as f32;
-                PreparedSubpixel {
-                    corners: sub_quad(corners, x_min, x_max, margin, 1.0 - margin),
-                    preview: display.scene_linear_to_srgb(stripes[index]),
+                DiagnosticView::Composite | DiagnosticView::EmittedRadiance => {
+                    display.scene_linear_to_srgb(request.panel.emitted_radiance(signal))
                 }
-            });
-            cells.push(PreparedVisualCell {
-                corners,
-                preview,
-                subpixels,
+                DiagnosticView::Subpixels if subpixels_resolved_at_center => {
+                    let pixel_uv = Vec2 {
+                        x: (uv.x * request.panel.native_width as f32).fract(),
+                        y: (uv.y * request.panel.native_height as f32).fract(),
+                    };
+                    display.scene_linear_to_srgb(request.panel.emission_at_pixel(signal, pixel_uv))
+                }
+                DiagnosticView::Subpixels => {
+                    display.scene_linear_to_srgb(request.panel.emitted_radiance(signal))
+                }
+            };
+            pixels.push(PreviewPixel {
+                rgb: preview,
+                on_panel: true,
             });
         }
     }
-    Ok(PreparedVisual {
+    let inspection_field_meters = request.inspection.map(|region| {
+        [
+            (region.max.x - region.min.x) * request.panel.active_width.0,
+            (region.max.y - region.min.y) * request.panel.active_height.0,
+        ]
+    });
+    Ok(PreparedRaster {
         frame,
-        columns,
-        rows,
-        cells,
+        width,
+        height,
+        pixels,
+        preview_scale_percent,
+        inspection_field_meters,
+        subpixels_resolved_at_center,
     })
 }
 
-fn sub_quad(corners: [Vec2; 4], x_min: f32, x_max: f32, y_min: f32, y_max: f32) -> [Vec2; 4] {
-    [
-        interpolate_quad(corners, Vec2 { x: x_min, y: y_min }),
-        interpolate_quad(corners, Vec2 { x: x_max, y: y_min }),
-        interpolate_quad(corners, Vec2 { x: x_max, y: y_max }),
-        interpolate_quad(corners, Vec2 { x: x_min, y: y_max }),
-    ]
-}
-
-fn interpolate_quad(corners: [Vec2; 4], uv: Vec2) -> Vec2 {
-    let top = Vec2 {
-        x: corners[0].x + (corners[1].x - corners[0].x) * uv.x,
-        y: corners[0].y + (corners[1].y - corners[0].y) * uv.x,
+pub fn inspection_region_from_drag(
+    request: SimulationRequest,
+    start_ndc: Vec2,
+    end_ndc: Vec2,
+) -> Result<PanelRegion, ApplicationError> {
+    let frame = prepare_frame(request)?;
+    let intersect = |point| {
+        panel_uv_at_viewport(
+            frame.camera,
+            request.panel.active_width,
+            request.panel.active_height,
+            request.viewport_aspect,
+            point,
+        )
+        .ok_or(ApplicationError::ViewRayMissesPanel)
     };
-    let bottom = Vec2 {
-        x: corners[3].x + (corners[2].x - corners[3].x) * uv.x,
-        y: corners[3].y + (corners[2].y - corners[3].y) * uv.x,
-    };
-    Vec2 {
-        x: top.x + (bottom.x - top.x) * uv.y,
-        y: top.y + (bottom.y - top.y) * uv.y,
+    let start = intersect(start_ndc)?;
+    if !(0.0..=1.0).contains(&start.x) || !(0.0..=1.0).contains(&start.y) {
+        return Err(ApplicationError::InspectionMustStartOnPanel);
     }
+    let end = intersect(end_ndc)?;
+    let region = PanelRegion {
+        min: Vec2 {
+            x: start.x.min(end.x),
+            y: start.y.min(end.y),
+        },
+        max: Vec2 {
+            x: start.x.max(end.x),
+            y: start.y.max(end.y),
+        },
+    };
+    region.validate().map_err(ApplicationError::Geometry)
 }
 
-fn interpolate_screen(screen: ProjectedScreen, uv: Vec2) -> Vec2 {
-    let top = Vec2 {
-        x: screen.corners[0].x + (screen.corners[1].x - screen.corners[0].x) * uv.x,
-        y: screen.corners[0].y + (screen.corners[1].y - screen.corners[0].y) * uv.x,
+fn projected_device_pixel_width(
+    frame: &PreparedFrame,
+    panel: LcdProfile,
+    preview_width: u16,
+) -> Option<f32> {
+    let center_uv = frame
+        .inspection
+        .map_or(Vec2 { x: 0.5, y: 0.5 }, |region| Vec2 {
+            x: (region.min.x + region.max.x) * 0.5,
+            y: (region.min.y + region.max.y) * 0.5,
+        });
+    let point = |uv: Vec2| Vec3 {
+        x: (uv.x - 0.5) * panel.active_width.0,
+        y: (0.5 - uv.y) * panel.active_height.0,
+        z: 0.0,
     };
-    let bottom = Vec2 {
-        x: screen.corners[3].x + (screen.corners[2].x - screen.corners[3].x) * uv.x,
-        y: screen.corners[3].y + (screen.corners[2].y - screen.corners[3].y) * uv.x,
-    };
-    Vec2 {
-        x: top.x + (bottom.x - top.x) * uv.y,
-        y: top.y + (bottom.y - top.y) * uv.y,
+    let first = project_scene_point(frame.camera, point(center_uv), frame.viewport_aspect)?;
+    let second = project_scene_point(
+        frame.camera,
+        point(Vec2 {
+            x: center_uv.x + 1.0 / panel.native_width as f32,
+            y: center_uv.y,
+        }),
+        frame.viewport_aspect,
+    )?;
+    Some((second.x - first.x).hypot(second.y - first.y) * f32::from(preview_width) * 0.5)
+}
+
+fn outside_panel() -> PreviewPixel {
+    PreviewPixel {
+        rgb: PreviewRgb {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+        },
+        on_panel: false,
     }
 }
 
@@ -236,7 +285,9 @@ pub fn diagnostic_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplicationError {
     InvalidViewportAspect,
-    EmptyVisualGrid,
+    EmptyPreviewRaster,
+    InspectionMustStartOnPanel,
+    ViewRayMissesPanel,
     Panel(PanelError),
     Geometry(GeometryError),
 }
@@ -245,7 +296,13 @@ impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidViewportAspect => formatter.write_str("viewport aspect must be positive"),
-            Self::EmptyVisualGrid => formatter.write_str("visual grid must be non-empty"),
+            Self::EmptyPreviewRaster => formatter.write_str("preview raster must be non-empty"),
+            Self::InspectionMustStartOnPanel => {
+                formatter.write_str("inspection selection must start on the panel")
+            }
+            Self::ViewRayMissesPanel => {
+                formatter.write_str("camera ray does not reach the panel plane")
+            }
             Self::Panel(error) => write!(formatter, "invalid panel: {error}"),
             Self::Geometry(error) => write!(formatter, "invalid camera: {error}"),
         }
@@ -283,6 +340,7 @@ mod tests {
                 orbit_amplitude_degrees: 15.0,
                 orbit_duration: RationalTime::new(96, 24).expect("valid duration"),
             },
+            inspection: None,
             view: DiagnosticView::Composite,
         }
     }
@@ -307,9 +365,36 @@ mod tests {
     }
 
     #[test]
-    fn prepared_visual_contains_only_resolved_cells() {
-        let visual = prepare_visual(request(), 12, 8).expect("valid visual request");
-        assert_eq!(visual.cells.len(), 96);
-        assert!(visual.cells.iter().all(|cell| cell.preview.r.is_finite()));
+    fn fit_subpixel_view_integrates_unresolved_device_pixels() {
+        let mut request = request();
+        request.view = DiagnosticView::Subpixels;
+        let raster = prepare_raster(request, 320, 180).expect("valid raster");
+        assert!(!raster.subpixels_resolved_at_center);
+        assert!(raster.pixels.iter().any(|pixel| pixel.on_panel));
+    }
+
+    #[test]
+    fn inspection_camera_resolves_physical_subpixels() {
+        let mut request = request();
+        request.view = DiagnosticView::Subpixels;
+        request.inspection = Some(PanelRegion {
+            min: Vec2 { x: 0.499, y: 0.499 },
+            max: Vec2 { x: 0.501, y: 0.501 },
+        });
+        let raster = prepare_raster(request, 320, 180).expect("valid inspection raster");
+        assert!(raster.subpixels_resolved_at_center);
+        assert!(raster.inspection_field_meters.is_some());
+    }
+
+    #[test]
+    fn inspection_drag_maps_back_to_panel_coordinates() {
+        let region = inspection_region_from_drag(
+            request(),
+            Vec2 { x: -0.1, y: -0.1 },
+            Vec2 { x: 0.1, y: 0.1 },
+        )
+        .expect("selection starts on panel");
+        assert!(region.min.x < 0.5);
+        assert!(region.max.x > 0.5);
     }
 }

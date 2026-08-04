@@ -4,9 +4,9 @@
 
 use eframe::egui::{
     self, Align, Color32, CornerRadius, FontFamily, FontId, Layout, Pos2, Rect, RichText, Shape,
-    Stroke, Vec2,
+    Stroke, TextureHandle, TextureOptions, Vec2,
 };
-use screen_application::{DiagnosticView, PreparedVisual, SimulationRequest, prepare_visual};
+use screen_application::{DiagnosticView, PreparedRaster, SimulationRequest, prepare_raster};
 use screen_contracts::{LinearRgb, Meters, Millimeters, RationalTime};
 use screen_geometry::CameraRig;
 use screen_panel::{LcdProfile, StripeLayout};
@@ -39,6 +39,7 @@ struct ScreenSimulationApp {
     view: DiagnosticView,
     panel: PanelControls,
     camera: CameraControls,
+    preview_texture: Option<TextureHandle>,
 }
 
 struct PanelControls {
@@ -82,6 +83,7 @@ impl ScreenSimulationApp {
                 focal_length_mm: 50.0,
                 orbit_degrees: 18.0,
             },
+            preview_texture: None,
         }
     }
 
@@ -110,6 +112,7 @@ impl ScreenSimulationApp {
                 orbit_duration: RationalTime::new(i64::from(DURATION_FRAMES), FRAME_RATE)
                     .expect("constant frame rate is non-zero"),
             },
+            inspection: None,
             view: self.view,
         }
     }
@@ -315,13 +318,21 @@ impl ScreenSimulationApp {
                 let available = ui.available_rect_before_wrap();
                 let aspect = (available.width() / available.height()).max(0.1);
                 let request = self.request(aspect);
-                let resolution = if self.view == DiagnosticView::Subpixels {
-                    (18, 10)
-                } else {
-                    (32, 18)
-                };
-                match prepare_visual(request, resolution.0, resolution.1) {
-                    Ok(visual) => draw_viewport(ui, available, &visual),
+                let width = available.width().round().clamp(1.0, f32::from(u16::MAX)) as u16;
+                let height = available.height().round().clamp(1.0, f32::from(u16::MAX)) as u16;
+                match prepare_raster(request, width, height) {
+                    Ok(raster) => {
+                        let image = raster_image(&raster);
+                        let texture = self.preview_texture.get_or_insert_with(|| {
+                            context.load_texture(
+                                "physical-preview",
+                                image.clone(),
+                                TextureOptions::NEAREST,
+                            )
+                        });
+                        texture.set(image, TextureOptions::NEAREST);
+                        draw_viewport(ui, available, &raster, texture);
+                    }
                     Err(error) => {
                         ui.centered_and_justified(|ui| {
                             ui.colored_label(Color32::from_rgb(242, 107, 107), error.to_string());
@@ -332,40 +343,18 @@ impl ScreenSimulationApp {
     }
 }
 
-fn draw_viewport(ui: &mut egui::Ui, rect: Rect, visual: &PreparedVisual) {
+fn draw_viewport(ui: &mut egui::Ui, rect: Rect, raster: &PreparedRaster, texture: &TextureHandle) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::from_rgb(10, 12, 16));
     draw_grid(&painter, rect);
-
-    let shadow = screen_points(
-        rect.translate(Vec2::new(0.0, 10.0)),
-        &visual.frame.projected_screen.corners,
+    painter.image(
+        texture.id(),
+        rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        Color32::WHITE,
     );
-    painter.add(Shape::convex_polygon(
-        shadow,
-        Color32::from_rgba_unmultiplied(0, 0, 0, 110),
-        Stroke::NONE,
-    ));
 
-    for cell in &visual.cells {
-        if visual.frame.view == DiagnosticView::Subpixels {
-            for subpixel in &cell.subpixels {
-                painter.add(Shape::convex_polygon(
-                    screen_points(rect, &subpixel.corners),
-                    preview_color(subpixel.preview),
-                    Stroke::NONE,
-                ));
-            }
-        } else {
-            painter.add(Shape::convex_polygon(
-                screen_points(rect, &cell.corners),
-                preview_color(cell.preview),
-                Stroke::new(0.25_f32, Color32::from_black_alpha(26)),
-            ));
-        }
-    }
-
-    let outline = screen_points(rect, &visual.frame.projected_screen.corners);
+    let outline = screen_points(rect, &raster.frame.projected_screen.corners);
     painter.add(Shape::closed_line(
         outline,
         Stroke::new(1.5_f32, Color32::from_rgb(111, 129, 158)),
@@ -375,7 +364,7 @@ fn draw_viewport(ui: &mut egui::Ui, rect: Rect, visual: &PreparedVisual) {
     painter.text(
         title_pos,
         egui::Align2::LEFT_TOP,
-        view_name(visual.frame.view),
+        view_name(raster.frame.view),
         FontId::new(12.0, FontFamily::Proportional),
         Color32::from_rgb(182, 193, 211),
     );
@@ -384,10 +373,10 @@ fn draw_viewport(ui: &mut egui::Ui, rect: Rect, visual: &PreparedVisual) {
         egui::Align2::LEFT_TOP,
         format!(
             "{} × {}  ·  {:.1} ppi  ·  pitch {:.1} µm",
-            visual.frame.native_raster[0],
-            visual.frame.native_raster[1],
-            visual.frame.pixels_per_inch,
-            visual.frame.pixel_pitch_meters * 1_000_000.0
+            raster.frame.native_raster[0],
+            raster.frame.native_raster[1],
+            raster.frame.pixels_per_inch,
+            raster.frame.pixel_pitch_meters * 1_000_000.0
         ),
         FontId::monospace(11.0),
         Color32::from_rgb(112, 124, 143),
@@ -397,7 +386,7 @@ fn draw_viewport(ui: &mut egui::Ui, rect: Rect, visual: &PreparedVisual) {
         egui::Align2::RIGHT_BOTTOM,
         format!(
             "camera yaw {:+.2}°  ·  facing {:.3}",
-            visual.frame.camera_yaw_degrees, visual.frame.projected_screen.facing_ratio
+            raster.frame.camera_yaw_degrees, raster.frame.projected_screen.facing_ratio
         ),
         FontId::monospace(11.0),
         Color32::from_rgb(112, 124, 143),
@@ -409,8 +398,8 @@ fn screen_points(rect: Rect, points: &[screen_contracts::Vec2; 4]) -> Vec<Pos2> 
         .iter()
         .map(|point| {
             Pos2::new(
-                rect.center().x + point.x * rect.width() * 0.43,
-                rect.center().y + point.y * rect.height() * 0.43,
+                rect.center().x + point.x * rect.width() * 0.5,
+                rect.center().y + point.y * rect.height() * 0.5,
             )
         })
         .collect()
@@ -440,6 +429,24 @@ fn draw_grid(painter: &egui::Painter, rect: Rect) {
 fn preview_color(color: screen_color::PreviewRgb) -> Color32 {
     let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     Color32::from_rgb(channel(color.r), channel(color.g), channel(color.b))
+}
+
+fn raster_image(raster: &PreparedRaster) -> egui::ColorImage {
+    let pixels = raster
+        .pixels
+        .iter()
+        .map(|pixel| {
+            if pixel.on_panel {
+                preview_color(pixel.rgb)
+            } else {
+                Color32::TRANSPARENT
+            }
+        })
+        .collect();
+    egui::ColorImage::new(
+        [usize::from(raster.width), usize::from(raster.height)],
+        pixels,
+    )
 }
 
 fn view_name(view: DiagnosticView) -> &'static str {
