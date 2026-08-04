@@ -158,6 +158,9 @@ impl LcdProfile {
 
     pub fn angular_attenuation(self, emission_cosine: f32) -> LinearRgb {
         let cosine = emission_cosine.clamp(0.0, 1.0);
+        if cosine == 0.0 {
+            return LinearRgb::new(0.0, 0.0, 0.0);
+        }
         LinearRgb::new(
             cosine.powf(self.angular_emission_power.r),
             cosine.powf(self.angular_emission_power.g),
@@ -210,10 +213,17 @@ impl LcdProfile {
 
 fn colorimetry_is_valid(color: PanelColorimetry) -> bool {
     let points = [color.red, color.green, color.blue, color.white];
-    points
+    let coordinates_valid = points
         .into_iter()
-        .all(|p| p.x.is_finite() && p.y.is_finite() && p.x > 0.0 && p.y > 0.0 && p.x + p.y < 1.0)
-        && inverse3(primary_xyz_columns(color)).is_some()
+        .all(|p| p.x.is_finite() && p.y.is_finite() && p.x > 0.0 && p.y > 0.0 && p.x + p.y < 1.0);
+    let Some(inverse) = inverse3(primary_xyz_columns(color)) else {
+        return false;
+    };
+    let scales = mat_vec(inverse, xy_to_xyz(color.white));
+    coordinates_valid
+        && scales
+            .into_iter()
+            .all(|value| value.is_finite() && value > 0.0)
 }
 
 fn xy_to_xyz(value: Chromaticity) -> [f32; 3] {
@@ -410,5 +420,15 @@ mod tests {
         let emission = profile()
             .emission_at_pixel(DeviceRgb::WHITE, screen_contracts::Vec2 { x: 0.01, y: 0.5 });
         assert_eq!(emission, LinearRgb::new(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn rear_face_never_emits_even_with_lambertian_zero_power() {
+        let mut panel = profile();
+        panel.angular_emission_power = LinearRgb::new(0.0, 0.0, 0.0);
+        assert_eq!(
+            panel.angular_attenuation(0.0),
+            LinearRgb::new(0.0, 0.0, 0.0)
+        );
     }
 }

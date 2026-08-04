@@ -591,6 +591,7 @@ impl PanelRegion {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct CameraSample {
     pub position: Vec3,
     pub target: Vec3,
@@ -962,10 +963,12 @@ fn inverse_distortion(observed: Vec2, lens: LensModel) -> Option<Vec2> {
 }
 
 fn distortion_is_invertible(lens: LensModel, lens_shift: Vec2) -> bool {
-    const GRID: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
+    const GRID_SEGMENTS: u32 = 64;
     const EPSILON: f32 = 1.0e-3;
-    GRID.into_iter().all(|x| {
-        GRID.into_iter().all(|y| {
+    (0..=GRID_SEGMENTS).all(|column| {
+        (0..=GRID_SEGMENTS).all(|row| {
+            let x = column as f32 / GRID_SEGMENTS as f32 * 2.0 - 1.0;
+            let y = row as f32 / GRID_SEGMENTS as f32 * 2.0 - 1.0;
             let observed = Vec2 {
                 x: x + 2.0 * lens_shift.x,
                 y: y + 2.0 * lens_shift.y,
