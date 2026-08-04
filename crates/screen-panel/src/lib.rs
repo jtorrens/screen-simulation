@@ -12,6 +12,11 @@ pub enum StripeLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SubpixelEmission {
+    pub stripes: [LinearRgb; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LcdProfile {
     pub native_width: u32,
     pub native_height: u32,
@@ -78,6 +83,19 @@ impl LcdProfile {
             channel(signal.b, self.channel_efficiency.b),
         )
     }
+
+    pub fn subpixel_emission(self, signal: DeviceRgb) -> SubpixelEmission {
+        let emission = self.emitted_radiance(signal);
+        let red = LinearRgb::new(emission.r, 0.0, 0.0);
+        let green = LinearRgb::new(0.0, emission.g, 0.0);
+        let blue = LinearRgb::new(0.0, 0.0, emission.b);
+        SubpixelEmission {
+            stripes: match self.stripe_layout {
+                StripeLayout::Rgb => [red, green, blue],
+                StripeLayout::Bgr => [blue, green, red],
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,5 +158,15 @@ mod tests {
         assert!(emission.r > profile().white_level_nits);
         assert!(emission.g > profile().black_level_nits);
         assert_eq!(emission.b, profile().black_level_nits * 0.9);
+    }
+
+    #[test]
+    fn bgr_profile_changes_physical_stripe_order() {
+        let mut bgr = profile();
+        bgr.stripe_layout = StripeLayout::Bgr;
+        let stripes = bgr.subpixel_emission(DeviceRgb::WHITE).stripes;
+        assert!(stripes[0].b > 0.0);
+        assert!(stripes[1].g > 0.0);
+        assert!(stripes[2].r > 0.0);
     }
 }

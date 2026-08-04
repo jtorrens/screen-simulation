@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow"] }
 screen-application = { path = "../../crates/screen-application" }
 screen-color = { path = "../../crates/screen-color" }
 screen-contracts = { path = "../../crates/screen-contracts" }
@@ -14,4 +15,3 @@ screen-media = { path = "../../crates/screen-media" }
 screen-panel = { path = "../../crates/screen-panel" }
 screen-persistence = { path = "../../crates/screen-persistence" }
 screen-platform = { path = "../../crates/screen-platform" }
-
