@@ -787,6 +787,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut state = state.borrow_mut();
             let elapsed = now.duration_since(state.last_tick).as_secs_f64();
             state.last_tick = now;
+            let mut frame_advanced = false;
             if window.get_playing() {
                 match project_frame_rate(&window) {
                     Ok(frame_rate) => {
@@ -798,14 +799,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             window.set_frame_number(
                                 (window.get_frame_number() + 1) % (DURATION_FRAMES as i32 + 1),
                             );
+                            frame_advanced = true;
                         }
                     }
-                    Err(error) => block_preview(&window, &error),
+                    Err(error) => {
+                        block_preview(&window, &error);
+                        return;
+                    }
                 }
             } else {
                 state.playback_accumulator_seconds = 0.0;
             }
-            render_preview(&window, &mut state);
+            if frame_advanced {
+                render_preview(&window, &mut state);
+            }
         });
     }
 
