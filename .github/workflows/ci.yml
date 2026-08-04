@@ -22,8 +22,8 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/cache@v5
         with:
-          path: C:\vcpkg\installed
-          key: windows-vcpkg-43c031bb61de2471c178fca57bc5a057b1b9eb73-ffmpeg-core-avcodec-avformat-swscale-v1
+          path: ${{ runner.temp }}\vcpkg-binary-cache
+          key: windows-vcpkg-43c031bb61de2471c178fca57bc5a057b1b9eb73-ffmpeg-core-avcodec-avformat-swscale-binary-v1
       - name: Install FFmpeg development libraries (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -40,6 +40,8 @@ jobs:
           git -C $vcpkgRoot fetch origin 43c031bb61de2471c178fca57bc5a057b1b9eb73 --depth=1
           git -C $vcpkgRoot checkout 43c031bb61de2471c178fca57bc5a057b1b9eb73
           & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
+          $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           & "$vcpkgRoot\vcpkg.exe" install "ffmpeg[core,avcodec,avformat,swscale]:x64-windows"
           "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$vcpkgRoot\installed\x64-windows\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
