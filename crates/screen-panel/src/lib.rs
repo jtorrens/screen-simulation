@@ -97,7 +97,7 @@ impl LcdProfile {
         {
             return Err(PanelError::InvalidLuminanceRange);
         }
-        if !colorimetry_is_valid(self.colorimetry) {
+        if native_to_acescg_matrix(self.colorimetry).is_none() {
             return Err(PanelError::InvalidColorimetry);
         }
         if [
@@ -125,7 +125,8 @@ impl LcdProfile {
         let profile = self.validate()?;
         Ok(ValidatedPanelEvaluator {
             profile,
-            native_to_acescg: native_to_acescg_matrix(profile.colorimetry),
+            native_to_acescg: native_to_acescg_matrix(profile.colorimetry)
+                .expect("validated panel has a finite well-conditioned color transform"),
         })
     }
 
@@ -143,7 +144,8 @@ impl LcdProfile {
     }
 
     pub fn native_to_acescg(self, native: LinearRgb) -> LinearRgb {
-        let matrix = native_to_acescg_matrix(self.colorimetry);
+        let matrix = native_to_acescg_matrix(self.colorimetry)
+            .expect("panel colorimetry must be validated before emission evaluation");
         LinearRgb::new(
             matrix[0][0] * native.r + matrix[0][1] * native.g + matrix[0][2] * native.b,
             matrix[1][0] * native.r + matrix[1][1] * native.g + matrix[1][2] * native.b,
@@ -270,19 +272,11 @@ impl ValidatedPanelEvaluator {
     }
 }
 
-fn colorimetry_is_valid(color: PanelColorimetry) -> bool {
+fn chromaticity_coordinates_are_valid(color: PanelColorimetry) -> bool {
     let points = [color.red, color.green, color.blue, color.white];
-    let coordinates_valid = points
+    points
         .into_iter()
-        .all(|p| p.x.is_finite() && p.y.is_finite() && p.x > 0.0 && p.y > 0.0 && p.x + p.y < 1.0);
-    let Some(inverse) = inverse3(primary_xyz_columns(color)) else {
-        return false;
-    };
-    let scales = mat_vec(inverse, xy_to_xyz(color.white));
-    coordinates_valid
-        && scales
-            .into_iter()
-            .all(|value| value.is_finite() && value > 0.0)
+        .all(|p| p.x.is_finite() && p.y.is_finite() && p.x > 0.0 && p.y > 0.0 && p.x + p.y < 1.0)
 }
 
 fn xy_to_xyz(value: Chromaticity) -> [f32; 3] {
@@ -296,13 +290,29 @@ fn primary_xyz_columns(color: PanelColorimetry) -> [[f32; 3]; 3] {
     [[r[0], g[0], b[0]], [r[1], g[1], b[1]], [r[2], g[2], b[2]]]
 }
 
-fn native_to_acescg_matrix(color: PanelColorimetry) -> [[f32; 3]; 3] {
+fn native_to_acescg_matrix(color: PanelColorimetry) -> Option<[[f32; 3]; 3]> {
+    const MAX_CONDITION_ESTIMATE: f32 = 10_000.0;
+    const MIN_CONE_RESPONSE: f32 = 1.0e-4;
+    const MAX_ADAPTATION_SCALE: f32 = 64.0;
+    const MAX_TRANSFORM_COEFFICIENT: f32 = 32.0;
+    if !chromaticity_coordinates_are_valid(color) {
+        return None;
+    }
     let primaries = primary_xyz_columns(color);
+    let primary_inverse = inverse3(primaries)?;
+    if matrix_infinity_norm(primaries) * matrix_infinity_norm(primary_inverse)
+        > MAX_CONDITION_ESTIMATE
+    {
+        return None;
+    }
     let white_xyz = xy_to_xyz(color.white);
-    let scales = mat_vec(
-        inverse3(primaries).expect("validated colorimetry"),
-        white_xyz,
-    );
+    let scales = mat_vec(primary_inverse, white_xyz);
+    if scales
+        .into_iter()
+        .any(|value| !value.is_finite() || value <= 0.0)
+    {
+        return None;
+    }
     let native_to_xyz = core::array::from_fn(|row| {
         core::array::from_fn(|column| primaries[row][column] * scales[column])
     });
@@ -325,13 +335,42 @@ fn native_to_acescg_matrix(color: PanelColorimetry) -> [[f32; 3]; 3] {
     ];
     let source_cones = mat_vec(BRADFORD, white_xyz);
     let target_cones = mat_vec(BRADFORD, D60);
+    if source_cones
+        .into_iter()
+        .any(|value| !value.is_finite() || value.abs() < MIN_CONE_RESPONSE)
+    {
+        return None;
+    }
+    let adaptation_scale = [
+        target_cones[0] / source_cones[0],
+        target_cones[1] / source_cones[1],
+        target_cones[2] / source_cones[2],
+    ];
+    if adaptation_scale
+        .into_iter()
+        .any(|value| !value.is_finite() || value.abs() > MAX_ADAPTATION_SCALE)
+    {
+        return None;
+    }
     let diagonal = [
-        [target_cones[0] / source_cones[0], 0.0, 0.0],
-        [0.0, target_cones[1] / source_cones[1], 0.0],
-        [0.0, 0.0, target_cones[2] / source_cones[2]],
+        [adaptation_scale[0], 0.0, 0.0],
+        [0.0, adaptation_scale[1], 0.0],
+        [0.0, 0.0, adaptation_scale[2]],
     ];
     let adaptation = mat_mul(BRADFORD_INV, mat_mul(diagonal, BRADFORD));
-    mat_mul(XYZ_D60_TO_ACESCG, mat_mul(adaptation, native_to_xyz))
+    let result = mat_mul(XYZ_D60_TO_ACESCG, mat_mul(adaptation, native_to_xyz));
+    result
+        .into_iter()
+        .flatten()
+        .all(|value| value.is_finite() && value.abs() <= MAX_TRANSFORM_COEFFICIENT)
+        .then_some(result)
+}
+
+fn matrix_infinity_norm(matrix: [[f32; 3]; 3]) -> f32 {
+    matrix
+        .into_iter()
+        .map(|row| row.into_iter().map(f32::abs).sum::<f32>())
+        .fold(0.0, f32::max)
 }
 
 fn mat_vec(matrix: [[f32; 3]; 3], vector: [f32; 3]) -> [f32; 3] {
@@ -486,6 +525,34 @@ mod tests {
         {
             close(actual, expected);
         }
+    }
+
+    #[test]
+    fn rejects_bradford_singular_and_ill_conditioned_colorimetry() {
+        let mut singular_adaptation = profile();
+        singular_adaptation.colorimetry = PanelColorimetry {
+            red: Chromaticity { x: 0.80, y: 0.10 },
+            green: Chromaticity { x: 0.10, y: 0.80 },
+            blue: Chromaticity { x: 0.01, y: 0.01 },
+            white: Chromaticity {
+                x: 0.071_784,
+                y: 0.20,
+            },
+        };
+        assert_eq!(
+            singular_adaptation.validate(),
+            Err(PanelError::InvalidColorimetry)
+        );
+
+        let mut ill_conditioned_primaries = profile();
+        ill_conditioned_primaries.colorimetry.green = Chromaticity {
+            x: 0.640_001,
+            y: 0.329_999,
+        };
+        assert_eq!(
+            ill_conditioned_primaries.validate(),
+            Err(PanelError::InvalidColorimetry)
+        );
     }
 
     #[test]

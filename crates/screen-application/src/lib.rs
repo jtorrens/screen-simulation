@@ -60,6 +60,101 @@ impl DeviceSignalRaster {
             .clamp(0.0, self.height.saturating_sub(1) as f32) as u32;
         self.pixels[(u64::from(y) * u64::from(self.width) + u64::from(x)) as usize]
     }
+}
+
+#[derive(Clone, Debug)]
+struct DeviceSignalIntegral {
+    width: u32,
+    height: u32,
+    prefix: Vec<IntegralRgb>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct IntegralRgb {
+    r: f64,
+    g: f64,
+    b: f64,
+}
+
+impl DeviceSignalIntegral {
+    fn new(source: &DeviceSignalRaster) -> Self {
+        let stride = source.width as usize + 1;
+        let mut prefix = vec![IntegralRgb::default(); stride * (source.height as usize + 1)];
+        for row in 0..source.height as usize {
+            let mut row_sum = IntegralRgb::default();
+            for column in 0..source.width as usize {
+                let pixel = source.pixels[row * source.width as usize + column];
+                row_sum.r += f64::from(pixel.r);
+                row_sum.g += f64::from(pixel.g);
+                row_sum.b += f64::from(pixel.b);
+                let above = prefix[row * stride + column + 1];
+                prefix[(row + 1) * stride + column + 1] = IntegralRgb {
+                    r: above.r + row_sum.r,
+                    g: above.g + row_sum.g,
+                    b: above.b + row_sum.b,
+                };
+            }
+        }
+        Self {
+            width: source.width,
+            height: source.height,
+            prefix,
+        }
+    }
+
+    fn prefix_at(&self, column: usize, row: usize) -> IntegralRgb {
+        self.prefix[row * (self.width as usize + 1) + column]
+    }
+
+    fn integer_sum(&self, x0: usize, y0: usize, x1: usize, y1: usize) -> IntegralRgb {
+        let a = self.prefix_at(x0, y0);
+        let b = self.prefix_at(x1, y0);
+        let c = self.prefix_at(x0, y1);
+        let d = self.prefix_at(x1, y1);
+        IntegralRgb {
+            r: d.r - b.r - c.r + a.r,
+            g: d.g - b.g - c.g + a.g,
+            b: d.b - b.b - c.b + a.b,
+        }
+    }
+
+    fn integral_to(&self, x: f32, y: f32) -> IntegralRgb {
+        let x = x.clamp(0.0, self.width as f32);
+        let y = y.clamp(0.0, self.height as f32);
+        let integer_x = x.floor() as usize;
+        let integer_y = y.floor() as usize;
+        let fraction_x = if integer_x < self.width as usize {
+            x - integer_x as f32
+        } else {
+            0.0
+        };
+        let fraction_y = if integer_y < self.height as usize {
+            y - integer_y as f32
+        } else {
+            0.0
+        };
+        let mut sum = self.prefix_at(integer_x, integer_y);
+        if fraction_x > 0.0 {
+            let column = self.integer_sum(integer_x, 0, integer_x + 1, integer_y);
+            sum.r += column.r * f64::from(fraction_x);
+            sum.g += column.g * f64::from(fraction_x);
+            sum.b += column.b * f64::from(fraction_x);
+        }
+        if fraction_y > 0.0 {
+            let row = self.integer_sum(0, integer_y, integer_x, integer_y + 1);
+            sum.r += row.r * f64::from(fraction_y);
+            sum.g += row.g * f64::from(fraction_y);
+            sum.b += row.b * f64::from(fraction_y);
+        }
+        if fraction_x > 0.0 && fraction_y > 0.0 {
+            let pixel = self.integer_sum(integer_x, integer_y, integer_x + 1, integer_y + 1);
+            let weight = f64::from(fraction_x) * f64::from(fraction_y);
+            sum.r += pixel.r * weight;
+            sum.g += pixel.g * weight;
+            sum.b += pixel.b * weight;
+        }
+        sum
+    }
 
     fn sample_area_box(&self, minimum: Vec2, maximum: Vec2) -> DeviceRgb {
         let x0 = minimum.x.min(maximum.x) * self.width as f32;
@@ -67,30 +162,21 @@ impl DeviceSignalRaster {
         let y0 = minimum.y.min(maximum.y) * self.height as f32;
         let y1 = minimum.y.max(maximum.y) * self.height as f32;
         let full_area = (x1 - x0).max(1.0e-8) * (y1 - y0).max(1.0e-8);
-        let start_x = x0.floor() as i64;
-        let end_x = x1.ceil() as i64;
-        let start_y = y0.floor() as i64;
-        let end_y = y1.ceil() as i64;
-        let mut sum = DeviceRgb::BLACK;
-        for row in start_y..end_y {
-            if row < 0 || row >= i64::from(self.height) {
-                continue;
-            }
-            let overlap_y = (y1.min(row as f32 + 1.0) - y0.max(row as f32)).max(0.0);
-            for column in start_x..end_x {
-                if column < 0 || column >= i64::from(self.width) {
-                    continue;
-                }
-                let overlap_x = (x1.min(column as f32 + 1.0) - x0.max(column as f32)).max(0.0);
-                let weight = overlap_x * overlap_y;
-                let pixel =
-                    self.pixels[(row as u64 * u64::from(self.width) + column as u64) as usize];
-                sum.r += pixel.r * weight;
-                sum.g += pixel.g * weight;
-                sum.b += pixel.b * weight;
-            }
-        }
-        DeviceRgb::new(sum.r / full_area, sum.g / full_area, sum.b / full_area)
+        let lower = self.integral_to(x0, y0);
+        let upper_x = self.integral_to(x1, y0);
+        let upper_y = self.integral_to(x0, y1);
+        let upper = self.integral_to(x1, y1);
+        let sum = IntegralRgb {
+            r: upper.r - upper_x.r - upper_y.r + lower.r,
+            g: upper.g - upper_x.g - upper_y.g + lower.g,
+            b: upper.b - upper_x.b - upper_y.b + lower.b,
+        };
+        let full_area = f64::from(full_area);
+        DeviceRgb::new(
+            (sum.r / full_area) as f32,
+            (sum.g / full_area) as f32,
+            (sum.b / full_area) as f32,
+        )
     }
 }
 
@@ -210,7 +296,7 @@ fn source_uv_unbounded(
 }
 
 fn sample_placed_area(
-    source: &DeviceSignalRaster,
+    source: &DeviceSignalIntegral,
     source_raster: [u32; 2],
     device_raster: [u32; 2],
     placement: RasterPlacement,
@@ -412,6 +498,7 @@ pub fn prepare_raster_from_device_signal(
     placement: RasterPlacement,
 ) -> Result<PreparedRaster, ApplicationError> {
     source.validate()?;
+    let source_integral = DeviceSignalIntegral::new(source);
     let source_raster = [source.width, source.height];
     let device_raster = [
         request.optics.panel.native_width,
@@ -429,7 +516,7 @@ pub fn prepare_raster_from_device_signal(
         },
         &|minimum, maximum| {
             sample_placed_area(
-                source,
+                &source_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -448,6 +535,7 @@ pub fn evaluate_linear_optics_from_device_signal(
     placement: RasterPlacement,
 ) -> Result<LinearOpticalRaster, ApplicationError> {
     source.validate()?;
+    let source_integral = DeviceSignalIntegral::new(source);
     let source_raster = [source.width, source.height];
     let device_raster = [request.panel.native_width, request.panel.native_height];
     evaluate_optical_raster_with_signal(
@@ -463,7 +551,7 @@ pub fn evaluate_linear_optics_from_device_signal(
         },
         &|minimum, maximum| {
             sample_placed_area(
-                source,
+                &source_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -1280,11 +1368,23 @@ mod tests {
                 DeviceRgb::BLACK,
             ],
         };
-        let average = raster.sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
+        let integral = DeviceSignalIntegral::new(&raster);
+        let average = integral.sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
         assert_eq!(average, DeviceRgb::new(0.5, 0.5, 0.5));
         let with_black_outside =
-            raster.sample_area_box(Vec2 { x: -1.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
+            integral.sample_area_box(Vec2 { x: -1.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
         assert_eq!(with_black_outside, DeviceRgb::new(0.25, 0.25, 0.25));
+
+        let high = f32::MAX / 4.0;
+        let hdr = DeviceSignalRaster {
+            width: 2,
+            height: 2,
+            pixels: vec![DeviceRgb::new(high, high, high); 4],
+        };
+        let hdr_average = DeviceSignalIntegral::new(&hdr)
+            .sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
+        assert_eq!(hdr_average, DeviceRgb::new(high, high, high));
+        assert!(hdr_average.r.is_finite());
     }
 
     #[test]
