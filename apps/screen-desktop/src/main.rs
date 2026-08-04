@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -11,7 +12,9 @@ use screen_application::{
 };
 use screen_contracts::{LinearRgb, Meters, Millimeters, RationalTime, Vec2};
 use screen_geometry::{CameraRig, PanelRegion};
+use screen_media::{AlphaPresence, FrameCadence, MediaDescriptor};
 use screen_panel::{LcdProfile, StripeLayout};
+use screen_platform::probe_media;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 const FRAME_RATE: u32 = 24;
@@ -145,9 +148,65 @@ fn render_preview(window: &MainWindow, state: &InteractionState) {
     }
 }
 
+fn load_source(window: &MainWindow, path: &Path) {
+    match probe_media(path) {
+        Ok(descriptor) => present_source(window, path, &descriptor),
+        Err(error) => window.set_error_text(error.to_string().into()),
+    }
+}
+
+fn present_source(window: &MainWindow, path: &Path, descriptor: &MediaDescriptor) {
+    let frame_rate = match descriptor.cadence {
+        FrameCadence::Constant { frame_rate } => format!(
+            "{}/{} fps",
+            frame_rate.numerator(),
+            frame_rate.denominator()
+        ),
+        FrameCadence::Variable => "variable fps".to_owned(),
+    };
+    let alpha = match descriptor.alpha {
+        AlphaPresence::Absent => "opaque",
+        AlphaPresence::Present => "alpha present",
+    };
+    let source_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Selected source");
+    window.set_source_title(source_name.into());
+    window.set_source_details(
+        format!(
+            "{} · {} × {} · {} · {} · {}",
+            descriptor.codec_name,
+            descriptor.raster.width,
+            descriptor.raster.height,
+            descriptor.pixel_format_name,
+            frame_rate,
+            alpha
+        )
+        .into(),
+    );
+    window.set_source_interpretation("IDT selection required · preview remains diagnostic".into());
+    window.set_error_text("".into());
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     let window = MainWindow::new()?;
     let state = Rc::new(RefCell::new(InteractionState::default()));
+
+    {
+        let weak_window = window.as_weak();
+        window.on_choose_source(move || {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Choose screen source media")
+                .pick_file()
+            {
+                load_source(&window, &path);
+            }
+        });
+    }
 
     {
         let weak_window = window.as_weak();
@@ -202,6 +261,9 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    if let Some(path) = std::env::args_os().nth(1) {
+        load_source(&window, Path::new(&path));
+    }
     render_preview(&window, &state.borrow());
     window.run()
 }

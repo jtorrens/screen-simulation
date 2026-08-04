@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 screen-color = { path = "../screen-color" }
 screen-contracts = { path = "../screen-contracts" }
 screen-media = { path = "../screen-media" }
-

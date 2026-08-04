@@ -97,11 +97,16 @@ export component MainWindow inherits Window {
     in-out property <string> inspection-text: "FIT · MAIN CAMERA";
     in-out property <string> hint-text: "Hold Z and drag · physical inspection camera";
     in-out property <string> error-text: "";
+    in-out property <string> source-title: "Procedural diagnostic";
+    in-out property <string> source-details: "3840 × 2160 · authored diagnostic";
+    in-out property <string> source-interpretation: "Explicit device signal";
+    in-out property <int> placement-index: 0;
     private property <bool> zoom-key-held: false;
 
     callback inspect(float, float, float, float);
     callback reset-inspection();
     callback tick();
+    callback choose-source();
 
     MenuBar {
         Menu {
@@ -347,9 +352,24 @@ export component MainWindow inherits Window {
                             font-weight: 700;
                         }
 
-                        Text { text: "SOURCE"; color: #71819b; font-size: 11px; }
-                        Text { text: "Procedural diagnostic · 3840 × 2160"; color: #c3ccda; }
-                        Text { text: "Explicit device signal"; color: #8794a9; }
+                        HorizontalLayout {
+                            height: 30px;
+                            Text { text: "SOURCE"; color: #71819b; font-size: 11px; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Button { text: "Open…"; clicked => { root.choose-source(); } }
+                        }
+                        Text { text: root.source-title; color: #c3ccda; overflow: elide; }
+                        Text { text: root.source-details; color: #8794a9; overflow: elide; }
+                        Text { text: root.source-interpretation; color: #d59b68; overflow: elide; }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Placement"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["Fit", "Fill / Crop", "Stretch", "1:1"];
+                                current-index <=> root.placement-index;
+                            }
+                        }
                         Rectangle { height: 1px; background: #303744; }
 
                         Text { text: "LCD PANEL"; color: #71819b; font-size: 11px; }
