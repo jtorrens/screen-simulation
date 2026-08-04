@@ -20,10 +20,11 @@ use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, 
 use screen_geometry::{CameraRig, PanelRegion};
 use screen_media::{
     AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, FrameSelectionPolicy,
-    MediaDescriptor,
+    MediaDescriptor, ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix,
+    SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
 };
 use screen_panel::{LcdProfile, StripeLayout};
-use screen_platform::decode_frame_at_time;
+use screen_platform::{decode_frame_at_time, probe_media};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 const DURATION_FRAMES: u32 = 96;
@@ -43,14 +44,20 @@ struct InteractionState {
 struct LoadedSource {
     path: PathBuf,
     descriptor: MediaDescriptor,
-    requested_time: RationalTime,
-    sample_policy: FrameSelectionPolicy,
-    decoded_timestamp: RationalTime,
-    decoded_frame: DecodedFrame,
+    decoded_sample_key: Option<DecodedSampleKey>,
+    decoded_timestamp: Option<RationalTime>,
+    decoded_frame: Option<DecodedFrame>,
     processor_interpretation: Option<SourceColorInterpretation>,
     color_processor: Option<SourceToDeviceProcessor>,
     prepared_signal_key: Option<(SourceColorInterpretation, AlphaInterpretation)>,
     device_signal: Option<DeviceSignalRaster>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DecodedSampleKey {
+    requested_time: RationalTime,
+    sample_policy: FrameSelectionPolicy,
+    interpretation: ResolvedSourceDecode,
 }
 
 impl InteractionState {
@@ -107,6 +114,38 @@ fn frame_selection_policy(window: &MainWindow) -> FrameSelectionPolicy {
         0 => FrameSelectionPolicy::Exact,
         2 => FrameSelectionPolicy::Nearest,
         _ => FrameSelectionPolicy::Floor,
+    }
+}
+
+fn source_decode_interpretation(window: &MainWindow) -> SourceDecodeInterpretation {
+    SourceDecodeInterpretation {
+        matrix: match window.get_matrix_index() {
+            1 => YuvMatrixSelection::Bt709,
+            2 => YuvMatrixSelection::Bt601,
+            3 => YuvMatrixSelection::Bt2020,
+            _ => YuvMatrixSelection::Auto,
+        },
+        range: match window.get_range_index() {
+            1 => SignalRangeSelection::Limited,
+            2 => SignalRangeSelection::Full,
+            _ => SignalRangeSelection::Auto,
+        },
+    }
+}
+
+fn decode_interpretation_description(interpretation: ResolvedSourceDecode) -> &'static str {
+    match interpretation {
+        ResolvedSourceDecode::Rgb => "RGB",
+        ResolvedSourceDecode::Monochrome(ResolvedSignalRange::Limited) => "Mono Limited",
+        ResolvedSourceDecode::Monochrome(ResolvedSignalRange::Full) => "Mono Full",
+        ResolvedSourceDecode::Yuv(yuv) => match (yuv.matrix, yuv.range) {
+            (ResolvedYuvMatrix::Bt601, ResolvedSignalRange::Limited) => "YUV Rec.601 Limited",
+            (ResolvedYuvMatrix::Bt601, ResolvedSignalRange::Full) => "YUV Rec.601 Full",
+            (ResolvedYuvMatrix::Bt709, ResolvedSignalRange::Limited) => "YUV Rec.709 Limited",
+            (ResolvedYuvMatrix::Bt709, ResolvedSignalRange::Full) => "YUV Rec.709 Full",
+            (ResolvedYuvMatrix::Bt2020, ResolvedSignalRange::Limited) => "YUV Rec.2020 Limited",
+            (ResolvedYuvMatrix::Bt2020, ResolvedSignalRange::Full) => "YUV Rec.2020 Full",
+        },
     }
 }
 
@@ -169,6 +208,16 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     let prepared = match &mut state.source {
         None => prepare_raster(request, PREVIEW_WIDTH, PREVIEW_HEIGHT),
         Some(source) => {
+            let decode_interpretation = match source
+                .descriptor
+                .resolve_decode_interpretation(source_decode_interpretation(window))
+            {
+                Ok(interpretation) => interpretation,
+                Err(error) => {
+                    block_preview(window, &error.to_string());
+                    return;
+                }
+            };
             let Some((interpretation, _)) = source_color_interpretation(window) else {
                 block_preview(window, "Select an authoritative source IDT");
                 return;
@@ -190,8 +239,13 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 _ => unreachable!("alpha association was validated before sample refresh"),
             };
             let sample_policy = frame_selection_policy(window);
-            if (source.requested_time != request.time || source.sample_policy != sample_policy)
-                && let Err(error) = refresh_loaded_source(source, request.time, sample_policy)
+            let sample_key = DecodedSampleKey {
+                requested_time: request.time,
+                sample_policy,
+                interpretation: decode_interpretation,
+            };
+            if source.decoded_sample_key != Some(sample_key)
+                && let Err(error) = refresh_loaded_source(source, sample_key)
             {
                 block_preview(window, &error);
                 return;
@@ -307,12 +361,19 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                     }
                     AlphaPresence::Present => "premultiplied → opaque black",
                 };
+                let sample_key = source
+                    .decoded_sample_key
+                    .expect("rendered media has a resolved decoded sample");
+                let decoded_timestamp = source
+                    .decoded_timestamp
+                    .expect("rendered media has an exact decoded timestamp");
                 window.set_source_interpretation(
                     format!(
-                        "{interpretation_description} · {alpha} · sample {}/{} s · {:?}",
-                        source.decoded_timestamp.numerator(),
-                        source.decoded_timestamp.denominator(),
-                        source.sample_policy
+                        "{} · {interpretation_description} · {alpha} · sample {}/{} s · {:?}",
+                        decode_interpretation_description(sample_key.interpretation),
+                        decoded_timestamp.numerator(),
+                        decoded_timestamp.denominator(),
+                        sample_key.sample_policy
                     )
                     .into(),
                 );
@@ -329,48 +390,29 @@ fn block_preview(window: &MainWindow, message: &str) {
 }
 
 fn load_source(window: &MainWindow, state: &mut InteractionState, path: &Path) {
-    let requested_time = match simulation_request(window, state.inspection) {
-        Ok(request) => request.time,
-        Err(error) => {
-            window.set_error_text(error.into());
-            return;
-        }
-    };
-    let sample_policy = frame_selection_policy(window);
-    match decode_frame_at_time(path, requested_time, sample_policy) {
-        Ok((descriptor, frame)) => {
-            let loaded = prepare_loaded_source(
-                path.to_owned(),
-                descriptor,
-                frame,
-                requested_time,
-                sample_policy,
-            );
+    match probe_media(path) {
+        Ok(descriptor) => {
+            let loaded = prepare_loaded_source(path.to_owned(), descriptor);
             present_source(window, path, &loaded.descriptor);
             state.source = Some(loaded);
             state.inspection = None;
             window.set_idt_index(0);
             window.set_alpha_index(0);
+            window.set_matrix_index(0);
+            window.set_range_index(0);
             render_preview(window, state);
         }
         Err(error) => window.set_error_text(error.to_string().into()),
     }
 }
 
-fn prepare_loaded_source(
-    path: PathBuf,
-    descriptor: MediaDescriptor,
-    frame: DecodedFrame,
-    requested_time: RationalTime,
-    sample_policy: FrameSelectionPolicy,
-) -> LoadedSource {
+fn prepare_loaded_source(path: PathBuf, descriptor: MediaDescriptor) -> LoadedSource {
     LoadedSource {
         path,
         descriptor,
-        requested_time,
-        sample_policy,
-        decoded_timestamp: frame.timestamp,
-        decoded_frame: frame,
+        decoded_sample_key: None,
+        decoded_timestamp: None,
+        decoded_frame: None,
         processor_interpretation: None,
         color_processor: None,
         prepared_signal_key: None,
@@ -401,7 +443,10 @@ fn ensure_device_signal(
         .as_ref()
         .expect("processor interpretation and processor are updated together");
     let device_signal = decoded_frame_to_device_signal(
-        &source.decoded_frame,
+        source
+            .decoded_frame
+            .as_ref()
+            .expect("device signal requires a resolved decoded sample"),
         source.descriptor.alpha,
         alpha_interpretation,
         processor,
@@ -413,19 +458,22 @@ fn ensure_device_signal(
 
 fn refresh_loaded_source(
     source: &mut LoadedSource,
-    requested_time: RationalTime,
-    sample_policy: FrameSelectionPolicy,
+    sample_key: DecodedSampleKey,
 ) -> Result<(), String> {
-    let (descriptor, frame) = decode_frame_at_time(&source.path, requested_time, sample_policy)
-        .map_err(|error| error.to_string())?;
+    let (descriptor, frame) = decode_frame_at_time(
+        &source.path,
+        sample_key.requested_time,
+        sample_key.sample_policy,
+        sample_key.interpretation,
+    )
+    .map_err(|error| error.to_string())?;
     if descriptor != source.descriptor {
         return Err("source descriptor changed on disk; reopen the source explicitly".to_owned());
     }
     source.descriptor = descriptor;
-    source.requested_time = requested_time;
-    source.sample_policy = sample_policy;
-    source.decoded_timestamp = frame.timestamp;
-    source.decoded_frame = frame;
+    source.decoded_sample_key = Some(sample_key);
+    source.decoded_timestamp = Some(frame.timestamp);
+    source.decoded_frame = Some(frame);
     source.prepared_signal_key = None;
     source.device_signal = None;
     Ok(())

@@ -1,4 +1,4 @@
-import { AboutSlint, Button, ComboBox, Slider } from "std-widgets.slint";
+import { AboutSlint, Button, ComboBox, ScrollView, Slider } from "std-widgets.slint";
 
 component ValueRow inherits Rectangle {
     in property <string> label;
@@ -104,6 +104,8 @@ export component MainWindow inherits Window {
     in-out property <int> idt-index: 0;
     in property <[string]> idt-model;
     in-out property <int> alpha-index: 0;
+    in-out property <int> matrix-index: 0;
+    in-out property <int> range-index: 0;
     in-out property <int> sample-policy-index: 1;
     in-out property <int> project-fps-index: 1;
     in-out property <int> custom-fps-numerator: 24;
@@ -348,9 +350,11 @@ export component MainWindow inherits Window {
                     border-width: 1px;
                     border-color: #303744;
 
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 5px;
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 18px;
+                            padding-right: 24px;
+                            spacing: 5px;
 
                         Text {
                             text: "SCENE INSPECTOR";
@@ -368,6 +372,24 @@ export component MainWindow inherits Window {
                         Text { text: root.source-title; color: #c3ccda; overflow: elide; }
                         Text { text: root.source-details; color: #8794a9; overflow: elide; }
                         Text { text: root.source-interpretation; color: #d59b68; overflow: elide; }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "YUV matrix"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["Auto (metadata)", "Rec.709", "Rec.601", "Rec.2020"];
+                                current-index <=> root.matrix-index;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Signal range"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["Auto (metadata)", "Limited", "Full"];
+                                current-index <=> root.range-index;
+                            }
+                        }
 
                         HorizontalLayout {
                             height: 34px;
@@ -520,10 +542,11 @@ export component MainWindow inherits Window {
 
                         Rectangle { vertical-stretch: 1; }
 
-                        Text {
-                            text: "Screen Simulation 0.1.0";
-                            color: #66748a;
-                            font-size: 11px;
+                            Text {
+                                text: "Screen Simulation 0.1.0";
+                                color: #66748a;
+                                font-size: 11px;
+                            }
                         }
                     }
                 }

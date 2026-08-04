@@ -40,6 +40,7 @@ pub enum TransferCharacteristic {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MatrixCoefficients {
     Rgb,
+    Bt601,
     Bt709,
     Bt2020Ncl,
     Bt2020Cl,

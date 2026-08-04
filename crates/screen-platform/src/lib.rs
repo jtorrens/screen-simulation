@@ -13,7 +13,7 @@ use screen_contracts::{
 };
 use screen_media::{
     AlphaPresence, DecodedFrame, DecodedRgba, FrameCadence, FrameSelectionPolicy, MediaDescriptor,
-    RasterSize,
+    PixelEncoding, RasterSize, ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix,
 };
 
 static FFMPEG_INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
@@ -65,6 +65,13 @@ pub fn probe_media(path: &Path) -> Result<MediaDescriptor, PlatformMediaError> {
         } else {
             AlphaPresence::Absent
         },
+        pixel_encoding: pixel_descriptor
+            .map(ffmpeg_bridge::pixel_encoding)
+            .ok_or_else(|| {
+                PlatformMediaError::InvalidVideoStream(
+                    "pixel format has no FFmpeg descriptor".to_owned(),
+                )
+            })?,
         codec_name: decoder
             .codec()
             .map_or_else(|| "unknown".to_owned(), |codec| codec.name().to_owned()),
@@ -113,6 +120,7 @@ fn declared_matrix(value: ffmpeg::util::color::Space) -> Option<MatrixCoefficien
     match value {
         Space::Unspecified => None,
         Space::RGB => Some(MatrixCoefficients::Rgb),
+        Space::BT470BG | Space::SMPTE170M => Some(MatrixCoefficients::Bt601),
         Space::BT709 => Some(MatrixCoefficients::Bt709),
         Space::BT2020NCL => Some(MatrixCoefficients::Bt2020Ncl),
         Space::BT2020CL => Some(MatrixCoefficients::Bt2020Cl),
@@ -135,6 +143,7 @@ pub fn decode_frame_at_time(
     path: &Path,
     requested_time: RationalTime,
     policy: FrameSelectionPolicy,
+    interpretation: ResolvedSourceDecode,
 ) -> Result<(MediaDescriptor, DecodedFrame), PlatformMediaError> {
     let descriptor = probe_media(path)?;
     if requested_time.numerator() < 0 {
@@ -173,6 +182,7 @@ pub fn decode_frame_at_time(
         ffmpeg::software::scaling::flag::Flags::BILINEAR,
     )
     .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
+    ffmpeg_bridge::configure_scaler(&mut scaler, descriptor.pixel_encoding, interpretation)?;
 
     let seek_timestamp = time_in_ffmpeg_base(requested_time)?;
     if seek_timestamp > 0 {
@@ -344,6 +354,74 @@ fn initialize_ffmpeg() -> Result<(), PlatformMediaError> {
         .map_err(PlatformMediaError::Initialization)
 }
 
+#[allow(unsafe_code)]
+mod ffmpeg_bridge {
+    use super::*;
+
+    pub(super) fn pixel_encoding(descriptor: ffmpeg::format::pixel::Descriptor) -> PixelEncoding {
+        if descriptor.nb_components() <= 2 {
+            return PixelEncoding::Monochrome;
+        }
+        // SAFETY: `Descriptor` is constructed by FFmpeg from its static pixel-format table, and
+        // its public `as_ptr` remains valid for the lifetime of the process.
+        let flags = unsafe { (*descriptor.as_ptr()).flags };
+        if flags & u64::try_from(ffmpeg::ffi::AV_PIX_FMT_FLAG_RGB).expect("RGB flag is positive")
+            != 0
+        {
+            PixelEncoding::Rgb
+        } else {
+            PixelEncoding::Yuv
+        }
+    }
+
+    pub(super) fn configure_scaler(
+        scaler: &mut ffmpeg::software::scaling::context::Context,
+        encoding: PixelEncoding,
+        interpretation: ResolvedSourceDecode,
+    ) -> Result<(), PlatformMediaError> {
+        let (matrix, range) = match (encoding, interpretation) {
+            (PixelEncoding::Rgb, ResolvedSourceDecode::Rgb) => return Ok(()),
+            (PixelEncoding::Yuv, ResolvedSourceDecode::Yuv(yuv)) => (yuv.matrix, yuv.range),
+            (PixelEncoding::Monochrome, ResolvedSourceDecode::Monochrome(range)) => {
+                // libswscale requires a coefficient table even though monochrome conversion does
+                // not consume chroma. This value therefore has no image-semantic effect.
+                (ResolvedYuvMatrix::Bt709, range)
+            }
+            _ => return Err(PlatformMediaError::DecodeInterpretationMismatch),
+        };
+        let coefficient_id = match matrix {
+            ResolvedYuvMatrix::Bt601 => ffmpeg::ffi::SWS_CS_ITU601,
+            ResolvedYuvMatrix::Bt709 => ffmpeg::ffi::SWS_CS_ITU709,
+            ResolvedYuvMatrix::Bt2020 => ffmpeg::ffi::SWS_CS_BT2020,
+        };
+        let source_full_range = match range {
+            ResolvedSignalRange::Limited => 0,
+            ResolvedSignalRange::Full => 1,
+        };
+        // SAFETY: `scaler` owns a live `SwsContext`; FFmpeg owns the immutable coefficient table;
+        // all scalar arguments follow the documented 16.16 fixed-point contract. The pointers are
+        // used only for the duration of this call and no Rust reference aliases their storage.
+        let result = unsafe {
+            let coefficients = ffmpeg::ffi::sws_getCoefficients(coefficient_id);
+            ffmpeg::ffi::sws_setColorspaceDetails(
+                scaler.as_mut_ptr(),
+                coefficients,
+                source_full_range,
+                coefficients,
+                1,
+                0,
+                1 << 16,
+                1 << 16,
+            )
+        };
+        if result < 0 {
+            Err(PlatformMediaError::CannotConfigureDecodeInterpretation)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlatformMediaError {
     Initialization(String),
@@ -360,6 +438,8 @@ pub enum PlatformMediaError {
     TimestampOverflow,
     FrameTooLarge,
     InvalidDecodedStorage,
+    DecodeInterpretationMismatch,
+    CannotConfigureDecodeInterpretation,
 }
 
 impl fmt::Display for PlatformMediaError {
@@ -399,6 +479,12 @@ impl fmt::Display for PlatformMediaError {
             Self::InvalidDecodedStorage => {
                 formatter.write_str("FFmpeg returned invalid decoded frame storage")
             }
+            Self::DecodeInterpretationMismatch => formatter.write_str(
+                "resolved source decode interpretation does not match the decoded pixel encoding",
+            ),
+            Self::CannotConfigureDecodeInterpretation => {
+                formatter.write_str("FFmpeg rejected the resolved source matrix or range")
+            }
         }
     }
 }
@@ -419,6 +505,7 @@ mod tests {
             cadence: FrameCadence::Variable,
             duration: Some(time(1, 1)),
             alpha: AlphaPresence::Absent,
+            pixel_encoding: PixelEncoding::Rgb,
             codec_name: "test".to_owned(),
             pixel_format_name: "rgba64le".to_owned(),
             color_metadata: EncodedColorMetadata::default(),
@@ -509,8 +596,81 @@ mod tests {
             declared_matrix(Space::BT709),
             Some(MatrixCoefficients::Bt709)
         );
+        assert_eq!(
+            declared_matrix(Space::SMPTE170M),
+            Some(MatrixCoefficients::Bt601)
+        );
         assert_eq!(declared_range(Range::MPEG), Some(SignalRange::Limited));
         assert_eq!(declared_primaries(Primaries::Unspecified), None);
         assert_eq!(declared_transfer(Transfer::Unspecified), None);
+    }
+
+    #[test]
+    fn pixel_encoding_is_derived_from_ffmpeg_pixel_descriptors() {
+        assert_eq!(
+            ffmpeg_bridge::pixel_encoding(
+                ffmpeg::format::Pixel::RGBA
+                    .descriptor()
+                    .expect("RGBA descriptor"),
+            ),
+            PixelEncoding::Rgb
+        );
+        assert_eq!(
+            ffmpeg_bridge::pixel_encoding(
+                ffmpeg::format::Pixel::YUV444P
+                    .descriptor()
+                    .expect("YUV descriptor"),
+            ),
+            PixelEncoding::Yuv
+        );
+        assert_eq!(
+            ffmpeg_bridge::pixel_encoding(
+                ffmpeg::format::Pixel::GRAY8
+                    .descriptor()
+                    .expect("gray descriptor"),
+            ),
+            PixelEncoding::Monochrome
+        );
+    }
+
+    #[test]
+    fn resolved_signal_range_changes_the_reference_yuv_decode() {
+        initialize_ffmpeg().expect("FFmpeg initializes");
+        let mut source =
+            ffmpeg::util::frame::video::Video::new(ffmpeg::format::Pixel::YUV444P, 1, 1);
+        source.data_mut(0)[0] = 16;
+        source.data_mut(1)[0] = 128;
+        source.data_mut(2)[0] = 128;
+        let decode = |range| {
+            let mut scaler = ffmpeg::software::scaling::context::Context::get(
+                ffmpeg::format::Pixel::YUV444P,
+                1,
+                1,
+                ffmpeg::format::Pixel::RGBA64LE,
+                1,
+                1,
+                ffmpeg::software::scaling::flag::Flags::POINT,
+            )
+            .expect("test scaler");
+            ffmpeg_bridge::configure_scaler(
+                &mut scaler,
+                PixelEncoding::Yuv,
+                ResolvedSourceDecode::Yuv(screen_media::ResolvedYuvInterpretation {
+                    matrix: ResolvedYuvMatrix::Bt709,
+                    range,
+                }),
+            )
+            .expect("resolved interpretation");
+            let mut output = ffmpeg::util::frame::video::Video::empty();
+            scaler.run(&source, &mut output).expect("scaled frame");
+            u16::from_le_bytes([output.data(0)[0], output.data(0)[1]])
+        };
+        let limited_black = decode(ResolvedSignalRange::Limited);
+        let full_dark_gray = decode(ResolvedSignalRange::Full);
+        assert!(limited_black < 512, "limited code 16 must decode as black");
+        assert!(
+            full_dark_gray > 3_000,
+            "full-range code 16 must remain above black"
+        );
     }
 }

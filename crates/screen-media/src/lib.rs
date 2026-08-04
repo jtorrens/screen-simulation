@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use screen_contracts::{EncodedColorMetadata, RationalTime};
+use screen_contracts::{EncodedColorMetadata, MatrixCoefficients, RationalTime, SignalRange};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RasterSize {
@@ -38,6 +38,60 @@ pub enum AlphaInterpretation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelEncoding {
+    Rgb,
+    Yuv,
+    Monochrome,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YuvMatrixSelection {
+    Auto,
+    Bt601,
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalRangeSelection {
+    Auto,
+    Limited,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedYuvMatrix {
+    Bt601,
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedSignalRange {
+    Limited,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceDecodeInterpretation {
+    pub matrix: YuvMatrixSelection,
+    pub range: SignalRangeSelection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedYuvInterpretation {
+    pub matrix: ResolvedYuvMatrix,
+    pub range: ResolvedSignalRange,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedSourceDecode {
+    Rgb,
+    Yuv(ResolvedYuvInterpretation),
+    Monochrome(ResolvedSignalRange),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameCadence {
     Constant { frame_rate: RationalTime },
     Variable,
@@ -56,9 +110,54 @@ pub struct MediaDescriptor {
     pub cadence: FrameCadence,
     pub duration: Option<RationalTime>,
     pub alpha: AlphaPresence,
+    pub pixel_encoding: PixelEncoding,
     pub codec_name: String,
     pub pixel_format_name: String,
     pub color_metadata: EncodedColorMetadata,
+}
+
+impl MediaDescriptor {
+    pub fn resolve_decode_interpretation(
+        &self,
+        authored: SourceDecodeInterpretation,
+    ) -> Result<ResolvedSourceDecode, MediaError> {
+        if self.pixel_encoding == PixelEncoding::Rgb {
+            return Ok(ResolvedSourceDecode::Rgb);
+        }
+        let range = match authored.range {
+            SignalRangeSelection::Limited => ResolvedSignalRange::Limited,
+            SignalRangeSelection::Full => ResolvedSignalRange::Full,
+            SignalRangeSelection::Auto => match self.color_metadata.range.as_ref() {
+                Some(SignalRange::Limited) => ResolvedSignalRange::Limited,
+                Some(SignalRange::Full) => ResolvedSignalRange::Full,
+                None => return Err(MediaError::UnresolvedSignalRange),
+                Some(SignalRange::Other(_)) => {
+                    return Err(MediaError::UnsupportedDeclaredSignalRange);
+                }
+            },
+        };
+        if self.pixel_encoding == PixelEncoding::Monochrome {
+            return Ok(ResolvedSourceDecode::Monochrome(range));
+        }
+        let matrix = match authored.matrix {
+            YuvMatrixSelection::Bt601 => ResolvedYuvMatrix::Bt601,
+            YuvMatrixSelection::Bt709 => ResolvedYuvMatrix::Bt709,
+            YuvMatrixSelection::Bt2020 => ResolvedYuvMatrix::Bt2020,
+            YuvMatrixSelection::Auto => match self.color_metadata.matrix.as_ref() {
+                Some(MatrixCoefficients::Bt601) => ResolvedYuvMatrix::Bt601,
+                Some(MatrixCoefficients::Bt709) => ResolvedYuvMatrix::Bt709,
+                Some(MatrixCoefficients::Bt2020Ncl | MatrixCoefficients::Bt2020Cl) => {
+                    ResolvedYuvMatrix::Bt2020
+                }
+                None => return Err(MediaError::UnresolvedYuvMatrix),
+                Some(_) => return Err(MediaError::UnsupportedDeclaredYuvMatrix),
+            },
+        };
+        Ok(ResolvedSourceDecode::Yuv(ResolvedYuvInterpretation {
+            matrix,
+            range,
+        }))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,6 +192,10 @@ impl DecodedFrame {
 pub enum MediaError {
     EmptyRaster,
     PixelCountMismatch { expected: u64, actual: u64 },
+    UnresolvedYuvMatrix,
+    UnsupportedDeclaredYuvMatrix,
+    UnresolvedSignalRange,
+    UnsupportedDeclaredSignalRange,
 }
 
 impl fmt::Display for MediaError {
@@ -102,6 +205,18 @@ impl fmt::Display for MediaError {
             Self::PixelCountMismatch { expected, actual } => write!(
                 formatter,
                 "decoded frame has {actual} pixels but its raster requires {expected}"
+            ),
+            Self::UnresolvedYuvMatrix => formatter.write_str(
+                "source metadata does not declare a supported YUV matrix; choose one explicitly",
+            ),
+            Self::UnsupportedDeclaredYuvMatrix => formatter.write_str(
+                "source metadata declares an unsupported YUV matrix; choose one explicitly",
+            ),
+            Self::UnresolvedSignalRange => formatter.write_str(
+                "source metadata does not declare signal range; choose Limited or Full explicitly",
+            ),
+            Self::UnsupportedDeclaredSignalRange => formatter.write_str(
+                "source metadata declares an unsupported signal range; choose one explicitly",
             ),
         }
     }
@@ -139,6 +254,95 @@ mod tests {
                 expected: 4,
                 actual: 3
             })
+        );
+    }
+
+    fn yuv_descriptor(metadata: EncodedColorMetadata) -> MediaDescriptor {
+        MediaDescriptor {
+            raster: RasterSize::new(1, 1).expect("valid raster"),
+            cadence: FrameCadence::Variable,
+            duration: None,
+            alpha: AlphaPresence::Absent,
+            pixel_encoding: PixelEncoding::Yuv,
+            codec_name: "test".to_owned(),
+            pixel_format_name: "yuv444p".to_owned(),
+            color_metadata: metadata,
+        }
+    }
+
+    #[test]
+    fn auto_yuv_decode_requires_complete_supported_metadata() {
+        let descriptor = yuv_descriptor(EncodedColorMetadata {
+            matrix: Some(MatrixCoefficients::Bt709),
+            range: Some(SignalRange::Limited),
+            ..EncodedColorMetadata::default()
+        });
+        assert_eq!(
+            descriptor.resolve_decode_interpretation(SourceDecodeInterpretation {
+                matrix: YuvMatrixSelection::Auto,
+                range: SignalRangeSelection::Auto,
+            }),
+            Ok(ResolvedSourceDecode::Yuv(ResolvedYuvInterpretation {
+                matrix: ResolvedYuvMatrix::Bt709,
+                range: ResolvedSignalRange::Limited,
+            }))
+        );
+        let missing_range = yuv_descriptor(EncodedColorMetadata {
+            matrix: Some(MatrixCoefficients::Bt709),
+            ..EncodedColorMetadata::default()
+        });
+        assert_eq!(
+            missing_range.resolve_decode_interpretation(SourceDecodeInterpretation {
+                matrix: YuvMatrixSelection::Auto,
+                range: SignalRangeSelection::Auto,
+            }),
+            Err(MediaError::UnresolvedSignalRange)
+        );
+    }
+
+    #[test]
+    fn explicit_yuv_decode_overrides_missing_or_unsupported_metadata() {
+        let descriptor = yuv_descriptor(EncodedColorMetadata::default());
+        assert_eq!(
+            descriptor.resolve_decode_interpretation(SourceDecodeInterpretation {
+                matrix: YuvMatrixSelection::Bt2020,
+                range: SignalRangeSelection::Full,
+            }),
+            Ok(ResolvedSourceDecode::Yuv(ResolvedYuvInterpretation {
+                matrix: ResolvedYuvMatrix::Bt2020,
+                range: ResolvedSignalRange::Full,
+            }))
+        );
+    }
+
+    #[test]
+    fn rgb_sources_do_not_enter_the_yuv_interpretation_route() {
+        let mut descriptor = yuv_descriptor(EncodedColorMetadata::default());
+        descriptor.pixel_encoding = PixelEncoding::Rgb;
+        assert_eq!(
+            descriptor.resolve_decode_interpretation(SourceDecodeInterpretation {
+                matrix: YuvMatrixSelection::Auto,
+                range: SignalRangeSelection::Auto,
+            }),
+            Ok(ResolvedSourceDecode::Rgb)
+        );
+    }
+
+    #[test]
+    fn monochrome_sources_require_range_but_not_matrix() {
+        let mut descriptor = yuv_descriptor(EncodedColorMetadata {
+            range: Some(SignalRange::Limited),
+            ..EncodedColorMetadata::default()
+        });
+        descriptor.pixel_encoding = PixelEncoding::Monochrome;
+        assert_eq!(
+            descriptor.resolve_decode_interpretation(SourceDecodeInterpretation {
+                matrix: YuvMatrixSelection::Auto,
+                range: SignalRangeSelection::Auto,
+            }),
+            Ok(ResolvedSourceDecode::Monochrome(
+                ResolvedSignalRange::Limited
+            ))
         );
     }
 }
