@@ -1,3 +1,994 @@
 //! Strict portable project-document ownership.
 
 #![forbid(unsafe_code)]
+
+use core::fmt;
+use screen_contracts::{FrameRate, RationalTime};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+pub const MANIFEST_NAME: &str = "project.json";
+pub const CURRENT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OpaqueId(String);
+
+impl OpaqueId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, PersistenceError> {
+        let value = value.into();
+        let valid = !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+        if !valid {
+            return Err(PersistenceError::InvalidOpaqueId(value));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PortablePath(String);
+
+impl PortablePath {
+    pub fn parse(value: impl Into<String>) -> Result<Self, PersistenceError> {
+        let value = value.into();
+        let path = Path::new(&value);
+        let valid = !value.is_empty()
+            && !value.contains('\\')
+            && !path.is_absolute()
+            && path.components().all(|component| {
+                matches!(component, Component::Normal(_))
+                    && component.as_os_str().to_str().is_some()
+            });
+        if !valid {
+            return Err(PersistenceError::InvalidPortablePath(value));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn resolve(&self, root: &Path) -> PathBuf {
+        root.join(&self.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectManifest {
+    pub schema: String,
+    pub version: u32,
+    pub project_id: OpaqueId,
+    pub title: String,
+    pub source_document: PortablePath,
+    pub device_document: PortablePath,
+    pub camera_document: PortablePath,
+    pub screen_document: PortablePath,
+    pub shot_document: PortablePath,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceDocument {
+    pub schema: String,
+    pub version: u32,
+    pub source_id: OpaqueId,
+    pub media: PortablePath,
+    pub decode: PixelDecodeSelection,
+    pub color: SourceColorSelection,
+    pub alpha: AlphaSelection,
+    pub placement: PlacementSelection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatrixSelection {
+    Auto,
+    Bt601,
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RangeSelection {
+    Auto,
+    Limited,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PixelDecodeSelection {
+    pub matrix: MatrixSelection,
+    pub range: RangeSelection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourceColorSelection {
+    Identity,
+    Named { transform_id: OpaqueId },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlphaSelection {
+    Auto,
+    Straight,
+    Premultiplied,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementSelection {
+    Fit,
+    FillCrop,
+    Stretch,
+    OneToOne,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceDocument {
+    pub schema: String,
+    pub version: u32,
+    pub device_id: OpaqueId,
+    pub native_width: u32,
+    pub native_height: u32,
+    pub active_width_meters: f32,
+    pub active_height_meters: f32,
+    pub stripe: StripeSelection,
+    pub black_matrix_fraction: f32,
+    pub eotf_gamma: f32,
+    pub black_level_nits: f32,
+    pub white_level_nits: f32,
+    pub channel_efficiency: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StripeSelection {
+    Rgb,
+    Bgr,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterpolationSelection {
+    Hold,
+    Linear,
+    Smooth,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactTime {
+    pub numerator: i64,
+    pub denominator: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransformKeyframe {
+    pub keyframe_id: OpaqueId,
+    pub time: ExactTime,
+    pub translation_meters: [f32; 3],
+    pub rotation_quaternion: [f32; 4],
+    pub interpolation: InterpolationSelection,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraIntrinsicsKeyframe {
+    pub keyframe_id: OpaqueId,
+    pub time: ExactTime,
+    pub focal_length_mm: f32,
+    pub sensor_width_mm: f32,
+    pub sensor_height_mm: f32,
+    pub lens_shift: [f32; 2],
+    pub focus_distance_meters: f32,
+    pub f_stop: f32,
+    pub near_clip_meters: f32,
+    pub far_clip_meters: f32,
+    pub interpolation: InterpolationSelection,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraDocument {
+    pub schema: String,
+    pub version: u32,
+    pub camera_id: OpaqueId,
+    pub transform_keyframes: Vec<TransformKeyframe>,
+    pub intrinsics_keyframes: Vec<CameraIntrinsicsKeyframe>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenDocument {
+    pub schema: String,
+    pub version: u32,
+    pub screen_id: OpaqueId,
+    pub transform_keyframes: Vec<TransformKeyframe>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShotDocument {
+    pub schema: String,
+    pub version: u32,
+    pub shot_id: OpaqueId,
+    pub source_id: OpaqueId,
+    pub device_id: OpaqueId,
+    pub camera_id: OpaqueId,
+    pub screen_id: OpaqueId,
+    pub project_frame_rate: ExactFrameRate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactFrameRate {
+    pub numerator: u32,
+    pub denominator: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectPackage {
+    pub manifest: ProjectManifest,
+    pub source: SourceDocument,
+    pub device: DeviceDocument,
+    pub camera: CameraDocument,
+    pub screen: ScreenDocument,
+    pub shot: ShotDocument,
+}
+
+impl ProjectPackage {
+    pub fn validate(&self) -> Result<(), PersistenceError> {
+        validate_manifest(&self.manifest)?;
+        validate_header(
+            &self.source.schema,
+            self.source.version,
+            "screen_simulation_source",
+        )?;
+        validate_header(
+            &self.device.schema,
+            self.device.version,
+            "screen_simulation_device",
+        )?;
+        validate_header(
+            &self.camera.schema,
+            self.camera.version,
+            "screen_simulation_camera",
+        )?;
+        validate_header(
+            &self.screen.schema,
+            self.screen.version,
+            "screen_simulation_screen",
+        )?;
+        validate_header(
+            &self.shot.schema,
+            self.shot.version,
+            "screen_simulation_shot",
+        )?;
+        validate_id(&self.manifest.project_id)?;
+        validate_id(&self.source.source_id)?;
+        validate_id(&self.device.device_id)?;
+        validate_id(&self.camera.camera_id)?;
+        validate_id(&self.screen.screen_id)?;
+        validate_id(&self.shot.shot_id)?;
+        PortablePath::parse(self.source.media.as_str())?;
+        if self.source.media.as_str() == MANIFEST_NAME
+            || [
+                &self.manifest.source_document,
+                &self.manifest.device_document,
+                &self.manifest.camera_document,
+                &self.manifest.screen_document,
+                &self.manifest.shot_document,
+            ]
+            .iter()
+            .any(|path| path.as_str() == self.source.media.as_str())
+        {
+            return Err(PersistenceError::ResourceOverlapsDocument(
+                self.source.media.as_str().to_owned(),
+            ));
+        }
+        if self.shot.source_id != self.source.source_id
+            || self.shot.device_id != self.device.device_id
+            || self.shot.camera_id != self.camera.camera_id
+            || self.shot.screen_id != self.screen.screen_id
+        {
+            return Err(PersistenceError::InvalidShotReference);
+        }
+        if self.shot.project_frame_rate.numerator == 0
+            || self.shot.project_frame_rate.denominator == 0
+        {
+            return Err(PersistenceError::InvalidFrameRate);
+        }
+        FrameRate::new(
+            self.shot.project_frame_rate.numerator,
+            self.shot.project_frame_rate.denominator,
+        )
+        .map_err(|_| PersistenceError::InvalidFrameRate)?;
+        validate_keyframes(&self.camera.transform_keyframes)?;
+        validate_intrinsics(&self.camera.intrinsics_keyframes)?;
+        validate_keyframes(&self.screen.transform_keyframes)?;
+        validate_device(&self.device)?;
+        Ok(())
+    }
+}
+
+pub fn open_project(root: &Path) -> Result<ProjectPackage, PersistenceError> {
+    if root.extension().and_then(|value| value.to_str()) != Some("screensim") {
+        return Err(PersistenceError::InvalidPackageExtension);
+    }
+    let manifest: ProjectManifest = read_document(&root.join(MANIFEST_NAME))?;
+    validate_manifest(&manifest)?;
+    let package = ProjectPackage {
+        source: read_document(&manifest.source_document.resolve(root))?,
+        device: read_document(&manifest.device_document.resolve(root))?,
+        camera: read_document(&manifest.camera_document.resolve(root))?,
+        screen: read_document(&manifest.screen_document.resolve(root))?,
+        shot: read_document(&manifest.shot_document.resolve(root))?,
+        manifest,
+    };
+    package.validate()?;
+    if !package.source.media.resolve(root).is_file() {
+        return Err(PersistenceError::MissingResource(
+            package.source.media.0.clone(),
+        ));
+    }
+    Ok(package)
+}
+
+pub fn create_project(
+    root: &Path,
+    package: &ProjectPackage,
+    source_media: &Path,
+) -> Result<(), PersistenceError> {
+    package.validate()?;
+    if root.extension().and_then(|value| value.to_str()) != Some("screensim") {
+        return Err(PersistenceError::InvalidPackageExtension);
+    }
+    if root.exists() {
+        return Err(PersistenceError::PackageAlreadyExists(root.to_path_buf()));
+    }
+    if !source_media.is_file() {
+        return Err(PersistenceError::SourceMediaMissing(
+            source_media.to_path_buf(),
+        ));
+    }
+    let parent = root.parent().ok_or(PersistenceError::PackageHasNoParent)?;
+    let file_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or(PersistenceError::PackageHasNoParent)?;
+    let staging = parent.join(format!(".{file_name}.creating-{}", std::process::id()));
+    if staging.exists() {
+        return Err(PersistenceError::StagingPathAlreadyExists(staging));
+    }
+    let result = create_project_in(&staging, package, source_media).and_then(|()| {
+        fs::rename(&staging, root).map_err(|error| PersistenceError::Io(root.to_path_buf(), error))
+    });
+    if result.is_err() && staging.exists() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+fn create_project_in(
+    root: &Path,
+    package: &ProjectPackage,
+    source_media: &Path,
+) -> Result<(), PersistenceError> {
+    fs::create_dir(root).map_err(|error| PersistenceError::Io(root.to_path_buf(), error))?;
+    for path in [
+        &package.manifest.source_document,
+        &package.manifest.device_document,
+        &package.manifest.camera_document,
+        &package.manifest.screen_document,
+        &package.manifest.shot_document,
+        &package.source.media,
+    ] {
+        let parent = path
+            .resolve(root)
+            .parent()
+            .ok_or_else(|| PersistenceError::InvalidPortablePath(path.0.clone()))?
+            .to_path_buf();
+        fs::create_dir_all(&parent).map_err(|error| PersistenceError::Io(parent, error))?;
+    }
+    write_document(&root.join(MANIFEST_NAME), &package.manifest)?;
+    write_document(
+        &package.manifest.source_document.resolve(root),
+        &package.source,
+    )?;
+    write_document(
+        &package.manifest.device_document.resolve(root),
+        &package.device,
+    )?;
+    write_document(
+        &package.manifest.camera_document.resolve(root),
+        &package.camera,
+    )?;
+    write_document(
+        &package.manifest.screen_document.resolve(root),
+        &package.screen,
+    )?;
+    write_document(&package.manifest.shot_document.resolve(root), &package.shot)?;
+    let media_target = package.source.media.resolve(root);
+    fs::copy(source_media, &media_target)
+        .map_err(|error| PersistenceError::Io(media_target, error))?;
+    Ok(())
+}
+
+fn validate_manifest(manifest: &ProjectManifest) -> Result<(), PersistenceError> {
+    validate_header(
+        &manifest.schema,
+        manifest.version,
+        "screen_simulation_project",
+    )?;
+    validate_id(&manifest.project_id)?;
+    if manifest.title.trim().is_empty() {
+        return Err(PersistenceError::EmptyProjectTitle);
+    }
+    let paths = [
+        &manifest.source_document,
+        &manifest.device_document,
+        &manifest.camera_document,
+        &manifest.screen_document,
+        &manifest.shot_document,
+    ];
+    for path in paths {
+        PortablePath::parse(path.as_str())?;
+        if path.as_str() == MANIFEST_NAME {
+            return Err(PersistenceError::DuplicateDocumentPath(
+                path.as_str().to_owned(),
+            ));
+        }
+    }
+    for (index, left) in paths.iter().enumerate() {
+        if paths[index + 1..]
+            .iter()
+            .any(|right| left.as_str() == right.as_str())
+        {
+            return Err(PersistenceError::DuplicateDocumentPath(
+                left.as_str().to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_header(
+    actual: &str,
+    version: u32,
+    expected: &'static str,
+) -> Result<(), PersistenceError> {
+    if actual != expected {
+        return Err(PersistenceError::UnknownSchema(actual.to_owned()));
+    }
+    if version != CURRENT_VERSION {
+        return Err(PersistenceError::UnknownVersion {
+            schema: expected,
+            version,
+        });
+    }
+    Ok(())
+}
+
+fn validate_id(id: &OpaqueId) -> Result<(), PersistenceError> {
+    OpaqueId::parse(id.as_str()).map(|_| ())
+}
+
+fn validate_time(time: ExactTime) -> Result<(), PersistenceError> {
+    RationalTime::new(time.numerator, time.denominator)
+        .map(|_| ())
+        .map_err(|_| PersistenceError::InvalidExactTime)
+}
+
+fn validate_keyframes(keyframes: &[TransformKeyframe]) -> Result<(), PersistenceError> {
+    if keyframes.is_empty() {
+        return Err(PersistenceError::EmptyAnimationTrack);
+    }
+    let mut prior: Option<ExactTime> = None;
+    for keyframe in keyframes {
+        validate_id(&keyframe.keyframe_id)?;
+        validate_time(keyframe.time)?;
+        if !keyframe
+            .translation_meters
+            .iter()
+            .all(|value| value.is_finite())
+            || !keyframe
+                .rotation_quaternion
+                .iter()
+                .all(|value| value.is_finite())
+        {
+            return Err(PersistenceError::NonFiniteNumber);
+        }
+        let magnitude = keyframe
+            .rotation_quaternion
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>();
+        if (magnitude - 1.0).abs() > 1.0e-4 {
+            return Err(PersistenceError::NonNormalizedQuaternion);
+        }
+        if prior.is_some_and(|previous| compare_time(previous, keyframe.time).is_ge()) {
+            return Err(PersistenceError::UnorderedKeyframes);
+        }
+        prior = Some(keyframe.time);
+    }
+    Ok(())
+}
+
+fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), PersistenceError> {
+    if keyframes.is_empty() {
+        return Err(PersistenceError::EmptyAnimationTrack);
+    }
+    let mut prior: Option<ExactTime> = None;
+    for keyframe in keyframes {
+        validate_id(&keyframe.keyframe_id)?;
+        validate_time(keyframe.time)?;
+        let values = [
+            keyframe.focal_length_mm,
+            keyframe.sensor_width_mm,
+            keyframe.sensor_height_mm,
+            keyframe.lens_shift[0],
+            keyframe.lens_shift[1],
+            keyframe.focus_distance_meters,
+            keyframe.f_stop,
+            keyframe.near_clip_meters,
+            keyframe.far_clip_meters,
+        ];
+        if !values.iter().all(|value| value.is_finite()) {
+            return Err(PersistenceError::NonFiniteNumber);
+        }
+        if keyframe.focal_length_mm <= 0.0
+            || keyframe.sensor_width_mm <= 0.0
+            || keyframe.sensor_height_mm <= 0.0
+            || keyframe.focus_distance_meters <= 0.0
+            || keyframe.f_stop <= 0.0
+            || keyframe.near_clip_meters <= 0.0
+            || keyframe.far_clip_meters <= keyframe.near_clip_meters
+        {
+            return Err(PersistenceError::InvalidCameraIntrinsics);
+        }
+        if prior.is_some_and(|previous| compare_time(previous, keyframe.time).is_ge()) {
+            return Err(PersistenceError::UnorderedKeyframes);
+        }
+        prior = Some(keyframe.time);
+    }
+    Ok(())
+}
+
+fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
+    let values = [
+        device.active_width_meters,
+        device.active_height_meters,
+        device.black_matrix_fraction,
+        device.eotf_gamma,
+        device.black_level_nits,
+        device.white_level_nits,
+        device.channel_efficiency[0],
+        device.channel_efficiency[1],
+        device.channel_efficiency[2],
+    ];
+    if !values.iter().all(|value| value.is_finite()) {
+        return Err(PersistenceError::NonFiniteNumber);
+    }
+    if device.native_width == 0
+        || device.native_height == 0
+        || device.active_width_meters <= 0.0
+        || device.active_height_meters <= 0.0
+        || !(0.0..1.0).contains(&device.black_matrix_fraction)
+        || device.eotf_gamma <= 0.0
+        || device.black_level_nits < 0.0
+        || device.white_level_nits <= device.black_level_nits
+        || device.channel_efficiency.iter().any(|value| *value <= 0.0)
+    {
+        return Err(PersistenceError::InvalidDeviceProfile);
+    }
+    Ok(())
+}
+
+fn compare_time(left: ExactTime, right: ExactTime) -> core::cmp::Ordering {
+    (i128::from(left.numerator) * i128::from(right.denominator))
+        .cmp(&(i128::from(right.numerator) * i128::from(left.denominator)))
+}
+
+fn read_document<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, PersistenceError> {
+    let bytes = fs::read(path).map_err(|error| PersistenceError::Io(path.to_path_buf(), error))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| PersistenceError::InvalidDocument(path.to_path_buf(), error))
+}
+
+fn write_document<T: Serialize>(path: &Path, value: &T) -> Result<(), PersistenceError> {
+    let mut bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| PersistenceError::Serialize(path.to_path_buf(), error))?;
+    bytes.push(b'\n');
+    fs::write(path, bytes).map_err(|error| PersistenceError::Io(path.to_path_buf(), error))
+}
+
+#[derive(Debug)]
+pub enum PersistenceError {
+    InvalidOpaqueId(String),
+    InvalidPortablePath(String),
+    InvalidPackageExtension,
+    PackageAlreadyExists(PathBuf),
+    SourceMediaMissing(PathBuf),
+    PackageHasNoParent,
+    StagingPathAlreadyExists(PathBuf),
+    DuplicateDocumentPath(String),
+    ResourceOverlapsDocument(String),
+    UnknownSchema(String),
+    UnknownVersion { schema: &'static str, version: u32 },
+    EmptyProjectTitle,
+    InvalidShotReference,
+    InvalidFrameRate,
+    InvalidExactTime,
+    EmptyAnimationTrack,
+    UnorderedKeyframes,
+    NonNormalizedQuaternion,
+    InvalidCameraIntrinsics,
+    InvalidDeviceProfile,
+    NonFiniteNumber,
+    MissingResource(String),
+    Io(PathBuf, std::io::Error),
+    InvalidDocument(PathBuf, serde_json::Error),
+    Serialize(PathBuf, serde_json::Error),
+}
+
+impl fmt::Display for PersistenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidOpaqueId(value) => write!(formatter, "invalid opaque id `{value}`"),
+            Self::InvalidPortablePath(value) => {
+                write!(formatter, "invalid portable path `{value}`")
+            }
+            Self::InvalidPackageExtension => {
+                formatter.write_str("project package must end in .screensim")
+            }
+            Self::PackageAlreadyExists(path) => write!(
+                formatter,
+                "project package already exists: {}",
+                path.display()
+            ),
+            Self::SourceMediaMissing(path) => {
+                write!(formatter, "source media does not exist: {}", path.display())
+            }
+            Self::PackageHasNoParent => {
+                formatter.write_str("project package requires a parent directory")
+            }
+            Self::StagingPathAlreadyExists(path) => write!(
+                formatter,
+                "project staging path already exists: {}",
+                path.display()
+            ),
+            Self::DuplicateDocumentPath(path) => {
+                write!(formatter, "project document path is duplicated: {path}")
+            }
+            Self::ResourceOverlapsDocument(path) => {
+                write!(formatter, "project resource overlaps a document: {path}")
+            }
+            Self::UnknownSchema(schema) => {
+                write!(formatter, "unknown project document schema `{schema}`")
+            }
+            Self::UnknownVersion { schema, version } => {
+                write!(formatter, "unsupported version {version} for `{schema}`")
+            }
+            Self::EmptyProjectTitle => formatter.write_str("project title must not be empty"),
+            Self::InvalidShotReference => {
+                formatter.write_str("shot contains an invalid owner reference")
+            }
+            Self::InvalidFrameRate => formatter.write_str("project frame rate must be positive"),
+            Self::InvalidExactTime => {
+                formatter.write_str("exact time denominator must be non-zero")
+            }
+            Self::EmptyAnimationTrack => {
+                formatter.write_str("animation track requires at least one keyframe")
+            }
+            Self::UnorderedKeyframes => {
+                formatter.write_str("keyframes must have unique strictly increasing times")
+            }
+            Self::NonNormalizedQuaternion => {
+                formatter.write_str("rotation quaternion must be normalized")
+            }
+            Self::InvalidCameraIntrinsics => formatter.write_str("camera intrinsics are invalid"),
+            Self::InvalidDeviceProfile => formatter.write_str("device profile is invalid"),
+            Self::NonFiniteNumber => {
+                formatter.write_str("project documents cannot contain non-finite numbers")
+            }
+            Self::MissingResource(path) => write!(formatter, "project resource is missing: {path}"),
+            Self::Io(path, error) => write!(
+                formatter,
+                "project I/O failed at {}: {error}",
+                path.display()
+            ),
+            Self::InvalidDocument(path, error) => write!(
+                formatter,
+                "invalid project document {}: {error}",
+                path.display()
+            ),
+            Self::Serialize(path, error) => write!(
+                formatter,
+                "cannot serialize project document {}: {error}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PersistenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(_, error) => Some(error),
+            Self::InvalidDocument(_, error) | Self::Serialize(_, error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(value: &str) -> OpaqueId {
+        OpaqueId::parse(value).expect("valid test id")
+    }
+
+    fn path(value: &str) -> PortablePath {
+        PortablePath::parse(value).expect("valid test path")
+    }
+
+    fn transform(id_value: &str) -> TransformKeyframe {
+        TransformKeyframe {
+            keyframe_id: id(id_value),
+            time: ExactTime {
+                numerator: 0,
+                denominator: 24,
+            },
+            translation_meters: [0.0, 0.0, 0.8],
+            rotation_quaternion: [0.0, 0.0, 0.0, 1.0],
+            interpolation: InterpolationSelection::Linear,
+        }
+    }
+
+    fn package() -> ProjectPackage {
+        ProjectPackage {
+            manifest: ProjectManifest {
+                schema: "screen_simulation_project".into(),
+                version: CURRENT_VERSION,
+                project_id: id("project-01"),
+                title: "Persistence test".into(),
+                source_document: path("sources/source.json"),
+                device_document: path("devices/device.json"),
+                camera_document: path("tracks/camera.json"),
+                screen_document: path("tracks/screen.json"),
+                shot_document: path("shots/shot.json"),
+            },
+            source: SourceDocument {
+                schema: "screen_simulation_source".into(),
+                version: CURRENT_VERSION,
+                source_id: id("source-01"),
+                media: path("media/source.mov"),
+                decode: PixelDecodeSelection {
+                    matrix: MatrixSelection::Auto,
+                    range: RangeSelection::Auto,
+                },
+                color: SourceColorSelection::Identity,
+                alpha: AlphaSelection::Straight,
+                placement: PlacementSelection::Fit,
+            },
+            device: DeviceDocument {
+                schema: "screen_simulation_device".into(),
+                version: CURRENT_VERSION,
+                device_id: id("device-01"),
+                native_width: 3840,
+                native_height: 2160,
+                active_width_meters: 0.596_736,
+                active_height_meters: 0.335_664,
+                stripe: StripeSelection::Rgb,
+                black_matrix_fraction: 0.12,
+                eotf_gamma: 2.2,
+                black_level_nits: 0.08,
+                white_level_nits: 600.0,
+                channel_efficiency: [1.0, 0.96, 0.9],
+            },
+            camera: CameraDocument {
+                schema: "screen_simulation_camera".into(),
+                version: CURRENT_VERSION,
+                camera_id: id("camera-01"),
+                transform_keyframes: vec![transform("camera-key-01")],
+                intrinsics_keyframes: vec![CameraIntrinsicsKeyframe {
+                    keyframe_id: id("intrinsics-key-01"),
+                    time: ExactTime {
+                        numerator: 0,
+                        denominator: 24,
+                    },
+                    focal_length_mm: 50.0,
+                    sensor_width_mm: 36.0,
+                    sensor_height_mm: 20.25,
+                    lens_shift: [0.0, 0.0],
+                    focus_distance_meters: 0.8,
+                    f_stop: 8.0,
+                    near_clip_meters: 0.01,
+                    far_clip_meters: 100.0,
+                    interpolation: InterpolationSelection::Linear,
+                }],
+            },
+            screen: ScreenDocument {
+                schema: "screen_simulation_screen".into(),
+                version: CURRENT_VERSION,
+                screen_id: id("screen-01"),
+                transform_keyframes: vec![transform("screen-key-01")],
+            },
+            shot: ShotDocument {
+                schema: "screen_simulation_shot".into(),
+                version: CURRENT_VERSION,
+                shot_id: id("shot-01"),
+                source_id: id("source-01"),
+                device_id: id("device-01"),
+                camera_id: id("camera-01"),
+                screen_id: id("screen-01"),
+                project_frame_rate: ExactFrameRate {
+                    numerator: 24,
+                    denominator: 1,
+                },
+            },
+        }
+    }
+
+    fn create_complete_project(root: &Path) -> ProjectPackage {
+        let package = package();
+        let media = root.parent().expect("root parent").join("source.mov");
+        fs::write(&media, b"test media").expect("test media");
+        create_project(root, &package, &media).expect("create strict project");
+        package
+    }
+
+    #[test]
+    fn portable_paths_reject_absolute_parent_and_windows_routes() {
+        for invalid in [
+            "/tmp/source.mov",
+            "../source.mov",
+            "media/../source.mov",
+            "C:\\source.mov",
+        ] {
+            assert!(PortablePath::parse(invalid).is_err(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn opening_is_byte_for_byte_read_only() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("test.screensim");
+        let expected = create_complete_project(&root);
+        let before = snapshot(&root);
+        assert_eq!(open_project(&root).expect("open project"), expected);
+        assert_eq!(snapshot(&root), before);
+    }
+
+    #[test]
+    fn unknown_fields_are_rejected() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("test.screensim");
+        create_complete_project(&root);
+        let manifest_path = root.join(MANIFEST_NAME);
+        let text = fs::read_to_string(&manifest_path).expect("manifest");
+        fs::write(
+            &manifest_path,
+            text.replace("\"version\": 1,", "\"version\": 1,\n  \"legacy\": true,"),
+        )
+        .expect("alter manifest");
+        assert!(matches!(
+            open_project(&root),
+            Err(PersistenceError::InvalidDocument(_, _))
+        ));
+    }
+
+    #[test]
+    fn unknown_versions_are_rejected_without_dispatch() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("test.screensim");
+        create_complete_project(&root);
+        let manifest_path = root.join(MANIFEST_NAME);
+        let text = fs::read_to_string(&manifest_path).expect("manifest");
+        fs::write(
+            &manifest_path,
+            text.replace("\"version\": 1", "\"version\": 2"),
+        )
+        .expect("alter manifest");
+        assert!(matches!(
+            open_project(&root),
+            Err(PersistenceError::UnknownVersion { version: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn missing_fields_and_aliases_are_rejected() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("test.screensim");
+        create_complete_project(&root);
+        let manifest_path = root.join(MANIFEST_NAME);
+        let text = fs::read_to_string(&manifest_path).expect("manifest");
+        fs::write(
+            &manifest_path,
+            text.replace("\"source_document\"", "\"sourceDocument\""),
+        )
+        .expect("alter manifest");
+        assert!(matches!(
+            open_project(&root),
+            Err(PersistenceError::InvalidDocument(_, _))
+        ));
+    }
+
+    #[test]
+    fn invalid_cross_document_reference_is_rejected() {
+        let mut package = package();
+        package.shot.source_id = id("different-source");
+        assert!(matches!(
+            package.validate(),
+            Err(PersistenceError::InvalidShotReference)
+        ));
+    }
+
+    #[test]
+    fn create_never_overwrites_an_existing_package() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("test.screensim");
+        fs::create_dir(&root).expect("existing package");
+        let media = temp.path().join("source.mov");
+        fs::write(&media, b"test media").expect("test media");
+        assert!(matches!(
+            create_project(&root, &package(), &media),
+            Err(PersistenceError::PackageAlreadyExists(_))
+        ));
+    }
+
+    #[test]
+    fn failed_creation_never_publishes_a_partial_package() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("test.screensim");
+        let missing = temp.path().join("missing.mov");
+        assert!(matches!(
+            create_project(&root, &package(), &missing),
+            Err(PersistenceError::SourceMediaMissing(_))
+        ));
+        assert!(!root.exists());
+    }
+
+    fn snapshot(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        fn visit(root: &Path, path: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
+            let mut entries: Vec<_> = fs::read_dir(path)
+                .expect("read project directory")
+                .map(|entry| entry.expect("project entry"))
+                .collect();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    files.push((
+                        path.strip_prefix(root).expect("relative").to_path_buf(),
+                        fs::read(path).expect("file bytes"),
+                    ));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        visit(root, root, &mut files);
+        files
+    }
+}

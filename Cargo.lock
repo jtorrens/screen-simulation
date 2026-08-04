@@ -4445,6 +4445,9 @@ name = "screen-persistence"
 version = "0.1.0"
 dependencies = [
  "screen-contracts",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
