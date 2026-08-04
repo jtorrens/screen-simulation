@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Validate current package edges, path ownership, and archive isolation."""
+
+from __future__ import annotations
+
+import fnmatch
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ACTIVE_TEXT_SUFFIXES = {".json", ".md", ".py", ".rs", ".toml", ".yml", ".yaml"}
+
+
+class ValidationError(RuntimeError):
+    """One or more executable architecture contracts failed."""
+
+
+def load_json(relative_path: str) -> dict[str, Any]:
+    path = ROOT / relative_path
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValidationError(f"Cannot load {relative_path}: {error}") from error
+    if not isinstance(value, dict):
+        raise ValidationError(f"{relative_path} must contain one JSON object")
+    return value
+
+
+def run(command: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise ValidationError(f"Required command is unavailable: {command[0]}") from error
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.strip() or error.stdout.strip()
+        raise ValidationError(f"Command failed ({' '.join(command)}): {detail}") from error
+    return result.stdout
+
+
+def validate_domains() -> None:
+    manifest = load_json("architecture/domains.json")
+    if set(manifest) != {"schema", "version", "packages"}:
+        raise ValidationError("domains.json has undeclared root fields")
+    if manifest["schema"] != "screen_simulation_domains" or manifest["version"] != 1:
+        raise ValidationError("domains.json has an unknown contract")
+    declared_packages = manifest["packages"]
+    if not isinstance(declared_packages, list) or not declared_packages:
+        raise ValidationError("domains.json must declare packages")
+
+    metadata = json.loads(run(["cargo", "metadata", "--format-version", "1", "--no-deps"]))
+    workspace_ids = set(metadata["workspace_members"])
+    actual = {
+        package["name"]: package
+        for package in metadata["packages"]
+        if package["id"] in workspace_ids
+    }
+    declared_names = [entry["name"] for entry in declared_packages]
+    if len(declared_names) != len(set(declared_names)):
+        raise ValidationError("domains.json contains duplicate package names")
+    if set(declared_names) != set(actual):
+        missing = sorted(set(actual) - set(declared_names))
+        extra = sorted(set(declared_names) - set(actual))
+        raise ValidationError(f"Workspace/domain package mismatch; undeclared={missing}, absent={extra}")
+
+    for entry in declared_packages:
+        if set(entry) != {"name", "path", "owner", "allowed_local_dependencies"}:
+            raise ValidationError(f"Package {entry.get('name')} has undeclared fields")
+        name = entry["name"]
+        package = actual[name]
+        actual_path = Path(package["manifest_path"]).resolve().parent.relative_to(ROOT).as_posix()
+        if actual_path != entry["path"]:
+            raise ValidationError(f"Package {name} path is {actual_path}, expected {entry['path']}")
+        local_dependencies = sorted(
+            dependency["name"]
+            for dependency in package["dependencies"]
+            if dependency["name"] in actual
+        )
+        allowed = sorted(entry["allowed_local_dependencies"])
+        if local_dependencies != allowed:
+            raise ValidationError(
+                f"Package {name} local dependencies are {local_dependencies}, expected {allowed}"
+            )
+
+
+def repository_paths() -> list[str]:
+    output = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+    return sorted(path for path in output.split("\0") if path)
+
+
+def validate_path_owners(paths: list[str]) -> None:
+    manifest = load_json("architecture/validation-owners.json")
+    if set(manifest) != {"schema", "version", "owners"}:
+        raise ValidationError("validation-owners.json has undeclared root fields")
+    if (
+        manifest["schema"] != "screen_simulation_validation_owners"
+        or manifest["version"] != 1
+    ):
+        raise ValidationError("validation-owners.json has an unknown contract")
+
+    owners = manifest["owners"]
+    owner_ids = [owner["id"] for owner in owners]
+    if len(owner_ids) != len(set(owner_ids)):
+        raise ValidationError("validation-owners.json contains duplicate owner ids")
+    for owner in owners:
+        if set(owner) != {"id", "paths", "checks"}:
+            raise ValidationError(f"Validation owner {owner.get('id')} has undeclared fields")
+        if not owner["paths"] or not owner["checks"]:
+            raise ValidationError(f"Validation owner {owner['id']} must declare paths and checks")
+
+    failures: list[str] = []
+    for path in paths:
+        matches = [
+            owner["id"]
+            for owner in owners
+            if any(fnmatch.fnmatchcase(path, pattern) for pattern in owner["paths"])
+        ]
+        if len(matches) != 1:
+            failures.append(f"{path}: expected one validation owner, found {matches}")
+    if failures:
+        raise ValidationError("Invalid validation ownership:\n" + "\n".join(failures))
+
+
+def validate_archive_isolation(paths: list[str]) -> None:
+    markdown_link = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+    for relative_path in paths:
+        if relative_path.startswith("Docs/old/"):
+            continue
+        path = ROOT / relative_path
+        if path.suffix.lower() != ".md":
+            continue
+        text = path.read_text(encoding="utf-8")
+        for target in markdown_link.findall(text):
+            normalized = target.replace("\\", "/").lower()
+            if normalized.startswith("docs/old/") or "/old/" in normalized or normalized.startswith("../old/"):
+                raise ValidationError(f"Active document {relative_path} links to the sealed archive")
+
+
+def validate_retired_surfaces(paths: list[str]) -> None:
+    manifest = load_json("architecture/retired.json")
+    if set(manifest) != {"schema", "version", "paths", "identifiers"}:
+        raise ValidationError("retired.json has undeclared root fields")
+    if manifest["schema"] != "screen_simulation_retired_surfaces" or manifest["version"] != 1:
+        raise ValidationError("retired.json has an unknown contract")
+
+    for retired_path in manifest["paths"]:
+        matches = [path for path in paths if fnmatch.fnmatchcase(path, retired_path)]
+        if matches:
+            raise ValidationError(f"Retired path returned ({retired_path}): {matches}")
+
+    identifiers = manifest["identifiers"]
+    if not identifiers:
+        return
+    for relative_path in paths:
+        if relative_path.startswith("Docs/old/"):
+            continue
+        path = ROOT / relative_path
+        if path.suffix.lower() not in ACTIVE_TEXT_SUFFIXES:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for identifier in identifiers:
+            if identifier in text:
+                raise ValidationError(f"Retired identifier {identifier!r} returned in {relative_path}")
+
+
+def main() -> int:
+    try:
+        paths = repository_paths()
+        validate_domains()
+        validate_path_owners(paths)
+        validate_archive_isolation(paths)
+        validate_retired_surfaces(paths)
+    except (ValidationError, json.JSONDecodeError) as error:
+        print(f"architecture validation failed: {error}", file=sys.stderr)
+        return 1
+    print("architecture validation passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

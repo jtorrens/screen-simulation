@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/screen-desktop",
+    "crates/screen-application",
+    "crates/screen-color",
+    "crates/screen-contracts",
+    "crates/screen-geometry",
+    "crates/screen-media",
+    "crates/screen-panel",
+    "crates/screen-persistence",
+    "crates/screen-platform",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+

@@ -1,0 +1,80 @@
+{
+  "schema": "screen_simulation_domains",
+  "version": 1,
+  "packages": [
+    {
+      "name": "screen-contracts",
+      "path": "crates/screen-contracts",
+      "owner": "contracts",
+      "allowed_local_dependencies": []
+    },
+    {
+      "name": "screen-media",
+      "path": "crates/screen-media",
+      "owner": "media",
+      "allowed_local_dependencies": ["screen-contracts"]
+    },
+    {
+      "name": "screen-color",
+      "path": "crates/screen-color",
+      "owner": "color",
+      "allowed_local_dependencies": ["screen-contracts"]
+    },
+    {
+      "name": "screen-panel",
+      "path": "crates/screen-panel",
+      "owner": "panel",
+      "allowed_local_dependencies": ["screen-contracts"]
+    },
+    {
+      "name": "screen-geometry",
+      "path": "crates/screen-geometry",
+      "owner": "geometry",
+      "allowed_local_dependencies": ["screen-contracts"]
+    },
+    {
+      "name": "screen-application",
+      "path": "crates/screen-application",
+      "owner": "application",
+      "allowed_local_dependencies": [
+        "screen-color",
+        "screen-contracts",
+        "screen-geometry",
+        "screen-media",
+        "screen-panel"
+      ]
+    },
+    {
+      "name": "screen-persistence",
+      "path": "crates/screen-persistence",
+      "owner": "persistence",
+      "allowed_local_dependencies": ["screen-contracts"]
+    },
+    {
+      "name": "screen-platform",
+      "path": "crates/screen-platform",
+      "owner": "platform",
+      "allowed_local_dependencies": [
+        "screen-color",
+        "screen-contracts",
+        "screen-media"
+      ]
+    },
+    {
+      "name": "screen-desktop",
+      "path": "apps/screen-desktop",
+      "owner": "desktop-composition",
+      "allowed_local_dependencies": [
+        "screen-application",
+        "screen-color",
+        "screen-contracts",
+        "screen-geometry",
+        "screen-media",
+        "screen-panel",
+        "screen-persistence",
+        "screen-platform"
+      ]
+    }
+  ]
+}
+

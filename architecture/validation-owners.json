@@ -1,0 +1,79 @@
+{
+  "schema": "screen_simulation_validation_owners",
+  "version": 1,
+  "owners": [
+    {
+      "id": "repository-contract",
+      "paths": [
+        ".gitignore",
+        "AGENTS.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "rust-toolchain.toml"
+      ],
+      "checks": ["architecture", "workspace"]
+    },
+    {
+      "id": "architecture",
+      "paths": [
+        ".github/workflows/*.yml",
+        "architecture/*.json",
+        "Docs/architecture/*.md",
+        "scripts/*.py"
+      ],
+      "checks": ["architecture", "workspace"]
+    },
+    {
+      "id": "sealed-history",
+      "paths": ["Docs/old/**"],
+      "checks": ["archive-isolation"]
+    },
+    {
+      "id": "contracts",
+      "paths": ["crates/screen-contracts/**"],
+      "checks": ["architecture", "workspace", "contracts"]
+    },
+    {
+      "id": "media",
+      "paths": ["crates/screen-media/**"],
+      "checks": ["architecture", "workspace", "media"]
+    },
+    {
+      "id": "color",
+      "paths": ["crates/screen-color/**"],
+      "checks": ["architecture", "workspace", "color"]
+    },
+    {
+      "id": "panel",
+      "paths": ["crates/screen-panel/**"],
+      "checks": ["architecture", "workspace", "panel"]
+    },
+    {
+      "id": "geometry",
+      "paths": ["crates/screen-geometry/**"],
+      "checks": ["architecture", "workspace", "geometry"]
+    },
+    {
+      "id": "application",
+      "paths": ["crates/screen-application/**"],
+      "checks": ["architecture", "workspace", "application"]
+    },
+    {
+      "id": "persistence",
+      "paths": ["crates/screen-persistence/**"],
+      "checks": ["architecture", "workspace", "persistence"]
+    },
+    {
+      "id": "platform",
+      "paths": ["crates/screen-platform/**"],
+      "checks": ["architecture", "workspace", "platform"]
+    },
+    {
+      "id": "desktop-composition",
+      "paths": ["apps/screen-desktop/**"],
+      "checks": ["architecture", "workspace", "desktop"]
+    }
+  ]
+}
+

@@ -1,0 +1,16 @@
+# Camera, time and space
+
+Status: normative.
+
+The canonical scene is right-handed. `+X` is right, `+Y` is up and `+Z` points from the screen toward a frontal viewer. A screen's local active area lies on XY, its center is the local origin and its front normal is `+Z`. A camera looks along local `-Z`.
+
+Scene translation and physical screen dimensions use meters. Focal length and sensor aperture use millimeters. Persisted values always name their unit through the owning contract rather than relying on UI labels.
+
+Project, source, camera and screen time use exact rational values. Floating-point seconds are not an authored or selection boundary. Panel refresh remains distinct from project and source frame rates.
+
+Camera and screen motion use the same current keyframed transform contract. Translation is canonical in meters and rotation is canonical as a normalized quaternion. UI yaw, pitch and roll are editing projections, not persisted authority. Every keyframe has a stable id, rational time, exact value and explicit `hold`, `linear`, or `smooth` interpolation.
+
+Camera intrinsics own focal length, sensor aperture, lens shift, focus distance, f-stop and clipping planes. The resolver is the single owner of interpolation and emits one immutable camera sample containing world, view and projection matrices plus resolved intrinsics. Geometry consumes that sample and never reads animation tracks directly.
+
+The current version authors camera animation inside the application. External camera files do not have a runtime evaluation route.
+
