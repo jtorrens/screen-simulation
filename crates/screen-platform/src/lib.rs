@@ -9,7 +9,8 @@ use std::sync::OnceLock;
 use ffmpeg_next as ffmpeg;
 use screen_contracts::RationalTime;
 use screen_media::{
-    AlphaPresence, DecodedFrame, DecodedRgba, FrameCadence, MediaDescriptor, RasterSize,
+    AlphaPresence, DecodedFrame, DecodedRgba, FrameCadence, FrameSelectionPolicy, MediaDescriptor,
+    RasterSize,
 };
 
 static FFMPEG_INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
@@ -68,6 +69,7 @@ pub fn probe_media(path: &Path) -> Result<MediaDescriptor, PlatformMediaError> {
 pub fn decode_frame_at_time(
     path: &Path,
     requested_time: RationalTime,
+    policy: FrameSelectionPolicy,
 ) -> Result<(MediaDescriptor, DecodedFrame), PlatformMediaError> {
     let descriptor = probe_media(path)?;
     if requested_time.numerator() < 0 {
@@ -114,7 +116,7 @@ pub fn decode_frame_at_time(
             .map_err(|error| PlatformMediaError::Seek(error.to_string()))?;
     }
 
-    let mut candidate = None;
+    let mut earlier = None;
     for (packet_stream, packet) in context.packets() {
         if packet_stream.index() != stream_index {
             continue;
@@ -123,26 +125,73 @@ pub fn decode_frame_at_time(
             .send_packet(&packet)
             .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
         while let Some(frame) = receive_frame(&mut decoder, &mut scaler, time_base)? {
-            if frame.timestamp > requested_time {
-                return candidate
-                    .map(|frame| (descriptor, frame))
-                    .ok_or(PlatformMediaError::NoSampleAtRequestedTime);
+            if frame.timestamp == requested_time {
+                return Ok((descriptor, frame));
             }
-            candidate = Some(frame);
+            if frame.timestamp > requested_time {
+                return resolve_sample(descriptor, earlier, Some(frame), requested_time, policy);
+            }
+            earlier = Some(frame);
         }
     }
     decoder
         .send_eof()
         .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
     while let Some(frame) = receive_frame(&mut decoder, &mut scaler, time_base)? {
-        if frame.timestamp > requested_time {
-            break;
+        if frame.timestamp == requested_time {
+            return Ok((descriptor, frame));
         }
-        candidate = Some(frame);
+        if frame.timestamp > requested_time {
+            return resolve_sample(descriptor, earlier, Some(frame), requested_time, policy);
+        }
+        earlier = Some(frame);
     }
-    candidate
+    resolve_sample(descriptor, earlier, None, requested_time, policy)
+}
+
+fn resolve_sample(
+    descriptor: MediaDescriptor,
+    earlier: Option<DecodedFrame>,
+    later: Option<DecodedFrame>,
+    requested_time: RationalTime,
+    policy: FrameSelectionPolicy,
+) -> Result<(MediaDescriptor, DecodedFrame), PlatformMediaError> {
+    let selected = match policy {
+        FrameSelectionPolicy::Exact => None,
+        FrameSelectionPolicy::Floor => earlier,
+        FrameSelectionPolicy::Nearest => match (earlier, later) {
+            (Some(earlier), Some(later)) => Some(
+                if earlier_is_nearer_or_tied(requested_time, earlier.timestamp, later.timestamp) {
+                    earlier
+                } else {
+                    later
+                },
+            ),
+            (Some(earlier), None) => Some(earlier),
+            (None, Some(later)) => Some(later),
+            (None, None) => None,
+        },
+    };
+    selected
         .map(|frame| (descriptor, frame))
         .ok_or(PlatformMediaError::NoSampleAtRequestedTime)
+}
+
+fn earlier_is_nearer_or_tied(
+    requested: RationalTime,
+    earlier: RationalTime,
+    later: RationalTime,
+) -> bool {
+    let earlier_numerator = (i128::from(requested.numerator()) * i128::from(earlier.denominator())
+        - i128::from(earlier.numerator()) * i128::from(requested.denominator()))
+    .abs();
+    let earlier_denominator =
+        i128::from(requested.denominator()) * i128::from(earlier.denominator());
+    let later_numerator = (i128::from(later.numerator()) * i128::from(requested.denominator())
+        - i128::from(requested.numerator()) * i128::from(later.denominator()))
+    .abs();
+    let later_denominator = i128::from(later.denominator()) * i128::from(requested.denominator());
+    earlier_numerator * later_denominator <= later_numerator * earlier_denominator
 }
 
 fn time_in_ffmpeg_base(time: RationalTime) -> Result<i64, PlatformMediaError> {
@@ -290,3 +339,91 @@ impl fmt::Display for PlatformMediaError {
 }
 
 impl std::error::Error for PlatformMediaError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn time(numerator: i64, denominator: u32) -> RationalTime {
+        RationalTime::new(numerator, denominator).expect("valid test time")
+    }
+
+    fn descriptor() -> MediaDescriptor {
+        MediaDescriptor {
+            raster: RasterSize::new(1, 1).expect("valid raster"),
+            cadence: FrameCadence::Variable,
+            duration: Some(time(1, 1)),
+            alpha: AlphaPresence::Absent,
+            codec_name: "test".to_owned(),
+            pixel_format_name: "rgba64le".to_owned(),
+        }
+    }
+
+    fn frame(timestamp: RationalTime) -> DecodedFrame {
+        DecodedFrame {
+            raster: RasterSize::new(1, 1).expect("valid raster"),
+            timestamp,
+            pixels: vec![DecodedRgba {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }],
+        }
+    }
+
+    #[test]
+    fn nearest_sample_uses_exact_distance_and_earlier_tie_break() {
+        assert!(earlier_is_nearer_or_tied(
+            time(1, 2),
+            time(1, 3),
+            time(2, 3)
+        ));
+        assert!(!earlier_is_nearer_or_tied(
+            time(3, 5),
+            time(1, 3),
+            time(2, 3)
+        ));
+    }
+
+    #[test]
+    fn authored_sample_policy_changes_resolution_without_fallback() {
+        let requested = time(1, 2);
+        let earlier = frame(time(1, 3));
+        let later = frame(time(2, 3));
+        assert_eq!(
+            resolve_sample(
+                descriptor(),
+                Some(earlier.clone()),
+                Some(later.clone()),
+                requested,
+                FrameSelectionPolicy::Exact,
+            ),
+            Err(PlatformMediaError::NoSampleAtRequestedTime)
+        );
+        assert_eq!(
+            resolve_sample(
+                descriptor(),
+                Some(earlier.clone()),
+                Some(later.clone()),
+                requested,
+                FrameSelectionPolicy::Floor,
+            )
+            .expect("floor sample")
+            .1,
+            earlier
+        );
+        assert_eq!(
+            resolve_sample(
+                descriptor(),
+                Some(earlier.clone()),
+                Some(later),
+                requested,
+                FrameSelectionPolicy::Nearest,
+            )
+            .expect("nearest sample")
+            .1,
+            earlier
+        );
+    }
+}

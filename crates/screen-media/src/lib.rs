@@ -43,6 +43,13 @@ pub enum FrameCadence {
     Variable,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameSelectionPolicy {
+    Exact,
+    Floor,
+    Nearest,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaDescriptor {
     pub raster: RasterSize,

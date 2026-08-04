@@ -21,7 +21,7 @@ media source
 
 Every arrow is a typed boundary. A consumer receives a complete validated result and never reconstructs the prior owner's semantics.
 
-Media sample selection consumes exact project time. The selected decoded sample is the latest timestamped frame whose presentation timestamp does not exceed that time. Negative time, missing timestamps, unknown-duration access beyond the exact initial sample, and time at or beyond a known source duration fail explicitly. The current evaluator has no implicit hold, loop, or nearest-frame mode.
+Media sample selection consumes exact project time and one authored policy. `Exact` requires an equal presentation timestamp. `Floor` selects the latest timestamped frame that does not exceed project time. `Nearest` compares the adjacent timestamps exactly and selects the earlier sample on a tie. Negative time, missing timestamps, unknown-duration access beyond the exact initial sample, and time at or beyond a known source duration fail explicitly. The current evaluator has no implicit hold or loop mode.
 
 ## Technology
 

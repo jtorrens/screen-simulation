@@ -16,7 +16,8 @@ use screen_color::SourceColorInterpretation;
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2};
 use screen_geometry::{CameraRig, PanelRegion};
 use screen_media::{
-    AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, MediaDescriptor,
+    AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, FrameSelectionPolicy,
+    MediaDescriptor,
 };
 use screen_panel::{LcdProfile, StripeLayout};
 use screen_platform::decode_frame_at_time;
@@ -39,6 +40,7 @@ struct LoadedSource {
     path: PathBuf,
     descriptor: MediaDescriptor,
     requested_time: RationalTime,
+    sample_policy: FrameSelectionPolicy,
     decoded_timestamp: RationalTime,
     straight_over_black: DeviceSignalRaster,
     premultiplied_over_black: DeviceSignalRaster,
@@ -74,6 +76,14 @@ fn project_frame_rate(window: &MainWindow) -> Result<FrameRate, String> {
         }
     };
     FrameRate::new(fraction.0, fraction.1).map_err(|error| error.to_string())
+}
+
+fn frame_selection_policy(window: &MainWindow) -> FrameSelectionPolicy {
+    match window.get_sample_policy_index() {
+        0 => FrameSelectionPolicy::Exact,
+        2 => FrameSelectionPolicy::Nearest,
+        _ => FrameSelectionPolicy::Floor,
+    }
 }
 
 fn simulation_request(
@@ -147,8 +157,9 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 );
                 return;
             }
-            if source.requested_time != request.time
-                && let Err(error) = refresh_loaded_source(source, request.time)
+            let sample_policy = frame_selection_policy(window);
+            if (source.requested_time != request.time || source.sample_policy != sample_policy)
+                && let Err(error) = refresh_loaded_source(source, request.time, sample_policy)
             {
                 block_preview(window, &error);
                 return;
@@ -252,9 +263,10 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 };
                 window.set_source_interpretation(
                     format!(
-                        "Identity device signal · {alpha} · sample {}/{} s",
+                        "Identity device signal · {alpha} · sample {}/{} s · {:?}",
                         source.decoded_timestamp.numerator(),
-                        source.decoded_timestamp.denominator()
+                        source.decoded_timestamp.denominator(),
+                        source.sample_policy
                     )
                     .into(),
                 );
@@ -278,16 +290,22 @@ fn load_source(window: &MainWindow, state: &mut InteractionState, path: &Path) {
             return;
         }
     };
-    match decode_frame_at_time(path, requested_time) {
+    let sample_policy = frame_selection_policy(window);
+    match decode_frame_at_time(path, requested_time, sample_policy) {
         Ok((descriptor, frame)) => {
-            let loaded =
-                match prepare_loaded_source(path.to_owned(), descriptor, frame, requested_time) {
-                    Ok(loaded) => loaded,
-                    Err(error) => {
-                        window.set_error_text(error.to_string().into());
-                        return;
-                    }
-                };
+            let loaded = match prepare_loaded_source(
+                path.to_owned(),
+                descriptor,
+                frame,
+                requested_time,
+                sample_policy,
+            ) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    window.set_error_text(error.to_string().into());
+                    return;
+                }
+            };
             present_source(window, path, &loaded.descriptor);
             state.source = Some(loaded);
             state.inspection = None;
@@ -304,6 +322,7 @@ fn prepare_loaded_source(
     descriptor: MediaDescriptor,
     frame: DecodedFrame,
     requested_time: RationalTime,
+    sample_policy: FrameSelectionPolicy,
 ) -> Result<LoadedSource, ApplicationError> {
     let straight_over_black = decoded_frame_to_device_signal(
         &frame,
@@ -321,6 +340,7 @@ fn prepare_loaded_source(
         path,
         descriptor,
         requested_time,
+        sample_policy,
         decoded_timestamp: frame.timestamp,
         straight_over_black,
         premultiplied_over_black,
@@ -330,14 +350,21 @@ fn prepare_loaded_source(
 fn refresh_loaded_source(
     source: &mut LoadedSource,
     requested_time: RationalTime,
+    sample_policy: FrameSelectionPolicy,
 ) -> Result<(), String> {
-    let (descriptor, frame) =
-        decode_frame_at_time(&source.path, requested_time).map_err(|error| error.to_string())?;
+    let (descriptor, frame) = decode_frame_at_time(&source.path, requested_time, sample_policy)
+        .map_err(|error| error.to_string())?;
     if descriptor != source.descriptor {
         return Err("source descriptor changed on disk; reopen the source explicitly".to_owned());
     }
-    let refreshed = prepare_loaded_source(source.path.clone(), descriptor, frame, requested_time)
-        .map_err(|error| error.to_string())?;
+    let refreshed = prepare_loaded_source(
+        source.path.clone(),
+        descriptor,
+        frame,
+        requested_time,
+        sample_policy,
+    )
+    .map_err(|error| error.to_string())?;
     *source = refreshed;
     Ok(())
 }

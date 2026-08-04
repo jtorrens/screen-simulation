@@ -103,6 +103,7 @@ export component MainWindow inherits Window {
     in-out property <int> placement-index: 0;
     in-out property <int> idt-index: 0;
     in-out property <int> alpha-index: 0;
+    in-out property <int> sample-policy-index: 1;
     in-out property <int> project-fps-index: 1;
     in-out property <int> custom-fps-numerator: 24;
     in-out property <int> custom-fps-denominator: 1;
@@ -382,6 +383,15 @@ export component MainWindow inherits Window {
                             ComboBox {
                                 model: ["Auto (metadata)", "Straight", "Premultiplied"];
                                 current-index <=> root.alpha-index;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Sampling"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["Exact", "Floor", "Nearest"];
+                                current-index <=> root.sample-policy-index;
                             }
                         }
 
