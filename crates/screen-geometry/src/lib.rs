@@ -630,7 +630,29 @@ fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
             .transmission_rgb
             .into_iter()
             .all(|value| (0.0..=1.0).contains(&value))
+        && distortion_is_certified_family(lens)
         && distortion_is_invertible(lens, lens_shift)
+}
+
+fn distortion_is_certified_family(lens: LensModel) -> bool {
+    let reference = LensModel::REFERENCE_PHOTOGRAPHIC;
+    let strength = if lens.radial_distortion[0].abs() < 1.0e-8 {
+        0.0
+    } else {
+        lens.radial_distortion[0] / reference.radial_distortion[0]
+    };
+    if !(0.0..=1.0).contains(&strength) {
+        return false;
+    }
+    lens.radial_distortion
+        .into_iter()
+        .zip(reference.radial_distortion)
+        .chain(
+            lens.tangential_distortion
+                .into_iter()
+                .zip(reference.tangential_distortion),
+        )
+        .all(|(actual, certified)| (actual - certified * strength).abs() <= 1.0e-6)
 }
 
 fn interpolate_lens(
@@ -817,16 +839,19 @@ pub fn panel_uv_aperture_samples(
                 channel,
             )
         });
-        let tangent_x = ideal.x * camera.sensor_width.0 / (2.0 * camera.focal_length.0);
-        let tangent_y = ideal.y * camera.sensor_height.0 / (2.0 * camera.focal_length.0);
-        let cosine = 1.0 / (1.0 + tangent_x * tangent_x + tangent_y * tangent_y).sqrt();
-        let natural = cosine.powi(4);
-        let vignette = 1.0 + (natural - 1.0) * camera.lens.vignetting_strength;
         let aperture_throughput = 1.0 / (camera.f_stop * camera.f_stop);
         OpticalSample {
             panel_uv: hits.map(|hit| hit.map(|value| value.0)),
             emission_cosine: hits.map(|hit| hit.map_or(0.0, |value| value.1)),
             irradiance_weight: core::array::from_fn(|channel| {
+                let scale = camera.lens.lateral_chromatic_scale[channel];
+                let tangent_x =
+                    ideal.x * scale * camera.sensor_width.0 / (2.0 * camera.focal_length.0);
+                let tangent_y =
+                    ideal.y * scale * camera.sensor_height.0 / (2.0 * camera.focal_length.0);
+                let cosine = 1.0 / (1.0 + tangent_x * tangent_x + tangent_y * tangent_y).sqrt();
+                let natural = cosine.powi(4);
+                let vignette = 1.0 + (natural - 1.0) * camera.lens.vignetting_strength;
                 aperture_throughput * vignette * camera.lens.transmission_rgb[channel]
             }),
         }
@@ -1225,6 +1250,50 @@ mod tests {
     }
 
     #[test]
+    fn canonical_matrices_match_cpu_projection_and_depth_convention() {
+        let camera = rig()
+            .sample(RationalTime::new(36, 24).expect("valid time"))
+            .expect("sample");
+        let point = Vec3 {
+            x: 0.08,
+            y: 0.03,
+            z: 0.0,
+        };
+        let transform = |matrix: [f32; 16], value: [f32; 4]| -> [f32; 4] {
+            core::array::from_fn(|row| {
+                matrix[row * 4] * value[0]
+                    + matrix[row * 4 + 1] * value[1]
+                    + matrix[row * 4 + 2] * value[2]
+                    + matrix[row * 4 + 3] * value[3]
+            })
+        };
+        let view = transform(camera.world_to_view, [point.x, point.y, point.z, 1.0]);
+        let clip = transform(camera.ideal_view_to_clip, view);
+        let ideal = Vec2 {
+            x: clip[0] / clip[3],
+            y: clip[1] / clip[3],
+        };
+        let observed = distort(ideal, camera.lens);
+        let cpu = project_scene_point(camera, point, 16.0 / 9.0).expect("visible");
+        assert!((cpu.x - observed.x).abs() < 1.0e-5);
+        assert!(
+            (cpu.y + observed.y).abs() < 1.0e-5,
+            "viewport Y is explicitly downward"
+        );
+
+        let near_clip = transform(
+            camera.ideal_view_to_clip,
+            [0.0, 0.0, camera.near_clip.0, 1.0],
+        );
+        let far_clip = transform(
+            camera.ideal_view_to_clip,
+            [0.0, 0.0, camera.far_clip.0, 1.0],
+        );
+        assert!((near_clip[2] / near_clip[3] + 1.0).abs() < 1.0e-4);
+        assert!((far_clip[2] / far_clip[3] - 1.0).abs() < 1.0e-4);
+    }
+
+    #[test]
     fn inspection_camera_physically_frames_selected_region() {
         let region = PanelRegion {
             min: Vec2 { x: 0.49, y: 0.48 },
@@ -1370,6 +1439,15 @@ mod tests {
             track.validate(),
             Err(GeometryError::NonPositiveIntrinsics)
         ));
+
+        let mut adversarial = rig();
+        adversarial.intrinsics.keyframes[0].lens.radial_distortion =
+            [-2.856_138_5, 3.541_582_3, 1.284_677_7];
+        adversarial.intrinsics.keyframes[0].lens_shift = Vec2 { x: 0.5, y: 0.0 };
+        assert!(
+            adversarial.validate().is_err(),
+            "the audit counterexample must never enter ray generation"
+        );
     }
 
     #[test]

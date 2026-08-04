@@ -62,9 +62,14 @@ pub struct LcdProfile {
     pub eotf_gamma: f32,
     pub black_level_nits: f32,
     pub white_level_nits: f32,
-    pub channel_efficiency: LinearRgb,
     pub colorimetry: PanelColorimetry,
     pub angular_emission_power: LinearRgb,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ValidatedPanelEvaluator {
+    profile: LcdProfile,
+    native_to_acescg: [[f32; 3]; 3],
 }
 
 impl LcdProfile {
@@ -92,16 +97,6 @@ impl LcdProfile {
         {
             return Err(PanelError::InvalidLuminanceRange);
         }
-        if [
-            self.channel_efficiency.r,
-            self.channel_efficiency.g,
-            self.channel_efficiency.b,
-        ]
-        .into_iter()
-        .any(|value| !value.is_finite() || value <= 0.0)
-        {
-            return Err(PanelError::InvalidChannelEfficiency);
-        }
         if !colorimetry_is_valid(self.colorimetry) {
             return Err(PanelError::InvalidColorimetry);
         }
@@ -126,21 +121,25 @@ impl LcdProfile {
         diagonal_pixels / width_inches.hypot(height_inches)
     }
 
+    pub fn evaluator(self) -> Result<ValidatedPanelEvaluator, PanelError> {
+        let profile = self.validate()?;
+        Ok(ValidatedPanelEvaluator {
+            profile,
+            native_to_acescg: native_to_acescg_matrix(profile.colorimetry),
+        })
+    }
+
     pub fn pixel_pitch_meters(self) -> f32 {
         self.active_width.0 / self.native_width as f32
     }
 
     pub fn native_emission(self, signal: DeviceRgb) -> LinearRgb {
         let span = self.white_level_nits - self.black_level_nits;
-        let channel = |value: f32, efficiency: f32| {
+        let channel = |value: f32| {
             let powered = value.abs().powf(self.eotf_gamma).copysign(value);
-            (self.black_level_nits + span * powered) * efficiency
+            self.black_level_nits + span * powered
         };
-        LinearRgb::new(
-            channel(signal.r, self.channel_efficiency.r),
-            channel(signal.g, self.channel_efficiency.g),
-            channel(signal.b, self.channel_efficiency.b),
-        )
+        LinearRgb::new(channel(signal.r), channel(signal.g), channel(signal.b))
     }
 
     pub fn native_to_acescg(self, native: LinearRgb) -> LinearRgb {
@@ -208,6 +207,66 @@ impl LcdProfile {
             .floor()
             .clamp(0.0, 2.0) as usize;
         self.subpixel_emission(signal).stripes[stripe_position]
+    }
+}
+
+impl ValidatedPanelEvaluator {
+    pub fn native_channel(self, signal: DeviceRgb, channel: usize) -> f32 {
+        let value = [signal.r, signal.g, signal.b][channel];
+        let span = self.profile.white_level_nits - self.profile.black_level_nits;
+        self.profile.black_level_nits
+            + span * value.abs().powf(self.profile.eotf_gamma).copysign(value)
+    }
+
+    pub fn native_channel_at_pixel(
+        self,
+        signal: DeviceRgb,
+        pixel_uv: screen_contracts::Vec2,
+        channel: usize,
+    ) -> f32 {
+        let margin = self.profile.black_matrix_fraction * 0.5;
+        if pixel_uv.x < margin
+            || pixel_uv.x > 1.0 - margin
+            || pixel_uv.y < margin
+            || pixel_uv.y > 1.0 - margin
+        {
+            return 0.0;
+        }
+        let stripe = ((pixel_uv.x - margin) / (1.0 - 2.0 * margin) * 3.0)
+            .floor()
+            .clamp(0.0, 2.0) as usize;
+        let emitter = match self.profile.stripe_layout {
+            StripeLayout::Rgb => stripe,
+            StripeLayout::Bgr => 2 - stripe,
+        };
+        if emitter != channel {
+            return 0.0;
+        }
+        let visible_area = (1.0 - self.profile.black_matrix_fraction).powi(2);
+        self.native_channel(signal, channel) * 3.0 / visible_area
+    }
+
+    pub fn angular_channel(self, emission_cosine: f32, channel: usize) -> f32 {
+        let cosine = emission_cosine.clamp(0.0, 1.0);
+        if cosine == 0.0 {
+            return 0.0;
+        }
+        cosine.powf(
+            [
+                self.profile.angular_emission_power.r,
+                self.profile.angular_emission_power.g,
+                self.profile.angular_emission_power.b,
+            ][channel],
+        )
+    }
+
+    pub fn native_to_acescg(self, native: LinearRgb) -> LinearRgb {
+        let matrix = self.native_to_acescg;
+        LinearRgb::new(
+            matrix[0][0] * native.r + matrix[0][1] * native.g + matrix[0][2] * native.b,
+            matrix[1][0] * native.r + matrix[1][1] * native.g + matrix[1][2] * native.b,
+            matrix[2][0] * native.r + matrix[2][1] * native.g + matrix[2][2] * native.b,
+        )
     }
 }
 
@@ -325,7 +384,6 @@ pub enum PanelError {
     InvalidBlackMatrix,
     InvalidEotf,
     InvalidLuminanceRange,
-    InvalidChannelEfficiency,
     InvalidColorimetry,
     InvalidAngularResponse,
 }
@@ -340,7 +398,6 @@ impl fmt::Display for PanelError {
             Self::InvalidLuminanceRange => {
                 "LCD white level must be greater than a non-negative black level"
             }
-            Self::InvalidChannelEfficiency => "LCD channel efficiencies must be positive",
             Self::InvalidColorimetry => {
                 "panel primaries and white point must form a finite non-degenerate color space"
             }
@@ -369,7 +426,6 @@ mod tests {
             eotf_gamma: 2.2,
             black_level_nits: 0.08,
             white_level_nits: 600.0,
-            channel_efficiency: LinearRgb::new(1.0, 0.96, 0.9),
             colorimetry: PanelColorimetry::SRGB_D65,
             angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
         }
@@ -387,7 +443,7 @@ mod tests {
         let emission = profile().native_emission(DeviceRgb::new(1.2, 0.5, 0.0));
         assert!(emission.r > profile().white_level_nits);
         assert!(emission.g > profile().black_level_nits);
-        assert_eq!(emission.b, profile().black_level_nits * 0.9);
+        assert_eq!(emission.b, profile().black_level_nits);
     }
 
     #[test]
@@ -398,11 +454,38 @@ mod tests {
 
     #[test]
     fn declared_white_adapts_to_neutral_acescg() {
-        let mut profile = profile();
-        profile.channel_efficiency = LinearRgb::new(1.0, 1.0, 1.0);
-        let white = profile.emitted_radiance(DeviceRgb::WHITE);
+        let white = profile().emitted_radiance(DeviceRgb::WHITE);
         assert!((white.r - white.g).abs() < 1.0);
         assert!((white.g - white.b).abs() < 1.0);
+    }
+
+    #[test]
+    fn srgb_d65_to_acescg_matches_cross_platform_golden_vectors() {
+        let evaluator = profile().evaluator().expect("valid panel");
+        let red = evaluator.native_to_acescg(LinearRgb::new(1.0, 0.0, 0.0));
+        let green = evaluator.native_to_acescg(LinearRgb::new(0.0, 1.0, 0.0));
+        let blue = evaluator.native_to_acescg(LinearRgb::new(0.0, 0.0, 1.0));
+        let close = |actual: f32, expected: f32| {
+            assert!((actual - expected).abs() < 1.0e-3, "{actual} != {expected}")
+        };
+        for (actual, expected) in [red.r, red.g, red.b]
+            .into_iter()
+            .zip([0.6131, 0.0702, 0.0206])
+        {
+            close(actual, expected);
+        }
+        for (actual, expected) in [green.r, green.g, green.b]
+            .into_iter()
+            .zip([0.3395, 0.9163, 0.1096])
+        {
+            close(actual, expected);
+        }
+        for (actual, expected) in [blue.r, blue.g, blue.b]
+            .into_iter()
+            .zip([0.0474, 0.0135, 0.8698])
+        {
+            close(actual, expected);
+        }
     }
 
     #[test]

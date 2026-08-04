@@ -278,7 +278,6 @@ fn simulation_request(
                 eotf_gamma: window.get_gamma(),
                 black_level_nits: 0.08,
                 white_level_nits: window.get_white_nits(),
-                channel_efficiency: LinearRgb::new(1.0, 0.96, 0.9),
                 colorimetry: PanelColorimetry::SRGB_D65,
                 angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
             },

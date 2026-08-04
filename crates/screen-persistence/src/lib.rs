@@ -155,7 +155,6 @@ pub struct DeviceDocument {
     pub eotf_gamma: f32,
     pub black_level_nits: f32,
     pub white_level_nits: f32,
-    pub channel_efficiency: [f32; 3],
     pub primary_xy: [[f32; 2]; 3],
     pub white_xy: [f32; 2],
     pub angular_emission_power: [f32; 3],
@@ -629,9 +628,6 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
         device.eotf_gamma,
         device.black_level_nits,
         device.white_level_nits,
-        device.channel_efficiency[0],
-        device.channel_efficiency[1],
-        device.channel_efficiency[2],
         device.primary_xy[0][0],
         device.primary_xy[0][1],
         device.primary_xy[1][0],
@@ -655,7 +651,6 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
         || device.eotf_gamma <= 0.0
         || device.black_level_nits < 0.0
         || device.white_level_nits <= device.black_level_nits
-        || device.channel_efficiency.iter().any(|value| *value <= 0.0)
         || device
             .primary_xy
             .iter()
@@ -876,7 +871,6 @@ mod tests {
                 eotf_gamma: 2.2,
                 black_level_nits: 0.08,
                 white_level_nits: 600.0,
-                channel_efficiency: [1.0, 0.96, 0.9],
                 primary_xy: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
                 white_xy: [0.3127, 0.3290],
                 angular_emission_power: [1.7, 1.5, 1.8],

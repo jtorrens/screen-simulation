@@ -12,7 +12,7 @@ use screen_geometry::{
     project_scene_point, project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
-use screen_panel::{LcdProfile, PanelError};
+use screen_panel::{LcdProfile, PanelError, ValidatedPanelEvaluator};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RasterPlacement {
@@ -59,6 +59,38 @@ impl DeviceSignalRaster {
             .floor()
             .clamp(0.0, self.height.saturating_sub(1) as f32) as u32;
         self.pixels[(u64::from(y) * u64::from(self.width) + u64::from(x)) as usize]
+    }
+
+    fn sample_area_box(&self, minimum: Vec2, maximum: Vec2) -> DeviceRgb {
+        let x0 = minimum.x.min(maximum.x) * self.width as f32;
+        let x1 = minimum.x.max(maximum.x) * self.width as f32;
+        let y0 = minimum.y.min(maximum.y) * self.height as f32;
+        let y1 = minimum.y.max(maximum.y) * self.height as f32;
+        let full_area = (x1 - x0).max(1.0e-8) * (y1 - y0).max(1.0e-8);
+        let start_x = x0.floor() as i64;
+        let end_x = x1.ceil() as i64;
+        let start_y = y0.floor() as i64;
+        let end_y = y1.ceil() as i64;
+        let mut sum = DeviceRgb::BLACK;
+        for row in start_y..end_y {
+            if row < 0 || row >= i64::from(self.height) {
+                continue;
+            }
+            let overlap_y = (y1.min(row as f32 + 1.0) - y0.max(row as f32)).max(0.0);
+            for column in start_x..end_x {
+                if column < 0 || column >= i64::from(self.width) {
+                    continue;
+                }
+                let overlap_x = (x1.min(column as f32 + 1.0) - x0.max(column as f32)).max(0.0);
+                let weight = overlap_x * overlap_y;
+                let pixel =
+                    self.pixels[(row as u64 * u64::from(self.width) + column as u64) as usize];
+                sum.r += pixel.r * weight;
+                sum.g += pixel.g * weight;
+                sum.b += pixel.b * weight;
+            }
+        }
+        DeviceRgb::new(sum.r / full_area, sum.g / full_area, sum.b / full_area)
     }
 }
 
@@ -141,13 +173,26 @@ pub fn source_uv_for_device_uv(
     if source_raster.contains(&0) || device_raster.contains(&0) {
         return None;
     }
+    let source_uv = source_uv_unbounded(source_raster, device_raster, placement, device_uv)?;
+    ((0.0..=1.0).contains(&source_uv.x) && (0.0..=1.0).contains(&source_uv.y)).then_some(source_uv)
+}
+
+fn source_uv_unbounded(
+    source_raster: [u32; 2],
+    device_raster: [u32; 2],
+    placement: RasterPlacement,
+    device_uv: Vec2,
+) -> Option<Vec2> {
+    if source_raster.contains(&0) || device_raster.contains(&0) {
+        return None;
+    }
     let source_aspect = source_raster[0] as f32 / source_raster[1] as f32;
     let device_aspect = device_raster[0] as f32 / device_raster[1] as f32;
     let centered = |scale_x: f32, scale_y: f32| Vec2 {
         x: (device_uv.x - 0.5) * scale_x + 0.5,
         y: (device_uv.y - 0.5) * scale_y + 0.5,
     };
-    let source_uv = match placement {
+    Some(match placement {
         RasterPlacement::Stretch => device_uv,
         RasterPlacement::Fit if source_aspect > device_aspect => {
             centered(1.0, source_aspect / device_aspect)
@@ -161,8 +206,24 @@ pub fn source_uv_for_device_uv(
             device_raster[0] as f32 / source_raster[0] as f32,
             device_raster[1] as f32 / source_raster[1] as f32,
         ),
+    })
+}
+
+fn sample_placed_area(
+    source: &DeviceSignalRaster,
+    source_raster: [u32; 2],
+    device_raster: [u32; 2],
+    placement: RasterPlacement,
+    minimum: Vec2,
+    maximum: Vec2,
+) -> DeviceRgb {
+    let Some(first) = source_uv_unbounded(source_raster, device_raster, placement, minimum) else {
+        return DeviceRgb::BLACK;
     };
-    ((0.0..=1.0).contains(&source_uv.x) && (0.0..=1.0).contains(&source_uv.y)).then_some(source_uv)
+    let Some(second) = source_uv_unbounded(source_raster, device_raster, placement, maximum) else {
+        return DeviceRgb::BLACK;
+    };
+    source.sample_area_box(first, second)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,9 +380,13 @@ pub fn prepare_raster(
     width: u16,
     height: u16,
 ) -> Result<PreparedRaster, ApplicationError> {
-    prepare_raster_with_signal(request.clone(), width, height, &|uv| {
-        diagnostic_signal(uv, request.optics.time)
-    })
+    prepare_raster_with_signal(
+        request.clone(),
+        width,
+        height,
+        &|uv| diagnostic_signal(uv, request.optics.time),
+        &|minimum, maximum| diagnostic_area_signal(minimum, maximum, request.optics.time),
+    )
 }
 
 pub fn evaluate_linear_optics(
@@ -335,6 +400,7 @@ pub fn evaluate_linear_optics(
         height,
         DiagnosticView::Composite,
         &|uv| diagnostic_signal(uv, request.time),
+        &|minimum, maximum| diagnostic_area_signal(minimum, maximum, request.time),
     )
 }
 
@@ -351,12 +417,27 @@ pub fn prepare_raster_from_device_signal(
         request.optics.panel.native_width,
         request.optics.panel.native_height,
     ];
-    prepare_raster_with_signal(request, width, height, &|device_uv| {
-        source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
-            .map_or(DeviceRgb::BLACK, |source_uv| {
-                source.sample_native_pixel(source_uv)
-            })
-    })
+    prepare_raster_with_signal(
+        request,
+        width,
+        height,
+        &|device_uv| {
+            source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
+                .map_or(DeviceRgb::BLACK, |source_uv| {
+                    source.sample_native_pixel(source_uv)
+                })
+        },
+        &|minimum, maximum| {
+            sample_placed_area(
+                source,
+                source_raster,
+                device_raster,
+                placement,
+                minimum,
+                maximum,
+            )
+        },
+    )
 }
 
 pub fn evaluate_linear_optics_from_device_signal(
@@ -380,6 +461,16 @@ pub fn evaluate_linear_optics_from_device_signal(
                     source.sample_native_pixel(source_uv)
                 })
         },
+        &|minimum, maximum| {
+            sample_placed_area(
+                source,
+                source_raster,
+                device_raster,
+                placement,
+                minimum,
+                maximum,
+            )
+        },
     )
 }
 
@@ -388,6 +479,7 @@ fn prepare_raster_with_signal(
     width: u16,
     height: u16,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+    signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) -> Result<PreparedRaster, ApplicationError> {
     if !request.preview_exposure_ev.is_finite() {
         return Err(ApplicationError::InvalidPreviewExposure);
@@ -398,6 +490,7 @@ fn prepare_raster_with_signal(
         height,
         request.view,
         signal_at,
+        signal_area,
     )?;
     let display = DiagnosticDisplayTransform {
         reference_white_nits: 100.0,
@@ -447,6 +540,7 @@ fn evaluate_optical_raster_with_signal(
     height: u16,
     view: DiagnosticView,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+    signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) -> Result<LinearOpticalRaster, ApplicationError> {
     if width == 0 || height == 0 {
         return Err(ApplicationError::EmptyPreviewRaster);
@@ -461,6 +555,7 @@ fn evaluate_optical_raster_with_signal(
     }
     frame.representative_signal = signal_at(Vec2 { x: 0.5, y: 0.5 });
     frame.representative_emission = request.panel.emitted_radiance(frame.representative_signal);
+    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
     let preview_scale_percent = projected_device_pixel_width(&frame, request.panel, width)
         .ok_or(ApplicationError::ViewRayMissesPanel)?
         * 100.0;
@@ -510,8 +605,14 @@ fn evaluate_optical_raster_with_signal(
                         viewport_ndc,
                     )
                 });
-                *output =
-                    integrate_aperture_samples(&aperture_samples, view, request.panel, signal_at);
+                *output = integrate_aperture_samples(
+                    &aperture_samples,
+                    view,
+                    request.panel,
+                    panel_evaluator,
+                    signal_at,
+                    signal_area,
+                );
             }
         });
     let inspection_field_meters = request.inspection.map(|region| {
@@ -535,11 +636,69 @@ fn integrate_aperture_samples(
     spatial_samples: &[[OpticalSample; APERTURE_SAMPLE_COUNT]],
     view: DiagnosticView,
     panel: LcdProfile,
+    evaluator: ValidatedPanelEvaluator,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+    signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) -> LinearOpticalPixel {
     let subpixels_resolved = subpixels_resolved_for_samples(spatial_samples, panel);
     let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
     let mut on_panel = false;
+    if !subpixels_resolved {
+        for aperture in 0..APERTURE_SAMPLE_COUNT {
+            for channel in 0..3 {
+                let mut minimum = Vec2 {
+                    x: f32::INFINITY,
+                    y: f32::INFINITY,
+                };
+                let mut maximum = Vec2 {
+                    x: f32::NEG_INFINITY,
+                    y: f32::NEG_INFINITY,
+                };
+                let mut weight_sum = 0.0;
+                let mut count = 0;
+                for spatial in spatial_samples {
+                    let optical = spatial[aperture];
+                    let Some(uv) = optical.panel_uv[channel]
+                        .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
+                    else {
+                        continue;
+                    };
+                    minimum.x = minimum.x.min(uv.x);
+                    minimum.y = minimum.y.min(uv.y);
+                    maximum.x = maximum.x.max(uv.x);
+                    maximum.y = maximum.y.max(uv.y);
+                    weight_sum += optical_channel_weight(optical, evaluator, view, channel);
+                    count += 1;
+                }
+                if count == 0 {
+                    continue;
+                }
+                on_panel = true;
+                let signal = signal_area(minimum, maximum);
+                let value = if view == DiagnosticView::DeviceSignal {
+                    [signal.r, signal.g, signal.b][channel]
+                } else {
+                    evaluator.native_channel(signal, channel)
+                };
+                let contribution = value * weight_sum / spatial_samples.len() as f32;
+                match channel {
+                    0 => sum.r += contribution,
+                    1 => sum.g += contribution,
+                    _ => sum.b += contribution,
+                }
+            }
+        }
+        let scale = 1.0 / APERTURE_SAMPLE_COUNT as f32;
+        let native_average = LinearRgb::new(sum.r * scale, sum.g * scale, sum.b * scale);
+        return LinearOpticalPixel {
+            acescg_irradiance: if view == DiagnosticView::DeviceSignal {
+                native_average
+            } else {
+                evaluator.native_to_acescg(native_average)
+            },
+            on_panel,
+        };
+    }
     for optical_sample in spatial_samples.iter().flatten() {
         for channel in 0..3 {
             let Some(uv) = optical_sample.panel_uv[channel]
@@ -550,7 +709,7 @@ fn integrate_aperture_samples(
             on_panel = true;
             let signal = signal_at(uv);
             let value = match view {
-                DiagnosticView::DeviceSignal => LinearRgb::new(signal.r, signal.g, signal.b),
+                DiagnosticView::DeviceSignal => [signal.r, signal.g, signal.b][channel],
                 DiagnosticView::Composite
                 | DiagnosticView::EmittedRadiance
                 | DiagnosticView::Subpixels
@@ -560,24 +719,14 @@ fn integrate_aperture_samples(
                         x: (uv.x * panel.native_width as f32).fract(),
                         y: (uv.y * panel.native_height as f32).fract(),
                     };
-                    panel.native_emission_at_pixel(signal, pixel_uv)
+                    evaluator.native_channel_at_pixel(signal, pixel_uv, channel)
                 }
                 DiagnosticView::Composite
                 | DiagnosticView::EmittedRadiance
-                | DiagnosticView::Subpixels => panel.native_emission(signal),
+                | DiagnosticView::Subpixels => evaluator.native_channel(signal, channel),
             };
-            let optical_weight = if view == DiagnosticView::DeviceSignal {
-                1.0
-            } else {
-                let angular = panel.angular_attenuation(optical_sample.emission_cosine[channel]);
-                let angular_channel = [angular.r, angular.g, angular.b][channel];
-                optical_sample.irradiance_weight[channel] * angular_channel
-            };
-            let weighted = match channel {
-                0 => value.r,
-                1 => value.g,
-                _ => value.b,
-            } * optical_weight;
+            let optical_weight = optical_channel_weight(*optical_sample, evaluator, view, channel);
+            let weighted = value * optical_weight;
             match channel {
                 0 => sum.r += weighted,
                 1 => sum.g += weighted,
@@ -590,12 +739,25 @@ fn integrate_aperture_samples(
     let average = if view == DiagnosticView::DeviceSignal {
         native_average
     } else {
-        panel.native_to_acescg(native_average)
+        evaluator.native_to_acescg(native_average)
     };
     LinearOpticalPixel {
         acescg_irradiance: average,
         on_panel,
     }
+}
+
+fn optical_channel_weight(
+    optical: OpticalSample,
+    evaluator: ValidatedPanelEvaluator,
+    view: DiagnosticView,
+    channel: usize,
+) -> f32 {
+    if view == DiagnosticView::DeviceSignal {
+        return 1.0;
+    }
+    optical.irradiance_weight[channel]
+        * evaluator.angular_channel(optical.emission_cosine[channel], channel)
 }
 
 fn subpixels_resolved_for_samples(
@@ -768,6 +930,24 @@ pub fn diagnostic_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
     )
 }
 
+fn diagnostic_area_signal(minimum: Vec2, maximum: Vec2, time: RationalTime) -> DeviceRgb {
+    const OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
+    let mut sum = DeviceRgb::BLACK;
+    for y in OFFSETS {
+        for x in OFFSETS {
+            let uv = Vec2 {
+                x: minimum.x + (maximum.x - minimum.x) * x,
+                y: minimum.y + (maximum.y - minimum.y) * y,
+            };
+            let value = diagnostic_signal(uv, time);
+            sum.r += value.r;
+            sum.g += value.g;
+            sum.b += value.b;
+        }
+    }
+    DeviceRgb::new(sum.r / 16.0, sum.g / 16.0, sum.b / 16.0)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApplicationError {
     InvalidViewportAspect,
@@ -879,7 +1059,6 @@ mod tests {
                     eotf_gamma: 2.2,
                     black_level_nits: 0.05,
                     white_level_nits: 500.0,
-                    channel_efficiency: LinearRgb::new(1.0, 0.95, 0.9),
                     colorimetry: PanelColorimetry::SRGB_D65,
                     angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
                 },
@@ -1007,7 +1186,9 @@ mod tests {
             &resolved_spatial,
             DiagnosticView::Composite,
             request.optics.panel,
+            request.optics.panel.evaluator().expect("valid panel"),
             &|_| DeviceRgb::WHITE,
+            &|_, _| DeviceRgb::WHITE,
         );
         let mut offset = optical;
         offset.panel_uv = [Some(Vec2 { x: 0.51, y: 0.51 }); 3];
@@ -1019,7 +1200,9 @@ mod tests {
             &unresolved_spatial,
             DiagnosticView::Composite,
             request.optics.panel,
+            request.optics.panel.evaluator().expect("valid panel"),
             &|_| DeviceRgb::WHITE,
+            &|_, _| DeviceRgb::WHITE,
         );
         assert_eq!(resolved.acescg_irradiance, LinearRgb::new(0.0, 0.0, 0.0));
         assert!(unresolved.acescg_irradiance.g > 0.0);
@@ -1064,6 +1247,25 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn device_signal_area_filter_integrates_piecewise_constant_native_pixels() {
+        let raster = DeviceSignalRaster {
+            width: 2,
+            height: 2,
+            pixels: vec![
+                DeviceRgb::BLACK,
+                DeviceRgb::WHITE,
+                DeviceRgb::WHITE,
+                DeviceRgb::BLACK,
+            ],
+        };
+        let average = raster.sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
+        assert_eq!(average, DeviceRgb::new(0.5, 0.5, 0.5));
+        let with_black_outside =
+            raster.sample_area_box(Vec2 { x: -1.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
+        assert_eq!(with_black_outside, DeviceRgb::new(0.25, 0.25, 0.25));
     }
 
     #[test]

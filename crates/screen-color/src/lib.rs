@@ -54,6 +54,27 @@ impl OcioInputTransform {
         }
     }
 
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::SrgbEncodedRec709 => "srgb-encoded-rec709",
+            Self::CameraRec709 => "camera-rec709",
+            Self::ArriLogC3Ei800 => "arri-logc3-ei800",
+            Self::ArriLogC4 => "arri-logc4",
+            Self::BmdFilmWideGamutGen5 => "bmd-film-wide-gamut-gen5",
+            Self::DavinciIntermediateWideGamut => "davinci-intermediate-wide-gamut",
+            Self::CanonLog3CinemaGamutD55 => "canon-log3-cinema-gamut-d55",
+            Self::VLogVGamut => "vlog-vgamut",
+            Self::Log3G10RedWideGamutRgb => "log3g10-red-wide-gamut-rgb",
+            Self::SLog3SGamut3Cine => "slog3-sgamut3-cine",
+        }
+    }
+
+    pub fn from_stable_id(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.stable_id() == value)
+    }
+
     const fn ocio_color_space(self) -> &'static str {
         match self {
             Self::SrgbEncodedRec709 => "sRGB Encoded Rec.709 (sRGB)",
@@ -310,6 +331,17 @@ mod tests {
                 )
                 .unwrap_or_else(|error| panic!("{} failed: {error}", input.label()));
         }
+    }
+
+    #[test]
+    fn stable_input_ids_round_trip_without_aliases() {
+        for input in OcioInputTransform::ALL {
+            assert_eq!(
+                OcioInputTransform::from_stable_id(input.stable_id()),
+                Some(input)
+            );
+        }
+        assert_eq!(OcioInputTransform::from_stable_id("ARRI LogC4"), None);
     }
 
     #[test]
