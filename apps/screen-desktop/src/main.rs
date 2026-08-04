@@ -16,8 +16,10 @@ use screen_color::{
     ColorEngine, DeviceColorTarget, OcioInputTransform, SourceColorInterpretation,
     SourceToDeviceProcessor, propose_ocio_input,
 };
-use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2};
-use screen_geometry::{CameraRig, PanelRegion};
+use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
+use screen_geometry::{
+    CameraKeyframe, CameraTrack, KeyframeInterpolation, PanelRegion, Quaternion,
+};
 use screen_media::{
     AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, FrameSelectionPolicy,
     MediaDescriptor, ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix,
@@ -39,6 +41,8 @@ struct InteractionState {
     color_engine: ColorEngine,
     last_tick: Instant,
     playback_accumulator_seconds: f64,
+    camera: CameraTrack,
+    next_camera_key_id: u64,
 }
 
 struct LoadedSource {
@@ -68,7 +72,42 @@ impl InteractionState {
             color_engine,
             last_tick: Instant::now(),
             playback_accumulator_seconds: 0.0,
+            camera: CameraTrack {
+                keyframes: vec![camera_keyframe(
+                    "camera-key-0".to_owned(),
+                    RationalTime::new(0, 1).expect("initial camera time is valid"),
+                    0.82,
+                    0.0,
+                    50.0,
+                    KeyframeInterpolation::Smooth,
+                )],
+            },
+            next_camera_key_id: 1,
         }
+    }
+}
+
+fn camera_keyframe(
+    id: String,
+    time: RationalTime,
+    distance: f32,
+    yaw_degrees: f32,
+    focal_mm: f32,
+    interpolation: KeyframeInterpolation,
+) -> CameraKeyframe {
+    let yaw = yaw_degrees.to_radians();
+    CameraKeyframe {
+        id,
+        time,
+        position: Vec3 {
+            x: distance * yaw.sin(),
+            y: 0.0,
+            z: distance * yaw.cos(),
+        },
+        rotation: Quaternion::from_yaw_degrees(yaw_degrees),
+        focal_length: Millimeters(focal_mm),
+        sensor_width: Millimeters(36.0),
+        interpolation,
     }
 }
 
@@ -152,6 +191,7 @@ fn decode_interpretation_description(interpretation: ResolvedSourceDecode) -> &'
 fn simulation_request(
     window: &MainWindow,
     inspection: Option<PanelRegion>,
+    camera: &CameraTrack,
 ) -> Result<SimulationRequest, String> {
     let frame_rate = project_frame_rate(window)?;
     let view = match window.get_view_index() {
@@ -181,15 +221,7 @@ fn simulation_request(
             white_level_nits: window.get_white_nits(),
             channel_efficiency: LinearRgb::new(1.0, 0.96, 0.9),
         },
-        camera: CameraRig {
-            distance: Meters(window.get_distance_m()),
-            focal_length: Millimeters(window.get_focal_mm()),
-            sensor_width: Millimeters(36.0),
-            orbit_amplitude_degrees: window.get_orbit_degrees(),
-            orbit_duration: frame_rate
-                .time_at_frame(i64::from(DURATION_FRAMES))
-                .map_err(|error| error.to_string())?,
-        },
+        camera: camera.clone(),
         inspection,
         view,
     })
@@ -197,7 +229,7 @@ fn simulation_request(
 
 fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     let started = Instant::now();
-    let request = match simulation_request(window, state.inspection) {
+    let request = match simulation_request(window, state.inspection, &state.camera) {
         Ok(request) => request,
         Err(error) => {
             block_preview(window, &error);
@@ -571,13 +603,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 y: y * 2.0 - 1.0,
             };
             let current_inspection = state.borrow().inspection;
-            let request = match simulation_request(&window, current_inspection) {
-                Ok(request) => request,
-                Err(error) => {
-                    window.set_error_text(error.into());
-                    return;
-                }
-            };
+            let request =
+                match simulation_request(&window, current_inspection, &state.borrow().camera) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        window.set_error_text(error.into());
+                        return;
+                    }
+                };
             match inspection_region_from_drag(
                 request,
                 to_ndc(start_x, start_y),
@@ -590,6 +623,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(error) => window.set_error_text(error.to_string().into()),
             }
+        });
+    }
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_set_camera_keyframe(move || {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let frame_rate = match project_frame_rate(&window) {
+                Ok(value) => value,
+                Err(error) => {
+                    window.set_error_text(error.into());
+                    return;
+                }
+            };
+            let time = match frame_rate.time_at_frame(i64::from(window.get_frame_number())) {
+                Ok(value) => value,
+                Err(error) => {
+                    window.set_error_text(error.to_string().into());
+                    return;
+                }
+            };
+            let interpolation = match window.get_camera_interpolation_index() {
+                0 => KeyframeInterpolation::Hold,
+                1 => KeyframeInterpolation::Linear,
+                _ => KeyframeInterpolation::Smooth,
+            };
+            let mut state = state.borrow_mut();
+            match state
+                .camera
+                .keyframes
+                .binary_search_by_key(&time, |item| item.time)
+            {
+                Ok(index) => {
+                    let id = state.camera.keyframes[index].id.clone();
+                    state.camera.keyframes[index] = camera_keyframe(
+                        id,
+                        time,
+                        window.get_distance_m(),
+                        window.get_yaw_degrees(),
+                        window.get_focal_mm(),
+                        interpolation,
+                    );
+                }
+                Err(index) => {
+                    let id = format!("camera-key-{}", state.next_camera_key_id);
+                    state.next_camera_key_id += 1;
+                    state.camera.keyframes.insert(
+                        index,
+                        camera_keyframe(
+                            id,
+                            time,
+                            window.get_distance_m(),
+                            window.get_yaw_degrees(),
+                            window.get_focal_mm(),
+                            interpolation,
+                        ),
+                    );
+                }
+            }
+            window.set_camera_key_count(state.camera.keyframes.len() as i32);
+            state.inspection = None;
+            render_preview(&window, &mut state);
         });
     }
     {

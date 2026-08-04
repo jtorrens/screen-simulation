@@ -5,35 +5,144 @@
 use core::fmt;
 use screen_contracts::{Meters, Millimeters, RationalTime, Vec2, Vec3};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CameraRig {
-    pub distance: Meters,
-    pub focal_length: Millimeters,
-    pub sensor_width: Millimeters,
-    pub orbit_amplitude_degrees: f32,
-    pub orbit_duration: RationalTime,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyframeInterpolation {
+    Hold,
+    Linear,
+    Smooth,
 }
 
-impl CameraRig {
-    pub fn validate(self) -> Result<Self, GeometryError> {
-        if self.distance.0 <= 0.0 {
-            return Err(GeometryError::NonPositiveCameraDistance);
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quaternion {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub w: f32,
+}
+
+impl Quaternion {
+    pub fn from_yaw_degrees(yaw: f32) -> Self {
+        let half = yaw.to_radians() * 0.5;
+        Self {
+            x: 0.0,
+            y: half.sin(),
+            z: 0.0,
+            w: half.cos(),
         }
-        if self.focal_length.0 <= 0.0 || self.sensor_width.0 <= 0.0 {
-            return Err(GeometryError::NonPositiveIntrinsics);
-        }
-        if self.orbit_duration.numerator() <= 0 {
-            return Err(GeometryError::NonPositiveOrbitDuration);
-        }
-        Ok(self)
     }
 
-    pub fn sample(self, time: RationalTime) -> CameraSample {
-        self.sample_at(time, Vec2 { x: 0.0, y: 0.0 }, self.distance)
+    fn normalized(self) -> Self {
+        let length = (self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w).sqrt();
+        Self {
+            x: self.x / length,
+            y: self.y / length,
+            z: self.z / length,
+            w: self.w / length,
+        }
+    }
+
+    fn rotate(self, value: Vec3) -> Vec3 {
+        let q = Vec3 {
+            x: self.x,
+            y: self.y,
+            z: self.z,
+        };
+        let t = scale(cross(q, value), 2.0);
+        add(value, add(scale(t, self.w), cross(q, t)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CameraKeyframe {
+    pub id: String,
+    pub time: RationalTime,
+    pub position: Vec3,
+    pub rotation: Quaternion,
+    pub focal_length: Millimeters,
+    pub sensor_width: Millimeters,
+    pub interpolation: KeyframeInterpolation,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CameraTrack {
+    pub keyframes: Vec<CameraKeyframe>,
+}
+
+impl CameraTrack {
+    pub fn validate(&self) -> Result<(), GeometryError> {
+        if self.keyframes.is_empty() {
+            return Err(GeometryError::EmptyCameraTrack);
+        }
+        let mut prior: Option<&CameraKeyframe> = None;
+        for key in &self.keyframes {
+            if key.id.is_empty()
+                || !key.position.x.is_finite()
+                || !key.position.y.is_finite()
+                || !key.position.z.is_finite()
+            {
+                return Err(GeometryError::InvalidCameraKeyframe);
+            }
+            let magnitude = key.rotation.x * key.rotation.x
+                + key.rotation.y * key.rotation.y
+                + key.rotation.z * key.rotation.z
+                + key.rotation.w * key.rotation.w;
+            if !magnitude.is_finite() || (magnitude - 1.0).abs() > 1.0e-4 {
+                return Err(GeometryError::InvalidCameraRotation);
+            }
+            if key.focal_length.0 <= 0.0 || key.sensor_width.0 <= 0.0 {
+                return Err(GeometryError::NonPositiveIntrinsics);
+            }
+            if let Some(previous) = prior
+                && (previous.time >= key.time || previous.id == key.id)
+            {
+                return Err(GeometryError::UnorderedCameraKeyframes);
+            }
+            prior = Some(key);
+        }
+        Ok(())
+    }
+
+    pub fn sample(&self, time: RationalTime) -> Result<CameraSample, GeometryError> {
+        self.validate()?;
+        let right = self.keyframes.partition_point(|key| key.time <= time);
+        if right == 0 {
+            return Ok(sample_key(&self.keyframes[0]));
+        }
+        if right == self.keyframes.len() {
+            return Ok(sample_key(&self.keyframes[right - 1]));
+        }
+        let left = &self.keyframes[right - 1];
+        if left.interpolation == KeyframeInterpolation::Hold {
+            return Ok(sample_key(left));
+        }
+        let next = &self.keyframes[right];
+        let span = next.time.as_seconds() - left.time.as_seconds();
+        let mut amount = ((time.as_seconds() - left.time.as_seconds()) / span) as f32;
+        if left.interpolation == KeyframeInterpolation::Smooth {
+            amount = amount * amount * (3.0 - 2.0 * amount);
+        }
+        let lerp = |a: f32, b: f32| a + (b - a) * amount;
+        let rotation = Quaternion {
+            x: lerp(left.rotation.x, next.rotation.x),
+            y: lerp(left.rotation.y, next.rotation.y),
+            z: lerp(left.rotation.z, next.rotation.z),
+            w: lerp(left.rotation.w, next.rotation.w),
+        }
+        .normalized();
+        Ok(camera_sample(
+            Vec3 {
+                x: lerp(left.position.x, next.position.x),
+                y: lerp(left.position.y, next.position.y),
+                z: lerp(left.position.z, next.position.z),
+            },
+            rotation,
+            Millimeters(lerp(left.focal_length.0, next.focal_length.0)),
+            Millimeters(lerp(left.sensor_width.0, next.sensor_width.0)),
+        ))
     }
 
     pub fn fit_panel_region(
-        self,
+        &self,
         time: RationalTime,
         region: PanelRegion,
         active_width: Meters,
@@ -46,15 +155,17 @@ impl CameraRig {
             y: (1.0 - region.min.y - region.max.y) * active_height.0 * 0.5,
         };
         let corners = region.scene_corners(active_width, active_height);
+        let source = self.sample(time)?;
         let fits = |distance: Meters| {
-            let sample = self.sample_at(time, target, distance);
+            let sample = inspection_sample(source, target, distance);
             corners.iter().all(|point| {
                 project_scene_point(sample, *point, viewport_aspect)
                     .is_some_and(|projected| projected.x.abs() <= 0.92 && projected.y.abs() <= 0.92)
             })
         };
 
-        let mut upper = self.distance.0.max(0.001);
+        let forward = normalize(subtract(source.target, source.position));
+        let mut upper = dot(scale(source.position, -1.0), forward).abs().max(0.001);
         for _ in 0..24 {
             if fits(Meters(upper)) {
                 break;
@@ -74,29 +185,50 @@ impl CameraRig {
                 lower = candidate;
             }
         }
-        Ok(self.sample_at(time, target, Meters(upper)))
+        Ok(inspection_sample(source, target, Meters(upper)))
     }
+}
 
-    fn sample_at(self, time: RationalTime, target: Vec2, distance: Meters) -> CameraSample {
-        let phase = (time.as_seconds() / self.orbit_duration.as_seconds()) as f32;
-        let eased = 0.5 - 0.5 * (core::f32::consts::TAU * phase).cos();
-        let yaw_degrees = self.orbit_amplitude_degrees * (eased * 2.0 - 1.0);
-        let yaw = yaw_degrees.to_radians();
-        CameraSample {
-            position: Vec3 {
-                x: target.x + distance.0 * yaw.sin(),
-                y: target.y,
-                z: distance.0 * yaw.cos(),
-            },
-            target: Vec3 {
-                x: target.x,
-                y: target.y,
-                z: 0.0,
-            },
-            yaw_degrees,
-            focal_length: self.focal_length,
-            sensor_width: self.sensor_width,
-        }
+fn sample_key(key: &CameraKeyframe) -> CameraSample {
+    camera_sample(
+        key.position,
+        key.rotation,
+        key.focal_length,
+        key.sensor_width,
+    )
+}
+
+fn camera_sample(
+    position: Vec3,
+    rotation: Quaternion,
+    focal_length: Millimeters,
+    sensor_width: Millimeters,
+) -> CameraSample {
+    let forward = rotation.rotate(Vec3 {
+        x: 0.0,
+        y: 0.0,
+        z: -1.0,
+    });
+    CameraSample {
+        position,
+        target: add(position, forward),
+        yaw_degrees: (2.0 * rotation.y.atan2(rotation.w)).to_degrees(),
+        focal_length,
+        sensor_width,
+    }
+}
+
+fn inspection_sample(source: CameraSample, target: Vec2, distance: Meters) -> CameraSample {
+    let forward = normalize(subtract(source.target, source.position));
+    let target = Vec3 {
+        x: target.x,
+        y: target.y,
+        z: 0.0,
+    };
+    CameraSample {
+        position: subtract(target, scale(forward, distance.0)),
+        target,
+        ..source
     }
 }
 
@@ -292,9 +424,11 @@ fn normalize(value: Vec3) -> Vec3 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryError {
-    NonPositiveCameraDistance,
+    EmptyCameraTrack,
+    InvalidCameraKeyframe,
+    InvalidCameraRotation,
+    UnorderedCameraKeyframes,
     NonPositiveIntrinsics,
-    NonPositiveOrbitDuration,
     InvalidInspectionRegion,
     InspectionRegionCannotBeFramed,
 }
@@ -302,9 +436,13 @@ pub enum GeometryError {
 impl fmt::Display for GeometryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::NonPositiveCameraDistance => "camera distance must be positive",
+            Self::EmptyCameraTrack => "camera track requires at least one keyframe",
+            Self::InvalidCameraKeyframe => "camera keyframe is invalid",
+            Self::InvalidCameraRotation => "camera keyframe quaternion must be normalized",
+            Self::UnorderedCameraKeyframes => {
+                "camera keyframes must have unique ids and increasing times"
+            }
             Self::NonPositiveIntrinsics => "camera focal length and sensor width must be positive",
-            Self::NonPositiveOrbitDuration => "camera orbit duration must be positive",
             Self::InvalidInspectionRegion => "inspection region must have finite positive area",
             Self::InspectionRegionCannotBeFramed => {
                 "inspection camera cannot frame the selected region"
@@ -319,27 +457,42 @@ impl std::error::Error for GeometryError {}
 mod tests {
     use super::*;
 
-    fn rig() -> CameraRig {
-        CameraRig {
-            distance: Meters(0.8),
+    fn rig() -> CameraTrack {
+        let key = |id: &str, frame, yaw: f32| CameraKeyframe {
+            id: id.to_owned(),
+            time: RationalTime::new(frame, 24).expect("valid time"),
+            position: Vec3 {
+                x: 0.8 * yaw.to_radians().sin(),
+                y: 0.0,
+                z: 0.8 * yaw.to_radians().cos(),
+            },
+            rotation: Quaternion::from_yaw_degrees(yaw),
             focal_length: Millimeters(50.0),
             sensor_width: Millimeters(36.0),
-            orbit_amplitude_degrees: 18.0,
-            orbit_duration: RationalTime::new(96, 24).expect("valid duration"),
+            interpolation: KeyframeInterpolation::Smooth,
+        };
+        CameraTrack {
+            keyframes: vec![key("start", 0, -18.0), key("middle", 48, 18.0)],
         }
     }
 
     #[test]
     fn animation_is_exactly_sampled_from_rational_time() {
-        let start = rig().sample(RationalTime::new(0, 24).expect("valid time"));
-        let middle = rig().sample(RationalTime::new(48, 24).expect("valid time"));
+        let start = rig()
+            .sample(RationalTime::new(0, 24).expect("valid time"))
+            .expect("sample");
+        let middle = rig()
+            .sample(RationalTime::new(48, 24).expect("valid time"))
+            .expect("sample");
         assert!((start.yaw_degrees + 18.0).abs() < 0.001);
         assert!((middle.yaw_degrees - 18.0).abs() < 0.001);
     }
 
     #[test]
     fn viewport_ray_round_trips_through_panel_plane() {
-        let camera = rig().sample(RationalTime::new(24, 24).expect("valid time"));
+        let camera = rig()
+            .sample(RationalTime::new(24, 24).expect("valid time"))
+            .expect("sample");
         let width = Meters(0.6);
         let height = Meters(0.34);
         let point = Vec3 {

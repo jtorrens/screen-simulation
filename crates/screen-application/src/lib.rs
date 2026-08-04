@@ -6,7 +6,7 @@ use core::fmt;
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_geometry::{
-    CameraRig, CameraSample, GeometryError, PanelRegion, ProjectedScreen, panel_uv_at_viewport,
+    CameraSample, CameraTrack, GeometryError, PanelRegion, ProjectedScreen, panel_uv_at_viewport,
     project_scene_point, project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
@@ -164,12 +164,12 @@ pub enum DiagnosticView {
     EmittedRadiance,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SimulationRequest {
     pub time: RationalTime,
     pub viewport_aspect: f32,
     pub panel: LcdProfile,
-    pub camera: CameraRig,
+    pub camera: CameraTrack,
     pub inspection: Option<PanelRegion>,
     pub view: DiagnosticView,
 }
@@ -213,12 +213,13 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
         return Err(ApplicationError::InvalidViewportAspect);
     }
     let panel = request.panel.validate().map_err(ApplicationError::Panel)?;
-    let camera_rig = request
+    request
         .camera
         .validate()
         .map_err(ApplicationError::Geometry)?;
     let camera = if let Some(region) = request.inspection {
-        camera_rig
+        request
+            .camera
             .fit_panel_region(
                 request.time,
                 region,
@@ -228,7 +229,10 @@ pub fn prepare_frame(request: SimulationRequest) -> Result<PreparedFrame, Applic
             )
             .map_err(ApplicationError::Geometry)?
     } else {
-        camera_rig.sample(request.time)
+        request
+            .camera
+            .sample(request.time)
+            .map_err(ApplicationError::Geometry)?
     };
     let projected_screen = project_screen(
         camera,
@@ -259,7 +263,7 @@ pub fn prepare_raster(
     width: u16,
     height: u16,
 ) -> Result<PreparedRaster, ApplicationError> {
-    prepare_raster_with_signal(request, width, height, &|uv| {
+    prepare_raster_with_signal(request.clone(), width, height, &|uv| {
         diagnostic_signal(uv, request.time)
     })
 }
@@ -291,7 +295,7 @@ fn prepare_raster_with_signal(
     if width == 0 || height == 0 {
         return Err(ApplicationError::EmptyPreviewRaster);
     }
-    let mut frame = prepare_frame(request)?;
+    let mut frame = prepare_frame(request.clone())?;
     frame.representative_signal = signal_at(Vec2 { x: 0.5, y: 0.5 });
     frame.representative_emission = request.panel.emitted_radiance(frame.representative_signal);
     let display = DiagnosticDisplayTransform {
@@ -371,7 +375,7 @@ pub fn inspection_region_from_drag(
     start_ndc: Vec2,
     end_ndc: Vec2,
 ) -> Result<PanelRegion, ApplicationError> {
-    let frame = prepare_frame(request)?;
+    let frame = prepare_frame(request.clone())?;
     let intersect = |point| {
         panel_uv_at_viewport(
             frame.camera,
@@ -534,12 +538,20 @@ mod tests {
                 white_level_nits: 500.0,
                 channel_efficiency: LinearRgb::new(1.0, 0.95, 0.9),
             },
-            camera: CameraRig {
-                distance: Meters(0.8),
-                focal_length: Millimeters(50.0),
-                sensor_width: Millimeters(36.0),
-                orbit_amplitude_degrees: 15.0,
-                orbit_duration: RationalTime::new(96, 24).expect("valid duration"),
+            camera: CameraTrack {
+                keyframes: vec![screen_geometry::CameraKeyframe {
+                    id: "camera-key-0".to_owned(),
+                    time: RationalTime::new(0, 24).expect("valid time"),
+                    position: Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.8,
+                    },
+                    rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
+                    focal_length: Millimeters(50.0),
+                    sensor_width: Millimeters(36.0),
+                    interpolation: screen_geometry::KeyframeInterpolation::Smooth,
+                }],
             },
             inspection: None,
             view: DiagnosticView::Composite,
@@ -723,6 +735,13 @@ mod tests {
     fn deep_oblique_inspection_does_not_require_the_full_panel_outline() {
         let mut request = request();
         request.time = RationalTime::new(48, 24).expect("valid time");
+        let yaw = 80.0_f32.to_radians();
+        request.camera.keyframes[0].position = Vec3 {
+            x: 0.8 * yaw.sin(),
+            y: 0.0,
+            z: 0.8 * yaw.cos(),
+        };
+        request.camera.keyframes[0].rotation = screen_geometry::Quaternion::from_yaw_degrees(80.0);
         request.inspection = Some(PanelRegion {
             min: Vec2 { x: 0.499, y: 0.499 },
             max: Vec2 { x: 0.501, y: 0.501 },

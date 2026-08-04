@@ -86,7 +86,9 @@ export component MainWindow inherits Window {
     in-out property <float> black-matrix: 0.12;
     in-out property <float> distance-m: 0.82;
     in-out property <float> focal-mm: 50;
-    in-out property <float> orbit-degrees: 18;
+    in-out property <float> yaw-degrees: 0;
+    in-out property <int> camera-key-count: 1;
+    in-out property <int> camera-interpolation-index: 2;
     in-out property <int> stripe-index: 0;
     in-out property <int> view-index: 0;
     in-out property <bool> playing: true;
@@ -116,6 +118,7 @@ export component MainWindow inherits Window {
     callback reset-inspection();
     callback tick();
     callback choose-source();
+    callback set-camera-keyframe();
 
     MenuBar {
         Menu {
@@ -504,13 +507,26 @@ export component MainWindow inherits Window {
                         }
 
                         ValueRow {
-                            label: "Orbit";
-                            minimum: 0;
+                            label: "Yaw";
+                            minimum: -45;
                             maximum: 35;
                             step: 0.1;
-                            value <=> root.orbit-degrees;
-                            numeric-value: round(root.orbit-degrees * 10) / 10;
+                            value <=> root.yaw-degrees;
+                            numeric-value: round(root.yaw-degrees * 10) / 10;
                             suffix: "°";
+                        }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            spacing: 8px;
+                            ComboBox {
+                                model: ["Hold", "Linear", "Smooth"];
+                                current-index <=> root.camera-interpolation-index;
+                            }
+                            Button {
+                                text: "Set key · " + root.camera-key-count;
+                                clicked => { root.set-camera-keyframe(); }
+                            }
                         }
 
                         HorizontalLayout {
