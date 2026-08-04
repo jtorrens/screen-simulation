@@ -348,7 +348,7 @@ fn native_to_acescg_matrix(color: PanelColorimetry) -> Option<[[f32; 3]; 3]> {
     ];
     if adaptation_scale
         .into_iter()
-        .any(|value| !value.is_finite() || value.abs() > MAX_ADAPTATION_SCALE)
+        .any(|value| !value.is_finite() || value <= 0.0 || value > MAX_ADAPTATION_SCALE)
     {
         return None;
     }
@@ -359,11 +359,14 @@ fn native_to_acescg_matrix(color: PanelColorimetry) -> Option<[[f32; 3]; 3]> {
     ];
     let adaptation = mat_mul(BRADFORD_INV, mat_mul(diagonal, BRADFORD));
     let result = mat_mul(XYZ_D60_TO_ACESCG, mat_mul(adaptation, native_to_xyz));
-    result
+    let coefficients_are_bounded = result
         .into_iter()
         .flatten()
-        .all(|value| value.is_finite() && value.abs() <= MAX_TRANSFORM_COEFFICIENT)
-        .then_some(result)
+        .all(|value| value.is_finite() && value.abs() <= MAX_TRANSFORM_COEFFICIENT);
+    let result_is_well_conditioned = inverse3(result).is_some_and(|inverse| {
+        matrix_infinity_norm(result) * matrix_infinity_norm(inverse) <= MAX_CONDITION_ESTIMATE
+    });
+    (coefficients_are_bounded && result_is_well_conditioned).then_some(result)
 }
 
 fn matrix_infinity_norm(matrix: [[f32; 3]; 3]) -> f32 {
@@ -551,6 +554,16 @@ mod tests {
         };
         assert_eq!(
             ill_conditioned_primaries.validate(),
+            Err(PanelError::InvalidColorimetry)
+        );
+
+        let mut ill_conditioned_transform = profile();
+        ill_conditioned_transform.colorimetry.white = Chromaticity {
+            x: 0.639_99,
+            y: 0.329_99,
+        };
+        assert_eq!(
+            ill_conditioned_transform.validate(),
             Err(PanelError::InvalidColorimetry)
         );
     }
