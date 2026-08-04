@@ -102,6 +102,7 @@ export component MainWindow inherits Window {
     in-out property <string> source-interpretation: "Explicit device signal";
     in-out property <int> placement-index: 0;
     in-out property <int> idt-index: 0;
+    in property <[string]> idt-model;
     in-out property <int> alpha-index: 0;
     in-out property <int> sample-policy-index: 1;
     in-out property <int> project-fps-index: 1;
@@ -372,7 +373,7 @@ export component MainWindow inherits Window {
                             height: 34px;
                             Text { text: "IDT"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
                             ComboBox {
-                                model: ["Select IDT…", "Identity (device signal)"];
+                                model: root.idt-model;
                                 current-index <=> root.idt-index;
                             }
                         }

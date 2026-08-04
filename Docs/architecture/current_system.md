@@ -25,7 +25,7 @@ Media sample selection consumes exact project time and one authored policy. `Exa
 
 ## Technology
 
-The cross-platform implementation uses Rust 1.97.1. GPU work uses `wgpu` and WGSL, selecting Metal on macOS and Direct3D 12 on Windows. The technical desktop UI uses Slint with one compiled `fluent-dark` style and its WGPU renderer on both platforms. Slint remains confined to `screen-desktop`; domain and application packages expose no UI types. The desktop bundle includes the required Slint attribution through the standard `AboutSlint` component. Media decode uses one bundled FFmpeg configuration on both platforms. OpenColorIO remains behind a narrow C++ boundary with a CPU reference processor. OpenEXR remains behind its own format adapter.
+The cross-platform implementation uses Rust 1.97.1. GPU work uses `wgpu` and WGSL, selecting Metal on macOS and Direct3D 12 on Windows. The technical desktop UI uses Slint with one compiled `fluent-dark` style and its WGPU renderer on both platforms. Slint remains confined to `screen-desktop`; domain and application packages expose no UI types. The desktop bundle includes the required Slint attribution through the standard `AboutSlint` component. Media decode uses one bundled FFmpeg configuration on both platforms. OpenColorIO 2.5.2 is statically built through the `screen-color` dependency boundary; `screen-color` opens the exact upstream built-in `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` configuration and never reads the process environment or a workstation configuration path. Its CPU processor is the current reference implementation. OpenEXR remains behind its own format adapter.
 
 The initial supported systems are Apple Silicon on macOS 14 or later and x86-64 on Windows 11.
 

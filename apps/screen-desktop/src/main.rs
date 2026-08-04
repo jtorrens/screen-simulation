@@ -12,7 +12,10 @@ use screen_application::{
     decoded_frame_to_device_signal, inspection_region_from_drag, prepare_raster,
     prepare_raster_from_device_signal,
 };
-use screen_color::SourceColorInterpretation;
+use screen_color::{
+    ColorEngine, DeviceColorTarget, OcioInputTransform, SourceColorInterpretation,
+    SourceToDeviceProcessor,
+};
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2};
 use screen_geometry::{CameraRig, PanelRegion};
 use screen_media::{
@@ -21,7 +24,7 @@ use screen_media::{
 };
 use screen_panel::{LcdProfile, StripeLayout};
 use screen_platform::decode_frame_at_time;
-use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
+use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 const DURATION_FRAMES: u32 = 96;
 const PREVIEW_WIDTH: u16 = 960;
@@ -32,6 +35,7 @@ slint::include_modules!();
 struct InteractionState {
     inspection: Option<PanelRegion>,
     source: Option<LoadedSource>,
+    color_engine: ColorEngine,
     last_tick: Instant,
     playback_accumulator_seconds: f64,
 }
@@ -42,18 +46,38 @@ struct LoadedSource {
     requested_time: RationalTime,
     sample_policy: FrameSelectionPolicy,
     decoded_timestamp: RationalTime,
-    straight_over_black: DeviceSignalRaster,
-    premultiplied_over_black: DeviceSignalRaster,
+    decoded_frame: DecodedFrame,
+    processor_interpretation: Option<SourceColorInterpretation>,
+    color_processor: Option<SourceToDeviceProcessor>,
+    prepared_signal_key: Option<(SourceColorInterpretation, AlphaInterpretation)>,
+    device_signal: Option<DeviceSignalRaster>,
 }
 
 impl InteractionState {
-    fn new() -> Self {
+    fn new(color_engine: ColorEngine) -> Self {
         Self {
             inspection: None,
             source: None,
+            color_engine,
             last_tick: Instant::now(),
             playback_accumulator_seconds: 0.0,
         }
+    }
+}
+
+fn source_color_interpretation(
+    window: &MainWindow,
+) -> Option<(SourceColorInterpretation, &'static str)> {
+    match window.get_idt_index() {
+        0 => None,
+        1 => Some((
+            SourceColorInterpretation::IdentityDeviceSignal,
+            "Identity device signal",
+        )),
+        index => OcioInputTransform::ALL
+            .get(usize::try_from(index - 2).ok()?)
+            .copied()
+            .map(|input| (SourceColorInterpretation::Ocio(input), input.label())),
     }
 }
 
@@ -141,13 +165,14 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             return;
         }
     };
+    let color_engine = &state.color_engine;
     let prepared = match &mut state.source {
         None => prepare_raster(request, PREVIEW_WIDTH, PREVIEW_HEIGHT),
         Some(source) => {
-            if window.get_idt_index() == 0 {
+            let Some((interpretation, _)) = source_color_interpretation(window) else {
                 block_preview(window, "Select an authoritative source IDT");
                 return;
-            }
+            };
             if source.descriptor.alpha == AlphaPresence::Present
                 && !matches!(window.get_alpha_index(), 1 | 2)
             {
@@ -157,6 +182,13 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 );
                 return;
             }
+            let alpha_interpretation = match (source.descriptor.alpha, window.get_alpha_index()) {
+                (AlphaPresence::Absent, _) | (AlphaPresence::Present, 1) => {
+                    AlphaInterpretation::Straight
+                }
+                (AlphaPresence::Present, 2) => AlphaInterpretation::Premultiplied,
+                _ => unreachable!("alpha association was validated before sample refresh"),
+            };
             let sample_policy = frame_selection_policy(window);
             if (source.requested_time != request.time || source.sample_policy != sample_policy)
                 && let Err(error) = refresh_loaded_source(source, request.time, sample_policy)
@@ -164,12 +196,16 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 block_preview(window, &error);
                 return;
             }
-            let signal = match (source.descriptor.alpha, window.get_alpha_index()) {
-                (AlphaPresence::Absent, _) => &source.straight_over_black,
-                (AlphaPresence::Present, 1) => &source.straight_over_black,
-                (AlphaPresence::Present, 2) => &source.premultiplied_over_black,
-                _ => unreachable!("alpha association was validated before sample refresh"),
-            };
+            if let Err(error) =
+                ensure_device_signal(source, color_engine, interpretation, alpha_interpretation)
+            {
+                block_preview(window, &error.to_string());
+                return;
+            }
+            let signal = source
+                .device_signal
+                .as_ref()
+                .expect("source interpretation was prepared before raster evaluation");
             let placement = match window.get_placement_index() {
                 1 => RasterPlacement::FillCrop,
                 2 => RasterPlacement::Stretch,
@@ -254,6 +290,16 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             );
             window.set_error_text("".into());
             if let Some(source) = &state.source {
+                let (interpretation, interpretation_label) = source_color_interpretation(window)
+                    .expect("rendered media has an explicit interpretation");
+                let interpretation_description = match interpretation {
+                    SourceColorInterpretation::IdentityDeviceSignal => {
+                        interpretation_label.to_owned()
+                    }
+                    SourceColorInterpretation::Ocio(_) => {
+                        format!("{interpretation_label} → sRGB device")
+                    }
+                };
                 let alpha = match source.descriptor.alpha {
                     AlphaPresence::Absent => "opaque",
                     AlphaPresence::Present if window.get_alpha_index() == 1 => {
@@ -263,7 +309,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 };
                 window.set_source_interpretation(
                     format!(
-                        "Identity device signal · {alpha} · sample {}/{} s · {:?}",
+                        "{interpretation_description} · {alpha} · sample {}/{} s · {:?}",
                         source.decoded_timestamp.numerator(),
                         source.decoded_timestamp.denominator(),
                         source.sample_policy
@@ -293,19 +339,13 @@ fn load_source(window: &MainWindow, state: &mut InteractionState, path: &Path) {
     let sample_policy = frame_selection_policy(window);
     match decode_frame_at_time(path, requested_time, sample_policy) {
         Ok((descriptor, frame)) => {
-            let loaded = match prepare_loaded_source(
+            let loaded = prepare_loaded_source(
                 path.to_owned(),
                 descriptor,
                 frame,
                 requested_time,
                 sample_policy,
-            ) {
-                Ok(loaded) => loaded,
-                Err(error) => {
-                    window.set_error_text(error.to_string().into());
-                    return;
-                }
-            };
+            );
             present_source(window, path, &loaded.descriptor);
             state.source = Some(loaded);
             state.inspection = None;
@@ -323,28 +363,52 @@ fn prepare_loaded_source(
     frame: DecodedFrame,
     requested_time: RationalTime,
     sample_policy: FrameSelectionPolicy,
-) -> Result<LoadedSource, ApplicationError> {
-    let straight_over_black = decoded_frame_to_device_signal(
-        &frame,
-        descriptor.alpha,
-        AlphaInterpretation::Straight,
-        SourceColorInterpretation::IdentityDeviceSignal,
-    )?;
-    let premultiplied_over_black = decoded_frame_to_device_signal(
-        &frame,
-        descriptor.alpha,
-        AlphaInterpretation::Premultiplied,
-        SourceColorInterpretation::IdentityDeviceSignal,
-    )?;
-    Ok(LoadedSource {
+) -> LoadedSource {
+    LoadedSource {
         path,
         descriptor,
         requested_time,
         sample_policy,
         decoded_timestamp: frame.timestamp,
-        straight_over_black,
-        premultiplied_over_black,
-    })
+        decoded_frame: frame,
+        processor_interpretation: None,
+        color_processor: None,
+        prepared_signal_key: None,
+        device_signal: None,
+    }
+}
+
+fn ensure_device_signal(
+    source: &mut LoadedSource,
+    color_engine: &ColorEngine,
+    interpretation: SourceColorInterpretation,
+    alpha_interpretation: AlphaInterpretation,
+) -> Result<(), ApplicationError> {
+    let key = (interpretation, alpha_interpretation);
+    if source.prepared_signal_key == Some(key) {
+        return Ok(());
+    }
+    if source.processor_interpretation != Some(interpretation) {
+        source.color_processor = Some(
+            color_engine
+                .source_to_device_processor(interpretation, DeviceColorTarget::SrgbDisplay)
+                .map_err(ApplicationError::Color)?,
+        );
+        source.processor_interpretation = Some(interpretation);
+    }
+    let processor = source
+        .color_processor
+        .as_ref()
+        .expect("processor interpretation and processor are updated together");
+    let device_signal = decoded_frame_to_device_signal(
+        &source.decoded_frame,
+        source.descriptor.alpha,
+        alpha_interpretation,
+        processor,
+    )?;
+    source.prepared_signal_key = Some(key);
+    source.device_signal = Some(device_signal);
+    Ok(())
 }
 
 fn refresh_loaded_source(
@@ -357,15 +421,13 @@ fn refresh_loaded_source(
     if descriptor != source.descriptor {
         return Err("source descriptor changed on disk; reopen the source explicitly".to_owned());
     }
-    let refreshed = prepare_loaded_source(
-        source.path.clone(),
-        descriptor,
-        frame,
-        requested_time,
-        sample_policy,
-    )
-    .map_err(|error| error.to_string())?;
-    *source = refreshed;
+    source.descriptor = descriptor;
+    source.requested_time = requested_time;
+    source.sample_policy = sample_policy;
+    source.decoded_timestamp = frame.timestamp;
+    source.decoded_frame = frame;
+    source.prepared_signal_key = None;
+    source.device_signal = None;
     Ok(())
 }
 
@@ -403,9 +465,20 @@ fn present_source(window: &MainWindow, path: &Path, descriptor: &MediaDescriptor
     window.set_error_text("".into());
 }
 
-fn main() -> Result<(), slint::PlatformError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window = MainWindow::new()?;
-    let state = Rc::new(RefCell::new(InteractionState::new()));
+    let idt_labels: Vec<SharedString> = ["Select IDT…", "Identity (device signal)"]
+        .into_iter()
+        .chain(
+            OcioInputTransform::ALL
+                .into_iter()
+                .map(|input| input.label()),
+        )
+        .map(Into::into)
+        .collect();
+    window.set_idt_model(ModelRc::new(VecModel::from(idt_labels)));
+    let color_engine = ColorEngine::bundled()?;
+    let state = Rc::new(RefCell::new(InteractionState::new(color_engine)));
 
     {
         let weak_window = window.as_weak();
@@ -505,5 +578,6 @@ fn main() -> Result<(), slint::PlatformError> {
         load_source(&window, &mut state.borrow_mut(), Path::new(&path));
     }
     render_preview(&window, &mut state.borrow_mut());
-    window.run()
+    window.run()?;
+    Ok(())
 }

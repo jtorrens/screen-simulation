@@ -831,6 +831,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3491,6 +3500,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ocio-rs"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3492534019b59e29dba06014f907dd12824537ed4d293d4108c4bfc669de7fd"
+dependencies = [
+ "ocio-sys",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "ocio-sys"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e63251d72d848de5eda39d59cd6490260cf031738ebd518ea37d76b5aae614ec"
+dependencies = [
+ "cc",
+ "cmake",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4365,6 +4394,7 @@ dependencies = [
 name = "screen-color"
 version = "0.1.0"
 dependencies = [
+ "ocio-rs",
  "screen-contracts",
 ]
 

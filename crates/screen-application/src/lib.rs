@@ -3,9 +3,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use screen_color::{
-    DiagnosticDisplayTransform, PreviewRgb, SourceColorInterpretation, source_to_device,
-};
+use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_geometry::{
     CameraRig, CameraSample, GeometryError, PanelRegion, ProjectedScreen, panel_uv_at_viewport,
@@ -59,7 +57,7 @@ pub fn decoded_frame_to_device_signal(
     frame: &DecodedFrame,
     alpha_presence: AlphaPresence,
     alpha_interpretation: AlphaInterpretation,
-    color_interpretation: SourceColorInterpretation,
+    color_processor: &SourceToDeviceProcessor,
 ) -> Result<DeviceSignalRaster, ApplicationError> {
     let expected = frame.raster.pixel_count();
     if frame.pixels.len() as u64 != expected {
@@ -72,21 +70,47 @@ pub fn decoded_frame_to_device_signal(
     {
         return Err(ApplicationError::AlphaAssociationUnresolved);
     }
-    let pixels = frame
-        .pixels
-        .iter()
+    let capacity = usize::try_from(expected)
+        .map_err(|_| ApplicationError::DecodedPixelStorageTooLarge)?
+        .checked_mul(4)
+        .ok_or(ApplicationError::DecodedPixelStorageTooLarge)?;
+    let mut transformed = Vec::with_capacity(capacity);
+    for pixel in &frame.pixels {
+        let [r, g, b, alpha] = match (alpha_presence, alpha_interpretation) {
+            (AlphaPresence::Absent, _)
+            | (AlphaPresence::Present, AlphaInterpretation::Straight) => {
+                [pixel.r, pixel.g, pixel.b, pixel.a]
+            }
+            (AlphaPresence::Present, AlphaInterpretation::Premultiplied) if pixel.a == 0.0 => {
+                [0.0, 0.0, 0.0, 0.0]
+            }
+            (AlphaPresence::Present, AlphaInterpretation::Premultiplied) => [
+                pixel.r / pixel.a,
+                pixel.g / pixel.a,
+                pixel.b / pixel.a,
+                pixel.a,
+            ],
+            (AlphaPresence::Present, AlphaInterpretation::Auto) => {
+                unreachable!("unresolved alpha was rejected before color processing")
+            }
+        };
+        transformed.extend_from_slice(&[r, g, b, alpha]);
+    }
+    color_processor
+        .apply_rgba_buffer(&mut transformed)
+        .map_err(ApplicationError::Color)?;
+    let pixels = transformed
+        .chunks_exact(4)
         .map(|pixel| {
-            let association = match (alpha_presence, alpha_interpretation) {
-                (AlphaPresence::Present, AlphaInterpretation::Straight) => pixel.a,
-                _ => 1.0,
+            let association = if alpha_presence == AlphaPresence::Present {
+                pixel[3]
+            } else {
+                1.0
             };
-            source_to_device(
-                color_interpretation,
-                [
-                    pixel.r * association,
-                    pixel.g * association,
-                    pixel.b * association,
-                ],
+            DeviceRgb::new(
+                pixel[0] * association,
+                pixel[1] * association,
+                pixel[2] * association,
             )
         })
         .collect();
@@ -434,7 +458,7 @@ pub fn diagnostic_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApplicationError {
     InvalidViewportAspect,
     EmptyPreviewRaster,
@@ -443,7 +467,9 @@ pub enum ApplicationError {
     EmptyDeviceSignalRaster,
     DeviceSignalPixelCountMismatch { expected: u64, actual: u64 },
     DecodedPixelCountMismatch { expected: u64, actual: u64 },
+    DecodedPixelStorageTooLarge,
     AlphaAssociationUnresolved,
+    Color(ColorError),
     Panel(PanelError),
     Geometry(GeometryError),
 }
@@ -470,9 +496,13 @@ impl fmt::Display for ApplicationError {
                 formatter,
                 "decoded source has {actual} pixels but requires {expected}"
             ),
+            Self::DecodedPixelStorageTooLarge => {
+                formatter.write_str("decoded source is too large for RGBA color processing")
+            }
             Self::AlphaAssociationUnresolved => formatter.write_str(
                 "alpha metadata does not identify Straight or Premultiplied association",
             ),
+            Self::Color(error) => write!(formatter, "invalid color transform: {error}"),
             Self::Panel(error) => write!(formatter, "invalid panel: {error}"),
             Self::Geometry(error) => write!(formatter, "invalid camera: {error}"),
         }
@@ -484,6 +514,7 @@ impl std::error::Error for ApplicationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use screen_color::{ColorEngine, DeviceColorTarget, SourceColorInterpretation};
     use screen_contracts::{Meters, Millimeters};
     use screen_panel::StripeLayout;
 
@@ -602,12 +633,19 @@ mod tests {
                 a: 0.5,
             }],
         };
+        let processor = ColorEngine::bundled()
+            .expect("bundled color engine")
+            .source_to_device_processor(
+                SourceColorInterpretation::IdentityDeviceSignal,
+                DeviceColorTarget::SrgbDisplay,
+            )
+            .expect("identity processor");
         assert_eq!(
             decoded_frame_to_device_signal(
                 &frame,
                 AlphaPresence::Present,
                 AlphaInterpretation::Auto,
-                SourceColorInterpretation::IdentityDeviceSignal,
+                &processor,
             ),
             Err(ApplicationError::AlphaAssociationUnresolved)
         );
@@ -615,18 +653,57 @@ mod tests {
             &frame,
             AlphaPresence::Present,
             AlphaInterpretation::Straight,
-            SourceColorInterpretation::IdentityDeviceSignal,
+            &processor,
         )
         .expect("explicit straight alpha");
         let premultiplied = decoded_frame_to_device_signal(
             &frame,
             AlphaPresence::Present,
             AlphaInterpretation::Premultiplied,
-            SourceColorInterpretation::IdentityDeviceSignal,
+            &processor,
         )
         .expect("explicit premultiplied alpha");
         assert_eq!(straight.pixels[0], DeviceRgb::new(0.4, 0.2, 0.1));
         assert_eq!(premultiplied.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
+    }
+
+    #[test]
+    fn equivalent_straight_and_premultiplied_sources_match_after_ocio() {
+        use screen_color::OcioInputTransform;
+        use screen_media::{DecodedRgba, RasterSize};
+
+        let make_frame = |rgb: [f32; 3]| DecodedFrame {
+            raster: RasterSize::new(1, 1).expect("valid raster"),
+            timestamp: RationalTime::new(0, 24).expect("valid time"),
+            pixels: vec![DecodedRgba {
+                r: rgb[0],
+                g: rgb[1],
+                b: rgb[2],
+                a: 0.5,
+            }],
+        };
+        let processor = ColorEngine::bundled()
+            .expect("bundled color engine")
+            .source_to_device_processor(
+                SourceColorInterpretation::Ocio(OcioInputTransform::ArriLogC4),
+                DeviceColorTarget::SrgbDisplay,
+            )
+            .expect("LogC4 processor");
+        let straight = decoded_frame_to_device_signal(
+            &make_frame([0.4, 0.2, 0.1]),
+            AlphaPresence::Present,
+            AlphaInterpretation::Straight,
+            &processor,
+        )
+        .expect("straight signal");
+        let premultiplied = decoded_frame_to_device_signal(
+            &make_frame([0.2, 0.1, 0.05]),
+            AlphaPresence::Present,
+            AlphaInterpretation::Premultiplied,
+            &processor,
+        )
+        .expect("premultiplied signal");
+        assert_eq!(straight, premultiplied);
     }
 
     #[test]
