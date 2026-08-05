@@ -61,9 +61,12 @@ only the identical modulation-free spatial value is referenced more than once. A
 procedural source, media sequence or any multi-keyframe spatial track selects the complete plan
 batch automatically. This is an optimization inside the same result contract, not another route.
 
-Native work is partitioned into 128-pixel sensor tiles. Progress publishes after each completed tile
-and cancellation is checked before the next tile. Completed staging remains non-authoritative and a
-cancelled job never publishes a partial result.
+Native work retains 128-pixel sensor tiles as its logical progress and cancellation boundary, but
+the macOS scheduler evaluates all horizontal tiles in a 128-row stripe as one exact product region.
+This shares row-plan preparation and one Metal batch across the image width. The developed stripe
+is then split only for staging publication; it is bit-identical to evaluating its logical tiles
+separately. Cancellation is checked before stripe compute and before every logical-tile publication.
+Completed staging remains non-authoritative and a cancelled job never publishes a partial result.
 
 The reproducible benchmark is:
 
@@ -73,9 +76,11 @@ cargo run --release -p screen-desktop --bin native_benchmark
 
 It reports cold Metal setup, time to the first complete Native tile, end-to-end physical throughput
 for the iPhone 16e model with rolling shutter for both the default one-motion-sample case and a
-static eight-motion-sample case, measured 48 MP extrapolations, and isolated CPU/Metal
-RAW-development time. Extrapolation is diagnostic evidence, not a promise: it assumes linear pixel
-scaling for the same authored scene and hardware.
+static eight-motion-sample case, a staged 1536×1152 ROI breakdown, the actual 8064×128 product
+stripe, measured 48 MP extrapolations, and isolated CPU/Metal RAW-development time. Metal uses
+unified `StorageModeShared`, so explicit device/host transfer is zero; shared-buffer result
+materialization is included in the Metal stage. Extrapolation is diagnostic evidence, not a
+promise: it assumes linear stripe scaling for the same authored scene and hardware.
 
 The pre-port 2026-08-05 release measurement on Apple M3 Ultra reported 2.065 s to the first
 128×128 product tile, 7,936 sensor pixels/s and a 1.7 h linear 8064×6048 extrapolation.
@@ -88,16 +93,25 @@ unique spatial plans, completed the tile in 0.071 s at 231,147 pixels/s and extr
 minutes. Run-to-run GPU variance makes the small ordering difference between those two cases
 non-semantic; both execute one unique spatial evaluation per rolling row.
 
-The isolated spatial kernel delivered its first tile in 0.010 s and sustained 13.19 million
-pixels/s, a 3.7 s one-sample 48 MP extrapolation. Isolated 1024×768 RAW development measured
-0.017 s CPU versus 0.003 s Metal, or 5.53×. For moving sources or multi-keyframe geometry, exact
-motion sampling remains the dominant cost; old PWM subdivision and CPU optics are absent from the
-product route.
+The large-ROI run established the real fixed cost. A 1536×1152 default capture took 0.649 s:
+0.575 s CPU plan preparation, 0.032 s Metal plus shared result materialization, 0.036 s temporal
+integration and sensor, and 0.006 s RAW Metal. Static/eight took 0.664 s with the same exact
+integration. Thus the previous minute-scale number was an invalid extrapolation of per-tile plan
+preparation, not sustained GPU work.
+
+With horizontal stripe scheduling connected to the product, an actual 8064×128 iPhone stripe took
+0.102 s default/one-sample and 0.107 s static/eight. It exposes 63 logical progress tiles and projects
+48 stripes to 4.9 s and 5.2 s respectively. The benchmark process reported 200 MiB maximum resident
+set size; principal 1536×1152 staging is 27.0 MiB spatial float4, 40.5 MiB accumulated f64x3 and
+20.2 MiB developed float3. The isolated spatial kernel sustained 13.93 million pixels/s, while
+1024×768 RAW development measured 0.017 s CPU versus 0.003 s Metal. For moving sources or
+multi-keyframe geometry, exact motion sampling remains the dominant cost; old PWM subdivision and
+CPU optics are absent from the product route.
 
 Remaining performance work is precisely bounded:
 
 1. Share prepared linear-emission storage across time-equivalent decoded media samples.
 2. Extend proof of static intervals beyond single-key tracks only where exact keyframe-segment
    identity can be established without heuristic tolerances.
-3. Consider multi-tile GPU scheduling only if it preserves sub-second progress and cooperative
-   cancellation at the existing publication boundary.
+3. Reduce exact CPU row-plan construction cost (currently the dominant large-ROI stage) without
+   weakening authored motion detection or temporal integration.

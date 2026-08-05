@@ -287,6 +287,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         expanded_pixels as f64 * 12.0 / 1_048_576.0
     );
 
+    let product_stripe = SensorRegion {
+        origin_x: 0,
+        origin_y: 0,
+        width: iphone.sensor.native_width,
+        height: TILE_EDGE,
+    };
+    let stripe_count = usize::from(iphone.sensor.native_height).div_ceil(usize::from(TILE_EDGE));
+    let run_product_stripe = |label: &str,
+                              capture: FrameCaptureRequest|
+     -> Result<Duration, Box<dyn std::error::Error>> {
+        let started = Instant::now();
+        let (_, stages) = capture_and_develop_procedural_region_with_compute_backends_timed(
+            capture,
+            iphone.sensor,
+            development,
+            product_stripe,
+            &metal,
+            &metal,
+        )?;
+        let elapsed = started.elapsed();
+        println!(
+            "product stripe {label}: {}x{} · {:.3} s to {} logical tile publications · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s",
+            product_stripe.width,
+            product_stripe.height,
+            elapsed.as_secs_f64(),
+            usize::from(product_stripe.width).div_ceil(usize::from(TILE_EDGE)),
+            stages.preparation_cpu.as_secs_f64(),
+            stages.spatial_backend.as_secs_f64(),
+            stages.integration_and_sensor_cpu.as_secs_f64(),
+            stages.raw_development_backend.as_secs_f64(),
+        );
+        Ok(elapsed)
+    };
+    let stripe_default = run_product_stripe("default1", default_capture.clone())?;
+    let mut stripe_static_capture = default_capture.clone();
+    stripe_static_capture.temporal_samples = MOTION_SAMPLES;
+    stripe_static_capture.optics.procedural_pattern = ProceduralTestPattern::EyeChart;
+    let stripe_static = run_product_stripe("static8", stripe_static_capture)?;
+    println!(
+        "48 MP stripe-scheduled estimate ({} stripes): default1 {:.1} s · static8 {:.1} s",
+        stripe_count,
+        stripe_default.as_secs_f64() * stripe_count as f64,
+        stripe_static.as_secs_f64() * stripe_count as f64,
+    );
+
     let backend_sensor = SensorProfile {
         native_width: 1_024,
         native_height: 768,
