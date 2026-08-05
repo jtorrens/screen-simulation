@@ -154,6 +154,12 @@ export component MainWindow inherits Window {
     in-out property <bool> playing: false;
     in-out property <int> frame-number: 0;
     in-out property <image> preview-image;
+    in-out property <image> native-level-0-image;
+    in-out property <image> native-level-1-image;
+    in-out property <image> native-level-2-image;
+    in-out property <image> native-level-3-image;
+    in-out property <float> native-source-width: 1;
+    in-out property <bool> native-pyramid-ready: false;
     in-out property <image> native-staging-image;
     in-out property <bool> native-staging-ready: false;
     in-out property <bool> native-capture-ready: false;
@@ -389,9 +395,9 @@ export component MainWindow inherits Window {
                             }
 
                             Button {
-                                text: "100%";
+                                text: "1:1 Sensor";
                                 clicked => {
-                                    root.viewer-zoom = clamp(root.preview-image.width * 1px / preview.width, 1, 8);
+                                    root.viewer-zoom = clamp(root.native-pyramid-ready ? root.native-source-width * 1px / preview.width : root.preview-image.width * 1px / preview.width, 1, 8);
                                     root.viewer-pan-x = 0;
                                     root.viewer-pan-y = 0;
                                 }
@@ -432,7 +438,48 @@ export component MainWindow inherits Window {
                             border-color: #313947;
 
                             Image {
+                                visible: !root.native-pyramid-ready;
                                 source: root.preview-image;
+                                width: parent.width * root.viewer-zoom;
+                                height: parent.height * root.viewer-zoom;
+                                x: -(self.width - parent.width) / 2 + root.viewer-pan-x * parent.width;
+                                y: -(self.height - parent.height) / 2 + root.viewer-pan-y * parent.height;
+                                image-fit: fill;
+                            }
+
+                            Image {
+                                visible: root.native-pyramid-ready && root.viewer-zoom >= (root.native-source-width * 1px / preview.width) * 0.75;
+                                source: root.native-level-0-image;
+                                width: parent.width * root.viewer-zoom;
+                                height: parent.height * root.viewer-zoom;
+                                x: -(self.width - parent.width) / 2 + root.viewer-pan-x * parent.width;
+                                y: -(self.height - parent.height) / 2 + root.viewer-pan-y * parent.height;
+                                image-fit: fill;
+                            }
+
+                            Image {
+                                visible: root.native-pyramid-ready && root.viewer-zoom < (root.native-source-width * 1px / preview.width) * 0.75 && root.viewer-zoom >= (root.native-source-width * 1px / preview.width) * 0.375;
+                                source: root.native-level-1-image;
+                                width: parent.width * root.viewer-zoom;
+                                height: parent.height * root.viewer-zoom;
+                                x: -(self.width - parent.width) / 2 + root.viewer-pan-x * parent.width;
+                                y: -(self.height - parent.height) / 2 + root.viewer-pan-y * parent.height;
+                                image-fit: fill;
+                            }
+
+                            Image {
+                                visible: root.native-pyramid-ready && root.viewer-zoom < (root.native-source-width * 1px / preview.width) * 0.375 && root.viewer-zoom >= (root.native-source-width * 1px / preview.width) * 0.1875;
+                                source: root.native-level-2-image;
+                                width: parent.width * root.viewer-zoom;
+                                height: parent.height * root.viewer-zoom;
+                                x: -(self.width - parent.width) / 2 + root.viewer-pan-x * parent.width;
+                                y: -(self.height - parent.height) / 2 + root.viewer-pan-y * parent.height;
+                                image-fit: fill;
+                            }
+
+                            Image {
+                                visible: root.native-pyramid-ready && root.viewer-zoom < (root.native-source-width * 1px / preview.width) * 0.1875;
+                                source: root.native-level-3-image;
                                 width: parent.width * root.viewer-zoom;
                                 height: parent.height * root.viewer-zoom;
                                 x: -(self.width - parent.width) / 2 + root.viewer-pan-x * parent.width;

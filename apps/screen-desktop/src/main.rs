@@ -1323,6 +1323,7 @@ fn present_preview_raster(
     if window.get_preview_invalidated() {
         return;
     }
+    window.set_native_pyramid_ready(false);
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(width), u32::from(height));
     for (target, source) in buffer.make_mut_slice().iter_mut().zip(&raster.pixels) {
         let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -1551,11 +1552,18 @@ struct NativeCaptureOutput {
     width: u16,
     height: u16,
     pixels: Vec<[u8; 4]>,
+    display_levels: [NativeDisplayLevel; 3],
     full_well_clipped: usize,
     adc_clipped: usize,
     sensor: SensorProfile,
     region: SensorRegion,
     transform: CameraOutputTransform,
+}
+
+struct NativeDisplayLevel {
+    width: u16,
+    height: u16,
+    pixels: Vec<[u8; 4]>,
 }
 
 #[derive(Clone, Copy)]
@@ -1791,6 +1799,7 @@ fn run_native_capture_job(
     Ok(NativeCaptureOutput {
         width: region.width,
         height: region.height,
+        display_levels: build_native_display_levels(region.width, region.height, &pixels),
         pixels,
         full_well_clipped,
         adc_clipped,
@@ -1798,6 +1807,50 @@ fn run_native_capture_job(
         region,
         transform,
     })
+}
+
+fn build_native_display_levels(
+    width: u16,
+    height: u16,
+    pixels: &[[u8; 4]],
+) -> [NativeDisplayLevel; 3] {
+    let level_1 = downsample_rgba_2x(width, height, pixels);
+    let level_2 = downsample_rgba_2x(level_1.width, level_1.height, &level_1.pixels);
+    let level_3 = downsample_rgba_2x(level_2.width, level_2.height, &level_2.pixels);
+    [level_1, level_2, level_3]
+}
+
+fn downsample_rgba_2x(width: u16, height: u16, pixels: &[[u8; 4]]) -> NativeDisplayLevel {
+    let output_width = width.div_ceil(2);
+    let output_height = height.div_ceil(2);
+    let mut output = Vec::with_capacity(usize::from(output_width) * usize::from(output_height));
+    for output_y in 0..output_height {
+        for output_x in 0..output_width {
+            let mut sum = [0_u32; 4];
+            let mut count = 0_u32;
+            for source_y in (output_y * 2)..(output_y * 2 + 2).min(height) {
+                for source_x in (output_x * 2)..(output_x * 2 + 2).min(width) {
+                    let pixel =
+                        pixels[usize::from(source_y) * usize::from(width) + usize::from(source_x)];
+                    for channel in 0..4 {
+                        sum[channel] += u32::from(pixel[channel]);
+                    }
+                    count += 1;
+                }
+            }
+            output.push([
+                ((sum[0] + count / 2) / count) as u8,
+                ((sum[1] + count / 2) / count) as u8,
+                ((sum[2] + count / 2) / count) as u8,
+                ((sum[3] + count / 2) / count) as u8,
+            ]);
+        }
+    }
+    NativeDisplayLevel {
+        width: output_width,
+        height: output_height,
+        pixels: output,
+    }
 }
 
 fn present_native_staging(window: &MainWindow, staging: NativeStagingPreview) {
@@ -1817,17 +1870,17 @@ fn present_native_staging(window: &MainWindow, staging: NativeStagingPreview) {
 }
 
 fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, started: Instant) {
-    let mut buffer =
-        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(output.width), u32::from(output.height));
-    for (target, source) in buffer.make_mut_slice().iter_mut().zip(output.pixels) {
-        *target = Rgba8Pixel {
-            r: source[0],
-            g: source[1],
-            b: source[2],
-            a: source[3],
-        };
-    }
-    window.set_preview_image(Image::from_rgba8(buffer));
+    window.set_native_level_0_image(native_level_image(NativeDisplayLevel {
+        width: output.width,
+        height: output.height,
+        pixels: output.pixels,
+    }));
+    let [level_1, level_2, level_3] = output.display_levels;
+    window.set_native_level_1_image(native_level_image(level_1));
+    window.set_native_level_2_image(native_level_image(level_2));
+    window.set_native_level_3_image(native_level_image(level_3));
+    window.set_native_source_width(f32::from(output.width));
+    window.set_native_pyramid_ready(true);
     window.set_scale_text(
         format!(
             "CAMERA SENSOR {} × {} · {}-BIT BAYER · NATIVE VIEW · WELL {} · ADC {} CLIPPED",
@@ -1864,6 +1917,20 @@ fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, star
             .into(),
     );
     window.set_error_text("".into());
+}
+
+fn native_level_image(level: NativeDisplayLevel) -> Image {
+    let mut buffer =
+        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(level.width), u32::from(level.height));
+    for (target, source) in buffer.make_mut_slice().iter_mut().zip(level.pixels) {
+        *target = Rgba8Pixel {
+            r: source[0],
+            g: source[1],
+            b: source[2],
+            a: source[3],
+        };
+    }
+    Image::from_rgba8(buffer)
 }
 
 fn sensor_tiles(region: SensorRegion, edge: u16) -> Vec<SensorRegion> {
@@ -2623,6 +2690,47 @@ mod interaction_tests {
             }) - base_scale * 0.5)
                 .abs()
                 < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn native_display_pyramid_area_filters_chroma_aliases_without_mutating_source() {
+        let source = [
+            [255, 0, 0, 255],
+            [0, 255, 255, 255],
+            [255, 0, 0, 255],
+            [0, 255, 255, 255],
+            [255, 0, 0, 255],
+            [0, 255, 255, 255],
+            [255, 0, 0, 255],
+            [0, 255, 255, 255],
+        ];
+        let levels = build_native_display_levels(8, 1, &source);
+
+        assert_eq!(source[0], [255, 0, 0, 255]);
+        assert_eq!((levels[0].width, levels[0].height), (4, 1));
+        assert!(
+            levels[0]
+                .pixels
+                .iter()
+                .all(|pixel| *pixel == [128, 128, 128, 255])
+        );
+        assert_eq!((levels[2].width, levels[2].height), (1, 1));
+        assert_eq!(levels[2].pixels[0], [128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn native_display_pyramid_preserves_odd_image_edges() {
+        let source = vec![[42, 84, 126, 255]; 15];
+        let levels = build_native_display_levels(5, 3, &source);
+        assert_eq!((levels[0].width, levels[0].height), (3, 2));
+        assert_eq!((levels[1].width, levels[1].height), (2, 1));
+        assert_eq!((levels[2].width, levels[2].height), (1, 1));
+        assert!(
+            levels
+                .iter()
+                .flat_map(|level| &level.pixels)
+                .all(|pixel| *pixel == [42, 84, 126, 255])
         );
     }
 }
