@@ -61,6 +61,19 @@ only the identical modulation-free spatial value is referenced more than once. A
 procedural source, media sequence or any multi-keyframe spatial track selects the complete plan
 batch automatically. This is an optimization inside the same result contract, not another route.
 
+When the camera transform, camera intrinsics and screen transform each contain one authored key,
+Application may also clone one fully validated procedural plan template for later exact times and
+sensor rows. It changes only the rational time, procedural time and sensor window, and recomputes
+the representative signal fields exactly. It does not reuse a spatial result: every authored
+motion sample is still evaluated by the backend. Conformance requires each instantiated plan to be
+field-for-field equal to a freshly prepared plan.
+
+Temporal integration parallelizes independent sensor pixels for global shutter and independent
+sensor rows for rolling shutter. Sample accumulation inside a pixel or row retains its authored
+order, so thread scheduling cannot change floating-point addition order. Sensor exposure likewise
+parallelizes independent photosites; CFA phase and counter-based noise remain keyed to global
+coordinates. Tests require identical exposures and RAW results with one and multiple Rayon workers.
+
 Native work retains 128-pixel sensor tiles as its logical progress and cancellation boundary, but
 the macOS scheduler evaluates all horizontal tiles in a 128-row stripe as one exact product region.
 This shares row-plan preparation and one Metal batch across the image width. The developed stripe
@@ -71,7 +84,7 @@ Completed staging remains non-authoritative and a cancelled job never publishes 
 Presentation is a separate platform port. `DisplayPublicationBackend` accepts immutable developed
 linear ACEScg and returns the final level-zero RGBA8 bytes; it cannot alter capture, exposure or any
 physical result. Desktop composes exactly one mandatory implementation. The current implementation
-uses independent instances of the pinned OCIO CPU processor across the host's available workers,
+uses persistent Rayon workers with independent instances of the pinned OCIO CPU processor,
 then applies the same Rust clamp/round quantization contract. It has no runtime Metal/CPU selection
 and no fallback. Preview remains outside this Native publication port, while Native export consumes
 the unchanged returned bytes.
@@ -89,6 +102,9 @@ The reproducible benchmark is:
 ```text
 cargo run --release -p screen-desktop --bin native_benchmark
 ```
+
+`SCREEN_BENCH_STRIPE_HEIGHT` may override the diagnostic stripe height for profiling only. It does
+not alter the product's 128-row physical stripe or 128-pixel logical progress boundary.
 
 It reports cold Metal setup, time to the first complete Native tile, end-to-end physical throughput
 for the iPhone 16e model with rolling shutter for both the default one-motion-sample case and a
@@ -134,18 +150,22 @@ prepared plan field for field, and the rolling test requires one preparation whi
 eight authored gain intervals and one backend plan per row. Animated sources and any multi-keyframe
 spatial track still prepare the complete plans.
 
-After this second exact optimization, a release static/eight 1536×1152 ROI took 0.081 s, including
-0.005 s preparation, 0.034 s spatial Metal, 0.037 s integration/sensor and 0.005 s RAW Metal. Its
-8064×128 product stripe took 0.068 s, with 0.001 s preparation and 0.018 s exact publication, and
-projects to 3.3 s for 48 MP. The animated default/one-sample stripe remained 0.130 s and projects to
-6.3 s; its 0.065 s preparation remains the next exact bottleneck. Principal 1536×1152 staging is
-27.0 MiB spatial float4, 40.5 MiB accumulated f64x3 and 20.2 MiB developed float3. Old PWM
-subdivision and CPU optics are absent from the product route.
+After exact procedural template instantiation and deterministic parallel integration/sensor
+exposure, three representative 2026-08-05 release runs on Apple M3 Ultra measured 0.048–0.054 s per
+8064×128 default stripe and 0.051–0.056 s per static/eight stripe. The corresponding linear
+8064×6048 projections were 2.3–2.6 s and 2.4–2.7 s respectively; run variance makes their small
+ordering difference non-semantic. Preparation fell to roughly 0.001 s per stripe, combined temporal
+integration and sensor exposure to 0.005–0.006 s, spatial Metal remained about 0.014–0.019 s, RAW
+Metal about 0.003–0.004 s and exact publication about 0.019–0.021 s. These are measured projections,
+not a product latency guarantee. Old PWM subdivision and CPU optics remain absent from the product
+route.
 
 Remaining performance work is precisely bounded:
 
-1. Share prepared linear-emission storage across time-equivalent decoded media samples.
-2. Extend proof of static intervals beyond single-key tracks only where exact keyframe-segment
+1. Reduce exact spatial Metal and byte-identical publication costs without introducing another
+   evaluator or loosening parity.
+2. Share prepared linear-emission storage across time-equivalent decoded media samples.
+3. Extend proof of static intervals beyond single-key tracks only where exact keyframe-segment
    identity can be established without heuristic tolerances.
-3. Reduce exact CPU row-plan construction for animated or moving intervals without weakening
+4. Reduce exact CPU row-plan construction for moving spatial tracks without weakening
    authored motion detection, source sampling or temporal integration.
