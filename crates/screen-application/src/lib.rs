@@ -437,7 +437,10 @@ pub enum DiagnosticView {
 pub enum ProceduralTestPattern {
     AnimatedCheckerboard,
     EyeChart,
+    PhotometricDeviceScale,
 }
+
+pub const PHOTOMETRIC_DEVICE_CODES: [f32; 9] = [0.0, 0.05, 0.10, 0.18, 0.25, 0.50, 0.75, 0.90, 1.0];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpticalRequest {
@@ -2251,7 +2254,16 @@ pub fn diagnostic_signal(
     match pattern {
         ProceduralTestPattern::AnimatedCheckerboard => checkerboard_signal(uv, time),
         ProceduralTestPattern::EyeChart => eye_chart_signal(uv),
+        ProceduralTestPattern::PhotometricDeviceScale => photometric_device_scale_signal(uv),
     }
+}
+
+fn photometric_device_scale_signal(uv: Vec2) -> DeviceRgb {
+    let patch = ((uv.x.clamp(0.0, 1.0 - f32::EPSILON) * PHOTOMETRIC_DEVICE_CODES.len() as f32)
+        .floor() as usize)
+        .min(PHOTOMETRIC_DEVICE_CODES.len() - 1);
+    let code = PHOTOMETRIC_DEVICE_CODES[patch];
+    DeviceRgb::new(code, code, code)
 }
 
 fn checkerboard_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
@@ -3246,5 +3258,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn photometric_scale_publishes_exact_achromatic_device_codes() {
+        let time = RationalTime::new(0, 24).expect("valid time");
+        for (index, expected) in PHOTOMETRIC_DEVICE_CODES.into_iter().enumerate() {
+            let value = diagnostic_signal(
+                ProceduralTestPattern::PhotometricDeviceScale,
+                Vec2 {
+                    x: (index as f32 + 0.5) / PHOTOMETRIC_DEVICE_CODES.len() as f32,
+                    y: 0.5,
+                },
+                time,
+            );
+            assert_eq!(value, DeviceRgb::new(expected, expected, expected));
+        }
+    }
+
+    #[test]
+    fn known_device_code_follows_authored_panel_eotf_through_optics() {
+        let mut optics = request().optical_request();
+        optics.panel.black_level_nits = 0.0;
+        let uniform = |code| DeviceSignalRaster {
+            width: 1,
+            height: 1,
+            pixels: vec![DeviceRgb::new(code, code, code)],
+        };
+        let white = evaluate_linear_optics_from_device_signal(
+            optics.clone(),
+            16,
+            9,
+            &uniform(1.0),
+            RasterPlacement::Stretch,
+        )
+        .expect("white optical reference");
+        let half = evaluate_linear_optics_from_device_signal(
+            optics.clone(),
+            16,
+            9,
+            &uniform(0.5),
+            RasterPlacement::Stretch,
+        )
+        .expect("half-code optical reference");
+        let center = 4 * 16 + 8;
+        let measured =
+            half.pixels[center].acescg_irradiance.g / white.pixels[center].acescg_irradiance.g;
+        let expected = 0.5_f32.powf(optics.panel.eotf_gamma);
+        assert!((measured - expected).abs() < 1.0e-5);
     }
 }

@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use image::ImageEncoder;
 use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
-    DiagnosticView, FrameCaptureRequest, OpticalRequest, PreparedDeviceSignalRaster,
-    PreparedRaster, PreviewPixel, ProceduralTestPattern, RasterPlacement, SensorReadout,
-    SimulationRequest, capture_and_develop_device_signal_region,
+    DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
+    PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel, ProceduralTestPattern,
+    RasterPlacement, SensorReadout, SimulationRequest, capture_and_develop_device_signal_region,
     capture_and_develop_procedural_region, capture_device_preset, decoded_frame_to_device_signal,
     evaluate_linear_optics, evaluate_linear_optics_from_device_signal,
     evaluate_linear_optics_from_prepared_device_signal, inspection_region_from_drag,
@@ -671,10 +671,10 @@ fn simulation_request(
             camera,
             screen: screen.clone(),
             inspection,
-            procedural_pattern: if window.get_procedural_pattern_index() == 1 {
-                ProceduralTestPattern::EyeChart
-            } else {
-                ProceduralTestPattern::AnimatedCheckerboard
+            procedural_pattern: match window.get_procedural_pattern_index() {
+                1 => ProceduralTestPattern::EyeChart,
+                5 => ProceduralTestPattern::PhotometricDeviceScale,
+                _ => ProceduralTestPattern::AnimatedCheckerboard,
             },
         },
         view,
@@ -1463,6 +1463,23 @@ fn present_procedural_source(window: &MainWindow) {
                 "3840 × 2160 · MTF, line pairs, slanted edges and channel ramps".into(),
             );
             window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
+        }
+        5 => {
+            window.set_source_title("Photometric device-code scale".into());
+            window.set_source_details(
+                format!(
+                    "9 achromatic patches · left→right codes {}",
+                    PHOTOMETRIC_DEVICE_CODES
+                        .iter()
+                        .map(|value| format!("{value:.2}"))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                )
+                .into(),
+            );
+            window.set_source_interpretation(
+                "Explicit device signal · panel EOTF and physical nits remain authoritative".into(),
+            );
         }
         _ => {
             window.set_source_title("Procedural diagnostic".into());
