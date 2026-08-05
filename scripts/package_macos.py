@@ -19,8 +19,10 @@ MACOS = CONTENTS / "MacOS"
 FRAMEWORKS = CONTENTS / "Frameworks"
 RESOURCES = CONTENTS / "Resources"
 BUNDLED_BINARY = MACOS / "screen-desktop"
-METAL_SOURCE = ROOT / "crates" / "screen-platform" / "shaders" / "native_camera.metal"
-METAL_AIR = RESOURCES / "native_camera.air"
+METAL_SOURCES = [
+    ROOT / "crates" / "screen-platform" / "shaders" / "native_camera.metal",
+    ROOT / "crates" / "screen-platform" / "shaders" / "spatial_optics.metal",
+]
 METAL_LIBRARY = RESOURCES / "native_camera.metallib"
 LOADER_RPATH = "@executable_path/../Frameworks"
 
@@ -160,9 +162,24 @@ def verify_portable_dependencies(binaries: list[Path]) -> None:
 
 def bundle_native_shaders() -> None:
     RESOURCES.mkdir(parents=True)
-    run(["xcrun", "-sdk", "macosx", "metal", "-c", str(METAL_SOURCE), "-o", str(METAL_AIR)])
-    run(["xcrun", "-sdk", "macosx", "metallib", str(METAL_AIR), "-o", str(METAL_LIBRARY)])
-    METAL_AIR.unlink()
+    air_files = []
+    for source in METAL_SOURCES:
+        air = RESOURCES / f"{source.stem}.air"
+        run(["xcrun", "-sdk", "macosx", "metal", "-c", str(source), "-o", str(air)])
+        air_files.append(air)
+    run(
+        [
+            "xcrun",
+            "-sdk",
+            "macosx",
+            "metallib",
+            *[str(air) for air in air_files],
+            "-o",
+            str(METAL_LIBRARY),
+        ]
+    )
+    for air in air_files:
+        air.unlink()
     if not METAL_LIBRARY.is_file() or METAL_LIBRARY.stat().st_size == 0:
         raise RuntimeError("packaged Native Metal shader library is missing or empty")
 
