@@ -466,12 +466,20 @@ mod tests {
     fn metal_matches_cpu_spatial_oracle_for_procedural_optics() {
         let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
         let (sensor, region) = sensor_and_region();
-        let request = request();
-        let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), sensor, region)
-            .expect("CPU oracle");
-        let plan = prepare_procedural_spatial_plan(request, sensor, region).expect("spatial plan");
-        let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
-        assert_spatial_parity(&cpu, &gpu);
+        for pattern in [
+            ProceduralTestPattern::AnimatedCheckerboard,
+            ProceduralTestPattern::EyeChart,
+            ProceduralTestPattern::PhotometricDeviceScale,
+        ] {
+            let mut request = request();
+            request.procedural_pattern = pattern;
+            let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), sensor, region)
+                .expect("CPU oracle");
+            let plan =
+                prepare_procedural_spatial_plan(request, sensor, region).expect("spatial plan");
+            let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
+            assert_spatial_parity(&cpu, &gpu);
+        }
     }
 
     #[test]
@@ -502,24 +510,31 @@ mod tests {
                 .collect(),
         })
         .expect("prepared raster");
-        let cpu = evaluate_device_signal_spatial_cpu_oracle(
-            request.clone(),
-            sensor,
-            region,
-            &source,
+        for placement in [
+            RasterPlacement::Fit,
             RasterPlacement::FillCrop,
-        )
-        .expect("CPU oracle");
-        let plan = prepare_device_signal_spatial_plan(
-            request,
-            sensor,
-            region,
-            &source,
-            RasterPlacement::FillCrop,
-        )
-        .expect("spatial plan");
-        let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
-        assert_spatial_parity(&cpu, &gpu);
+            RasterPlacement::Stretch,
+            RasterPlacement::OneToOne,
+        ] {
+            let cpu = evaluate_device_signal_spatial_cpu_oracle(
+                request.clone(),
+                sensor,
+                region,
+                &source,
+                placement,
+            )
+            .expect("CPU oracle");
+            let plan = prepare_device_signal_spatial_plan(
+                request.clone(),
+                sensor,
+                region,
+                &source,
+                placement,
+            )
+            .expect("spatial plan");
+            let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
+            assert_spatial_parity(&cpu, &gpu);
+        }
     }
 
     #[test]
