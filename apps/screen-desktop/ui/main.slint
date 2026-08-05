@@ -120,6 +120,11 @@ export component MainWindow inherits Window {
     in-out property <int> project-fps-index: 1;
     in-out property <int> custom-fps-numerator: 24;
     in-out property <int> custom-fps-denominator: 1;
+    in-out property <int> procedural-pattern-index: 0;
+    in-out property <bool> procedural-source: true;
+    in-out property <bool> can-undo: false;
+    in-out property <bool> can-redo: false;
+    in-out property <bool> camera-edit-pending: false;
     private property <bool> zoom-key-held: false;
 
     callback inspect(float, float, float, float);
@@ -127,8 +132,28 @@ export component MainWindow inherits Window {
     callback tick();
     callback choose-source();
     callback set-camera-keyframe();
+    callback undo();
+    callback redo();
 
     MenuBar {
+        Menu {
+            title: "Edit";
+
+            MenuItem {
+                title: "Undo";
+                enabled: root.can-undo;
+                shortcut: @keys(Control + Z);
+                activated => { root.undo(); }
+            }
+
+            MenuItem {
+                title: "Redo";
+                enabled: root.can-redo;
+                shortcut: @keys(Control + Shift + Z);
+                activated => { root.redo(); }
+            }
+        }
+
         Menu {
             title: "Help";
 
@@ -144,7 +169,7 @@ export component MainWindow inherits Window {
 
     Timer {
         // CPU optical reference evaluation leaves event-loop time between deterministic frames.
-        interval: 1000ms;
+        interval: 250ms;
         running: true;
         triggered => {
             root.tick();
@@ -386,6 +411,16 @@ export component MainWindow inherits Window {
                         Text { text: root.source-interpretation; color: #d59b68; overflow: elide; }
 
                         HorizontalLayout {
+                            visible: root.procedural-source;
+                            height: 34px;
+                            Text { text: "Test chart"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["Animated checkerboard", "Eye chart · black on white"];
+                                current-index <=> root.procedural-pattern-index;
+                            }
+                        }
+
+                        HorizontalLayout {
                             height: 34px;
                             Text { text: "YUV matrix"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
                             ComboBox {
@@ -552,7 +587,7 @@ export component MainWindow inherits Window {
                                 current-index <=> root.camera-interpolation-index;
                             }
                             Button {
-                                text: "Set key · " + root.camera-key-count;
+                                text: (root.camera-edit-pending ? "Commit key · " : "Set key · ") + root.camera-key-count;
                                 clicked => { root.set-camera-keyframe(); }
                             }
                         }

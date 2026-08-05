@@ -12,10 +12,10 @@ use std::time::Instant;
 
 use screen_application::{
     ApplicationError, DeviceSignalRaster, DiagnosticView, FrameCaptureRequest, OpticalRequest,
-    PreparedDeviceSignalRaster, RasterPlacement, SensorReadout, SimulationRequest,
-    capture_and_develop_frame_from_device_signal_sequence, capture_and_develop_procedural_frame,
-    decoded_frame_to_device_signal, inspection_region_from_drag, prepare_raster,
-    prepare_raster_from_device_signal,
+    PreparedDeviceSignalRaster, ProceduralTestPattern, RasterPlacement, SensorReadout,
+    SimulationRequest, capture_and_develop_frame_from_device_signal_sequence,
+    capture_and_develop_procedural_frame, decoded_frame_to_device_signal,
+    inspection_region_from_drag, prepare_raster, prepare_raster_from_device_signal,
 };
 use screen_camera::CameraDevelopment;
 use screen_color::{
@@ -70,6 +70,7 @@ struct RenderControls {
     range_index: i32,
     sample_policy_index: i32,
     project_fps_index: i32,
+    procedural_pattern_index: i32,
     custom_fps_numerator: i32,
     custom_fps_denominator: i32,
 }
@@ -101,9 +102,32 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         range_index: window.get_range_index(),
         sample_policy_index: window.get_sample_policy_index(),
         project_fps_index: window.get_project_fps_index(),
+        procedural_pattern_index: window.get_procedural_pattern_index(),
         custom_fps_numerator: window.get_custom_fps_numerator(),
         custom_fps_denominator: window.get_custom_fps_denominator(),
     }
+}
+
+fn camera_edit_from_controls(controls: RenderControls) -> CameraEdit {
+    CameraEdit {
+        distance: controls.distance_m,
+        yaw_degrees: controls.yaw_degrees,
+        focal_mm: controls.focal_mm,
+        focus_distance_m: controls.focus_distance_m,
+        f_stop: controls.f_stop,
+        interpolation: match controls.camera_interpolation_index {
+            0 => KeyframeInterpolation::Hold,
+            1 => KeyframeInterpolation::Linear,
+            _ => KeyframeInterpolation::Smooth,
+        },
+    }
+}
+
+fn timeline_selection_changed(previous: RenderControls, current: RenderControls) -> bool {
+    previous.frame_number != current.frame_number
+        || previous.project_fps_index != current.project_fps_index
+        || previous.custom_fps_numerator != current.custom_fps_numerator
+        || previous.custom_fps_denominator != current.custom_fps_denominator
 }
 
 struct InteractionState {
@@ -112,10 +136,103 @@ struct InteractionState {
     color_engine: ColorEngine,
     last_tick: Instant,
     playback_accumulator_seconds: f64,
-    camera: CameraRig,
+    camera_editor: CameraEditor,
     screen: ScreenTrack,
-    next_camera_key_id: u64,
     last_render_controls: Option<RenderControls>,
+}
+
+struct CameraEditor {
+    committed: CameraRig,
+    preview: Option<CameraRig>,
+    preview_inserted_key: bool,
+    undo: Vec<CameraRig>,
+    redo: Vec<CameraRig>,
+    next_key_id: u64,
+}
+
+impl CameraEditor {
+    fn new(committed: CameraRig, next_key_id: u64) -> Self {
+        Self {
+            committed,
+            preview: None,
+            preview_inserted_key: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            next_key_id,
+        }
+    }
+
+    fn effective(&self) -> &CameraRig {
+        self.preview.as_ref().unwrap_or(&self.committed)
+    }
+
+    fn preview_edit(&mut self, time: RationalTime, edit: CameraEdit) {
+        let (preview, inserted) = camera_with_edit(
+            &self.committed,
+            time,
+            edit,
+            format!("camera-key-{}", self.next_key_id),
+        );
+        self.preview = Some(preview);
+        self.preview_inserted_key = inserted;
+    }
+
+    fn commit_preview(&mut self) -> bool {
+        let Some(preview) = self.preview.take() else {
+            return false;
+        };
+        if preview == self.committed {
+            self.preview_inserted_key = false;
+            return false;
+        }
+        self.undo.push(self.committed.clone());
+        self.committed = preview;
+        self.redo.clear();
+        if self.preview_inserted_key {
+            self.next_key_id += 1;
+        }
+        self.preview_inserted_key = false;
+        true
+    }
+
+    fn undo(&mut self) -> bool {
+        if self.preview.take().is_some() {
+            self.preview_inserted_key = false;
+            return true;
+        }
+        let Some(previous) = self.undo.pop() else {
+            return false;
+        };
+        self.redo.push(self.committed.clone());
+        self.committed = previous;
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        if self.preview.is_some() {
+            return false;
+        }
+        let Some(next) = self.redo.pop() else {
+            return false;
+        };
+        self.undo.push(self.committed.clone());
+        self.committed = next;
+        true
+    }
+
+    fn cancel_preview(&mut self) -> bool {
+        let changed = self.preview.take().is_some();
+        self.preview_inserted_key = false;
+        changed
+    }
+
+    fn can_undo(&self) -> bool {
+        self.preview.is_some() || !self.undo.is_empty()
+    }
+
+    fn can_redo(&self) -> bool {
+        self.preview.is_none() && !self.redo.is_empty()
+    }
 }
 
 struct LoadedSource {
@@ -145,18 +262,21 @@ impl InteractionState {
             color_engine,
             last_tick: Instant::now(),
             playback_accumulator_seconds: 0.0,
-            camera: camera_rig(vec![camera_keyframes(
-                "camera-key-0".to_owned(),
-                RationalTime::new(0, 1).expect("initial camera time is valid"),
-                CameraEdit {
-                    distance: 0.82,
-                    yaw_degrees: 0.0,
-                    focal_mm: 50.0,
-                    focus_distance_m: 0.82,
-                    f_stop: 8.0,
-                    interpolation: KeyframeInterpolation::Smooth,
-                },
-            )]),
+            camera_editor: CameraEditor::new(
+                camera_rig(vec![camera_keyframes(
+                    "camera-key-0".to_owned(),
+                    RationalTime::new(0, 1).expect("initial camera time is valid"),
+                    CameraEdit {
+                        distance: 0.82,
+                        yaw_degrees: 0.0,
+                        focal_mm: 50.0,
+                        focus_distance_m: 0.82,
+                        f_stop: 8.0,
+                        interpolation: KeyframeInterpolation::Smooth,
+                    },
+                )]),
+                1,
+            ),
             screen: TransformTrack {
                 keyframes: vec![TransformKeyframe {
                     id: "screen-transform-0".to_owned(),
@@ -175,13 +295,12 @@ impl InteractionState {
                     interpolation: KeyframeInterpolation::Hold,
                 }],
             },
-            next_camera_key_id: 1,
             last_render_controls: None,
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct CameraEdit {
     distance: f32,
     yaw_degrees: f32,
@@ -189,6 +308,21 @@ struct CameraEdit {
     focus_distance_m: f32,
     f_stop: f32,
     interpolation: KeyframeInterpolation,
+}
+
+fn camera_edit_from_window(window: &MainWindow) -> CameraEdit {
+    CameraEdit {
+        distance: window.get_distance_m(),
+        yaw_degrees: window.get_yaw_degrees(),
+        focal_mm: window.get_focal_mm(),
+        focus_distance_m: window.get_focus_distance_m(),
+        f_stop: window.get_f_stop(),
+        interpolation: match window.get_camera_interpolation_index() {
+            0 => KeyframeInterpolation::Hold,
+            1 => KeyframeInterpolation::Linear,
+            _ => KeyframeInterpolation::Smooth,
+        },
+    }
 }
 
 fn camera_keyframes(
@@ -236,6 +370,77 @@ fn camera_rig(keys: Vec<(TransformKeyframe, CameraIntrinsicsKeyframe)>) -> Camer
             keyframes: intrinsics,
         },
     }
+}
+
+fn camera_with_edit(
+    committed: &CameraRig,
+    time: RationalTime,
+    edit: CameraEdit,
+    inserted_id: String,
+) -> (CameraRig, bool) {
+    let mut result = committed.clone();
+    match result
+        .transform
+        .keyframes
+        .binary_search_by_key(&time, |item| item.time)
+    {
+        Ok(index) => {
+            let transform_id = result.transform.keyframes[index].id.clone();
+            let intrinsics_id = result.intrinsics.keyframes[index].id.clone();
+            let (mut transform, mut intrinsics) = camera_keyframes(inserted_id, time, edit);
+            transform.id = transform_id;
+            intrinsics.id = intrinsics_id;
+            result.transform.keyframes[index] = transform;
+            result.intrinsics.keyframes[index] = intrinsics;
+            (result, false)
+        }
+        Err(index) => {
+            let (transform, intrinsics) = camera_keyframes(inserted_id, time, edit);
+            result.transform.keyframes.insert(index, transform);
+            result.intrinsics.keyframes.insert(index, intrinsics);
+            (result, true)
+        }
+    }
+}
+
+fn set_camera_controls_from_committed(
+    window: &MainWindow,
+    editor: &CameraEditor,
+    time: RationalTime,
+) -> Result<(), String> {
+    let sample = editor
+        .committed
+        .sample(time)
+        .map_err(|error| error.to_string())?;
+    let distance =
+        (sample.position.x * sample.position.x + sample.position.z * sample.position.z).sqrt();
+    let yaw_degrees = sample.position.x.atan2(sample.position.z).to_degrees();
+    window.set_distance_m(distance);
+    window.set_yaw_degrees(yaw_degrees);
+    window.set_focal_mm(sample.focal_length.0);
+    window.set_focus_distance_m(sample.focus_distance.0);
+    window.set_f_stop(sample.f_stop);
+    let interpolation = editor
+        .committed
+        .transform
+        .keyframes
+        .binary_search_by_key(&time, |item| item.time)
+        .map(|index| editor.committed.transform.keyframes[index].interpolation)
+        .unwrap_or_else(|index| {
+            editor.committed.transform.keyframes[index.saturating_sub(1)].interpolation
+        });
+    window.set_camera_interpolation_index(match interpolation {
+        KeyframeInterpolation::Hold => 0,
+        KeyframeInterpolation::Linear => 1,
+        KeyframeInterpolation::Smooth => 2,
+    });
+    Ok(())
+}
+
+fn update_undo_availability(window: &MainWindow, editor: &CameraEditor) {
+    window.set_can_undo(editor.can_undo());
+    window.set_can_redo(editor.can_redo());
+    window.set_camera_edit_pending(editor.preview.is_some());
 }
 
 fn source_color_interpretation(
@@ -355,6 +560,11 @@ fn simulation_request(
             camera: camera.clone(),
             screen: screen.clone(),
             inspection,
+            procedural_pattern: if window.get_procedural_pattern_index() == 1 {
+                ProceduralTestPattern::EyeChart
+            } else {
+                ProceduralTestPattern::AnimatedCheckerboard
+            },
         },
         view,
         preview_exposure_ev: window.get_preview_exposure_ev(),
@@ -363,8 +573,16 @@ fn simulation_request(
 
 fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     state.last_render_controls = Some(render_controls(window));
+    if state.source.is_none() {
+        present_procedural_source(window);
+    }
     let started = Instant::now();
-    let request = match simulation_request(window, state.inspection, &state.camera, &state.screen) {
+    let request = match simulation_request(
+        window,
+        state.inspection,
+        state.camera_editor.effective(),
+        &state.screen,
+    ) {
         Ok(request) => request,
         Err(error) => {
             block_preview(window, &error);
@@ -569,6 +787,18 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     }
 }
 
+fn present_procedural_source(window: &MainWindow) {
+    if window.get_procedural_pattern_index() == 1 {
+        window.set_source_title("Eye chart".into());
+        window.set_source_details("3840 × 2160 · black optotypes on white".into());
+        window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
+    } else {
+        window.set_source_title("Procedural diagnostic".into());
+        window.set_source_details("3840 × 2160 · animated checkerboard".into());
+        window.set_source_interpretation("Explicit device signal".into());
+    }
+}
+
 fn render_camera_result(
     window: &MainWindow,
     request: SimulationRequest,
@@ -714,6 +944,7 @@ fn load_source(window: &MainWindow, state: &mut InteractionState, path: &Path) {
             let loaded = prepare_loaded_source(path.to_owned(), descriptor);
             present_source(window, path, &loaded.descriptor);
             state.source = Some(loaded);
+            window.set_procedural_source(false);
             state.inspection = None;
             window.set_idt_index(0);
             window.set_alpha_index(0);
@@ -889,12 +1120,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 x: x * 2.0 - 1.0,
                 y: y * 2.0 - 1.0,
             };
-            let current_inspection = state.borrow().inspection;
+            let state_ref = state.borrow();
             let request = match simulation_request(
                 &window,
-                current_inspection,
-                &state.borrow().camera,
-                &state.borrow().screen,
+                state_ref.inspection,
+                state_ref.camera_editor.effective(),
+                &state_ref.screen,
             ) {
                 Ok(request) => request,
                 Err(error) => {
@@ -902,6 +1133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
             };
+            drop(state_ref);
             match inspection_region_from_drag(
                 request,
                 to_ndc(start_x, start_y),
@@ -937,57 +1169,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
             };
-            let interpolation = match window.get_camera_interpolation_index() {
-                0 => KeyframeInterpolation::Hold,
-                1 => KeyframeInterpolation::Linear,
-                _ => KeyframeInterpolation::Smooth,
-            };
             let mut state = state.borrow_mut();
-            match state
-                .camera
-                .transform
-                .keyframes
-                .binary_search_by_key(&time, |item| item.time)
-            {
-                Ok(index) => {
-                    let id = format!("camera-key-{}", index);
-                    let (transform, intrinsics) = camera_keyframes(
-                        id,
-                        time,
-                        CameraEdit {
-                            distance: window.get_distance_m(),
-                            yaw_degrees: window.get_yaw_degrees(),
-                            focal_mm: window.get_focal_mm(),
-                            focus_distance_m: window.get_focus_distance_m(),
-                            f_stop: window.get_f_stop(),
-                            interpolation,
-                        },
-                    );
-                    state.camera.transform.keyframes[index] = transform;
-                    state.camera.intrinsics.keyframes[index] = intrinsics;
-                }
-                Err(index) => {
-                    let id = format!("camera-key-{}", state.next_camera_key_id);
-                    state.next_camera_key_id += 1;
-                    let (transform, intrinsics) = camera_keyframes(
-                        id,
-                        time,
-                        CameraEdit {
-                            distance: window.get_distance_m(),
-                            yaw_degrees: window.get_yaw_degrees(),
-                            focal_mm: window.get_focal_mm(),
-                            focus_distance_m: window.get_focus_distance_m(),
-                            f_stop: window.get_f_stop(),
-                            interpolation,
-                        },
-                    );
-                    state.camera.transform.keyframes.insert(index, transform);
-                    state.camera.intrinsics.keyframes.insert(index, intrinsics);
-                }
-            }
-            window.set_camera_key_count(state.camera.transform.keyframes.len() as i32);
+            state
+                .camera_editor
+                .preview_edit(time, camera_edit_from_window(&window));
+            state.camera_editor.commit_preview();
+            window.set_camera_key_count(
+                state.camera_editor.committed.transform.keyframes.len() as i32
+            );
+            update_undo_availability(&window, &state.camera_editor);
             state.inspection = None;
             render_preview(&window, &mut state);
+        });
+    }
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_undo(move || {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let time = match project_frame_rate(&window).and_then(|rate| {
+                rate.time_at_frame(i64::from(window.get_frame_number()))
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(value) => value,
+                Err(error) => {
+                    window.set_error_text(error.into());
+                    return;
+                }
+            };
+            let mut state = state.borrow_mut();
+            if state.camera_editor.undo() {
+                if let Err(error) =
+                    set_camera_controls_from_committed(&window, &state.camera_editor, time)
+                {
+                    window.set_error_text(error.into());
+                    return;
+                }
+                window.set_camera_key_count(
+                    state.camera_editor.committed.transform.keyframes.len() as i32,
+                );
+                state.inspection = None;
+                render_preview(&window, &mut state);
+            }
+            update_undo_availability(&window, &state.camera_editor);
+        });
+    }
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_redo(move || {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let time = match project_frame_rate(&window).and_then(|rate| {
+                rate.time_at_frame(i64::from(window.get_frame_number()))
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(value) => value,
+                Err(error) => {
+                    window.set_error_text(error.into());
+                    return;
+                }
+            };
+            let mut state = state.borrow_mut();
+            if state.camera_editor.redo() {
+                if let Err(error) =
+                    set_camera_controls_from_committed(&window, &state.camera_editor, time)
+                {
+                    window.set_error_text(error.into());
+                    return;
+                }
+                window.set_camera_key_count(
+                    state.camera_editor.committed.transform.keyframes.len() as i32,
+                );
+                state.inspection = None;
+                render_preview(&window, &mut state);
+            }
+            update_undo_availability(&window, &state.camera_editor);
         });
     }
     {
@@ -1036,7 +1296,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 state.playback_accumulator_seconds = 0.0;
             }
-            let controls_changed = state.last_render_controls != Some(render_controls(&window));
+            let previous_controls = state.last_render_controls;
+            let mut current_controls = render_controls(&window);
+            let timeline_changed = frame_advanced
+                || previous_controls
+                    .is_some_and(|previous| timeline_selection_changed(previous, current_controls));
+            if timeline_changed {
+                state.camera_editor.cancel_preview();
+                let time = match project_frame_rate(&window).and_then(|rate| {
+                    rate.time_at_frame(i64::from(window.get_frame_number()))
+                        .map_err(|error| error.to_string())
+                }) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        block_preview(&window, &error);
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    set_camera_controls_from_committed(&window, &state.camera_editor, time)
+                {
+                    block_preview(&window, &error);
+                    return;
+                }
+                current_controls = render_controls(&window);
+                update_undo_availability(&window, &state.camera_editor);
+            } else if previous_controls.is_some_and(|previous| {
+                camera_edit_from_controls(previous) != camera_edit_from_controls(current_controls)
+            }) {
+                let time = match project_frame_rate(&window).and_then(|rate| {
+                    rate.time_at_frame(i64::from(window.get_frame_number()))
+                        .map_err(|error| error.to_string())
+                }) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        block_preview(&window, &error);
+                        return;
+                    }
+                };
+                state
+                    .camera_editor
+                    .preview_edit(time, camera_edit_from_controls(current_controls));
+                state.inspection = None;
+                update_undo_availability(&window, &state.camera_editor);
+            }
+            let controls_changed = previous_controls != Some(current_controls);
             if frame_advanced || controls_changed {
                 render_preview(&window, &mut state);
             }
@@ -1049,4 +1353,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     render_preview(&window, &mut state.borrow_mut());
     window.run()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+
+    fn editor() -> CameraEditor {
+        CameraEditor::new(
+            camera_rig(vec![camera_keyframes(
+                "camera-key-0".to_owned(),
+                RationalTime::new(0, 24).unwrap(),
+                CameraEdit {
+                    distance: 0.8,
+                    yaw_degrees: 0.0,
+                    focal_mm: 50.0,
+                    focus_distance_m: 0.8,
+                    f_stop: 8.0,
+                    interpolation: KeyframeInterpolation::Smooth,
+                },
+            )]),
+            1,
+        )
+    }
+
+    #[test]
+    fn camera_preview_is_transient_and_commit_is_one_undoable_transaction() {
+        let mut editor = editor();
+        let original = editor.committed.clone();
+        let time = RationalTime::new(1, 24).unwrap();
+        let edit = CameraEdit {
+            distance: 1.2,
+            yaw_degrees: 18.0,
+            focal_mm: 65.0,
+            focus_distance_m: 1.2,
+            f_stop: 4.0,
+            interpolation: KeyframeInterpolation::Linear,
+        };
+
+        editor.preview_edit(time, edit);
+        assert_eq!(editor.committed, original);
+        assert_ne!(editor.effective(), &original);
+        assert!(editor.can_undo());
+        assert!(!editor.can_redo());
+
+        assert!(editor.undo());
+        assert_eq!(editor.effective(), &original);
+        assert!(!editor.can_undo());
+
+        editor.preview_edit(time, edit);
+        assert!(editor.commit_preview());
+        assert_eq!(editor.committed.transform.keyframes.len(), 2);
+        let committed = editor.committed.clone();
+        assert!(editor.undo());
+        assert_eq!(editor.committed, original);
+        assert!(editor.can_redo());
+        assert!(editor.redo());
+        assert_eq!(editor.committed, committed);
+    }
+
+    #[test]
+    fn replacing_a_camera_key_preserves_its_stable_ids() {
+        let mut editor = editor();
+        let transform_id = editor.committed.transform.keyframes[0].id.clone();
+        let intrinsics_id = editor.committed.intrinsics.keyframes[0].id.clone();
+        editor.preview_edit(
+            RationalTime::new(0, 24).unwrap(),
+            CameraEdit {
+                distance: 0.9,
+                yaw_degrees: -12.0,
+                focal_mm: 35.0,
+                focus_distance_m: 0.9,
+                f_stop: 5.6,
+                interpolation: KeyframeInterpolation::Hold,
+            },
+        );
+        editor.commit_preview();
+        assert_eq!(editor.committed.transform.keyframes[0].id, transform_id);
+        assert_eq!(editor.committed.intrinsics.keyframes[0].id, intrinsics_id);
+    }
 }

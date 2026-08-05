@@ -346,6 +346,12 @@ pub enum DiagnosticView {
     EmittedRadiance,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProceduralTestPattern {
+    AnimatedCheckerboard,
+    EyeChart,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpticalRequest {
     pub time: RationalTime,
@@ -354,6 +360,7 @@ pub struct OpticalRequest {
     pub camera: CameraRig,
     pub screen: ScreenTrack,
     pub inspection: Option<PanelRegion>,
+    pub procedural_pattern: ProceduralTestPattern,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -525,7 +532,11 @@ pub fn prepare_frame(request: OpticalRequest) -> Result<PreparedFrame, Applicati
         panel.active_height,
         request.viewport_aspect,
     );
-    let signal = diagnostic_signal(Vec2 { x: 0.5, y: 0.5 }, request.time);
+    let signal = diagnostic_signal(
+        request.procedural_pattern,
+        Vec2 { x: 0.5, y: 0.5 },
+        request.time,
+    );
     Ok(PreparedFrame {
         time: request.time,
         viewport_aspect: request.viewport_aspect,
@@ -552,8 +563,15 @@ pub fn prepare_raster(
         request.clone(),
         width,
         height,
-        &|uv| diagnostic_signal(uv, request.optics.time),
-        &|minimum, maximum| diagnostic_area_signal(minimum, maximum, request.optics.time),
+        &|uv| diagnostic_signal(request.optics.procedural_pattern, uv, request.optics.time),
+        &|minimum, maximum| {
+            diagnostic_area_signal(
+                request.optics.procedural_pattern,
+                minimum,
+                maximum,
+                request.optics.time,
+            )
+        },
     )
 }
 
@@ -567,8 +585,10 @@ pub fn evaluate_linear_optics(
         width,
         height,
         DiagnosticView::Composite,
-        &|uv| diagnostic_signal(uv, request.time),
-        &|minimum, maximum| diagnostic_area_signal(minimum, maximum, request.time),
+        &|uv| diagnostic_signal(request.procedural_pattern, uv, request.time),
+        &|minimum, maximum| {
+            diagnostic_area_signal(request.procedural_pattern, minimum, maximum, request.time)
+        },
     )
 }
 
@@ -1023,8 +1043,10 @@ fn evaluate_procedural_optical_row(
         width,
         height,
         row,
-        &|uv| diagnostic_signal(uv, request.time),
-        &|minimum, maximum| diagnostic_area_signal(minimum, maximum, request.time),
+        &|uv| diagnostic_signal(request.procedural_pattern, uv, request.time),
+        &|minimum, maximum| {
+            diagnostic_area_signal(request.procedural_pattern, minimum, maximum, request.time)
+        },
     )
 }
 
@@ -1615,7 +1637,18 @@ fn optical_footprint_device_pixels(
 
 /// Current vertical-slice device signal. This is explicit authored diagnostic content,
 /// not a media fallback and not reachable from media decoding.
-pub fn diagnostic_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
+pub fn diagnostic_signal(
+    pattern: ProceduralTestPattern,
+    uv: Vec2,
+    time: RationalTime,
+) -> DeviceRgb {
+    match pattern {
+        ProceduralTestPattern::AnimatedCheckerboard => checkerboard_signal(uv, time),
+        ProceduralTestPattern::EyeChart => eye_chart_signal(uv),
+    }
+}
+
+fn checkerboard_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
     let pulse = (time.as_seconds() as f32 * 0.8).sin() * 0.5 + 0.5;
     let grid_x = (uv.x * 12.0).floor() as i32;
     let grid_y = (uv.y * 8.0).floor() as i32;
@@ -1632,7 +1665,48 @@ pub fn diagnostic_signal(uv: Vec2, time: RationalTime) -> DeviceRgb {
     )
 }
 
-fn diagnostic_area_signal(minimum: Vec2, maximum: Vec2, time: RationalTime) -> DeviceRgb {
+fn eye_chart_signal(uv: Vec2) -> DeviceRgb {
+    const ROWS: [(f32, f32, u8); 7] = [
+        (0.14, 0.18, 1),
+        (0.31, 0.13, 2),
+        (0.45, 0.095, 3),
+        (0.57, 0.072, 4),
+        (0.67, 0.055, 5),
+        (0.76, 0.043, 6),
+        (0.84, 0.034, 7),
+    ];
+    for (row, (center_y, size, count)) in ROWS.into_iter().enumerate() {
+        let spacing = size * 1.45;
+        let first_x = 0.5 - spacing * (f32::from(count) - 1.0) * 0.5;
+        for column in 0..count {
+            let center_x = first_x + spacing * f32::from(column);
+            let mut local_x = (uv.x - center_x) / size;
+            let mut local_y = (uv.y - center_y) / size;
+            match (row + usize::from(column)) % 4 {
+                1 => (local_x, local_y) = (-local_y, local_x),
+                2 => (local_x, local_y) = (-local_x, -local_y),
+                3 => (local_x, local_y) = (local_y, -local_x),
+                _ => {}
+            }
+            let vertical = (-0.5..=-0.28).contains(&local_x) && (-0.5..=0.5).contains(&local_y);
+            let horizontal = (-0.5..=0.5).contains(&local_x)
+                && ((-0.5..=-0.30).contains(&local_y)
+                    || (-0.10..=0.10).contains(&local_y)
+                    || (0.30..=0.5).contains(&local_y));
+            if vertical || horizontal {
+                return DeviceRgb::BLACK;
+            }
+        }
+    }
+    DeviceRgb::WHITE
+}
+
+fn diagnostic_area_signal(
+    pattern: ProceduralTestPattern,
+    minimum: Vec2,
+    maximum: Vec2,
+    time: RationalTime,
+) -> DeviceRgb {
     const OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
     let mut sum = DeviceRgb::BLACK;
     for y in OFFSETS {
@@ -1641,7 +1715,7 @@ fn diagnostic_area_signal(minimum: Vec2, maximum: Vec2, time: RationalTime) -> D
                 x: minimum.x + (maximum.x - minimum.x) * x,
                 y: minimum.y + (maximum.y - minimum.y) * y,
             };
-            let value = diagnostic_signal(uv, time);
+            let value = diagnostic_signal(pattern, uv, time);
             sum.r += value.r;
             sum.g += value.g;
             sum.b += value.b;
@@ -1828,6 +1902,7 @@ mod tests {
                     }],
                 },
                 inspection: None,
+                procedural_pattern: ProceduralTestPattern::AnimatedCheckerboard,
             },
             view: DiagnosticView::Composite,
             preview_exposure_ev: 6.0,
@@ -2372,5 +2447,43 @@ mod tests {
         .expect("selection starts on panel");
         assert!(region.min.x < 0.5);
         assert!(region.max.x > 0.5);
+    }
+
+    #[test]
+    fn eye_chart_is_an_explicit_bounded_black_on_white_device_signal() {
+        let time = RationalTime::new(0, 24).expect("valid time");
+        assert_eq!(
+            diagnostic_signal(
+                ProceduralTestPattern::EyeChart,
+                Vec2 { x: 0.5, y: 0.14 },
+                time,
+            ),
+            DeviceRgb::BLACK
+        );
+        assert_eq!(
+            diagnostic_signal(
+                ProceduralTestPattern::EyeChart,
+                Vec2 { x: 0.05, y: 0.05 },
+                time,
+            ),
+            DeviceRgb::WHITE
+        );
+        for y in 0..=100 {
+            for x in 0..=100 {
+                let value = diagnostic_signal(
+                    ProceduralTestPattern::EyeChart,
+                    Vec2 {
+                        x: x as f32 / 100.0,
+                        y: y as f32 / 100.0,
+                    },
+                    time,
+                );
+                assert!(
+                    [value.r, value.g, value.b]
+                        .into_iter()
+                        .all(|channel| (0.0..=1.0).contains(&channel))
+                );
+            }
+        }
     }
 }
