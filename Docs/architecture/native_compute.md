@@ -42,6 +42,18 @@ unresolved integration, high black-matrix coverage, strong lens distortion and a
 character. The explicit channel tolerance is maximum absolute `2e-3` or maximum relative `2e-4`;
 panel-hit identity must be exact.
 
+Desktop selects the same `MetalRawDevelopment` adapter for both Application compute ports. There is
+no product CPU route or legacy PWM route. Application owns shutter scheduling and multiplies the
+modulation-free Metal result by each analytically integrated panel gain exactly once. Tests prove
+that `analytic_banding.amount == 0` is exact identity, that eight requested motion samples create
+eight spatial samples, and that a complete eight-sample rolling capture preserves CPU-oracle RAW
+codes and clipping masks exactly. Developed ACEScg remains within `2e-5`.
+
+Rolling row/sample plans are submitted through the batch port. Plans that share procedural or
+static raster storage use one parameter array, one signal upload and one Metal dispatch; distinct
+animated raster samples retain their exact authored source and may require separate dispatches.
+The batch changes command granularity only and never drops a row or motion sample.
+
 Native work is partitioned into 128-pixel sensor tiles. Progress publishes after each completed tile
 and cancellation is checked before the next tile. Completed staging remains non-authoritative and a
 cancelled job never publishes a partial result.
@@ -57,28 +69,25 @@ for the iPhone 16e model with rolling shutter and eight temporal samples, a meas
 extrapolation, and isolated CPU/Metal RAW-development time. Extrapolation is diagnostic evidence,
 not a promise: it assumes linear pixel scaling for the same authored scene and hardware.
 
-The 2026-08-05 release measurement on Apple M3 Ultra reported 0.045 s cold backend setup, 2.065 s
-to the first complete 128×128 product tile on the pre-factorization path, 7,936 sensor pixels/s
-end-to-end and a 1.7 h linear extrapolation for 8064×6048. Isolated 1024×768 RAW development
-measured 0.018 s CPU versus 0.003 s Metal, or 5.75×. This localizes the legacy-shaped cost in the
-repeated CPU optical evaluator rather than RAW development.
+The pre-port 2026-08-05 release measurement on Apple M3 Ultra reported 2.065 s to the first
+128×128 product tile, 7,936 sensor pixels/s and a 1.7 h linear 8064×6048 extrapolation.
 
-After the clean-display temporal decision, the benchmark also measures one authoritative spatial
-optical evaluation separately from the existing rolling/PWM repetition. For an exact 128×128
-sensor window, the CPU oracle measured 0.013 s or 1.28 million pixels/s. The first Metal spatial
-result arrived in 0.013 s; eight subsequent dispatches measured 11.76 million pixels/s, a 9.2×
-spatial speedup and 4.1 s linear 48 MP spatial extrapolation. The legacy-shaped eight-sample rolling
-measurement remains 2.065 s per product tile and 1.7 h extrapolated until the independent temporal
-contract lands. Motion that genuinely changes source or geometry still requires its explicitly
-authored spatial samples; the backend never reduces them.
+After product connection and temporal factorization, the representative release run reported
+0.047 s cold setup and 0.542 s to the first complete 128×128 tile. That tile batched 1,048 exact
+rolling row/sample plans (the demosaic halo included) for eight requested motion samples. Measured
+end-to-end throughput was 30,202 sensor pixels/s, corresponding to a 26.9 minute linear iPhone 16e
+48 MP extrapolation for the same rolling/eight-sample scene. This is the end-to-end estimate; the
+separate one-sample spatial figure must not be presented as such.
 
-The remaining integration tranche is precisely bounded:
+The isolated spatial kernel delivered its first tile in 0.010 s and sustained 13.19 million
+pixels/s, a 3.7 s one-sample 48 MP extrapolation. Isolated 1024×768 RAW development measured
+0.017 s CPU versus 0.003 s Metal, or 5.53×. Exact motion sampling is now the dominant cost in the
+representative benchmark, not old PWM subdivision or CPU optics.
 
-1. Consume the separately published analytical temporal contract, then select the spatial Metal
-   port in the sole Native product composition path.
-2. Preserve exact authored motion samples while applying separable residual modulation and optional
-   per-row banding without repeating static geometry, lens, cover or panel work.
-3. Split GPU command work below the publication tile if measured cancellation latency exceeds the
-   interactive bound on larger windows.
-4. Extend end-to-end parity through optical exposure, deterministic RAW codes and final development
-   for global/rolling readout and analytic banding identity/edge cases.
+Remaining performance work is precisely bounded:
+
+1. Detect provably static camera/screen/source intervals so eight authorized motion samples may
+   reuse one spatial result without changing the requested quadrature contract.
+2. Share prepared linear-emission storage across time-equivalent decoded media samples.
+3. Consider multi-tile GPU scheduling only if it preserves sub-second progress and cooperative
+   cancellation at the existing publication boundary.

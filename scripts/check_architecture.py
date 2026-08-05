@@ -176,6 +176,7 @@ def validate_retired_surfaces(paths: list[str]) -> None:
 def validate_native_backend_composition(paths: list[str]) -> None:
     required_paths = {
         "crates/screen-platform/shaders/native_camera.metal",
+        "crates/screen-platform/shaders/spatial_optics.metal",
         "Docs/architecture/native_compute.md",
     }
     missing = sorted(required_paths - set(paths))
@@ -184,9 +185,9 @@ def validate_native_backend_composition(paths: list[str]) -> None:
     desktop = (ROOT / "apps/screen-desktop/src/main.rs").read_text(encoding="utf-8")
     required_calls = [
         "MetalRawDevelopment::new()",
-        "capture_and_develop_procedural_region_with_backend(",
-        "capture_and_develop_device_signal_region_with_backend(",
-        "capture_and_develop_device_signal_region_sequence_with_backend(",
+        "capture_and_develop_procedural_region_with_compute_backends(",
+        "capture_and_develop_device_signal_region_with_compute_backends(",
+        "capture_and_develop_device_signal_region_sequence_with_compute_backends(",
     ]
     absent = [call for call in required_calls if call not in desktop]
     if absent:

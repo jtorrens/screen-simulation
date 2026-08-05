@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     const SENSOR_WIDTH: u16 = 256;
     const SENSOR_HEIGHT: u16 = 192;
     const TILE_EDGE: u16 = 128;
+    const MOTION_SAMPLES: u16 = 8;
     let iphone = CAPTURE_DEVICE_PRESETS
         .iter()
         .find(|preset| preset.id == "iphone-16e-main-48mp")
@@ -95,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             white_level_nits: DEVICE_PRESETS[0].reference_white_nits,
             colorimetry: PanelColorimetry::SRGB_D65,
             angular_emission_power: screen_contracts::LinearRgb::new(1.7, 1.5, 1.8),
-            temporal_emission: PanelTemporalEmission::continuous(),
+            temporal_emission: PanelTemporalEmission::clean_lcd(),
         },
         cover: CoverGlassProfile::NEUTRAL,
         environment: ProceduralEnvironment::DARK,
@@ -119,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frame_rate: FrameRate::new(24, 1)?,
         frame_index: 0,
         duration: RationalTime::new(1, 288)?,
-        temporal_samples: 8,
+        temporal_samples: MOTION_SAMPLES,
         readout: SensorReadout::Rolling {
             duration: RationalTime::new(3, 250)?,
             direction: RollingDirection::TopToBottom,
@@ -166,8 +167,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("benchmark tile: {TILE_EDGE}x{TILE_EDGE} ({pixels:.0} pixels)");
     println!("cold backend setup: {:.3} s", setup.as_secs_f64());
     println!(
-        "time to first complete tile: {:.3} s",
+        "time to first complete product tile: {:.3} s",
         elapsed.as_secs_f64()
+    );
+    println!(
+        "rolling batch: {} exact row-sample plans ({} motion samples)",
+        usize::from(tile_region.expanded_for_demosaic(sensor).height) * usize::from(MOTION_SAMPLES),
+        MOTION_SAMPLES
     );
     println!("end-to-end physical throughput: {throughput:.2} sensor pixels/s");
     println!(
@@ -184,12 +190,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SPATIAL_THROUGHPUT_ITERATIONS, metal_spatial_throughput
     );
     println!(
-        "48 MP Metal spatial extrapolation after temporal factorization: {:.1} s",
+        "48 MP one-sample Metal spatial extrapolation: {:.1} s",
         iphone_pixels / metal_spatial_throughput
     );
     println!(
-        "48 MP measured extrapolation: {:.1} h ({}x{}; same physical settings)",
-        iphone_pixels / throughput / 3600.0,
+        "48 MP end-to-end measured extrapolation: {:.1} min ({}x{}; rolling, 8 motion samples)",
+        iphone_pixels / throughput / 60.0,
         iphone.sensor.native_width,
         iphone.sensor.native_height
     );
