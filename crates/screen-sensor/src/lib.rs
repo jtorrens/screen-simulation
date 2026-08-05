@@ -15,6 +15,8 @@ pub enum BayerPattern {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SensorProfile {
+    pub native_width: u16,
+    pub native_height: u16,
     pub bayer_pattern: BayerPattern,
     pub acescg_to_sensor: [[f32; 3]; 3],
     pub saturation_exposure: LinearRgb,
@@ -52,6 +54,8 @@ pub struct RawSensorRaster {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SensorError {
     EmptyRaster,
+    InvalidNativeRaster,
+    RasterProfileMismatch,
     PixelCountMismatch,
     NonFiniteExposure,
     InvalidDuration,
@@ -66,6 +70,8 @@ pub enum SensorError {
 
 impl SensorProfile {
     pub const REFERENCE: Self = Self {
+        native_width: 3_840,
+        native_height: 2_160,
         bayer_pattern: BayerPattern::Rggb,
         acescg_to_sensor: [[0.72, 0.21, 0.07], [0.10, 0.82, 0.08], [0.03, 0.16, 0.81]],
         saturation_exposure: LinearRgb::new(0.018, 0.018, 0.018),
@@ -77,6 +83,9 @@ impl SensorProfile {
     };
 
     pub fn validate(self) -> Result<Self, SensorError> {
+        if self.native_width == 0 || self.native_height == 0 {
+            return Err(SensorError::InvalidNativeRaster);
+        }
         if !matrix_is_valid(self.acescg_to_sensor) {
             return Err(SensorError::InvalidColorMatrix);
         }
@@ -144,6 +153,11 @@ pub fn expose_raw(
 ) -> Result<RawSensorRaster, SensorError> {
     let profile = profile.validate()?;
     exposure.validate()?;
+    if exposure.width != u32::from(profile.native_width)
+        || exposure.height != u32::from(profile.native_height)
+    {
+        return Err(SensorError::RasterProfileMismatch);
+    }
     let maximum_code = (1_u32 << profile.adc_bits) - 1;
     let mut codes = Vec::with_capacity(exposure.acescg_irradiance_seconds.len());
     let mut clipped = Vec::with_capacity(exposure.acescg_irradiance_seconds.len());
@@ -174,13 +188,16 @@ pub fn expose_raw(
         );
         let read_electrons = f64::from(profile.read_noise_electrons_rms)
             * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB);
-        let electrons = (photoelectrons + dark_electrons + read_electrons).max(0.0);
-        let normalized =
-            electrons * f64::from(profile.analog_gain) / f64::from(profile.full_well_electrons);
-        let is_clipped = normalized >= 1.0;
+        let full_well = f64::from(profile.full_well_electrons);
+        let collected_electrons = photoelectrons + dark_electrons;
+        let full_well_clipped = collected_electrons >= full_well;
+        let well_electrons = collected_electrons.clamp(0.0, full_well);
+        let post_read_electrons = (well_electrons + read_electrons).max(0.0);
+        let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
+        let adc_clipped = normalized >= 1.0;
         let code = (normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16;
         codes.push(code);
-        clipped.push(is_clipped);
+        clipped.push(full_well_clipped || adc_clipped);
     }
     Ok(RawSensorRaster {
         width: exposure.width,
@@ -311,6 +328,10 @@ impl fmt::Display for SensorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::EmptyRaster => "integrated optical exposure raster must be non-empty",
+            Self::InvalidNativeRaster => "sensor native photosite raster must be non-empty",
+            Self::RasterProfileMismatch => {
+                "integrated optical exposure raster must match the sensor native photosite raster"
+            }
             Self::PixelCountMismatch => {
                 "integrated optical exposure pixel count does not match its raster"
             }
@@ -340,8 +361,10 @@ impl std::error::Error for SensorError {}
 mod tests {
     use super::*;
 
-    fn noiseless_profile() -> SensorProfile {
+    fn noiseless_profile(native_width: u16, native_height: u16) -> SensorProfile {
         SensorProfile {
+            native_width,
+            native_height,
             acescg_to_sensor: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             dark_current_electrons_per_second: 0.0,
             read_noise_electrons_rms: 0.0,
@@ -360,7 +383,7 @@ mod tests {
 
     #[test]
     fn noiseless_exposure_quantizes_native_cfa_and_saturates() {
-        let profile = noiseless_profile();
+        let profile = noiseless_profile(2, 2);
         let half = profile.saturation_exposure.r * 0.5;
         let exposure = IntegratedOpticalExposure {
             width: 2,
@@ -392,6 +415,11 @@ mod tests {
 
     #[test]
     fn deterministic_noise_changes_only_with_capture_identity() {
+        let profile = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            ..SensorProfile::REFERENCE
+        };
         let exposure = IntegratedOpticalExposure {
             width: 8,
             height: 8,
@@ -399,7 +427,7 @@ mod tests {
             acescg_irradiance_seconds: vec![LinearRgb::new(0.01, 0.01, 0.01); 64],
         };
         let first = expose_raw(
-            SensorProfile::REFERENCE,
+            profile,
             &exposure,
             CaptureIdentity {
                 noise_seed: 99,
@@ -408,7 +436,7 @@ mod tests {
         )
         .expect("first capture");
         let repeated = expose_raw(
-            SensorProfile::REFERENCE,
+            profile,
             &exposure,
             CaptureIdentity {
                 noise_seed: 99,
@@ -417,7 +445,7 @@ mod tests {
         )
         .expect("repeated capture");
         let next = expose_raw(
-            SensorProfile::REFERENCE,
+            profile,
             &exposure,
             CaptureIdentity {
                 noise_seed: 99,
@@ -430,8 +458,39 @@ mod tests {
     }
 
     #[test]
+    fn full_well_clips_before_read_noise_and_analog_gain() {
+        let mut profile = noiseless_profile(1, 1);
+        profile.analog_gain = 0.5;
+        let exposure = IntegratedOpticalExposure {
+            width: 1,
+            height: 1,
+            duration_seconds: 1.0,
+            acescg_irradiance_seconds: vec![LinearRgb::new(
+                profile.saturation_exposure.r * 2.0,
+                0.0,
+                0.0,
+            )],
+        };
+        let raw = expose_raw(
+            profile,
+            &exposure,
+            CaptureIdentity {
+                noise_seed: 1,
+                frame_index: 0,
+            },
+        )
+        .expect("valid saturated capture");
+        let half_scale = ((1_u32 << profile.adc_bits) - 1) / 2;
+        assert!((i64::from(raw.codes[0]) - i64::from(half_scale)).abs() <= 1);
+        assert_eq!(raw.clipped, vec![true]);
+    }
+
+    #[test]
     fn invalid_profiles_and_exposures_fail_before_capture() {
         let mut invalid = SensorProfile::REFERENCE;
+        invalid.native_width = 0;
+        assert_eq!(invalid.validate(), Err(SensorError::InvalidNativeRaster));
+        invalid = SensorProfile::REFERENCE;
         invalid.acescg_to_sensor[2] = invalid.acescg_to_sensor[1];
         assert_eq!(invalid.validate(), Err(SensorError::InvalidColorMatrix));
         invalid = SensorProfile::REFERENCE;
@@ -447,5 +506,23 @@ mod tests {
             acescg_irradiance_seconds: vec![LinearRgb::new(0.0, 0.0, 0.0)],
         };
         assert_eq!(exposure.validate(), Err(SensorError::InvalidDuration));
+
+        let mismatched = IntegratedOpticalExposure {
+            width: 1,
+            height: 1,
+            duration_seconds: 1.0,
+            acescg_irradiance_seconds: vec![LinearRgb::new(0.0, 0.0, 0.0)],
+        };
+        assert_eq!(
+            expose_raw(
+                SensorProfile::REFERENCE,
+                &mismatched,
+                CaptureIdentity {
+                    noise_seed: 0,
+                    frame_index: 0,
+                },
+            ),
+            Err(SensorError::RasterProfileMismatch)
+        );
     }
 }

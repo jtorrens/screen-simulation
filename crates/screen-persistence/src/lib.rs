@@ -266,6 +266,8 @@ pub struct SensorDocument {
     pub schema: String,
     pub version: u32,
     pub sensor_id: OpaqueId,
+    pub native_width: u16,
+    pub native_height: u16,
     pub bayer_pattern: BayerSelection,
     pub acescg_to_sensor: [[f32; 3]; 3],
     pub saturation_exposure: [f32; 3],
@@ -764,7 +766,9 @@ fn validate_sensor(sensor: &SensorDocument) -> Result<(), PersistenceError> {
             return Err(PersistenceError::InvalidSensorProfile);
         }
     }
-    if sensor.shutter_duration.numerator <= 0
+    if sensor.native_width == 0
+        || sensor.native_height == 0
+        || sensor.shutter_duration.numerator <= 0
         || !(1..=64).contains(&sensor.temporal_samples)
         || sensor.saturation_exposure.iter().any(|value| *value <= 0.0)
         || sensor.full_well_electrons <= 0.0
@@ -1036,6 +1040,8 @@ mod tests {
                 schema: "screen_simulation_sensor".into(),
                 version: CURRENT_VERSION,
                 sensor_id: id("sensor-01"),
+                native_width: 3_840,
+                native_height: 2_160,
                 bayer_pattern: BayerSelection::Rggb,
                 acescg_to_sensor: [[0.72, 0.21, 0.07], [0.10, 0.82, 0.08], [0.03, 0.16, 0.81]],
                 saturation_exposure: [0.018, 0.018, 0.018],

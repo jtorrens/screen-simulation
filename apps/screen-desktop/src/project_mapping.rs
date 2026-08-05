@@ -144,6 +144,8 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 .collect::<Result<_, _>>()?,
         },
         sensor: SensorProfile {
+            native_width: package.sensor.native_width,
+            native_height: package.sensor.native_height,
             bayer_pattern: match package.sensor.bayer_pattern {
                 BayerSelection::Rggb => BayerPattern::Rggb,
                 BayerSelection::Bggr => BayerPattern::Bggr,
@@ -362,6 +364,8 @@ mod tests {
                 schema: "screen_simulation_sensor".into(),
                 version: CURRENT_VERSION,
                 sensor_id: id("sensor-01"),
+                native_width: 3_840,
+                native_height: 2_160,
                 bayer_pattern: BayerSelection::Rggb,
                 acescg_to_sensor: [[0.72, 0.21, 0.07], [0.10, 0.82, 0.08], [0.03, 0.16, 0.81]],
                 saturation_exposure: [0.018, 0.018, 0.018],
@@ -414,6 +418,8 @@ mod tests {
         assert_eq!(scene.alpha, AlphaInterpretation::Premultiplied);
         assert_eq!(scene.placement, RasterPlacement::OneToOne);
         assert_eq!(scene.sensor.bayer_pattern, BayerPattern::Rggb);
+        assert_eq!(scene.sensor.native_width, 3_840);
+        assert_eq!(scene.sensor.native_height, 2_160);
         assert_eq!(scene.shutter_duration, RationalTime::new(1, 48).unwrap());
         assert_eq!(scene.temporal_samples, 8);
         assert_eq!(

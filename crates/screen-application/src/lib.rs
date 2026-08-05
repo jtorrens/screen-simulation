@@ -5,7 +5,7 @@
 use core::fmt;
 use rayon::prelude::*;
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
-use screen_contracts::{ContractError, DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
+use screen_contracts::{ContractError, DeviceRgb, FrameRate, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_geometry::{
     APERTURE_SAMPLE_COUNT, CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion,
     ProjectedScreen, ScreenSample, ScreenTrack, panel_uv_aperture_samples, panel_uv_at_viewport,
@@ -361,6 +361,39 @@ pub struct ShutterRequest {
     pub readout: SensorReadout,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrameCaptureRequest {
+    pub optics: OpticalRequest,
+    pub frame_rate: FrameRate,
+    pub frame_index: i64,
+    pub duration: RationalTime,
+    pub temporal_samples: u16,
+    pub readout: SensorReadout,
+    pub noise_seed: u64,
+}
+
+impl FrameCaptureRequest {
+    fn resolve(self) -> Result<(ShutterRequest, CaptureIdentity), ApplicationError> {
+        let mut optics = self.optics;
+        optics.time = self
+            .frame_rate
+            .time_at_frame(self.frame_index)
+            .map_err(ApplicationError::Time)?;
+        Ok((
+            ShutterRequest {
+                optics,
+                duration: self.duration,
+                temporal_samples: self.temporal_samples,
+                readout: self.readout,
+            },
+            CaptureIdentity {
+                noise_seed: self.noise_seed,
+                frame_index: self.frame_index,
+            },
+        ))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SensorReadout {
     Global,
@@ -559,14 +592,13 @@ pub fn integrate_procedural_shutter(
     }
 }
 
-pub fn capture_procedural_shutter(
-    request: ShutterRequest,
-    width: u16,
-    height: u16,
+pub fn capture_procedural_frame(
+    request: FrameCaptureRequest,
     sensor: SensorProfile,
-    identity: CaptureIdentity,
 ) -> Result<RawSensorRaster, ApplicationError> {
-    let exposure = integrate_procedural_shutter(request, width, height)?;
+    let (shutter, identity) = request.resolve()?;
+    let exposure =
+        integrate_procedural_shutter(shutter, sensor.native_width, sensor.native_height)?;
     expose_raw(sensor, &exposure, identity).map_err(ApplicationError::Sensor)
 }
 
@@ -606,22 +638,20 @@ where
     }
 }
 
-pub fn capture_shutter_from_device_signal_sequence<F>(
-    request: ShutterRequest,
-    width: u16,
-    height: u16,
+pub fn capture_frame_from_device_signal_sequence<F>(
+    request: FrameCaptureRequest,
     placement: RasterPlacement,
     signal_at_time: F,
     sensor: SensorProfile,
-    identity: CaptureIdentity,
 ) -> Result<RawSensorRaster, ApplicationError>
 where
     F: FnMut(RationalTime) -> Result<Arc<PreparedDeviceSignalRaster>, ApplicationError>,
 {
+    let (shutter, identity) = request.resolve()?;
     let exposure = integrate_shutter_from_device_signal_sequence(
-        request,
-        width,
-        height,
+        shutter,
+        sensor.native_width,
+        sensor.native_height,
         placement,
         signal_at_time,
     )?;
@@ -703,22 +733,29 @@ where
     if width == 0 || height == 0 || readout_duration.numerator() <= 0 {
         return Err(ApplicationError::InvalidSensorReadout);
     }
+    let row_schedules = (0..usize::from(height))
+        .map(|row| {
+            let row_center = rolling_row_center_time(
+                request.optics.time,
+                readout_duration,
+                row,
+                usize::from(height),
+                direction,
+            )?;
+            Ok((
+                row,
+                shutter_quadrature(
+                    row_center,
+                    request.duration,
+                    request.temporal_samples,
+                    request.optics.panel.temporal_emission,
+                )?,
+            ))
+        })
+        .collect::<Result<Vec<_>, ApplicationError>>()?;
     let pixel_count = usize::from(width) * usize::from(height);
     let mut accumulated = vec![[0.0_f64; 3]; pixel_count];
-    for row in 0..usize::from(height) {
-        let row_center = rolling_row_center_time(
-            request.optics.time,
-            readout_duration,
-            row,
-            usize::from(height),
-            direction,
-        )?;
-        let samples = shutter_quadrature(
-            row_center,
-            request.duration,
-            request.temporal_samples,
-            request.optics.panel.temporal_emission,
-        )?;
+    for (row, samples) in row_schedules {
         for sample in samples {
             let mut optics = request.optics.clone();
             optics.time = sample.time;
@@ -1835,22 +1872,24 @@ mod tests {
     #[test]
     fn global_shutter_capture_is_deterministic_and_samples_the_signal_sequence() {
         let mut optics = request().optics;
-        optics.time = RationalTime::new(1, 1).expect("valid center");
-        let shutter = ShutterRequest {
+        optics.time = RationalTime::new(99, 1).expect("ignored preview time");
+        let capture = FrameCaptureRequest {
             optics,
+            frame_rate: FrameRate::new(24, 1).expect("valid frame rate"),
+            frame_index: 24,
             duration: RationalTime::new(1, 48).expect("valid shutter"),
             temporal_samples: 4,
             readout: SensorReadout::Global,
-        };
-        let identity = CaptureIdentity {
             noise_seed: 42,
-            frame_index: 24,
+        };
+        let sensor = SensorProfile {
+            native_width: 32,
+            native_height: 18,
+            ..SensorProfile::REFERENCE
         };
         let mut sampled_times = Vec::new();
-        let first = capture_shutter_from_device_signal_sequence(
-            shutter.clone(),
-            32,
-            18,
+        let first = capture_frame_from_device_signal_sequence(
+            capture.clone(),
             RasterPlacement::Stretch,
             |time| {
                 sampled_times.push(time);
@@ -1862,14 +1901,11 @@ mod tests {
                     },
                 )?))
             },
-            SensorProfile::REFERENCE,
-            identity,
+            sensor,
         )
         .expect("first capture");
-        let second = capture_shutter_from_device_signal_sequence(
-            shutter,
-            32,
-            18,
+        let second = capture_frame_from_device_signal_sequence(
+            capture,
             RasterPlacement::Stretch,
             |_| {
                 Ok(Arc::new(PreparedDeviceSignalRaster::new(
@@ -1880,11 +1916,13 @@ mod tests {
                     },
                 )?))
             },
-            SensorProfile::REFERENCE,
-            identity,
+            sensor,
         )
         .expect("repeated capture");
         assert_eq!(sampled_times.len(), 4);
+        assert!(sampled_times.iter().all(|time| {
+            *time > RationalTime::new(0, 1).unwrap() && *time < RationalTime::new(2, 1).unwrap()
+        }));
         assert_eq!(first, second);
         assert_eq!(first.codes.len(), 32 * 18);
     }
