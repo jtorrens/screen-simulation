@@ -55,7 +55,7 @@ use screen_panel::{
     AnalyticBanding, DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission,
     ResidualFlicker, StripeLayout, device_preset,
 };
-use screen_platform::{DisplayPublicationBackend, ExactCpuDisplayPublication, MetalRawDevelopment};
+use screen_platform::{DisplayPublicationBackend, MetalDisplayPublication, MetalRawDevelopment};
 use screen_platform::{decode_frame_at_time, probe_media};
 use screen_sensor::{SensorProfile, SensorRegion};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
@@ -2072,7 +2072,7 @@ fn run_native_capture_job(
     let setup_started = Instant::now();
     let color_engine =
         ColorEngine::bundled().map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
-    let publication_backend = ExactCpuDisplayPublication::new(transform)
+    let publication_backend = MetalDisplayPublication::new(transform)
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
     let media_processor = match &source {
         NativeCaptureSource::Media(media) => Some(

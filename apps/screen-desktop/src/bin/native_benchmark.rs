@@ -18,7 +18,7 @@ use screen_geometry::{
 use screen_panel::{
     DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
 };
-use screen_platform::{DisplayPublicationBackend, ExactCpuDisplayPublication, MetalRawDevelopment};
+use screen_platform::{DisplayPublicationBackend, MetalDisplayPublication, MetalRawDevelopment};
 use screen_sensor::{RawSensorRegion, SensorProfile, SensorRegion};
 
 struct BenchmarkStaging {
@@ -356,9 +356,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_processor =
         ColorEngine::bundled()?.camera_output_processor(CameraOutputTransform::SrgbSdr100)?;
     let publication_setup_started = Instant::now();
-    let publication_backend = ExactCpuDisplayPublication::new(CameraOutputTransform::SrgbSdr100)?;
+    let publication_backend = MetalDisplayPublication::new(CameraOutputTransform::SrgbSdr100)?;
     println!(
-        "exact publication backend setup: {:.3} s",
+        "Metal publication backend setup: {:.3} s",
         publication_setup_started.elapsed().as_secs_f64()
     );
     let stripe_count =
@@ -395,13 +395,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect::<Vec<_>>();
         let quantize_elapsed = quantize_started.elapsed();
-        let exact_started = Instant::now();
-        let exact_bytes = publication_backend.publish_acescg_rgba8(&developed)?;
-        let exact_elapsed = exact_started.elapsed();
-        assert_eq!(exact_bytes, display_bytes);
+        let publication_started = Instant::now();
+        let publication_bytes = publication_backend.publish_acescg_rgba8(&developed)?;
+        let publication_elapsed = publication_started.elapsed();
+        let maximum_cpu_delta = publication_bytes
+            .iter()
+            .zip(&display_bytes)
+            .map(|(metal, cpu)| metal.abs_diff(*cpu))
+            .max()
+            .unwrap_or(0);
+        assert!(maximum_cpu_delta <= 1);
         let copy_started = Instant::now();
-        let mut publication = vec![0_u8; exact_bytes.len()];
-        publication.copy_from_slice(&exact_bytes);
+        let mut publication = vec![0_u8; publication_bytes.len()];
+        publication.copy_from_slice(&publication_bytes);
         let copy_elapsed = copy_started.elapsed();
         let staging_started = Instant::now();
         let mut staging =
@@ -415,9 +421,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         std::hint::black_box(staging.snapshot());
         let staging_elapsed = staging_started.elapsed();
-        let product_elapsed = capture_elapsed + exact_elapsed + copy_elapsed + staging_elapsed;
+        let product_elapsed =
+            capture_elapsed + publication_elapsed + copy_elapsed + staging_elapsed;
         println!(
-            "product stripe {label}: {}x{} · {:.3} s exact product path · {} logical tiles ready · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s · exact parallel publication {:.3} s · output copy {:.3} s · staging {:.3} s",
+            "product stripe {label}: {}x{} · {:.3} s product path · {} logical tiles ready · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s · Metal OCIO publication {:.3} s · max CPU code delta {} · output copy {:.3} s · staging {:.3} s",
             product_stripe.width,
             product_stripe.height,
             product_elapsed.as_secs_f64(),
@@ -426,7 +433,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stages.spatial_backend.as_secs_f64(),
             stages.integration_and_sensor_cpu.as_secs_f64(),
             stages.raw_development_backend.as_secs_f64(),
-            exact_elapsed.as_secs_f64(),
+            publication_elapsed.as_secs_f64(),
+            maximum_cpu_delta,
             copy_elapsed.as_secs_f64(),
             staging_elapsed.as_secs_f64(),
         );
