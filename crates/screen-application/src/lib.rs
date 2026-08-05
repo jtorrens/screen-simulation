@@ -1999,6 +1999,7 @@ mod tests {
             sensor,
             CameraDevelopment {
                 white_balance: LinearRgb::new(2.0, 1.0, 1.5),
+                linear_exposure_scale: 1.0,
             },
         )
         .expect("captured camera frame");

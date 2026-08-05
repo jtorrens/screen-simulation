@@ -89,6 +89,11 @@ export component MainWindow inherits Window {
     in-out property <float> focus-distance-m: 0.82;
     in-out property <float> f-stop: 8;
     in-out property <float> preview-exposure-ev: 6;
+    in-out property <float> white-balance-r: 1;
+    in-out property <float> white-balance-g: 1;
+    in-out property <float> white-balance-b: 1;
+    in-out property <float> camera-exposure-ev: 0;
+    in-out property <int> output-transform-index: 0;
     in-out property <float> yaw-degrees: 0;
     in-out property <int> camera-key-count: 1;
     in-out property <int> camera-interpolation-index: 2;
@@ -582,10 +587,65 @@ export component MainWindow inherits Window {
                             value <=> root.preview-exposure-ev;
                             numeric-value: round(root.preview-exposure-ev * 10) / 10;
                             suffix: "EV";
+                            visible: root.view-index != 4;
+                        }
+
+                        Text {
+                            text: "CAMERA DEVELOPMENT";
+                            color: #71819b;
+                            font-size: 11px;
+                            visible: root.view-index == 4;
+                        }
+
+                        ValueRow {
+                            label: "WB red";
+                            minimum: 0.25;
+                            maximum: 4;
+                            step: 0.01;
+                            value <=> root.white-balance-r;
+                            numeric-value: round(root.white-balance-r * 100) / 100;
+                            visible: root.view-index == 4;
+                        }
+
+                        ValueRow {
+                            label: "WB green";
+                            minimum: 0.25;
+                            maximum: 4;
+                            step: 0.01;
+                            value <=> root.white-balance-g;
+                            numeric-value: round(root.white-balance-g * 100) / 100;
+                            visible: root.view-index == 4;
+                        }
+
+                        ValueRow {
+                            label: "WB blue";
+                            minimum: 0.25;
+                            maximum: 4;
+                            step: 0.01;
+                            value <=> root.white-balance-b;
+                            numeric-value: round(root.white-balance-b * 100) / 100;
+                            visible: root.view-index == 4;
+                        }
+
+                        ValueRow {
+                            label: "Develop";
+                            minimum: -8;
+                            maximum: 8;
+                            step: 0.1;
+                            value <=> root.camera-exposure-ev;
+                            numeric-value: round(root.camera-exposure-ev * 10) / 10;
+                            suffix: "EV";
+                            visible: root.view-index == 4;
                         }
 
                         ComboBox {
-                            model: ["Composite", "Device signal", "RGB subpixels", "Emitted radiance"];
+                            model: ["ACES 2.0 · sRGB SDR 100", "ACES 2.0 · Rec.709 SDR 100", "ACES 2.0 · Rec.2100 PQ 1000"];
+                            current-index <=> root.output-transform-index;
+                            visible: root.view-index == 4;
+                        }
+
+                        ComboBox {
+                            model: ["Composite", "Device signal", "RGB subpixels", "Emitted radiance", "Camera result"];
                             current-index <=> root.view-index;
                         }
 

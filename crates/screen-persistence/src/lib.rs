@@ -304,6 +304,7 @@ pub struct ShotDocument {
     pub project_frame_rate: ExactFrameRate,
     pub sensor_noise_seed: u64,
     pub white_balance_gains: [f32; 3],
+    pub camera_linear_exposure_scale: f32,
     pub camera_output_transform_id: String,
 }
 
@@ -410,6 +411,8 @@ impl ProjectPackage {
             .white_balance_gains
             .into_iter()
             .any(|value| !value.is_finite() || !(0.01..=100.0).contains(&value))
+            || !self.shot.camera_linear_exposure_scale.is_finite()
+            || !(0.000_001..=1_000_000.0).contains(&self.shot.camera_linear_exposure_scale)
             || self.shot.camera_output_transform_id.is_empty()
         {
             return Err(PersistenceError::InvalidCameraDevelopment);
@@ -1093,6 +1096,7 @@ mod tests {
                 },
                 sensor_noise_seed: 42,
                 white_balance_gains: [2.0, 1.0, 1.5],
+                camera_linear_exposure_scale: 55.555_557,
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
             },
         }

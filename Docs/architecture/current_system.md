@@ -23,6 +23,7 @@ media source
      → Bayer photosite charge, noise, saturation, gain and RAW quantization
      → single reference Bayer demosaic
      → explicit native-sensor white balance
+     → explicit linear camera exposure scale
      → immutable linear ACEScg developed camera result
      → explicit OCIO output transform
 ```

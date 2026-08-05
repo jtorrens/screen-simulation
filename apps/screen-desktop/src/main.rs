@@ -7,16 +7,20 @@ pub mod project_mapping;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use screen_application::{
-    ApplicationError, DeviceSignalRaster, DiagnosticView, OpticalRequest, RasterPlacement,
-    SimulationRequest, decoded_frame_to_device_signal, inspection_region_from_drag, prepare_raster,
+    ApplicationError, DeviceSignalRaster, DiagnosticView, FrameCaptureRequest, OpticalRequest,
+    PreparedDeviceSignalRaster, RasterPlacement, SensorReadout, SimulationRequest,
+    capture_and_develop_frame_from_device_signal_sequence, capture_and_develop_procedural_frame,
+    decoded_frame_to_device_signal, inspection_region_from_drag, prepare_raster,
     prepare_raster_from_device_signal,
 };
+use screen_camera::CameraDevelopment;
 use screen_color::{
-    ColorEngine, DeviceColorTarget, OcioInputTransform, SourceColorInterpretation,
-    SourceToDeviceProcessor, propose_ocio_input,
+    CameraOutputTransform, ColorEngine, DeviceColorTarget, OcioInputTransform,
+    SourceColorInterpretation, SourceToDeviceProcessor, propose_ocio_input,
 };
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_geometry::{
@@ -30,6 +34,7 @@ use screen_media::{
 };
 use screen_panel::{LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout};
 use screen_platform::{decode_frame_at_time, probe_media};
+use screen_sensor::SensorProfile;
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 const DURATION_FRAMES: u32 = 96;
@@ -48,6 +53,11 @@ struct RenderControls {
     focus_distance_m: f32,
     f_stop: f32,
     preview_exposure_ev: f32,
+    white_balance_r: f32,
+    white_balance_g: f32,
+    white_balance_b: f32,
+    camera_exposure_ev: f32,
+    output_transform_index: i32,
     yaw_degrees: f32,
     camera_interpolation_index: i32,
     stripe_index: i32,
@@ -74,6 +84,11 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         focus_distance_m: window.get_focus_distance_m(),
         f_stop: window.get_f_stop(),
         preview_exposure_ev: window.get_preview_exposure_ev(),
+        white_balance_r: window.get_white_balance_r(),
+        white_balance_g: window.get_white_balance_g(),
+        white_balance_b: window.get_white_balance_b(),
+        camera_exposure_ev: window.get_camera_exposure_ev(),
+        output_transform_index: window.get_output_transform_index(),
         yaw_degrees: window.get_yaw_degrees(),
         camera_interpolation_index: window.get_camera_interpolation_index(),
         stripe_index: window.get_stripe_index(),
@@ -357,6 +372,10 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         }
     };
     let color_engine = &state.color_engine;
+    if window.get_view_index() == 4 && state.source.is_none() {
+        render_camera_result(window, request, color_engine, None, started);
+        return;
+    }
     let prepared = match &mut state.source {
         None => prepare_raster(request, PREVIEW_WIDTH, PREVIEW_HEIGHT),
         Some(source) => {
@@ -418,6 +437,23 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 3 => RasterPlacement::OneToOne,
                 _ => RasterPlacement::Fit,
             };
+            if window.get_view_index() == 4 {
+                let prepared_signal = match PreparedDeviceSignalRaster::new(signal.clone()) {
+                    Ok(signal) => Arc::new(signal),
+                    Err(error) => {
+                        block_preview(window, &error.to_string());
+                        return;
+                    }
+                };
+                render_camera_result(
+                    window,
+                    request,
+                    color_engine,
+                    Some((prepared_signal, placement)),
+                    started,
+                );
+                return;
+            }
             prepare_raster_from_device_signal(
                 request,
                 PREVIEW_WIDTH,
@@ -531,6 +567,139 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         }
         Err(error) => window.set_error_text(error.to_string().into()),
     }
+}
+
+fn render_camera_result(
+    window: &MainWindow,
+    request: SimulationRequest,
+    color_engine: &ColorEngine,
+    source: Option<(Arc<PreparedDeviceSignalRaster>, RasterPlacement)>,
+    started: Instant,
+) {
+    let frame_rate = match project_frame_rate(window) {
+        Ok(value) => value,
+        Err(error) => {
+            block_preview(window, &error);
+            return;
+        }
+    };
+    let shutter_denominator = match frame_rate.numerator().checked_mul(2) {
+        Some(value) => value,
+        None => {
+            block_preview(
+                window,
+                "project frame rate is too large for a 180-degree shutter",
+            );
+            return;
+        }
+    };
+    let shutter_duration =
+        match RationalTime::new(i64::from(frame_rate.denominator()), shutter_denominator) {
+            Ok(value) => value,
+            Err(error) => {
+                block_preview(window, &error.to_string());
+                return;
+            }
+        };
+    let capture = FrameCaptureRequest {
+        optics: request.optics,
+        frame_rate,
+        frame_index: i64::from(window.get_frame_number()),
+        duration: shutter_duration,
+        temporal_samples: 1,
+        readout: SensorReadout::Global,
+        noise_seed: 42,
+    };
+    let sensor = SensorProfile {
+        native_width: PREVIEW_WIDTH,
+        native_height: PREVIEW_HEIGHT,
+        ..SensorProfile::REFERENCE
+    };
+    let development = CameraDevelopment {
+        white_balance: LinearRgb::new(
+            window.get_white_balance_r(),
+            window.get_white_balance_g(),
+            window.get_white_balance_b(),
+        ),
+        linear_exposure_scale: sensor.saturation_exposure.g.recip()
+            * window.get_camera_exposure_ev().exp2(),
+    };
+    let captured = match source {
+        Some((prepared, placement)) => capture_and_develop_frame_from_device_signal_sequence(
+            capture,
+            placement,
+            |_| Ok(Arc::clone(&prepared)),
+            sensor,
+            development,
+        ),
+        None => capture_and_develop_procedural_frame(capture, sensor, development),
+    };
+    let captured = match captured {
+        Ok(value) => value,
+        Err(error) => {
+            block_preview(window, &error.to_string());
+            return;
+        }
+    };
+    let transform = match window.get_output_transform_index() {
+        0 => CameraOutputTransform::SrgbSdr100,
+        1 => CameraOutputTransform::Rec709Sdr100,
+        2 => CameraOutputTransform::Rec2100Pq1000,
+        _ => {
+            block_preview(window, "select an explicit camera output transform");
+            return;
+        }
+    };
+    let processor = match color_engine.camera_output_processor(transform) {
+        Ok(value) => value,
+        Err(error) => {
+            block_preview(window, &error.to_string());
+            return;
+        }
+    };
+    let mut output = Vec::with_capacity(captured.developed.acescg.len() * 4);
+    for pixel in &captured.developed.acescg {
+        output.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
+    }
+    if let Err(error) = processor.apply_acescg_rgba_buffer(&mut output) {
+        block_preview(window, &error.to_string());
+        return;
+    }
+    let mut buffer =
+        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(PREVIEW_WIDTH), u32::from(PREVIEW_HEIGHT));
+    for (target, rgba) in buffer
+        .make_mut_slice()
+        .iter_mut()
+        .zip(output.chunks_exact(4))
+    {
+        let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        *target = Rgba8Pixel {
+            r: channel(rgba[0]),
+            g: channel(rgba[1]),
+            b: channel(rgba[2]),
+            a: 255,
+        };
+    }
+    let clipped = captured.raw.clipped.iter().filter(|value| **value).count();
+    window.set_preview_image(Image::from_rgba8(buffer));
+    window.set_scale_text(
+        format!(
+            "CAMERA SENSOR {} × {} · {}-BIT BAYER · {} CLIPPED",
+            PREVIEW_WIDTH, PREVIEW_HEIGHT, sensor.adc_bits, clipped
+        )
+        .into(),
+    );
+    window.set_render_text(
+        format!(
+            "RAW → demosaic → WB → ACEScg → {} · {:.1} ms",
+            transform.label(),
+            started.elapsed().as_secs_f64() * 1_000.0
+        )
+        .into(),
+    );
+    window.set_inspection_text("DEVELOPED CAMERA FRAME · 180° GLOBAL SHUTTER".into());
+    window.set_hint_text("Authoritative RAW and linear ACEScg retained before ODT".into());
+    window.set_error_text("".into());
 }
 
 fn block_preview(window: &MainWindow, message: &str) {

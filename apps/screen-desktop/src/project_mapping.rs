@@ -191,6 +191,7 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 package.shot.white_balance_gains[1],
                 package.shot.white_balance_gains[2],
             ),
+            linear_exposure_scale: package.shot.camera_linear_exposure_scale,
         }
         .validate()
         .map_err(|error| error.to_string())?,
@@ -429,6 +430,7 @@ mod tests {
                 },
                 sensor_noise_seed: 42,
                 white_balance_gains: [2.0, 1.0, 1.5],
+                camera_linear_exposure_scale: 55.555_557,
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
             },
         };
@@ -457,6 +459,7 @@ mod tests {
             scene.camera_development.white_balance,
             LinearRgb::new(2.0, 1.0, 1.5)
         );
+        assert_eq!(scene.camera_development.linear_exposure_scale, 55.555_557);
         assert_eq!(
             scene.camera_output_transform,
             CameraOutputTransform::SrgbSdr100

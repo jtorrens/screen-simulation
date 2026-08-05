@@ -10,11 +10,14 @@ use screen_sensor::{RawSensorRaster, SensorProfile};
 pub struct CameraDevelopment {
     /// Explicit multiplicative gains in native sensor RGB order.
     pub white_balance: LinearRgb,
+    /// Explicit conversion from physical reconstructed exposure to ACEScg working levels.
+    pub linear_exposure_scale: f32,
 }
 
 impl CameraDevelopment {
     pub const NEUTRAL: Self = Self {
         white_balance: LinearRgb::new(1.0, 1.0, 1.0),
+        linear_exposure_scale: 1.0,
     };
 
     pub fn validate(self) -> Result<Self, CameraDevelopmentError> {
@@ -27,6 +30,11 @@ impl CameraDevelopment {
         .any(|value| !value.is_finite() || !(0.01..=100.0).contains(&value))
         {
             return Err(CameraDevelopmentError::InvalidWhiteBalance);
+        }
+        if !self.linear_exposure_scale.is_finite()
+            || !(0.000_001..=1_000_000.0).contains(&self.linear_exposure_scale)
+        {
+            return Err(CameraDevelopmentError::InvalidExposureScale);
         }
         Ok(self)
     }
@@ -43,6 +51,7 @@ pub struct DevelopedCameraRaster {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CameraDevelopmentError {
     InvalidWhiteBalance,
+    InvalidExposureScale,
     RawProfileMismatch,
     RawPixelCountMismatch,
     InvalidSensorProfile,
@@ -110,7 +119,10 @@ pub fn develop_raw_to_acescg(
                     channel,
                 ) * gains[channel];
             }
-            let developed = mat_vec(sensor_to_acescg, sensor_rgb);
+            let mut developed = mat_vec(sensor_to_acescg, sensor_rgb);
+            developed.r *= development.linear_exposure_scale;
+            developed.g *= development.linear_exposure_scale;
+            developed.b *= development.linear_exposure_scale;
             if [developed.r, developed.g, developed.b]
                 .into_iter()
                 .any(|value| !value.is_finite())
@@ -214,6 +226,9 @@ impl fmt::Display for CameraDevelopmentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidWhiteBalance => "white-balance gains must be finite and in [0.01, 100]",
+            Self::InvalidExposureScale => {
+                "linear camera exposure scale must be finite and in [0.000001, 1000000]"
+            }
             Self::RawProfileMismatch => "RAW raster does not match its authored sensor profile",
             Self::RawPixelCountMismatch => "RAW raster storage does not match its dimensions",
             Self::InvalidSensorProfile => "sensor profile is invalid",
@@ -296,6 +311,7 @@ mod tests {
             sensor,
             CameraDevelopment {
                 white_balance: LinearRgb::new(2.0, 1.0, 0.5),
+                linear_exposure_scale: 1.0,
             },
         )
         .expect("developed raster");
@@ -303,6 +319,37 @@ mod tests {
         assert!((pixel.r - 1.0).abs() < 2.0e-5);
         assert!((pixel.g - 0.5).abs() < 2.0e-5);
         assert!((pixel.b - 0.25).abs() < 2.0e-5);
+    }
+
+    #[test]
+    fn explicit_linear_exposure_scale_changes_developed_acescg_without_changing_raw() {
+        let sensor = identity_sensor(BayerPattern::Rggb);
+        let raw = RawSensorRaster {
+            width: 4,
+            height: 4,
+            bayer_pattern: BayerPattern::Rggb,
+            adc_bits: 16,
+            codes: vec![16_384; 16],
+            clipped: vec![false; 16],
+        };
+        let original = raw.clone();
+        let developed = develop_raw_to_acescg(
+            &raw,
+            sensor,
+            CameraDevelopment {
+                white_balance: LinearRgb::new(1.0, 1.0, 1.0),
+                linear_exposure_scale: 4.0,
+            },
+        )
+        .expect("developed raster");
+        assert_eq!(raw, original);
+        for channel in [
+            developed.acescg[5].r,
+            developed.acescg[5].g,
+            developed.acescg[5].b,
+        ] {
+            assert!((channel - 1.0).abs() < 2.0e-5);
+        }
     }
 
     #[test]
