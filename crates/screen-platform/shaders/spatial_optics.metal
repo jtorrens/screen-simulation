@@ -387,12 +387,12 @@ inline float2 footprint_offset(uint index, float psf) {
     return sample + disk * psf;
 }
 
-kernel void evaluate_spatial_optics(device const float4* signal [[buffer(0)]],
-                                    device const float4* code_integral [[buffer(1)]],
-                                    device const float4* emission_integral [[buffer(2)]],
-                                    device float4* output [[buffer(3)]],
-                                    constant SpatialParams& p [[buffer(4)]],
-                                    uint index [[thread_position_in_grid]]) {
+inline void evaluate_spatial_optics_pixel(device const float4* signal,
+                                          device const float4* code_integral,
+                                          device const float4* emission_integral,
+                                          device float4* output,
+                                          constant SpatialParams& p,
+                                          uint index) {
     uint pixel_count = p.window.x * p.window.y;
     if (index >= pixel_count) return;
     uint local_x = index % p.window.x; uint local_y = index / p.window.x;
@@ -481,4 +481,27 @@ kernel void evaluate_spatial_optics(device const float4* signal [[buffer(0)]],
     float3 acescg = float3(dot(p.panel_matrix_0.xyz, native), dot(p.panel_matrix_1.xyz, native),
                            dot(p.panel_matrix_2.xyz, native)) + reflected;
     output[index] = float4(acescg, on_panel ? 1.0f : 0.0f);
+}
+
+kernel void evaluate_spatial_optics(device const float4* signal [[buffer(0)]],
+                                    device const float4* code_integral [[buffer(1)]],
+                                    device const float4* emission_integral [[buffer(2)]],
+                                    device float4* output [[buffer(3)]],
+                                    constant SpatialParams& p [[buffer(4)]],
+                                    uint index [[thread_position_in_grid]]) {
+    evaluate_spatial_optics_pixel(signal, code_integral, emission_integral, output, p, index);
+}
+
+kernel void evaluate_spatial_optics_batch(device const float4* signal [[buffer(0)]],
+                                          device const float4* code_integral [[buffer(1)]],
+                                          device const float4* emission_integral [[buffer(2)]],
+                                          device float4* output [[buffer(3)]],
+                                          constant SpatialParams* params [[buffer(4)]],
+                                          constant uint2& batch [[buffer(5)]],
+                                          uint index [[thread_position_in_grid]]) {
+    uint pixel_count = batch.x;
+    uint job = index / pixel_count;
+    if (job >= batch.y) return;
+    evaluate_spatial_optics_pixel(signal, code_integral, emission_integral,
+                                  output + job * pixel_count, params[job], index % pixel_count);
 }

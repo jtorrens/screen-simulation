@@ -334,18 +334,269 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
             })
             .collect())
     }
+
+    fn evaluate_spatial_batch(
+        &self,
+        plans: &[SpatialOpticalPlan],
+    ) -> Result<Vec<Vec<LinearOpticalPixel>>, Self::Error> {
+        struct Dispatch {
+            signal: metal::Buffer,
+            code_integral: metal::Buffer,
+            emission_integral: metal::Buffer,
+            params: metal::Buffer,
+            output: metal::Buffer,
+            count: usize,
+        }
+
+        if plans.is_empty() {
+            return Ok(Vec::new());
+        }
+        let shared_count = usize::from(plans[0].raster.width) * usize::from(plans[0].raster.height);
+        let shares_signal_and_shape = plans.iter().all(|plan| {
+            let shared_signal_storage = matches!(
+                (&plans[0].signal, &plan.signal),
+                (
+                    SpatialSignalPlan::Procedural { .. },
+                    SpatialSignalPlan::Procedural { .. }
+                )
+            ) || plan.signal == plans[0].signal;
+            usize::from(plan.raster.width) * usize::from(plan.raster.height) == shared_count
+                && shared_signal_storage
+        });
+        if shares_signal_and_shape {
+            let placeholder = vec![[0.0_f32; 4]];
+            let (signal, code_integral, emission_integral) = match &plans[0].signal {
+                SpatialSignalPlan::Procedural { .. } => {
+                    (placeholder.clone(), placeholder.clone(), placeholder)
+                }
+                SpatialSignalPlan::Raster {
+                    width,
+                    height,
+                    device_signal,
+                    linear_native_emission,
+                    ..
+                } => {
+                    let signal = device_signal
+                        .iter()
+                        .map(|value| [value.r, value.g, value.b, 0.0])
+                        .collect::<Vec<_>>();
+                    let emission = linear_native_emission
+                        .iter()
+                        .map(|value| [value.r, value.g, value.b, 0.0])
+                        .collect::<Vec<_>>();
+                    (
+                        signal.clone(),
+                        prefix_integral(&signal, *width, *height),
+                        prefix_integral(&emission, *width, *height),
+                    )
+                }
+            };
+            let buffer = |values: &[[f32; 4]]| {
+                self.device.new_buffer_with_data(
+                    values.as_ptr().cast(),
+                    size_of_val(values) as u64,
+                    MTLResourceOptions::StorageModeShared,
+                )
+            };
+            let signal = buffer(&signal);
+            let code_integral = buffer(&code_integral);
+            let emission_integral = buffer(&emission_integral);
+            let params = plans.iter().map(SpatialParams::new).collect::<Vec<_>>();
+            let params = self.device.new_buffer_with_data(
+                params.as_ptr().cast(),
+                size_of_val(params.as_slice()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+            let batch = [shared_count as u32, plans.len() as u32];
+            let batch = self.device.new_buffer_with_data(
+                batch.as_ptr().cast(),
+                size_of_val(&batch) as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+            let total_count = shared_count * plans.len();
+            let output = self.device.new_buffer(
+                (total_count * size_of::<[f32; 4]>()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+            let command = self.queue.new_command_buffer();
+            let encoder = command.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&self.spatial_batch_pipeline);
+            encoder.set_buffer(0, Some(&signal), 0);
+            encoder.set_buffer(1, Some(&code_integral), 0);
+            encoder.set_buffer(2, Some(&emission_integral), 0);
+            encoder.set_buffer(3, Some(&output), 0);
+            encoder.set_buffer(4, Some(&params), 0);
+            encoder.set_buffer(5, Some(&batch), 0);
+            let width = self
+                .spatial_batch_pipeline
+                .thread_execution_width()
+                .min(total_count as u64)
+                .max(1);
+            encoder.dispatch_threads(
+                MTLSize::new(total_count as u64, 1, 1),
+                MTLSize::new(width, 1, 1),
+            );
+            encoder.end_encoding();
+            command.commit();
+            command.wait_until_completed();
+            if command.status() != MTLCommandBufferStatus::Completed {
+                return Err(MetalNativeError(format!(
+                    "spatial Metal shared batch ended with status {:?}",
+                    command.status()
+                )));
+            }
+            // SAFETY: the shared output contains exactly `total_count` float4 values and the
+            // command is complete. Every returned pixel is copied before the buffer is released.
+            let gpu = unsafe {
+                core::slice::from_raw_parts(output.contents().cast::<[f32; 4]>(), total_count)
+            };
+            if gpu
+                .iter()
+                .any(|pixel| pixel[..3].iter().any(|value| !value.is_finite()))
+            {
+                return Err(MetalNativeError(
+                    "spatial Metal shared batch contains a non-finite value".to_owned(),
+                ));
+            }
+            return Ok(gpu
+                .chunks_exact(shared_count)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .map(|pixel| LinearOpticalPixel {
+                            acescg_irradiance: LinearRgb::new(pixel[0], pixel[1], pixel[2]),
+                            on_panel: pixel[3] != 0.0,
+                        })
+                        .collect()
+                })
+                .collect());
+        }
+        let mut dispatches = Vec::with_capacity(plans.len());
+        for plan in plans {
+            let placeholder = vec![[0.0_f32; 4]];
+            let (signal, code_integral, emission_integral) = match &plan.signal {
+                SpatialSignalPlan::Procedural { .. } => {
+                    (placeholder.clone(), placeholder.clone(), placeholder)
+                }
+                SpatialSignalPlan::Raster {
+                    width,
+                    height,
+                    device_signal,
+                    linear_native_emission,
+                    ..
+                } => {
+                    let signal = device_signal
+                        .iter()
+                        .map(|value| [value.r, value.g, value.b, 0.0])
+                        .collect::<Vec<_>>();
+                    let emission = linear_native_emission
+                        .iter()
+                        .map(|value| [value.r, value.g, value.b, 0.0])
+                        .collect::<Vec<_>>();
+                    (
+                        signal.clone(),
+                        prefix_integral(&signal, *width, *height),
+                        prefix_integral(&emission, *width, *height),
+                    )
+                }
+            };
+            let buffer = |values: &[[f32; 4]]| {
+                self.device.new_buffer_with_data(
+                    values.as_ptr().cast(),
+                    size_of_val(values) as u64,
+                    MTLResourceOptions::StorageModeShared,
+                )
+            };
+            let params = SpatialParams::new(plan);
+            let count = usize::from(plan.raster.width) * usize::from(plan.raster.height);
+            dispatches.push(Dispatch {
+                signal: buffer(&signal),
+                code_integral: buffer(&code_integral),
+                emission_integral: buffer(&emission_integral),
+                params: self.device.new_buffer_with_data(
+                    core::ptr::from_ref(&params).cast(),
+                    size_of::<SpatialParams>() as u64,
+                    MTLResourceOptions::StorageModeShared,
+                ),
+                output: self.device.new_buffer(
+                    (count * size_of::<[f32; 4]>()) as u64,
+                    MTLResourceOptions::StorageModeShared,
+                ),
+                count,
+            });
+        }
+        let command = self.queue.new_command_buffer();
+        let encoder = command.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.spatial_pipeline);
+        for dispatch in &dispatches {
+            encoder.set_buffer(0, Some(&dispatch.signal), 0);
+            encoder.set_buffer(1, Some(&dispatch.code_integral), 0);
+            encoder.set_buffer(2, Some(&dispatch.emission_integral), 0);
+            encoder.set_buffer(3, Some(&dispatch.output), 0);
+            encoder.set_buffer(4, Some(&dispatch.params), 0);
+            let width = self
+                .spatial_pipeline
+                .thread_execution_width()
+                .min(dispatch.count as u64)
+                .max(1);
+            encoder.dispatch_threads(
+                MTLSize::new(dispatch.count as u64, 1, 1),
+                MTLSize::new(width, 1, 1),
+            );
+        }
+        encoder.end_encoding();
+        command.commit();
+        command.wait_until_completed();
+        if command.status() != MTLCommandBufferStatus::Completed {
+            return Err(MetalNativeError(format!(
+                "spatial Metal batch ended with status {:?}",
+                command.status()
+            )));
+        }
+        dispatches
+            .iter()
+            .map(|dispatch| {
+                // SAFETY: each shared output has `count` float4 values, the shared command has
+                // completed, and values are copied before the Metal allocation is released.
+                let gpu = unsafe {
+                    core::slice::from_raw_parts(
+                        dispatch.output.contents().cast::<[f32; 4]>(),
+                        dispatch.count,
+                    )
+                };
+                if gpu
+                    .iter()
+                    .any(|pixel| pixel[..3].iter().any(|value| !value.is_finite()))
+                {
+                    return Err(MetalNativeError(
+                        "spatial Metal batch contains a non-finite value".to_owned(),
+                    ));
+                }
+                Ok(gpu
+                    .iter()
+                    .map(|pixel| LinearOpticalPixel {
+                        acescg_irradiance: LinearRgb::new(pixel[0], pixel[1], pixel[2]),
+                        on_panel: pixel[3] != 0.0,
+                    })
+                    .collect())
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use screen_application::{
-        DeviceSignalRaster, OpticalRequest, PreparedDeviceSignalRaster, ProceduralTestPattern,
-        RasterPlacement, evaluate_device_signal_spatial_cpu_oracle,
-        evaluate_procedural_spatial_cpu_oracle, prepare_device_signal_spatial_plan,
-        prepare_procedural_spatial_plan,
+        DeviceSignalRaster, FrameCaptureRequest, OpticalRequest, PanelTemporalEvaluation,
+        PreparedDeviceSignalRaster, ProceduralTestPattern, RasterPlacement, RollingDirection,
+        SensorReadout, capture_and_develop_procedural_region_with_backend,
+        capture_and_develop_procedural_region_with_compute_backends,
+        evaluate_device_signal_spatial_cpu_oracle, evaluate_procedural_spatial_cpu_oracle,
+        prepare_device_signal_spatial_plan, prepare_procedural_spatial_plan,
     };
-    use screen_contracts::{DeviceRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
+    use screen_camera::CameraDevelopment;
+    use screen_contracts::{DeviceRgb, FrameRate, Meters, Millimeters, RationalTime, Vec2, Vec3};
     use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
     use screen_geometry::{
         CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation,
@@ -359,6 +610,7 @@ mod tests {
         let time = RationalTime::new(17, 24).expect("valid time");
         OpticalRequest {
             time,
+            panel_temporal_evaluation: PanelTemporalEvaluation::Instantaneous,
             viewport_aspect: 16.0 / 9.0,
             panel: LcdProfile {
                 native_width: 1920,
@@ -588,5 +840,58 @@ mod tests {
         let first = metal.evaluate_spatial(&plan).expect("first Metal result");
         let second = metal.evaluate_spatial(&plan).expect("second Metal result");
         assert_eq!(second, first);
+    }
+
+    #[test]
+    fn complete_rolling_capture_preserves_cpu_oracle_codes_with_eight_motion_samples() {
+        let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
+        let (sensor, region) = sensor_and_region();
+        let capture = FrameCaptureRequest {
+            optics: request(),
+            frame_rate: FrameRate::new(24, 1).expect("frame rate"),
+            frame_index: 17,
+            duration: RationalTime::new(1, 192).expect("shutter"),
+            temporal_samples: 8,
+            readout: SensorReadout::Rolling {
+                duration: RationalTime::new(1, 80).expect("readout"),
+                direction: RollingDirection::TopToBottom,
+            },
+            neutral_density_stops: 0.0,
+            noise_seed: 0x5EED,
+        };
+        let development = CameraDevelopment {
+            white_balance: LinearRgb::new(1.7, 1.0, 0.65),
+            middle_gray_illuminance_seconds: 0.05,
+            develop_exposure_ev: 0.75,
+        };
+        let cpu = capture_and_develop_procedural_region_with_backend(
+            capture.clone(),
+            sensor,
+            development,
+            region,
+            &metal,
+        )
+        .expect("CPU spatial oracle capture");
+        let gpu = capture_and_develop_procedural_region_with_compute_backends(
+            capture,
+            sensor,
+            development,
+            region,
+            &metal,
+            &metal,
+        )
+        .expect("complete Metal capture");
+        assert_eq!(gpu.raw.codes, cpu.raw.codes);
+        assert_eq!(gpu.raw.full_well_clipped, cpu.raw.full_well_clipped);
+        assert_eq!(gpu.raw.adc_clipped, cpu.raw.adc_clipped);
+        for (expected, actual) in cpu.developed.acescg.iter().zip(&gpu.developed.acescg) {
+            for difference in [
+                (expected.r - actual.r).abs(),
+                (expected.g - actual.g).abs(),
+                (expected.b - actual.b).abs(),
+            ] {
+                assert!(difference <= 2.0e-5, "developed difference {difference}");
+            }
+        }
     }
 }

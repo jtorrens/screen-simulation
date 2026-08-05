@@ -36,6 +36,7 @@ pub struct MetalRawDevelopment {
     green_pipeline: ComputePipelineState,
     develop_pipeline: ComputePipelineState,
     pub(crate) spatial_pipeline: ComputePipelineState,
+    pub(crate) spatial_batch_pipeline: ComputePipelineState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +64,7 @@ impl MetalRawDevelopment {
         let green_pipeline = pipeline("reconstruct_green")?;
         let develop_pipeline = pipeline("develop_acescg")?;
         let spatial_pipeline = pipeline("evaluate_spatial_optics")?;
+        let spatial_batch_pipeline = pipeline("evaluate_spatial_optics_batch")?;
         let queue = device.new_command_queue();
         Ok(Self {
             device,
@@ -70,6 +72,7 @@ impl MetalRawDevelopment {
             green_pipeline,
             develop_pipeline,
             spatial_pipeline,
+            spatial_batch_pipeline,
         })
     }
 
