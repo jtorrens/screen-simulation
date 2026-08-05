@@ -8,14 +8,17 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::Instant;
 
 use screen_application::{
-    ApplicationError, DeviceSignalRaster, DiagnosticView, FrameCaptureRequest, OpticalRequest,
-    PreparedDeviceSignalRaster, ProceduralTestPattern, RasterPlacement, SensorReadout,
-    SimulationRequest, capture_and_develop_frame_from_device_signal_sequence,
-    capture_and_develop_procedural_frame, decoded_frame_to_device_signal,
-    inspection_region_from_drag, prepare_raster, prepare_raster_from_device_signal,
+    ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
+    DiagnosticView, FrameCaptureRequest, OpticalRequest, PreparedDeviceSignalRaster,
+    ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
+    capture_and_develop_device_signal_region, capture_and_develop_procedural_region,
+    capture_device_preset, decoded_frame_to_device_signal, inspection_region_from_drag,
+    prepare_raster, prepare_raster_from_device_signal,
 };
 use screen_camera::CameraDevelopment;
 use screen_color::{
@@ -37,12 +40,11 @@ use screen_panel::{
     device_geometry_preset,
 };
 use screen_platform::{decode_frame_at_time, probe_media};
-use screen_sensor::SensorProfile;
+use screen_sensor::{SensorProfile, SensorRegion};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 const DURATION_FRAMES: u32 = 96;
 const PREVIEW_WIDTH: u16 = 960;
-const PREVIEW_HEIGHT: u16 = 540;
 
 slint::include_modules!();
 
@@ -61,7 +63,12 @@ struct RenderControls {
     white_balance_b: f32,
     camera_exposure_ev: f32,
     output_transform_index: i32,
-    sensor_raster_index: i32,
+    capture_preset_index: i32,
+    capture_sensor_width: f32,
+    capture_sensor_height: f32,
+    capture_gate_width_mm: f32,
+    capture_gate_height_mm: f32,
+    capture_scope_index: i32,
     device_native_width: f32,
     device_native_height: f32,
     device_active_width_mm: f32,
@@ -100,7 +107,12 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         white_balance_b: window.get_white_balance_b(),
         camera_exposure_ev: window.get_camera_exposure_ev(),
         output_transform_index: window.get_output_transform_index(),
-        sensor_raster_index: window.get_sensor_raster_index(),
+        capture_preset_index: window.get_capture_preset_index(),
+        capture_sensor_width: window.get_capture_sensor_width(),
+        capture_sensor_height: window.get_capture_sensor_height(),
+        capture_gate_width_mm: window.get_capture_gate_width_mm(),
+        capture_gate_height_mm: window.get_capture_gate_height_mm(),
+        capture_scope_index: window.get_capture_scope_index(),
         device_native_width: window.get_device_native_width(),
         device_native_height: window.get_device_native_height(),
         device_active_width_mm: window.get_device_active_width_mm(),
@@ -161,6 +173,10 @@ struct InteractionState {
     camera_editor: CameraEditor,
     screen: ScreenTrack,
     last_render_controls: Option<RenderControls>,
+    last_capture_controls: Option<RenderControls>,
+    capture_sensor: SensorProfile,
+    capture_render_requested: bool,
+    capture_cancel: Option<Arc<AtomicBool>>,
 }
 
 struct CameraEditor {
@@ -319,6 +335,10 @@ impl InteractionState {
                 }],
             },
             last_render_controls: None,
+            last_capture_controls: None,
+            capture_sensor: CAPTURE_DEVICE_PRESETS[0].sensor,
+            capture_render_requested: false,
+            capture_cancel: None,
         }
     }
 }
@@ -575,12 +595,28 @@ fn simulation_request(
         3 => DiagnosticView::EmittedRadiance,
         _ => DiagnosticView::Composite,
     };
+    let gate_width = window.get_capture_gate_width_mm();
+    let gate_height = window.get_capture_gate_height_mm();
+    if !gate_width.is_finite()
+        || !gate_height.is_finite()
+        || gate_width <= 0.0
+        || gate_height <= 0.0
+    {
+        return Err("capture gate must have finite positive dimensions".to_owned());
+    }
+    let mut camera = camera.clone();
+    for keyframe in &mut camera.intrinsics.keyframes {
+        keyframe.sensor_width = Millimeters(gate_width);
+        keyframe.sensor_height = Millimeters(gate_height);
+    }
+    let viewport_aspect = gate_width / gate_height;
+    window.set_preview_aspect(viewport_aspect);
     Ok(SimulationRequest {
         optics: OpticalRequest {
             time: frame_rate
                 .time_at_frame(i64::from(window.get_frame_number()))
                 .map_err(|error| error.to_string())?,
-            viewport_aspect: f32::from(PREVIEW_WIDTH) / f32::from(PREVIEW_HEIGHT),
+            viewport_aspect,
             panel: LcdProfile {
                 native_width,
                 native_height,
@@ -599,7 +635,7 @@ fn simulation_request(
                 angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
                 temporal_emission: PanelTemporalEmission::continuous(),
             },
-            camera: camera.clone(),
+            camera,
             screen: screen.clone(),
             inspection,
             procedural_pattern: if window.get_procedural_pattern_index() == 1 {
@@ -611,6 +647,18 @@ fn simulation_request(
         view,
         preview_exposure_ev: window.get_preview_exposure_ev(),
     })
+}
+
+fn preview_raster(window: &MainWindow) -> Result<(u16, u16), String> {
+    let aspect = window.get_preview_aspect();
+    if !aspect.is_finite() || aspect <= 0.0 {
+        return Err("capture preview aspect must be finite and positive".to_owned());
+    }
+    let height = (f32::from(PREVIEW_WIDTH) / aspect).round();
+    if !(1.0..=f32::from(u16::MAX)).contains(&height) {
+        return Err("capture preview raster is outside the supported range".to_owned());
+    }
+    Ok((PREVIEW_WIDTH, height as u16))
 }
 
 fn device_geometry(window: &MainWindow) -> Result<(u32, u32, Meters, Meters), String> {
@@ -680,8 +728,83 @@ fn apply_device_preset(window: &MainWindow, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn apply_capture_preset(
+    window: &MainWindow,
+    state: &mut InteractionState,
+    id: &str,
+) -> Result<(), String> {
+    if id == "custom" {
+        window.set_capture_fixed_optics(false);
+        window.set_capture_summary("Custom complete capture profile".into());
+        state.last_capture_controls = None;
+        return Ok(());
+    }
+    let preset = capture_device_preset(id)
+        .ok_or_else(|| format!("unknown current capture preset id {id}"))?;
+    state.capture_sensor = preset.sensor;
+    state.last_capture_controls = None;
+    window.set_capture_sensor_width(f32::from(preset.sensor.native_width));
+    window.set_capture_sensor_height(f32::from(preset.sensor.native_height));
+    window.set_capture_gate_width_mm(preset.gate_width.0);
+    window.set_capture_gate_height_mm(preset.gate_height.0);
+    window.set_focal_mm(preset.focal_length.0);
+    window.set_f_stop(preset.f_stop);
+    window.set_capture_fixed_optics(
+        preset.optics_authority == CaptureOpticsAuthority::IntegratedFixedLens,
+    );
+    window.set_capture_summary(preset.calibration.into());
+    window.set_preview_aspect(preset.gate_width.0 / preset.gate_height.0);
+    Ok(())
+}
+
+fn capture_sensor(window: &MainWindow, state: &InteractionState) -> Result<SensorProfile, String> {
+    let width = window.get_capture_sensor_width();
+    let height = window.get_capture_sensor_height();
+    if !width.is_finite()
+        || !height.is_finite()
+        || width.fract() != 0.0
+        || height.fract() != 0.0
+        || !(64.0..=f32::from(u16::MAX)).contains(&width)
+        || !(64.0..=f32::from(u16::MAX)).contains(&height)
+    {
+        return Err(
+            "capture raster must contain complete photosites in the supported range".into(),
+        );
+    }
+    let sensor = SensorProfile {
+        native_width: width as u16,
+        native_height: height as u16,
+        ..state.capture_sensor
+    };
+    sensor.validate().map_err(|error| error.to_string())
+}
+
+fn selected_sensor_region(window: &MainWindow, sensor: SensorProfile) -> SensorRegion {
+    if window.get_capture_scope_index() == 1 {
+        return SensorRegion::full(sensor);
+    }
+    let width = sensor.native_width.min(1_024);
+    let height = sensor.native_height.min(1_024);
+    SensorRegion {
+        origin_x: (sensor.native_width - width) / 2,
+        origin_y: (sensor.native_height - height) / 2,
+        width,
+        height,
+    }
+}
+
 fn render_preview(window: &MainWindow, state: &mut InteractionState) {
-    state.last_render_controls = Some(render_controls(window));
+    let current_controls = render_controls(window);
+    if window.get_capture_rendering() {
+        if state.last_capture_controls != Some(current_controls) {
+            if let Some(cancel) = &state.capture_cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            window.set_render_text("Cancelling stale native capture…".into());
+        }
+        return;
+    }
+    state.last_render_controls = Some(current_controls);
     if state.source.is_none() {
         present_procedural_source(window);
     }
@@ -698,13 +821,51 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             return;
         }
     };
+    let (preview_width, preview_height) = match preview_raster(window) {
+        Ok(value) => value,
+        Err(error) => {
+            block_preview(window, &error);
+            return;
+        }
+    };
+    let capture_selection = if window.get_view_index() == 4 && state.capture_render_requested {
+        match capture_sensor(window, state) {
+            Ok(sensor) => {
+                let cancel = Arc::new(AtomicBool::new(false));
+                state.capture_cancel = Some(Arc::clone(&cancel));
+                window.set_capture_rendering(true);
+                Some((sensor, selected_sensor_region(window, sensor), cancel))
+            }
+            Err(error) => {
+                block_preview(window, &error);
+                state.capture_render_requested = false;
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let color_engine = &state.color_engine;
+    if window.get_view_index() == 4 && !state.capture_render_requested {
+        if state.last_capture_controls != Some(current_controls) {
+            window.set_preview_image(Image::default());
+            window.set_scale_text("NATIVE CAPTURE NOT RENDERED".into());
+            window.set_render_text("Ready for one explicit frame".into());
+            window.set_inspection_text("CAPTURE DEVICE · SENSOR SPACE".into());
+            window.set_hint_text("Choose native ROI or complete frame, then render".into());
+            window.set_error_text("".into());
+        }
+        return;
+    }
     if window.get_view_index() == 4 && state.source.is_none() {
-        render_camera_result(window, request, color_engine, None, started);
+        let (sensor, region, cancel) = capture_selection.expect("capture selection resolved above");
+        render_camera_result(window, request, None, sensor, region, started, cancel);
+        state.capture_render_requested = false;
+        state.last_capture_controls = Some(current_controls);
         return;
     }
     let prepared = match &mut state.source {
-        None => prepare_raster(request, PREVIEW_WIDTH, PREVIEW_HEIGHT),
+        None => prepare_raster(request, preview_width, preview_height),
         Some(source) => {
             let decode_interpretation = match source
                 .descriptor
@@ -765,9 +926,12 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 _ => RasterPlacement::Fit,
             };
             if window.get_view_index() == 4 {
+                let (sensor, region, cancel) =
+                    capture_selection.expect("capture selection resolved above");
                 let prepared_signal = match PreparedDeviceSignalRaster::new(signal.clone()) {
                     Ok(signal) => Arc::new(signal),
                     Err(error) => {
+                        window.set_capture_rendering(false);
                         block_preview(window, &error.to_string());
                         return;
                     }
@@ -775,16 +939,20 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 render_camera_result(
                     window,
                     request,
-                    color_engine,
                     Some((prepared_signal, placement)),
+                    sensor,
+                    region,
                     started,
+                    cancel,
                 );
+                state.capture_render_requested = false;
+                state.last_capture_controls = Some(current_controls);
                 return;
             }
             prepare_raster_from_device_signal(
                 request,
-                PREVIEW_WIDTH,
-                PREVIEW_HEIGHT,
+                preview_width,
+                preview_height,
                 signal,
                 placement,
             )
@@ -793,8 +961,8 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     match prepared {
         Ok(raster) => {
             let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(
-                u32::from(PREVIEW_WIDTH),
-                u32::from(PREVIEW_HEIGHT),
+                u32::from(preview_width),
+                u32::from(preview_height),
             );
             for (target, source) in buffer.make_mut_slice().iter_mut().zip(&raster.pixels) {
                 let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -831,8 +999,8 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             window.set_render_text(
                 format!(
                     "{} × {} · {:.1} ms",
-                    PREVIEW_WIDTH,
-                    PREVIEW_HEIGHT,
+                    preview_width,
+                    preview_height,
                     started.elapsed().as_secs_f64() * 1_000.0
                 )
                 .into(),
@@ -911,13 +1079,16 @@ fn present_procedural_source(window: &MainWindow) {
 fn render_camera_result(
     window: &MainWindow,
     request: SimulationRequest,
-    color_engine: &ColorEngine,
     source: Option<(Arc<PreparedDeviceSignalRaster>, RasterPlacement)>,
+    sensor: SensorProfile,
+    region: SensorRegion,
     started: Instant,
+    cancel: Arc<AtomicBool>,
 ) {
     let frame_rate = match project_frame_rate(window) {
         Ok(value) => value,
         Err(error) => {
+            window.set_capture_rendering(false);
             block_preview(window, &error);
             return;
         }
@@ -925,6 +1096,7 @@ fn render_camera_result(
     let shutter_denominator = match frame_rate.numerator().checked_mul(2) {
         Some(value) => value,
         None => {
+            window.set_capture_rendering(false);
             block_preview(
                 window,
                 "project frame rate is too large for a 180-degree shutter",
@@ -936,6 +1108,7 @@ fn render_camera_result(
         match RationalTime::new(i64::from(frame_rate.denominator()), shutter_denominator) {
             Ok(value) => value,
             Err(error) => {
+                window.set_capture_rendering(false);
                 block_preview(window, &error.to_string());
                 return;
             }
@@ -949,18 +1122,6 @@ fn render_camera_result(
         readout: SensorReadout::Global,
         noise_seed: 42,
     };
-    let (sensor_width, sensor_height) = match sensor_raster(window.get_sensor_raster_index()) {
-        Ok(value) => value,
-        Err(error) => {
-            block_preview(window, error);
-            return;
-        }
-    };
-    let sensor = SensorProfile {
-        native_width: sensor_width,
-        native_height: sensor_height,
-        ..SensorProfile::REFERENCE
-    };
     let development = CameraDevelopment {
         white_balance: LinearRgb::new(
             window.get_white_balance_r(),
@@ -970,80 +1131,182 @@ fn render_camera_result(
         linear_exposure_scale: sensor.saturation_exposure.g.recip()
             * window.get_camera_exposure_ev().exp2(),
     };
-    let captured = match source {
-        Some((prepared, placement)) => capture_and_develop_frame_from_device_signal_sequence(
-            capture,
-            placement,
-            |_| Ok(Arc::clone(&prepared)),
-            sensor,
-            development,
-        ),
-        None => capture_and_develop_procedural_frame(capture, sensor, development),
-    };
-    let captured = match captured {
-        Ok(value) => value,
-        Err(error) => {
-            block_preview(window, &error.to_string());
-            return;
-        }
-    };
     let transform = match window.get_output_transform_index() {
         0 => CameraOutputTransform::SrgbSdr100,
         1 => CameraOutputTransform::Rec709Sdr100,
         2 => CameraOutputTransform::Rec2100Pq1000,
         _ => {
+            window.set_capture_rendering(false);
             block_preview(window, "select an explicit camera output transform");
             return;
         }
     };
-    let processor = match color_engine.camera_output_processor(transform) {
-        Ok(value) => value,
-        Err(error) => {
-            block_preview(window, &error.to_string());
-            return;
+    let weak_window = window.as_weak();
+    thread::spawn(move || {
+        let progress_window = weak_window.clone();
+        let result = run_native_capture_job(
+            capture,
+            source,
+            sensor,
+            development,
+            region,
+            transform,
+            &cancel,
+            move |completed, total, tile| {
+                let _ = progress_window.upgrade_in_event_loop(move |window| {
+                    window.set_render_text(
+                        format!(
+                            "Native tile {completed} / {total} · {} × {}",
+                            tile.width, tile.height
+                        )
+                        .into(),
+                    );
+                });
+            },
+        );
+        let _ = weak_window.upgrade_in_event_loop(move |window| {
+            window.set_capture_rendering(false);
+            match result {
+                Ok(output) => present_native_capture(&window, output, started),
+                Err(NativeCaptureError::Cancelled) => {
+                    window.set_render_text("Native capture cancelled".into());
+                    window.set_hint_text("No partial frame was published".into());
+                }
+                Err(NativeCaptureError::Failed(error)) => block_preview(&window, &error),
+            }
+        });
+    });
+}
+
+struct NativeCaptureOutput {
+    width: u16,
+    height: u16,
+    pixels: Vec<[u8; 4]>,
+    clipped: usize,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    transform: CameraOutputTransform,
+}
+
+enum NativeCaptureError {
+    Cancelled,
+    Failed(String),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_native_capture_job(
+    capture: FrameCaptureRequest,
+    source: Option<(Arc<PreparedDeviceSignalRaster>, RasterPlacement)>,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    region: SensorRegion,
+    transform: CameraOutputTransform,
+    cancel: &AtomicBool,
+    progress: impl Fn(usize, usize, SensorRegion),
+) -> Result<NativeCaptureOutput, NativeCaptureError> {
+    let color_engine =
+        ColorEngine::bundled().map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
+    let processor = color_engine
+        .camera_output_processor(transform)
+        .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
+    let mut pixels =
+        vec![[0_u8, 0_u8, 0_u8, 255_u8]; usize::from(region.width) * usize::from(region.height)];
+    let tiles = sensor_tiles(region, 512);
+    let tile_count = tiles.len();
+    let mut clipped = 0_usize;
+    for (tile_index, tile) in tiles.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(NativeCaptureError::Cancelled);
         }
-    };
-    let mut output = Vec::with_capacity(captured.developed.acescg.len() * 4);
-    for pixel in &captured.developed.acescg {
-        output.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
+        let captured = match &source {
+            Some((prepared, placement)) => capture_and_develop_device_signal_region(
+                capture.clone(),
+                sensor,
+                development,
+                tile,
+                prepared,
+                *placement,
+            ),
+            None => {
+                capture_and_develop_procedural_region(capture.clone(), sensor, development, tile)
+            }
+        }
+        .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
+        clipped += clipped_in_region(&captured.raw, tile);
+        let mut output = Vec::with_capacity(captured.developed.acescg.len() * 4);
+        for pixel in &captured.developed.acescg {
+            output.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
+        }
+        processor
+            .apply_acescg_rgba_buffer(&mut output)
+            .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
+        let tile_width = usize::from(tile.width);
+        let output_stride = usize::from(region.width);
+        let offset_x = usize::from(tile.origin_x - region.origin_x);
+        let offset_y = usize::from(tile.origin_y - region.origin_y);
+        for row in 0..usize::from(tile.height) {
+            let target_start = (offset_y + row) * output_stride + offset_x;
+            for (column, rgba) in output[row * tile_width * 4..(row + 1) * tile_width * 4]
+                .chunks_exact(4)
+                .enumerate()
+            {
+                let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+                pixels[target_start + column] =
+                    [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255];
+            }
+        }
+        progress(tile_index + 1, tile_count, tile);
     }
-    if let Err(error) = processor.apply_acescg_rgba_buffer(&mut output) {
-        block_preview(window, &error.to_string());
-        return;
-    }
+    Ok(NativeCaptureOutput {
+        width: region.width,
+        height: region.height,
+        pixels,
+        clipped,
+        sensor,
+        region,
+        transform,
+    })
+}
+
+fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, started: Instant) {
     let mut buffer =
-        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(sensor_width), u32::from(sensor_height));
-    for (target, rgba) in buffer
-        .make_mut_slice()
-        .iter_mut()
-        .zip(output.chunks_exact(4))
-    {
-        let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(output.width), u32::from(output.height));
+    for (target, source) in buffer.make_mut_slice().iter_mut().zip(output.pixels) {
         *target = Rgba8Pixel {
-            r: channel(rgba[0]),
-            g: channel(rgba[1]),
-            b: channel(rgba[2]),
-            a: 255,
+            r: source[0],
+            g: source[1],
+            b: source[2],
+            a: source[3],
         };
     }
-    let clipped = captured.raw.clipped.iter().filter(|value| **value).count();
     window.set_preview_image(Image::from_rgba8(buffer));
     window.set_scale_text(
         format!(
             "CAMERA SENSOR {} × {} · {}-BIT BAYER · NATIVE VIEW · {} CLIPPED",
-            sensor_width, sensor_height, sensor.adc_bits, clipped
+            output.width, output.height, output.sensor.adc_bits, output.clipped
         )
         .into(),
     );
     window.set_render_text(
         format!(
             "RAW → demosaic → WB → ACEScg → {} · {:.1} ms",
-            transform.label(),
+            output.transform.label(),
             started.elapsed().as_secs_f64() * 1_000.0
         )
         .into(),
     );
-    window.set_inspection_text("DEVELOPED CAMERA FRAME · 180° GLOBAL SHUTTER".into());
+    window.set_inspection_text(if output.region == SensorRegion::full(output.sensor) {
+        "COMPLETE DEVELOPED CAMERA FRAME · 180° GLOBAL SHUTTER".into()
+    } else {
+        format!(
+            "NATIVE SENSOR ROI · x{} y{} · {} × {}",
+            output.region.origin_x,
+            output.region.origin_y,
+            output.region.width,
+            output.region.height
+        )
+        .into()
+    });
     window.set_hint_text(
         "Native sensor result · increase View zoom and drag to inspect without moving camera"
             .into(),
@@ -1051,13 +1314,40 @@ fn render_camera_result(
     window.set_error_text("".into());
 }
 
-fn sensor_raster(index: i32) -> Result<(u16, u16), &'static str> {
-    match index {
-        0 => Ok((960, 540)),
-        1 => Ok((1_920, 1_080)),
-        2 => Ok((3_840, 2_160)),
-        _ => Err("select an explicit sensor raster"),
+fn sensor_tiles(region: SensorRegion, edge: u16) -> Vec<SensorRegion> {
+    let mut tiles = Vec::new();
+    let end_x = u32::from(region.origin_x) + u32::from(region.width);
+    let end_y = u32::from(region.origin_y) + u32::from(region.height);
+    let mut y = u32::from(region.origin_y);
+    while y < end_y {
+        let mut x = u32::from(region.origin_x);
+        while x < end_x {
+            tiles.push(SensorRegion {
+                origin_x: x as u16,
+                origin_y: y as u16,
+                width: (end_x - x).min(u32::from(edge)) as u16,
+                height: (end_y - y).min(u32::from(edge)) as u16,
+            });
+            x += u32::from(edge);
+        }
+        y += u32::from(edge);
     }
+    tiles
+}
+
+fn clipped_in_region(raw: &screen_sensor::RawSensorRegion, region: SensorRegion) -> usize {
+    let offset_x = usize::from(region.origin_x - raw.region.origin_x);
+    let offset_y = usize::from(region.origin_y - raw.region.origin_y);
+    let stride = usize::from(raw.region.width);
+    let mut count = 0;
+    for row in 0..usize::from(region.height) {
+        let start = (offset_y + row) * stride + offset_x;
+        count += raw.clipped[start..start + usize::from(region.width)]
+            .iter()
+            .filter(|value| **value)
+            .count();
+    }
+    count
 }
 
 fn block_preview(window: &MainWindow, message: &str) {
@@ -1230,6 +1520,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     window.set_device_preset_model(ModelRc::new(VecModel::from(device_labels)));
     window.set_device_preset_ids(ModelRc::new(VecModel::from(device_ids)));
+    let capture_labels: Vec<SharedString> = CAPTURE_DEVICE_PRESETS
+        .iter()
+        .map(|preset| preset.label.into())
+        .chain(std::iter::once("Custom".into()))
+        .collect();
+    let capture_ids: Vec<SharedString> = CAPTURE_DEVICE_PRESETS
+        .iter()
+        .map(|preset| preset.id.into())
+        .chain(std::iter::once("custom".into()))
+        .collect();
+    window.set_capture_preset_model(ModelRc::new(VecModel::from(capture_labels)));
+    window.set_capture_preset_ids(ModelRc::new(VecModel::from(capture_ids)));
     window.set_build_id(
         option_env!("SCREEN_SIM_BUILD_ID")
             .unwrap_or("development")
@@ -1238,6 +1540,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     apply_device_preset(&window, "lcd-macbook-pro-retina-14")?;
     let color_engine = ColorEngine::bundled()?;
     let state = Rc::new(RefCell::new(InteractionState::new(color_engine)));
+    apply_capture_preset(&window, &mut state.borrow_mut(), "arri-alexa-35-open-gate")?;
 
     {
         let weak_window = window.as_weak();
@@ -1249,6 +1552,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match apply_device_preset(&window, id.as_str()) {
                 Ok(()) => render_preview(&window, &mut state.borrow_mut()),
                 Err(error) => block_preview(&window, &error),
+            }
+        });
+    }
+
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_select_capture_preset(move |id| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let mut state = state.borrow_mut();
+            match apply_capture_preset(&window, &mut state, id.as_str()) {
+                Ok(()) => render_preview(&window, &mut state),
+                Err(error) => block_preview(&window, &error),
+            }
+        });
+    }
+
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_render_capture_frame(move || {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            if window.get_capture_rendering() {
+                return;
+            }
+            window.set_render_text("Rendering one native sensor frame…".into());
+            let mut state = state.borrow_mut();
+            state.capture_render_requested = true;
+            render_preview(&window, &mut state);
+        });
+    }
+
+    {
+        let state = Rc::clone(&state);
+        window.on_cancel_capture_frame(move || {
+            if let Some(cancel) = &state.borrow().capture_cancel {
+                cancel.store(true, Ordering::Relaxed);
             }
         });
     }

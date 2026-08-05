@@ -110,7 +110,18 @@ export component MainWindow inherits Window {
     in-out property <float> white-balance-b: 1;
     in-out property <float> camera-exposure-ev: 0;
     in-out property <int> output-transform-index: 0;
-    in-out property <int> sensor-raster-index: 1;
+    in-out property <int> capture-preset-index: 0;
+    in property <[string]> capture-preset-model;
+    in property <[string]> capture-preset-ids;
+    in-out property <float> capture-sensor-width: 4608;
+    in-out property <float> capture-sensor-height: 3164;
+    in-out property <float> capture-gate-width-mm: 27.99;
+    in-out property <float> capture-gate-height-mm: 19.22;
+    in-out property <string> capture-summary: "Published ALEV 4 geometry · reference 50 mm lens";
+    in-out property <bool> capture-fixed-optics: false;
+    in-out property <int> capture-scope-index: 0;
+    in-out property <bool> capture-rendering: false;
+    in-out property <float> preview-aspect: 1.5;
     in-out property <int> device-preset-index: 3;
     in property <[string]> device-preset-model;
     in property <[string]> device-preset-ids;
@@ -168,6 +179,9 @@ export component MainWindow inherits Window {
     callback undo();
     callback redo();
     callback select-device-preset(string);
+    callback select-capture-preset(string);
+    callback render-capture-frame();
+    callback cancel-capture-frame();
 
     MenuBar {
         Menu {
@@ -392,7 +406,7 @@ export component MainWindow inherits Window {
                         Rectangle { vertical-stretch: 1; }
 
                         preview := Rectangle {
-                            height: self.width * 9 / 16;
+                            height: self.width / root.preview-aspect;
                             clip: true;
                             background: #06080b;
                             border-width: 1px;
@@ -690,6 +704,7 @@ export component MainWindow inherits Window {
                             value <=> root.focal-mm;
                             numeric-value: round(root.focal-mm * 10) / 10;
                             suffix: "mm";
+                            enabled: !root.capture-fixed-optics;
                         }
 
                         ValueRow {
@@ -739,6 +754,7 @@ export component MainWindow inherits Window {
                             step: 0.1;
                             value <=> root.f-stop;
                             numeric-value: round(root.f-stop * 10) / 10;
+                            enabled: !root.capture-fixed-optics;
                         }
 
                         HorizontalLayout {
@@ -767,7 +783,7 @@ export component MainWindow inherits Window {
                             Rectangle { horizontal-stretch: 1; }
 
                             Text {
-                                text: "36.0 mm";
+                                text: round(root.capture-gate-width-mm * 100) / 100 + " × " + round(root.capture-gate-height-mm * 100) / 100 + " mm";
                                 color: #c3ccda;
                                 vertical-alignment: center;
                             }
@@ -788,16 +804,97 @@ export component MainWindow inherits Window {
                         }
 
                         Text {
-                            text: "CAMERA DEVELOPMENT";
+                            text: "CAPTURE DEVICE";
                             color: #71819b;
                             font-size: 11px;
                             visible: root.view-index == 4;
                         }
 
                         ComboBox {
-                            model: ["Sensor 960 × 540", "Sensor 1920 × 1080", "Sensor 3840 × 2160"];
-                            current-index <=> root.sensor-raster-index;
+                            model: root.capture-preset-model;
+                            current-index <=> root.capture-preset-index;
                             visible: root.view-index == 4;
+                            selected(value) => {
+                                root.select-capture-preset(root.capture-preset-ids[self.current-index]);
+                            }
+                        }
+
+                        ValueRow {
+                            visible: root.view-index == 4 && root.capture-preset-index == root.capture-preset-model.length - 1;
+                            label: "Sensor W";
+                            minimum: 64;
+                            maximum: 12000;
+                            step: 1;
+                            value <=> root.capture-sensor-width;
+                            numeric-value: round(root.capture-sensor-width);
+                            suffix: "px";
+                        }
+
+                        ValueRow {
+                            visible: root.view-index == 4 && root.capture-preset-index == root.capture-preset-model.length - 1;
+                            label: "Sensor H";
+                            minimum: 64;
+                            maximum: 12000;
+                            step: 1;
+                            value <=> root.capture-sensor-height;
+                            numeric-value: round(root.capture-sensor-height);
+                            suffix: "px";
+                        }
+
+                        ValueRow {
+                            visible: root.view-index == 4 && root.capture-preset-index == root.capture-preset-model.length - 1;
+                            label: "Gate W";
+                            minimum: 1;
+                            maximum: 70;
+                            step: 0.01;
+                            value <=> root.capture-gate-width-mm;
+                            numeric-value: round(root.capture-gate-width-mm * 100) / 100;
+                            suffix: "mm";
+                        }
+
+                        ValueRow {
+                            visible: root.view-index == 4 && root.capture-preset-index == root.capture-preset-model.length - 1;
+                            label: "Gate H";
+                            minimum: 1;
+                            maximum: 70;
+                            step: 0.01;
+                            value <=> root.capture-gate-height-mm;
+                            numeric-value: round(root.capture-gate-height-mm * 100) / 100;
+                            suffix: "mm";
+                        }
+
+                        Text {
+                            text: root.capture-sensor-width + " × " + root.capture-sensor-height + " · " + root.capture-gate-width-mm + " × " + root.capture-gate-height-mm + " mm";
+                            color: #c3ccda;
+                            font-size: 11px;
+                            visible: root.view-index == 4;
+                        }
+
+                        Text {
+                            text: root.capture-summary;
+                            color: #8794a9;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                            visible: root.view-index == 4;
+                        }
+
+                        ComboBox {
+                            model: ["Native center ROI · 1024 × 1024", "Complete native frame"];
+                            current-index <=> root.capture-scope-index;
+                            visible: root.view-index == 4;
+                        }
+
+                        Button {
+                            text: root.capture-scope-index == 0 ? "Render native ROI" : "Render complete frame";
+                            clicked => { root.render-capture-frame(); }
+                            visible: root.view-index == 4;
+                            enabled: !root.capture-rendering;
+                        }
+
+                        Button {
+                            text: "Cancel render";
+                            clicked => { root.cancel-capture-frame(); }
+                            visible: root.view-index == 4 && root.capture-rendering;
                         }
 
                         ValueRow {

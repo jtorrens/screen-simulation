@@ -4,7 +4,7 @@
 
 use core::fmt;
 use screen_contracts::LinearRgb;
-use screen_sensor::{RawSensorRaster, SensorProfile};
+use screen_sensor::{RawSensorRaster, RawSensorRegion, SensorProfile, SensorRegion};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraDevelopment {
@@ -45,6 +45,14 @@ pub struct DevelopedCameraRaster {
     pub width: u32,
     pub height: u32,
     /// Scene-linear ACEScg exposure values. Negative and above-one values are preserved.
+    pub acescg: Vec<LinearRgb>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DevelopedCameraRegion {
+    pub sensor_width: u16,
+    pub sensor_height: u16,
+    pub region: SensorRegion,
     pub acescg: Vec<LinearRgb>,
 }
 
@@ -137,6 +145,137 @@ pub fn develop_raw_to_acescg(
         height: raw.height,
         acescg,
     })
+}
+
+pub fn develop_raw_region_to_acescg(
+    raw: &RawSensorRegion,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+) -> Result<DevelopedCameraRegion, CameraDevelopmentError> {
+    let sensor = sensor
+        .validate()
+        .map_err(|_| CameraDevelopmentError::InvalidSensorProfile)?;
+    let development = development.validate()?;
+    if raw.sensor_width != sensor.native_width
+        || raw.sensor_height != sensor.native_height
+        || raw.bayer_pattern != sensor.bayer_pattern
+        || raw.adc_bits != sensor.adc_bits
+        || raw.region.validate(sensor).is_err()
+    {
+        return Err(CameraDevelopmentError::RawProfileMismatch);
+    }
+    let pixel_count = u64::from(raw.region.width) * u64::from(raw.region.height);
+    if raw.codes.len() as u64 != pixel_count || raw.clipped.len() as u64 != pixel_count {
+        return Err(CameraDevelopmentError::RawPixelCountMismatch);
+    }
+    let sensor_to_acescg =
+        inverse3(sensor.acescg_to_sensor).ok_or(CameraDevelopmentError::InvalidColorMatrix)?;
+    let maximum_code = ((1_u32 << sensor.adc_bits) - 1) as f32;
+    let saturation = [
+        sensor.saturation_exposure.r,
+        sensor.saturation_exposure.g,
+        sensor.saturation_exposure.b,
+    ];
+    let gains = [
+        development.white_balance.r,
+        development.white_balance.g,
+        development.white_balance.b,
+    ];
+    let mut native_mosaic = Vec::with_capacity(raw.codes.len());
+    for (index, code) in raw.codes.iter().copied().enumerate() {
+        let local_x = index % usize::from(raw.region.width);
+        let local_y = index / usize::from(raw.region.width);
+        let x = u32::from(raw.region.origin_x) + local_x as u32;
+        let y = u32::from(raw.region.origin_y) + local_y as u32;
+        let channel = raw.bayer_pattern.channel_at(x, y);
+        native_mosaic
+            .push(f32::from(code) / maximum_code / sensor.analog_gain * saturation[channel]);
+    }
+
+    let mut acescg = Vec::with_capacity(raw.codes.len());
+    for local_y in 0..u32::from(raw.region.height) {
+        for local_x in 0..u32::from(raw.region.width) {
+            let global_x = u32::from(raw.region.origin_x) + local_x;
+            let global_y = u32::from(raw.region.origin_y) + local_y;
+            let mut sensor_rgb = [0.0_f32; 3];
+            for channel in 0..3 {
+                sensor_rgb[channel] = interpolate_region_channel(
+                    &native_mosaic,
+                    raw.region,
+                    raw.bayer_pattern,
+                    global_x,
+                    global_y,
+                    channel,
+                ) * gains[channel];
+            }
+            let mut developed = mat_vec(sensor_to_acescg, sensor_rgb);
+            developed.r *= development.linear_exposure_scale;
+            developed.g *= development.linear_exposure_scale;
+            developed.b *= development.linear_exposure_scale;
+            if [developed.r, developed.g, developed.b]
+                .into_iter()
+                .any(|value| !value.is_finite())
+            {
+                return Err(CameraDevelopmentError::NonFiniteDevelopedPixel);
+            }
+            acescg.push(developed);
+        }
+    }
+    Ok(DevelopedCameraRegion {
+        sensor_width: sensor.native_width,
+        sensor_height: sensor.native_height,
+        region: raw.region,
+        acescg,
+    })
+}
+
+fn interpolate_region_channel(
+    mosaic: &[f32],
+    region: SensorRegion,
+    pattern: screen_sensor::BayerPattern,
+    x: u32,
+    y: u32,
+    channel: usize,
+) -> f32 {
+    let index = |sample_x: u32, sample_y: u32| {
+        (sample_y - u32::from(region.origin_y)) as usize * usize::from(region.width)
+            + (sample_x - u32::from(region.origin_x)) as usize
+    };
+    if pattern.channel_at(x, y) == channel {
+        return mosaic[index(x, y)];
+    }
+    let mut sum = 0.0_f32;
+    let mut weight_sum = 0.0_f32;
+    for offset_y in -1_i32..=1 {
+        for offset_x in -1_i32..=1 {
+            if offset_x == 0 && offset_y == 0 {
+                continue;
+            }
+            let sample_x = x as i64 + i64::from(offset_x);
+            let sample_y = y as i64 + i64::from(offset_y);
+            if sample_x < i64::from(region.origin_x)
+                || sample_y < i64::from(region.origin_y)
+                || sample_x >= i64::from(region.origin_x) + i64::from(region.width)
+                || sample_y >= i64::from(region.origin_y) + i64::from(region.height)
+            {
+                continue;
+            }
+            let sample_x = sample_x as u32;
+            let sample_y = sample_y as u32;
+            if pattern.channel_at(sample_x, sample_y) != channel {
+                continue;
+            }
+            let weight = if offset_x == 0 || offset_y == 0 {
+                2.0
+            } else {
+                1.0
+            };
+            sum += mosaic[index(sample_x, sample_y)] * weight;
+            weight_sum += weight;
+        }
+    }
+    debug_assert!(weight_sum > 0.0);
+    sum / weight_sum
 }
 
 /// One deterministic normalized bilinear demosaic. Edge samples are included only when their
@@ -243,7 +382,7 @@ impl std::error::Error for CameraDevelopmentError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use screen_sensor::BayerPattern;
+    use screen_sensor::{BayerPattern, RawSensorRegion, SensorRegion};
 
     fn identity_sensor(pattern: BayerPattern) -> SensorProfile {
         SensorProfile {
@@ -367,5 +506,62 @@ mod tests {
             develop_raw_to_acescg(&raw, sensor, CameraDevelopment::NEUTRAL),
             Err(CameraDevelopmentError::RawProfileMismatch)
         );
+    }
+
+    #[test]
+    fn region_demosaic_with_halo_matches_the_complete_sensor_result() {
+        let sensor = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            ..identity_sensor(BayerPattern::Rggb)
+        };
+        let codes: Vec<u16> = (0..64)
+            .map(|index| 4_000 + (index as u16 * 701) % 50_000)
+            .collect();
+        let full_raw = RawSensorRaster {
+            width: 8,
+            height: 8,
+            bayer_pattern: BayerPattern::Rggb,
+            adc_bits: 16,
+            codes: codes.clone(),
+            clipped: vec![false; 64],
+        };
+        let full = develop_raw_to_acescg(&full_raw, sensor, CameraDevelopment::NEUTRAL)
+            .expect("complete development");
+        let requested = SensorRegion {
+            origin_x: 3,
+            origin_y: 3,
+            width: 2,
+            height: 2,
+        };
+        let halo = requested.expanded_for_demosaic(sensor);
+        let mut region_codes = Vec::new();
+        for y in 0..usize::from(halo.height) {
+            let start = (usize::from(halo.origin_y) + y) * 8 + usize::from(halo.origin_x);
+            region_codes.extend_from_slice(&codes[start..start + usize::from(halo.width)]);
+        }
+        let region_raw = RawSensorRegion {
+            sensor_width: 8,
+            sensor_height: 8,
+            region: halo,
+            bayer_pattern: BayerPattern::Rggb,
+            adc_bits: 16,
+            codes: region_codes,
+            clipped: vec![false; usize::from(halo.width) * usize::from(halo.height)],
+        };
+        let region = develop_raw_region_to_acescg(&region_raw, sensor, CameraDevelopment::NEUTRAL)
+            .expect("region development");
+        for y in 0..usize::from(requested.height) {
+            for x in 0..usize::from(requested.width) {
+                let global_x = usize::from(requested.origin_x) + x;
+                let global_y = usize::from(requested.origin_y) + y;
+                let region_x = global_x - usize::from(halo.origin_x);
+                let region_y = global_y - usize::from(halo.origin_y);
+                assert_eq!(
+                    region.acescg[region_y * usize::from(halo.width) + region_x],
+                    full.acescg[global_y * 8 + global_x]
+                );
+            }
+        }
     }
 }

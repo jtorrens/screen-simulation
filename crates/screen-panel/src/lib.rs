@@ -89,7 +89,7 @@ impl DeviceGeometryPreset {
     }
 }
 
-pub const DEVICE_GEOMETRY_PRESETS: [DeviceGeometryPreset; 8] = [
+pub const DEVICE_GEOMETRY_PRESETS: [DeviceGeometryPreset; 9] = [
     DeviceGeometryPreset {
         id: "lcd-phone-4_7-retina",
         label: "Phone LCD · 4.7 Retina",
@@ -153,6 +153,14 @@ pub const DEVICE_GEOMETRY_PRESETS: [DeviceGeometryPreset; 8] = [
         native_height: 2_160,
         active_width: Meters(1.217_591),
         active_height: Meters(0.684_895),
+    },
+    DeviceGeometryPreset {
+        id: "lcd-asus-proart-pa329cv",
+        label: "ASUS ProArt PA329CV · 32 UHD",
+        native_width: 3_840,
+        native_height: 2_160,
+        active_width: Meters(0.708_480),
+        active_height: Meters(0.398_520),
     },
 ];
 

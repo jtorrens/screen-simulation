@@ -5,10 +5,13 @@
 use core::fmt;
 use rayon::prelude::*;
 use screen_camera::{
-    CameraDevelopment, CameraDevelopmentError, DevelopedCameraRaster, develop_raw_to_acescg,
+    CameraDevelopment, CameraDevelopmentError, DevelopedCameraRaster, DevelopedCameraRegion,
+    develop_raw_region_to_acescg, develop_raw_to_acescg,
 };
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
-use screen_contracts::{ContractError, DeviceRgb, FrameRate, LinearRgb, RationalTime, Vec2, Vec3};
+use screen_contracts::{
+    ContractError, DeviceRgb, FrameRate, LinearRgb, Millimeters, RationalTime, Vec2, Vec3,
+};
 #[cfg(test)]
 use screen_geometry::APERTURE_SAMPLE_COUNT;
 use screen_geometry::{
@@ -19,9 +22,82 @@ use screen_geometry::{
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{LcdProfile, PanelError, PanelTemporalEmission, ValidatedPanelEvaluator};
 use screen_sensor::{
-    CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, SensorError, SensorProfile,
-    expose_raw,
+    BayerPattern, CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
+    SensorError, SensorProfile, SensorRegion, expose_raw, expose_raw_region,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureOpticsAuthority {
+    InterchangeableReferenceLens,
+    IntegratedFixedLens,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaptureDevicePreset {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub calibration: &'static str,
+    pub sensor: SensorProfile,
+    pub gate_width: Millimeters,
+    pub gate_height: Millimeters,
+    pub focal_length: Millimeters,
+    pub f_stop: f32,
+    pub optics_authority: CaptureOpticsAuthority,
+}
+
+pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
+    CaptureDevicePreset {
+        id: "arri-alexa-35-open-gate",
+        label: "ARRI ALEXA 35 · 4.6K Open Gate",
+        calibration: "Published ALEV 4 geometry · reference 50 mm lens",
+        sensor: SensorProfile {
+            native_width: 4_608,
+            native_height: 3_164,
+            bayer_pattern: BayerPattern::Rggb,
+            acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
+            saturation_exposure: SensorProfile::REFERENCE.saturation_exposure,
+            full_well_electrons: 65_000.0,
+            dark_current_electrons_per_second: 0.1,
+            read_noise_electrons_rms: 2.0,
+            analog_gain: 1.0,
+            adc_bits: 14,
+        },
+        gate_width: Millimeters(27.99),
+        gate_height: Millimeters(19.22),
+        focal_length: Millimeters(50.0),
+        f_stop: 4.0,
+        optics_authority: CaptureOpticsAuthority::InterchangeableReferenceLens,
+    },
+    CaptureDevicePreset {
+        id: "iphone-16e-main-48mp",
+        label: "iPhone 16e Main · 48 MP",
+        calibration: "Calibrated approximation · 4.2 mm EXIF / 26 mm equivalent",
+        sensor: SensorProfile {
+            native_width: 8_064,
+            native_height: 6_048,
+            bayer_pattern: BayerPattern::Rggb,
+            acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
+            saturation_exposure: SensorProfile::REFERENCE.saturation_exposure,
+            full_well_electrons: 10_000.0,
+            dark_current_electrons_per_second: 0.05,
+            read_noise_electrons_rms: 1.5,
+            analog_gain: 1.0,
+            adc_bits: 12,
+        },
+        gate_width: Millimeters(5.815_385),
+        gate_height: Millimeters(4.361_539),
+        focal_length: Millimeters(4.2),
+        f_stop: 1.64,
+        optics_authority: CaptureOpticsAuthority::IntegratedFixedLens,
+    },
+];
+
+pub fn capture_device_preset(id: &str) -> Option<CaptureDevicePreset> {
+    CAPTURE_DEVICE_PRESETS
+        .iter()
+        .copied()
+        .find(|preset| preset.id == id)
+}
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -485,6 +561,40 @@ pub struct PreparedRaster {
     pub subpixels_resolved_at_center: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RasterWindow {
+    full_width: u16,
+    full_height: u16,
+    origin_x: u16,
+    origin_y: u16,
+    width: u16,
+    height: u16,
+}
+
+impl RasterWindow {
+    fn full(width: u16, height: u16) -> Self {
+        Self {
+            full_width: width,
+            full_height: height,
+            origin_x: 0,
+            origin_y: 0,
+            width,
+            height,
+        }
+    }
+
+    fn from_sensor_region(sensor: SensorProfile, region: SensorRegion) -> Self {
+        Self {
+            full_width: sensor.native_width,
+            full_height: sensor.native_height,
+            origin_x: region.origin_x,
+            origin_y: region.origin_y,
+            width: region.width,
+            height: region.height,
+        }
+    }
+}
+
 pub fn prepare_frame(request: OpticalRequest) -> Result<PreparedFrame, ApplicationError> {
     if !request.viewport_aspect.is_finite() || request.viewport_aspect <= 0.0 {
         return Err(ApplicationError::InvalidViewportAspect);
@@ -594,6 +704,22 @@ pub fn evaluate_linear_optics(
     )
 }
 
+fn evaluate_linear_optics_region(
+    request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+) -> Result<LinearOpticalRaster, ApplicationError> {
+    evaluate_optical_window_with_signal(
+        request.clone(),
+        RasterWindow::from_sensor_region(sensor, region),
+        DiagnosticView::Composite,
+        &|uv| diagnostic_signal(request.procedural_pattern, uv, request.time),
+        &|minimum, maximum| {
+            diagnostic_area_signal(request.procedural_pattern, minimum, maximum, request.time)
+        },
+    )
+}
+
 pub fn integrate_procedural_shutter(
     request: ShutterRequest,
     width: u16,
@@ -632,6 +758,66 @@ pub fn capture_procedural_frame(
 pub struct CapturedCameraFrame {
     pub raw: RawSensorRaster,
     pub developed: DevelopedCameraRaster,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapturedCameraRegion {
+    pub raw: RawSensorRegion,
+    pub developed: DevelopedCameraRegion,
+}
+
+pub fn capture_and_develop_procedural_region(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+) -> Result<CapturedCameraRegion, ApplicationError> {
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let requested_region = requested_region
+        .validate(sensor)
+        .map_err(ApplicationError::Sensor)?;
+    let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let (shutter, identity) = request.resolve()?;
+    let exposure = integrate_procedural_global_region(shutter, sensor, evaluation_region)?;
+    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
+        .map_err(ApplicationError::Sensor)?;
+    let developed = develop_raw_region_to_acescg(&raw, sensor, development)
+        .map_err(ApplicationError::CameraDevelopment)?;
+    Ok(CapturedCameraRegion {
+        raw,
+        developed: crop_developed_region(developed, requested_region),
+    })
+}
+
+pub fn capture_and_develop_device_signal_region(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    signal: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<CapturedCameraRegion, ApplicationError> {
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let requested_region = requested_region
+        .validate(sensor)
+        .map_err(ApplicationError::Sensor)?;
+    let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let (shutter, identity) = request.resolve()?;
+    let exposure = integrate_device_signal_global_region(
+        shutter,
+        sensor,
+        evaluation_region,
+        signal,
+        placement,
+    )?;
+    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
+        .map_err(ApplicationError::Sensor)?;
+    let developed = develop_raw_region_to_acescg(&raw, sensor, development)
+        .map_err(ApplicationError::CameraDevelopment)?;
+    Ok(CapturedCameraRegion {
+        raw,
+        developed: crop_developed_region(developed, requested_region),
+    })
 }
 
 pub fn capture_and_develop_procedural_frame(
@@ -756,6 +942,92 @@ where
         }
     }
     finish_integrated_exposure(width, height, request.duration, accumulated)
+}
+
+fn integrate_procedural_global_region(
+    request: ShutterRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+) -> Result<IntegratedOpticalExposure, ApplicationError> {
+    if request.readout != SensorReadout::Global {
+        return Err(ApplicationError::InvalidSensorReadout);
+    }
+    let samples = shutter_quadrature(
+        request.optics.time,
+        request.duration,
+        request.temporal_samples,
+        request.optics.panel.temporal_emission,
+    )?;
+    let pixel_count = usize::from(region.width) * usize::from(region.height);
+    let mut accumulated = vec![[0.0_f64; 3]; pixel_count];
+    for sample in samples {
+        let mut optics = request.optics.clone();
+        optics.time = sample.time;
+        let raster = evaluate_linear_optics_region(optics, sensor, region)?;
+        for (sum, pixel) in accumulated.iter_mut().zip(raster.pixels) {
+            sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
+            sum[1] += f64::from(pixel.acescg_irradiance.g) * sample.weight_seconds;
+            sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
+        }
+    }
+    finish_integrated_exposure(region.width, region.height, request.duration, accumulated)
+}
+
+fn integrate_device_signal_global_region(
+    request: ShutterRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    signal: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<IntegratedOpticalExposure, ApplicationError> {
+    if request.readout != SensorReadout::Global {
+        return Err(ApplicationError::InvalidSensorReadout);
+    }
+    let samples = shutter_quadrature(
+        request.optics.time,
+        request.duration,
+        request.temporal_samples,
+        request.optics.panel.temporal_emission,
+    )?;
+    let pixel_count = usize::from(region.width) * usize::from(region.height);
+    let mut accumulated = vec![[0.0_f64; 3]; pixel_count];
+    for sample in samples {
+        let mut optics = request.optics.clone();
+        optics.time = sample.time;
+        let raster = evaluate_linear_optics_region_from_prepared_device_signal(
+            optics, sensor, region, signal, placement,
+        )?;
+        for (sum, pixel) in accumulated.iter_mut().zip(raster.pixels) {
+            sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
+            sum[1] += f64::from(pixel.acescg_irradiance.g) * sample.weight_seconds;
+            sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
+        }
+    }
+    finish_integrated_exposure(region.width, region.height, request.duration, accumulated)
+}
+
+fn crop_developed_region(
+    developed: DevelopedCameraRegion,
+    requested: SensorRegion,
+) -> DevelopedCameraRegion {
+    if developed.region == requested {
+        return developed;
+    }
+    let offset_x = usize::from(requested.origin_x - developed.region.origin_x);
+    let offset_y = usize::from(requested.origin_y - developed.region.origin_y);
+    let source_width = usize::from(developed.region.width);
+    let requested_width = usize::from(requested.width);
+    let mut acescg = Vec::with_capacity(requested_width * usize::from(requested.height));
+    for row in 0..usize::from(requested.height) {
+        let start = (offset_y + row) * source_width + offset_x;
+        acescg.extend_from_slice(&developed.acescg[start..start + requested_width]);
+    }
+    DevelopedCameraRegion {
+        sensor_width: developed.sensor_width,
+        sensor_height: developed.sensor_height,
+        region: requested,
+        acescg,
+    }
 }
 
 fn finish_integrated_exposure(
@@ -1034,6 +1306,38 @@ pub fn evaluate_linear_optics_from_prepared_device_signal(
     )
 }
 
+fn evaluate_linear_optics_region_from_prepared_device_signal(
+    request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    source: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<LinearOpticalRaster, ApplicationError> {
+    let source_raster = source.raster_size();
+    let device_raster = [request.panel.native_width, request.panel.native_height];
+    evaluate_optical_window_with_signal(
+        request,
+        RasterWindow::from_sensor_region(sensor, region),
+        DiagnosticView::Composite,
+        &|device_uv| {
+            source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
+                .map_or(DeviceRgb::BLACK, |source_uv| {
+                    source.source.sample_native_pixel(source_uv)
+                })
+        },
+        &|minimum, maximum| {
+            sample_placed_area(
+                &source.integral,
+                source_raster,
+                device_raster,
+                placement,
+                minimum,
+                maximum,
+            )
+        },
+    )
+}
+
 fn evaluate_procedural_optical_row(
     request: OpticalRequest,
     width: u16,
@@ -1131,7 +1435,7 @@ fn evaluate_optical_row_with_signal(
         };
     }
     Ok(
-        match aperture_sample_count(frame.camera, frame.screen, width) {
+        match aperture_sample_count(frame.camera, frame.screen, request.panel, width) {
             16 => evaluate_row!(16),
             32 => evaluate_row!(32),
             64 => evaluate_row!(64),
@@ -1209,11 +1513,27 @@ fn evaluate_optical_raster_with_signal(
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
     signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) -> Result<LinearOpticalRaster, ApplicationError> {
-    if width == 0 || height == 0 {
+    evaluate_optical_window_with_signal(
+        request,
+        RasterWindow::full(width, height),
+        view,
+        signal_at,
+        signal_area,
+    )
+}
+
+fn evaluate_optical_window_with_signal(
+    request: OpticalRequest,
+    raster: RasterWindow,
+    view: DiagnosticView,
+    signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+    signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
+) -> Result<LinearOpticalRaster, ApplicationError> {
+    if raster.width == 0 || raster.height == 0 {
         return Err(ApplicationError::EmptyPreviewRaster);
     }
     let mut frame = prepare_frame(request.clone())?;
-    let raster_aspect = f32::from(width) / f32::from(height);
+    let raster_aspect = f32::from(raster.full_width) / f32::from(raster.full_height);
     if (raster_aspect - frame.viewport_aspect).abs() > 1.0e-4 {
         return Err(ApplicationError::RasterViewportAspectMismatch {
             raster_aspect,
@@ -1231,26 +1551,30 @@ fn evaluate_optical_raster_with_signal(
         representative.g * panel_temporal_gain,
         representative.b * panel_temporal_gain,
     );
-    let preview_scale_percent = projected_device_pixel_width(&frame, request.panel, width)
-        .ok_or(ApplicationError::ViewRayMissesPanel)?
-        * 100.0;
-    let subpixels_resolved_at_center =
-        optical_footprint_device_pixels(&frame, request.panel, width, height)
-            .is_some_and(|footprint| footprint[0] <= 1.0 / 3.0 && footprint[1] <= 1.0);
+    let preview_scale_percent =
+        projected_device_pixel_width(&frame, request.panel, raster.full_width)
+            .ok_or(ApplicationError::ViewRayMissesPanel)?
+            * 100.0;
+    let subpixels_resolved_at_center = optical_footprint_device_pixels(
+        &frame,
+        request.panel,
+        raster.full_width,
+        raster.full_height,
+    )
+    .is_some_and(|footprint| footprint[0] <= 1.0 / 3.0 && footprint[1] <= 1.0);
     let mut pixels = vec![
         LinearOpticalPixel {
             acescg_irradiance: LinearRgb::new(0.0, 0.0, 0.0),
             on_panel: false,
         };
-        usize::from(width) * usize::from(height)
+        usize::from(raster.width) * usize::from(raster.height)
     ];
-    match aperture_sample_count(frame.camera, frame.screen, width) {
+    match aperture_sample_count(frame.camera, frame.screen, request.panel, raster.full_width) {
         16 => evaluate_optical_pixels::<16>(
             &mut pixels,
             &frame,
             &request,
-            width,
-            height,
+            raster,
             view,
             panel_evaluator,
             panel_temporal_gain,
@@ -1261,8 +1585,7 @@ fn evaluate_optical_raster_with_signal(
             &mut pixels,
             &frame,
             &request,
-            width,
-            height,
+            raster,
             view,
             panel_evaluator,
             panel_temporal_gain,
@@ -1273,8 +1596,7 @@ fn evaluate_optical_raster_with_signal(
             &mut pixels,
             &frame,
             &request,
-            width,
-            height,
+            raster,
             view,
             panel_evaluator,
             panel_temporal_gain,
@@ -1285,8 +1607,7 @@ fn evaluate_optical_raster_with_signal(
             &mut pixels,
             &frame,
             &request,
-            width,
-            height,
+            raster,
             view,
             panel_evaluator,
             panel_temporal_gain,
@@ -1303,8 +1624,8 @@ fn evaluate_optical_raster_with_signal(
     });
     Ok(LinearOpticalRaster {
         frame,
-        width,
-        height,
+        width: raster.width,
+        height: raster.height,
         pixels,
         projected_device_pixel_percent: preview_scale_percent,
         inspection_field_meters,
@@ -1317,8 +1638,7 @@ fn evaluate_optical_pixels<const SAMPLE_COUNT: usize>(
     pixels: &mut [LinearOpticalPixel],
     frame: &PreparedFrame,
     request: &OpticalRequest,
-    width: u16,
-    height: u16,
+    raster: RasterWindow,
     view: DiagnosticView,
     panel_evaluator: ValidatedPanelEvaluator,
     panel_temporal_gain: f32,
@@ -1326,17 +1646,17 @@ fn evaluate_optical_pixels<const SAMPLE_COUNT: usize>(
     signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) {
     pixels
-        .par_chunks_mut(usize::from(width))
+        .par_chunks_mut(usize::from(raster.width))
         .enumerate()
         .for_each(|(row, output_row)| {
             for (column, output) in output_row.iter_mut().enumerate() {
                 *output = evaluate_optical_pixel::<SAMPLE_COUNT>(
                     frame,
                     request,
-                    width,
-                    height,
-                    row,
-                    column,
+                    raster.full_width,
+                    raster.full_height,
+                    row + usize::from(raster.origin_y),
+                    column + usize::from(raster.origin_x),
                     view,
                     panel_evaluator,
                     panel_temporal_gain,
@@ -1347,27 +1667,66 @@ fn evaluate_optical_pixels<const SAMPLE_COUNT: usize>(
         });
 }
 
-fn aperture_sample_count(camera: CameraSample, screen: ScreenSample, raster_width: u16) -> usize {
-    let panel_center = screen.local_to_world(Vec3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    });
-    let offset = Vec3 {
-        x: panel_center.x - camera.position.x,
-        y: panel_center.y - camera.position.y,
-        z: panel_center.z - camera.position.z,
+fn aperture_sample_count(
+    camera: CameraSample,
+    screen: ScreenSample,
+    panel: LcdProfile,
+    raster_width: u16,
+) -> usize {
+    let forward = Vec3 {
+        x: camera.target.x - camera.position.x,
+        y: camera.target.y - camera.position.y,
+        z: camera.target.z - camera.position.z,
     };
-    let panel_distance = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z)
-        .sqrt()
-        .max(0.001);
-    let relative_defocus = (1.0 - panel_distance / camera.focus_distance.0).abs();
     let focal_length_meters = camera.focal_length.0 * 0.001;
     let sensor_width_meters = camera.sensor_width.0 * 0.001;
     let aperture_radius = focal_length_meters / (2.0 * camera.f_stop);
-    let projected_pixel_width =
-        panel_distance * sensor_width_meters / focal_length_meters / f32::from(raster_width);
-    let blur_radius_pixels = aperture_radius * relative_defocus / projected_pixel_width;
+    let half_width = panel.active_width.0 * 0.5;
+    let half_height = panel.active_height.0 * 0.5;
+    let blur_radius_pixels = [
+        Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        Vec3 {
+            x: -half_width,
+            y: -half_height,
+            z: 0.0,
+        },
+        Vec3 {
+            x: half_width,
+            y: -half_height,
+            z: 0.0,
+        },
+        Vec3 {
+            x: -half_width,
+            y: half_height,
+            z: 0.0,
+        },
+        Vec3 {
+            x: half_width,
+            y: half_height,
+            z: 0.0,
+        },
+    ]
+    .into_iter()
+    .map(|local| screen.local_to_world(local))
+    .map(|point| Vec3 {
+        x: point.x - camera.position.x,
+        y: point.y - camera.position.y,
+        z: point.z - camera.position.z,
+    })
+    .map(|offset| {
+        let distance = (offset.x * forward.x + offset.y * forward.y + offset.z * forward.z)
+            .abs()
+            .max(0.001);
+        let relative_defocus = (1.0 - distance / camera.focus_distance.0).abs();
+        let projected_pixel_width =
+            distance * sensor_width_meters / focal_length_meters / f32::from(raster_width);
+        aperture_radius * relative_defocus / projected_pixel_width
+    })
+    .fold(0.0_f32, f32::max);
     if blur_radius_pixels < 0.5 {
         16
     } else if blur_radius_pixels < 1.5 {
@@ -1984,6 +2343,7 @@ mod tests {
     use screen_contracts::{Meters, Millimeters};
     use screen_panel::PanelTemporalEmission;
     use screen_panel::{PanelColorimetry, StripeLayout};
+    use std::collections::HashSet;
 
     fn request() -> SimulationRequest {
         SimulationRequest {
@@ -2070,12 +2430,58 @@ mod tests {
     }
 
     #[test]
+    fn bundled_capture_presets_are_complete_unique_authoring_templates() {
+        let mut ids = HashSet::new();
+        for preset in CAPTURE_DEVICE_PRESETS {
+            assert!(ids.insert(preset.id));
+            preset.sensor.validate().expect("valid sensor profile");
+            assert!(preset.gate_width.0 > 0.0 && preset.gate_height.0 > 0.0);
+            let raster_aspect =
+                f32::from(preset.sensor.native_width) / f32::from(preset.sensor.native_height);
+            let gate_aspect = preset.gate_width.0 / preset.gate_height.0;
+            assert!((raster_aspect - gate_aspect).abs() < 0.001);
+            assert_eq!(capture_device_preset(preset.id), Some(*preset));
+        }
+        assert_eq!(capture_device_preset("unknown-or-retired"), None);
+    }
+
+    #[test]
+    fn optical_sensor_region_is_an_exact_crop_of_the_complete_raster() {
+        let mut request = request().optical_request();
+        request.viewport_aspect = 1.0;
+        request.camera.intrinsics.keyframes[0].sensor_height = Millimeters(36.0);
+        let full = evaluate_linear_optics(request.clone(), 8, 8).expect("complete raster");
+        let sensor = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 2,
+            origin_y: 3,
+            width: 3,
+            height: 2,
+        };
+        let cropped =
+            evaluate_linear_optics_region(request, sensor, region).expect("native sensor region");
+        for local_y in 0..usize::from(region.height) {
+            for local_x in 0..usize::from(region.width) {
+                let full_index = (usize::from(region.origin_y) + local_y) * 8
+                    + usize::from(region.origin_x)
+                    + local_x;
+                let region_index = local_y * usize::from(region.width) + local_x;
+                assert_eq!(cropped.pixels[region_index], full.pixels[full_index]);
+            }
+        }
+    }
+
+    #[test]
     fn aperture_quality_tracks_global_defocus_without_per_pixel_seams() {
         let mut camera = prepare_frame(request().optical_request())
             .expect("valid request")
             .camera;
         assert_eq!(
-            aperture_sample_count(camera, ScreenSample::IDENTITY, 960),
+            aperture_sample_count(camera, ScreenSample::IDENTITY, request().optics.panel, 960),
             16
         );
 
@@ -2084,7 +2490,7 @@ mod tests {
         camera.focal_length = Millimeters(63.5);
         camera.f_stop = 1.2;
         assert_eq!(
-            aperture_sample_count(camera, ScreenSample::IDENTITY, 960),
+            aperture_sample_count(camera, ScreenSample::IDENTITY, request().optics.panel, 960),
             128
         );
     }
