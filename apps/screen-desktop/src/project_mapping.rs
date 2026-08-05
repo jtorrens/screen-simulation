@@ -1,4 +1,4 @@
-use screen_application::RasterPlacement;
+use screen_application::{RasterPlacement, RollingDirection, SensorReadout};
 use screen_color::{OcioInputTransform, SourceColorInterpretation};
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_geometry::{
@@ -14,7 +14,8 @@ use screen_panel::{
 use screen_persistence::{
     AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics, ExactTime,
     InterpolationSelection, MatrixSelection, PlacementSelection, ProjectPackage, RangeSelection,
-    SourceColorSelection, StripeSelection, TransformKeyframe as StoredTransform,
+    RollingDirectionSelection, SensorReadoutDocument, SourceColorSelection, StripeSelection,
+    TransformKeyframe as StoredTransform,
 };
 use screen_sensor::{BayerPattern, SensorProfile};
 
@@ -31,6 +32,7 @@ pub struct ProjectScene {
     pub sensor: SensorProfile,
     pub shutter_duration: RationalTime,
     pub temporal_samples: u16,
+    pub sensor_readout: SensorReadout,
     pub sensor_noise_seed: u64,
 }
 
@@ -164,6 +166,19 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
         .map_err(|error| error.to_string())?,
         shutter_duration: map_time(package.sensor.shutter_duration)?,
         temporal_samples: package.sensor.temporal_samples,
+        sensor_readout: match package.sensor.readout {
+            SensorReadoutDocument::Global => SensorReadout::Global,
+            SensorReadoutDocument::Rolling {
+                duration,
+                direction,
+            } => SensorReadout::Rolling {
+                duration: map_time(duration)?,
+                direction: match direction {
+                    RollingDirectionSelection::TopToBottom => RollingDirection::TopToBottom,
+                    RollingDirectionSelection::BottomToTop => RollingDirection::BottomToTop,
+                },
+            },
+        },
         sensor_noise_seed: package.shot.sensor_noise_seed,
     };
     scene.camera.validate().map_err(|error| error.to_string())?;
@@ -360,6 +375,13 @@ mod tests {
                     denominator: 48,
                 },
                 temporal_samples: 8,
+                readout: SensorReadoutDocument::Rolling {
+                    duration: ExactTime {
+                        numerator: 1,
+                        denominator: 60,
+                    },
+                    direction: RollingDirectionSelection::TopToBottom,
+                },
             },
             screen: ScreenDocument {
                 schema: "screen_simulation_screen".into(),
@@ -394,6 +416,13 @@ mod tests {
         assert_eq!(scene.sensor.bayer_pattern, BayerPattern::Rggb);
         assert_eq!(scene.shutter_duration, RationalTime::new(1, 48).unwrap());
         assert_eq!(scene.temporal_samples, 8);
+        assert_eq!(
+            scene.sensor_readout,
+            SensorReadout::Rolling {
+                duration: RationalTime::new(1, 60).unwrap(),
+                direction: RollingDirection::TopToBottom,
+            }
+        );
         assert_eq!(scene.sensor_noise_seed, 42);
         let time = scene.frame_rate.time_at_frame(0).expect("time");
         let camera = scene.camera.sample(time).expect("camera");

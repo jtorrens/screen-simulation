@@ -324,6 +324,58 @@ impl PanelTemporalEmission {
             0.0
         })
     }
+
+    pub fn transitions_between(
+        self,
+        start: RationalTime,
+        end: RationalTime,
+    ) -> Result<Vec<RationalTime>, PanelError> {
+        const MAX_TRANSITIONS: i64 = 4_096;
+        self.validate()?;
+        if end <= start {
+            return Err(PanelError::InvalidTemporalInterval);
+        }
+        if self.pwm_on_duration == self.pwm_period {
+            return Ok(Vec::new());
+        }
+        let relative_start = start.checked_sub(self.phase).map_err(PanelError::Time)?;
+        let relative_end = end.checked_sub(self.phase).map_err(PanelError::Time)?;
+        let first_cycle = relative_start
+            .floor_div(self.pwm_period)
+            .map_err(PanelError::Time)?;
+        let last_cycle = relative_end
+            .floor_div(self.pwm_period)
+            .map_err(PanelError::Time)?;
+        let cycle_count = last_cycle
+            .checked_sub(first_cycle)
+            .and_then(|value| value.checked_add(1))
+            .ok_or(PanelError::TooManyTemporalTransitions)?;
+        if cycle_count > MAX_TRANSITIONS / 2 {
+            return Err(PanelError::TooManyTemporalTransitions);
+        }
+        let mut transitions = Vec::with_capacity(cycle_count.max(0) as usize * 2);
+        for cycle in first_cycle..=last_cycle {
+            let cycle_start = self
+                .phase
+                .checked_add(
+                    self.pwm_period
+                        .checked_mul_ratio(cycle, 1)
+                        .map_err(PanelError::Time)?,
+                )
+                .map_err(PanelError::Time)?;
+            let off = cycle_start
+                .checked_add(self.pwm_on_duration)
+                .map_err(PanelError::Time)?;
+            for transition in [cycle_start, off] {
+                if transition > start && transition < end {
+                    transitions.push(transition);
+                }
+            }
+        }
+        transitions.sort_unstable();
+        transitions.dedup();
+        Ok(transitions)
+    }
 }
 
 fn chromaticity_coordinates_are_valid(color: PanelColorimetry) -> bool {
@@ -483,6 +535,8 @@ pub enum PanelError {
     InvalidColorimetry,
     InvalidAngularResponse,
     InvalidTemporalEmission,
+    InvalidTemporalInterval,
+    TooManyTemporalTransitions,
     Time(ContractError),
 }
 
@@ -504,6 +558,12 @@ impl fmt::Display for PanelError {
             }
             Self::InvalidTemporalEmission => {
                 "panel PWM period and on-duration must be positive with on-duration no greater than period"
+            }
+            Self::InvalidTemporalInterval => {
+                "panel temporal integration interval must have positive duration"
+            }
+            Self::TooManyTemporalTransitions => {
+                "panel temporal interval exceeds the supported exact PWM transition count"
             }
             Self::Time(error) => return write!(formatter, "invalid panel temporal phase: {error}"),
         };
@@ -666,5 +726,18 @@ mod tests {
         assert_eq!(temporal.gain(RationalTime::new(1, 400).unwrap()), Ok(1.0));
         assert_eq!(temporal.gain(RationalTime::new(3, 400).unwrap()), Ok(0.0));
         assert_eq!(temporal.gain(RationalTime::new(-1, 400).unwrap()), Ok(0.0));
+        assert_eq!(
+            temporal
+                .transitions_between(
+                    RationalTime::new(0, 1).unwrap(),
+                    RationalTime::new(1, 50).unwrap(),
+                )
+                .unwrap(),
+            vec![
+                RationalTime::new(1, 200).unwrap(),
+                RationalTime::new(1, 100).unwrap(),
+                RationalTime::new(3, 200).unwrap(),
+            ]
+        );
     }
 }
