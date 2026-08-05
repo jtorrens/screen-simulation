@@ -8,5 +8,10 @@ license.workspace = true
 [dependencies]
 ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 screen-color = { path = "../screen-color" }
+screen-camera = { path = "../screen-camera" }
 screen-contracts = { path = "../screen-contracts" }
 screen-media = { path = "../screen-media" }
+screen-sensor = { path = "../screen-sensor" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.33"

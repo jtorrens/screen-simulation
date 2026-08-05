@@ -1,6 +1,11 @@
 //! Replaceable operating-system, GPU, media, display, and filesystem adapters.
 
-#![deny(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
+
+#[cfg(target_os = "macos")]
+mod native_metal;
+#[cfg(target_os = "macos")]
+pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 
 use core::fmt;
 use std::path::Path;

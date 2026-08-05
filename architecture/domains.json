@@ -76,9 +76,11 @@
       "path": "crates/screen-platform",
       "owner": "platform",
       "allowed_local_dependencies": [
+        "screen-camera",
         "screen-color",
         "screen-contracts",
-        "screen-media"
+        "screen-media",
+        "screen-sensor"
       ]
     },
     {
