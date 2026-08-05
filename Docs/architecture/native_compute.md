@@ -27,12 +27,20 @@ over all four Bayer patterns, odd global CFA origins, edge support and aggressiv
 develop exposure. Raw sensor codes and clipping masks are still produced by the unchanged CPU sensor
 owner and are bit-identical because Metal begins strictly after the authoritative RAW boundary.
 
-The optical ray evaluator and exact shutter accumulation remain CPU in this first connected slice.
-They are the measured dominant cost and the next Metal tranche must execute the existing prepared
-optical model, including every selected temporal and aperture sample, rolling-row time, PWM
-partition, cover ray and native panel phase. It must enter through a similarly narrow Application
-port; it cannot add a second evaluator or retain a product CPU route. A future Windows backend may
-implement these ports without introducing platform dependencies into any physical domain.
+Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
+plan contains the validated camera and screen samples, sensor window, panel geometry and
+colorimetry, cover and environment, globally selected 16–128 aperture sample count, and either the
+procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
+represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
+and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
+Fresnel/transmission/reflection and native-to-ACEScg conversion in one Metal kernel. Physical
+domains contain no Metal dependency, and a future Windows adapter can implement the same port.
+
+The scalar implementation remains available only through explicitly named CPU-oracle functions.
+Optical conformance currently covers procedural and raster signals, RGB/BGR layouts, resolved and
+unresolved integration, high black-matrix coverage, strong lens distortion and active cover
+character. The explicit channel tolerance is maximum absolute `2e-3` or maximum relative `2e-4`;
+panel-hit identity must be exact.
 
 Native work is partitioned into 128-pixel sensor tiles. Progress publishes after each completed tile
 and cancellation is checked before the next tile. Completed staging remains non-authoritative and a
@@ -49,30 +57,28 @@ for the iPhone 16e model with rolling shutter and eight temporal samples, a meas
 extrapolation, and isolated CPU/Metal RAW-development time. Extrapolation is diagnostic evidence,
 not a promise: it assumes linear pixel scaling for the same authored scene and hardware.
 
-The 2026-08-05 release measurement on Apple M3 Ultra reported 0.114 s cold backend setup, 2.031 s
-to the first complete 128×128 product tile, 8,067 sensor pixels/s end-to-end and a 1.7 h linear
-extrapolation for 8064×6048. Isolated 1024×768 RAW development measured 0.017 s CPU versus 0.003 s
-Metal, or 5.58×. This localizes the remaining cost in the pre-RAW optical evaluator rather than the
-connected Metal stage.
+The 2026-08-05 release measurement on Apple M3 Ultra reported 0.045 s cold backend setup, 2.065 s
+to the first complete 128×128 product tile on the pre-factorization path, 7,936 sensor pixels/s
+end-to-end and a 1.7 h linear extrapolation for 8064×6048. Isolated 1024×768 RAW development
+measured 0.018 s CPU versus 0.003 s Metal, or 5.75×. This localizes the legacy-shaped cost in the
+repeated CPU optical evaluator rather than RAW development.
 
 After the clean-display temporal decision, the benchmark also measures one authoritative spatial
-optical evaluation separately from the existing rolling/PWM repetition. On the same M3 Ultra, a
-128×96 spatial pass measured 0.012 s or 1.04 million pixels/s, corresponding to a 0.8 minute linear
-48 MP extrapolation before RAW development. The legacy-shaped eight-sample rolling measurement was
-2.045 s for one 128×128 tile, 8,011 pixels/s and 1.7 h extrapolated. This comparison is the required
-pre-port profile: Metal work must target the spatial evaluator, while the forthcoming analytical
-display modulation contract removes the repeated-optics cost independently. Motion that genuinely
-changes source or geometry still requires its explicitly authored spatial samples.
+optical evaluation separately from the existing rolling/PWM repetition. For an exact 128×128
+sensor window, the CPU oracle measured 0.013 s or 1.28 million pixels/s. The first Metal spatial
+result arrived in 0.013 s; eight subsequent dispatches measured 11.76 million pixels/s, a 9.2×
+spatial speedup and 4.1 s linear 48 MP spatial extrapolation. The legacy-shaped eight-sample rolling
+measurement remains 2.065 s per product tile and 1.7 h extrapolated until the independent temporal
+contract lands. Motion that genuinely changes source or geometry still requires its explicitly
+authored spatial samples; the backend never reduces them.
 
-The next implementation tranche is precisely bounded:
+The remaining integration tranche is precisely bounded:
 
-1. Add an Application-owned prepared optical-work contract containing validated frame, panel,
-   cover, placement, temporal/PWM partitions and the globally selected aperture pattern.
-2. Execute the current per-ray panel, cover and lens equations in Metal for procedural, static and
-   time-varying device signal through that one contract.
-3. Accumulate every exact temporal interval without reducing the authored sample count, retaining
-   complete-sensor row/CFA/panel phase for ROI and full-frame requests.
-4. Split GPU command work below the 128-pixel publication tile so cancellation can stop queued work
-   promptly without publishing a partial authoritative tile.
-5. Extend CPU-oracle parity to optical illuminance, RAW codes and final development for rolling/PWM,
-   resolved/unresolved subpixels, cover extremes, 16–128 aperture samples and 1–64 temporal samples.
+1. Consume the separately published analytical temporal contract, then select the spatial Metal
+   port in the sole Native product composition path.
+2. Preserve exact authored motion samples while applying separable residual modulation and optional
+   per-row banding without repeating static geometry, lens, cover or panel work.
+3. Split GPU command work below the publication tile if measured cancellation latency exceeds the
+   interactive bound on larger windows.
+4. Extend end-to-end parity through optical exposure, deterministic RAW codes and final development
+   for global/rolling readout and analytic banding identity/edge cases.

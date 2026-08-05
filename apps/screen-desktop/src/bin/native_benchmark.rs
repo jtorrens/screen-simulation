@@ -2,8 +2,9 @@ use std::time::Instant;
 
 use screen_application::{
     CAPTURE_DEVICE_PRESETS, FrameCaptureRequest, OpticalRequest, ProceduralTestPattern,
-    RollingDirection, SensorReadout, capture_and_develop_procedural_region_with_backend,
-    evaluate_linear_optics,
+    RollingDirection, SensorReadout, SpatialOpticalBackend,
+    capture_and_develop_procedural_region_with_backend, evaluate_procedural_spatial_cpu_oracle,
+    prepare_procedural_spatial_plan,
 };
 use screen_camera::{CameraDevelopment, CpuRawDevelopment, RawDevelopmentBackend};
 use screen_contracts::{FrameRate, Meters, RationalTime, Vec2, Vec3};
@@ -102,11 +103,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         inspection: None,
         procedural_pattern: ProceduralTestPattern::AnimatedCheckerboard,
     };
-    let spatial_started = Instant::now();
-    let spatial = evaluate_linear_optics(optics.clone(), TILE_EDGE, 96)?;
-    let spatial_elapsed = spatial_started.elapsed();
-    let spatial_pixels = spatial.pixels.len() as f64;
-    let spatial_throughput = spatial_pixels / spatial_elapsed.as_secs_f64();
+    let tile_region = SensorRegion {
+        origin_x: 0,
+        origin_y: 0,
+        width: TILE_EDGE,
+        height: TILE_EDGE,
+    };
+    let spatial_plan = prepare_procedural_spatial_plan(optics.clone(), sensor, tile_region)?;
+    let cpu_spatial_started = Instant::now();
+    evaluate_procedural_spatial_cpu_oracle(optics.clone(), sensor, tile_region)?;
+    let cpu_spatial_elapsed = cpu_spatial_started.elapsed();
     let capture = FrameCaptureRequest {
         optics,
         frame_rate: FrameRate::new(24, 1)?,
@@ -128,17 +134,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let setup_started = Instant::now();
     let metal = MetalRawDevelopment::new()?;
     let setup = setup_started.elapsed();
+    let first_spatial_started = Instant::now();
+    let first_spatial = metal.evaluate_spatial(&spatial_plan)?;
+    let first_spatial_elapsed = first_spatial_started.elapsed();
+    let spatial_pixels = first_spatial.len() as f64;
+    const SPATIAL_THROUGHPUT_ITERATIONS: usize = 8;
+    let throughput_started = Instant::now();
+    for _ in 0..SPATIAL_THROUGHPUT_ITERATIONS {
+        metal.evaluate_spatial(&spatial_plan)?;
+    }
+    let throughput_elapsed = throughput_started.elapsed();
+    let metal_spatial_throughput =
+        spatial_pixels * SPATIAL_THROUGHPUT_ITERATIONS as f64 / throughput_elapsed.as_secs_f64();
     let render_started = Instant::now();
     let result = capture_and_develop_procedural_region_with_backend(
         capture,
         sensor,
         development,
-        SensorRegion {
-            origin_x: 0,
-            origin_y: 0,
-            width: TILE_EDGE,
-            height: TILE_EDGE,
-        },
+        tile_region,
         &metal,
     )?;
     let elapsed = render_started.elapsed();
@@ -156,13 +169,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("end-to-end physical throughput: {throughput:.2} sensor pixels/s");
     println!(
-        "single authoritative spatial optical pass: {:.3} s · {:.0} pixels/s",
-        spatial_elapsed.as_secs_f64(),
-        spatial_throughput
+        "CPU spatial oracle: {:.3} s · {:.0} pixels/s",
+        cpu_spatial_elapsed.as_secs_f64(),
+        spatial_pixels / cpu_spatial_elapsed.as_secs_f64()
     );
     println!(
-        "48 MP spatial-only extrapolation after temporal factorization: {:.1} min",
-        iphone_pixels / spatial_throughput / 60.0
+        "Metal time to first spatial tile: {:.3} s",
+        first_spatial_elapsed.as_secs_f64()
+    );
+    println!(
+        "Metal spatial throughput ({} iterations): {:.0} pixels/s",
+        SPATIAL_THROUGHPUT_ITERATIONS, metal_spatial_throughput
+    );
+    println!(
+        "48 MP Metal spatial extrapolation after temporal factorization: {:.1} s",
+        iphone_pixels / metal_spatial_throughput
     );
     println!(
         "48 MP measured extrapolation: {:.1} h ({}x{}; same physical settings)",
