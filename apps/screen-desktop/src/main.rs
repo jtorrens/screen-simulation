@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
@@ -36,15 +36,23 @@ use screen_media::{
     SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
 };
 use screen_panel::{
-    DEVICE_GEOMETRY_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
-    device_geometry_preset,
+    DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
+    device_preset,
 };
 use screen_platform::{decode_frame_at_time, probe_media};
 use screen_sensor::{SensorProfile, SensorRegion};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 const DURATION_FRAMES: u32 = 96;
+const DRAFT_PREVIEW_WIDTH: u16 = 360;
 const PREVIEW_WIDTH: u16 = 960;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewQuality {
+    Draft,
+    Medium,
+    High,
+}
 
 slint::include_modules!();
 
@@ -68,7 +76,7 @@ struct RenderControls {
     capture_sensor_height: f32,
     capture_gate_width_mm: f32,
     capture_gate_height_mm: f32,
-    capture_scope_index: i32,
+    render_quality_index: i32,
     device_native_width: f32,
     device_native_height: f32,
     device_active_width_mm: f32,
@@ -112,7 +120,7 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         capture_sensor_height: window.get_capture_sensor_height(),
         capture_gate_width_mm: window.get_capture_gate_width_mm(),
         capture_gate_height_mm: window.get_capture_gate_height_mm(),
-        capture_scope_index: window.get_capture_scope_index(),
+        render_quality_index: window.get_render_quality_index(),
         device_native_width: window.get_device_native_width(),
         device_native_height: window.get_device_native_height(),
         device_active_width_mm: window.get_device_active_width_mm(),
@@ -651,16 +659,16 @@ fn simulation_request(
     })
 }
 
-fn preview_raster(window: &MainWindow) -> Result<(u16, u16), String> {
+fn preview_raster(window: &MainWindow, width: u16) -> Result<(u16, u16), String> {
     let aspect = window.get_preview_aspect();
     if !aspect.is_finite() || aspect <= 0.0 {
         return Err("capture preview aspect must be finite and positive".to_owned());
     }
-    let height = (f32::from(PREVIEW_WIDTH) / aspect).round();
+    let height = (f32::from(width) / aspect).round();
     if !(1.0..=f32::from(u16::MAX)).contains(&height) {
         return Err("capture preview raster is outside the supported range".to_owned());
     }
-    Ok((PREVIEW_WIDTH, height as u16))
+    Ok((width, height as u16))
 }
 
 fn device_geometry(window: &MainWindow) -> Result<(u32, u32, Meters, Meters), String> {
@@ -717,15 +725,20 @@ fn update_device_summary(window: &MainWindow) {
 
 fn apply_device_preset(window: &MainWindow, id: &str) -> Result<(), String> {
     if id == "custom" {
+        window.set_device_reference_white_nits(window.get_white_nits());
+        window.set_device_white_basis("Custom authored operating white".into());
         update_device_summary(window);
         return Ok(());
     }
-    let preset = device_geometry_preset(id)
-        .ok_or_else(|| format!("unknown current device preset id {id}"))?;
+    let preset =
+        device_preset(id).ok_or_else(|| format!("unknown current device preset id {id}"))?;
     window.set_device_native_width(preset.native_width as f32);
     window.set_device_native_height(preset.native_height as f32);
     window.set_device_active_width_mm(preset.active_width.0 * 1_000.0);
     window.set_device_active_height_mm(preset.active_height.0 * 1_000.0);
+    window.set_white_nits(preset.reference_white_nits);
+    window.set_device_reference_white_nits(preset.reference_white_nits);
+    window.set_device_white_basis(preset.white_basis.into());
     update_device_summary(window);
     Ok(())
 }
@@ -788,7 +801,7 @@ fn capture_sensor(window: &MainWindow, state: &InteractionState) -> Result<Senso
 }
 
 fn selected_sensor_region(window: &MainWindow, sensor: SensorProfile) -> SensorRegion {
-    if window.get_capture_scope_index() == 1 {
+    if window.get_render_quality_index() == 4 {
         return SensorRegion::full(sensor);
     }
     let width = sensor.native_width.min(1_024);
@@ -809,14 +822,23 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 cancel.store(true, Ordering::Relaxed);
             }
             window.set_render_text("Cancelling stale native capture…".into());
+            window.set_native_capture_stale(window.get_native_capture_ready());
         }
         return;
     }
     if window.get_preview_rendering() {
         state.preview_pending = true;
-        window.set_render_text("Current preview finishing · update queued".into());
+        window.set_preview_invalidated(true);
+        window.set_render_text("Cancelling stale preview · selected quality queued".into());
         return;
     }
+    let preview_quality = match window.get_render_quality_index() {
+        0 => PreviewQuality::Draft,
+        1 => PreviewQuality::Medium,
+        2 => PreviewQuality::High,
+        _ => PreviewQuality::Medium,
+    };
+    window.set_preview_invalidated(false);
     state.last_render_controls = Some(current_controls);
     if state.source.is_none() {
         present_procedural_source(window);
@@ -834,7 +856,12 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             return;
         }
     };
-    let (preview_width, preview_height) = match preview_raster(window) {
+    let raster_width = match preview_quality {
+        PreviewQuality::Draft => DRAFT_PREVIEW_WIDTH,
+        PreviewQuality::Medium => PREVIEW_WIDTH,
+        PreviewQuality::High => PREVIEW_WIDTH * 2,
+    };
+    let (preview_width, preview_height) = match preview_raster(window, raster_width) {
         Ok(value) => value,
         Err(error) => {
             block_preview(window, &error);
@@ -861,11 +888,15 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     let color_engine = &state.color_engine;
     if window.get_view_index() == 4 && !state.capture_render_requested {
         if state.last_capture_controls != Some(current_controls) {
-            window.set_preview_image(Image::default());
-            window.set_scale_text("NATIVE CAPTURE NOT RENDERED".into());
+            window.set_native_capture_stale(window.get_native_capture_ready());
+            window.set_scale_text(if window.get_native_capture_ready() {
+                "PREVIOUS COMPLETE CAPTURE · STALE".into()
+            } else {
+                "NATIVE CAPTURE NOT RENDERED".into()
+            });
             window.set_render_text("Ready for one explicit frame".into());
             window.set_inspection_text("CAPTURE DEVICE · SENSOR SPACE".into());
-            window.set_hint_text("Choose native ROI or complete frame, then render".into());
+            window.set_hint_text("Render controls are beside the camera selector".into());
             window.set_error_text("".into());
         }
         return;
@@ -974,6 +1005,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         preview_width,
         preview_height,
         started,
+        preview_quality,
     );
 }
 
@@ -989,12 +1021,19 @@ fn render_preview_async(
     width: u16,
     height: u16,
     started: Instant,
+    quality: PreviewQuality,
 ) {
     window.set_preview_rendering(true);
     window.set_render_progress_visible(true);
     window.set_render_progress(0.05);
-    window.set_render_progress_label(format!("Physical preview · {width} × {height}").into());
-    window.set_render_text("Rendering physical preview…".into());
+    let quality_label = match quality {
+        PreviewQuality::Draft => "Draft",
+        PreviewQuality::Medium => "Medium",
+        PreviewQuality::High => "High",
+    };
+    window
+        .set_render_progress_label(format!("{quality_label} preview · {width} × {height}").into());
+    window.set_render_text(format!("Rendering {quality_label} preview…").into());
     window.set_error_text("".into());
     let rendered_view_index = window.get_view_index();
     let weak_window = window.as_weak();
@@ -1017,6 +1056,7 @@ fn render_preview_async(
                     height,
                     rendered_view_index,
                     started,
+                    quality,
                 ),
                 Err(error) => block_preview(&window, &error.to_string()),
             }
@@ -1032,7 +1072,11 @@ fn present_preview_raster(
     height: u16,
     rendered_view_index: i32,
     started: Instant,
+    quality: PreviewQuality,
 ) {
+    if window.get_preview_invalidated() {
+        return;
+    }
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(width), u32::from(height));
     for (target, source) in buffer.make_mut_slice().iter_mut().zip(&raster.pixels) {
         let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -1066,9 +1110,14 @@ fn present_preview_raster(
         )
         .into(),
     );
+    let quality_label = match quality {
+        PreviewQuality::Draft => "DRAFT",
+        PreviewQuality::Medium => "MEDIUM",
+        PreviewQuality::High => "HIGH",
+    };
     window.set_render_text(
         format!(
-            "{width} × {height} · {:.1} ms",
+            "{quality_label} · {width} × {height} · {:.1} ms",
             started.elapsed().as_secs_f64() * 1_000.0
         )
         .into(),
@@ -1206,6 +1255,8 @@ fn render_camera_result(
             return;
         }
     };
+    window.set_native_staging_ready(false);
+    window.set_preview_aspect(f32::from(region.width) / f32::from(region.height));
     let weak_window = window.as_weak();
     thread::spawn(move || {
         let progress_window = weak_window.clone();
@@ -1217,7 +1268,7 @@ fn render_camera_result(
             region,
             transform,
             &cancel,
-            move |completed, total, tile| {
+            move |completed, total, tile, staging| {
                 let _ = progress_window.upgrade_in_event_loop(move |window| {
                     window.set_render_progress(completed as f32 / total as f32);
                     window.set_render_progress_label(
@@ -1230,16 +1281,22 @@ fn render_camera_result(
                         )
                         .into(),
                     );
+                    if let Some(staging) = staging {
+                        present_native_staging(&window, staging);
+                    }
                 });
             },
         );
         let _ = weak_window.upgrade_in_event_loop(move |window| {
             window.set_capture_rendering(false);
+            window.set_native_staging_ready(false);
             match result {
                 Ok(output) => {
                     window.set_render_progress(1.0);
                     window.set_render_progress_visible(false);
                     present_native_capture(&window, output, started);
+                    window.set_native_capture_ready(true);
+                    window.set_native_capture_stale(false);
                 }
                 Err(NativeCaptureError::Cancelled) => {
                     window.set_render_progress_visible(false);
@@ -1265,6 +1322,12 @@ struct NativeCaptureOutput {
     transform: CameraOutputTransform,
 }
 
+struct NativeStagingPreview {
+    width: u16,
+    height: u16,
+    pixels: Vec<[u8; 4]>,
+}
+
 enum NativeCaptureError {
     Cancelled,
     Failed(String),
@@ -1279,7 +1342,7 @@ fn run_native_capture_job(
     region: SensorRegion,
     transform: CameraOutputTransform,
     cancel: &AtomicBool,
-    progress: impl Fn(usize, usize, SensorRegion),
+    mut progress: impl FnMut(usize, usize, SensorRegion, Option<NativeStagingPreview>),
 ) -> Result<NativeCaptureOutput, NativeCaptureError> {
     let color_engine =
         ColorEngine::bundled().map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
@@ -1291,6 +1354,9 @@ fn run_native_capture_job(
     let tiles = sensor_tiles(region, 512);
     let tile_count = tiles.len();
     let mut clipped = 0_usize;
+    let mut last_staging_update = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
     for (tile_index, tile) in tiles.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err(NativeCaptureError::Cancelled);
@@ -1332,7 +1398,16 @@ fn run_native_capture_job(
                     [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255];
             }
         }
-        progress(tile_index + 1, tile_count, tile);
+        let completed = tile_index + 1;
+        let staging = if completed == tile_count
+            || last_staging_update.elapsed() >= Duration::from_millis(100)
+        {
+            last_staging_update = Instant::now();
+            Some(downsample_native_staging(region, &pixels, 960))
+        } else {
+            None
+        };
+        progress(completed, tile_count, tile, staging);
     }
     Ok(NativeCaptureOutput {
         width: region.width,
@@ -1343,6 +1418,46 @@ fn run_native_capture_job(
         region,
         transform,
     })
+}
+
+fn downsample_native_staging(
+    region: SensorRegion,
+    pixels: &[[u8; 4]],
+    maximum_width: u16,
+) -> NativeStagingPreview {
+    let width = region.width.min(maximum_width);
+    let height = ((u32::from(region.height) * u32::from(width)) / u32::from(region.width))
+        .max(1)
+        .min(u32::from(u16::MAX)) as u16;
+    let mut preview = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for y in 0..height {
+        let source_y = usize::from(y) * usize::from(region.height) / usize::from(height);
+        for x in 0..width {
+            let source_x = usize::from(x) * usize::from(region.width) / usize::from(width);
+            preview.push(pixels[source_y * usize::from(region.width) + source_x]);
+        }
+    }
+    NativeStagingPreview {
+        width,
+        height,
+        pixels: preview,
+    }
+}
+
+fn present_native_staging(window: &MainWindow, staging: NativeStagingPreview) {
+    let mut buffer =
+        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(staging.width), u32::from(staging.height));
+    for (target, source) in buffer.make_mut_slice().iter_mut().zip(staging.pixels) {
+        *target = Rgba8Pixel {
+            r: source[0],
+            g: source[1],
+            b: source[2],
+            a: source[3],
+        };
+    }
+    window.set_native_staging_image(Image::from_rgba8(buffer));
+    window.set_native_staging_ready(true);
+    window.set_scale_text("STAGING TILES · NOT FINAL".into());
 }
 
 fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, started: Instant) {
@@ -1589,12 +1704,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(Into::into)
         .collect();
     window.set_idt_model(ModelRc::new(VecModel::from(idt_labels)));
-    let device_labels: Vec<SharedString> = DEVICE_GEOMETRY_PRESETS
+    let device_labels: Vec<SharedString> = DEVICE_PRESETS
         .iter()
         .map(|preset| preset.label.into())
         .chain(std::iter::once("Custom".into()))
         .collect();
-    let device_ids: Vec<SharedString> = DEVICE_GEOMETRY_PRESETS
+    let device_ids: Vec<SharedString> = DEVICE_PRESETS
         .iter()
         .map(|preset| preset.id.into())
         .chain(std::iter::once("custom".into()))
@@ -1649,6 +1764,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(()) => render_preview(&window, &mut state),
                 Err(error) => block_preview(&window, &error),
             }
+        });
+    }
+
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_select_render_quality(move |quality| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            if quality >= 3 {
+                window.set_view_index(4);
+            } else {
+                if window.get_view_index() == 4 {
+                    window.set_view_index(0);
+                }
+            }
+            render_preview(&window, &mut state.borrow_mut());
         });
     }
 

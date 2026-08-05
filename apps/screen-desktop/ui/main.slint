@@ -19,6 +19,9 @@ component ValueRow inherits Rectangle {
     }
     changed input-focused => {
         if (!root.input-focused) {
+            if (root.edit-text.is-float()) {
+                root.value = clamp(root.edit-text.to-float(), root.minimum, root.maximum);
+            }
             root.edit-text = root.numeric-value;
         }
     }
@@ -119,9 +122,10 @@ export component MainWindow inherits Window {
     in-out property <float> capture-gate-height-mm: 19.22;
     in-out property <string> capture-summary: "Published ALEV 4 geometry · reference 50 mm lens";
     in-out property <bool> capture-fixed-optics: false;
-    in-out property <int> capture-scope-index: 0;
+    in-out property <int> render-quality-index: 1;
     in-out property <bool> capture-rendering: false;
     in-out property <bool> preview-rendering: false;
+    in-out property <bool> preview-invalidated: false;
     in-out property <bool> render-progress-visible: false;
     in-out property <float> render-progress: 0;
     in-out property <string> render-progress-label: "";
@@ -134,6 +138,8 @@ export component MainWindow inherits Window {
     in-out property <float> device-active-width-mm: 302.4;
     in-out property <float> device-active-height-mm: 196.4;
     in-out property <string> device-summary: "14.2 in · 254.0 PPI · 0.100 mm pitch";
+    in-out property <float> device-reference-white-nits: 500;
+    in-out property <string> device-white-basis: "Published SDR reference";
     in property <string> build-id: "development";
     in-out property <int> focus-mode-index: 0;
     in-out property <float> yaw-degrees: 0;
@@ -145,6 +151,10 @@ export component MainWindow inherits Window {
     in-out property <bool> playing: false;
     in-out property <int> frame-number: 0;
     in-out property <image> preview-image;
+    in-out property <image> native-staging-image;
+    in-out property <bool> native-staging-ready: false;
+    in-out property <bool> native-capture-ready: false;
+    in-out property <bool> native-capture-stale: false;
     in-out property <string> scale-text: "PREVIEW —";
     in-out property <string> render-text: "Preparing physical preview…";
     in-out property <string> inspection-text: "FIT · MAIN CAMERA";
@@ -187,6 +197,7 @@ export component MainWindow inherits Window {
     callback render-capture-frame();
     callback cancel-capture-frame();
     callback continue-preview-render();
+    callback select-render-quality(int);
 
     MenuBar {
         Menu {
@@ -426,6 +437,40 @@ export component MainWindow inherits Window {
                                 image-fit: fill;
                             }
 
+                            Image {
+                                visible: root.capture-rendering && root.native-staging-ready;
+                                source: root.native-staging-image;
+                                width: parent.width;
+                                height: parent.height;
+                                image-fit: fill;
+                            }
+
+                            Rectangle {
+                                visible: root.view-index == 4 && !root.capture-rendering && (!root.native-capture-ready || root.native-capture-stale);
+                                width: 260px;
+                                height: 96px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 7px;
+                                border-width: 1px;
+                                border-color: #40516a;
+                                background: #111821e8;
+
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 8px;
+                                    Text {
+                                        text: root.native-capture-stale ? "CAMERA SETTINGS CHANGED" : "NATIVE CAPTURE NOT RENDERED";
+                                        color: #92baff;
+                                        horizontal-alignment: center;
+                                    }
+                                    Button {
+                                        text: root.render-quality-index == 3 ? "Render native ROI" : "Render complete frame";
+                                        clicked => { root.render-capture-frame(); }
+                                    }
+                                }
+                            }
+
                             Rectangle {
                                 visible: drag-area.pressed && root.zoom-key-held;
                                 x: min(drag-area.pressed-x, drag-area.mouse-x);
@@ -490,7 +535,7 @@ export component MainWindow inherits Window {
                         spacing: 0px;
 
                         Rectangle {
-                            height: 154px;
+                            height: root.render-quality-index >= 3 ? 258px : 196px;
                             background: #171c25;
                             border-width: 1px;
                             border-color: #303744;
@@ -512,6 +557,12 @@ export component MainWindow inherits Window {
                                     ComboBox {
                                         model: ["Composite", "Device signal", "RGB subpixels", "Emitted radiance", "Camera result"];
                                         current-index <=> root.view-index;
+                                        selected(value) => {
+                                            if (self.current-index == 4 && root.render-quality-index < 3) {
+                                                root.render-quality-index = 3;
+                                                root.select-render-quality(3);
+                                            }
+                                        }
                                     }
                                 }
 
@@ -530,6 +581,41 @@ export component MainWindow inherits Window {
                                 Text {
                                     text: root.capture-summary;
                                     color: #8794a9;
+                                    font-size: 10px;
+                                    overflow: elide;
+                                }
+
+                                HorizontalLayout {
+                                    height: 32px;
+                                    Text { text: "Quality"; color: #aeb7c8; width: 78px; vertical-alignment: center; }
+                                    ComboBox {
+                                        model: ["Draft", "Medium", "High", "Native · center ROI", "Native · complete frame"];
+                                        current-index <=> root.render-quality-index;
+                                        selected(value) => { root.select-render-quality(self.current-index); }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    visible: root.render-quality-index >= 3;
+                                    height: 34px;
+                                    spacing: 8px;
+                                    Button {
+                                        text: root.render-quality-index == 3 ? "Render native ROI" : "Render full frame";
+                                        clicked => { root.render-capture-frame(); }
+                                        enabled: !root.capture-rendering;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Button {
+                                        text: "Cancel";
+                                        clicked => { root.cancel-capture-frame(); }
+                                        visible: root.capture-rendering;
+                                    }
+                                }
+
+                                Text {
+                                    visible: root.render-quality-index >= 3;
+                                    text: root.capture-rendering ? root.render-progress-label : (root.native-capture-stale ? "Previous complete frame · stale" : (root.native-capture-ready ? "Complete frame available" : "Ready to render one explicit frame"));
+                                    color: root.capture-rendering ? #8fc6ff : #8794a9;
                                     font-size: 10px;
                                     overflow: elide;
                                 }
@@ -641,6 +727,12 @@ export component MainWindow inherits Window {
                         }
 
                         Text { text: root.device-summary; color: #8794a9; font-size: 11px; }
+
+                        Text {
+                            text: root.device-white-basis + " · " + round(root.device-reference-white-nits) + " nit" + (abs(root.white-nits - root.device-reference-white-nits) > 0.05 ? " · modified" : "");
+                            color: abs(root.white-nits - root.device-reference-white-nits) > 0.05 ? #d59b68 : #8794a9;
+                            font-size: 11px;
+                        }
 
                         ValueRow {
                             visible: root.device-preset-index == root.device-preset-model.length - 1;
@@ -803,7 +895,6 @@ export component MainWindow inherits Window {
                             step: 0.1;
                             value <=> root.f-stop;
                             numeric-value: round(root.f-stop * 10) / 10;
-                            enabled: !root.capture-fixed-optics;
                         }
 
                         HorizontalLayout {
@@ -908,25 +999,6 @@ export component MainWindow inherits Window {
                             color: #c3ccda;
                             font-size: 11px;
                             visible: root.view-index == 4;
-                        }
-
-                        ComboBox {
-                            model: ["Native center ROI · 1024 × 1024", "Complete native frame"];
-                            current-index <=> root.capture-scope-index;
-                            visible: root.view-index == 4;
-                        }
-
-                        Button {
-                            text: root.capture-scope-index == 0 ? "Render native ROI" : "Render complete frame";
-                            clicked => { root.render-capture-frame(); }
-                            visible: root.view-index == 4;
-                            enabled: !root.capture-rendering;
-                        }
-
-                        Button {
-                            text: "Cancel render";
-                            clicked => { root.cancel-capture-frame(); }
-                            visible: root.view-index == 4 && root.capture-rendering;
                         }
 
                         ValueRow {

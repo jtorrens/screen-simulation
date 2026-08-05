@@ -68,16 +68,18 @@ pub struct LcdProfile {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DeviceGeometryPreset {
+pub struct DevicePreset {
     pub id: &'static str,
     pub label: &'static str,
     pub native_width: u32,
     pub native_height: u32,
     pub active_width: Meters,
     pub active_height: Meters,
+    pub reference_white_nits: f32,
+    pub white_basis: &'static str,
 }
 
-impl DeviceGeometryPreset {
+impl DevicePreset {
     pub fn pixels_per_inch(self) -> f32 {
         let diagonal_pixels = (self.native_width as f32).hypot(self.native_height as f32);
         let diagonal_meters = self.active_width.0.hypot(self.active_height.0);
@@ -89,83 +91,101 @@ impl DeviceGeometryPreset {
     }
 }
 
-pub const DEVICE_GEOMETRY_PRESETS: [DeviceGeometryPreset; 9] = [
-    DeviceGeometryPreset {
+pub const DEVICE_PRESETS: [DevicePreset; 9] = [
+    DevicePreset {
         id: "lcd-phone-4_7-retina",
         label: "Phone LCD · 4.7 Retina",
         native_width: 750,
         native_height: 1_334,
         active_width: Meters(0.058_436),
         active_height: Meters(0.103_941),
+        reference_white_nits: 625.0,
+        white_basis: "Generic authored reference",
     },
-    DeviceGeometryPreset {
+    DevicePreset {
         id: "lcd-phone-6_1-liquid-retina",
         label: "Phone LCD · 6.1 Liquid Retina",
         native_width: 828,
         native_height: 1_792,
         active_width: Meters(0.064_517),
         active_height: Meters(0.139_607),
+        reference_white_nits: 625.0,
+        white_basis: "Generic authored reference",
     },
-    DeviceGeometryPreset {
+    DevicePreset {
         id: "lcd-phone-6_5-high-density",
         label: "Phone LCD · 6.5 high density",
         native_width: 1_080,
         native_height: 2_400,
         active_width: Meters(0.067_733),
         active_height: Meters(0.150_519),
+        reference_white_nits: 500.0,
+        white_basis: "Generic authored reference",
     },
-    DeviceGeometryPreset {
+    DevicePreset {
         id: "lcd-macbook-pro-retina-14",
         label: "MacBook Pro Retina · 14.2",
         native_width: 3_024,
         native_height: 1_964,
         active_width: Meters(0.302_4),
         active_height: Meters(0.196_4),
+        reference_white_nits: 500.0,
+        white_basis: "Published SDR reference",
     },
-    DeviceGeometryPreset {
+    DevicePreset {
         id: "lcd-laptop-fhd-15_6",
         label: "Laptop LCD · 15.6 Full HD",
         native_width: 1_920,
         native_height: 1_080,
         active_width: Meters(0.345_353),
         active_height: Meters(0.194_261),
+        reference_white_nits: 300.0,
+        white_basis: "Generic authored reference",
     },
-    DeviceGeometryPreset {
+    DevicePreset {
         id: "lcd-tv-hd-32",
         label: "TV LCD · 32 HD",
         native_width: 1_366,
         native_height: 768,
         active_width: Meters(0.708_500),
         active_height: Meters(0.398_337),
+        reference_white_nits: 250.0,
+        white_basis: "Generic authored reference",
     },
-    DeviceGeometryPreset {
+    DevicePreset {
         id: "lcd-tv-fhd-43",
         label: "TV LCD · 43 Full HD",
         native_width: 1_920,
         native_height: 1_080,
         active_width: Meters(0.951_935),
         active_height: Meters(0.535_463),
+        reference_white_nits: 300.0,
+        white_basis: "Generic authored reference",
     },
-    DeviceGeometryPreset {
+    DevicePreset {
         id: "lcd-tv-uhd-55",
         label: "TV LCD · 55 UHD",
         native_width: 3_840,
         native_height: 2_160,
         active_width: Meters(1.217_591),
         active_height: Meters(0.684_895),
+        reference_white_nits: 350.0,
+        white_basis: "Generic authored reference",
     },
-    DeviceGeometryPreset {
+    DevicePreset {
         id: "lcd-asus-proart-pa329cv",
         label: "ASUS ProArt PA329CV · 32 UHD",
         native_width: 3_840,
         native_height: 2_160,
         active_width: Meters(0.708_480),
         active_height: Meters(0.398_520),
+        reference_white_nits: 350.0,
+        white_basis: "ASUS published typical SDR",
     },
 ];
 
-pub fn device_geometry_preset(id: &str) -> Option<DeviceGeometryPreset> {
-    DEVICE_GEOMETRY_PRESETS
+pub fn device_preset(id: &str) -> Option<DevicePreset> {
+    DEVICE_PRESETS
         .iter()
         .copied()
         .find(|preset| preset.id == id)
@@ -750,17 +770,19 @@ mod tests {
     }
 
     #[test]
-    fn bundled_device_geometry_presets_have_stable_unique_ids_and_complete_scale() {
+    fn bundled_device_presets_have_stable_unique_ids_and_complete_scale() {
         let mut ids = std::collections::BTreeSet::new();
-        for preset in DEVICE_GEOMETRY_PRESETS {
+        for preset in DEVICE_PRESETS {
             assert!(ids.insert(preset.id));
             assert!(preset.native_width > 0 && preset.native_height > 0);
             assert!(preset.active_width.0 > 0.0 && preset.active_height.0 > 0.0);
             assert!((40.0..500.0).contains(&preset.pixels_per_inch()));
             assert!((4.0..60.0).contains(&preset.diagonal_inches()));
-            assert_eq!(device_geometry_preset(preset.id), Some(preset));
+            assert!(preset.reference_white_nits > 0.0);
+            assert!(!preset.white_basis.is_empty());
+            assert_eq!(device_preset(preset.id), Some(preset));
         }
-        assert_eq!(device_geometry_preset("retired-or-unknown"), None);
+        assert_eq!(device_preset("retired-or-unknown"), None);
     }
 
     #[test]
