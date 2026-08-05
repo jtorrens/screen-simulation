@@ -5,6 +5,8 @@
 #[cfg(target_os = "macos")]
 mod native_metal;
 #[cfg(target_os = "macos")]
+mod spatial_metal;
+#[cfg(target_os = "macos")]
 pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 
 use core::fmt;

@@ -1008,6 +1008,19 @@ fn evaluate_linear_optics_region(
     )
 }
 
+/// Evaluates the modulation-free procedural spatial pass with the scalar CPU implementation.
+///
+/// This is an oracle for backend conformance tests. Product composition should select a
+/// [`SpatialOpticalBackend`] at its platform boundary instead of calling this function.
+pub fn evaluate_procedural_spatial_cpu_oracle(
+    mut request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
+    request.panel.temporal_emission = PanelTemporalEmission::continuous();
+    evaluate_linear_optics_region(request, sensor, region).map(|raster| raster.pixels)
+}
+
 fn evaluate_procedural_optical_sensor_row(
     request: OpticalRequest,
     sensor: SensorProfile,
@@ -1944,6 +1957,23 @@ fn evaluate_linear_optics_region_from_prepared_device_signal(
             )
         },
     )
+}
+
+/// Evaluates the modulation-free raster spatial pass with the scalar CPU implementation.
+///
+/// This is retained only as an oracle for backend conformance tests.
+pub fn evaluate_device_signal_spatial_cpu_oracle(
+    mut request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    source: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
+    request.panel.temporal_emission = PanelTemporalEmission::continuous();
+    evaluate_linear_optics_region_from_prepared_device_signal(
+        request, sensor, region, source, placement,
+    )
+    .map(|raster| raster.pixels)
 }
 
 fn evaluate_device_signal_optical_sensor_row(

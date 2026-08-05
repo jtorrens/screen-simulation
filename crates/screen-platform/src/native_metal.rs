@@ -31,14 +31,15 @@ struct CameraParams {
 }
 
 pub struct MetalRawDevelopment {
-    device: Device,
-    queue: metal::CommandQueue,
+    pub(crate) device: Device,
+    pub(crate) queue: metal::CommandQueue,
     green_pipeline: ComputePipelineState,
     develop_pipeline: ComputePipelineState,
+    pub(crate) spatial_pipeline: ComputePipelineState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MetalNativeError(String);
+pub struct MetalNativeError(pub(crate) String);
 
 impl MetalRawDevelopment {
     pub fn new() -> Result<Self, MetalNativeError> {
@@ -61,12 +62,14 @@ impl MetalRawDevelopment {
         };
         let green_pipeline = pipeline("reconstruct_green")?;
         let develop_pipeline = pipeline("develop_acescg")?;
+        let spatial_pipeline = pipeline("evaluate_spatial_optics")?;
         let queue = device.new_command_queue();
         Ok(Self {
             device,
             queue,
             green_pipeline,
             develop_pipeline,
+            spatial_pipeline,
         })
     }
 
