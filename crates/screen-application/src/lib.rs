@@ -4,6 +4,9 @@
 
 use core::fmt;
 use rayon::prelude::*;
+use screen_camera::{
+    CameraDevelopment, CameraDevelopmentError, DevelopedCameraRaster, develop_raw_to_acescg,
+};
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{ContractError, DeviceRgb, FrameRate, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_geometry::{
@@ -603,6 +606,23 @@ pub fn capture_procedural_frame(
     expose_raw(sensor, &exposure, identity).map_err(ApplicationError::Sensor)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapturedCameraFrame {
+    pub raw: RawSensorRaster,
+    pub developed: DevelopedCameraRaster,
+}
+
+pub fn capture_and_develop_procedural_frame(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+) -> Result<CapturedCameraFrame, ApplicationError> {
+    let raw = capture_procedural_frame(request, sensor)?;
+    let developed = develop_raw_to_acescg(&raw, sensor, development)
+        .map_err(ApplicationError::CameraDevelopment)?;
+    Ok(CapturedCameraFrame { raw, developed })
+}
+
 pub fn integrate_shutter_from_device_signal_sequence<F>(
     request: ShutterRequest,
     width: u16,
@@ -658,6 +678,23 @@ where
         signal_at_time,
     )?;
     expose_raw(sensor, &exposure, identity).map_err(ApplicationError::Sensor)
+}
+
+pub fn capture_and_develop_frame_from_device_signal_sequence<F>(
+    request: FrameCaptureRequest,
+    placement: RasterPlacement,
+    signal_at_time: F,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+) -> Result<CapturedCameraFrame, ApplicationError>
+where
+    F: FnMut(RationalTime) -> Result<Arc<PreparedDeviceSignalRaster>, ApplicationError>,
+{
+    let raw =
+        capture_frame_from_device_signal_sequence(request, placement, signal_at_time, sensor)?;
+    let developed = develop_raw_to_acescg(&raw, sensor, development)
+        .map_err(ApplicationError::CameraDevelopment)?;
+    Ok(CapturedCameraFrame { raw, developed })
 }
 
 fn integrate_global_shutter<F>(
@@ -1647,6 +1684,7 @@ pub enum ApplicationError {
     Panel(PanelError),
     Geometry(GeometryError),
     Sensor(SensorError),
+    CameraDevelopment(CameraDevelopmentError),
     Time(ContractError),
 }
 
@@ -1710,6 +1748,7 @@ impl fmt::Display for ApplicationError {
             Self::Panel(error) => write!(formatter, "invalid panel: {error}"),
             Self::Geometry(error) => write!(formatter, "invalid camera: {error}"),
             Self::Sensor(error) => write!(formatter, "invalid sensor capture: {error}"),
+            Self::CameraDevelopment(error) => write!(formatter, "camera development: {error}"),
             Self::Time(error) => write!(formatter, "invalid capture time: {error}"),
         }
     }
@@ -1927,6 +1966,51 @@ mod tests {
         }));
         assert_eq!(first, second);
         assert_eq!(first.codes.len(), 32 * 18);
+    }
+
+    #[test]
+    fn application_publishes_raw_and_developed_acescg_as_distinct_immutable_results() {
+        let capture = FrameCaptureRequest {
+            optics: request().optics,
+            frame_rate: FrameRate::new(24, 1).expect("valid frame rate"),
+            frame_index: 0,
+            duration: RationalTime::new(1, 48).expect("valid shutter"),
+            temporal_samples: 1,
+            readout: SensorReadout::Global,
+            noise_seed: 7,
+        };
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let frame = capture_and_develop_frame_from_device_signal_sequence(
+            capture,
+            RasterPlacement::Stretch,
+            |_| {
+                Ok(Arc::new(PreparedDeviceSignalRaster::new(
+                    DeviceSignalRaster {
+                        width: 1,
+                        height: 1,
+                        pixels: vec![DeviceRgb::new(0.25, 0.5, 0.75)],
+                    },
+                )?))
+            },
+            sensor,
+            CameraDevelopment {
+                white_balance: LinearRgb::new(2.0, 1.0, 1.5),
+            },
+        )
+        .expect("captured camera frame");
+        assert_eq!(frame.raw.codes.len(), 144);
+        assert_eq!(frame.developed.acescg.len(), 144);
+        assert!(
+            frame
+                .developed
+                .acescg
+                .iter()
+                .all(|pixel| pixel.r.is_finite() && pixel.g.is_finite() && pixel.b.is_finite())
+        );
     }
 
     #[test]

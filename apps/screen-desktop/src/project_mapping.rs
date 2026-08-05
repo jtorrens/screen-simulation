@@ -1,5 +1,6 @@
 use screen_application::{RasterPlacement, RollingDirection, SensorReadout};
-use screen_color::{OcioInputTransform, SourceColorInterpretation};
+use screen_camera::CameraDevelopment;
+use screen_color::{CameraOutputTransform, OcioInputTransform, SourceColorInterpretation};
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, LensModel,
@@ -34,6 +35,8 @@ pub struct ProjectScene {
     pub temporal_samples: u16,
     pub sensor_readout: SensorReadout,
     pub sensor_noise_seed: u64,
+    pub camera_development: CameraDevelopment,
+    pub camera_output_transform: CameraOutputTransform,
 }
 
 pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, String> {
@@ -182,6 +185,24 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             },
         },
         sensor_noise_seed: package.shot.sensor_noise_seed,
+        camera_development: CameraDevelopment {
+            white_balance: LinearRgb::new(
+                package.shot.white_balance_gains[0],
+                package.shot.white_balance_gains[1],
+                package.shot.white_balance_gains[2],
+            ),
+        }
+        .validate()
+        .map_err(|error| error.to_string())?,
+        camera_output_transform: CameraOutputTransform::from_stable_id(
+            &package.shot.camera_output_transform_id,
+        )
+        .ok_or_else(|| {
+            format!(
+                "unknown camera output transform: {}",
+                package.shot.camera_output_transform_id
+            )
+        })?,
     };
     scene.camera.validate().map_err(|error| error.to_string())?;
     scene.screen.validate().map_err(|error| error.to_string())?;
@@ -407,6 +428,8 @@ mod tests {
                     denominator: 1,
                 },
                 sensor_noise_seed: 42,
+                white_balance_gains: [2.0, 1.0, 1.5],
+                camera_output_transform_id: "aces2-srgb-sdr-100".into(),
             },
         };
         let scene = map_project_scene(&package).expect("strict complete mapping");
@@ -430,6 +453,14 @@ mod tests {
             }
         );
         assert_eq!(scene.sensor_noise_seed, 42);
+        assert_eq!(
+            scene.camera_development.white_balance,
+            LinearRgb::new(2.0, 1.0, 1.5)
+        );
+        assert_eq!(
+            scene.camera_output_transform,
+            CameraOutputTransform::SrgbSdr100
+        );
         let time = scene.frame_rate.time_at_frame(0).expect("time");
         let camera = scene.camera.sample(time).expect("camera");
         let screen = scene.screen.sample(time).expect("screen");

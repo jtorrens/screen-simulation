@@ -9,6 +9,7 @@ license.workspace = true
 rfd = { version = "0.17.2", default-features = false }
 slint = { version = "1.17.1", default-features = false, features = ["accessibility", "backend-winit", "compat-1-2", "renderer-femtovg-wgpu", "std"] }
 screen-application = { path = "../../crates/screen-application" }
+screen-camera = { path = "../../crates/screen-camera" }
 screen-color = { path = "../../crates/screen-color" }
 screen-contracts = { path = "../../crates/screen-contracts" }
 screen-geometry = { path = "../../crates/screen-geometry" }

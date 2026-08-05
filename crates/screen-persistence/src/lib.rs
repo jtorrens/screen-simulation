@@ -303,6 +303,8 @@ pub struct ShotDocument {
     pub screen_id: OpaqueId,
     pub project_frame_rate: ExactFrameRate,
     pub sensor_noise_seed: u64,
+    pub white_balance_gains: [f32; 3],
+    pub camera_output_transform_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,6 +405,15 @@ impl ProjectPackage {
         validate_keyframes(&self.screen.transform_keyframes)?;
         validate_device(&self.device)?;
         validate_sensor(&self.sensor)?;
+        if self
+            .shot
+            .white_balance_gains
+            .into_iter()
+            .any(|value| !value.is_finite() || !(0.01..=100.0).contains(&value))
+            || self.shot.camera_output_transform_id.is_empty()
+        {
+            return Err(PersistenceError::InvalidCameraDevelopment);
+        }
         Ok(())
     }
 }
@@ -824,6 +835,7 @@ pub enum PersistenceError {
     InvalidCameraIntrinsics,
     InvalidDeviceProfile,
     InvalidSensorProfile,
+    InvalidCameraDevelopment,
     NonFiniteNumber,
     MissingResource(String),
     Io(PathBuf, std::io::Error),
@@ -892,6 +904,9 @@ impl fmt::Display for PersistenceError {
             Self::InvalidCameraIntrinsics => formatter.write_str("camera intrinsics are invalid"),
             Self::InvalidDeviceProfile => formatter.write_str("device profile is invalid"),
             Self::InvalidSensorProfile => formatter.write_str("sensor profile is invalid"),
+            Self::InvalidCameraDevelopment => formatter.write_str(
+                "camera development requires explicit white balance and output transform",
+            ),
             Self::NonFiniteNumber => {
                 formatter.write_str("project documents cannot contain non-finite numbers")
             }
@@ -1077,6 +1092,8 @@ mod tests {
                     denominator: 1,
                 },
                 sensor_noise_seed: 42,
+                white_balance_gains: [2.0, 1.0, 1.5],
+                camera_output_transform_id: "aces2-srgb-sdr-100".into(),
             },
         }
     }

@@ -4384,6 +4384,7 @@ name = "screen-application"
 version = "0.1.0"
 dependencies = [
  "rayon",
+ "screen-camera",
  "screen-color",
  "screen-contracts",
  "screen-geometry",
@@ -4418,6 +4419,7 @@ version = "0.1.0"
 dependencies = [
  "rfd",
  "screen-application",
+ "screen-camera",
  "screen-color",
  "screen-contracts",
  "screen-geometry",
