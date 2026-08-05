@@ -3,7 +3,10 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use ocio_rs::{CPUProcessor, Config, TransformDirection};
+use ocio_rs::{
+    CPUProcessor, Config, GpuLanguage, GpuShaderDesc, GpuTextureChannel, Interpolation,
+    TransformDirection,
+};
 use screen_contracts::{
     ColorPrimaries, DeviceRgb, EncodedColorMetadata, LinearRgb, MatrixCoefficients,
     TransferCharacteristic,
@@ -185,6 +188,41 @@ pub struct ColorEngine {
     config: Config,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OcioGpuTextureDimension {
+    One,
+    Two,
+    Three,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OcioGpuTextureInterpolation {
+    Nearest,
+    Linear,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OcioGpuTexture {
+    pub texture_name: String,
+    pub sampler_name: String,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub channel_count: u8,
+    pub dimension: OcioGpuTextureDimension,
+    pub interpolation: OcioGpuTextureInterpolation,
+    pub binding_index: u32,
+    pub values: Vec<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OcioGpuShader {
+    pub function_name: String,
+    pub source: String,
+    pub textures: Vec<OcioGpuTexture>,
+    pub uniform_count: usize,
+}
+
 impl ColorEngine {
     pub fn bundled() -> Result<Self, ColorError> {
         if ocio_rs::is_stub_build() {
@@ -236,11 +274,97 @@ impl ColorEngine {
                 transform.ocio_view(),
                 TransformDirection::Forward,
             )
-            .and_then(|processor| processor.default_cpu_processor())
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        let processor = processor
+            .default_cpu_processor()
             .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
         Ok(CameraOutputProcessor {
             transform,
             processor,
+        })
+    }
+
+    pub fn camera_output_gpu_shader(
+        &self,
+        transform: CameraOutputTransform,
+    ) -> Result<OcioGpuShader, ColorError> {
+        let processor = self
+            .config
+            .processor_display(
+                ACESCG_COLOR_SPACE,
+                transform.ocio_display(),
+                transform.ocio_view(),
+                TransformDirection::Forward,
+            )
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        let gpu = processor
+            .default_gpu_processor()
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        let mut shader =
+            GpuShaderDesc::create().map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        shader
+            .set_language(GpuLanguage::Msl2_0)
+            .and_then(|()| shader.set_function_name("screenSimulationOcioDisplay"))
+            .and_then(|()| shader.set_resource_prefix("screen_simulation_ocio_"))
+            .and_then(|()| shader.set_allow_texture_1d(false))
+            .and_then(|()| gpu.try_extract_shader_info(&mut shader))
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        let source = shader
+            .shader_text()
+            .ok_or_else(|| ColorError::OpenColorIo("GPU processor emitted no MSL".to_owned()))?;
+        let interpolation = |value| match value {
+            Interpolation::Nearest => Ok(OcioGpuTextureInterpolation::Nearest),
+            Interpolation::Linear => Ok(OcioGpuTextureInterpolation::Linear),
+            other => Err(ColorError::OpenColorIo(format!(
+                "unsupported GPU LUT interpolation {other:?}"
+            ))),
+        };
+        let mut textures = shader
+            .textures_2d()
+            .into_iter()
+            .map(|texture| {
+                Ok(OcioGpuTexture {
+                    texture_name: texture.texture_name,
+                    sampler_name: texture.sampler_name,
+                    width: texture.width,
+                    height: texture.height,
+                    depth: 1,
+                    channel_count: match texture.channel {
+                        GpuTextureChannel::Red => 1,
+                        GpuTextureChannel::Rgb => 3,
+                    },
+                    dimension: OcioGpuTextureDimension::Two,
+                    interpolation: interpolation(texture.interpolation)?,
+                    binding_index: texture.binding_index,
+                    values: texture.values,
+                })
+            })
+            .collect::<Result<Vec<_>, ColorError>>()?;
+        textures.extend(
+            shader
+                .textures_3d()
+                .into_iter()
+                .map(|texture| {
+                    Ok(OcioGpuTexture {
+                        texture_name: texture.texture_name,
+                        sampler_name: texture.sampler_name,
+                        width: texture.edge_len,
+                        height: texture.edge_len,
+                        depth: texture.edge_len,
+                        channel_count: 3,
+                        dimension: OcioGpuTextureDimension::Three,
+                        interpolation: interpolation(texture.interpolation)?,
+                        binding_index: texture.binding_index,
+                        values: texture.values,
+                    })
+                })
+                .collect::<Result<Vec<_>, ColorError>>()?,
+        );
+        Ok(OcioGpuShader {
+            function_name: "screenSimulationOcioDisplay".to_owned(),
+            source,
+            textures,
+            uniform_count: shader.uniforms().len(),
         })
     }
 }
@@ -248,6 +372,14 @@ impl ColorEngine {
 pub struct CameraOutputProcessor {
     transform: CameraOutputTransform,
     processor: CPUProcessor,
+}
+
+/// Replaceable presentation-only boundary from immutable developed ACEScg to final RGBA8 bytes.
+/// Implementations cannot mutate or reinterpret the authoritative scene-linear input.
+pub trait DisplayPublicationBackend {
+    type Error: fmt::Display;
+
+    fn publish_acescg_rgba8(&self, pixels: &[LinearRgb]) -> Result<Vec<u8>, Self::Error>;
 }
 
 impl CameraOutputProcessor {
@@ -514,6 +646,23 @@ mod tests {
             processor.apply_rgba_buffer(&mut [0.0; 3]),
             Err(ColorError::InvalidRgbaBufferLength(3))
         );
+    }
+
+    #[test]
+    fn pinned_camera_output_generates_complete_msl_resources() {
+        let shader = ColorEngine::bundled()
+            .expect("bundled color engine")
+            .camera_output_gpu_shader(CameraOutputTransform::SrgbSdr100)
+            .expect("camera output GPU shader");
+        assert!(shader.source.contains(&shader.function_name));
+        assert_eq!(shader.textures.len(), 2);
+        assert!(
+            shader
+                .textures
+                .iter()
+                .all(|texture| texture.dimension == OcioGpuTextureDimension::Two)
+        );
+        assert_eq!(shader.uniform_count, 0);
     }
 
     #[test]
