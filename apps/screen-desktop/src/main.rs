@@ -31,8 +31,9 @@ use screen_application::{
 };
 use screen_camera::{CameraDevelopment, apply_sensor_white_balance_to_acescg};
 use screen_color::{
-    CameraOutputTransform, ColorEngine, DeviceColorTarget, OcioInputTransform, PreviewRgb,
-    SourceColorInterpretation, SourceToDeviceProcessor, propose_ocio_input,
+    CameraOutputTransform, ColorEngine, DeviceColorTarget, DisplayPublicationBackend,
+    OcioInputTransform, PreviewRgb, SourceColorInterpretation, SourceToDeviceProcessor,
+    propose_ocio_input,
 };
 use screen_contracts::{
     DeviceRgb, FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3,
@@ -55,7 +56,7 @@ use screen_panel::{
     AnalyticBanding, DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission,
     ResidualFlicker, StripeLayout, device_preset,
 };
-use screen_platform::MetalRawDevelopment;
+use screen_platform::{ExactCpuDisplayPublication, MetalRawDevelopment};
 use screen_platform::{decode_frame_at_time, probe_media};
 use screen_sensor::{SensorProfile, SensorRegion};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
@@ -2072,8 +2073,7 @@ fn run_native_capture_job(
     let setup_started = Instant::now();
     let color_engine =
         ColorEngine::bundled().map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
-    let processor = color_engine
-        .camera_output_processor(transform)
+    let publication_backend = ExactCpuDisplayPublication::new(transform)
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
     let media_processor = match &source {
         NativeCaptureSource::Media(media) => Some(
@@ -2181,12 +2181,8 @@ fn run_native_capture_job(
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
         timings.capture_and_develop += capture_started.elapsed();
         let output_started = Instant::now();
-        let mut output = Vec::with_capacity(captured.developed.acescg.len() * 4);
-        for pixel in &captured.developed.acescg {
-            output.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
-        }
-        processor
-            .apply_acescg_rgba_buffer(&mut output)
+        let output = publication_backend
+            .publish_acescg_rgba8(&captured.developed.acescg)
             .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
         let stripe_width = usize::from(stripe.width);
         let output_stride = usize::from(region.width) * 4;
@@ -2207,8 +2203,7 @@ fn run_native_capture_job(
                 let source_end = source_start + usize::from(tile.width) * 4;
                 let target_start = (output_offset_y + row) * output_stride + output_offset_x * 4;
                 for (column, rgba) in output[source_start..source_end].chunks_exact(4).enumerate() {
-                    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let pixel = [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255];
+                    let pixel = [rgba[0], rgba[1], rgba[2], rgba[3]];
                     pixels[target_start + column * 4..target_start + column * 4 + 4]
                         .copy_from_slice(&pixel);
                     staging_accumulator.add_pixel(
