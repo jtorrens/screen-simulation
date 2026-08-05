@@ -596,6 +596,7 @@ pub fn capture_procedural_frame(
     request: FrameCaptureRequest,
     sensor: SensorProfile,
 ) -> Result<RawSensorRaster, ApplicationError> {
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
     let (shutter, identity) = request.resolve()?;
     let exposure =
         integrate_procedural_shutter(shutter, sensor.native_width, sensor.native_height)?;
@@ -647,6 +648,7 @@ pub fn capture_frame_from_device_signal_sequence<F>(
 where
     F: FnMut(RationalTime) -> Result<Arc<PreparedDeviceSignalRaster>, ApplicationError>,
 {
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
     let (shutter, identity) = request.resolve()?;
     let exposure = integrate_shutter_from_device_signal_sequence(
         shutter,
