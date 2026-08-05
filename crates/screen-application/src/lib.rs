@@ -1906,7 +1906,9 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
             signal_area,
         );
     }
-    let aperture_samples = RESOLVED_SENSOR_BOX.map(trace);
+    let aperture_samples = RESOLVED_SENSOR_BOX
+        .map(|offset| expand_sensor_footprint(offset, psf_radius))
+        .map(trace);
     integrate_aperture_samples(
         &aperture_samples,
         view,
@@ -1916,6 +1918,14 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
         signal_at,
         signal_area,
     )
+}
+
+fn expand_sensor_footprint(offset: Vec2, psf_radius_pixels: f32) -> Vec2 {
+    let scale = 1.0 + 2.0 * psf_radius_pixels;
+    Vec2 {
+        x: 0.5 + (offset.x - 0.5) * scale,
+        y: 0.5 + (offset.y - 0.5) * scale,
+    }
 }
 
 fn approximate_psf_radius_pixels(camera: CameraSample, raster_width: u16) -> f32 {
@@ -2911,6 +2921,18 @@ mod tests {
         assert!(at_3840 > at_960);
         assert!(at_f16 > at_3840);
         assert!(at_f16 <= 1.5);
+    }
+
+    #[test]
+    fn resolved_sensor_sampling_applies_the_authored_optical_psf_extent() {
+        let base = expand_sensor_footprint(Vec2 { x: 0.125, y: 0.875 }, 0.0);
+        assert_eq!(base, Vec2 { x: 0.125, y: 0.875 });
+
+        let expanded = expand_sensor_footprint(Vec2 { x: 0.125, y: 0.875 }, 0.5);
+        assert_eq!(expanded, Vec2 { x: -0.25, y: 1.25 });
+        let opposite = expand_sensor_footprint(Vec2 { x: 0.875, y: 0.125 }, 0.5);
+        assert!((expanded.x + opposite.x - 1.0).abs() < f32::EPSILON);
+        assert!((expanded.y + opposite.y - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
