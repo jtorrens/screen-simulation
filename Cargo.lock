@@ -4393,6 +4393,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "screen-camera"
+version = "0.1.0"
+dependencies = [
+ "screen-contracts",
+ "screen-sensor",
+]
+
+[[package]]
 name = "screen-color"
 version = "0.1.0"
 dependencies = [

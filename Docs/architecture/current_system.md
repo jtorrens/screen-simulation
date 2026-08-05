@@ -21,6 +21,10 @@ media source
   ├→ explicit optical-preview or still-output transform
   └→ exact global/rolling-shutter temporal integration
      → Bayer photosite charge, noise, saturation, gain and RAW quantization
+     → single reference Bayer demosaic
+     → explicit native-sensor white balance
+     → immutable linear ACEScg developed camera result
+     → explicit OCIO output transform
 ```
 
 Every arrow is a typed boundary. A consumer receives a complete validated result and never reconstructs the prior owner's semantics. Declared media color metadata crosses the Media boundary as typed evidence only. YUV matrix and signal range resolve independently from the source IDT: `Auto` consumes only supported declared metadata, while absent or unsupported evidence blocks decoding until the user authors an explicit value. RGB sources bypass the YUV interpretation route, and monochrome sources require range but not matrix. The Platform adapter receives only a fully resolved decode interpretation and configures the single FFmpeg YUV-to-RGB conversion before OCIO. Color may propose an IDT from an exact complete pattern, while evaluation remains blocked until the source interpretation is explicitly authored.
@@ -42,6 +46,7 @@ screen-color           explicit OCIO and color-transform ownership
 screen-panel           device signal, fixed-pixel LCD and emitted radiance
 screen-geometry        camera/screen tracks and physical projection
 screen-sensor          integrated exposure, photosites, sensor noise and mosaiced RAW
+screen-camera          explicit Bayer development and sensor RGB to linear ACEScg
 screen-application     immutable request preparation and orchestration
 screen-persistence     strict portable project documents
 screen-platform        replaceable OS, GPU, media and filesystem adapters

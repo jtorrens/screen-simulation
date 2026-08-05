@@ -39,6 +39,12 @@
       "allowed_local_dependencies": ["screen-contracts"]
     },
     {
+      "name": "screen-camera",
+      "path": "crates/screen-camera",
+      "owner": "camera-development",
+      "allowed_local_dependencies": ["screen-contracts", "screen-sensor"]
+    },
+    {
       "name": "screen-application",
       "path": "crates/screen-application",
       "owner": "application",

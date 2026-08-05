@@ -10,6 +10,55 @@ use screen_contracts::{
 };
 
 pub const OCIO_CONFIGURATION_ID: &str = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
+const ACESCG_COLOR_SPACE: &str = "ACEScg";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CameraOutputTransform {
+    SrgbSdr100,
+    Rec709Sdr100,
+    Rec2100Pq1000,
+}
+
+impl CameraOutputTransform {
+    pub const ALL: [Self; 3] = [Self::SrgbSdr100, Self::Rec709Sdr100, Self::Rec2100Pq1000];
+
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::SrgbSdr100 => "aces2-srgb-sdr-100",
+            Self::Rec709Sdr100 => "aces2-rec709-sdr-100",
+            Self::Rec2100Pq1000 => "aces2-rec2100-pq-1000",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SrgbSdr100 => "ACES 2.0 · sRGB SDR 100 nit",
+            Self::Rec709Sdr100 => "ACES 2.0 · Rec.709 SDR 100 nit",
+            Self::Rec2100Pq1000 => "ACES 2.0 · Rec.2100 PQ 1000 nit",
+        }
+    }
+
+    pub fn from_stable_id(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.stable_id() == value)
+    }
+
+    const fn ocio_display(self) -> &'static str {
+        match self {
+            Self::SrgbSdr100 => "sRGB - Display",
+            Self::Rec709Sdr100 => "Rec.1886 Rec.709 - Display",
+            Self::Rec2100Pq1000 => "Rec.2100-PQ - Display",
+        }
+    }
+
+    const fn ocio_view(self) -> &'static str {
+        match self {
+            Self::SrgbSdr100 | Self::Rec709Sdr100 => "ACES 2.0 - SDR 100 nits (Rec.709)",
+            Self::Rec2100Pq1000 => "ACES 2.0 - HDR 1000 nits (Rec.2020)",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OcioInputTransform {
@@ -174,6 +223,60 @@ impl ColorEngine {
             }
         }
     }
+
+    pub fn camera_output_processor(
+        &self,
+        transform: CameraOutputTransform,
+    ) -> Result<CameraOutputProcessor, ColorError> {
+        let processor = self
+            .config
+            .processor_display(
+                ACESCG_COLOR_SPACE,
+                transform.ocio_display(),
+                transform.ocio_view(),
+                TransformDirection::Forward,
+            )
+            .and_then(|processor| processor.default_cpu_processor())
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        Ok(CameraOutputProcessor {
+            transform,
+            processor,
+        })
+    }
+}
+
+pub struct CameraOutputProcessor {
+    transform: CameraOutputTransform,
+    processor: CPUProcessor,
+}
+
+impl CameraOutputProcessor {
+    pub const fn transform(&self) -> CameraOutputTransform {
+        self.transform
+    }
+
+    pub fn apply_acescg_rgba_buffer(&self, pixels: &mut [f32]) -> Result<(), ColorError> {
+        if !pixels.len().is_multiple_of(4) {
+            return Err(ColorError::InvalidRgbaBufferLength(pixels.len()));
+        }
+        self.processor
+            .try_apply_rgba_pixels(
+                pixels,
+                i64::try_from(pixels.len() / 4).map_err(|_| ColorError::PixelCountOverflow)?,
+                4,
+            )
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))
+    }
+
+    pub fn apply_acescg(&self, value: LinearRgb) -> Result<PreviewRgb, ColorError> {
+        let mut rgba = [value.r, value.g, value.b, 1.0];
+        self.apply_acescg_rgba_buffer(&mut rgba)?;
+        Ok(PreviewRgb {
+            r: rgba[0],
+            g: rgba[1],
+            b: rgba[2],
+        })
+    }
 }
 
 pub enum SourceToDeviceProcessor {
@@ -331,6 +434,44 @@ mod tests {
                 )
                 .unwrap_or_else(|error| panic!("{} failed: {error}", input.label()));
         }
+    }
+
+    #[test]
+    fn every_camera_output_has_a_stable_id_and_resolves_in_the_pinned_configuration() {
+        let engine = ColorEngine::bundled().expect("bundled color engine");
+        for transform in CameraOutputTransform::ALL {
+            assert_eq!(
+                CameraOutputTransform::from_stable_id(transform.stable_id()),
+                Some(transform)
+            );
+            let processor = engine
+                .camera_output_processor(transform)
+                .unwrap_or_else(|error| panic!("{} failed: {error}", transform.label()));
+            assert_eq!(processor.transform(), transform);
+            let output = processor
+                .apply_acescg(LinearRgb::new(-0.1, 0.18, 4.0))
+                .expect("camera output");
+            assert!(output.r.is_finite() && output.g.is_finite() && output.b.is_finite());
+        }
+        assert_eq!(CameraOutputTransform::from_stable_id("rec709"), None);
+    }
+
+    #[test]
+    fn output_selection_does_not_mutate_the_authoritative_acescg_value() {
+        let engine = ColorEngine::bundled().expect("bundled color engine");
+        let linear = LinearRgb::new(0.18, 0.09, 1.4);
+        let first = engine
+            .camera_output_processor(CameraOutputTransform::SrgbSdr100)
+            .expect("sRGB output")
+            .apply_acescg(linear)
+            .expect("sRGB pixel");
+        let second = engine
+            .camera_output_processor(CameraOutputTransform::Rec2100Pq1000)
+            .expect("PQ output")
+            .apply_acescg(linear)
+            .expect("PQ pixel");
+        assert_eq!(linear, LinearRgb::new(0.18, 0.09, 1.4));
+        assert_ne!(first, second);
     }
 
     #[test]

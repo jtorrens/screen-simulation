@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "apps/screen-desktop",
     "crates/screen-application",
+    "crates/screen-camera",
     "crates/screen-color",
     "crates/screen-contracts",
     "crates/screen-geometry",

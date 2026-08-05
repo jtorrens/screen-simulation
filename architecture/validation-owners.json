@@ -60,6 +60,11 @@
       "checks": ["architecture", "workspace", "sensor"]
     },
     {
+      "id": "camera-development",
+      "paths": ["crates/screen-camera/**"],
+      "checks": ["architecture", "workspace", "camera-development"]
+    },
+    {
       "id": "application",
       "paths": ["crates/screen-application/**"],
       "checks": ["architecture", "workspace", "application"]
