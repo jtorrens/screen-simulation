@@ -127,16 +127,25 @@ completed in 0.124 s default/one-sample and 0.126 s static/eight, including 0.00
 6.1 s respectively for the 8064×6048 sensor. This projection includes exact eight-interval temporal
 integration in the static case and applies analytic row gain once; it changes no capture samples.
 
-The large-ROI benchmark still identifies exact CPU plan preparation as the next dominant stage:
-approximately 0.065 s per product stripe and 0.573–0.578 s at 1536×1152. Principal 1536×1152
-staging is 27.0 MiB spatial float4, 40.5 MiB accumulated f64x3 and 20.2 MiB developed float3. For
-moving sources or multi-keyframe geometry, exact motion sampling remains the dominant capture cost;
-old PWM subdivision and CPU optics are absent from the product route.
+Static rolling rows now clone one fully validated spatial-plan template and change only its exact
+time and sensor-row window. This optimization is enabled by the same explicit static/single-key
+proof as spatial reuse. A conformance test requires the instantiated template to equal a freshly
+prepared plan field for field, and the rolling test requires one preparation while retaining all
+eight authored gain intervals and one backend plan per row. Animated sources and any multi-keyframe
+spatial track still prepare the complete plans.
+
+After this second exact optimization, a release static/eight 1536×1152 ROI took 0.081 s, including
+0.005 s preparation, 0.034 s spatial Metal, 0.037 s integration/sensor and 0.005 s RAW Metal. Its
+8064×128 product stripe took 0.068 s, with 0.001 s preparation and 0.018 s exact publication, and
+projects to 3.3 s for 48 MP. The animated default/one-sample stripe remained 0.130 s and projects to
+6.3 s; its 0.065 s preparation remains the next exact bottleneck. Principal 1536×1152 staging is
+27.0 MiB spatial float4, 40.5 MiB accumulated f64x3 and 20.2 MiB developed float3. Old PWM
+subdivision and CPU optics are absent from the product route.
 
 Remaining performance work is precisely bounded:
 
 1. Share prepared linear-emission storage across time-equivalent decoded media samples.
 2. Extend proof of static intervals beyond single-key tracks only where exact keyframe-segment
    identity can be established without heuristic tolerances.
-3. Reduce exact CPU row-plan construction cost (the dominant large-ROI capture stage) without
-   weakening authored motion detection or temporal integration.
+3. Reduce exact CPU row-plan construction for animated or moving intervals without weakening
+   authored motion detection, source sampling or temporal integration.
