@@ -475,6 +475,22 @@ mod tests {
     }
 
     #[test]
+    fn pinned_sdr_output_preserves_objective_gray_anchors() {
+        let processor = ColorEngine::bundled()
+            .expect("bundled color engine")
+            .camera_output_processor(CameraOutputTransform::SrgbSdr100)
+            .expect("sRGB output");
+        for (linear, expected_srgb) in [(0.18_f32, 0.349_188_f32), (0.64, 0.617_808)] {
+            let output = processor
+                .apply_acescg(LinearRgb::new(linear, linear, linear))
+                .expect("gray output");
+            assert!((output.r - expected_srgb).abs() < 1.0e-5);
+            assert!((output.g - expected_srgb).abs() < 1.0e-5);
+            assert!((output.b - expected_srgb).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
     fn stable_input_ids_round_trip_without_aliases() {
         for input in OcioInputTransform::ALL {
             assert_eq!(

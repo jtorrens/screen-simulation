@@ -2793,6 +2793,73 @@ mod tests {
     }
 
     #[test]
+    fn native_development_matches_the_ideal_camera_preview_photometry() {
+        let simulation = request();
+        let signal = PreparedDeviceSignalRaster::new(DeviceSignalRaster {
+            width: 1,
+            height: 1,
+            pixels: vec![DeviceRgb::WHITE],
+        })
+        .expect("uniform device signal");
+        let sensor = SensorProfile {
+            native_width: 32,
+            native_height: 18,
+            saturation_illuminance_seconds: LinearRgb::new(2.4, 2.4, 2.4),
+            full_well_electrons: 10_000_000.0,
+            dark_current_electrons_per_second: 0.0,
+            read_noise_electrons_rms: 0.0,
+            adc_bits: 16,
+            ..SensorProfile::REFERENCE
+        };
+        let shutter = RationalTime::new(1, 48).expect("valid shutter");
+        let development = CameraDevelopment {
+            white_balance: LinearRgb::new(1.0, 1.0, 1.0),
+            middle_gray_illuminance_seconds: 0.1,
+            develop_exposure_ev: 0.0,
+        };
+        let ideal = evaluate_linear_optics_from_prepared_device_signal(
+            simulation.optics.clone(),
+            sensor.native_width,
+            sensor.native_height,
+            &signal,
+            RasterPlacement::Stretch,
+        )
+        .expect("ideal optical raster");
+        let native = capture_and_develop_device_signal_region(
+            FrameCaptureRequest {
+                optics: simulation.optics,
+                frame_rate: FrameRate::new(24, 1).expect("valid frame rate"),
+                frame_index: 0,
+                duration: shutter,
+                temporal_samples: 1,
+                readout: SensorReadout::Global,
+                neutral_density_stops: 0.0,
+                noise_seed: 1,
+            },
+            sensor,
+            development,
+            SensorRegion {
+                origin_x: 0,
+                origin_y: 0,
+                width: sensor.native_width,
+                height: sensor.native_height,
+            },
+            &signal,
+            RasterPlacement::Stretch,
+        )
+        .expect("native camera result");
+        let center = 9 * 32 + 16;
+        let expected =
+            ideal.pixels[center].acescg_irradiance.g * shutter.as_seconds() as f32 * 0.18
+                / development.middle_gray_illuminance_seconds;
+        let measured = native.developed.acescg[center].g;
+        assert!(
+            (measured / expected - 1.0).abs() < 0.015,
+            "native {measured} differs from ideal preview {expected}"
+        );
+    }
+
+    #[test]
     fn global_shutter_integrates_physical_panel_pwm_phase() {
         let base_optics = request().optics;
         let signal = |_| {
