@@ -11,7 +11,8 @@ use screen_media::{
     AlphaInterpretation, SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
 };
 use screen_panel::{
-    Chromaticity, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
+    AnalyticBanding, Chromaticity, LcdProfile, PanelColorimetry, PanelTemporalEmission,
+    ResidualFlicker, StripeLayout,
 };
 use screen_persistence::{
     AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics, ExactTime,
@@ -117,9 +118,17 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 device.angular_emission_power[2],
             ),
             temporal_emission: PanelTemporalEmission {
-                pwm_period: map_time(device.pwm_period)?,
-                pwm_on_duration: map_time(device.pwm_on_duration)?,
-                phase: map_time(device.pwm_phase)?,
+                residual_flicker: ResidualFlicker {
+                    period: map_time(device.residual_flicker_period)?,
+                    amplitude: device.residual_flicker_amplitude,
+                    phase: map_time(device.residual_flicker_phase)?,
+                },
+                analytic_banding: AnalyticBanding {
+                    period: map_time(device.banding_period)?,
+                    on_duration: map_time(device.banding_on_duration)?,
+                    phase: map_time(device.banding_phase)?,
+                    amount: device.banding_amount,
+                },
             },
         }
         .validate()
@@ -391,18 +400,28 @@ mod tests {
                 primary_xy: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
                 white_xy: [0.3127, 0.3290],
                 angular_emission_power: [1.7, 1.5, 1.8],
-                pwm_period: ExactTime {
+                residual_flicker_period: ExactTime {
                     numerator: 1,
-                    denominator: 960,
+                    denominator: 240,
                 },
-                pwm_on_duration: ExactTime {
-                    numerator: 1,
-                    denominator: 1_920,
-                },
-                pwm_phase: ExactTime {
+                residual_flicker_amplitude: 0.002,
+                residual_flicker_phase: ExactTime {
                     numerator: 0,
                     denominator: 1,
                 },
+                banding_period: ExactTime {
+                    numerator: 1,
+                    denominator: 960,
+                },
+                banding_on_duration: ExactTime {
+                    numerator: 1,
+                    denominator: 1_920,
+                },
+                banding_phase: ExactTime {
+                    numerator: 0,
+                    denominator: 1,
+                },
+                banding_amount: 0.0,
                 cover: CoverDocument {
                     character_strength: 1.0,
                     thickness_millimeters: 0.8,

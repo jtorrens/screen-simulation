@@ -24,7 +24,7 @@ use screen_geometry::{
     panel_uv_at_viewport, project_scene_point, project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
-use screen_panel::{LcdProfile, PanelError, PanelTemporalEmission, ValidatedPanelEvaluator};
+use screen_panel::{LcdProfile, PanelError, ValidatedPanelEvaluator};
 use screen_sensor::{
     BayerPattern, CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
     SensorError, SensorProfile, SensorRegion, expose_raw, expose_raw_region,
@@ -80,7 +80,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         reference_exposure_index: 800.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
         default_shutter_angle_degrees: 180.0,
-        default_temporal_samples: 8,
+        default_temporal_samples: 1,
         default_readout_duration_milliseconds: 7.8,
         optics_authority: CaptureOpticsAuthority::InterchangeableReferenceLens,
     },
@@ -108,7 +108,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         reference_exposure_index: 100.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.1,
         default_shutter_angle_degrees: 30.0,
-        default_temporal_samples: 8,
+        default_temporal_samples: 1,
         default_readout_duration_milliseconds: 12.0,
         optics_authority: CaptureOpticsAuthority::IntegratedFixedLens,
     },
@@ -488,11 +488,20 @@ pub enum ProceduralTestPattern {
     PhotometricDeviceScale,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PanelTemporalEvaluation {
+    /// Technical preview at one exact project time.
+    Instantaneous,
+    /// Shutter-integrated panel-emission gain. Optics still evaluate through the same path.
+    ExposureAverage(f32),
+}
+
 pub const PHOTOMETRIC_DEVICE_CODES: [f32; 9] = [0.0, 0.05, 0.10, 0.18, 0.25, 0.50, 0.75, 0.90, 1.0];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct OpticalRequest {
     pub time: RationalTime,
+    pub panel_temporal_evaluation: PanelTemporalEvaluation,
     pub viewport_aspect: f32,
     pub panel: LcdProfile,
     pub cover: CoverGlassProfile,
@@ -1106,7 +1115,6 @@ where
         request.optics.time,
         request.duration,
         request.temporal_samples,
-        request.optics.panel.temporal_emission,
     )?;
     if width == 0 || height == 0 {
         return Err(ApplicationError::EmptyPreviewRaster);
@@ -1116,6 +1124,13 @@ where
     for sample in samples {
         let mut optics = request.optics.clone();
         optics.time = sample.time;
+        optics.panel_temporal_evaluation = PanelTemporalEvaluation::ExposureAverage(
+            optics
+                .panel
+                .temporal_emission
+                .average_gain(sample.start, sample.end)
+                .map_err(ApplicationError::Panel)?,
+        );
         let raster = optical_at_time(optics)?;
         if raster.width != width || raster.height != height || raster.pixels.len() != pixel_count {
             return Err(ApplicationError::OpticalSampleRasterMismatch);
@@ -1198,13 +1213,19 @@ fn integrate_global_region(
         request.optics.time,
         request.duration,
         request.temporal_samples,
-        request.optics.panel.temporal_emission,
     )?;
     let pixel_count = usize::from(region.width) * usize::from(region.height);
     let mut accumulated = vec![[0.0_f64; 3]; pixel_count];
     for sample in samples {
         let mut optics = request.optics.clone();
         optics.time = sample.time;
+        optics.panel_temporal_evaluation = PanelTemporalEvaluation::ExposureAverage(
+            optics
+                .panel
+                .temporal_emission
+                .average_gain(sample.start, sample.end)
+                .map_err(ApplicationError::Panel)?,
+        );
         let raster = optical_at_time(optics)?;
         for (sum, pixel) in accumulated.iter_mut().zip(raster.pixels) {
             sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
@@ -1247,15 +1268,17 @@ fn integrate_rolling_region(
             usize::from(sensor.native_height),
             direction,
         )?;
-        let samples = shutter_quadrature(
-            row_center,
-            request.duration,
-            request.temporal_samples,
-            request.optics.panel.temporal_emission,
-        )?;
+        let samples = shutter_quadrature(row_center, request.duration, request.temporal_samples)?;
         for sample in samples {
             let mut optics = request.optics.clone();
             optics.time = sample.time;
+            optics.panel_temporal_evaluation = PanelTemporalEvaluation::ExposureAverage(
+                optics
+                    .panel
+                    .temporal_emission
+                    .average_gain(sample.start, sample.end)
+                    .map_err(ApplicationError::Panel)?,
+            );
             let row = optical_row_at_time(optics, global_row as u16)?;
             if row.len() != usize::from(region.width) {
                 return Err(ApplicationError::OpticalSampleRasterMismatch);
@@ -1356,12 +1379,7 @@ where
             )?;
             Ok((
                 row,
-                shutter_quadrature(
-                    row_center,
-                    request.duration,
-                    request.temporal_samples,
-                    request.optics.panel.temporal_emission,
-                )?,
+                shutter_quadrature(row_center, request.duration, request.temporal_samples)?,
             ))
         })
         .collect::<Result<Vec<_>, ApplicationError>>()?;
@@ -1371,6 +1389,13 @@ where
         for sample in samples {
             let mut optics = request.optics.clone();
             optics.time = sample.time;
+            optics.panel_temporal_evaluation = PanelTemporalEvaluation::ExposureAverage(
+                optics
+                    .panel
+                    .temporal_emission
+                    .average_gain(sample.start, sample.end)
+                    .map_err(ApplicationError::Panel)?,
+            );
             let optical_row = optical_row_at_time(optics, row)?;
             if optical_row.len() != usize::from(width) {
                 return Err(ApplicationError::OpticalSampleRasterMismatch);
@@ -1421,7 +1446,9 @@ fn rolling_row_center_time(
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TemporalSample {
+    start: RationalTime,
     time: RationalTime,
+    end: RationalTime,
     weight_seconds: f64,
 }
 
@@ -1429,7 +1456,6 @@ fn shutter_quadrature(
     center: RationalTime,
     duration: RationalTime,
     temporal_samples: u16,
-    panel_temporal: PanelTemporalEmission,
 ) -> Result<Vec<TemporalSample>, ApplicationError> {
     let duration_seconds = duration.as_seconds();
     if duration.numerator() <= 0
@@ -1446,25 +1472,13 @@ fn shutter_quadrature(
     let open = center
         .checked_sub(half_duration)
         .map_err(ApplicationError::Time)?;
-    let close = center
-        .checked_add(half_duration)
-        .map_err(ApplicationError::Time)?;
-
-    let mut boundaries = Vec::with_capacity(usize::from(temporal_samples) + 2);
+    let mut boundaries = Vec::with_capacity(usize::from(temporal_samples) + 1);
     for index in 0..=temporal_samples {
         let offset = duration
             .checked_mul_ratio(i64::from(index), u32::from(temporal_samples))
             .map_err(ApplicationError::Time)?;
         boundaries.push(open.checked_add(offset).map_err(ApplicationError::Time)?);
     }
-    boundaries.extend(
-        panel_temporal
-            .transitions_between(open, close)
-            .map_err(ApplicationError::Panel)?,
-    );
-    boundaries.sort_unstable();
-    boundaries.dedup();
-
     boundaries
         .windows(2)
         .map(|interval| {
@@ -1479,7 +1493,9 @@ fn shutter_quadrature(
                 )
                 .map_err(ApplicationError::Time)?;
             Ok(TemporalSample {
+                start: interval[0],
                 time: midpoint,
+                end: interval[1],
                 weight_seconds: width.as_seconds(),
             })
         })
@@ -1811,9 +1827,7 @@ fn evaluate_optical_row_with_signal(
         .cover
         .evaluator(request.environment)
         .map_err(ApplicationError::Cover)?;
-    let temporal_gain = evaluator
-        .temporal_gain(request.time)
-        .map_err(ApplicationError::Panel)?;
+    let temporal_gain = panel_temporal_gain(&request, evaluator)?;
     macro_rules! evaluate_row {
         ($sample_count:literal) => {
             (0..usize::from(width))
@@ -1948,9 +1962,7 @@ fn evaluate_optical_window_with_signal(
         .cover
         .evaluator(request.environment)
         .map_err(ApplicationError::Cover)?;
-    let panel_temporal_gain = panel_evaluator
-        .temporal_gain(request.time)
-        .map_err(ApplicationError::Panel)?;
+    let panel_temporal_gain = panel_temporal_gain(&request, panel_evaluator)?;
     let representative = request.panel.emitted_radiance(frame.representative_signal);
     frame.representative_emission = LinearRgb::new(
         representative.r * panel_temporal_gain,
@@ -2041,6 +2053,21 @@ fn evaluate_optical_window_with_signal(
         inspection_field_meters,
         subpixels_resolved_at_center,
     })
+}
+
+fn panel_temporal_gain(
+    request: &OpticalRequest,
+    evaluator: ValidatedPanelEvaluator,
+) -> Result<f32, ApplicationError> {
+    match request.panel_temporal_evaluation {
+        PanelTemporalEvaluation::Instantaneous => evaluator
+            .temporal_gain(request.time)
+            .map_err(ApplicationError::Panel),
+        PanelTemporalEvaluation::ExposureAverage(gain) if gain.is_finite() && gain >= 0.0 => {
+            Ok(gain)
+        }
+        PanelTemporalEvaluation::ExposureAverage(_) => Err(ApplicationError::InvalidShutter),
+    }
 }
 
 fn raster_represents_viewport(width: u16, height: u16, viewport_aspect: f32) -> bool {
@@ -2856,7 +2883,7 @@ impl fmt::Display for ApplicationError {
                 formatter.write_str("preview exposure EV must be finite")
             }
             Self::InvalidShutter => formatter.write_str(
-                "shutter duration must be positive and temporal samples must be in [1, 64]",
+                "shutter duration must be positive and motion samples must be in [1, 64]",
             ),
             Self::InvalidSensorReadout => formatter.write_str(
                 "sensor readout duration and row coordinates must define a valid shutter interval",
@@ -2929,7 +2956,7 @@ mod tests {
     use screen_contracts::{Meters, Millimeters};
     use screen_cover::{COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset};
     use screen_geometry::lens_preset;
-    use screen_panel::PanelTemporalEmission;
+    use screen_panel::{AnalyticBanding, PanelTemporalEmission};
     use screen_panel::{DEVICE_PRESETS, PanelColorimetry, StripeLayout};
     use std::collections::HashSet;
 
@@ -2937,6 +2964,7 @@ mod tests {
         SimulationRequest {
             optics: OpticalRequest {
                 time: RationalTime::new(24, 24).expect("valid time"),
+                panel_temporal_evaluation: PanelTemporalEvaluation::Instantaneous,
                 viewport_aspect: 16.0 / 9.0,
                 panel: LcdProfile {
                     native_width: 1920,
@@ -3284,8 +3312,7 @@ mod tests {
     fn global_shutter_uses_exact_centered_temporal_quadrature() {
         let center = RationalTime::new(1, 1).expect("valid center");
         let duration = RationalTime::new(1, 48).expect("valid shutter");
-        let samples = shutter_quadrature(center, duration, 4, PanelTemporalEmission::continuous())
-            .expect("valid samples");
+        let samples = shutter_quadrature(center, duration, 4).expect("valid samples");
         assert_eq!(
             samples.iter().map(|sample| sample.time).collect::<Vec<_>>(),
             vec![
@@ -3300,7 +3327,7 @@ mod tests {
                 < f64::EPSILON
         }));
         assert_eq!(
-            shutter_quadrature(center, duration, 0, PanelTemporalEmission::continuous(),),
+            shutter_quadrature(center, duration, 0),
             Err(ApplicationError::InvalidShutter)
         );
     }
@@ -3480,7 +3507,7 @@ mod tests {
     }
 
     #[test]
-    fn global_shutter_integrates_physical_panel_pwm_phase() {
+    fn global_shutter_integrates_analytic_banding_without_changing_average_luminance() {
         let base_optics = request().optics;
         let signal = |_| {
             Ok(Arc::new(PreparedDeviceSignalRaster::new(
@@ -3506,11 +3533,14 @@ mod tests {
         )
         .expect("continuous exposure");
         let mut pulsed_optics = base_optics;
-        pulsed_optics.panel.temporal_emission = PanelTemporalEmission {
-            pwm_period: RationalTime::new(1, 1_000).unwrap(),
-            pwm_on_duration: RationalTime::new(1, 2_000).unwrap(),
+        let mut temporal = PanelTemporalEmission::continuous();
+        temporal.analytic_banding = AnalyticBanding {
+            period: RationalTime::new(1, 1_000).unwrap(),
+            on_duration: RationalTime::new(1, 2_000).unwrap(),
             phase: RationalTime::new(0, 1).unwrap(),
+            amount: 1.0,
         };
+        pulsed_optics.panel.temporal_emission = temporal;
         let pulsed = integrate_shutter_from_device_signal_sequence(
             ShutterRequest {
                 optics: pulsed_optics,
@@ -3528,7 +3558,7 @@ mod tests {
         let index = 9 * 32 + 16;
         let continuous_value = continuous.acescg_illuminance_seconds[index].g;
         let pulsed_value = pulsed.acescg_illuminance_seconds[index].g;
-        assert!((pulsed_value / continuous_value - 0.5).abs() < 1.0e-5);
+        assert!((pulsed_value / continuous_value - 1.0).abs() < 1.0e-5);
     }
 
     #[test]
@@ -3561,14 +3591,17 @@ mod tests {
     }
 
     #[test]
-    fn rolling_shutter_and_panel_pwm_create_physical_row_bands() {
+    fn optional_analytic_banding_uses_rolling_row_phase_without_extra_optical_samples() {
         let mut optics = request().optics;
         optics.time = RationalTime::new(0, 1).unwrap();
-        optics.panel.temporal_emission = PanelTemporalEmission {
-            pwm_period: RationalTime::new(1, 100).unwrap(),
-            pwm_on_duration: RationalTime::new(1, 200).unwrap(),
+        let mut temporal = PanelTemporalEmission::continuous();
+        temporal.analytic_banding = AnalyticBanding {
+            period: RationalTime::new(1, 100).unwrap(),
+            on_duration: RationalTime::new(1, 200).unwrap(),
             phase: RationalTime::new(0, 1).unwrap(),
+            amount: 1.0,
         };
+        optics.panel.temporal_emission = temporal;
         let prepared = Arc::new(
             PreparedDeviceSignalRaster::new(DeviceSignalRaster {
                 width: 1,

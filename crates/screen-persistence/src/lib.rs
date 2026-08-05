@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 5;
+pub const CURRENT_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -159,9 +159,13 @@ pub struct DeviceDocument {
     pub primary_xy: [[f32; 2]; 3],
     pub white_xy: [f32; 2],
     pub angular_emission_power: [f32; 3],
-    pub pwm_period: ExactTime,
-    pub pwm_on_duration: ExactTime,
-    pub pwm_phase: ExactTime,
+    pub residual_flicker_period: ExactTime,
+    pub residual_flicker_amplitude: f32,
+    pub residual_flicker_phase: ExactTime,
+    pub banding_period: ExactTime,
+    pub banding_on_duration: ExactTime,
+    pub banding_phase: ExactTime,
+    pub banding_amount: f32,
     pub cover: CoverDocument,
 }
 
@@ -761,9 +765,11 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
 }
 
 fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
-    validate_time(device.pwm_period)?;
-    validate_time(device.pwm_on_duration)?;
-    validate_time(device.pwm_phase)?;
+    validate_time(device.residual_flicker_period)?;
+    validate_time(device.residual_flicker_phase)?;
+    validate_time(device.banding_period)?;
+    validate_time(device.banding_on_duration)?;
+    validate_time(device.banding_phase)?;
     let values = [
         device.active_width_meters,
         device.active_height_meters,
@@ -782,6 +788,8 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
         device.angular_emission_power[0],
         device.angular_emission_power[1],
         device.angular_emission_power[2],
+        device.residual_flicker_amplitude,
+        device.banding_amount,
     ];
     if !values.iter().all(|value| value.is_finite()) {
         return Err(PersistenceError::NonFiniteNumber);
@@ -803,9 +811,10 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
             .angular_emission_power
             .iter()
             .any(|value| *value < 0.0)
-        || device.pwm_period.numerator <= 0
-        || device.pwm_on_duration.numerator <= 0
-        || compare_time(device.pwm_on_duration, device.pwm_period).is_gt()
+        || device.residual_flicker_period.numerator <= 0
+        || device.banding_period.numerator <= 0
+        || device.banding_on_duration.numerator <= 0
+        || compare_time(device.banding_on_duration, device.banding_period).is_gt()
     {
         return Err(PersistenceError::InvalidDeviceProfile);
     }
@@ -1119,18 +1128,28 @@ mod tests {
                 primary_xy: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
                 white_xy: [0.3127, 0.3290],
                 angular_emission_power: [1.7, 1.5, 1.8],
-                pwm_period: ExactTime {
+                residual_flicker_period: ExactTime {
                     numerator: 1,
-                    denominator: 1_000,
+                    denominator: 240,
                 },
-                pwm_on_duration: ExactTime {
-                    numerator: 1,
-                    denominator: 1_000,
-                },
-                pwm_phase: ExactTime {
+                residual_flicker_amplitude: 0.002,
+                residual_flicker_phase: ExactTime {
                     numerator: 0,
                     denominator: 1,
                 },
+                banding_period: ExactTime {
+                    numerator: 1,
+                    denominator: 960,
+                },
+                banding_on_duration: ExactTime {
+                    numerator: 1,
+                    denominator: 1_920,
+                },
+                banding_phase: ExactTime {
+                    numerator: 0,
+                    denominator: 1,
+                },
+                banding_amount: 0.0,
                 cover: CoverDocument {
                     character_strength: 1.0,
                     thickness_millimeters: 0.8,

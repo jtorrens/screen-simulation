@@ -20,7 +20,8 @@ use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
     PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel, ProceduralTestPattern,
-    RasterPlacement, SensorReadout, SimulationRequest, capture_and_develop_device_signal_region,
+    PanelTemporalEvaluation, RasterPlacement, SensorReadout, SimulationRequest,
+    capture_and_develop_device_signal_region,
     capture_and_develop_device_signal_region_sequence, capture_and_develop_procedural_region,
     capture_device_preset, decoded_frame_to_device_signal, evaluate_linear_optics,
     evaluate_linear_optics_from_device_signal, evaluate_linear_optics_from_prepared_device_signal,
@@ -50,8 +51,8 @@ use screen_media::{
     SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
 };
 use screen_panel::{
-    DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
-    device_preset,
+    AnalyticBanding, DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission,
+    ResidualFlicker, StripeLayout, device_preset,
 };
 use screen_platform::{decode_frame_at_time, probe_media};
 use screen_sensor::{SensorProfile, SensorRegion};
@@ -709,6 +710,34 @@ fn simulation_request(
     }
     let viewport_aspect = gate_width / gate_height;
     window.set_preview_aspect(viewport_aspect);
+    let flicker_hz = window.get_panel_flicker_hz();
+    let flicker_percent = window.get_panel_flicker_percent();
+    let banding_hz = window.get_panel_banding_hz();
+    let banding_duty_percent = window.get_panel_banding_duty_percent();
+    let banding_amount = window.get_panel_banding_amount();
+    if !flicker_hz.is_finite()
+        || !(10.0..=4_000.0).contains(&flicker_hz)
+        || !flicker_percent.is_finite()
+        || !(0.0..=10.0).contains(&flicker_percent)
+        || !banding_hz.is_finite()
+        || !(10.0..=4_000.0).contains(&banding_hz)
+        || !banding_duty_percent.is_finite()
+        || !(1.0..=100.0).contains(&banding_duty_percent)
+        || !banding_amount.is_finite()
+        || !(0.0..=1.0).contains(&banding_amount)
+    {
+        return Err("panel temporal controls are outside the certified range".to_owned());
+    }
+    let flicker_period = RationalTime::new(1, flicker_hz.round() as u32)
+        .map_err(|error| error.to_string())?;
+    let banding_frequency = banding_hz.round() as u32;
+    let banding_period =
+        RationalTime::new(1, banding_frequency).map_err(|error| error.to_string())?;
+    let banding_on_duration = RationalTime::new(
+        banding_duty_percent.round() as i64,
+        banding_frequency * 100,
+    )
+    .map_err(|error| error.to_string())?;
     let mut cover = authored_cover;
     cover.character_strength = window.get_cover_strength();
     let mut environment = authored_environment;
@@ -718,6 +747,7 @@ fn simulation_request(
             time: frame_rate
                 .time_at_frame(i64::from(window.get_frame_number()))
                 .map_err(|error| error.to_string())?,
+            panel_temporal_evaluation: PanelTemporalEvaluation::Instantaneous,
             viewport_aspect,
             panel: LcdProfile {
                 native_width,
@@ -735,7 +765,19 @@ fn simulation_request(
                 white_level_nits: window.get_white_nits(),
                 colorimetry: PanelColorimetry::SRGB_D65,
                 angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
-                temporal_emission: PanelTemporalEmission::continuous(),
+                temporal_emission: PanelTemporalEmission {
+                    residual_flicker: ResidualFlicker {
+                        period: flicker_period,
+                        amplitude: flicker_percent / 100.0,
+                        phase: RationalTime::new(0, 1).expect("zero phase is valid"),
+                    },
+                    analytic_banding: AnalyticBanding {
+                        period: banding_period,
+                        on_duration: banding_on_duration,
+                        phase: RationalTime::new(0, 1).expect("zero phase is valid"),
+                        amount: banding_amount,
+                    },
+                },
             },
             cover,
             environment,
@@ -1846,7 +1888,7 @@ fn capture_pipeline_settings(
         .map_err(|error| error.to_string())?;
     let temporal_samples_value = window.get_temporal_samples();
     if !temporal_samples_value.is_finite() || !(1.0..=64.0).contains(&temporal_samples_value) {
-        return Err("temporal samples must be finite and in [1, 64]".into());
+        return Err("motion samples must be finite and in [1, 64]".into());
     }
     let temporal_samples = temporal_samples_value.round() as u16;
     let readout = match window.get_sensor_readout_index() {

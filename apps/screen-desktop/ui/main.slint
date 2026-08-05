@@ -103,6 +103,11 @@ export component MainWindow inherits Window {
     in-out property <float> white-nits: 600;
     in-out property <float> gamma: 2.2;
     in-out property <float> black-matrix: 0.12;
+    in-out property <float> panel-flicker-percent: 0.2;
+    in-out property <float> panel-flicker-hz: 240;
+    in-out property <float> panel-banding-amount: 0;
+    in-out property <float> panel-banding-hz: 960;
+    in-out property <float> panel-banding-duty-percent: 50;
     in-out property <float> distance-m: 0.82;
     in-out property <float> focal-mm: 50;
     in-out property <float> focus-distance-m: 0.82;
@@ -114,7 +119,7 @@ export component MainWindow inherits Window {
     in-out property <float> camera-exposure-ev: 0;
     in-out property <float> capture-exposure-index: 800;
     in-out property <float> shutter-angle-degrees: 180;
-    in-out property <float> temporal-samples: 8;
+    in-out property <float> temporal-samples: 1;
     in-out property <int> sensor-readout-index: 1;
     in-out property <float> readout-duration-ms: 7.8;
     in-out property <float> sensor-noise-seed: 42;
@@ -898,6 +903,59 @@ export component MainWindow inherits Window {
                             }
                         }
 
+                        Text { text: "TEMPORAL EMISSION"; color: #71819b; font-size: 11px; }
+
+                        ValueRow {
+                            label: "Flicker";
+                            minimum: 0;
+                            maximum: 10;
+                            step: 0.1;
+                            value <=> root.panel-flicker-percent;
+                            numeric-value: round(root.panel-flicker-percent * 10) / 10;
+                            suffix: "%";
+                        }
+
+                        ValueRow {
+                            label: "Flicker rate";
+                            minimum: 10;
+                            maximum: 4000;
+                            step: 1;
+                            value <=> root.panel-flicker-hz;
+                            numeric-value: round(root.panel-flicker-hz);
+                            suffix: "Hz";
+                        }
+
+                        ValueRow {
+                            label: "Banding";
+                            minimum: 0;
+                            maximum: 1;
+                            step: 0.01;
+                            value <=> root.panel-banding-amount;
+                            numeric-value: round(root.panel-banding-amount * 100) / 100;
+                        }
+
+                        ValueRow {
+                            label: "Band rate";
+                            minimum: 10;
+                            maximum: 4000;
+                            step: 1;
+                            value <=> root.panel-banding-hz;
+                            numeric-value: round(root.panel-banding-hz);
+                            suffix: "Hz";
+                            visible: root.panel-banding-amount > 0;
+                        }
+
+                        ValueRow {
+                            label: "Band duty";
+                            minimum: 1;
+                            maximum: 100;
+                            step: 1;
+                            value <=> root.panel-banding-duty-percent;
+                            numeric-value: round(root.panel-banding-duty-percent);
+                            suffix: "%";
+                            visible: root.panel-banding-amount > 0;
+                        }
+
                         Rectangle { height: 1px; background: #303744; }
 
                         Text { text: "COVER GLASS"; color: #71819b; font-size: 11px; }
@@ -1128,7 +1186,7 @@ export component MainWindow inherits Window {
                         }
 
                         ValueRow {
-                            label: "Time samples";
+                            label: "Motion samples";
                             minimum: 1;
                             maximum: 64;
                             step: 1;

@@ -201,11 +201,26 @@ pub fn device_preset(id: &str) -> Option<DevicePreset> {
         .find(|preset| preset.id == id)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PanelTemporalEmission {
-    pub pwm_period: RationalTime,
-    pub pwm_on_duration: RationalTime,
+    pub residual_flicker: ResidualFlicker,
+    pub analytic_banding: AnalyticBanding,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResidualFlicker {
+    pub period: RationalTime,
+    pub amplitude: f32,
     pub phase: RationalTime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnalyticBanding {
+    pub period: RationalTime,
+    pub on_duration: RationalTime,
+    pub phase: RationalTime,
+    /// Creative interpolation from clean emission at zero to duty-normalized PWM at one.
+    pub amount: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -515,17 +530,41 @@ fn periodic_interval_coverage(minimum: f32, maximum: f32, start: f32, end: f32) 
 impl PanelTemporalEmission {
     pub fn continuous() -> Self {
         Self {
-            pwm_period: RationalTime::new(1, 1_000).expect("constant PWM period is valid"),
-            pwm_on_duration: RationalTime::new(1, 1_000)
-                .expect("constant PWM on-duration is valid"),
-            phase: RationalTime::new(0, 1).expect("constant PWM phase is valid"),
+            residual_flicker: ResidualFlicker {
+                period: RationalTime::new(1, 240).expect("clean flicker period is valid"),
+                amplitude: 0.0,
+                phase: RationalTime::new(0, 1).expect("clean flicker phase is valid"),
+            },
+            analytic_banding: AnalyticBanding {
+                period: RationalTime::new(1, 960).expect("clean banding period is valid"),
+                on_duration: RationalTime::new(1, 1_920)
+                    .expect("clean banding duty is valid"),
+                phase: RationalTime::new(0, 1).expect("clean banding phase is valid"),
+                amount: 0.0,
+            },
+        }
+    }
+
+    pub fn clean_lcd() -> Self {
+        Self {
+            residual_flicker: ResidualFlicker {
+                period: RationalTime::new(1, 240).expect("LCD flicker period is valid"),
+                amplitude: 0.002,
+                phase: RationalTime::new(0, 1).expect("LCD flicker phase is valid"),
+            },
+            ..Self::continuous()
         }
     }
 
     pub fn validate(self) -> Result<Self, PanelError> {
-        if self.pwm_period.numerator() <= 0
-            || self.pwm_on_duration.numerator() <= 0
-            || self.pwm_on_duration > self.pwm_period
+        if self.residual_flicker.period.numerator() <= 0
+            || !self.residual_flicker.amplitude.is_finite()
+            || !(0.0..=0.1).contains(&self.residual_flicker.amplitude)
+            || self.analytic_banding.period.numerator() <= 0
+            || self.analytic_banding.on_duration.numerator() <= 0
+            || self.analytic_banding.on_duration > self.analytic_banding.period
+            || !self.analytic_banding.amount.is_finite()
+            || !(0.0..=1.0).contains(&self.analytic_banding.amount)
         {
             return Err(PanelError::InvalidTemporalEmission);
         }
@@ -534,25 +573,92 @@ impl PanelTemporalEmission {
 
     pub fn gain(self, time: RationalTime) -> Result<f32, PanelError> {
         self.validate()?;
-        let relative = time.checked_sub(self.phase).map_err(PanelError::Time)?;
+        let residual = self.residual_gain(time);
+        let banding = self.banding_gain(time)?;
+        Ok(residual * banding)
+    }
+
+    pub fn average_gain(
+        self,
+        start: RationalTime,
+        end: RationalTime,
+    ) -> Result<f32, PanelError> {
+        self.validate()?;
+        if end <= start {
+            return Err(PanelError::InvalidTemporalInterval);
+        }
+        if self.analytic_banding.amount == 0.0 {
+            return Ok(self.average_residual_gain(start, end));
+        }
+        let mut boundaries = vec![start, end];
+        boundaries.extend(self.banding_transitions_between(start, end)?);
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        let duration = end.checked_sub(start).map_err(PanelError::Time)?.as_seconds();
+        let mut integral = 0.0;
+        for interval in boundaries.windows(2) {
+            let width = interval[1]
+                .checked_sub(interval[0])
+                .map_err(PanelError::Time)?;
+            let midpoint = interval[0]
+                .checked_add(width.checked_mul_ratio(1, 2).map_err(PanelError::Time)?)
+                .map_err(PanelError::Time)?;
+            integral += f64::from(
+                self.average_residual_gain(interval[0], interval[1])
+                    * self.banding_gain(midpoint)?,
+            ) * width.as_seconds();
+        }
+        Ok((integral / duration) as f32)
+    }
+
+    fn residual_gain(self, time: RationalTime) -> f32 {
+        let relative = time.as_seconds() - self.residual_flicker.phase.as_seconds();
+        let angle = core::f64::consts::TAU * relative / self.residual_flicker.period.as_seconds();
+        1.0 + self.residual_flicker.amplitude * angle.sin() as f32
+    }
+
+    fn average_residual_gain(self, start: RationalTime, end: RationalTime) -> f32 {
+        let period = self.residual_flicker.period.as_seconds();
+        let phase = self.residual_flicker.phase.as_seconds();
+        let start_seconds = start.as_seconds();
+        let end_seconds = end.as_seconds();
+        let duration = end_seconds - start_seconds;
+        let omega = core::f64::consts::TAU / period;
+        let average_sine = ((omega * (start_seconds - phase)).cos()
+            - (omega * (end_seconds - phase)).cos())
+            / (omega * duration);
+        1.0 + self.residual_flicker.amplitude * average_sine as f32
+    }
+
+    fn banding_gain(self, time: RationalTime) -> Result<f32, PanelError> {
+        if self.analytic_banding.amount == 0.0 {
+            return Ok(1.0);
+        }
+        let relative = time
+            .checked_sub(self.analytic_banding.phase)
+            .map_err(PanelError::Time)?;
         let cycle = relative
-            .floor_div(self.pwm_period)
+            .floor_div(self.analytic_banding.period)
             .map_err(PanelError::Time)?;
         let cycle_start = self
-            .pwm_period
+            .analytic_banding
+            .period
             .checked_mul_ratio(cycle, 1)
             .map_err(PanelError::Time)?;
         let within_cycle = relative
             .checked_sub(cycle_start)
             .map_err(PanelError::Time)?;
-        Ok(if within_cycle < self.pwm_on_duration {
-            1.0
+        let duty = (self.analytic_banding.on_duration.as_seconds()
+            / self.analytic_banding.period.as_seconds()) as f32;
+        let pwm = if within_cycle < self.analytic_banding.on_duration {
+            1.0 / duty
         } else {
             0.0
-        })
+        };
+        Ok(1.0 + self.analytic_banding.amount * (pwm - 1.0))
     }
 
-    pub fn transitions_between(
+    fn banding_transitions_between(
         self,
         start: RationalTime,
         end: RationalTime,
@@ -562,16 +668,22 @@ impl PanelTemporalEmission {
         if end <= start {
             return Err(PanelError::InvalidTemporalInterval);
         }
-        if self.pwm_on_duration == self.pwm_period {
+        if self.analytic_banding.amount == 0.0
+            || self.analytic_banding.on_duration == self.analytic_banding.period
+        {
             return Ok(Vec::new());
         }
-        let relative_start = start.checked_sub(self.phase).map_err(PanelError::Time)?;
-        let relative_end = end.checked_sub(self.phase).map_err(PanelError::Time)?;
+        let relative_start = start
+            .checked_sub(self.analytic_banding.phase)
+            .map_err(PanelError::Time)?;
+        let relative_end = end
+            .checked_sub(self.analytic_banding.phase)
+            .map_err(PanelError::Time)?;
         let first_cycle = relative_start
-            .floor_div(self.pwm_period)
+            .floor_div(self.analytic_banding.period)
             .map_err(PanelError::Time)?;
         let last_cycle = relative_end
-            .floor_div(self.pwm_period)
+            .floor_div(self.analytic_banding.period)
             .map_err(PanelError::Time)?;
         let cycle_count = last_cycle
             .checked_sub(first_cycle)
@@ -583,15 +695,17 @@ impl PanelTemporalEmission {
         let mut transitions = Vec::with_capacity(cycle_count.max(0) as usize * 2);
         for cycle in first_cycle..=last_cycle {
             let cycle_start = self
+                .analytic_banding
                 .phase
                 .checked_add(
-                    self.pwm_period
+                    self.analytic_banding
+                        .period
                         .checked_mul_ratio(cycle, 1)
                         .map_err(PanelError::Time)?,
                 )
                 .map_err(PanelError::Time)?;
             let off = cycle_start
-                .checked_add(self.pwm_on_duration)
+                .checked_add(self.analytic_banding.on_duration)
                 .map_err(PanelError::Time)?;
             for transition in [cycle_start, off] {
                 if transition > start && transition < end {
@@ -784,13 +898,13 @@ impl fmt::Display for PanelError {
                 "panel angular-emission powers must be finite and non-negative"
             }
             Self::InvalidTemporalEmission => {
-                "panel PWM period and on-duration must be positive with on-duration no greater than period"
+                "panel residual flicker and analytic banding parameters are outside their certified ranges"
             }
             Self::InvalidTemporalInterval => {
                 "panel temporal integration interval must have positive duration"
             }
             Self::TooManyTemporalTransitions => {
-                "panel temporal interval exceeds the supported exact PWM transition count"
+                "panel temporal interval exceeds the supported exact banding transition count"
             }
             Self::Time(error) => return write!(formatter, "invalid panel temporal phase: {error}"),
         };
@@ -1002,27 +1116,39 @@ mod tests {
     }
 
     #[test]
-    fn pwm_emission_uses_exact_phase_including_negative_time() {
+    fn clean_flicker_and_optional_banding_are_separate_and_exposure_integrable() {
         let temporal = PanelTemporalEmission {
-            pwm_period: RationalTime::new(1, 100).expect("valid period"),
-            pwm_on_duration: RationalTime::new(1, 200).expect("valid on duration"),
-            phase: RationalTime::new(0, 1).expect("valid phase"),
+            residual_flicker: ResidualFlicker {
+                period: RationalTime::new(1, 240).expect("valid residual period"),
+                amplitude: 0.002,
+                phase: RationalTime::new(0, 1).expect("valid residual phase"),
+            },
+            analytic_banding: AnalyticBanding {
+                period: RationalTime::new(1, 100).expect("valid PWM period"),
+                on_duration: RationalTime::new(1, 200).expect("valid on duration"),
+                phase: RationalTime::new(0, 1).expect("valid PWM phase"),
+                amount: 1.0,
+            },
         };
-        assert_eq!(temporal.gain(RationalTime::new(1, 400).unwrap()), Ok(1.0));
+        assert!(temporal.gain(RationalTime::new(1, 400).unwrap()).unwrap() > 1.9);
         assert_eq!(temporal.gain(RationalTime::new(3, 400).unwrap()), Ok(0.0));
         assert_eq!(temporal.gain(RationalTime::new(-1, 400).unwrap()), Ok(0.0));
-        assert_eq!(
-            temporal
-                .transitions_between(
-                    RationalTime::new(0, 1).unwrap(),
-                    RationalTime::new(1, 50).unwrap(),
-                )
-                .unwrap(),
-            vec![
-                RationalTime::new(1, 200).unwrap(),
-                RationalTime::new(1, 100).unwrap(),
-                RationalTime::new(3, 200).unwrap(),
-            ]
-        );
+        let full_cycles = temporal
+            .average_gain(
+                RationalTime::new(0, 1).unwrap(),
+                RationalTime::new(1, 20).unwrap(),
+            )
+            .unwrap();
+        assert!((full_cycles - 1.0).abs() < 1.0e-5);
+
+        let clean = PanelTemporalEmission::clean_lcd();
+        assert!(clean.gain(RationalTime::new(1, 960).unwrap()).unwrap() > 1.0);
+        let integrated = clean
+            .average_gain(
+                RationalTime::new(0, 1).unwrap(),
+                RationalTime::new(1, 24).unwrap(),
+            )
+            .unwrap();
+        assert!((integrated - 1.0).abs() < 1.0e-5);
     }
 }
