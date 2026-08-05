@@ -830,6 +830,7 @@ fn embedded_test_signal(
     let encoded = match pattern_index {
         2 => include_bytes!("../assets/editorial-text-reference.png").as_slice(),
         3 => include_bytes!("../assets/camera-color-reference.png").as_slice(),
+        4 => include_bytes!("../assets/frequency-moire-reference.png").as_slice(),
         _ => {
             state.embedded_source = None;
             return Ok(None);
@@ -1276,6 +1277,13 @@ fn present_procedural_source(window: &MainWindow) {
             window.set_source_title("Camera color reference".into());
             window
                 .set_source_details("3840 × 2160 · skin, textiles, neutrals and materials".into());
+            window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
+        }
+        4 => {
+            window.set_source_title("Frequency and moire reference".into());
+            window.set_source_details(
+                "3840 × 2160 · MTF, line pairs, slanted edges and channel ramps".into(),
+            );
             window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
         }
         _ => {
@@ -2279,6 +2287,7 @@ mod interaction_tests {
         for encoded in [
             include_bytes!("../assets/editorial-text-reference.png").as_slice(),
             include_bytes!("../assets/camera-color-reference.png").as_slice(),
+            include_bytes!("../assets/frequency-moire-reference.png").as_slice(),
         ] {
             let image = image::load_from_memory_with_format(encoded, image::ImageFormat::Png)
                 .expect("bundled PNG must decode");

@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160" shape-rendering="crispEdges">
+  <defs>
+    <pattern id="lp1" width="2" height="2" patternUnits="userSpaceOnUse"><rect width="1" height="2" fill="#050505"/><rect x="1" width="1" height="2" fill="#fafafa"/></pattern>
+    <pattern id="lp2" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="4" fill="#050505"/><rect x="2" width="2" height="4" fill="#fafafa"/></pattern>
+    <pattern id="lp3" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="3" height="6" fill="#050505"/><rect x="3" width="3" height="6" fill="#fafafa"/></pattern>
+    <pattern id="lp4" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="4" height="8" fill="#050505"/><rect x="4" width="4" height="8" fill="#fafafa"/></pattern>
+    <pattern id="lp6" width="12" height="12" patternUnits="userSpaceOnUse"><rect width="6" height="12" fill="#050505"/><rect x="6" width="6" height="12" fill="#fafafa"/></pattern>
+    <pattern id="lp8" width="16" height="16" patternUnits="userSpaceOnUse"><rect width="8" height="16" fill="#050505"/><rect x="8" width="8" height="16" fill="#fafafa"/></pattern>
+    <pattern id="rgb1" width="3" height="3" patternUnits="userSpaceOnUse"><rect width="1" height="3" fill="#ff0000"/><rect x="1" width="1" height="3" fill="#00ff00"/><rect x="2" width="1" height="3" fill="#0000ff"/></pattern>
+    <pattern id="cmy2" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="2" height="6" fill="#00ffff"/><rect x="2" width="2" height="6" fill="#ff00ff"/><rect x="4" width="2" height="6" fill="#ffff00"/></pattern>
+    <linearGradient id="gray" x1="0" x2="1"><stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#ffffff"/></linearGradient>
+    <linearGradient id="red" x1="0" x2="1"><stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#ff0000"/></linearGradient>
+    <linearGradient id="green" x1="0" x2="1"><stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#00ff00"/></linearGradient>
+    <linearGradient id="blue" x1="0" x2="1"><stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#0000ff"/></linearGradient>
+    <path id="wedge" d="M0 0 L-21.4 -490 L21.4 -490 Z" fill="#050505"/>
+  </defs>
+
+  <rect width="3840" height="2160" fill="#808080"/>
+  <rect x="56" y="48" width="3728" height="2064" rx="18" fill="#ededed" stroke="#151515" stroke-width="4"/>
+  <text x="112" y="122" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="700" fill="#111">FREQUENCY · MTF · MOIRE · DEVICE PIXEL REFERENCE</text>
+  <text x="112" y="168" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#444">3840 × 2160 sRGB device signal · authored pixel frequencies</text>
+
+  <rect x="100" y="214" width="1260" height="1110" fill="#bdbdbd" stroke="#222" stroke-width="3"/>
+  <g transform="translate(730 768)">
+    <circle r="500" fill="#fafafa" stroke="#111" stroke-width="4"/>
+    <use href="#wedge" transform="rotate(0)"/><use href="#wedge" transform="rotate(10)"/><use href="#wedge" transform="rotate(20)"/><use href="#wedge" transform="rotate(30)"/>
+    <use href="#wedge" transform="rotate(40)"/><use href="#wedge" transform="rotate(50)"/><use href="#wedge" transform="rotate(60)"/><use href="#wedge" transform="rotate(70)"/>
+    <use href="#wedge" transform="rotate(80)"/><use href="#wedge" transform="rotate(90)"/><use href="#wedge" transform="rotate(100)"/><use href="#wedge" transform="rotate(110)"/>
+    <use href="#wedge" transform="rotate(120)"/><use href="#wedge" transform="rotate(130)"/><use href="#wedge" transform="rotate(140)"/><use href="#wedge" transform="rotate(150)"/>
+    <use href="#wedge" transform="rotate(160)"/><use href="#wedge" transform="rotate(170)"/><use href="#wedge" transform="rotate(180)"/><use href="#wedge" transform="rotate(190)"/>
+    <use href="#wedge" transform="rotate(200)"/><use href="#wedge" transform="rotate(210)"/><use href="#wedge" transform="rotate(220)"/><use href="#wedge" transform="rotate(230)"/>
+    <use href="#wedge" transform="rotate(240)"/><use href="#wedge" transform="rotate(250)"/><use href="#wedge" transform="rotate(260)"/><use href="#wedge" transform="rotate(270)"/>
+    <use href="#wedge" transform="rotate(280)"/><use href="#wedge" transform="rotate(290)"/><use href="#wedge" transform="rotate(300)"/><use href="#wedge" transform="rotate(310)"/>
+    <use href="#wedge" transform="rotate(320)"/><use href="#wedge" transform="rotate(330)"/><use href="#wedge" transform="rotate(340)"/><use href="#wedge" transform="rotate(350)"/>
+    <circle r="12" fill="#ff3a20"/>
+  </g>
+  <text x="520" y="1292" font-family="Arial, Helvetica, sans-serif" font-size="26" fill="#222">SIEMENS STAR · RADIAL RESOLUTION</text>
+
+  <g font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#222">
+    <text x="1430" y="248">VERTICAL LINE PAIRS · AUTHORED DEVICE PIXELS</text>
+    <rect x="1430" y="278" width="330" height="260" fill="url(#lp1)" stroke="#222" stroke-width="2"/><text x="1430" y="570">1 px</text>
+    <rect x="1790" y="278" width="330" height="260" fill="url(#lp2)" stroke="#222" stroke-width="2"/><text x="1790" y="570">2 px</text>
+    <rect x="2150" y="278" width="330" height="260" fill="url(#lp3)" stroke="#222" stroke-width="2"/><text x="2150" y="570">3 px</text>
+    <rect x="2510" y="278" width="330" height="260" fill="url(#lp4)" stroke="#222" stroke-width="2"/><text x="2510" y="570">4 px</text>
+    <rect x="2870" y="278" width="330" height="260" fill="url(#lp6)" stroke="#222" stroke-width="2"/><text x="2870" y="570">6 px</text>
+    <rect x="3230" y="278" width="430" height="260" fill="url(#lp8)" stroke="#222" stroke-width="2"/><text x="3230" y="570">8 px</text>
+  </g>
+
+  <g transform="translate(1430 650)">
+    <text x="0" y="0" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#222">SLANTED EDGES · 1 / 2 / 4 PX</text>
+    <rect x="0" y="40" width="680" height="300" fill="#fafafa" stroke="#222" stroke-width="2"/>
+    <g transform="translate(110 190) rotate(-5)"><rect x="-44" y="-150" width="44" height="300" fill="#050505"/><rect x="0" y="-150" width="1" height="300" fill="#777"/></g>
+    <g transform="translate(340 190) rotate(5)"><rect x="-44" y="-150" width="44" height="300" fill="#050505"/><rect x="0" y="-150" width="2" height="300" fill="#777"/></g>
+    <g transform="translate(570 190) rotate(-7)"><rect x="-44" y="-150" width="44" height="300" fill="#050505"/><rect x="0" y="-150" width="4" height="300" fill="#777"/></g>
+
+    <text x="740" y="0" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#222">CONCENTRIC FREQUENCY</text>
+    <rect x="740" y="40" width="720" height="300" fill="#fafafa" stroke="#222" stroke-width="2"/>
+    <g transform="translate(1100 190)" fill="none" stroke="#050505">
+      <circle r="12" stroke-width="5"/><circle r="24" stroke-width="5"/><circle r="38" stroke-width="4"/><circle r="54" stroke-width="4"/>
+      <circle r="72" stroke-width="4"/><circle r="92" stroke-width="3"/><circle r="114" stroke-width="3"/><circle r="138" stroke-width="3"/>
+      <circle r="164" stroke-width="2"/><circle r="192" stroke-width="2"/><circle r="222" stroke-width="2"/><circle r="254" stroke-width="1"/>
+    </g>
+
+    <text x="1520" y="0" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#222">CHROMATIC FREQUENCY</text>
+    <rect x="1520" y="40" width="710" height="140" fill="url(#rgb1)" stroke="#222" stroke-width="2"/>
+    <rect x="1520" y="200" width="710" height="140" fill="url(#cmy2)" stroke="#222" stroke-width="2"/>
+  </g>
+
+  <g font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#222">
+    <text x="112" y="1410">LUMINANCE AND CHANNEL RAMPS</text>
+    <rect x="112" y="1440" width="870" height="110" fill="url(#gray)" stroke="#222" stroke-width="2"/>
+    <rect x="1010" y="1440" width="870" height="110" fill="url(#red)" stroke="#222" stroke-width="2"/>
+    <rect x="1908" y="1440" width="870" height="110" fill="url(#green)" stroke="#222" stroke-width="2"/>
+    <rect x="2806" y="1440" width="870" height="110" fill="url(#blue)" stroke="#222" stroke-width="2"/>
+  </g>
+
+  <g font-family="Arial, Helvetica, sans-serif" fill="#222">
+    <text x="112" y="1648" font-size="26" font-weight="700">FINE TEXT AND PIXEL MARKS</text>
+    <text x="112" y="1702" font-size="24">24 px — MTF 0123456789 · RGB · diagonals /\\ · curves OQCG · stems Il1 | rn m</text>
+    <text x="112" y="1744" font-size="18">18 px — Pixel phase, black matrix, optical focus, Bayer sampling and demosaic detail.</text>
+    <text x="112" y="1780" font-size="14">14 px — abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789</text>
+    <text x="112" y="1812" font-size="10">10 px — microtext intended to cross the practical resolution threshold of the complete imaging chain.</text>
+  </g>
+
+  <g transform="translate(112 1870)">
+    <rect width="3564" height="184" fill="#808080" stroke="#222" stroke-width="2"/>
+    <rect x="28" y="28" width="1" height="128" fill="#000"/><rect x="58" y="28" width="2" height="128" fill="#000"/>
+    <rect x="90" y="28" width="3" height="128" fill="#000"/><rect x="124" y="28" width="4" height="128" fill="#000"/>
+    <rect x="160" y="28" width="6" height="128" fill="#000"/><rect x="202" y="28" width="8" height="128" fill="#000"/>
+    <rect x="260" y="28" width="128" height="1" fill="#fff"/><rect x="260" y="58" width="128" height="2" fill="#fff"/>
+    <rect x="260" y="90" width="128" height="3" fill="#fff"/><rect x="260" y="124" width="128" height="4" fill="#fff"/>
+    <g transform="translate(480 28)">
+      <rect width="128" height="128" fill="#000"/><rect x="1" y="1" width="126" height="126" fill="#fff"/>
+      <rect x="16" y="16" width="96" height="96" fill="#000"/><rect x="17" y="17" width="94" height="94" fill="#fff"/>
+      <rect x="32" y="32" width="64" height="64" fill="#000"/><rect x="33" y="33" width="62" height="62" fill="#fff"/>
+    </g>
+    <text x="660" y="108" font-family="Menlo, Monaco, monospace" font-size="26" fill="#f5f5f5">1  2  3  4  6  8 px · exact authored marks · neutral 50% surround</text>
+  </g>
+</svg>
