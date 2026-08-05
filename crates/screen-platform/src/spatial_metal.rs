@@ -623,7 +623,9 @@ mod tests {
         CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation,
         LensModel, Quaternion, TransformKeyframe, TransformTrack,
     };
-    use screen_panel::{LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout};
+    use screen_panel::{
+        AnalyticBanding, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
+    };
     use screen_sensor::{SensorProfile, SensorRegion};
     use std::collections::BTreeMap;
 
@@ -902,6 +904,67 @@ mod tests {
             &metal,
         )
         .expect("complete Metal capture");
+        assert_eq!(gpu.raw.codes, cpu.raw.codes);
+        assert_eq!(gpu.raw.full_well_clipped, cpu.raw.full_well_clipped);
+        assert_eq!(gpu.raw.adc_clipped, cpu.raw.adc_clipped);
+        for (expected, actual) in cpu.developed.acescg.iter().zip(&gpu.developed.acescg) {
+            for difference in [
+                (expected.r - actual.r).abs(),
+                (expected.g - actual.g).abs(),
+                (expected.b - actual.b).abs(),
+            ] {
+                assert!(difference <= 2.0e-5, "developed difference {difference}");
+            }
+        }
+    }
+
+    #[test]
+    fn static_reuse_matches_cpu_for_rolling_analytic_banding_and_eight_samples() {
+        let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
+        let (sensor, region) = sensor_and_region();
+        let mut optics = request();
+        optics.procedural_pattern = ProceduralTestPattern::EyeChart;
+        optics.panel.temporal_emission.analytic_banding = AnalyticBanding {
+            period: RationalTime::new(1, 100).expect("period"),
+            on_duration: RationalTime::new(1, 250).expect("duty"),
+            phase: RationalTime::new(1, 1_000).expect("phase"),
+            amount: 0.8,
+        };
+        let capture = FrameCaptureRequest {
+            optics,
+            frame_rate: FrameRate::new(24, 1).expect("frame rate"),
+            frame_index: 17,
+            duration: RationalTime::new(1, 800).expect("shutter"),
+            temporal_samples: 8,
+            readout: SensorReadout::Rolling {
+                duration: RationalTime::new(1, 100).expect("readout"),
+                direction: RollingDirection::TopToBottom,
+            },
+            neutral_density_stops: 0.0,
+            noise_seed: 0x0B4A_D1A6,
+        };
+        let development = CameraDevelopment {
+            white_balance: LinearRgb::new(1.7, 1.0, 0.65),
+            middle_gray_illuminance_seconds: 0.05,
+            develop_exposure_ev: 0.75,
+        };
+        let cpu = capture_and_develop_procedural_region_with_backend(
+            capture.clone(),
+            sensor,
+            development,
+            region,
+            &metal,
+        )
+        .expect("CPU spatial oracle capture");
+        let gpu = capture_and_develop_procedural_region_with_compute_backends(
+            capture,
+            sensor,
+            development,
+            region,
+            &metal,
+            &metal,
+        )
+        .expect("reused Metal capture");
         assert_eq!(gpu.raw.codes, cpu.raw.codes);
         assert_eq!(gpu.raw.full_well_clipped, cpu.raw.full_well_clipped);
         assert_eq!(gpu.raw.adc_clipped, cpu.raw.adc_clipped);

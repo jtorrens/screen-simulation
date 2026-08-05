@@ -702,6 +702,64 @@ pub struct SpatialOpticalPlan {
     pub signal: SpatialSignalPlan,
 }
 
+impl SpatialOpticalPlan {
+    fn has_identical_spatial_evaluation(&self, other: &Self) -> bool {
+        self.raster == other.raster
+            && self.frame.camera == other.frame.camera
+            && self.frame.screen == other.frame.screen
+            && self.panel == other.panel
+            && self.panel_native_to_acescg == other.panel_native_to_acescg
+            && self.cover == other.cover
+            && self.environment == other.environment
+            && self.aperture_sample_count == other.aperture_sample_count
+            && self.signal.has_identical_spatial_evaluation(&other.signal)
+    }
+}
+
+impl SpatialSignalPlan {
+    fn has_identical_spatial_evaluation(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Procedural {
+                    pattern: first_pattern,
+                    time_seconds: first_time,
+                },
+                Self::Procedural {
+                    pattern,
+                    time_seconds,
+                },
+            ) => {
+                first_pattern == pattern
+                    && (*first_pattern != ProceduralTestPattern::AnimatedCheckerboard
+                        || first_time == time_seconds)
+            }
+            (
+                Self::Raster {
+                    width: first_width,
+                    height: first_height,
+                    device_signal: first_device,
+                    linear_native_emission: first_emission,
+                    placement: first_placement,
+                },
+                Self::Raster {
+                    width,
+                    height,
+                    device_signal,
+                    linear_native_emission,
+                    placement,
+                },
+            ) => {
+                first_width == width
+                    && first_height == height
+                    && first_placement == placement
+                    && Arc::ptr_eq(first_device, device_signal)
+                    && Arc::ptr_eq(first_emission, linear_native_emission)
+            }
+            _ => false,
+        }
+    }
+}
+
 pub trait SpatialOpticalBackend {
     type Error: fmt::Display;
 
@@ -1624,6 +1682,7 @@ where
     F: FnMut(OpticalRequest, SensorRegion) -> Result<SpatialOpticalPlan, ApplicationError>,
 {
     struct BatchSample {
+        plan_index: usize,
         destination_offset: usize,
         expected_pixels: usize,
         weight_seconds: f64,
@@ -1632,6 +1691,17 @@ where
 
     let mut plans = Vec::new();
     let mut batch_samples = Vec::new();
+    let intern_plan = |plans: &mut Vec<SpatialOpticalPlan>, plan: SpatialOpticalPlan| {
+        if let Some(index) = plans
+            .iter()
+            .position(|candidate| candidate.has_identical_spatial_evaluation(&plan))
+        {
+            index
+        } else {
+            plans.push(plan);
+            plans.len() - 1
+        }
+    };
     match request.readout {
         SensorReadout::Global => {
             for sample in shutter_quadrature(
@@ -1649,8 +1719,9 @@ where
                 optics.time = sample.time;
                 optics.panel_temporal_evaluation =
                     PanelTemporalEvaluation::ExposureAverage(temporal_gain);
-                plans.push(plan_at(optics, region)?);
+                let plan_index = intern_plan(&mut plans, plan_at(optics, region)?);
                 batch_samples.push(BatchSample {
+                    plan_index,
                     destination_offset: 0,
                     expected_pixels: usize::from(region.width) * usize::from(region.height),
                     weight_seconds: sample.weight_seconds,
@@ -1687,16 +1758,20 @@ where
                     optics.time = sample.time;
                     optics.panel_temporal_evaluation =
                         PanelTemporalEvaluation::ExposureAverage(temporal_gain);
-                    plans.push(plan_at(
-                        optics,
-                        SensorRegion {
-                            origin_x: region.origin_x,
-                            origin_y: global_row as u16,
-                            width: region.width,
-                            height: 1,
-                        },
-                    )?);
+                    let plan_index = intern_plan(
+                        &mut plans,
+                        plan_at(
+                            optics,
+                            SensorRegion {
+                                origin_x: region.origin_x,
+                                origin_y: global_row as u16,
+                                width: region.width,
+                                height: 1,
+                            },
+                        )?,
+                    );
                     batch_samples.push(BatchSample {
+                        plan_index,
                         destination_offset: local_row * usize::from(region.width),
                         expected_pixels: usize::from(region.width),
                         weight_seconds: sample.weight_seconds,
@@ -1709,16 +1784,17 @@ where
     let batches = backend
         .evaluate_spatial_batch(&plans)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
-    if batches.len() != batch_samples.len() {
+    if batches.len() != plans.len() {
         return Err(ApplicationError::OpticalSampleRasterMismatch);
     }
     let mut accumulated =
         vec![[0.0_f64; 3]; usize::from(region.width) * usize::from(region.height)];
-    for (pixels, sample) in batches.into_iter().zip(batch_samples) {
+    for sample in batch_samples {
+        let pixels = &batches[sample.plan_index];
         if pixels.len() != sample.expected_pixels {
             return Err(ApplicationError::OpticalSampleRasterMismatch);
         }
-        for (index, pixel) in pixels.into_iter().enumerate() {
+        for (index, pixel) in pixels.iter().enumerate() {
             let sum = &mut accumulated[sample.destination_offset + index];
             let scale = f64::from(sample.temporal_gain) * sample.weight_seconds;
             sum[0] += f64::from(pixel.acescg_irradiance.r) * scale;
@@ -3763,6 +3839,84 @@ mod tests {
             .unwrap()
         };
         assert_eq!(integrate(zero_amount), integrate(clean));
+    }
+
+    #[test]
+    fn static_rolling_reuses_one_plan_per_row_but_integrates_all_eight_gains() {
+        let mut optics = request().optics;
+        optics.procedural_pattern = ProceduralTestPattern::EyeChart;
+        optics.panel.temporal_emission = PanelTemporalEmission::continuous();
+        optics.panel.temporal_emission.analytic_banding = AnalyticBanding {
+            period: RationalTime::new(1, 100).unwrap(),
+            on_duration: RationalTime::new(1, 250).unwrap(),
+            phase: RationalTime::new(1, 1_000).unwrap(),
+            amount: 0.8,
+        };
+        let duration = RationalTime::new(1, 800).unwrap();
+        let readout_duration = RationalTime::new(1, 100).unwrap();
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 2,
+            origin_y: 2,
+            width: 3,
+            height: 2,
+        };
+        let backend = UnitSpatialBackend {
+            last_batch_size: AtomicUsize::new(0),
+        };
+        let exposure = integrate_spatial_region_with_backend(
+            ShutterRequest {
+                optics: optics.clone(),
+                duration,
+                temporal_samples: 8,
+                readout: SensorReadout::Rolling {
+                    duration: readout_duration,
+                    direction: RollingDirection::TopToBottom,
+                },
+                neutral_density_stops: 0.0,
+            },
+            sensor,
+            region,
+            &backend,
+            |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+        )
+        .unwrap();
+        assert_eq!(backend.last_batch_size.load(Ordering::Relaxed), 2);
+        for local_row in 0..usize::from(region.height) {
+            let global_row = usize::from(region.origin_y) + local_row;
+            let center = rolling_row_center_time(
+                optics.time,
+                readout_duration,
+                global_row,
+                usize::from(sensor.native_height),
+                RollingDirection::TopToBottom,
+            )
+            .unwrap();
+            let expected = shutter_quadrature(center, duration, 8)
+                .unwrap()
+                .into_iter()
+                .map(|sample| {
+                    f64::from(
+                        optics
+                            .panel
+                            .temporal_emission
+                            .average_gain(sample.start, sample.end)
+                            .unwrap(),
+                    ) * sample.weight_seconds
+                })
+                .sum::<f64>() as f32;
+            for column in 0..usize::from(region.width) {
+                let pixel = exposure.acescg_illuminance_seconds
+                    [local_row * usize::from(region.width) + column];
+                assert!((pixel.r - expected).abs() <= 2.0e-7);
+                assert!((pixel.g - expected).abs() <= 2.0e-7);
+                assert!((pixel.b - expected).abs() <= 2.0e-7);
+            }
+        }
     }
 
     #[test]
