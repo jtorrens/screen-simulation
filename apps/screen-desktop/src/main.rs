@@ -5,13 +5,17 @@
 pub mod project_mapping;
 
 use std::cell::RefCell;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use image::ImageEncoder;
 use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PreparedDeviceSignalRaster,
@@ -197,6 +201,7 @@ struct InteractionState {
     capture_middle_gray_at_reference_ei: f32,
     capture_render_requested: bool,
     capture_cancel: Option<Arc<AtomicBool>>,
+    latest_native_export: Arc<Mutex<Option<NativeExportFrame>>>,
     preview_pending: bool,
     embedded_source: Option<(i32, Arc<PreparedDeviceSignalRaster>)>,
 }
@@ -364,6 +369,7 @@ impl InteractionState {
                 .middle_gray_illuminance_seconds_at_reference_ei,
             capture_render_requested: false,
             capture_cancel: None,
+            latest_native_export: Arc::new(Mutex::new(None)),
             preview_pending: false,
             embedded_source: None,
         }
@@ -1004,8 +1010,11 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 middle_gray_at_reference_ei: state.capture_middle_gray_at_reference_ei,
             },
             region,
-            started,
-            cancel,
+            NativeRenderSession {
+                started,
+                cancel,
+                latest_export: Arc::clone(&state.latest_native_export),
+            },
         );
         state.capture_render_requested = false;
         state.last_capture_controls = Some(current_controls);
@@ -1095,8 +1104,11 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                         middle_gray_at_reference_ei: state.capture_middle_gray_at_reference_ei,
                     },
                     region,
-                    started,
-                    cancel,
+                    NativeRenderSession {
+                        started,
+                        cancel,
+                        latest_export: Arc::clone(&state.latest_native_export),
+                    },
                 );
                 state.capture_render_requested = false;
                 state.last_capture_controls = Some(current_controls);
@@ -1466,8 +1478,7 @@ fn render_camera_result(
     source: Option<(Arc<PreparedDeviceSignalRaster>, RasterPlacement)>,
     capture_profile: CapturePhotometricProfile,
     region: SensorRegion,
-    started: Instant,
-    cancel: Arc<AtomicBool>,
+    session: NativeRenderSession,
 ) {
     let sensor = capture_profile.sensor;
     window.set_render_progress_visible(true);
@@ -1494,6 +1505,11 @@ fn render_camera_result(
     window.set_native_staging_ready(false);
     window.set_preview_aspect(f32::from(region.width) / f32::from(region.height));
     let weak_window = window.as_weak();
+    let NativeRenderSession {
+        started,
+        cancel,
+        latest_export,
+    } = session;
     thread::spawn(move || {
         let progress_window = weak_window.clone();
         let result = run_native_capture_job(
@@ -1528,6 +1544,14 @@ fn render_camera_result(
             window.set_native_staging_ready(false);
             match result {
                 Ok(output) => {
+                    if let Ok(mut current) = latest_export.lock() {
+                        *current = Some(NativeExportFrame {
+                            width: output.width,
+                            height: output.height,
+                            pixels: Arc::clone(&output.pixels),
+                            transform: output.transform,
+                        });
+                    }
                     window.set_render_progress(1.0);
                     window.set_render_progress_visible(false);
                     present_native_capture(&window, output, started);
@@ -1551,19 +1575,42 @@ fn render_camera_result(
 struct NativeCaptureOutput {
     width: u16,
     height: u16,
-    pixels: Vec<[u8; 4]>,
+    pixels: Arc<[u8]>,
     display_levels: [NativeDisplayLevel; 3],
     full_well_clipped: usize,
     adc_clipped: usize,
     sensor: SensorProfile,
     region: SensorRegion,
     transform: CameraOutputTransform,
+    timings: NativeCaptureTimings,
+}
+
+struct NativeRenderSession {
+    started: Instant,
+    cancel: Arc<AtomicBool>,
+    latest_export: Arc<Mutex<Option<NativeExportFrame>>>,
 }
 
 struct NativeDisplayLevel {
     width: u16,
     height: u16,
-    pixels: Vec<[u8; 4]>,
+    pixels: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct NativeExportFrame {
+    width: u16,
+    height: u16,
+    pixels: Arc<[u8]>,
+    transform: CameraOutputTransform,
+}
+
+#[derive(Clone, Copy, Default)]
+struct NativeCaptureTimings {
+    setup: Duration,
+    capture_and_develop: Duration,
+    output_and_assembly: Duration,
+    display_pyramid: Duration,
 }
 
 #[derive(Clone, Copy)]
@@ -1726,13 +1773,20 @@ fn run_native_capture_job(
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, usize, SensorRegion, Option<NativeStagingPreview>),
 ) -> Result<NativeCaptureOutput, NativeCaptureError> {
+    let setup_started = Instant::now();
     let color_engine =
         ColorEngine::bundled().map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
     let processor = color_engine
         .camera_output_processor(transform)
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
-    let mut pixels =
-        vec![[0_u8, 0_u8, 0_u8, 255_u8]; usize::from(region.width) * usize::from(region.height)];
+    let mut timings = NativeCaptureTimings {
+        setup: setup_started.elapsed(),
+        ..NativeCaptureTimings::default()
+    };
+    let mut pixels = vec![0_u8; usize::from(region.width) * usize::from(region.height) * 4];
+    for alpha in pixels.iter_mut().skip(3).step_by(4) {
+        *alpha = 255;
+    }
     let mut staging_accumulator = NativeStagingAccumulator::new(region, 960);
     let tiles = sensor_tiles(region, 512);
     let tile_count = tiles.len();
@@ -1745,6 +1799,7 @@ fn run_native_capture_job(
         if cancel.load(Ordering::Relaxed) {
             return Err(NativeCaptureError::Cancelled);
         }
+        let capture_started = Instant::now();
         let captured = match &source {
             Some((prepared, placement)) => capture_and_develop_device_signal_region(
                 capture.clone(),
@@ -1759,6 +1814,8 @@ fn run_native_capture_job(
             }
         }
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
+        timings.capture_and_develop += capture_started.elapsed();
+        let output_started = Instant::now();
         let (tile_full_well_clipped, tile_adc_clipped) = clipping_in_region(&captured.raw, tile);
         full_well_clipped += tile_full_well_clipped;
         adc_clipped += tile_adc_clipped;
@@ -1770,21 +1827,23 @@ fn run_native_capture_job(
             .apply_acescg_rgba_buffer(&mut output)
             .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
         let tile_width = usize::from(tile.width);
-        let output_stride = usize::from(region.width);
+        let output_stride = usize::from(region.width) * 4;
         let offset_x = usize::from(tile.origin_x - region.origin_x);
         let offset_y = usize::from(tile.origin_y - region.origin_y);
         for row in 0..usize::from(tile.height) {
-            let target_start = (offset_y + row) * output_stride + offset_x;
+            let target_start = (offset_y + row) * output_stride + offset_x * 4;
             for (column, rgba) in output[row * tile_width * 4..(row + 1) * tile_width * 4]
                 .chunks_exact(4)
                 .enumerate()
             {
                 let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
                 let pixel = [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255];
-                pixels[target_start + column] = pixel;
+                pixels[target_start + column * 4..target_start + column * 4 + 4]
+                    .copy_from_slice(&pixel);
                 staging_accumulator.add_pixel(offset_x + column, offset_y + row, pixel);
             }
         }
+        timings.output_and_assembly += output_started.elapsed();
         let completed = tile_index + 1;
         let staging = if completed == tile_count
             || last_staging_update.elapsed() >= Duration::from_millis(100)
@@ -1796,49 +1855,50 @@ fn run_native_capture_job(
         };
         progress(completed, tile_count, tile, staging);
     }
+    let pixels = Arc::<[u8]>::from(pixels);
+    let pyramid_started = Instant::now();
+    let display_levels = build_native_display_levels(region.width, region.height, &pixels);
+    timings.display_pyramid = pyramid_started.elapsed();
     Ok(NativeCaptureOutput {
         width: region.width,
         height: region.height,
-        display_levels: build_native_display_levels(region.width, region.height, &pixels),
+        display_levels,
         pixels,
         full_well_clipped,
         adc_clipped,
         sensor,
         region,
         transform,
+        timings,
     })
 }
 
-fn build_native_display_levels(
-    width: u16,
-    height: u16,
-    pixels: &[[u8; 4]],
-) -> [NativeDisplayLevel; 3] {
+fn build_native_display_levels(width: u16, height: u16, pixels: &[u8]) -> [NativeDisplayLevel; 3] {
     let level_1 = downsample_rgba_2x(width, height, pixels);
     let level_2 = downsample_rgba_2x(level_1.width, level_1.height, &level_1.pixels);
     let level_3 = downsample_rgba_2x(level_2.width, level_2.height, &level_2.pixels);
     [level_1, level_2, level_3]
 }
 
-fn downsample_rgba_2x(width: u16, height: u16, pixels: &[[u8; 4]]) -> NativeDisplayLevel {
+fn downsample_rgba_2x(width: u16, height: u16, pixels: &[u8]) -> NativeDisplayLevel {
     let output_width = width.div_ceil(2);
     let output_height = height.div_ceil(2);
-    let mut output = Vec::with_capacity(usize::from(output_width) * usize::from(output_height));
+    let mut output = Vec::with_capacity(usize::from(output_width) * usize::from(output_height) * 4);
     for output_y in 0..output_height {
         for output_x in 0..output_width {
             let mut sum = [0_u32; 4];
             let mut count = 0_u32;
             for source_y in (output_y * 2)..(output_y * 2 + 2).min(height) {
                 for source_x in (output_x * 2)..(output_x * 2 + 2).min(width) {
-                    let pixel =
-                        pixels[usize::from(source_y) * usize::from(width) + usize::from(source_x)];
+                    let source =
+                        (usize::from(source_y) * usize::from(width) + usize::from(source_x)) * 4;
                     for channel in 0..4 {
-                        sum[channel] += u32::from(pixel[channel]);
+                        sum[channel] += u32::from(pixels[source + channel]);
                     }
                     count += 1;
                 }
             }
-            output.push([
+            output.extend_from_slice(&[
                 ((sum[0] + count / 2) / count) as u8,
                 ((sum[1] + count / 2) / count) as u8,
                 ((sum[2] + count / 2) / count) as u8,
@@ -1870,15 +1930,27 @@ fn present_native_staging(window: &MainWindow, staging: NativeStagingPreview) {
 }
 
 fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, started: Instant) {
-    window.set_native_level_0_image(native_level_image(NativeDisplayLevel {
-        width: output.width,
-        height: output.height,
-        pixels: output.pixels,
-    }));
+    window.set_native_level_0_image(native_level_image(
+        output.width,
+        output.height,
+        &output.pixels,
+    ));
     let [level_1, level_2, level_3] = output.display_levels;
-    window.set_native_level_1_image(native_level_image(level_1));
-    window.set_native_level_2_image(native_level_image(level_2));
-    window.set_native_level_3_image(native_level_image(level_3));
+    window.set_native_level_1_image(native_level_image(
+        level_1.width,
+        level_1.height,
+        &level_1.pixels,
+    ));
+    window.set_native_level_2_image(native_level_image(
+        level_2.width,
+        level_2.height,
+        &level_2.pixels,
+    ));
+    window.set_native_level_3_image(native_level_image(
+        level_3.width,
+        level_3.height,
+        &level_3.pixels,
+    ));
     window.set_native_source_width(f32::from(output.width));
     window.set_native_pyramid_ready(true);
     window.set_scale_text(
@@ -1894,9 +1966,13 @@ fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, star
     );
     window.set_render_text(
         format!(
-            "RAW → demosaic → WB → ACEScg → {} · {:.1} ms",
+            "Native {:.1} ms · setup {:.1} · physical+develop {:.1} · ODT+assemble {:.1} · pyramid {:.1} · {}",
+            started.elapsed().as_secs_f64() * 1_000.0,
+            output.timings.setup.as_secs_f64() * 1_000.0,
+            output.timings.capture_and_develop.as_secs_f64() * 1_000.0,
+            output.timings.output_and_assembly.as_secs_f64() * 1_000.0,
+            output.timings.display_pyramid.as_secs_f64() * 1_000.0,
             output.transform.label(),
-            started.elapsed().as_secs_f64() * 1_000.0
         )
         .into(),
     );
@@ -1919,10 +1995,13 @@ fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, star
     window.set_error_text("".into());
 }
 
-fn native_level_image(level: NativeDisplayLevel) -> Image {
-    let mut buffer =
-        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(level.width), u32::from(level.height));
-    for (target, source) in buffer.make_mut_slice().iter_mut().zip(level.pixels) {
+fn native_level_image(width: u16, height: u16, pixels: &[u8]) -> Image {
+    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(width), u32::from(height));
+    for (target, source) in buffer
+        .make_mut_slice()
+        .iter_mut()
+        .zip(pixels.chunks_exact(4))
+    {
         *target = Rgba8Pixel {
             r: source[0],
             g: source[1],
@@ -1931,6 +2010,26 @@ fn native_level_image(level: NativeDisplayLevel) -> Image {
         };
     }
     Image::from_rgba8(buffer)
+}
+
+fn encode_native_png(writer: impl Write, frame: &NativeExportFrame) -> Result<(), String> {
+    let expected = usize::from(frame.width) * usize::from(frame.height) * 4;
+    if frame.pixels.len() != expected {
+        return Err("native export buffer does not match its authored raster".into());
+    }
+    image::codecs::png::PngEncoder::new(writer)
+        .write_image(
+            frame.pixels.as_ref(),
+            u32::from(frame.width),
+            u32::from(frame.height),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn write_native_png(path: &Path, frame: &NativeExportFrame) -> Result<(), String> {
+    let file = File::create(path).map_err(|error| error.to_string())?;
+    encode_native_png(file, frame)
 }
 
 fn sensor_tiles(region: SensorRegion, edge: u16) -> Vec<SensorRegion> {
@@ -2239,6 +2338,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(cancel) = &state.borrow().capture_cancel {
                 cancel.store(true, Ordering::Relaxed);
             }
+        });
+    }
+
+    {
+        let weak_window = window.as_weak();
+        let latest_export = Arc::clone(&state.borrow().latest_native_export);
+        window.on_export_native_frame(move || {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            if window.get_capture_rendering() || window.get_native_capture_stale() {
+                return;
+            }
+            let frame = match latest_export.lock() {
+                Ok(current) => current.clone(),
+                Err(_) => {
+                    block_preview(&window, "native export state is unavailable");
+                    return;
+                }
+            };
+            let Some(frame) = frame else {
+                block_preview(&window, "render one complete Native result before export");
+                return;
+            };
+            let Some(path) = rfd::FileDialog::new()
+                .set_title("Export exact Native camera result")
+                .add_filter("PNG image", &["png"])
+                .set_file_name("screen-simulation-native.png")
+                .save_file()
+            else {
+                return;
+            };
+            window.set_render_text("Exporting exact Native raster…".into());
+            let export_window = weak_window.clone();
+            thread::spawn(move || {
+                let result = write_native_png(&path, &frame);
+                let _ = export_window.upgrade_in_event_loop(move |window| match result {
+                    Ok(()) => {
+                        window.set_render_text(
+                            format!(
+                                "Exported {} × {} exact Native PNG · {}",
+                                frame.width,
+                                frame.height,
+                                frame.transform.label()
+                            )
+                            .into(),
+                        );
+                        window.set_error_text("".into());
+                    }
+                    Err(error) => block_preview(&window, &format!("Native export failed: {error}")),
+                });
+            });
         });
     }
 
@@ -2696,32 +2847,26 @@ mod interaction_tests {
     #[test]
     fn native_display_pyramid_area_filters_chroma_aliases_without_mutating_source() {
         let source = [
-            [255, 0, 0, 255],
-            [0, 255, 255, 255],
-            [255, 0, 0, 255],
-            [0, 255, 255, 255],
-            [255, 0, 0, 255],
-            [0, 255, 255, 255],
-            [255, 0, 0, 255],
-            [0, 255, 255, 255],
+            255, 0, 0, 255, 0, 255, 255, 255, 255, 0, 0, 255, 0, 255, 255, 255, 255, 0, 0, 255, 0,
+            255, 255, 255, 255, 0, 0, 255, 0, 255, 255, 255,
         ];
         let levels = build_native_display_levels(8, 1, &source);
 
-        assert_eq!(source[0], [255, 0, 0, 255]);
+        assert_eq!(&source[0..4], &[255, 0, 0, 255]);
         assert_eq!((levels[0].width, levels[0].height), (4, 1));
         assert!(
             levels[0]
                 .pixels
-                .iter()
-                .all(|pixel| *pixel == [128, 128, 128, 255])
+                .chunks_exact(4)
+                .all(|pixel| pixel == [128, 128, 128, 255])
         );
         assert_eq!((levels[2].width, levels[2].height), (1, 1));
-        assert_eq!(levels[2].pixels[0], [128, 128, 128, 255]);
+        assert_eq!(levels[2].pixels, [128, 128, 128, 255]);
     }
 
     #[test]
     fn native_display_pyramid_preserves_odd_image_edges() {
-        let source = vec![[42, 84, 126, 255]; 15];
+        let source = [42, 84, 126, 255].repeat(15);
         let levels = build_native_display_levels(5, 3, &source);
         assert_eq!((levels[0].width, levels[0].height), (3, 2));
         assert_eq!((levels[1].width, levels[1].height), (2, 1));
@@ -2729,8 +2874,28 @@ mod interaction_tests {
         assert!(
             levels
                 .iter()
-                .flat_map(|level| &level.pixels)
-                .all(|pixel| *pixel == [42, 84, 126, 255])
+                .flat_map(|level| level.pixels.chunks_exact(4))
+                .all(|pixel| pixel == [42, 84, 126, 255])
         );
+    }
+
+    #[test]
+    fn native_png_export_preserves_exact_level_zero_pixels() {
+        let pixels = Arc::<[u8]>::from(vec![
+            1, 2, 3, 255, 10, 20, 30, 255, 100, 110, 120, 255, 250, 240, 230, 255,
+        ]);
+        let frame = NativeExportFrame {
+            width: 2,
+            height: 2,
+            pixels: Arc::clone(&pixels),
+            transform: CameraOutputTransform::SrgbSdr100,
+        };
+        let mut encoded = Vec::new();
+        encode_native_png(&mut encoded, &frame).expect("native PNG encoding");
+        let decoded = image::load_from_memory_with_format(&encoded, image::ImageFormat::Png)
+            .expect("native PNG decoding")
+            .to_rgba8();
+        assert_eq!((decoded.width(), decoded.height()), (2, 2));
+        assert_eq!(decoded.as_raw(), pixels.as_ref());
     }
 }

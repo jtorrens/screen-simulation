@@ -205,6 +205,7 @@ export component MainWindow inherits Window {
     callback select-capture-preset(string);
     callback render-capture-frame();
     callback cancel-capture-frame();
+    callback export-native-frame();
     callback continue-preview-render();
     callback select-render-quality(int);
 
@@ -654,6 +655,14 @@ export component MainWindow inherits Window {
                                         clicked => { root.cancel-capture-frame(); }
                                         visible: root.capture-rendering;
                                     }
+                                }
+
+                                Button {
+                                    visible: root.render-quality-index >= 3 && root.native-capture-ready;
+                                    text: "Export exact Native PNG…";
+                                    clicked => { root.export-native-frame(); }
+                                    enabled: !root.capture-rendering && !root.native-capture-stale;
+                                    height: 32px;
                                 }
 
                                 Text {

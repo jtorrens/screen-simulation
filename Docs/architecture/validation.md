@@ -8,5 +8,6 @@ The architecture guard also verifies that active documentation does not link int
 
 Contract coverage will reject unknown versions, unknown fields, aliases, missing required values and invalid references. Startup coverage will prove byte-for-byte read-only project opening. Conversion coverage will use disposable copies. CPU/GPU color and numeric implementations will be compared with documented tolerances.
 
-Broad tests are never a fallback for an unclassified change. The validation-owner manifest must first assign the changed path to its semantic owner and exact checks.
+Desktop export coverage decodes an in-memory PNG and requires its raster and RGBA bytes to equal the immutable Native level-zero publication buffer exactly. Display-pyramid tests separately require exact 2× area reduction, including odd raster edges, so export cannot silently consume a presentation level.
 
+Broad tests are never a fallback for an unclassified change. The validation-owner manifest must first assign the changed path to its semantic owner and exact checks.
