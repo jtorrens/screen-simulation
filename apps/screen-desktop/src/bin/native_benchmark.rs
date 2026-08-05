@@ -18,15 +18,16 @@ use screen_platform::MetalRawDevelopment;
 use screen_sensor::{RawSensorRegion, SensorProfile, SensorRegion};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    const WIDTH: u16 = 64;
-    const HEIGHT: u16 = 48;
+    const SENSOR_WIDTH: u16 = 256;
+    const SENSOR_HEIGHT: u16 = 192;
+    const TILE_EDGE: u16 = 128;
     let iphone = CAPTURE_DEVICE_PRESETS
         .iter()
         .find(|preset| preset.id == "iphone-16e-main-48mp")
         .expect("current iPhone capture template");
     let sensor = SensorProfile {
-        native_width: WIDTH,
-        native_height: HEIGHT,
+        native_width: SENSOR_WIDTH,
+        native_height: SENSOR_HEIGHT,
         ..iphone.sensor
     };
     let at_zero = RationalTime::new(0, 24)?;
@@ -79,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let capture = FrameCaptureRequest {
         optics: OpticalRequest {
             time: at_zero,
-            viewport_aspect: f32::from(WIDTH) / f32::from(HEIGHT),
+            viewport_aspect: f32::from(SENSOR_WIDTH) / f32::from(SENSOR_HEIGHT),
             panel: LcdProfile {
                 native_width: DEVICE_PRESETS[0].native_width,
                 native_height: DEVICE_PRESETS[0].native_height,
@@ -125,7 +126,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         capture,
         sensor,
         development,
-        SensorRegion::full(sensor),
+        SensorRegion {
+            origin_x: 0,
+            origin_y: 0,
+            width: TILE_EDGE,
+            height: TILE_EDGE,
+        },
         &metal,
     )?;
     let elapsed = render_started.elapsed();
@@ -135,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         f64::from(iphone.sensor.native_width) * f64::from(iphone.sensor.native_height);
     println!("backend: Metal · {}", metal.device_name());
     println!("scene: iPhone 16e model · rolling shutter · 8 temporal samples");
-    println!("benchmark raster: {WIDTH}x{HEIGHT} ({pixels:.0} pixels)");
+    println!("benchmark tile: {TILE_EDGE}x{TILE_EDGE} ({pixels:.0} pixels)");
     println!("cold backend setup: {:.3} s", setup.as_secs_f64());
     println!(
         "time to first complete tile: {:.3} s",

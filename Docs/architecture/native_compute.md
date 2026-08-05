@@ -49,10 +49,10 @@ for the iPhone 16e model with rolling shutter and eight temporal samples, a meas
 extrapolation, and isolated CPU/Metal RAW-development time. Extrapolation is diagnostic evidence,
 not a promise: it assumes linear pixel scaling for the same authored scene and hardware.
 
-The 2026-08-05 release measurement on Apple M3 Ultra reported 0.057 s cold backend setup, 0.469 s
-to the first 64×48 complete benchmark tile, 6,557 sensor pixels/s end-to-end and a 2.1 h linear
+The 2026-08-05 release measurement on Apple M3 Ultra reported 0.114 s cold backend setup, 2.031 s
+to the first complete 128×128 product tile, 8,067 sensor pixels/s end-to-end and a 1.7 h linear
 extrapolation for 8064×6048. Isolated 1024×768 RAW development measured 0.017 s CPU versus 0.003 s
-Metal, or 5.43×. This localizes the remaining cost in the pre-RAW optical evaluator rather than the
+Metal, or 5.58×. This localizes the remaining cost in the pre-RAW optical evaluator rather than the
 connected Metal stage.
 
 The next implementation tranche is precisely bounded:
