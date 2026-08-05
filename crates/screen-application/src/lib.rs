@@ -29,6 +29,7 @@ use screen_sensor::{
     BayerPattern, CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
     SensorError, SensorProfile, SensorRegion, expose_raw, expose_raw_region,
 };
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureOpticsAuthority {
@@ -779,6 +780,20 @@ pub trait SpatialOpticalBackend {
     }
 }
 
+/// Wall-clock stage accounting for reproducible Native pipeline benchmarks.
+///
+/// Backend time includes command encoding, GPU execution and materializing shared-buffer results.
+/// Apple silicon uses unified `StorageModeShared` buffers, so there is no separate device-to-host
+/// transfer stage in the current Metal backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeCaptureStageTimings {
+    pub preparation_cpu: Duration,
+    pub spatial_backend: Duration,
+    pub integration_and_sensor_cpu: Duration,
+    pub raw_development_backend: Duration,
+    pub output_assembly_cpu: Duration,
+}
+
 impl RasterWindow {
     fn full(width: u16, height: u16) -> Self {
         Self {
@@ -1229,6 +1244,32 @@ where
     S: SpatialOpticalBackend,
     R: RawDevelopmentBackend,
 {
+    capture_and_develop_procedural_region_with_compute_backends_timed(
+        request,
+        sensor,
+        development,
+        requested_region,
+        spatial_backend,
+        raw_backend,
+    )
+    .map(|(capture, _)| capture)
+}
+
+/// The connected product pipeline with stage timings intended for performance diagnostics.
+pub fn capture_and_develop_procedural_region_with_compute_backends_timed<S, R>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    spatial_backend: &S,
+    raw_backend: &R,
+) -> Result<(CapturedCameraRegion, NativeCaptureStageTimings), ApplicationError>
+where
+    S: SpatialOpticalBackend,
+    R: RawDevelopmentBackend,
+{
+    let mut timings = NativeCaptureStageTimings::default();
+    let preparation_started = Instant::now();
     let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
     let requested_region = requested_region
         .validate(sensor)
@@ -1237,23 +1278,32 @@ where
     let source_is_static =
         request.optics.procedural_pattern != ProceduralTestPattern::AnimatedCheckerboard;
     let (shutter, identity) = request.resolve()?;
-    let exposure = integrate_spatial_region_with_backend(
+    timings.preparation_cpu += preparation_started.elapsed();
+    let exposure = integrate_spatial_region_with_backend_timed(
         shutter,
         sensor,
         evaluation_region,
         source_is_static,
         spatial_backend,
         |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+        &mut timings,
     )?;
+    let sensor_started = Instant::now();
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
         .map_err(ApplicationError::Sensor)?;
+    timings.integration_and_sensor_cpu += sensor_started.elapsed();
+    let raw_started = Instant::now();
     let developed = raw_backend
         .develop_region(&raw, sensor, development)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
-    Ok(CapturedCameraRegion {
+    timings.raw_development_backend = raw_started.elapsed();
+    let assembly_started = Instant::now();
+    let capture = CapturedCameraRegion {
         raw,
         developed: crop_developed_region(developed, requested_region),
-    })
+    };
+    timings.output_assembly_cpu = assembly_started.elapsed();
+    Ok((capture, timings))
 }
 
 pub fn capture_and_develop_device_signal_region(
@@ -1681,12 +1731,37 @@ fn integrate_spatial_region_with_backend<B, F>(
     region: SensorRegion,
     source_is_static: bool,
     backend: &B,
-    mut plan_at: F,
+    plan_at: F,
 ) -> Result<IntegratedOpticalExposure, ApplicationError>
 where
     B: SpatialOpticalBackend,
     F: FnMut(OpticalRequest, SensorRegion) -> Result<SpatialOpticalPlan, ApplicationError>,
 {
+    integrate_spatial_region_with_backend_timed(
+        request,
+        sensor,
+        region,
+        source_is_static,
+        backend,
+        plan_at,
+        &mut NativeCaptureStageTimings::default(),
+    )
+}
+
+fn integrate_spatial_region_with_backend_timed<B, F>(
+    request: ShutterRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    source_is_static: bool,
+    backend: &B,
+    mut plan_at: F,
+    timings: &mut NativeCaptureStageTimings,
+) -> Result<IntegratedOpticalExposure, ApplicationError>
+where
+    B: SpatialOpticalBackend,
+    F: FnMut(OpticalRequest, SensorRegion) -> Result<SpatialOpticalPlan, ApplicationError>,
+{
+    let preparation_started = Instant::now();
     struct BatchSample {
         plan_index: usize,
         destination_offset: usize,
@@ -1814,12 +1889,16 @@ where
             }
         }
     }
+    timings.preparation_cpu += preparation_started.elapsed();
+    let backend_started = Instant::now();
     let batches = backend
         .evaluate_spatial_batch(&plans)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
+    timings.spatial_backend += backend_started.elapsed();
     if batches.len() != plans.len() {
         return Err(ApplicationError::OpticalSampleRasterMismatch);
     }
+    let integration_started = Instant::now();
     let mut accumulated =
         vec![[0.0_f64; 3]; usize::from(region.width) * usize::from(region.height)];
     for sample in batch_samples {
@@ -1835,13 +1914,15 @@ where
             sum[2] += f64::from(pixel.acescg_irradiance.b) * scale;
         }
     }
-    finish_integrated_exposure(
+    let exposure = finish_integrated_exposure(
         region.width,
         region.height,
         request.duration,
         request.neutral_density_stops,
         accumulated,
-    )
+    )?;
+    timings.integration_and_sensor_cpu += integration_started.elapsed();
+    Ok(exposure)
 }
 
 fn integrate_global_region(

@@ -4,6 +4,7 @@ use screen_application::{
     CAPTURE_DEVICE_PRESETS, FrameCaptureRequest, OpticalRequest, PanelTemporalEvaluation,
     ProceduralTestPattern, RollingDirection, SensorReadout, SpatialOpticalBackend,
     capture_and_develop_procedural_region_with_compute_backends,
+    capture_and_develop_procedural_region_with_compute_backends_timed,
     evaluate_procedural_spatial_cpu_oracle, prepare_procedural_spatial_plan,
 };
 use screen_camera::{CameraDevelopment, CpuRawDevelopment, RawDevelopmentBackend};
@@ -162,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok((started.elapsed(), result.developed.acescg.len() as f64))
         };
     let (default_elapsed, pixels) = run_capture(default_capture.clone())?;
-    let mut static_eight_capture = default_capture;
+    let mut static_eight_capture = default_capture.clone();
     static_eight_capture.temporal_samples = MOTION_SAMPLES;
     static_eight_capture.optics.procedural_pattern = ProceduralTestPattern::EyeChart;
     let (static_eight_elapsed, static_pixels) = run_capture(static_eight_capture)?;
@@ -217,6 +218,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "48 MP static/8 end-to-end extrapolation: {:.1} min (same exact 8-sample integration)",
         iphone_pixels / static_eight_throughput / 60.0
+    );
+
+    const LARGE_WIDTH: u16 = 1_536;
+    const LARGE_HEIGHT: u16 = 1_152;
+    let large_sensor = SensorProfile {
+        native_width: LARGE_WIDTH,
+        native_height: LARGE_HEIGHT,
+        ..iphone.sensor
+    };
+    let large_region = SensorRegion::full(large_sensor);
+    let large_default = default_capture.clone();
+    let mut large_static_eight = large_default.clone();
+    large_static_eight.temporal_samples = MOTION_SAMPLES;
+    large_static_eight.optics.procedural_pattern = ProceduralTestPattern::EyeChart;
+    let run_large = |label: &str,
+                     capture: FrameCaptureRequest|
+     -> Result<(Duration, f64), Box<dyn std::error::Error>> {
+        let started = Instant::now();
+        let (result, stages) = capture_and_develop_procedural_region_with_compute_backends_timed(
+            capture,
+            large_sensor,
+            development,
+            large_region,
+            &metal,
+            &metal,
+        )?;
+        let total = started.elapsed();
+        let measured = stages.preparation_cpu
+            + stages.spatial_backend
+            + stages.integration_and_sensor_cpu
+            + stages.raw_development_backend
+            + stages.output_assembly_cpu;
+        println!(
+            "large ROI {label}: {LARGE_WIDTH}x{LARGE_HEIGHT} · {:.3} s",
+            total.as_secs_f64()
+        );
+        println!(
+            "  preparation CPU {:.3} s · spatial Metal + shared materialization {:.3} s",
+            stages.preparation_cpu.as_secs_f64(),
+            stages.spatial_backend.as_secs_f64()
+        );
+        println!(
+            "  temporal integration + sensor CPU {:.3} s · RAW develop Metal {:.3} s · output assembly {:.3} s",
+            stages.integration_and_sensor_cpu.as_secs_f64(),
+            stages.raw_development_backend.as_secs_f64(),
+            stages.output_assembly_cpu.as_secs_f64()
+        );
+        println!(
+            "  explicit device/host transfer 0.000 s (unified StorageModeShared; result materialization is included above) · unaccounted {:.3} s",
+            total.saturating_sub(measured).as_secs_f64()
+        );
+        Ok((total, result.developed.acescg.len() as f64))
+    };
+    let (large_default_elapsed, large_pixels) = run_large("default1", large_default)?;
+    let (large_static_elapsed, _) = run_large("static8", large_static_eight)?;
+    println!(
+        "48 MP large-ROI extrapolation: default1 {:.1} s · static8 {:.1} s",
+        iphone_pixels / (large_pixels / large_default_elapsed.as_secs_f64()),
+        iphone_pixels / (large_pixels / large_static_elapsed.as_secs_f64())
+    );
+    let expanded = large_region.expanded_for_demosaic(large_sensor);
+    let expanded_pixels = usize::from(expanded.width) * usize::from(expanded.height);
+    println!(
+        "large-ROI principal staging: {:.1} MiB spatial float4 + {:.1} MiB accumulated f64x3 + {:.1} MiB developed float3",
+        expanded_pixels as f64 * 16.0 / 1_048_576.0,
+        expanded_pixels as f64 * 24.0 / 1_048_576.0,
+        expanded_pixels as f64 * 12.0 / 1_048_576.0
     );
 
     let backend_sensor = SensorProfile {
