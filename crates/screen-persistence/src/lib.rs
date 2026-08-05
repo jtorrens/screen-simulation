@@ -159,6 +159,9 @@ pub struct DeviceDocument {
     pub primary_xy: [[f32; 2]; 3],
     pub white_xy: [f32; 2],
     pub angular_emission_power: [f32; 3],
+    pub pwm_period: ExactTime,
+    pub pwm_on_duration: ExactTime,
+    pub pwm_phase: ExactTime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -668,6 +671,9 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
 }
 
 fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
+    validate_time(device.pwm_period)?;
+    validate_time(device.pwm_on_duration)?;
+    validate_time(device.pwm_phase)?;
     let values = [
         device.active_width_meters,
         device.active_height_meters,
@@ -707,6 +713,9 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
             .angular_emission_power
             .iter()
             .any(|value| *value < 0.0)
+        || device.pwm_period.numerator <= 0
+        || device.pwm_on_duration.numerator <= 0
+        || compare_time(device.pwm_on_duration, device.pwm_period).is_gt()
     {
         return Err(PersistenceError::InvalidDeviceProfile);
     }
@@ -956,6 +965,18 @@ mod tests {
                 primary_xy: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
                 white_xy: [0.3127, 0.3290],
                 angular_emission_power: [1.7, 1.5, 1.8],
+                pwm_period: ExactTime {
+                    numerator: 1,
+                    denominator: 1_000,
+                },
+                pwm_on_duration: ExactTime {
+                    numerator: 1,
+                    denominator: 1_000,
+                },
+                pwm_phase: ExactTime {
+                    numerator: 0,
+                    denominator: 1,
+                },
             },
             camera: CameraDocument {
                 schema: "screen_simulation_camera".into(),

@@ -148,6 +148,16 @@ impl RationalTime {
             u128::from(self.denominator) * u128::from(denominator),
         )
     }
+
+    pub fn floor_div(self, positive_divisor: Self) -> Result<i64, ContractError> {
+        if positive_divisor.numerator <= 0 {
+            return Err(ContractError::NonPositiveTimeDivisor);
+        }
+        let numerator = i128::from(self.numerator) * i128::from(positive_divisor.denominator);
+        let denominator = i128::from(self.denominator) * i128::from(positive_divisor.numerator);
+        let quotient = numerator.div_euclid(denominator);
+        i64::try_from(quotient).map_err(|_| ContractError::TimeOverflow)
+    }
 }
 
 fn rational_from_wide(numerator: i128, denominator: u128) -> Result<RationalTime, ContractError> {
@@ -236,6 +246,7 @@ pub enum ContractError {
     ZeroDenominator,
     NonPositiveFrameRate,
     TimeOverflow,
+    NonPositiveTimeDivisor,
 }
 
 impl fmt::Display for ContractError {
@@ -248,6 +259,9 @@ impl fmt::Display for ContractError {
                 formatter.write_str("frame rate numerator and denominator must be positive")
             }
             Self::TimeOverflow => formatter.write_str("exact frame time exceeds its numeric range"),
+            Self::NonPositiveTimeDivisor => {
+                formatter.write_str("exact time divisor must be positive")
+            }
         }
     }
 }
@@ -303,6 +317,12 @@ mod tests {
                 .expect("valid boundary time")
                 .checked_add(RationalTime::new(1, 1).expect("valid increment")),
             Err(ContractError::TimeOverflow)
+        );
+        assert_eq!(
+            RationalTime::new(-1, 10)
+                .expect("valid negative time")
+                .floor_div(RationalTime::new(1, 24).expect("valid period")),
+            Ok(-3)
         );
     }
 }

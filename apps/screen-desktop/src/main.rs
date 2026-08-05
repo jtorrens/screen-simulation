@@ -28,7 +28,7 @@ use screen_media::{
     MediaDescriptor, ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix,
     SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
 };
-use screen_panel::{LcdProfile, PanelColorimetry, StripeLayout};
+use screen_panel::{LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout};
 use screen_platform::{decode_frame_at_time, probe_media};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
@@ -335,6 +335,7 @@ fn simulation_request(
                 white_level_nits: window.get_white_nits(),
                 colorimetry: PanelColorimetry::SRGB_D65,
                 angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+                temporal_emission: PanelTemporalEmission::continuous(),
             },
             camera: camera.clone(),
             screen: screen.clone(),

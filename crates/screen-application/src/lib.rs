@@ -792,8 +792,16 @@ fn evaluate_optical_raster_with_signal(
         });
     }
     frame.representative_signal = signal_at(Vec2 { x: 0.5, y: 0.5 });
-    frame.representative_emission = request.panel.emitted_radiance(frame.representative_signal);
     let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let panel_temporal_gain = panel_evaluator
+        .temporal_gain(request.time)
+        .map_err(ApplicationError::Panel)?;
+    let representative = request.panel.emitted_radiance(frame.representative_signal);
+    frame.representative_emission = LinearRgb::new(
+        representative.r * panel_temporal_gain,
+        representative.g * panel_temporal_gain,
+        representative.b * panel_temporal_gain,
+    );
     let preview_scale_percent = projected_device_pixel_width(&frame, request.panel, width)
         .ok_or(ApplicationError::ViewRayMissesPanel)?
         * 100.0;
@@ -856,6 +864,7 @@ fn evaluate_optical_raster_with_signal(
                         view,
                         request.panel,
                         panel_evaluator,
+                        panel_temporal_gain,
                         signal_at,
                         signal_area,
                     );
@@ -867,6 +876,7 @@ fn evaluate_optical_raster_with_signal(
                     view,
                     request.panel,
                     panel_evaluator,
+                    panel_temporal_gain,
                     signal_at,
                     signal_area,
                 );
@@ -894,6 +904,7 @@ fn integrate_aperture_samples(
     view: DiagnosticView,
     panel: LcdProfile,
     evaluator: ValidatedPanelEvaluator,
+    panel_temporal_gain: f32,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
     signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) -> LinearOpticalPixel {
@@ -924,7 +935,13 @@ fn integrate_aperture_samples(
                     minimum.y = minimum.y.min(uv.y);
                     maximum.x = maximum.x.max(uv.x);
                     maximum.y = maximum.y.max(uv.y);
-                    weight_sum += optical_channel_weight(optical, evaluator, view, channel);
+                    weight_sum += optical_channel_weight(
+                        optical,
+                        evaluator,
+                        panel_temporal_gain,
+                        view,
+                        channel,
+                    );
                     count += 1;
                 }
                 if count == 0 {
@@ -982,7 +999,13 @@ fn integrate_aperture_samples(
                 | DiagnosticView::EmittedRadiance
                 | DiagnosticView::Subpixels => evaluator.native_channel(signal, channel),
             };
-            let optical_weight = optical_channel_weight(*optical_sample, evaluator, view, channel);
+            let optical_weight = optical_channel_weight(
+                *optical_sample,
+                evaluator,
+                panel_temporal_gain,
+                view,
+                channel,
+            );
             let weighted = value * optical_weight;
             match channel {
                 0 => sum.r += weighted,
@@ -1007,6 +1030,7 @@ fn integrate_aperture_samples(
 fn optical_channel_weight(
     optical: OpticalSample,
     evaluator: ValidatedPanelEvaluator,
+    panel_temporal_gain: f32,
     view: DiagnosticView,
     channel: usize,
 ) -> f32 {
@@ -1015,6 +1039,7 @@ fn optical_channel_weight(
     }
     optical.irradiance_weight[channel]
         * evaluator.angular_channel(optical.emission_cosine[channel], channel)
+        * panel_temporal_gain
 }
 
 fn subpixels_resolved_for_samples(
@@ -1310,6 +1335,7 @@ mod tests {
     use super::*;
     use screen_color::{ColorEngine, DeviceColorTarget, SourceColorInterpretation};
     use screen_contracts::{Meters, Millimeters};
+    use screen_panel::PanelTemporalEmission;
     use screen_panel::{PanelColorimetry, StripeLayout};
 
     fn request() -> SimulationRequest {
@@ -1329,6 +1355,7 @@ mod tests {
                     white_level_nits: 500.0,
                     colorimetry: PanelColorimetry::SRGB_D65,
                     angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+                    temporal_emission: PanelTemporalEmission::continuous(),
                 },
                 camera: CameraRig {
                     transform: screen_geometry::TransformTrack {
@@ -1505,6 +1532,52 @@ mod tests {
     }
 
     #[test]
+    fn global_shutter_integrates_physical_panel_pwm_phase() {
+        let base_optics = request().optics;
+        let signal = |_| {
+            Ok(DeviceSignalRaster {
+                width: 1,
+                height: 1,
+                pixels: vec![DeviceRgb::WHITE],
+            })
+        };
+        let continuous = integrate_global_shutter_from_device_signal_sequence(
+            GlobalShutterRequest {
+                optics: base_optics.clone(),
+                duration: RationalTime::new(1, 100).unwrap(),
+                temporal_samples: 2,
+            },
+            32,
+            18,
+            RasterPlacement::Stretch,
+            signal,
+        )
+        .expect("continuous exposure");
+        let mut pulsed_optics = base_optics;
+        pulsed_optics.panel.temporal_emission = PanelTemporalEmission {
+            pwm_period: RationalTime::new(1, 100).unwrap(),
+            pwm_on_duration: RationalTime::new(1, 200).unwrap(),
+            phase: RationalTime::new(0, 1).unwrap(),
+        };
+        let pulsed = integrate_global_shutter_from_device_signal_sequence(
+            GlobalShutterRequest {
+                optics: pulsed_optics,
+                duration: RationalTime::new(1, 100).unwrap(),
+                temporal_samples: 2,
+            },
+            32,
+            18,
+            RasterPlacement::Stretch,
+            signal,
+        )
+        .expect("pulsed exposure");
+        let index = 9 * 32 + 16;
+        let continuous_value = continuous.acescg_irradiance_seconds[index].g;
+        let pulsed_value = pulsed.acescg_irradiance_seconds[index].g;
+        assert!((pulsed_value / continuous_value - 0.5).abs() < 1.0e-5);
+    }
+
+    #[test]
     fn fit_subpixel_view_integrates_unresolved_device_pixels() {
         let mut request = request();
         request.view = DiagnosticView::Subpixels;
@@ -1527,6 +1600,7 @@ mod tests {
             DiagnosticView::Composite,
             request.optics.panel,
             request.optics.panel.evaluator().expect("valid panel"),
+            1.0,
             &|_| DeviceRgb::WHITE,
             &|_, _| DeviceRgb::WHITE,
         );
@@ -1541,6 +1615,7 @@ mod tests {
             DiagnosticView::Composite,
             request.optics.panel,
             request.optics.panel.evaluator().expect("valid panel"),
+            1.0,
             &|_| DeviceRgb::WHITE,
             &|_, _| DeviceRgb::WHITE,
         );

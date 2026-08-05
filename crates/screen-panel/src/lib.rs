@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use screen_contracts::{DeviceRgb, LinearRgb, Meters};
+use screen_contracts::{ContractError, DeviceRgb, LinearRgb, Meters, RationalTime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StripeLayout {
@@ -64,6 +64,14 @@ pub struct LcdProfile {
     pub white_level_nits: f32,
     pub colorimetry: PanelColorimetry,
     pub angular_emission_power: LinearRgb,
+    pub temporal_emission: PanelTemporalEmission,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanelTemporalEmission {
+    pub pwm_period: RationalTime,
+    pub pwm_on_duration: RationalTime,
+    pub phase: RationalTime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -110,6 +118,7 @@ impl LcdProfile {
         {
             return Err(PanelError::InvalidAngularResponse);
         }
+        self.temporal_emission.validate()?;
         Ok(self)
     }
 
@@ -270,6 +279,51 @@ impl ValidatedPanelEvaluator {
             matrix[2][0] * native.r + matrix[2][1] * native.g + matrix[2][2] * native.b,
         )
     }
+
+    pub fn temporal_gain(self, time: RationalTime) -> Result<f32, PanelError> {
+        self.profile.temporal_emission.gain(time)
+    }
+}
+
+impl PanelTemporalEmission {
+    pub fn continuous() -> Self {
+        Self {
+            pwm_period: RationalTime::new(1, 1_000).expect("constant PWM period is valid"),
+            pwm_on_duration: RationalTime::new(1, 1_000)
+                .expect("constant PWM on-duration is valid"),
+            phase: RationalTime::new(0, 1).expect("constant PWM phase is valid"),
+        }
+    }
+
+    pub fn validate(self) -> Result<Self, PanelError> {
+        if self.pwm_period.numerator() <= 0
+            || self.pwm_on_duration.numerator() <= 0
+            || self.pwm_on_duration > self.pwm_period
+        {
+            return Err(PanelError::InvalidTemporalEmission);
+        }
+        Ok(self)
+    }
+
+    pub fn gain(self, time: RationalTime) -> Result<f32, PanelError> {
+        self.validate()?;
+        let relative = time.checked_sub(self.phase).map_err(PanelError::Time)?;
+        let cycle = relative
+            .floor_div(self.pwm_period)
+            .map_err(PanelError::Time)?;
+        let cycle_start = self
+            .pwm_period
+            .checked_mul_ratio(cycle, 1)
+            .map_err(PanelError::Time)?;
+        let within_cycle = relative
+            .checked_sub(cycle_start)
+            .map_err(PanelError::Time)?;
+        Ok(if within_cycle < self.pwm_on_duration {
+            1.0
+        } else {
+            0.0
+        })
+    }
 }
 
 fn chromaticity_coordinates_are_valid(color: PanelColorimetry) -> bool {
@@ -428,6 +482,8 @@ pub enum PanelError {
     InvalidLuminanceRange,
     InvalidColorimetry,
     InvalidAngularResponse,
+    InvalidTemporalEmission,
+    Time(ContractError),
 }
 
 impl fmt::Display for PanelError {
@@ -446,6 +502,10 @@ impl fmt::Display for PanelError {
             Self::InvalidAngularResponse => {
                 "panel angular-emission powers must be finite and non-negative"
             }
+            Self::InvalidTemporalEmission => {
+                "panel PWM period and on-duration must be positive with on-duration no greater than period"
+            }
+            Self::Time(error) => return write!(formatter, "invalid panel temporal phase: {error}"),
         };
         formatter.write_str(message)
     }
@@ -470,6 +530,7 @@ mod tests {
             white_level_nits: 600.0,
             colorimetry: PanelColorimetry::SRGB_D65,
             angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+            temporal_emission: PanelTemporalEmission::continuous(),
         }
     }
 
@@ -593,5 +654,17 @@ mod tests {
             panel.angular_attenuation(0.0),
             LinearRgb::new(0.0, 0.0, 0.0)
         );
+    }
+
+    #[test]
+    fn pwm_emission_uses_exact_phase_including_negative_time() {
+        let temporal = PanelTemporalEmission {
+            pwm_period: RationalTime::new(1, 100).expect("valid period"),
+            pwm_on_duration: RationalTime::new(1, 200).expect("valid on duration"),
+            phase: RationalTime::new(0, 1).expect("valid phase"),
+        };
+        assert_eq!(temporal.gain(RationalTime::new(1, 400).unwrap()), Ok(1.0));
+        assert_eq!(temporal.gain(RationalTime::new(3, 400).unwrap()), Ok(0.0));
+        assert_eq!(temporal.gain(RationalTime::new(-1, 400).unwrap()), Ok(0.0));
     }
 }
