@@ -29,11 +29,11 @@ owner and are bit-identical because Metal begins strictly after the authoritativ
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and
-colorimetry, cover and environment, globally selected 16–128 aperture sample count, and either the
+colorimetry, cover and complete rotated synthetic-HDR environment, globally selected 16–128 aperture sample count, and either the
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
 represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
 and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
-Fresnel/transmission/reflection and native-to-ACEScg conversion in one Metal kernel. Physical
+Fresnel/transmission/reflection, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
 The scalar implementation remains available only through explicitly named CPU-oracle functions.
