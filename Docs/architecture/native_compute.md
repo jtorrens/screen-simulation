@@ -68,6 +68,22 @@ is then split only for staging publication; it is bit-identical to evaluating it
 separately. Cancellation is checked before stripe compute and before every logical-tile publication.
 Completed staging remains non-authoritative and a cancelled job never publishes a partial result.
 
+Presentation is a separate platform port. `DisplayPublicationBackend` accepts immutable developed
+linear ACEScg and returns the final level-zero RGBA8 bytes; it cannot alter capture, exposure or any
+physical result. Desktop composes exactly one mandatory implementation. The current implementation
+uses independent instances of the pinned OCIO CPU processor across the host's available workers,
+then applies the same Rust clamp/round quantization contract. It has no runtime Metal/CPU selection
+and no fallback. Preview remains outside this Native publication port, while Native export consumes
+the unchanged returned bytes.
+
+The pinned OCIO GPU processor can generate MSL 2.0 plus its declared 1D/2D/3D LUT and uniform
+resources. A test-only Platform probe compiles that generated source with Metal fast math disabled
+and compares final bytes against the CPU authority. On the current pinned configuration, sRGB SDR
+produced 86 differing RGBA8 samples in a 65,544-sample matrix containing grays, primaries,
+negatives, values above one, non-finite values and dense threshold-adjacent ramps. It is therefore
+not an eligible Native product backend. The generated shader is neither packaged nor reachable by
+Desktop; changing that decision requires a new byte-for-byte eligibility audit.
+
 The reproducible benchmark is:
 
 ```text
@@ -100,17 +116,22 @@ integration. Thus the previous minute-scale number was an invalid extrapolation 
 preparation, not sustained GPU work.
 
 With horizontal stripe scheduling connected to the product, an actual 8064×128 iPhone stripe took
-about 0.10 s through developed linear ACEScg for both default/one-sample and static/eight. Including
-the real CPU OCIO display transform and RGBA8 assembly, first visual publication measured 0.350 s
-and 0.359 s. It exposes 63 logical progress tiles and projects 48 stripes to 16.8 s and 17.2 s
-respectively. Of the default stripe, 0.066 s was plan preparation, 0.014 s spatial Metal, 0.017 s
-integration/sensor, 0.003 s RAW Metal and 0.248 s display transform/assembly. The benchmark process
-reported 200 MiB maximum resident set size (595 MiB macOS peak footprint); principal 1536×1152
-staging is 27.0 MiB spatial float4, 40.5 MiB accumulated f64x3 and 20.2 MiB developed float3. The
-isolated spatial kernel sustained about 13 million pixels/s, while 1024×768 RAW development measured
-0.017 s CPU versus 0.003 s Metal. For moving sources or multi-keyframe geometry, exact motion
-sampling remains the dominant capture cost; old PWM subdivision and CPU optics are absent from the
-product route.
+about 0.10 s through developed linear ACEScg for both default/one-sample and static/eight. Before
+the presentation change, serial CPU OCIO plus RGBA8 assembly added about 0.248 s.
+
+The 2026-08-05 release measurement of the exact parallel publication backend on Apple M3 Ultra
+reported 0.013 s setup and 0.018–0.021 s per 8064×128 stripe. The unchanged serial oracle split was
+0.002 s float RGBA materialization, 0.241 s OCIO and 0.002 s quantization/assembly. Product stripes
+completed in 0.124 s default/one-sample and 0.126 s static/eight, including 0.000 s output copy and
+0.003 s staging, and exposed 63 logical progress tiles. Forty-eight stripes project to 5.9 s and
+6.1 s respectively for the 8064×6048 sensor. This projection includes exact eight-interval temporal
+integration in the static case and applies analytic row gain once; it changes no capture samples.
+
+The large-ROI benchmark still identifies exact CPU plan preparation as the next dominant stage:
+approximately 0.065 s per product stripe and 0.573–0.578 s at 1536×1152. Principal 1536×1152
+staging is 27.0 MiB spatial float4, 40.5 MiB accumulated f64x3 and 20.2 MiB developed float3. For
+moving sources or multi-keyframe geometry, exact motion sampling remains the dominant capture cost;
+old PWM subdivision and CPU optics are absent from the product route.
 
 Remaining performance work is precisely bounded:
 
@@ -119,5 +140,3 @@ Remaining performance work is precisely bounded:
    identity can be established without heuristic tolerances.
 3. Reduce exact CPU row-plan construction cost (the dominant large-ROI capture stage) without
    weakening authored motion detection or temporal integration.
-4. Move or batch the exact OCIO display transform/assembly, now the dominant time-to-publication
-   stage; it is presentation work and must not mutate authoritative developed ACEScg.
