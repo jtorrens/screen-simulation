@@ -715,6 +715,19 @@ impl SpatialOpticalPlan {
             && self.aperture_sample_count == other.aperture_sample_count
             && self.signal.has_identical_spatial_evaluation(&other.signal)
     }
+
+    fn static_template_for_region(&self, time: RationalTime, region: SensorRegion) -> Self {
+        let mut plan = self.clone();
+        plan.frame.time = time;
+        plan.raster.origin_x = region.origin_x;
+        plan.raster.origin_y = region.origin_y;
+        plan.raster.width = region.width;
+        plan.raster.height = region.height;
+        if let SpatialSignalPlan::Procedural { time_seconds, .. } = &mut plan.signal {
+            *time_seconds = time.as_seconds() as f32;
+        }
+        plan
+    }
 }
 
 impl SpatialSignalPlan {
@@ -1833,6 +1846,7 @@ where
             if duration.numerator() <= 0 {
                 return Err(ApplicationError::InvalidSensorReadout);
             }
+            let mut static_row_template: Option<SpatialOpticalPlan> = None;
             for local_row in 0..usize::from(region.height) {
                 let row_plan_start = plans.len();
                 let mut reused_plan_index = None;
@@ -1867,11 +1881,14 @@ where
                         if let Some(index) = reused_plan_index {
                             index
                         } else {
-                            let index = intern_plan(
-                                &mut plans,
-                                row_plan_start,
-                                plan_at(optics, row_region)?,
-                            );
+                            let plan = if let Some(template) = &static_row_template {
+                                template.static_template_for_region(sample.time, row_region)
+                            } else {
+                                let plan = plan_at(optics, row_region)?;
+                                static_row_template = Some(plan.clone());
+                                plan
+                            };
+                            let index = intern_plan(&mut plans, row_plan_start, plan);
                             reused_plan_index = Some(index);
                             index
                         }
@@ -3984,6 +4001,7 @@ mod tests {
         let backend = UnitSpatialBackend {
             last_batch_size: AtomicUsize::new(0),
         };
+        let plan_preparations = AtomicUsize::new(0);
         let exposure = integrate_spatial_region_with_backend(
             ShutterRequest {
                 optics: optics.clone(),
@@ -3999,10 +4017,14 @@ mod tests {
             region,
             true,
             &backend,
-            |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+            |optics, region| {
+                plan_preparations.fetch_add(1, Ordering::Relaxed);
+                prepare_procedural_spatial_plan(optics, sensor, region)
+            },
         )
         .unwrap();
         assert_eq!(backend.last_batch_size.load(Ordering::Relaxed), 2);
+        assert_eq!(plan_preparations.load(Ordering::Relaxed), 1);
         for local_row in 0..usize::from(region.height) {
             let global_row = usize::from(region.origin_y) + local_row;
             let center = rolling_row_center_time(
@@ -4034,6 +4056,38 @@ mod tests {
                 assert!((pixel.b - expected).abs() <= 2.0e-7);
             }
         }
+    }
+
+    #[test]
+    fn static_row_template_is_exactly_the_fresh_prepared_plan() {
+        let mut first = request().optics;
+        first.procedural_pattern = ProceduralTestPattern::EyeChart;
+        first.time = RationalTime::new(1, 24).unwrap();
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let first_region = SensorRegion {
+            origin_x: 2,
+            origin_y: 2,
+            width: 3,
+            height: 1,
+        };
+        let template =
+            prepare_procedural_spatial_plan(first.clone(), sensor, first_region).unwrap();
+        let second_time = RationalTime::new(7, 120).unwrap();
+        let second_region = SensorRegion {
+            origin_y: 3,
+            ..first_region
+        };
+        let mut second = first;
+        second.time = second_time;
+        let fresh = prepare_procedural_spatial_plan(second, sensor, second_region).unwrap();
+        assert_eq!(
+            template.static_template_for_region(second_time, second_region),
+            fresh
+        );
     }
 
     #[test]
