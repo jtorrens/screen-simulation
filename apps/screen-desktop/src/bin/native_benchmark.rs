@@ -8,7 +8,7 @@ use screen_application::{
     evaluate_procedural_spatial_cpu_oracle, prepare_procedural_spatial_plan,
 };
 use screen_camera::{CameraDevelopment, CpuRawDevelopment, RawDevelopmentBackend};
-use screen_color::{CameraOutputTransform, ColorEngine};
+use screen_color::{CameraOutputTransform, ColorEngine, DisplayPublicationBackend};
 use screen_contracts::{FrameRate, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
 use screen_geometry::{
@@ -18,7 +18,7 @@ use screen_geometry::{
 use screen_panel::{
     DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
 };
-use screen_platform::MetalRawDevelopment;
+use screen_platform::{ExactCpuDisplayPublication, MetalRawDevelopment};
 use screen_sensor::{RawSensorRegion, SensorProfile, SensorRegion};
 
 struct BenchmarkStaging {
@@ -350,6 +350,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let output_processor =
         ColorEngine::bundled()?.camera_output_processor(CameraOutputTransform::SrgbSdr100)?;
+    let publication_setup_started = Instant::now();
+    let publication_backend = ExactCpuDisplayPublication::new(CameraOutputTransform::SrgbSdr100)?;
+    println!(
+        "exact publication backend setup: {:.3} s",
+        publication_setup_started.elapsed().as_secs_f64()
+    );
     let stripe_count = usize::from(iphone.sensor.native_height).div_ceil(usize::from(TILE_EDGE));
     let run_product_stripe = |label: &str,
                               capture: FrameCaptureRequest|
@@ -363,9 +369,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &metal,
             &metal,
         )?;
+        let capture_elapsed = started.elapsed();
+        let developed = result.developed.acescg;
         let materialize_started = Instant::now();
-        let mut display = Vec::with_capacity(result.developed.acescg.len() * 4);
-        for pixel in result.developed.acescg {
+        let mut display = Vec::with_capacity(developed.len() * 4);
+        for pixel in &developed {
             display.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
         }
         let materialize_elapsed = materialize_started.elapsed();
@@ -381,9 +389,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect::<Vec<_>>();
         let quantize_elapsed = quantize_started.elapsed();
+        let exact_started = Instant::now();
+        let exact_bytes = publication_backend.publish_acescg_rgba8(&developed)?;
+        let exact_elapsed = exact_started.elapsed();
+        assert_eq!(exact_bytes, display_bytes);
         let copy_started = Instant::now();
-        let mut publication = vec![0_u8; display_bytes.len()];
-        publication.copy_from_slice(&display_bytes);
+        let mut publication = vec![0_u8; exact_bytes.len()];
+        publication.copy_from_slice(&exact_bytes);
         let copy_elapsed = copy_started.elapsed();
         let staging_started = Instant::now();
         let mut staging =
@@ -397,24 +409,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         std::hint::black_box(staging.snapshot());
         let staging_elapsed = staging_started.elapsed();
-        let elapsed = started.elapsed();
+        let product_elapsed = capture_elapsed + exact_elapsed + copy_elapsed + staging_elapsed;
         println!(
-            "product stripe {label}: {}x{} · {:.3} s profiled publication · {} logical tiles ready · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s · float RGBA {:.3} s · OCIO {:.3} s · quantize {:.3} s · output copy {:.3} s · staging {:.3} s",
+            "product stripe {label}: {}x{} · {:.3} s exact product path · {} logical tiles ready · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s · exact parallel publication {:.3} s · output copy {:.3} s · staging {:.3} s",
             product_stripe.width,
             product_stripe.height,
-            elapsed.as_secs_f64(),
+            product_elapsed.as_secs_f64(),
             usize::from(product_stripe.width).div_ceil(usize::from(TILE_EDGE)),
             stages.preparation_cpu.as_secs_f64(),
             stages.spatial_backend.as_secs_f64(),
             stages.integration_and_sensor_cpu.as_secs_f64(),
             stages.raw_development_backend.as_secs_f64(),
-            materialize_elapsed.as_secs_f64(),
-            ocio_elapsed.as_secs_f64(),
-            quantize_elapsed.as_secs_f64(),
+            exact_elapsed.as_secs_f64(),
             copy_elapsed.as_secs_f64(),
             staging_elapsed.as_secs_f64(),
         );
-        Ok(elapsed)
+        println!(
+            "  serial exact oracle split: float RGBA {:.3} s · OCIO {:.3} s · quantize/assembly {:.3} s",
+            materialize_elapsed.as_secs_f64(),
+            ocio_elapsed.as_secs_f64(),
+            quantize_elapsed.as_secs_f64(),
+        );
+        Ok(product_elapsed)
     };
     let stripe_default = run_product_stripe("default1", default_capture.clone())?;
     let mut stripe_static_capture = default_capture.clone();
