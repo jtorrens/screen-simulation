@@ -578,4 +578,15 @@ mod tests {
             assert_spatial_parity(&cpu, &gpu);
         }
     }
+
+    #[test]
+    fn spatial_metal_is_bit_deterministic_for_one_prepared_plan() {
+        let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
+        let (sensor, region) = sensor_and_region();
+        let plan =
+            prepare_procedural_spatial_plan(request(), sensor, region).expect("spatial plan");
+        let first = metal.evaluate_spatial(&plan).expect("first Metal result");
+        let second = metal.evaluate_spatial(&plan).expect("second Metal result");
+        assert_eq!(second, first);
+    }
 }
