@@ -48,3 +48,22 @@ It reports cold Metal setup, time to the first complete Native tile, end-to-end 
 for the iPhone 16e model with rolling shutter and eight temporal samples, a measured 48 MP
 extrapolation, and isolated CPU/Metal RAW-development time. Extrapolation is diagnostic evidence,
 not a promise: it assumes linear pixel scaling for the same authored scene and hardware.
+
+The 2026-08-05 release measurement on Apple M3 Ultra reported 0.057 s cold backend setup, 0.469 s
+to the first 64×48 complete benchmark tile, 6,557 sensor pixels/s end-to-end and a 2.1 h linear
+extrapolation for 8064×6048. Isolated 1024×768 RAW development measured 0.017 s CPU versus 0.003 s
+Metal, or 5.43×. This localizes the remaining cost in the pre-RAW optical evaluator rather than the
+connected Metal stage.
+
+The next implementation tranche is precisely bounded:
+
+1. Add an Application-owned prepared optical-work contract containing validated frame, panel,
+   cover, placement, temporal/PWM partitions and the globally selected aperture pattern.
+2. Execute the current per-ray panel, cover and lens equations in Metal for procedural, static and
+   time-varying device signal through that one contract.
+3. Accumulate every exact temporal interval without reducing the authored sample count, retaining
+   complete-sensor row/CFA/panel phase for ROI and full-frame requests.
+4. Split GPU command work below the 128-pixel publication tile so cancellation can stop queued work
+   promptly without publishing a partial authoritative tile.
+5. Extend CPU-oracle parity to optical illuminance, RAW codes and final development for rolling/PWM,
+   resolved/unresolved subpixels, cover extremes, 16–128 aperture samples and 1–64 temporal samples.

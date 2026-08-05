@@ -114,8 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let development = CameraDevelopment {
         white_balance: screen_contracts::LinearRgb::new(1.0, 1.0, 1.0),
-        middle_gray_illuminance_seconds: iphone
-            .middle_gray_illuminance_seconds_at_reference_ei,
+        middle_gray_illuminance_seconds: iphone.middle_gray_illuminance_seconds_at_reference_ei,
         develop_exposure_ev: 0.0,
     };
     let setup_started = Instant::now();
@@ -132,12 +131,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = render_started.elapsed();
     let pixels = result.developed.acescg.len() as f64;
     let throughput = pixels / elapsed.as_secs_f64();
-    let iphone_pixels = f64::from(iphone.sensor.native_width) * f64::from(iphone.sensor.native_height);
+    let iphone_pixels =
+        f64::from(iphone.sensor.native_width) * f64::from(iphone.sensor.native_height);
     println!("backend: Metal · {}", metal.device_name());
     println!("scene: iPhone 16e model · rolling shutter · 8 temporal samples");
     println!("benchmark raster: {WIDTH}x{HEIGHT} ({pixels:.0} pixels)");
     println!("cold backend setup: {:.3} s", setup.as_secs_f64());
-    println!("time to first complete tile: {:.3} s", elapsed.as_secs_f64());
+    println!(
+        "time to first complete tile: {:.3} s",
+        elapsed.as_secs_f64()
+    );
     println!("end-to-end physical throughput: {throughput:.2} sensor pixels/s");
     println!(
         "48 MP measured extrapolation: {:.1} h ({}x{}; same physical settings)",

@@ -173,6 +173,34 @@ def validate_retired_surfaces(paths: list[str]) -> None:
                 raise ValidationError(f"Retired identifier {identifier!r} returned in {relative_path}")
 
 
+def validate_native_backend_composition(paths: list[str]) -> None:
+    required_paths = {
+        "crates/screen-platform/shaders/native_camera.metal",
+        "Docs/architecture/native_compute.md",
+    }
+    missing = sorted(required_paths - set(paths))
+    if missing:
+        raise ValidationError(f"Native Metal boundary is incomplete; missing={missing}")
+    desktop = (ROOT / "apps/screen-desktop/src/main.rs").read_text(encoding="utf-8")
+    required_calls = [
+        "MetalRawDevelopment::new()",
+        "capture_and_develop_procedural_region_with_backend(",
+        "capture_and_develop_device_signal_region_with_backend(",
+        "capture_and_develop_device_signal_region_sequence_with_backend(",
+    ]
+    absent = [call for call in required_calls if call not in desktop]
+    if absent:
+        raise ValidationError(f"Desktop Native composition does not require Metal; absent={absent}")
+    cpu_calls = [
+        "capture_and_develop_procedural_region(",
+        "capture_and_develop_device_signal_region(",
+        "capture_and_develop_device_signal_region_sequence(",
+    ]
+    present = [call for call in cpu_calls if call in desktop]
+    if present:
+        raise ValidationError(f"Desktop Native composition calls CPU reference entrypoints: {present}")
+
+
 def main() -> int:
     try:
         paths = repository_paths()
@@ -180,6 +208,7 @@ def main() -> int:
         validate_path_owners(paths)
         validate_archive_isolation(paths)
         validate_retired_surfaces(paths)
+        validate_native_backend_composition(paths)
     except (ValidationError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)
         return 1

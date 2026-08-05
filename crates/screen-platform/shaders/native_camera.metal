@@ -57,8 +57,8 @@ kernel void reconstruct_green(device const ushort* codes [[buffer(0)]],
         green[index] = center;
         return;
     }
-    float left, right, far_left, far_right;
-    float up, down, far_up, far_down;
+    float left = 0.0f, right = 0.0f, far_left = 0.0f, far_right = 0.0f;
+    float up = 0.0f, down = 0.0f, far_up = 0.0f, far_down = 0.0f;
     bool horizontal = mosaic_at(codes, p, x - 1, y, left)
         && mosaic_at(codes, p, x + 1, y, right)
         && mosaic_at(codes, p, x - 2, y, far_left)
