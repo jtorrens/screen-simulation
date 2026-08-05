@@ -65,6 +65,16 @@ pub struct DevelopedCameraRegion {
     pub acescg: Vec<LinearRgb>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RawDevelopmentPlan {
+    pub maximum_code: u32,
+    pub analog_gain: f32,
+    pub saturation: [f32; 3],
+    pub white_balance: [f32; 3],
+    pub sensor_to_acescg: [[f32; 3]; 3],
+    pub linear_scale: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CameraDevelopmentError {
     InvalidWhiteBalance,
@@ -74,6 +84,84 @@ pub enum CameraDevelopmentError {
     InvalidSensorProfile,
     InvalidColorMatrix,
     NonFiniteDevelopedPixel,
+}
+
+/// Replaceable compute boundary for the one authoritative RAW-development operation.
+///
+/// Platform implementations consume the complete immutable RAW identity and return the same
+/// [`DevelopedCameraRegion`] contract. The physical camera model remains owned here; this port
+/// only permits a platform backend to execute that model.
+pub trait RawDevelopmentBackend {
+    type Error: fmt::Display;
+
+    fn develop_region(
+        &self,
+        raw: &RawSensorRegion,
+        sensor: SensorProfile,
+        development: CameraDevelopment,
+    ) -> Result<DevelopedCameraRegion, Self::Error>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CpuRawDevelopment;
+
+impl RawDevelopmentBackend for CpuRawDevelopment {
+    type Error = CameraDevelopmentError;
+
+    fn develop_region(
+        &self,
+        raw: &RawSensorRegion,
+        sensor: SensorProfile,
+        development: CameraDevelopment,
+    ) -> Result<DevelopedCameraRegion, Self::Error> {
+        develop_raw_region_to_acescg(raw, sensor, development)
+    }
+}
+
+/// Validates the complete authoritative RAW/development boundary and resolves immutable numeric
+/// inputs for a compute adapter. Backends must not reproduce these domain decisions.
+pub fn prepare_raw_region_development(
+    raw: &RawSensorRegion,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+) -> Result<RawDevelopmentPlan, CameraDevelopmentError> {
+    let sensor = sensor
+        .validate()
+        .map_err(|_| CameraDevelopmentError::InvalidSensorProfile)?;
+    let development = development.validate()?;
+    if raw.sensor_width != sensor.native_width
+        || raw.sensor_height != sensor.native_height
+        || raw.bayer_pattern != sensor.bayer_pattern
+        || raw.adc_bits != sensor.adc_bits
+        || raw.sensor_profile != sensor
+        || raw.region.validate(sensor).is_err()
+    {
+        return Err(CameraDevelopmentError::RawProfileMismatch);
+    }
+    let pixel_count = u64::from(raw.region.width) * u64::from(raw.region.height);
+    if raw.codes.len() as u64 != pixel_count
+        || raw.full_well_clipped.len() as u64 != pixel_count
+        || raw.adc_clipped.len() as u64 != pixel_count
+    {
+        return Err(CameraDevelopmentError::RawPixelCountMismatch);
+    }
+    Ok(RawDevelopmentPlan {
+        maximum_code: (1_u32 << sensor.adc_bits) - 1,
+        analog_gain: sensor.analog_gain,
+        saturation: [
+            sensor.saturation_illuminance_seconds.r,
+            sensor.saturation_illuminance_seconds.g,
+            sensor.saturation_illuminance_seconds.b,
+        ],
+        white_balance: [
+            development.white_balance.r,
+            development.white_balance.g,
+            development.white_balance.b,
+        ],
+        sensor_to_acescg: inverse3(sensor.acescg_to_sensor)
+            .ok_or(CameraDevelopmentError::InvalidColorMatrix)?,
+        linear_scale: development.linear_scale(),
+    })
 }
 
 /// Applies native-sensor white-balance gains while keeping the public value in ACEScg.

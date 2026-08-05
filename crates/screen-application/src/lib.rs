@@ -5,8 +5,8 @@
 use core::fmt;
 use rayon::prelude::*;
 use screen_camera::{
-    CameraDevelopment, CameraDevelopmentError, DevelopedCameraRaster, DevelopedCameraRegion,
-    develop_raw_region_to_acescg, develop_raw_to_acescg,
+    CameraDevelopment, CameraDevelopmentError, CpuRawDevelopment, DevelopedCameraRaster,
+    DevelopedCameraRegion, RawDevelopmentBackend, develop_raw_to_acescg,
 };
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{
@@ -908,6 +908,22 @@ pub fn capture_and_develop_procedural_region(
     development: CameraDevelopment,
     requested_region: SensorRegion,
 ) -> Result<CapturedCameraRegion, ApplicationError> {
+    capture_and_develop_procedural_region_with_backend(
+        request,
+        sensor,
+        development,
+        requested_region,
+        &CpuRawDevelopment,
+    )
+}
+
+pub fn capture_and_develop_procedural_region_with_backend<B: RawDevelopmentBackend>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    backend: &B,
+) -> Result<CapturedCameraRegion, ApplicationError> {
     let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
     let requested_region = requested_region
         .validate(sensor)
@@ -917,8 +933,9 @@ pub fn capture_and_develop_procedural_region(
     let exposure = integrate_procedural_region(shutter, sensor, evaluation_region)?;
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
         .map_err(ApplicationError::Sensor)?;
-    let developed = develop_raw_region_to_acescg(&raw, sensor, development)
-        .map_err(ApplicationError::CameraDevelopment)?;
+    let developed = backend
+        .develop_region(&raw, sensor, development)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
     Ok(CapturedCameraRegion {
         raw,
         developed: crop_developed_region(developed, requested_region),
@@ -933,6 +950,27 @@ pub fn capture_and_develop_device_signal_region(
     signal: &PreparedDeviceSignalRaster,
     placement: RasterPlacement,
 ) -> Result<CapturedCameraRegion, ApplicationError> {
+    capture_and_develop_device_signal_region_with_backend(
+        request,
+        sensor,
+        development,
+        requested_region,
+        signal,
+        placement,
+        &CpuRawDevelopment,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn capture_and_develop_device_signal_region_with_backend<B: RawDevelopmentBackend>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    signal: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+    backend: &B,
+) -> Result<CapturedCameraRegion, ApplicationError> {
     let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
     let requested_region = requested_region
         .validate(sensor)
@@ -943,8 +981,9 @@ pub fn capture_and_develop_device_signal_region(
         integrate_device_signal_region(shutter, sensor, evaluation_region, signal, placement)?;
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
         .map_err(ApplicationError::Sensor)?;
-    let developed = develop_raw_region_to_acescg(&raw, sensor, development)
-        .map_err(ApplicationError::CameraDevelopment)?;
+    let developed = backend
+        .develop_region(&raw, sensor, development)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
     Ok(CapturedCameraRegion {
         raw,
         developed: crop_developed_region(developed, requested_region),
@@ -960,10 +999,35 @@ pub fn capture_and_develop_device_signal_region_sequence<F>(
     development: CameraDevelopment,
     requested_region: SensorRegion,
     placement: RasterPlacement,
-    mut signal_at_time: F,
+    signal_at_time: F,
 ) -> Result<CapturedCameraRegion, ApplicationError>
 where
     F: FnMut(RationalTime) -> Result<Arc<PreparedDeviceSignalRaster>, ApplicationError>,
+{
+    capture_and_develop_device_signal_region_sequence_with_backend(
+        request,
+        sensor,
+        development,
+        requested_region,
+        placement,
+        signal_at_time,
+        &CpuRawDevelopment,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn capture_and_develop_device_signal_region_sequence_with_backend<F, B>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    placement: RasterPlacement,
+    mut signal_at_time: F,
+    backend: &B,
+) -> Result<CapturedCameraRegion, ApplicationError>
+where
+    F: FnMut(RationalTime) -> Result<Arc<PreparedDeviceSignalRaster>, ApplicationError>,
+    B: RawDevelopmentBackend,
 {
     let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
     let requested_region = requested_region
@@ -1006,8 +1070,9 @@ where
     }?;
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
         .map_err(ApplicationError::Sensor)?;
-    let developed = develop_raw_region_to_acescg(&raw, sensor, development)
-        .map_err(ApplicationError::CameraDevelopment)?;
+    let developed = backend
+        .develop_region(&raw, sensor, development)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
     Ok(CapturedCameraRegion {
         raw,
         developed: crop_developed_region(developed, requested_region),
@@ -2872,6 +2937,7 @@ pub enum ApplicationError {
     Geometry(GeometryError),
     Sensor(SensorError),
     CameraDevelopment(CameraDevelopmentError),
+    NativeBackend(String),
     Time(ContractError),
 }
 
@@ -2942,6 +3008,7 @@ impl fmt::Display for ApplicationError {
             Self::Geometry(error) => write!(formatter, "invalid camera: {error}"),
             Self::Sensor(error) => write!(formatter, "invalid sensor capture: {error}"),
             Self::CameraDevelopment(error) => write!(formatter, "camera development: {error}"),
+            Self::NativeBackend(error) => write!(formatter, "native compute backend: {error}"),
             Self::Time(error) => write!(formatter, "invalid capture time: {error}"),
         }
     }
