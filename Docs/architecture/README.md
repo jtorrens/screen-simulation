@@ -8,6 +8,7 @@ This directory contains only the documents required to implement and validate th
 - `color_and_panel.md`: source interpretation, device signal, physical panel emission and optical cover.
 - `camera_time_and_space.md`: canonical coordinates, rational time and animated camera/screen tracks.
 - `sensor_capture.md`: shutter integration, photosite response, noise and RAW ownership.
+- `native_compute.md`: replaceable Native compute boundary and current Metal execution slice.
 - `project_and_change_policy.md`: portable project ownership, current-only contracts and explicit maintenance.
 - `validation.md`: executable architecture and contract enforcement.
 

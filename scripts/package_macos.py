@@ -17,7 +17,11 @@ BUNDLE = ROOT / "dist" / "Screen Simulation.app"
 CONTENTS = BUNDLE / "Contents"
 MACOS = CONTENTS / "MacOS"
 FRAMEWORKS = CONTENTS / "Frameworks"
+RESOURCES = CONTENTS / "Resources"
 BUNDLED_BINARY = MACOS / "screen-desktop"
+METAL_SOURCE = ROOT / "crates" / "screen-platform" / "shaders" / "native_camera.metal"
+METAL_AIR = RESOURCES / "native_camera.air"
+METAL_LIBRARY = RESOURCES / "native_camera.metallib"
 LOADER_RPATH = "@executable_path/../Frameworks"
 
 
@@ -154,6 +158,15 @@ def verify_portable_dependencies(binaries: list[Path]) -> None:
             raise RuntimeError(f"machine-specific rpath {entry!r} remains in {binary}")
 
 
+def bundle_native_shaders() -> None:
+    RESOURCES.mkdir(parents=True)
+    run(["xcrun", "-sdk", "macosx", "metal", "-c", str(METAL_SOURCE), "-o", str(METAL_AIR)])
+    run(["xcrun", "-sdk", "macosx", "metallib", str(METAL_AIR), "-o", str(METAL_LIBRARY)])
+    METAL_AIR.unlink()
+    if not METAL_LIBRARY.is_file() or METAL_LIBRARY.stat().st_size == 0:
+        raise RuntimeError("packaged Native Metal shader library is missing or empty")
+
+
 def main() -> int:
     build_environment = os.environ.copy()
     build_environment["SCREEN_SIM_BUILD_ID"] = capture(
@@ -169,6 +182,7 @@ def main() -> int:
     MACOS.mkdir(parents=True)
     shutil.copy2(RELEASE_BINARY, BUNDLED_BINARY)
     BUNDLED_BINARY.chmod(BUNDLED_BINARY.stat().st_mode | stat.S_IXUSR)
+    bundle_native_shaders()
 
     info = {
         "CFBundleDevelopmentRegion": "en",

@@ -1,0 +1,182 @@
+use std::time::Instant;
+
+use screen_application::{
+    CAPTURE_DEVICE_PRESETS, FrameCaptureRequest, OpticalRequest, ProceduralTestPattern,
+    RollingDirection, SensorReadout, capture_and_develop_procedural_region_with_backend,
+};
+use screen_camera::{CameraDevelopment, CpuRawDevelopment, RawDevelopmentBackend};
+use screen_contracts::{FrameRate, Meters, RationalTime, Vec2, Vec3};
+use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
+use screen_geometry::{
+    CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, Quaternion,
+    TransformKeyframe, TransformTrack, lens_preset,
+};
+use screen_panel::{
+    DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
+};
+use screen_platform::MetalRawDevelopment;
+use screen_sensor::{RawSensorRegion, SensorProfile, SensorRegion};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    const WIDTH: u16 = 64;
+    const HEIGHT: u16 = 48;
+    let iphone = CAPTURE_DEVICE_PRESETS
+        .iter()
+        .find(|preset| preset.id == "iphone-16e-main-48mp")
+        .expect("current iPhone capture template");
+    let sensor = SensorProfile {
+        native_width: WIDTH,
+        native_height: HEIGHT,
+        ..iphone.sensor
+    };
+    let at_zero = RationalTime::new(0, 24)?;
+    let camera = CameraRig {
+        transform: TransformTrack {
+            keyframes: vec![TransformKeyframe {
+                id: "benchmark-camera".to_owned(),
+                time: at_zero,
+                translation: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.22,
+                },
+                rotation: Quaternion::from_yaw_degrees(0.0),
+                interpolation: KeyframeInterpolation::Hold,
+            }],
+        },
+        intrinsics: CameraIntrinsicsTrack {
+            keyframes: vec![CameraIntrinsicsKeyframe {
+                id: "benchmark-intrinsics".to_owned(),
+                time: at_zero,
+                focal_length: iphone.focal_length,
+                sensor_width: iphone.gate_width,
+                sensor_height: iphone.gate_height,
+                lens_shift: Vec2 { x: 0.0, y: 0.0 },
+                focus_distance: Meters(0.22),
+                f_stop: iphone.f_stop,
+                near_clip: Meters(0.01),
+                far_clip: Meters(100.0),
+                lens: lens_preset(iphone.default_lens_preset_id)
+                    .expect("current integrated lens")
+                    .lens,
+                interpolation: KeyframeInterpolation::Hold,
+            }],
+        },
+    };
+    let screen = TransformTrack {
+        keyframes: vec![TransformKeyframe {
+            id: "benchmark-screen".to_owned(),
+            time: at_zero,
+            translation: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            rotation: Quaternion::from_yaw_degrees(0.0),
+            interpolation: KeyframeInterpolation::Hold,
+        }],
+    };
+    let capture = FrameCaptureRequest {
+        optics: OpticalRequest {
+            time: at_zero,
+            viewport_aspect: f32::from(WIDTH) / f32::from(HEIGHT),
+            panel: LcdProfile {
+                native_width: DEVICE_PRESETS[0].native_width,
+                native_height: DEVICE_PRESETS[0].native_height,
+                active_width: DEVICE_PRESETS[0].active_width,
+                active_height: DEVICE_PRESETS[0].active_height,
+                stripe_layout: StripeLayout::Rgb,
+                black_matrix_fraction: 0.1,
+                eotf_gamma: 2.2,
+                black_level_nits: 0.05,
+                white_level_nits: DEVICE_PRESETS[0].reference_white_nits,
+                colorimetry: PanelColorimetry::SRGB_D65,
+                angular_emission_power: screen_contracts::LinearRgb::new(1.7, 1.5, 1.8),
+                temporal_emission: PanelTemporalEmission::continuous(),
+            },
+            cover: CoverGlassProfile::NEUTRAL,
+            environment: ProceduralEnvironment::DARK,
+            camera,
+            screen,
+            inspection: None,
+            procedural_pattern: ProceduralTestPattern::AnimatedCheckerboard,
+        },
+        frame_rate: FrameRate::new(24, 1)?,
+        frame_index: 0,
+        duration: RationalTime::new(1, 288)?,
+        temporal_samples: 8,
+        readout: SensorReadout::Rolling {
+            duration: RationalTime::new(3, 250)?,
+            direction: RollingDirection::TopToBottom,
+        },
+        neutral_density_stops: 0.0,
+        noise_seed: 0x5EED,
+    };
+    let development = CameraDevelopment {
+        white_balance: screen_contracts::LinearRgb::new(1.0, 1.0, 1.0),
+        middle_gray_illuminance_seconds: iphone
+            .middle_gray_illuminance_seconds_at_reference_ei,
+        develop_exposure_ev: 0.0,
+    };
+    let setup_started = Instant::now();
+    let metal = MetalRawDevelopment::new()?;
+    let setup = setup_started.elapsed();
+    let render_started = Instant::now();
+    let result = capture_and_develop_procedural_region_with_backend(
+        capture,
+        sensor,
+        development,
+        SensorRegion::full(sensor),
+        &metal,
+    )?;
+    let elapsed = render_started.elapsed();
+    let pixels = result.developed.acescg.len() as f64;
+    let throughput = pixels / elapsed.as_secs_f64();
+    let iphone_pixels = f64::from(iphone.sensor.native_width) * f64::from(iphone.sensor.native_height);
+    println!("backend: Metal · {}", metal.device_name());
+    println!("scene: iPhone 16e model · rolling shutter · 8 temporal samples");
+    println!("benchmark raster: {WIDTH}x{HEIGHT} ({pixels:.0} pixels)");
+    println!("cold backend setup: {:.3} s", setup.as_secs_f64());
+    println!("time to first complete tile: {:.3} s", elapsed.as_secs_f64());
+    println!("end-to-end physical throughput: {throughput:.2} sensor pixels/s");
+    println!(
+        "48 MP measured extrapolation: {:.1} h ({}x{}; same physical settings)",
+        iphone_pixels / throughput / 3600.0,
+        iphone.sensor.native_width,
+        iphone.sensor.native_height
+    );
+
+    let backend_sensor = SensorProfile {
+        native_width: 1_024,
+        native_height: 768,
+        ..iphone.sensor
+    };
+    let backend_region = SensorRegion::full(backend_sensor);
+    let backend_count = usize::from(backend_region.width) * usize::from(backend_region.height);
+    let raw = RawSensorRegion {
+        sensor_width: backend_sensor.native_width,
+        sensor_height: backend_sensor.native_height,
+        region: backend_region,
+        bayer_pattern: backend_sensor.bayer_pattern,
+        adc_bits: backend_sensor.adc_bits,
+        sensor_profile: backend_sensor,
+        codes: (0..backend_count)
+            .map(|index| ((index as u32 * 997 + 31) % 4_095) as u16)
+            .collect(),
+        full_well_clipped: vec![false; backend_count],
+        adc_clipped: vec![false; backend_count],
+    };
+    let cpu_started = Instant::now();
+    CpuRawDevelopment.develop_region(&raw, backend_sensor, development)?;
+    let cpu_elapsed = cpu_started.elapsed();
+    let metal_started = Instant::now();
+    metal.develop_region(&raw, backend_sensor, development)?;
+    let metal_elapsed = metal_started.elapsed();
+    println!(
+        "RAW develop 1024x768: CPU {:.3} s · Metal {:.3} s · {:.2}x",
+        cpu_elapsed.as_secs_f64(),
+        metal_elapsed.as_secs_f64(),
+        cpu_elapsed.as_secs_f64() / metal_elapsed.as_secs_f64()
+    );
+    Ok(())
+}

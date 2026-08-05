@@ -21,9 +21,10 @@ use screen_application::{
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
     PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel, ProceduralTestPattern,
     PanelTemporalEvaluation, RasterPlacement, SensorReadout, SimulationRequest,
-    capture_and_develop_device_signal_region,
-    capture_and_develop_device_signal_region_sequence, capture_and_develop_procedural_region,
-    capture_device_preset, decoded_frame_to_device_signal, evaluate_linear_optics,
+    capture_and_develop_device_signal_region_sequence_with_backend,
+    capture_and_develop_device_signal_region_with_backend,
+    capture_and_develop_procedural_region_with_backend, capture_device_preset,
+    decoded_frame_to_device_signal, evaluate_linear_optics,
     evaluate_linear_optics_from_device_signal, evaluate_linear_optics_from_prepared_device_signal,
     inspection_region_from_drag, prepare_raster, prepare_raster_from_device_signal,
     prepare_raster_from_prepared_device_signal,
@@ -54,6 +55,7 @@ use screen_panel::{
     AnalyticBanding, DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission,
     ResidualFlicker, StripeLayout, device_preset,
 };
+use screen_platform::MetalRawDevelopment;
 use screen_platform::{decode_frame_at_time, probe_media};
 use screen_sensor::{SensorProfile, SensorRegion};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
@@ -1821,6 +1823,7 @@ struct NativeCaptureOutput {
     region: SensorRegion,
     transform: CameraOutputTransform,
     timings: NativeCaptureTimings,
+    backend: String,
 }
 
 struct NativeRenderSession {
@@ -2090,12 +2093,15 @@ fn run_native_capture_job(
         setup: setup_started.elapsed(),
         ..NativeCaptureTimings::default()
     };
+    let metal = MetalRawDevelopment::new()
+        .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
+    let backend = format!("Metal · {}", metal.device_name());
     let mut pixels = vec![0_u8; usize::from(region.width) * usize::from(region.height) * 4];
     for alpha in pixels.iter_mut().skip(3).step_by(4) {
         *alpha = 255;
     }
     let mut staging_accumulator = NativeStagingAccumulator::new(region, 960);
-    let tiles = sensor_tiles(region, 512);
+    let tiles = sensor_tiles(region, 128);
     let tile_count = tiles.len();
     let mut full_well_clipped = 0_usize;
     let mut adc_clipped = 0_usize;
@@ -2109,53 +2115,61 @@ fn run_native_capture_job(
         let capture_started = Instant::now();
         let captured = match &source {
             NativeCaptureSource::Static { signal, placement } => {
-                capture_and_develop_device_signal_region(
+                capture_and_develop_device_signal_region_with_backend(
                     capture.clone(),
                     sensor,
                     development,
                     tile,
                     signal,
                     *placement,
+                    &metal,
                 )
             }
-            NativeCaptureSource::Procedural => {
-                capture_and_develop_procedural_region(capture.clone(), sensor, development, tile)
-            }
-            NativeCaptureSource::Media(media) => capture_and_develop_device_signal_region_sequence(
+            NativeCaptureSource::Procedural => capture_and_develop_procedural_region_with_backend(
                 capture.clone(),
                 sensor,
                 development,
                 tile,
-                media.placement,
-                |time| {
-                    if let Some((_, signal)) =
-                        media_cache.iter().find(|(cached, _)| *cached == time)
-                    {
-                        return Ok(Arc::clone(signal));
-                    }
-                    let (resolved_descriptor, frame) = decode_frame_at_time(
-                        &media.path,
-                        time,
-                        media.sample_policy,
-                        media.decode_interpretation,
-                    )
-                    .map_err(|_| ApplicationError::MediaSampleUnavailable)?;
-                    if resolved_descriptor != media.descriptor {
-                        return Err(ApplicationError::MediaSampleUnavailable);
-                    }
-                    let signal = decoded_frame_to_device_signal(
-                        &frame,
-                        media.descriptor.alpha,
-                        media.alpha_interpretation,
-                        media_processor
-                            .as_ref()
-                            .expect("media processor exists for media source"),
-                    )?;
-                    let prepared = Arc::new(PreparedDeviceSignalRaster::new(signal)?);
-                    media_cache.push((time, Arc::clone(&prepared)));
-                    Ok(prepared)
-                },
+                &metal,
             ),
+            NativeCaptureSource::Media(media) => {
+                capture_and_develop_device_signal_region_sequence_with_backend(
+                    capture.clone(),
+                    sensor,
+                    development,
+                    tile,
+                    media.placement,
+                    |time| {
+                        if let Some((_, signal)) =
+                            media_cache.iter().find(|(cached, _)| *cached == time)
+                        {
+                            return Ok(Arc::clone(signal));
+                        }
+                        let (resolved_descriptor, frame) = decode_frame_at_time(
+                            &media.path,
+                            time,
+                            media.sample_policy,
+                            media.decode_interpretation,
+                        )
+                        .map_err(|_| ApplicationError::MediaSampleUnavailable)?;
+                        if resolved_descriptor != media.descriptor {
+                            return Err(ApplicationError::MediaSampleUnavailable);
+                        }
+                        let signal = decoded_frame_to_device_signal(
+                            &frame,
+                            media.descriptor.alpha,
+                            media.alpha_interpretation,
+                            media_processor
+                                .as_ref()
+                                .expect("media processor exists for media source"),
+                        )?;
+                        let prepared = Arc::new(PreparedDeviceSignalRaster::new(signal)?);
+                        media_cache.push((time, Arc::clone(&prepared)));
+                        Ok(prepared)
+                    },
+                    &metal,
+                )
+            }
         }
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
         timings.capture_and_develop += capture_started.elapsed();
@@ -2214,6 +2228,7 @@ fn run_native_capture_job(
         region,
         transform,
         timings,
+        backend,
     })
 }
 
@@ -2310,8 +2325,9 @@ fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, star
     );
     window.set_render_text(
         format!(
-            "Native {:.1} ms · setup {:.1} · physical+develop {:.1} · ODT+assemble {:.1} · pyramid {:.1} · {}",
+            "Native {:.1} ms · {} · setup {:.1} · physical+develop {:.1} · ODT+assemble {:.1} · pyramid {:.1} · {}",
             started.elapsed().as_secs_f64() * 1_000.0,
+            output.backend,
             output.timings.setup.as_secs_f64() * 1_000.0,
             output.timings.capture_and_develop.as_secs_f64() * 1_000.0,
             output.timings.output_and_assembly.as_secs_f64() * 1_000.0,
