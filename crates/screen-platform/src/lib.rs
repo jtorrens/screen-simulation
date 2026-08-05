@@ -5,9 +5,15 @@
 #[cfg(target_os = "macos")]
 mod native_metal;
 #[cfg(target_os = "macos")]
+mod presentation_cpu;
+#[cfg(all(test, target_os = "macos"))]
+mod presentation_metal_probe;
+#[cfg(target_os = "macos")]
 mod spatial_metal;
 #[cfg(target_os = "macos")]
 pub use native_metal::{MetalNativeError, MetalRawDevelopment};
+#[cfg(target_os = "macos")]
+pub use presentation_cpu::{DisplayPublicationError, ExactCpuDisplayPublication};
 
 use core::fmt;
 use std::path::Path;
