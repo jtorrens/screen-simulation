@@ -1234,11 +1234,14 @@ where
         .validate(sensor)
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let source_is_static =
+        request.optics.procedural_pattern != ProceduralTestPattern::AnimatedCheckerboard;
     let (shutter, identity) = request.resolve()?;
     let exposure = integrate_spatial_region_with_backend(
         shutter,
         sensor,
         evaluation_region,
+        source_is_static,
         spatial_backend,
         |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
     )?;
@@ -1328,6 +1331,7 @@ where
         shutter,
         sensor,
         evaluation_region,
+        true,
         spatial_backend,
         |optics, region| {
             prepare_spatial_plan(
@@ -1463,6 +1467,7 @@ where
         shutter,
         sensor,
         evaluation_region,
+        false,
         spatial_backend,
         |optics, region| {
             let signal = signal_at_time(optics.time)?;
@@ -1674,6 +1679,7 @@ fn integrate_spatial_region_with_backend<B, F>(
     request: ShutterRequest,
     sensor: SensorProfile,
     region: SensorRegion,
+    source_is_static: bool,
     backend: &B,
     mut plan_at: F,
 ) -> Result<IntegratedOpticalExposure, ApplicationError>
@@ -1689,21 +1695,27 @@ where
         temporal_gain: f32,
     }
 
+    let can_reuse_spatial_samples = source_is_static
+        && request.optics.camera.transform.keyframes.len() == 1
+        && request.optics.camera.intrinsics.keyframes.len() == 1
+        && request.optics.screen.keyframes.len() == 1;
     let mut plans = Vec::new();
     let mut batch_samples = Vec::new();
-    let intern_plan = |plans: &mut Vec<SpatialOpticalPlan>, plan: SpatialOpticalPlan| {
-        if let Some(index) = plans
-            .iter()
-            .position(|candidate| candidate.has_identical_spatial_evaluation(&plan))
-        {
-            index
-        } else {
-            plans.push(plan);
-            plans.len() - 1
-        }
-    };
+    let intern_plan =
+        |plans: &mut Vec<SpatialOpticalPlan>, search_start: usize, plan: SpatialOpticalPlan| {
+            if let Some(index) = plans[search_start..]
+                .iter()
+                .position(|candidate| candidate.has_identical_spatial_evaluation(&plan))
+            {
+                search_start + index
+            } else {
+                plans.push(plan);
+                plans.len() - 1
+            }
+        };
     match request.readout {
         SensorReadout::Global => {
+            let mut reused_plan_index = None;
             for sample in shutter_quadrature(
                 request.optics.time,
                 request.duration,
@@ -1719,7 +1731,17 @@ where
                 optics.time = sample.time;
                 optics.panel_temporal_evaluation =
                     PanelTemporalEvaluation::ExposureAverage(temporal_gain);
-                let plan_index = intern_plan(&mut plans, plan_at(optics, region)?);
+                let plan_index = if can_reuse_spatial_samples {
+                    if let Some(index) = reused_plan_index {
+                        index
+                    } else {
+                        let index = intern_plan(&mut plans, 0, plan_at(optics, region)?);
+                        reused_plan_index = Some(index);
+                        index
+                    }
+                } else {
+                    intern_plan(&mut plans, 0, plan_at(optics, region)?)
+                };
                 batch_samples.push(BatchSample {
                     plan_index,
                     destination_offset: 0,
@@ -1737,6 +1759,8 @@ where
                 return Err(ApplicationError::InvalidSensorReadout);
             }
             for local_row in 0..usize::from(region.height) {
+                let row_plan_start = plans.len();
+                let mut reused_plan_index = None;
                 let global_row = usize::from(region.origin_y) + local_row;
                 let row_center = rolling_row_center_time(
                     request.optics.time,
@@ -1758,18 +1782,27 @@ where
                     optics.time = sample.time;
                     optics.panel_temporal_evaluation =
                         PanelTemporalEvaluation::ExposureAverage(temporal_gain);
-                    let plan_index = intern_plan(
-                        &mut plans,
-                        plan_at(
-                            optics,
-                            SensorRegion {
-                                origin_x: region.origin_x,
-                                origin_y: global_row as u16,
-                                width: region.width,
-                                height: 1,
-                            },
-                        )?,
-                    );
+                    let row_region = SensorRegion {
+                        origin_x: region.origin_x,
+                        origin_y: global_row as u16,
+                        width: region.width,
+                        height: 1,
+                    };
+                    let plan_index = if can_reuse_spatial_samples {
+                        if let Some(index) = reused_plan_index {
+                            index
+                        } else {
+                            let index = intern_plan(
+                                &mut plans,
+                                row_plan_start,
+                                plan_at(optics, row_region)?,
+                            );
+                            reused_plan_index = Some(index);
+                            index
+                        }
+                    } else {
+                        intern_plan(&mut plans, row_plan_start, plan_at(optics, row_region)?)
+                    };
                     batch_samples.push(BatchSample {
                         plan_index,
                         destination_offset: local_row * usize::from(region.width),
@@ -3784,6 +3817,7 @@ mod tests {
             shutter,
             sensor,
             region,
+            false,
             &backend,
             |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
         )
@@ -3833,6 +3867,7 @@ mod tests {
                 },
                 sensor,
                 region,
+                false,
                 &backend,
                 |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
             )
@@ -3881,6 +3916,7 @@ mod tests {
             },
             sensor,
             region,
+            true,
             &backend,
             |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
         )
@@ -3917,6 +3953,47 @@ mod tests {
                 assert!((pixel.b - expected).abs() <= 2.0e-7);
             }
         }
+    }
+
+    #[test]
+    fn authored_camera_motion_forces_the_complete_eight_plan_batch() {
+        let mut optics = request().optics;
+        optics.procedural_pattern = ProceduralTestPattern::EyeChart;
+        let mut moving_key = optics.camera.transform.keyframes[0].clone();
+        moving_key.id = "camera-transform-moving".to_owned();
+        moving_key.time = RationalTime::new(2, 1).unwrap();
+        moving_key.translation.x = 0.1;
+        optics.camera.transform.keyframes.push(moving_key);
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 2,
+            origin_y: 2,
+            width: 3,
+            height: 2,
+        };
+        let backend = UnitSpatialBackend {
+            last_batch_size: AtomicUsize::new(0),
+        };
+        integrate_spatial_region_with_backend(
+            ShutterRequest {
+                optics,
+                duration: RationalTime::new(1, 48).unwrap(),
+                temporal_samples: 8,
+                readout: SensorReadout::Global,
+                neutral_density_stops: 0.0,
+            },
+            sensor,
+            region,
+            true,
+            &backend,
+            |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+        )
+        .unwrap();
+        assert_eq!(backend.last_batch_size.load(Ordering::Relaxed), 8);
     }
 
     #[test]
