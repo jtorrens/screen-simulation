@@ -978,4 +978,85 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn horizontal_supertile_is_exactly_equivalent_to_logical_tiles() {
+        let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
+        let sensor = SensorProfile {
+            native_width: 32,
+            native_height: 18,
+            ..SensorProfile::REFERENCE
+        };
+        let stripe = SensorRegion {
+            origin_x: 4,
+            origin_y: 4,
+            width: 18,
+            height: 7,
+        };
+        let tiles = [
+            SensorRegion { width: 9, ..stripe },
+            SensorRegion {
+                origin_x: 13,
+                width: 9,
+                ..stripe
+            },
+        ];
+        let mut optics = request();
+        optics.procedural_pattern = ProceduralTestPattern::EyeChart;
+        optics.panel.temporal_emission.analytic_banding = AnalyticBanding {
+            period: RationalTime::new(1, 100).expect("period"),
+            on_duration: RationalTime::new(1, 250).expect("duty"),
+            phase: RationalTime::new(1, 1_000).expect("phase"),
+            amount: 0.8,
+        };
+        let capture = FrameCaptureRequest {
+            optics,
+            frame_rate: FrameRate::new(24, 1).expect("frame rate"),
+            frame_index: 17,
+            duration: RationalTime::new(1, 800).expect("shutter"),
+            temporal_samples: 8,
+            readout: SensorReadout::Rolling {
+                duration: RationalTime::new(1, 100).expect("readout"),
+                direction: RollingDirection::TopToBottom,
+            },
+            neutral_density_stops: 0.0,
+            noise_seed: 0x051A_17E5,
+        };
+        let development = CameraDevelopment {
+            white_balance: LinearRgb::new(1.7, 1.0, 0.65),
+            middle_gray_illuminance_seconds: 0.05,
+            develop_exposure_ev: 0.75,
+        };
+        let combined = capture_and_develop_procedural_region_with_compute_backends(
+            capture.clone(),
+            sensor,
+            development,
+            stripe,
+            &metal,
+            &metal,
+        )
+        .expect("stripe capture");
+        for tile in tiles {
+            let separate = capture_and_develop_procedural_region_with_compute_backends(
+                capture.clone(),
+                sensor,
+                development,
+                tile,
+                &metal,
+                &metal,
+            )
+            .expect("logical tile capture");
+            for row in 0..usize::from(tile.height) {
+                let combined_start =
+                    row * usize::from(stripe.width) + usize::from(tile.origin_x - stripe.origin_x);
+                let separate_start = row * usize::from(tile.width);
+                assert_eq!(
+                    &combined.developed.acescg
+                        [combined_start..combined_start + usize::from(tile.width)],
+                    &separate.developed.acescg
+                        [separate_start..separate_start + usize::from(tile.width)]
+                );
+            }
+        }
+    }
 }

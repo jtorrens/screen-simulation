@@ -2099,14 +2099,18 @@ fn run_native_capture_job(
         *alpha = 255;
     }
     let mut staging_accumulator = NativeStagingAccumulator::new(region, 960);
-    let tiles = sensor_tiles(region, 128);
-    let tile_count = tiles.len();
+    let tile_stripes = sensor_tile_stripes(region, 128);
+    let tile_count = tile_stripes
+        .iter()
+        .map(|(_, tiles)| tiles.len())
+        .sum::<usize>();
+    let mut completed = 0_usize;
     let mut full_well_clipped = 0_usize;
     let mut adc_clipped = 0_usize;
     let mut last_staging_update = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
-    for (tile_index, tile) in tiles.into_iter().enumerate() {
+    for (stripe, tiles) in tile_stripes {
         if cancel.load(Ordering::Relaxed) {
             return Err(NativeCaptureError::Cancelled);
         }
@@ -2117,7 +2121,7 @@ fn run_native_capture_job(
                     capture.clone(),
                     sensor,
                     development,
-                    tile,
+                    stripe,
                     signal,
                     *placement,
                     &metal,
@@ -2129,7 +2133,7 @@ fn run_native_capture_job(
                     capture.clone(),
                     sensor,
                     development,
-                    tile,
+                    stripe,
                     &metal,
                     &metal,
                 )
@@ -2139,7 +2143,7 @@ fn run_native_capture_job(
                     capture.clone(),
                     sensor,
                     development,
-                    tile,
+                    stripe,
                     media.placement,
                     |time| {
                         if let Some((_, signal)) =
@@ -2177,9 +2181,6 @@ fn run_native_capture_job(
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
         timings.capture_and_develop += capture_started.elapsed();
         let output_started = Instant::now();
-        let (tile_full_well_clipped, tile_adc_clipped) = clipping_in_region(&captured.raw, tile);
-        full_well_clipped += tile_full_well_clipped;
-        adc_clipped += tile_adc_clipped;
         let mut output = Vec::with_capacity(captured.developed.acescg.len() * 4);
         for pixel in &captured.developed.acescg {
             output.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
@@ -2187,34 +2188,48 @@ fn run_native_capture_job(
         processor
             .apply_acescg_rgba_buffer(&mut output)
             .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
-        let tile_width = usize::from(tile.width);
+        let stripe_width = usize::from(stripe.width);
         let output_stride = usize::from(region.width) * 4;
-        let offset_x = usize::from(tile.origin_x - region.origin_x);
-        let offset_y = usize::from(tile.origin_y - region.origin_y);
-        for row in 0..usize::from(tile.height) {
-            let target_start = (offset_y + row) * output_stride + offset_x * 4;
-            for (column, rgba) in output[row * tile_width * 4..(row + 1) * tile_width * 4]
-                .chunks_exact(4)
-                .enumerate()
-            {
-                let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let pixel = [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255];
-                pixels[target_start + column * 4..target_start + column * 4 + 4]
-                    .copy_from_slice(&pixel);
-                staging_accumulator.add_pixel(offset_x + column, offset_y + row, pixel);
+        for tile in tiles {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(NativeCaptureError::Cancelled);
             }
+            let (tile_full_well_clipped, tile_adc_clipped) =
+                clipping_in_region(&captured.raw, tile);
+            full_well_clipped += tile_full_well_clipped;
+            adc_clipped += tile_adc_clipped;
+            let stripe_offset_x = usize::from(tile.origin_x - stripe.origin_x);
+            let stripe_offset_y = usize::from(tile.origin_y - stripe.origin_y);
+            let output_offset_x = usize::from(tile.origin_x - region.origin_x);
+            let output_offset_y = usize::from(tile.origin_y - region.origin_y);
+            for row in 0..usize::from(tile.height) {
+                let source_start = ((stripe_offset_y + row) * stripe_width + stripe_offset_x) * 4;
+                let source_end = source_start + usize::from(tile.width) * 4;
+                let target_start = (output_offset_y + row) * output_stride + output_offset_x * 4;
+                for (column, rgba) in output[source_start..source_end].chunks_exact(4).enumerate() {
+                    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let pixel = [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255];
+                    pixels[target_start + column * 4..target_start + column * 4 + 4]
+                        .copy_from_slice(&pixel);
+                    staging_accumulator.add_pixel(
+                        output_offset_x + column,
+                        output_offset_y + row,
+                        pixel,
+                    );
+                }
+            }
+            completed += 1;
+            let staging = if completed == tile_count
+                || last_staging_update.elapsed() >= Duration::from_millis(100)
+            {
+                last_staging_update = Instant::now();
+                Some(staging_accumulator.snapshot())
+            } else {
+                None
+            };
+            progress(completed, tile_count, tile, staging);
         }
         timings.output_and_assembly += output_started.elapsed();
-        let completed = tile_index + 1;
-        let staging = if completed == tile_count
-            || last_staging_update.elapsed() >= Duration::from_millis(100)
-        {
-            last_staging_update = Instant::now();
-            Some(staging_accumulator.snapshot())
-        } else {
-            None
-        };
-        progress(completed, tile_count, tile, staging);
     }
     let pixels = Arc::<[u8]>::from(pixels);
     let pyramid_started = Instant::now();
@@ -2414,6 +2429,34 @@ fn sensor_tiles(region: SensorRegion, edge: u16) -> Vec<SensorRegion> {
         y += u32::from(edge);
     }
     tiles
+}
+
+fn sensor_tile_stripes(region: SensorRegion, edge: u16) -> Vec<(SensorRegion, Vec<SensorRegion>)> {
+    let mut stripes = Vec::new();
+    for tile in sensor_tiles(region, edge) {
+        if stripes
+            .last()
+            .is_none_or(|(_, tiles): &(SensorRegion, Vec<SensorRegion>)| {
+                tiles[0].origin_y != tile.origin_y
+            })
+        {
+            stripes.push((
+                SensorRegion {
+                    origin_x: region.origin_x,
+                    origin_y: tile.origin_y,
+                    width: region.width,
+                    height: tile.height,
+                },
+                Vec::new(),
+            ));
+        }
+        stripes
+            .last_mut()
+            .expect("a stripe exists for every tile")
+            .1
+            .push(tile);
+    }
+    stripes
 }
 
 fn clipping_in_region(
@@ -3268,6 +3311,26 @@ mod interaction_tests {
             assert_eq!([image.width(), image.height()], [3_840, 2_160]);
             assert!(image.to_rgba8().pixels().all(|pixel| pixel[3] == 255));
         }
+    }
+
+    #[test]
+    fn native_scheduler_groups_horizontal_tiles_without_changing_progress_boundaries() {
+        let region = SensorRegion {
+            origin_x: 7,
+            origin_y: 11,
+            width: 300,
+            height: 260,
+        };
+        let stripes = sensor_tile_stripes(region, 128);
+        assert_eq!(stripes.len(), 3);
+        assert_eq!(
+            stripes.iter().map(|(_, tiles)| tiles.len()).sum::<usize>(),
+            9
+        );
+        assert_eq!(stripes[0].0.width, 300);
+        assert_eq!(stripes[0].0.height, 128);
+        assert_eq!(stripes[2].0.height, 4);
+        assert_eq!(stripes[0].1, sensor_tiles(region, 128)[..3]);
     }
 
     #[test]
