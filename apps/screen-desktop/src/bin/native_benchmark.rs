@@ -21,6 +21,60 @@ use screen_panel::{
 use screen_platform::MetalRawDevelopment;
 use screen_sensor::{RawSensorRegion, SensorProfile, SensorRegion};
 
+struct BenchmarkStaging {
+    width: usize,
+    height: usize,
+    source_width: usize,
+    source_height: usize,
+    sums: Vec<[u64; 3]>,
+    samples: Vec<u32>,
+}
+
+impl BenchmarkStaging {
+    fn new(source_width: u16, source_height: u16) -> Self {
+        let width = usize::from(source_width.min(960));
+        let height = (usize::from(source_height) * width / usize::from(source_width)).max(1);
+        Self {
+            width,
+            height,
+            source_width: usize::from(source_width),
+            source_height: usize::from(source_height),
+            sums: vec![[0; 3]; width * height],
+            samples: vec![0; width * height],
+        }
+    }
+
+    fn add(&mut self, source_x: usize, source_y: usize, pixel: &[u8]) {
+        let target_x = source_x * self.width / self.source_width;
+        let target_y = source_y * self.height / self.source_height;
+        let target = target_y * self.width + target_x;
+        for (sum, value) in self.sums[target].iter_mut().zip(pixel.iter().take(3)) {
+            *sum += u64::from(*value);
+        }
+        self.samples[target] += 1;
+    }
+
+    fn snapshot(&self) -> Vec<[u8; 4]> {
+        self.sums
+            .iter()
+            .zip(&self.samples)
+            .map(|(sum, samples)| {
+                if *samples == 0 {
+                    [17, 17, 17, 255]
+                } else {
+                    let count = u64::from(*samples);
+                    [
+                        ((sum[0] + count / 2) / count) as u8,
+                        ((sum[1] + count / 2) / count) as u8,
+                        ((sum[2] + count / 2) / count) as u8,
+                        255,
+                    ]
+                }
+            })
+            .collect()
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     const SENSOR_WIDTH: u16 = 256;
     const SENSOR_HEIGHT: u16 = 192;
@@ -309,12 +363,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &metal,
             &metal,
         )?;
-        let output_started = Instant::now();
+        let materialize_started = Instant::now();
         let mut display = Vec::with_capacity(result.developed.acescg.len() * 4);
         for pixel in result.developed.acescg {
             display.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
         }
+        let materialize_elapsed = materialize_started.elapsed();
+        let ocio_started = Instant::now();
         output_processor.apply_acescg_rgba_buffer(&mut display)?;
+        let ocio_elapsed = ocio_started.elapsed();
+        let quantize_started = Instant::now();
         let display_bytes = display
             .chunks_exact(4)
             .flat_map(|rgba| {
@@ -322,11 +380,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255]
             })
             .collect::<Vec<_>>();
-        std::hint::black_box(display_bytes);
-        let output_elapsed = output_started.elapsed();
+        let quantize_elapsed = quantize_started.elapsed();
+        let copy_started = Instant::now();
+        let mut publication = vec![0_u8; display_bytes.len()];
+        publication.copy_from_slice(&display_bytes);
+        let copy_elapsed = copy_started.elapsed();
+        let staging_started = Instant::now();
+        let mut staging =
+            BenchmarkStaging::new(iphone.sensor.native_width, iphone.sensor.native_height);
+        for (index, pixel) in publication.chunks_exact(4).enumerate() {
+            staging.add(
+                index % usize::from(product_stripe.width),
+                index / usize::from(product_stripe.width),
+                pixel,
+            );
+        }
+        std::hint::black_box(staging.snapshot());
+        let staging_elapsed = staging_started.elapsed();
         let elapsed = started.elapsed();
         println!(
-            "product stripe {label}: {}x{} · {:.3} s to first visual publication · {} logical tiles ready · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s · OCIO/assembly {:.3} s",
+            "product stripe {label}: {}x{} · {:.3} s profiled publication · {} logical tiles ready · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s · float RGBA {:.3} s · OCIO {:.3} s · quantize {:.3} s · output copy {:.3} s · staging {:.3} s",
             product_stripe.width,
             product_stripe.height,
             elapsed.as_secs_f64(),
@@ -335,7 +408,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stages.spatial_backend.as_secs_f64(),
             stages.integration_and_sensor_cpu.as_secs_f64(),
             stages.raw_development_backend.as_secs_f64(),
-            output_elapsed.as_secs_f64(),
+            materialize_elapsed.as_secs_f64(),
+            ocio_elapsed.as_secs_f64(),
+            quantize_elapsed.as_secs_f64(),
+            copy_elapsed.as_secs_f64(),
+            staging_elapsed.as_secs_f64(),
         );
         Ok(elapsed)
     };
