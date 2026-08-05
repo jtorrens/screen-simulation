@@ -120,6 +120,54 @@ impl RationalTime {
     pub fn as_seconds(self) -> f64 {
         self.numerator as f64 / f64::from(self.denominator)
     }
+
+    pub fn checked_add(self, other: Self) -> Result<Self, ContractError> {
+        let numerator = i128::from(self.numerator) * i128::from(other.denominator)
+            + i128::from(other.numerator) * i128::from(self.denominator);
+        let denominator = u128::from(self.denominator) * u128::from(other.denominator);
+        rational_from_wide(numerator, denominator)
+    }
+
+    pub fn checked_sub(self, other: Self) -> Result<Self, ContractError> {
+        let numerator = i128::from(self.numerator) * i128::from(other.denominator)
+            - i128::from(other.numerator) * i128::from(self.denominator);
+        let denominator = u128::from(self.denominator) * u128::from(other.denominator);
+        rational_from_wide(numerator, denominator)
+    }
+
+    pub fn checked_mul_ratio(
+        self,
+        numerator: i64,
+        denominator: u32,
+    ) -> Result<Self, ContractError> {
+        if denominator == 0 {
+            return Err(ContractError::ZeroDenominator);
+        }
+        rational_from_wide(
+            i128::from(self.numerator) * i128::from(numerator),
+            u128::from(self.denominator) * u128::from(denominator),
+        )
+    }
+}
+
+fn rational_from_wide(numerator: i128, denominator: u128) -> Result<RationalTime, ContractError> {
+    let numerator_magnitude = numerator.unsigned_abs();
+    let divisor = gcd_u128(numerator_magnitude, denominator);
+    let reduced_numerator = numerator / divisor as i128;
+    let reduced_denominator = denominator / divisor;
+    Ok(RationalTime {
+        numerator: i64::try_from(reduced_numerator).map_err(|_| ContractError::TimeOverflow)?,
+        denominator: u32::try_from(reduced_denominator).map_err(|_| ContractError::TimeOverflow)?,
+    })
+}
+
+fn gcd_u128(mut left: u128, mut right: u128) -> u128 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
 }
 
 impl PartialOrd for RationalTime {
@@ -236,5 +284,25 @@ mod tests {
         let film = RationalTime::new(1_001, 24_000).expect("valid time");
         let video = RationalTime::new(1, 24).expect("valid time");
         assert!(film > video);
+    }
+
+    #[test]
+    fn rational_time_arithmetic_reduces_exactly_and_rejects_overflow() {
+        let center = RationalTime::new(1, 24).expect("valid center");
+        let half_shutter = RationalTime::new(1, 96).expect("valid half shutter");
+        let open = center.checked_sub(half_shutter).expect("valid open time");
+        assert_eq!(open, RationalTime::new(1, 32).expect("valid expected time"));
+        assert_eq!(
+            half_shutter
+                .checked_mul_ratio(3, 2)
+                .expect("valid scaled time"),
+            RationalTime::new(1, 64).expect("valid expected time")
+        );
+        assert_eq!(
+            RationalTime::new(i64::MAX, 1)
+                .expect("valid boundary time")
+                .checked_add(RationalTime::new(1, 1).expect("valid increment")),
+            Err(ContractError::TimeOverflow)
+        );
     }
 }

@@ -33,6 +33,12 @@
       "allowed_local_dependencies": ["screen-contracts"]
     },
     {
+      "name": "screen-sensor",
+      "path": "crates/screen-sensor",
+      "owner": "sensor",
+      "allowed_local_dependencies": ["screen-contracts"]
+    },
+    {
       "name": "screen-application",
       "path": "crates/screen-application",
       "owner": "application",
@@ -41,7 +47,8 @@
         "screen-contracts",
         "screen-geometry",
         "screen-media",
-        "screen-panel"
+        "screen-panel",
+        "screen-sensor"
       ]
     },
     {
@@ -72,9 +79,9 @@
         "screen-media",
         "screen-panel",
         "screen-persistence",
-        "screen-platform"
+        "screen-platform",
+        "screen-sensor"
       ]
     }
   ]
 }
-

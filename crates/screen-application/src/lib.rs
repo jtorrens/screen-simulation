@@ -5,7 +5,7 @@
 use core::fmt;
 use rayon::prelude::*;
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
-use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
+use screen_contracts::{ContractError, DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_geometry::{
     APERTURE_SAMPLE_COUNT, CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion,
     ProjectedScreen, ScreenSample, ScreenTrack, panel_uv_aperture_samples, panel_uv_at_viewport,
@@ -13,6 +13,10 @@ use screen_geometry::{
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{LcdProfile, PanelError, ValidatedPanelEvaluator};
+use screen_sensor::{
+    CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, SensorError, SensorProfile,
+    expose_raw,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RasterPlacement {
@@ -331,6 +335,13 @@ pub struct OpticalRequest {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct GlobalShutterRequest {
+    pub optics: OpticalRequest,
+    pub duration: RationalTime,
+    pub temporal_samples: u16,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct SimulationRequest {
     pub optics: OpticalRequest,
     pub view: DiagnosticView,
@@ -488,6 +499,145 @@ pub fn evaluate_linear_optics(
         &|uv| diagnostic_signal(uv, request.time),
         &|minimum, maximum| diagnostic_area_signal(minimum, maximum, request.time),
     )
+}
+
+pub fn integrate_procedural_global_shutter(
+    request: GlobalShutterRequest,
+    width: u16,
+    height: u16,
+) -> Result<IntegratedOpticalExposure, ApplicationError> {
+    integrate_global_shutter(request, width, height, |optics| {
+        evaluate_linear_optics(optics, width, height)
+    })
+}
+
+pub fn capture_procedural_global_shutter(
+    request: GlobalShutterRequest,
+    width: u16,
+    height: u16,
+    sensor: SensorProfile,
+    identity: CaptureIdentity,
+) -> Result<RawSensorRaster, ApplicationError> {
+    let exposure = integrate_procedural_global_shutter(request, width, height)?;
+    expose_raw(sensor, &exposure, identity).map_err(ApplicationError::Sensor)
+}
+
+pub fn integrate_global_shutter_from_device_signal_sequence<F>(
+    request: GlobalShutterRequest,
+    width: u16,
+    height: u16,
+    placement: RasterPlacement,
+    mut signal_at_time: F,
+) -> Result<IntegratedOpticalExposure, ApplicationError>
+where
+    F: FnMut(RationalTime) -> Result<DeviceSignalRaster, ApplicationError>,
+{
+    integrate_global_shutter(request, width, height, |optics| {
+        let signal = signal_at_time(optics.time)?;
+        evaluate_linear_optics_from_device_signal(optics, width, height, &signal, placement)
+    })
+}
+
+pub fn capture_global_shutter_from_device_signal_sequence<F>(
+    request: GlobalShutterRequest,
+    width: u16,
+    height: u16,
+    placement: RasterPlacement,
+    signal_at_time: F,
+    sensor: SensorProfile,
+    identity: CaptureIdentity,
+) -> Result<RawSensorRaster, ApplicationError>
+where
+    F: FnMut(RationalTime) -> Result<DeviceSignalRaster, ApplicationError>,
+{
+    let exposure = integrate_global_shutter_from_device_signal_sequence(
+        request,
+        width,
+        height,
+        placement,
+        signal_at_time,
+    )?;
+    expose_raw(sensor, &exposure, identity).map_err(ApplicationError::Sensor)
+}
+
+fn integrate_global_shutter<F>(
+    request: GlobalShutterRequest,
+    width: u16,
+    height: u16,
+    mut optical_at_time: F,
+) -> Result<IntegratedOpticalExposure, ApplicationError>
+where
+    F: FnMut(OpticalRequest) -> Result<LinearOpticalRaster, ApplicationError>,
+{
+    let sample_times = global_shutter_sample_times(
+        request.optics.time,
+        request.duration,
+        request.temporal_samples,
+    )?;
+    if width == 0 || height == 0 {
+        return Err(ApplicationError::EmptyPreviewRaster);
+    }
+    let pixel_count = usize::from(width) * usize::from(height);
+    let mut accumulated = vec![[0.0_f64; 3]; pixel_count];
+    for time in sample_times {
+        let mut optics = request.optics.clone();
+        optics.time = time;
+        let raster = optical_at_time(optics)?;
+        if raster.width != width || raster.height != height || raster.pixels.len() != pixel_count {
+            return Err(ApplicationError::OpticalSampleRasterMismatch);
+        }
+        for (sum, pixel) in accumulated.iter_mut().zip(raster.pixels) {
+            sum[0] += f64::from(pixel.acescg_irradiance.r);
+            sum[1] += f64::from(pixel.acescg_irradiance.g);
+            sum[2] += f64::from(pixel.acescg_irradiance.b);
+        }
+    }
+    let duration_seconds = request.duration.as_seconds();
+    let scale = duration_seconds / f64::from(request.temporal_samples);
+    let acescg_irradiance_seconds = accumulated
+        .into_iter()
+        .map(|sum| {
+            LinearRgb::new(
+                (sum[0] * scale) as f32,
+                (sum[1] * scale) as f32,
+                (sum[2] * scale) as f32,
+            )
+        })
+        .collect();
+    let exposure = IntegratedOpticalExposure {
+        width: u32::from(width),
+        height: u32::from(height),
+        duration_seconds: duration_seconds as f32,
+        acescg_irradiance_seconds,
+    };
+    exposure.validate().map_err(ApplicationError::Sensor)?;
+    Ok(exposure)
+}
+
+fn global_shutter_sample_times(
+    center: RationalTime,
+    duration: RationalTime,
+    temporal_samples: u16,
+) -> Result<Vec<RationalTime>, ApplicationError> {
+    let duration_seconds = duration.as_seconds();
+    if duration.numerator() <= 0
+        || !duration_seconds.is_finite()
+        || duration_seconds <= 0.0
+        || duration_seconds > f64::from(f32::MAX)
+        || !(1..=64).contains(&temporal_samples)
+    {
+        return Err(ApplicationError::InvalidGlobalShutter);
+    }
+    let denominator = u32::from(temporal_samples) * 2;
+    (0..temporal_samples)
+        .map(|index| {
+            let centered_odd = i64::from(index) * 2 + 1 - i64::from(temporal_samples);
+            let offset = duration
+                .checked_mul_ratio(centered_odd, denominator)
+                .map_err(ApplicationError::Time)?;
+            center.checked_add(offset).map_err(ApplicationError::Time)
+        })
+        .collect()
 }
 
 pub fn prepare_raster_from_device_signal(
@@ -1059,6 +1209,8 @@ fn diagnostic_area_signal(minimum: Vec2, maximum: Vec2, time: RationalTime) -> D
 pub enum ApplicationError {
     InvalidViewportAspect,
     InvalidPreviewExposure,
+    InvalidGlobalShutter,
+    OpticalSampleRasterMismatch,
     SensorViewportAspectMismatch {
         sensor_aspect: f32,
         viewport_aspect: f32,
@@ -1085,6 +1237,8 @@ pub enum ApplicationError {
     Color(ColorError),
     Panel(PanelError),
     Geometry(GeometryError),
+    Sensor(SensorError),
+    Time(ContractError),
 }
 
 impl fmt::Display for ApplicationError {
@@ -1094,6 +1248,11 @@ impl fmt::Display for ApplicationError {
             Self::InvalidPreviewExposure => {
                 formatter.write_str("preview exposure EV must be finite")
             }
+            Self::InvalidGlobalShutter => formatter.write_str(
+                "global shutter duration must be positive and temporal samples must be in [1, 64]",
+            ),
+            Self::OpticalSampleRasterMismatch => formatter
+                .write_str("all temporal optical samples must match the authored sensor raster"),
             Self::SensorViewportAspectMismatch {
                 sensor_aspect,
                 viewport_aspect,
@@ -1138,6 +1297,8 @@ impl fmt::Display for ApplicationError {
             Self::Color(error) => write!(formatter, "invalid color transform: {error}"),
             Self::Panel(error) => write!(formatter, "invalid panel: {error}"),
             Self::Geometry(error) => write!(formatter, "invalid camera: {error}"),
+            Self::Sensor(error) => write!(formatter, "invalid sensor capture: {error}"),
+            Self::Time(error) => write!(formatter, "invalid capture time: {error}"),
         }
     }
 }
@@ -1269,6 +1430,78 @@ mod tests {
         let second =
             evaluate_linear_optics(preview.optical_request(), 32, 18).expect("linear render");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn global_shutter_uses_exact_centered_temporal_samples() {
+        let center = RationalTime::new(1, 1).expect("valid center");
+        let duration = RationalTime::new(1, 48).expect("valid shutter");
+        let samples = global_shutter_sample_times(center, duration, 4).expect("valid samples");
+        assert_eq!(
+            samples,
+            vec![
+                RationalTime::new(127, 128).expect("valid time"),
+                RationalTime::new(383, 384).expect("valid time"),
+                RationalTime::new(385, 384).expect("valid time"),
+                RationalTime::new(129, 128).expect("valid time"),
+            ]
+        );
+        assert_eq!(
+            global_shutter_sample_times(center, duration, 0),
+            Err(ApplicationError::InvalidGlobalShutter)
+        );
+    }
+
+    #[test]
+    fn global_shutter_capture_is_deterministic_and_samples_the_signal_sequence() {
+        let mut optics = request().optics;
+        optics.time = RationalTime::new(1, 1).expect("valid center");
+        let shutter = GlobalShutterRequest {
+            optics,
+            duration: RationalTime::new(1, 48).expect("valid shutter"),
+            temporal_samples: 4,
+        };
+        let identity = CaptureIdentity {
+            noise_seed: 42,
+            frame_index: 24,
+        };
+        let mut sampled_times = Vec::new();
+        let first = capture_global_shutter_from_device_signal_sequence(
+            shutter.clone(),
+            32,
+            18,
+            RasterPlacement::Stretch,
+            |time| {
+                sampled_times.push(time);
+                Ok(DeviceSignalRaster {
+                    width: 1,
+                    height: 1,
+                    pixels: vec![DeviceRgb::new(0.25, 0.5, 0.75)],
+                })
+            },
+            SensorProfile::REFERENCE,
+            identity,
+        )
+        .expect("first capture");
+        let second = capture_global_shutter_from_device_signal_sequence(
+            shutter,
+            32,
+            18,
+            RasterPlacement::Stretch,
+            |_| {
+                Ok(DeviceSignalRaster {
+                    width: 1,
+                    height: 1,
+                    pixels: vec![DeviceRgb::new(0.25, 0.5, 0.75)],
+                })
+            },
+            SensorProfile::REFERENCE,
+            identity,
+        )
+        .expect("repeated capture");
+        assert_eq!(sampled_times.len(), 4);
+        assert_eq!(first, second);
+        assert_eq!(first.codes.len(), 32 * 18);
     }
 
     #[test]

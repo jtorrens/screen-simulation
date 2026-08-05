@@ -10,10 +10,11 @@ use screen_media::{
 };
 use screen_panel::{Chromaticity, LcdProfile, PanelColorimetry, StripeLayout};
 use screen_persistence::{
-    AlphaSelection, CameraIntrinsicsKeyframe as StoredIntrinsics, ExactTime,
+    AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics, ExactTime,
     InterpolationSelection, MatrixSelection, PlacementSelection, ProjectPackage, RangeSelection,
     SourceColorSelection, StripeSelection, TransformKeyframe as StoredTransform,
 };
+use screen_sensor::{BayerPattern, SensorProfile};
 
 pub struct ProjectScene {
     pub packaged_media_path: String,
@@ -25,6 +26,10 @@ pub struct ProjectScene {
     pub panel: LcdProfile,
     pub camera: CameraRig,
     pub screen: ScreenTrack,
+    pub sensor: SensorProfile,
+    pub shutter_duration: RationalTime,
+    pub temporal_samples: u16,
+    pub sensor_noise_seed: u64,
 }
 
 pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, String> {
@@ -129,6 +134,30 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 .map(map_transform)
                 .collect::<Result<_, _>>()?,
         },
+        sensor: SensorProfile {
+            bayer_pattern: match package.sensor.bayer_pattern {
+                BayerSelection::Rggb => BayerPattern::Rggb,
+                BayerSelection::Bggr => BayerPattern::Bggr,
+                BayerSelection::Grbg => BayerPattern::Grbg,
+                BayerSelection::Gbrg => BayerPattern::Gbrg,
+            },
+            acescg_to_sensor: package.sensor.acescg_to_sensor,
+            saturation_exposure: LinearRgb::new(
+                package.sensor.saturation_exposure[0],
+                package.sensor.saturation_exposure[1],
+                package.sensor.saturation_exposure[2],
+            ),
+            full_well_electrons: package.sensor.full_well_electrons,
+            dark_current_electrons_per_second: package.sensor.dark_current_electrons_per_second,
+            read_noise_electrons_rms: package.sensor.read_noise_electrons_rms,
+            analog_gain: package.sensor.analog_gain,
+            adc_bits: package.sensor.adc_bits,
+        }
+        .validate()
+        .map_err(|error| error.to_string())?,
+        shutter_duration: map_time(package.sensor.shutter_duration)?,
+        temporal_samples: package.sensor.temporal_samples,
+        sensor_noise_seed: package.shot.sensor_noise_seed,
     };
     scene.camera.validate().map_err(|error| error.to_string())?;
     scene.screen.validate().map_err(|error| error.to_string())?;
@@ -229,6 +258,7 @@ mod tests {
                 source_document: path("sources/source.json"),
                 device_document: path("devices/device.json"),
                 camera_document: path("tracks/camera.json"),
+                sensor_document: path("cameras/sensor.json"),
                 screen_document: path("tracks/screen.json"),
                 shot_document: path("shots/shot.json"),
             },
@@ -294,6 +324,24 @@ mod tests {
                     interpolation: InterpolationSelection::Linear,
                 }],
             },
+            sensor: SensorDocument {
+                schema: "screen_simulation_sensor".into(),
+                version: CURRENT_VERSION,
+                sensor_id: id("sensor-01"),
+                bayer_pattern: BayerSelection::Rggb,
+                acescg_to_sensor: [[0.72, 0.21, 0.07], [0.10, 0.82, 0.08], [0.03, 0.16, 0.81]],
+                saturation_exposure: [0.018, 0.018, 0.018],
+                full_well_electrons: 45_000.0,
+                dark_current_electrons_per_second: 0.1,
+                read_noise_electrons_rms: 2.0,
+                analog_gain: 1.0,
+                adc_bits: 14,
+                shutter_duration: ExactTime {
+                    numerator: 1,
+                    denominator: 48,
+                },
+                temporal_samples: 8,
+            },
             screen: ScreenDocument {
                 schema: "screen_simulation_screen".into(),
                 version: CURRENT_VERSION,
@@ -307,11 +355,13 @@ mod tests {
                 source_id: id("source-01"),
                 device_id: id("device-01"),
                 camera_id: id("camera-01"),
+                sensor_id: id("sensor-01"),
                 screen_id: id("screen-01"),
                 project_frame_rate: ExactFrameRate {
                     numerator: 24,
                     denominator: 1,
                 },
+                sensor_noise_seed: 42,
             },
         };
         let scene = map_project_scene(&package).expect("strict complete mapping");
@@ -322,6 +372,10 @@ mod tests {
         );
         assert_eq!(scene.alpha, AlphaInterpretation::Premultiplied);
         assert_eq!(scene.placement, RasterPlacement::OneToOne);
+        assert_eq!(scene.sensor.bayer_pattern, BayerPattern::Rggb);
+        assert_eq!(scene.shutter_duration, RationalTime::new(1, 48).unwrap());
+        assert_eq!(scene.temporal_samples, 8);
+        assert_eq!(scene.sensor_noise_seed, 42);
         let time = scene.frame_rate.time_at_frame(0).expect("time");
         let camera = scene.camera.sample(time).expect("camera");
         let screen = scene.screen.sample(time).expect("screen");

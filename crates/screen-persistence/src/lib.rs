@@ -75,6 +75,7 @@ pub struct ProjectManifest {
     pub source_document: PortablePath,
     pub device_document: PortablePath,
     pub camera_document: PortablePath,
+    pub sensor_document: PortablePath,
     pub screen_document: PortablePath,
     pub shot_document: PortablePath,
 }
@@ -230,6 +231,33 @@ pub struct CameraDocument {
     pub intrinsics_keyframes: Vec<CameraIntrinsicsKeyframe>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BayerSelection {
+    Rggb,
+    Bggr,
+    Grbg,
+    Gbrg,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SensorDocument {
+    pub schema: String,
+    pub version: u32,
+    pub sensor_id: OpaqueId,
+    pub bayer_pattern: BayerSelection,
+    pub acescg_to_sensor: [[f32; 3]; 3],
+    pub saturation_exposure: [f32; 3],
+    pub full_well_electrons: f32,
+    pub dark_current_electrons_per_second: f32,
+    pub read_noise_electrons_rms: f32,
+    pub analog_gain: f32,
+    pub adc_bits: u8,
+    pub shutter_duration: ExactTime,
+    pub temporal_samples: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenDocument {
@@ -248,8 +276,10 @@ pub struct ShotDocument {
     pub source_id: OpaqueId,
     pub device_id: OpaqueId,
     pub camera_id: OpaqueId,
+    pub sensor_id: OpaqueId,
     pub screen_id: OpaqueId,
     pub project_frame_rate: ExactFrameRate,
+    pub sensor_noise_seed: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +295,7 @@ pub struct ProjectPackage {
     pub source: SourceDocument,
     pub device: DeviceDocument,
     pub camera: CameraDocument,
+    pub sensor: SensorDocument,
     pub screen: ScreenDocument,
     pub shot: ShotDocument,
 }
@@ -288,6 +319,11 @@ impl ProjectPackage {
             "screen_simulation_camera",
         )?;
         validate_header(
+            &self.sensor.schema,
+            self.sensor.version,
+            "screen_simulation_sensor",
+        )?;
+        validate_header(
             &self.screen.schema,
             self.screen.version,
             "screen_simulation_screen",
@@ -301,6 +337,7 @@ impl ProjectPackage {
         validate_id(&self.source.source_id)?;
         validate_id(&self.device.device_id)?;
         validate_id(&self.camera.camera_id)?;
+        validate_id(&self.sensor.sensor_id)?;
         validate_id(&self.screen.screen_id)?;
         validate_id(&self.shot.shot_id)?;
         PortablePath::parse(self.source.media.as_str())?;
@@ -309,6 +346,7 @@ impl ProjectPackage {
                 &self.manifest.source_document,
                 &self.manifest.device_document,
                 &self.manifest.camera_document,
+                &self.manifest.sensor_document,
                 &self.manifest.screen_document,
                 &self.manifest.shot_document,
             ]
@@ -322,6 +360,7 @@ impl ProjectPackage {
         if self.shot.source_id != self.source.source_id
             || self.shot.device_id != self.device.device_id
             || self.shot.camera_id != self.camera.camera_id
+            || self.shot.sensor_id != self.sensor.sensor_id
             || self.shot.screen_id != self.screen.screen_id
         {
             return Err(PersistenceError::InvalidShotReference);
@@ -340,6 +379,7 @@ impl ProjectPackage {
         validate_intrinsics(&self.camera.intrinsics_keyframes)?;
         validate_keyframes(&self.screen.transform_keyframes)?;
         validate_device(&self.device)?;
+        validate_sensor(&self.sensor)?;
         Ok(())
     }
 }
@@ -354,6 +394,7 @@ pub fn open_project(root: &Path) -> Result<ProjectPackage, PersistenceError> {
         source: read_document(&manifest.source_document.resolve(root))?,
         device: read_document(&manifest.device_document.resolve(root))?,
         camera: read_document(&manifest.camera_document.resolve(root))?,
+        sensor: read_document(&manifest.sensor_document.resolve(root))?,
         screen: read_document(&manifest.screen_document.resolve(root))?,
         shot: read_document(&manifest.shot_document.resolve(root))?,
         manifest,
@@ -412,6 +453,7 @@ fn create_project_in(
         &package.manifest.source_document,
         &package.manifest.device_document,
         &package.manifest.camera_document,
+        &package.manifest.sensor_document,
         &package.manifest.screen_document,
         &package.manifest.shot_document,
         &package.source.media,
@@ -435,6 +477,10 @@ fn create_project_in(
     write_document(
         &package.manifest.camera_document.resolve(root),
         &package.camera,
+    )?;
+    write_document(
+        &package.manifest.sensor_document.resolve(root),
+        &package.sensor,
     )?;
     write_document(
         &package.manifest.screen_document.resolve(root),
@@ -461,6 +507,7 @@ fn validate_manifest(manifest: &ProjectManifest) -> Result<(), PersistenceError>
         &manifest.source_document,
         &manifest.device_document,
         &manifest.camera_document,
+        &manifest.sensor_document,
         &manifest.screen_document,
         &manifest.shot_document,
     ];
@@ -666,6 +713,38 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
     Ok(())
 }
 
+fn validate_sensor(sensor: &SensorDocument) -> Result<(), PersistenceError> {
+    validate_time(sensor.shutter_duration)?;
+    let finite = sensor
+        .acescg_to_sensor
+        .iter()
+        .flatten()
+        .chain(sensor.saturation_exposure.iter())
+        .copied()
+        .chain([
+            sensor.full_well_electrons,
+            sensor.dark_current_electrons_per_second,
+            sensor.read_noise_electrons_rms,
+            sensor.analog_gain,
+        ])
+        .all(f32::is_finite);
+    if !finite {
+        return Err(PersistenceError::NonFiniteNumber);
+    }
+    if sensor.shutter_duration.numerator <= 0
+        || !(1..=64).contains(&sensor.temporal_samples)
+        || sensor.saturation_exposure.iter().any(|value| *value <= 0.0)
+        || sensor.full_well_electrons <= 0.0
+        || sensor.dark_current_electrons_per_second < 0.0
+        || sensor.read_noise_electrons_rms < 0.0
+        || sensor.analog_gain <= 0.0
+        || !(8..=16).contains(&sensor.adc_bits)
+    {
+        return Err(PersistenceError::InvalidSensorProfile);
+    }
+    Ok(())
+}
+
 fn compare_time(left: ExactTime, right: ExactTime) -> core::cmp::Ordering {
     (i128::from(left.numerator) * i128::from(right.denominator))
         .cmp(&(i128::from(right.numerator) * i128::from(left.denominator)))
@@ -707,6 +786,7 @@ pub enum PersistenceError {
     NonNormalizedQuaternion,
     InvalidCameraIntrinsics,
     InvalidDeviceProfile,
+    InvalidSensorProfile,
     NonFiniteNumber,
     MissingResource(String),
     Io(PathBuf, std::io::Error),
@@ -774,6 +854,7 @@ impl fmt::Display for PersistenceError {
             }
             Self::InvalidCameraIntrinsics => formatter.write_str("camera intrinsics are invalid"),
             Self::InvalidDeviceProfile => formatter.write_str("device profile is invalid"),
+            Self::InvalidSensorProfile => formatter.write_str("sensor profile is invalid"),
             Self::NonFiniteNumber => {
                 formatter.write_str("project documents cannot contain non-finite numbers")
             }
@@ -842,6 +923,7 @@ mod tests {
                 source_document: path("sources/source.json"),
                 device_document: path("devices/device.json"),
                 camera_document: path("tracks/camera.json"),
+                sensor_document: path("cameras/sensor.json"),
                 screen_document: path("tracks/screen.json"),
                 shot_document: path("shots/shot.json"),
             },
@@ -905,6 +987,24 @@ mod tests {
                     interpolation: InterpolationSelection::Linear,
                 }],
             },
+            sensor: SensorDocument {
+                schema: "screen_simulation_sensor".into(),
+                version: CURRENT_VERSION,
+                sensor_id: id("sensor-01"),
+                bayer_pattern: BayerSelection::Rggb,
+                acescg_to_sensor: [[0.72, 0.21, 0.07], [0.10, 0.82, 0.08], [0.03, 0.16, 0.81]],
+                saturation_exposure: [0.018, 0.018, 0.018],
+                full_well_electrons: 45_000.0,
+                dark_current_electrons_per_second: 0.1,
+                read_noise_electrons_rms: 2.0,
+                analog_gain: 1.0,
+                adc_bits: 14,
+                shutter_duration: ExactTime {
+                    numerator: 1,
+                    denominator: 48,
+                },
+                temporal_samples: 8,
+            },
             screen: ScreenDocument {
                 schema: "screen_simulation_screen".into(),
                 version: CURRENT_VERSION,
@@ -918,11 +1018,13 @@ mod tests {
                 source_id: id("source-01"),
                 device_id: id("device-01"),
                 camera_id: id("camera-01"),
+                sensor_id: id("sensor-01"),
                 screen_id: id("screen-01"),
                 project_frame_rate: ExactFrameRate {
                     numerator: 24,
                     denominator: 1,
                 },
+                sensor_noise_seed: 42,
             },
         }
     }

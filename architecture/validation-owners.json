@@ -55,6 +55,11 @@
       "checks": ["architecture", "workspace", "geometry"]
     },
     {
+      "id": "sensor",
+      "paths": ["crates/screen-sensor/**"],
+      "checks": ["architecture", "workspace", "sensor"]
+    },
+    {
       "id": "application",
       "paths": ["crates/screen-application/**"],
       "checks": ["architecture", "workspace", "application"]
@@ -76,4 +81,3 @@
     }
   ]
 }
-

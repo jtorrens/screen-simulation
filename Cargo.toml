@@ -10,10 +10,10 @@ members = [
     "crates/screen-panel",
     "crates/screen-persistence",
     "crates/screen-platform",
+    "crates/screen-sensor",
 ]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
-

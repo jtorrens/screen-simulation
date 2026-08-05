@@ -4389,6 +4389,7 @@ dependencies = [
  "screen-geometry",
  "screen-media",
  "screen-panel",
+ "screen-sensor",
 ]
 
 [[package]]
@@ -4416,6 +4417,7 @@ dependencies = [
  "screen-panel",
  "screen-persistence",
  "screen-platform",
+ "screen-sensor",
  "slint",
  "slint-build",
 ]
@@ -4459,6 +4461,13 @@ dependencies = [
  "screen-color",
  "screen-contracts",
  "screen-media",
+]
+
+[[package]]
+name = "screen-sensor"
+version = "0.1.0"
+dependencies = [
+ "screen-contracts",
 ]
 
 [[package]]

@@ -18,7 +18,9 @@ media source
 → independently animated screen/camera projection
 → deterministic sensor-footprint and thin-lens integration
 → immutable linear ACEScg optical result
-→ explicit preview or still-output transform
+  ├→ explicit optical-preview or still-output transform
+  └→ exact global-shutter temporal integration
+     → Bayer photosite charge, noise, saturation, gain and RAW quantization
 ```
 
 Every arrow is a typed boundary. A consumer receives a complete validated result and never reconstructs the prior owner's semantics. Declared media color metadata crosses the Media boundary as typed evidence only. YUV matrix and signal range resolve independently from the source IDT: `Auto` consumes only supported declared metadata, while absent or unsupported evidence blocks decoding until the user authors an explicit value. RGB sources bypass the YUV interpretation route, and monochrome sources require range but not matrix. The Platform adapter receives only a fully resolved decode interpretation and configures the single FFmpeg YUV-to-RGB conversion before OCIO. Color may propose an IDT from an exact complete pattern, while evaluation remains blocked until the source interpretation is explicitly authored.
@@ -39,6 +41,7 @@ screen-media           exact media decode and frame selection
 screen-color           explicit OCIO and color-transform ownership
 screen-panel           device signal, fixed-pixel LCD and emitted radiance
 screen-geometry        camera/screen tracks and physical projection
+screen-sensor          integrated exposure, photosites, sensor noise and mosaiced RAW
 screen-application     immutable request preparation and orchestration
 screen-persistence     strict portable project documents
 screen-platform        replaceable OS, GPU, media and filesystem adapters
@@ -49,4 +52,4 @@ Domain packages expose narrow capabilities and do not depend on sibling implemen
 
 ## Current scope
 
-The current implementation target is one source clip per simulation shot, one authored rational project frame rate, one project-owned complete LCD profile, internally authored independent camera-transform, camera-intrinsics and screen-transform tracks, an RGB/BGR stripe panel, transformed physical projection, deterministic reference sampling, a public linear optical result, debug views and still export. A source whose raster differs from the device native raster requires one authored placement policy: `Fit`, `FillCrop`, `Stretch`, or `OneToOne`. Pixel decode matrix, pixel decode range, source IDT and alpha association are independent explicit decisions. Alpha is resolved to the current explicit opaque-black target before panel evaluation.
+The current implementation target is one source clip per simulation shot, one authored rational project frame rate, one project-owned complete LCD profile and sensor profile, internally authored independent camera-transform, camera-intrinsics and screen-transform tracks, an RGB/BGR stripe panel, transformed physical projection, deterministic reference sampling, a public linear optical result, exact global-shutter integration, mosaiced RAW capture, debug views and still export. A source whose raster differs from the device native raster requires one authored placement policy: `Fit`, `FillCrop`, `Stretch`, or `OneToOne`. Pixel decode matrix, pixel decode range, source IDT and alpha association are independent explicit decisions. Alpha is resolved to the current explicit opaque-black target before panel evaluation.
