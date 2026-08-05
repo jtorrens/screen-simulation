@@ -124,34 +124,33 @@ pub fn develop_raw_to_acescg(
             .push(f32::from(code) / maximum_code / sensor.analog_gain * saturation[channel]);
     }
 
+    let reconstructed = demosaic_sensor_rgb(
+        &native_mosaic,
+        SensorRegion {
+            origin_x: 0,
+            origin_y: 0,
+            width: raw.width as u16,
+            height: raw.height as u16,
+        },
+        raw.bayer_pattern,
+    );
     let mut acescg = Vec::with_capacity(raw.codes.len());
-    for y in 0..raw.height {
-        for x in 0..raw.width {
-            let mut sensor_rgb = [0.0_f32; 3];
-            for channel in 0..3 {
-                sensor_rgb[channel] = interpolate_channel(
-                    &native_mosaic,
-                    raw.width,
-                    raw.height,
-                    raw.bayer_pattern,
-                    x,
-                    y,
-                    channel,
-                ) * gains[channel];
-            }
-            let mut developed = mat_vec(sensor_to_acescg, sensor_rgb);
-            let linear_scale = development.linear_scale();
-            developed.r *= linear_scale;
-            developed.g *= linear_scale;
-            developed.b *= linear_scale;
-            if [developed.r, developed.g, developed.b]
-                .into_iter()
-                .any(|value| !value.is_finite())
-            {
-                return Err(CameraDevelopmentError::NonFiniteDevelopedPixel);
-            }
-            acescg.push(developed);
+    for mut sensor_rgb in reconstructed {
+        for channel in 0..3 {
+            sensor_rgb[channel] *= gains[channel];
         }
+        let mut developed = mat_vec(sensor_to_acescg, sensor_rgb);
+        let linear_scale = development.linear_scale();
+        developed.r *= linear_scale;
+        developed.g *= linear_scale;
+        developed.b *= linear_scale;
+        if [developed.r, developed.g, developed.b]
+            .into_iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(CameraDevelopmentError::NonFiniteDevelopedPixel);
+        }
+        acescg.push(developed);
     }
     Ok(DevelopedCameraRaster {
         width: raw.width,
@@ -208,35 +207,24 @@ pub fn develop_raw_region_to_acescg(
             .push(f32::from(code) / maximum_code / sensor.analog_gain * saturation[channel]);
     }
 
+    let reconstructed = demosaic_sensor_rgb(&native_mosaic, raw.region, raw.bayer_pattern);
     let mut acescg = Vec::with_capacity(raw.codes.len());
-    for local_y in 0..u32::from(raw.region.height) {
-        for local_x in 0..u32::from(raw.region.width) {
-            let global_x = u32::from(raw.region.origin_x) + local_x;
-            let global_y = u32::from(raw.region.origin_y) + local_y;
-            let mut sensor_rgb = [0.0_f32; 3];
-            for channel in 0..3 {
-                sensor_rgb[channel] = interpolate_region_channel(
-                    &native_mosaic,
-                    raw.region,
-                    raw.bayer_pattern,
-                    global_x,
-                    global_y,
-                    channel,
-                ) * gains[channel];
-            }
-            let mut developed = mat_vec(sensor_to_acescg, sensor_rgb);
-            let linear_scale = development.linear_scale();
-            developed.r *= linear_scale;
-            developed.g *= linear_scale;
-            developed.b *= linear_scale;
-            if [developed.r, developed.g, developed.b]
-                .into_iter()
-                .any(|value| !value.is_finite())
-            {
-                return Err(CameraDevelopmentError::NonFiniteDevelopedPixel);
-            }
-            acescg.push(developed);
+    for mut sensor_rgb in reconstructed {
+        for channel in 0..3 {
+            sensor_rgb[channel] *= gains[channel];
         }
+        let mut developed = mat_vec(sensor_to_acescg, sensor_rgb);
+        let linear_scale = development.linear_scale();
+        developed.r *= linear_scale;
+        developed.g *= linear_scale;
+        developed.b *= linear_scale;
+        if [developed.r, developed.g, developed.b]
+            .into_iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(CameraDevelopmentError::NonFiniteDevelopedPixel);
+        }
+        acescg.push(developed);
     }
     Ok(DevelopedCameraRegion {
         sensor_width: sensor.native_width,
@@ -246,101 +234,153 @@ pub fn develop_raw_region_to_acescg(
     })
 }
 
-fn interpolate_region_channel(
+struct MosaicWindow<'a> {
+    values: &'a [f32],
+    region: SensorRegion,
+    pattern: screen_sensor::BayerPattern,
+}
+
+impl MosaicWindow<'_> {
+    fn value(&self, x: i64, y: i64) -> Option<f32> {
+        let origin_x = i64::from(self.region.origin_x);
+        let origin_y = i64::from(self.region.origin_y);
+        if x < origin_x
+            || y < origin_y
+            || x >= origin_x + i64::from(self.region.width)
+            || y >= origin_y + i64::from(self.region.height)
+        {
+            return None;
+        }
+        let local_x = usize::try_from(x - origin_x).ok()?;
+        let local_y = usize::try_from(y - origin_y).ok()?;
+        Some(self.values[local_y * usize::from(self.region.width) + local_x])
+    }
+
+    fn channel(&self, x: i64, y: i64) -> usize {
+        self.pattern.channel_at(x as u32, y as u32)
+    }
+}
+
+fn demosaic_sensor_rgb(
     mosaic: &[f32],
     region: SensorRegion,
     pattern: screen_sensor::BayerPattern,
-    x: u32,
-    y: u32,
-    channel: usize,
-) -> f32 {
-    let index = |sample_x: u32, sample_y: u32| {
-        (sample_y - u32::from(region.origin_y)) as usize * usize::from(region.width)
-            + (sample_x - u32::from(region.origin_x)) as usize
+) -> Vec<[f32; 3]> {
+    let window = MosaicWindow {
+        values: mosaic,
+        region,
+        pattern,
     };
-    if pattern.channel_at(x, y) == channel {
-        return mosaic[index(x, y)];
-    }
-    let mut sum = 0.0_f32;
-    let mut weight_sum = 0.0_f32;
-    for offset_y in -1_i32..=1 {
-        for offset_x in -1_i32..=1 {
-            if offset_x == 0 && offset_y == 0 {
-                continue;
-            }
-            let sample_x = x as i64 + i64::from(offset_x);
-            let sample_y = y as i64 + i64::from(offset_y);
-            if sample_x < i64::from(region.origin_x)
-                || sample_y < i64::from(region.origin_y)
-                || sample_x >= i64::from(region.origin_x) + i64::from(region.width)
-                || sample_y >= i64::from(region.origin_y) + i64::from(region.height)
-            {
-                continue;
-            }
-            let sample_x = sample_x as u32;
-            let sample_y = sample_y as u32;
-            if pattern.channel_at(sample_x, sample_y) != channel {
-                continue;
-            }
-            let weight = if offset_x == 0 || offset_y == 0 {
-                2.0
+    let mut green = Vec::with_capacity(mosaic.len());
+    for local_y in 0..u32::from(region.height) {
+        for local_x in 0..u32::from(region.width) {
+            let x = i64::from(region.origin_x) + i64::from(local_x);
+            let y = i64::from(region.origin_y) + i64::from(local_y);
+            green.push(if window.channel(x, y) == 1 {
+                window.value(x, y).expect("validated mosaic coordinate")
             } else {
-                1.0
-            };
-            sum += mosaic[index(sample_x, sample_y)] * weight;
-            weight_sum += weight;
+                interpolate_green(&window, x, y)
+            });
         }
     }
-    debug_assert!(weight_sum > 0.0);
-    sum / weight_sum
+    let green_at = |x: i64, y: i64| {
+        let local_x = usize::try_from(x - i64::from(region.origin_x)).ok()?;
+        let local_y = usize::try_from(y - i64::from(region.origin_y)).ok()?;
+        if local_x >= usize::from(region.width) || local_y >= usize::from(region.height) {
+            return None;
+        }
+        Some(green[local_y * usize::from(region.width) + local_x])
+    };
+    let mut reconstructed = Vec::with_capacity(mosaic.len());
+    for local_y in 0..u32::from(region.height) {
+        for local_x in 0..u32::from(region.width) {
+            let x = i64::from(region.origin_x) + i64::from(local_x);
+            let y = i64::from(region.origin_y) + i64::from(local_y);
+            let own_channel = window.channel(x, y);
+            let center_green = green_at(x, y).expect("validated green coordinate");
+            let mut sensor_rgb = [0.0; 3];
+            sensor_rgb[1] = center_green;
+            for channel in [0, 2] {
+                sensor_rgb[channel] = if own_channel == channel {
+                    window.value(x, y).expect("validated mosaic coordinate")
+                } else {
+                    interpolate_color_difference(&window, &green_at, x, y, channel, center_green)
+                };
+            }
+            reconstructed.push(sensor_rgb);
+        }
+    }
+    reconstructed
 }
 
-/// One deterministic normalized bilinear demosaic. Edge samples are included only when their
-/// authored CFA channel matches; no guessed edge mode or alternate algorithm is selected.
-fn interpolate_channel(
-    mosaic: &[f32],
-    width: u32,
-    height: u32,
-    pattern: screen_sensor::BayerPattern,
-    x: u32,
-    y: u32,
-    channel: usize,
-) -> f32 {
-    if pattern.channel_at(x, y) == channel {
-        return mosaic[y as usize * width as usize + x as usize];
-    }
-    let mut sum = 0.0_f32;
-    let mut weight_sum = 0.0_f32;
-    for offset_y in -1_i32..=1 {
-        for offset_x in -1_i32..=1 {
-            if offset_x == 0 && offset_y == 0 {
-                continue;
+fn interpolate_green(window: &MosaicWindow<'_>, x: i64, y: i64) -> f32 {
+    let center = window.value(x, y).expect("validated mosaic coordinate");
+    let directional = |dx: i64, dy: i64| {
+        let near_a = window.value(x - dx, y - dy)?;
+        let near_b = window.value(x + dx, y + dy)?;
+        let far_a = window.value(x - 2 * dx, y - 2 * dy)?;
+        let far_b = window.value(x + 2 * dx, y + 2 * dy)?;
+        let estimate = (near_a + near_b) * 0.5 + (2.0 * center - far_a - far_b) * 0.25;
+        let gradient = (near_a - near_b).abs() + (2.0 * center - far_a - far_b).abs();
+        Some((estimate, gradient))
+    };
+    match (directional(1, 0), directional(0, 1)) {
+        (Some(horizontal), Some(vertical)) if horizontal.1 < vertical.1 => horizontal.0,
+        (Some(horizontal), Some(vertical)) if vertical.1 < horizontal.1 => vertical.0,
+        (Some(horizontal), Some(vertical)) => (horizontal.0 + vertical.0) * 0.5,
+        (Some(horizontal), None) => horizontal.0,
+        (None, Some(vertical)) => vertical.0,
+        (None, None) => {
+            let mut sum = 0.0;
+            let mut count = 0.0;
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                if let Some(value) = window.value(x + dx, y + dy) {
+                    sum += value;
+                    count += 1.0;
+                }
             }
-            let sample_x = x as i64 + i64::from(offset_x);
-            let sample_y = y as i64 + i64::from(offset_y);
-            if sample_x < 0
-                || sample_y < 0
-                || sample_x >= i64::from(width)
-                || sample_y >= i64::from(height)
-            {
-                continue;
-            }
-            let sample_x = sample_x as u32;
-            let sample_y = sample_y as u32;
-            if pattern.channel_at(sample_x, sample_y) != channel {
-                continue;
-            }
-            let weight = if offset_x == 0 || offset_y == 0 {
-                2.0
-            } else {
-                1.0
-            };
-            sum += mosaic[sample_y as usize * width as usize + sample_x as usize] * weight;
-            weight_sum += weight;
+            debug_assert!(count > 0.0);
+            sum / count
         }
     }
-    debug_assert!(weight_sum > 0.0);
-    sum / weight_sum
+}
+
+fn interpolate_color_difference(
+    window: &MosaicWindow<'_>,
+    green_at: &impl Fn(i64, i64) -> Option<f32>,
+    x: i64,
+    y: i64,
+    channel: usize,
+    center_green: f32,
+) -> f32 {
+    let own_channel = window.channel(x, y);
+    let offsets: &[(i64, i64)] = if own_channel == 1 {
+        if window.channel(x - 1, y) == channel || window.channel(x + 1, y) == channel {
+            &[(-1, 0), (1, 0)]
+        } else {
+            &[(0, -1), (0, 1)]
+        }
+    } else {
+        &[(-1, -1), (1, -1), (-1, 1), (1, 1)]
+    };
+    let mut difference_sum = 0.0;
+    let mut count = 0.0;
+    for &(dx, dy) in offsets {
+        let sample_x = x + dx;
+        let sample_y = y + dy;
+        if window.channel(sample_x, sample_y) != channel {
+            continue;
+        }
+        if let (Some(value), Some(green)) = (
+            window.value(sample_x, sample_y),
+            green_at(sample_x, sample_y),
+        ) {
+            difference_sum += value - green;
+            count += 1.0;
+        }
+    }
+    debug_assert!(count > 0.0);
+    center_green + difference_sum / count
 }
 
 fn mat_vec(matrix: [[f32; 3]; 3], value: [f32; 3]) -> LinearRgb {
@@ -534,39 +574,39 @@ mod tests {
     #[test]
     fn region_demosaic_with_halo_matches_the_complete_sensor_result() {
         let sensor = SensorProfile {
-            native_width: 8,
-            native_height: 8,
+            native_width: 16,
+            native_height: 16,
             ..identity_sensor(BayerPattern::Rggb)
         };
-        let codes: Vec<u16> = (0..64)
-            .map(|index| 4_000 + (index as u16 * 701) % 50_000)
+        let codes: Vec<u16> = (0..256)
+            .map(|index| (4_000 + (index as u32 * 701) % 50_000) as u16)
             .collect();
         let full_raw = RawSensorRaster {
-            width: 8,
-            height: 8,
+            width: 16,
+            height: 16,
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
             codes: codes.clone(),
-            full_well_clipped: vec![false; 64],
-            adc_clipped: vec![false; 64],
+            full_well_clipped: vec![false; 256],
+            adc_clipped: vec![false; 256],
         };
         let full = develop_raw_to_acescg(&full_raw, sensor, CameraDevelopment::NEUTRAL)
             .expect("complete development");
         let requested = SensorRegion {
-            origin_x: 3,
-            origin_y: 3,
+            origin_x: 6,
+            origin_y: 6,
             width: 2,
             height: 2,
         };
         let halo = requested.expanded_for_demosaic(sensor);
         let mut region_codes = Vec::new();
         for y in 0..usize::from(halo.height) {
-            let start = (usize::from(halo.origin_y) + y) * 8 + usize::from(halo.origin_x);
+            let start = (usize::from(halo.origin_y) + y) * 16 + usize::from(halo.origin_x);
             region_codes.extend_from_slice(&codes[start..start + usize::from(halo.width)]);
         }
         let region_raw = RawSensorRegion {
-            sensor_width: 8,
-            sensor_height: 8,
+            sensor_width: 16,
+            sensor_height: 16,
             region: halo,
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
@@ -584,7 +624,48 @@ mod tests {
                 let region_y = global_y - usize::from(halo.origin_y);
                 assert_eq!(
                     region.acescg[region_y * usize::from(halo.width) + region_x],
-                    full.acescg[global_y * 8 + global_x]
+                    full.acescg[global_y * 16 + global_x]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn edge_directed_demosaic_keeps_a_monochrome_edge_achromatic() {
+        let sensor = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            ..identity_sensor(BayerPattern::Rggb)
+        };
+        let codes = (0..64)
+            .map(|index| {
+                let x = index % 8;
+                let value = if x < 4 { 0.1 } else { 0.9 };
+                (value * 65_535.0_f32).round() as u16
+            })
+            .collect();
+        let raw = RawSensorRaster {
+            width: 8,
+            height: 8,
+            bayer_pattern: BayerPattern::Rggb,
+            adc_bits: 16,
+            codes,
+            full_well_clipped: vec![false; 64],
+            adc_clipped: vec![false; 64],
+        };
+        let developed = develop_raw_to_acescg(&raw, sensor, CameraDevelopment::NEUTRAL)
+            .expect("developed monochrome edge");
+
+        for y in 3..5 {
+            for x in 2..6 {
+                let pixel = developed.acescg[y * 8 + x];
+                assert!(
+                    (pixel.r - pixel.g).abs() < 2.0e-5,
+                    "red fringe at ({x}, {y}): {pixel:?}"
+                );
+                assert!(
+                    (pixel.b - pixel.g).abs() < 2.0e-5,
+                    "blue fringe at ({x}, {y}): {pixel:?}"
                 );
             }
         }

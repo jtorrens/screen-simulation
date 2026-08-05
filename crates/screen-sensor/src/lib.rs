@@ -329,11 +329,11 @@ impl SensorRegion {
     }
 
     pub fn expanded_for_demosaic(self, profile: SensorProfile) -> Self {
-        let origin_x = self.origin_x.saturating_sub(1);
-        let origin_y = self.origin_y.saturating_sub(1);
-        let end_x = (u32::from(self.origin_x) + u32::from(self.width) + 1)
+        let origin_x = self.origin_x.saturating_sub(3);
+        let origin_y = self.origin_y.saturating_sub(3);
+        let end_x = (u32::from(self.origin_x) + u32::from(self.width) + 3)
             .min(u32::from(profile.native_width)) as u16;
-        let end_y = (u32::from(self.origin_y) + u32::from(self.height) + 1)
+        let end_y = (u32::from(self.origin_y) + u32::from(self.height) + 3)
             .min(u32::from(profile.native_height)) as u16;
         Self {
             origin_x,
