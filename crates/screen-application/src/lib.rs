@@ -41,6 +41,7 @@ pub struct CaptureDevicePreset {
     pub gate_width: Millimeters,
     pub gate_height: Millimeters,
     pub focal_length: Millimeters,
+    pub default_lens_preset_id: &'static str,
     pub f_stop: f32,
     pub reference_exposure_index: f32,
     pub middle_gray_illuminance_seconds_at_reference_ei: f32,
@@ -68,6 +69,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         gate_width: Millimeters(27.99),
         gate_height: Millimeters(19.22),
         focal_length: Millimeters(50.0),
+        default_lens_preset_id: "generic-prime-50mm",
         f_stop: 4.0,
         reference_exposure_index: 800.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
@@ -93,6 +95,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         gate_width: Millimeters(5.815_385),
         gate_height: Millimeters(4.361_539),
         focal_length: Millimeters(4.2),
+        default_lens_preset_id: "iphone-16e-main-integrated",
         f_stop: 1.64,
         reference_exposure_index: 100.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.1,
@@ -2456,6 +2459,7 @@ mod tests {
     use super::*;
     use screen_color::{ColorEngine, DeviceColorTarget, SourceColorInterpretation};
     use screen_contracts::{Meters, Millimeters};
+    use screen_geometry::lens_preset;
     use screen_panel::PanelTemporalEmission;
     use screen_panel::{PanelColorimetry, StripeLayout};
     use std::collections::HashSet;
@@ -2551,6 +2555,9 @@ mod tests {
             assert!(ids.insert(preset.id));
             preset.sensor.validate().expect("valid sensor profile");
             assert!(preset.gate_width.0 > 0.0 && preset.gate_height.0 > 0.0);
+            let lens = lens_preset(preset.default_lens_preset_id)
+                .expect("capture template lens must resolve");
+            assert_eq!(lens.nominal_focal_length, preset.focal_length);
             assert!((25.0..=12_800.0).contains(&preset.reference_exposure_index));
             assert!(preset.middle_gray_illuminance_seconds_at_reference_ei > 0.0);
             assert!((1.0..=360.0).contains(&preset.default_shutter_angle_degrees));

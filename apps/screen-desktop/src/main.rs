@@ -35,8 +35,9 @@ use screen_contracts::{
     DeviceRgb, FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3,
 };
 use screen_geometry::{
-    CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, LensModel,
-    PanelRegion, Quaternion, ScreenTrack, TransformKeyframe, TransformTrack,
+    CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation,
+    LENS_PRESETS, LensModel, PanelRegion, Quaternion, ScreenTrack, TransformKeyframe,
+    TransformTrack, lens_preset,
 };
 use screen_media::{
     AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, FrameSelectionPolicy,
@@ -83,6 +84,7 @@ struct RenderControls {
     neutral_density_stops: f32,
     output_transform_index: i32,
     capture_preset_index: i32,
+    lens_preset_index: i32,
     capture_sensor_width: f32,
     capture_sensor_height: f32,
     capture_gate_width_mm: f32,
@@ -130,6 +132,7 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         neutral_density_stops: window.get_neutral_density_stops(),
         output_transform_index: window.get_output_transform_index(),
         capture_preset_index: window.get_capture_preset_index(),
+        lens_preset_index: window.get_lens_preset_index(),
         capture_sensor_width: window.get_capture_sensor_width(),
         capture_sensor_height: window.get_capture_sensor_height(),
         capture_gate_width_mm: window.get_capture_gate_width_mm(),
@@ -159,7 +162,7 @@ fn render_controls(window: &MainWindow) -> RenderControls {
     }
 }
 
-fn camera_edit_from_controls(controls: RenderControls) -> CameraEdit {
+fn camera_edit_from_controls(controls: RenderControls, lens: LensModel) -> CameraEdit {
     CameraEdit {
         distance: controls.distance_m,
         yaw_degrees: controls.yaw_degrees,
@@ -171,6 +174,7 @@ fn camera_edit_from_controls(controls: RenderControls) -> CameraEdit {
             controls.focus_distance_m
         },
         f_stop: controls.f_stop,
+        lens,
         interpolation: match controls.camera_interpolation_index {
             0 => KeyframeInterpolation::Hold,
             1 => KeyframeInterpolation::Linear,
@@ -199,6 +203,7 @@ struct InteractionState {
     capture_sensor: SensorProfile,
     capture_reference_exposure_index: f32,
     capture_middle_gray_at_reference_ei: f32,
+    active_lens: LensModel,
     capture_render_requested: bool,
     capture_cancel: Option<Arc<AtomicBool>>,
     latest_native_export: Arc<Mutex<Option<NativeExportFrame>>>,
@@ -338,6 +343,7 @@ impl InteractionState {
                         focal_mm: 50.0,
                         focus_distance_m: 0.82,
                         f_stop: 8.0,
+                        lens: LensModel::REFERENCE_PHOTOGRAPHIC,
                         interpolation: KeyframeInterpolation::Smooth,
                     },
                 )]),
@@ -367,6 +373,9 @@ impl InteractionState {
             capture_reference_exposure_index: CAPTURE_DEVICE_PRESETS[0].reference_exposure_index,
             capture_middle_gray_at_reference_ei: CAPTURE_DEVICE_PRESETS[0]
                 .middle_gray_illuminance_seconds_at_reference_ei,
+            active_lens: lens_preset(CAPTURE_DEVICE_PRESETS[0].default_lens_preset_id)
+                .expect("initial capture template lens must resolve")
+                .lens,
             capture_render_requested: false,
             capture_cancel: None,
             latest_native_export: Arc::new(Mutex::new(None)),
@@ -384,10 +393,11 @@ struct CameraEdit {
     focal_mm: f32,
     focus_distance_m: f32,
     f_stop: f32,
+    lens: LensModel,
     interpolation: KeyframeInterpolation,
 }
 
-fn camera_edit_from_window(window: &MainWindow) -> CameraEdit {
+fn camera_edit_from_window(window: &MainWindow, lens: LensModel) -> CameraEdit {
     CameraEdit {
         distance: window.get_distance_m(),
         yaw_degrees: window.get_yaw_degrees(),
@@ -399,6 +409,7 @@ fn camera_edit_from_window(window: &MainWindow) -> CameraEdit {
             window.get_focus_distance_m()
         },
         f_stop: window.get_f_stop(),
+        lens,
         interpolation: match window.get_camera_interpolation_index() {
             0 => KeyframeInterpolation::Hold,
             1 => KeyframeInterpolation::Linear,
@@ -441,7 +452,7 @@ fn camera_keyframes(
             f_stop: edit.f_stop,
             near_clip: Meters(0.01),
             far_clip: Meters(100.0),
-            lens: LensModel::REFERENCE_PHOTOGRAPHIC,
+            lens: edit.lens,
             interpolation: edit.interpolation,
         },
     )
@@ -494,7 +505,7 @@ fn set_camera_controls_from_committed(
     window: &MainWindow,
     editor: &CameraEditor,
     time: RationalTime,
-) -> Result<(), String> {
+) -> Result<LensModel, String> {
     let sample = editor
         .committed
         .sample(time)
@@ -514,6 +525,29 @@ fn set_camera_controls_from_committed(
     window.set_focal_mm(sample.focal_length.0);
     window.set_focus_distance_m(sample.focus_distance.0);
     window.set_f_stop(sample.f_stop);
+    let lens_index = LENS_PRESETS
+        .iter()
+        .position(|preset| {
+            preset.lens == sample.lens
+                && (preset.nominal_focal_length.0 - sample.focal_length.0).abs() < 1.0e-4
+        })
+        .unwrap_or(LENS_PRESETS.len());
+    window.set_lens_preset_index(lens_index as i32);
+    window.set_lens_summary(
+        if lens_index == LENS_PRESETS.len() {
+            "Custom / animated lens parameters"
+        } else {
+            match LENS_PRESETS[lens_index].authority {
+                screen_geometry::LensPresetAuthority::GenericApproximation => {
+                    "Generic photographic approximation"
+                }
+                screen_geometry::LensPresetAuthority::CalibratedApproximation => {
+                    "Calibrated integrated-lens approximation"
+                }
+            }
+        }
+        .into(),
+    );
     let interpolation = editor
         .committed
         .transform
@@ -528,7 +562,7 @@ fn set_camera_controls_from_committed(
         KeyframeInterpolation::Linear => 1,
         KeyframeInterpolation::Smooth => 2,
     });
-    Ok(())
+    Ok(sample.lens)
 }
 
 fn update_undo_availability(window: &MainWindow, editor: &CameraEditor) {
@@ -807,8 +841,41 @@ fn apply_capture_preset(
     window.set_capture_fixed_optics(
         preset.optics_authority == CaptureOpticsAuthority::IntegratedFixedLens,
     );
+    apply_lens_preset(window, state, preset.default_lens_preset_id)?;
     window.set_capture_summary(preset.calibration.into());
     window.set_preview_aspect(preset.gate_width.0 / preset.gate_height.0);
+    Ok(())
+}
+
+fn apply_lens_preset(
+    window: &MainWindow,
+    state: &mut InteractionState,
+    id: &str,
+) -> Result<(), String> {
+    if id == "custom" {
+        window.set_lens_preset_index(LENS_PRESETS.len() as i32);
+        window.set_lens_summary("Custom complete lens parameters".into());
+        return Ok(());
+    }
+    let preset = lens_preset(id).ok_or_else(|| format!("unknown current lens preset id {id}"))?;
+    let index = LENS_PRESETS
+        .iter()
+        .position(|candidate| candidate.id == id)
+        .expect("resolved lens preset belongs to the current catalog");
+    state.active_lens = preset.lens;
+    window.set_lens_preset_index(index as i32);
+    window.set_focal_mm(preset.nominal_focal_length.0);
+    window.set_lens_summary(
+        match preset.authority {
+            screen_geometry::LensPresetAuthority::GenericApproximation => {
+                "Generic photographic approximation"
+            }
+            screen_geometry::LensPresetAuthority::CalibratedApproximation => {
+                "Calibrated integrated-lens approximation"
+            }
+        }
+        .into(),
+    );
     Ok(())
 }
 
@@ -2279,6 +2346,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     window.set_capture_preset_model(ModelRc::new(VecModel::from(capture_labels)));
     window.set_capture_preset_ids(ModelRc::new(VecModel::from(capture_ids)));
+    let lens_labels: Vec<SharedString> = LENS_PRESETS
+        .iter()
+        .map(|preset| preset.label.into())
+        .chain(std::iter::once("Custom / interpolated".into()))
+        .collect();
+    let lens_ids: Vec<SharedString> = LENS_PRESETS
+        .iter()
+        .map(|preset| preset.id.into())
+        .chain(std::iter::once("custom".into()))
+        .collect();
+    window.set_lens_preset_model(ModelRc::new(VecModel::from(lens_labels)));
+    window.set_lens_preset_ids(ModelRc::new(VecModel::from(lens_ids)));
     window.set_build_id(
         option_env!("SCREEN_SIM_BUILD_ID")
             .unwrap_or("development")
@@ -2306,13 +2385,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let weak_window = window.as_weak();
         let state = Rc::clone(&state);
+        window.on_select_lens_preset(move |id| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let mut state = state.borrow_mut();
+            if let Err(error) = apply_lens_preset(&window, &mut state, id.as_str()) {
+                block_preview(&window, &error);
+                return;
+            }
+            let time = match project_frame_rate(&window).and_then(|rate| {
+                rate.time_at_frame(i64::from(window.get_frame_number()))
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(time) => time,
+                Err(error) => {
+                    block_preview(&window, &error);
+                    return;
+                }
+            };
+            let lens = state.active_lens;
+            state
+                .camera_editor
+                .preview_edit(time, camera_edit_from_window(&window, lens));
+            state.inspection = None;
+            update_undo_availability(&window, &state.camera_editor);
+            render_preview(&window, &mut state);
+        });
+    }
+
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
         window.on_select_capture_preset(move |id| {
             let Some(window) = weak_window.upgrade() else {
                 return;
             };
             let mut state = state.borrow_mut();
             match apply_capture_preset(&window, &mut state, id.as_str()) {
-                Ok(()) => render_preview(&window, &mut state),
+                Ok(()) => {
+                    let time = match project_frame_rate(&window).and_then(|rate| {
+                        rate.time_at_frame(i64::from(window.get_frame_number()))
+                            .map_err(|error| error.to_string())
+                    }) {
+                        Ok(time) => time,
+                        Err(error) => {
+                            block_preview(&window, &error);
+                            return;
+                        }
+                    };
+                    let lens = state.active_lens;
+                    state
+                        .camera_editor
+                        .preview_edit(time, camera_edit_from_window(&window, lens));
+                    state.inspection = None;
+                    update_undo_availability(&window, &state.camera_editor);
+                    render_preview(&window, &mut state);
+                }
                 Err(error) => block_preview(&window, &error),
             }
         });
@@ -2502,9 +2631,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
             let mut state = state.borrow_mut();
+            let lens = state.active_lens;
             state
                 .camera_editor
-                .preview_edit(time, camera_edit_from_window(&window));
+                .preview_edit(time, camera_edit_from_window(&window, lens));
             state.camera_editor.commit_preview();
             window.set_camera_key_count(
                 state.camera_editor.committed.transform.keyframes.len() as i32
@@ -2533,12 +2663,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let mut state = state.borrow_mut();
             if state.camera_editor.undo() {
-                if let Err(error) =
-                    set_camera_controls_from_committed(&window, &state.camera_editor, time)
-                {
-                    window.set_error_text(error.into());
-                    return;
-                }
+                state.active_lens =
+                    match set_camera_controls_from_committed(&window, &state.camera_editor, time) {
+                        Ok(lens) => lens,
+                        Err(error) => {
+                            window.set_error_text(error.into());
+                            return;
+                        }
+                    };
                 window.set_camera_key_count(
                     state.camera_editor.committed.transform.keyframes.len() as i32,
                 );
@@ -2567,12 +2699,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let mut state = state.borrow_mut();
             if state.camera_editor.redo() {
-                if let Err(error) =
-                    set_camera_controls_from_committed(&window, &state.camera_editor, time)
-                {
-                    window.set_error_text(error.into());
-                    return;
-                }
+                state.active_lens =
+                    match set_camera_controls_from_committed(&window, &state.camera_editor, time) {
+                        Ok(lens) => lens,
+                        Err(error) => {
+                            window.set_error_text(error.into());
+                            return;
+                        }
+                    };
                 window.set_camera_key_count(
                     state.camera_editor.committed.transform.keyframes.len() as i32,
                 );
@@ -2651,16 +2785,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         return;
                     }
                 };
-                if let Err(error) =
-                    set_camera_controls_from_committed(&window, &state.camera_editor, time)
-                {
-                    block_preview(&window, &error);
-                    return;
-                }
+                state.active_lens =
+                    match set_camera_controls_from_committed(&window, &state.camera_editor, time) {
+                        Ok(lens) => lens,
+                        Err(error) => {
+                            block_preview(&window, &error);
+                            return;
+                        }
+                    };
                 current_controls = render_controls(&window);
                 update_undo_availability(&window, &state.camera_editor);
             } else if previous_controls.is_some_and(|previous| {
-                camera_edit_from_controls(previous) != camera_edit_from_controls(current_controls)
+                camera_edit_from_controls(previous, state.active_lens)
+                    != camera_edit_from_controls(current_controls, state.active_lens)
             }) {
                 let time = match project_frame_rate(&window).and_then(|rate| {
                     rate.time_at_frame(i64::from(window.get_frame_number()))
@@ -2672,9 +2809,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         return;
                     }
                 };
+                let lens = state.active_lens;
                 state
                     .camera_editor
-                    .preview_edit(time, camera_edit_from_controls(current_controls));
+                    .preview_edit(time, camera_edit_from_controls(current_controls, lens));
                 state.inspection = None;
                 update_undo_availability(&window, &state.camera_editor);
             }
@@ -2709,6 +2847,7 @@ mod interaction_tests {
                     focal_mm: 50.0,
                     focus_distance_m: 0.8,
                     f_stop: 8.0,
+                    lens: LensModel::REFERENCE_PHOTOGRAPHIC,
                     interpolation: KeyframeInterpolation::Smooth,
                 },
             )]),
@@ -2728,6 +2867,7 @@ mod interaction_tests {
             focal_mm: 65.0,
             focus_distance_m: 1.2,
             f_stop: 4.0,
+            lens: LensModel::REFERENCE_PHOTOGRAPHIC,
             interpolation: KeyframeInterpolation::Linear,
         };
 
@@ -2766,6 +2906,7 @@ mod interaction_tests {
                 focal_mm: 35.0,
                 focus_distance_m: 0.9,
                 f_stop: 5.6,
+                lens: lens_preset("generic-prime-35mm").unwrap().lens,
                 interpolation: KeyframeInterpolation::Hold,
             },
         );

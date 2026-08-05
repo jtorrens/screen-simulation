@@ -43,6 +43,119 @@ impl LensModel {
     };
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LensPresetAuthority {
+    GenericApproximation,
+    CalibratedApproximation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LensPreset {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub authority: LensPresetAuthority,
+    pub nominal_focal_length: Millimeters,
+    pub lens: LensModel,
+}
+
+pub const LENS_PRESETS: &[LensPreset] = &[
+    LensPreset {
+        id: "generic-prime-18mm",
+        label: "Generic prime · 18 mm",
+        authority: LensPresetAuthority::GenericApproximation,
+        nominal_focal_length: Millimeters(18.0),
+        lens: LensModel {
+            radial_distortion: [-0.12, 0.035, -0.004],
+            tangential_distortion: [0.000_7, -0.000_5],
+            longitudinal_chromatic_meters: [0.001_8, 0.0, -0.002_2],
+            lateral_chromatic_scale: [1.001_5, 1.0, 0.998_3],
+            vignetting_strength: 0.9,
+            transmission_rgb: [0.88, 0.9, 0.91],
+        },
+    },
+    LensPreset {
+        id: "generic-prime-25mm",
+        label: "Generic prime · 25 mm",
+        authority: LensPresetAuthority::GenericApproximation,
+        nominal_focal_length: Millimeters(25.0),
+        lens: LensModel {
+            radial_distortion: [-0.08, 0.022, -0.002],
+            tangential_distortion: [0.000_6, -0.000_4],
+            longitudinal_chromatic_meters: [0.001_5, 0.0, -0.001_9],
+            lateral_chromatic_scale: [1.001_2, 1.0, 0.998_7],
+            vignetting_strength: 0.82,
+            transmission_rgb: [0.9, 0.92, 0.93],
+        },
+    },
+    LensPreset {
+        id: "generic-prime-35mm",
+        label: "Generic prime · 35 mm",
+        authority: LensPresetAuthority::GenericApproximation,
+        nominal_focal_length: Millimeters(35.0),
+        lens: LensModel {
+            radial_distortion: [-0.045, 0.011, -0.000_5],
+            tangential_distortion: [0.000_45, -0.000_3],
+            longitudinal_chromatic_meters: [0.001_3, 0.0, -0.001_6],
+            lateral_chromatic_scale: [1.000_9, 1.0, 0.999],
+            vignetting_strength: 0.72,
+            transmission_rgb: [0.92, 0.94, 0.95],
+        },
+    },
+    LensPreset {
+        id: "generic-prime-50mm",
+        label: "Generic prime · 50 mm",
+        authority: LensPresetAuthority::GenericApproximation,
+        nominal_focal_length: Millimeters(50.0),
+        lens: LensModel::REFERENCE_PHOTOGRAPHIC,
+    },
+    LensPreset {
+        id: "generic-prime-85mm",
+        label: "Generic prime · 85 mm",
+        authority: LensPresetAuthority::GenericApproximation,
+        nominal_focal_length: Millimeters(85.0),
+        lens: LensModel {
+            radial_distortion: [0.012, -0.004, 0.000_5],
+            tangential_distortion: [0.000_25, -0.000_2],
+            longitudinal_chromatic_meters: [0.000_9, 0.0, -0.001_1],
+            lateral_chromatic_scale: [1.000_55, 1.0, 0.999_4],
+            vignetting_strength: 0.52,
+            transmission_rgb: [0.93, 0.95, 0.96],
+        },
+    },
+    LensPreset {
+        id: "generic-prime-135mm",
+        label: "Generic prime · 135 mm",
+        authority: LensPresetAuthority::GenericApproximation,
+        nominal_focal_length: Millimeters(135.0),
+        lens: LensModel {
+            radial_distortion: [0.018, -0.006, 0.001],
+            tangential_distortion: [0.000_2, -0.000_15],
+            longitudinal_chromatic_meters: [0.000_75, 0.0, -0.000_9],
+            lateral_chromatic_scale: [1.000_4, 1.0, 0.999_55],
+            vignetting_strength: 0.45,
+            transmission_rgb: [0.93, 0.95, 0.96],
+        },
+    },
+    LensPreset {
+        id: "iphone-16e-main-integrated",
+        label: "iPhone 16e main · integrated",
+        authority: LensPresetAuthority::CalibratedApproximation,
+        nominal_focal_length: Millimeters(4.2),
+        lens: LensModel {
+            radial_distortion: [-0.14, 0.045, -0.006],
+            tangential_distortion: [0.000_8, -0.000_6],
+            longitudinal_chromatic_meters: [0.000_16, 0.0, -0.000_2],
+            lateral_chromatic_scale: [1.001_8, 1.0, 0.998],
+            vignetting_strength: 0.88,
+            transmission_rgb: [0.86, 0.89, 0.9],
+        },
+    },
+];
+
+pub fn lens_preset(id: &str) -> Option<LensPreset> {
+    LENS_PRESETS.iter().copied().find(|preset| preset.id == id)
+}
+
 impl Quaternion {
     pub fn from_yaw_degrees(yaw: f32) -> Self {
         let half = yaw.to_radians() * 0.5;
@@ -651,24 +764,13 @@ fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
 }
 
 fn distortion_is_certified_family(lens: LensModel) -> bool {
-    let reference = LensModel::REFERENCE_PHOTOGRAPHIC;
-    let strength = if lens.radial_distortion[0].abs() < 1.0e-8 {
-        0.0
-    } else {
-        lens.radial_distortion[0] / reference.radial_distortion[0]
-    };
-    if !(0.0..=1.0).contains(&strength) {
-        return false;
-    }
-    lens.radial_distortion
-        .into_iter()
-        .zip(reference.radial_distortion)
-        .chain(
-            lens.tangential_distortion
-                .into_iter()
-                .zip(reference.tangential_distortion),
-        )
-        .all(|(actual, certified)| (actual - certified * strength).abs() <= 1.0e-6)
+    (-0.25..=0.08).contains(&lens.radial_distortion[0])
+        && (-0.1..=0.15).contains(&lens.radial_distortion[1])
+        && (-0.05..=0.05).contains(&lens.radial_distortion[2])
+        && lens
+            .tangential_distortion
+            .into_iter()
+            .all(|coefficient| (-0.01..=0.01).contains(&coefficient))
 }
 
 fn interpolate_lens(
@@ -1542,5 +1644,24 @@ mod tests {
             transforms.validate(),
             Err(GeometryError::InvalidTransformKeyframe)
         ));
+    }
+
+    #[test]
+    fn bundled_lens_presets_are_unique_complete_and_inside_the_certified_domain() {
+        let mut ids = HashSet::new();
+        for preset in LENS_PRESETS {
+            assert!(ids.insert(preset.id));
+            assert_eq!(lens_preset(preset.id), Some(*preset));
+            assert!(preset.nominal_focal_length.0 > 0.0);
+            assert!(lens_is_valid_for_gate(preset.lens, Vec2 { x: 0.0, y: 0.0 }));
+        }
+        assert_eq!(lens_preset("unknown-or-retired"), None);
+
+        for pair in LENS_PRESETS.windows(2) {
+            let midpoint = interpolate_lens(pair[0].lens, pair[1].lens, &|left, right| {
+                (left + right) * 0.5
+            });
+            assert!(lens_is_valid_for_gate(midpoint, Vec2 { x: 0.0, y: 0.0 }));
+        }
     }
 }

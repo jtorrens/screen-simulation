@@ -125,6 +125,10 @@ export component MainWindow inherits Window {
     in-out property <float> capture-gate-height-mm: 19.22;
     in-out property <string> capture-summary: "Published ALEV 4 geometry · reference 50 mm lens";
     in-out property <bool> capture-fixed-optics: false;
+    in-out property <int> lens-preset-index: 3;
+    in property <[string]> lens-preset-model;
+    in property <[string]> lens-preset-ids;
+    in-out property <string> lens-summary: "Generic photographic approximation";
     in-out property <int> render-quality-index: 1;
     in-out property <bool> capture-rendering: false;
     in-out property <bool> preview-rendering: false;
@@ -203,6 +207,7 @@ export component MainWindow inherits Window {
     callback redo();
     callback select-device-preset(string);
     callback select-capture-preset(string);
+    callback select-lens-preset(string);
     callback render-capture-frame();
     callback cancel-capture-frame();
     callback export-native-frame();
@@ -880,6 +885,21 @@ export component MainWindow inherits Window {
                         Rectangle { height: 1px; background: #303744; }
                         Text { text: "CAMERA"; color: #71819b; font-size: 11px; }
 
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Lens"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: root.lens-preset-model;
+                                current-index <=> root.lens-preset-index;
+                                enabled: !root.capture-fixed-optics;
+                                selected(value) => {
+                                    root.select-lens-preset(root.lens-preset-ids[self.current-index]);
+                                }
+                            }
+                        }
+
+                        Text { text: root.lens-summary; color: #8794a9; font-size: 10px; overflow: elide; }
+
                         ValueRow {
                             label: "Distance";
                             minimum: 0.05;
@@ -892,8 +912,8 @@ export component MainWindow inherits Window {
 
                         ValueRow {
                             label: "Focal";
-                            minimum: 24;
-                            maximum: 85;
+                            minimum: 4;
+                            maximum: 135;
                             step: 0.1;
                             value <=> root.focal-mm;
                             numeric-value: round(root.focal-mm * 10) / 10;
