@@ -55,6 +55,15 @@ extrapolation for 8064×6048. Isolated 1024×768 RAW development measured 0.017 
 Metal, or 5.58×. This localizes the remaining cost in the pre-RAW optical evaluator rather than the
 connected Metal stage.
 
+After the clean-display temporal decision, the benchmark also measures one authoritative spatial
+optical evaluation separately from the existing rolling/PWM repetition. On the same M3 Ultra, a
+128×96 spatial pass measured 0.012 s or 1.04 million pixels/s, corresponding to a 0.8 minute linear
+48 MP extrapolation before RAW development. The legacy-shaped eight-sample rolling measurement was
+2.045 s for one 128×128 tile, 8,011 pixels/s and 1.7 h extrapolated. This comparison is the required
+pre-port profile: Metal work must target the spatial evaluator, while the forthcoming analytical
+display modulation contract removes the repeated-optics cost independently. Motion that genuinely
+changes source or geometry still requires its explicitly authored spatial samples.
+
 The next implementation tranche is precisely bounded:
 
 1. Add an Application-owned prepared optical-work contract containing validated frame, panel,

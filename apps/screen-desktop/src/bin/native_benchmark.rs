@@ -3,6 +3,7 @@ use std::time::Instant;
 use screen_application::{
     CAPTURE_DEVICE_PRESETS, FrameCaptureRequest, OpticalRequest, ProceduralTestPattern,
     RollingDirection, SensorReadout, capture_and_develop_procedural_region_with_backend,
+    evaluate_linear_optics,
 };
 use screen_camera::{CameraDevelopment, CpuRawDevelopment, RawDevelopmentBackend};
 use screen_contracts::{FrameRate, Meters, RationalTime, Vec2, Vec3};
@@ -77,31 +78,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             interpolation: KeyframeInterpolation::Hold,
         }],
     };
-    let capture = FrameCaptureRequest {
-        optics: OpticalRequest {
-            time: at_zero,
-            viewport_aspect: f32::from(SENSOR_WIDTH) / f32::from(SENSOR_HEIGHT),
-            panel: LcdProfile {
-                native_width: DEVICE_PRESETS[0].native_width,
-                native_height: DEVICE_PRESETS[0].native_height,
-                active_width: DEVICE_PRESETS[0].active_width,
-                active_height: DEVICE_PRESETS[0].active_height,
-                stripe_layout: StripeLayout::Rgb,
-                black_matrix_fraction: 0.1,
-                eotf_gamma: 2.2,
-                black_level_nits: 0.05,
-                white_level_nits: DEVICE_PRESETS[0].reference_white_nits,
-                colorimetry: PanelColorimetry::SRGB_D65,
-                angular_emission_power: screen_contracts::LinearRgb::new(1.7, 1.5, 1.8),
-                temporal_emission: PanelTemporalEmission::continuous(),
-            },
-            cover: CoverGlassProfile::NEUTRAL,
-            environment: ProceduralEnvironment::DARK,
-            camera,
-            screen,
-            inspection: None,
-            procedural_pattern: ProceduralTestPattern::AnimatedCheckerboard,
+    let optics = OpticalRequest {
+        time: at_zero,
+        viewport_aspect: f32::from(SENSOR_WIDTH) / f32::from(SENSOR_HEIGHT),
+        panel: LcdProfile {
+            native_width: DEVICE_PRESETS[0].native_width,
+            native_height: DEVICE_PRESETS[0].native_height,
+            active_width: DEVICE_PRESETS[0].active_width,
+            active_height: DEVICE_PRESETS[0].active_height,
+            stripe_layout: StripeLayout::Rgb,
+            black_matrix_fraction: 0.1,
+            eotf_gamma: 2.2,
+            black_level_nits: 0.05,
+            white_level_nits: DEVICE_PRESETS[0].reference_white_nits,
+            colorimetry: PanelColorimetry::SRGB_D65,
+            angular_emission_power: screen_contracts::LinearRgb::new(1.7, 1.5, 1.8),
+            temporal_emission: PanelTemporalEmission::continuous(),
         },
+        cover: CoverGlassProfile::NEUTRAL,
+        environment: ProceduralEnvironment::DARK,
+        camera,
+        screen,
+        inspection: None,
+        procedural_pattern: ProceduralTestPattern::AnimatedCheckerboard,
+    };
+    let spatial_started = Instant::now();
+    let spatial = evaluate_linear_optics(optics.clone(), TILE_EDGE, 96)?;
+    let spatial_elapsed = spatial_started.elapsed();
+    let spatial_pixels = spatial.pixels.len() as f64;
+    let spatial_throughput = spatial_pixels / spatial_elapsed.as_secs_f64();
+    let capture = FrameCaptureRequest {
+        optics,
         frame_rate: FrameRate::new(24, 1)?,
         frame_index: 0,
         duration: RationalTime::new(1, 288)?,
@@ -148,6 +155,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed.as_secs_f64()
     );
     println!("end-to-end physical throughput: {throughput:.2} sensor pixels/s");
+    println!(
+        "single authoritative spatial optical pass: {:.3} s · {:.0} pixels/s",
+        spatial_elapsed.as_secs_f64(),
+        spatial_throughput
+    );
+    println!(
+        "48 MP spatial-only extrapolation after temporal factorization: {:.1} min",
+        iphone_pixels / spatial_throughput / 60.0
+    );
     println!(
         "48 MP measured extrapolation: {:.1} h ({}x{}; same physical settings)",
         iphone_pixels / throughput / 3600.0,
