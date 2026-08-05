@@ -13,9 +13,9 @@ decoded encoded RGB
 → nonlinear device signal RGB
 → panel EOTF, black/white levels and channel response
 → physical native-primary subpixel emission and angular response
-→ per-emitter lens integration
+→ per-emitter lens integration with absolute luminance retained
 → explicit native-primary/white-point conversion
-→ linear relative irradiance in ACEScg
+→ linear image-plane illuminance in ACEScg
 ```
 
 The source transform and panel EOTF must never linearize the same signal twice. `screen-color` resolves named transformations and reference processing. `screen-panel` alone converts the final device signal into physical emission.

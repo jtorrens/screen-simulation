@@ -10,14 +10,17 @@ use screen_sensor::{RawSensorRaster, RawSensorRegion, SensorProfile, SensorRegio
 pub struct CameraDevelopment {
     /// Explicit multiplicative gains in native sensor RGB order.
     pub white_balance: LinearRgb,
-    /// Explicit conversion from physical reconstructed exposure to ACEScg working levels.
-    pub linear_exposure_scale: f32,
+    /// Image-plane illuminance exposure in lux-seconds placed at ACEScg 0.18.
+    pub middle_gray_illuminance_seconds: f32,
+    /// Explicit push/pull applied only after RAW reconstruction.
+    pub develop_exposure_ev: f32,
 }
 
 impl CameraDevelopment {
     pub const NEUTRAL: Self = Self {
         white_balance: LinearRgb::new(1.0, 1.0, 1.0),
-        linear_exposure_scale: 1.0,
+        middle_gray_illuminance_seconds: 0.18,
+        develop_exposure_ev: 0.0,
     };
 
     pub fn validate(self) -> Result<Self, CameraDevelopmentError> {
@@ -31,12 +34,18 @@ impl CameraDevelopment {
         {
             return Err(CameraDevelopmentError::InvalidWhiteBalance);
         }
-        if !self.linear_exposure_scale.is_finite()
-            || !(0.000_001..=1_000_000.0).contains(&self.linear_exposure_scale)
+        if !self.middle_gray_illuminance_seconds.is_finite()
+            || !(0.000_001..=1_000_000.0).contains(&self.middle_gray_illuminance_seconds)
+            || !self.develop_exposure_ev.is_finite()
+            || !(-16.0..=16.0).contains(&self.develop_exposure_ev)
         {
             return Err(CameraDevelopmentError::InvalidExposureScale);
         }
         Ok(self)
+    }
+
+    fn linear_scale(self) -> f32 {
+        0.18 / self.middle_gray_illuminance_seconds * self.develop_exposure_ev.exp2()
     }
 }
 
@@ -87,16 +96,19 @@ pub fn develop_raw_to_acescg(
         return Err(CameraDevelopmentError::RawProfileMismatch);
     }
     let pixel_count = u64::from(raw.width) * u64::from(raw.height);
-    if raw.codes.len() as u64 != pixel_count || raw.clipped.len() as u64 != pixel_count {
+    if raw.codes.len() as u64 != pixel_count
+        || raw.full_well_clipped.len() as u64 != pixel_count
+        || raw.adc_clipped.len() as u64 != pixel_count
+    {
         return Err(CameraDevelopmentError::RawPixelCountMismatch);
     }
     let sensor_to_acescg =
         inverse3(sensor.acescg_to_sensor).ok_or(CameraDevelopmentError::InvalidColorMatrix)?;
     let maximum_code = ((1_u32 << sensor.adc_bits) - 1) as f32;
     let saturation = [
-        sensor.saturation_exposure.r,
-        sensor.saturation_exposure.g,
-        sensor.saturation_exposure.b,
+        sensor.saturation_illuminance_seconds.r,
+        sensor.saturation_illuminance_seconds.g,
+        sensor.saturation_illuminance_seconds.b,
     ];
     let gains = [
         development.white_balance.r,
@@ -128,9 +140,10 @@ pub fn develop_raw_to_acescg(
                 ) * gains[channel];
             }
             let mut developed = mat_vec(sensor_to_acescg, sensor_rgb);
-            developed.r *= development.linear_exposure_scale;
-            developed.g *= development.linear_exposure_scale;
-            developed.b *= development.linear_exposure_scale;
+            let linear_scale = development.linear_scale();
+            developed.r *= linear_scale;
+            developed.g *= linear_scale;
+            developed.b *= linear_scale;
             if [developed.r, developed.g, developed.b]
                 .into_iter()
                 .any(|value| !value.is_finite())
@@ -165,16 +178,19 @@ pub fn develop_raw_region_to_acescg(
         return Err(CameraDevelopmentError::RawProfileMismatch);
     }
     let pixel_count = u64::from(raw.region.width) * u64::from(raw.region.height);
-    if raw.codes.len() as u64 != pixel_count || raw.clipped.len() as u64 != pixel_count {
+    if raw.codes.len() as u64 != pixel_count
+        || raw.full_well_clipped.len() as u64 != pixel_count
+        || raw.adc_clipped.len() as u64 != pixel_count
+    {
         return Err(CameraDevelopmentError::RawPixelCountMismatch);
     }
     let sensor_to_acescg =
         inverse3(sensor.acescg_to_sensor).ok_or(CameraDevelopmentError::InvalidColorMatrix)?;
     let maximum_code = ((1_u32 << sensor.adc_bits) - 1) as f32;
     let saturation = [
-        sensor.saturation_exposure.r,
-        sensor.saturation_exposure.g,
-        sensor.saturation_exposure.b,
+        sensor.saturation_illuminance_seconds.r,
+        sensor.saturation_illuminance_seconds.g,
+        sensor.saturation_illuminance_seconds.b,
     ];
     let gains = [
         development.white_balance.r,
@@ -209,9 +225,10 @@ pub fn develop_raw_region_to_acescg(
                 ) * gains[channel];
             }
             let mut developed = mat_vec(sensor_to_acescg, sensor_rgb);
-            developed.r *= development.linear_exposure_scale;
-            developed.g *= development.linear_exposure_scale;
-            developed.b *= development.linear_exposure_scale;
+            let linear_scale = development.linear_scale();
+            developed.r *= linear_scale;
+            developed.g *= linear_scale;
+            developed.b *= linear_scale;
             if [developed.r, developed.g, developed.b]
                 .into_iter()
                 .any(|value| !value.is_finite())
@@ -366,7 +383,7 @@ impl fmt::Display for CameraDevelopmentError {
         formatter.write_str(match self {
             Self::InvalidWhiteBalance => "white-balance gains must be finite and in [0.01, 100]",
             Self::InvalidExposureScale => {
-                "linear camera exposure scale must be finite and in [0.000001, 1000000]"
+                "middle-gray exposure must be finite and positive, and develop EV must be in [-16, 16]"
             }
             Self::RawProfileMismatch => "RAW raster does not match its authored sensor profile",
             Self::RawPixelCountMismatch => "RAW raster storage does not match its dimensions",
@@ -390,7 +407,7 @@ mod tests {
             native_height: 4,
             bayer_pattern: pattern,
             acescg_to_sensor: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            saturation_exposure: LinearRgb::new(1.0, 1.0, 1.0),
+            saturation_illuminance_seconds: LinearRgb::new(1.0, 1.0, 1.0),
             full_well_electrons: 10_000.0,
             dark_current_electrons_per_second: 0.0,
             read_noise_electrons_rms: 0.0,
@@ -422,7 +439,8 @@ mod tests {
                 bayer_pattern: pattern,
                 adc_bits: 16,
                 codes,
-                clipped: vec![false; 16],
+                full_well_clipped: vec![false; 16],
+                adc_clipped: vec![false; 16],
             };
             let developed = develop_raw_to_acescg(&raw, sensor, CameraDevelopment::NEUTRAL)
                 .expect("developed raster");
@@ -443,14 +461,16 @@ mod tests {
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
             codes: vec![32_768; 16],
-            clipped: vec![false; 16],
+            full_well_clipped: vec![false; 16],
+            adc_clipped: vec![false; 16],
         };
         let developed = develop_raw_to_acescg(
             &raw,
             sensor,
             CameraDevelopment {
                 white_balance: LinearRgb::new(2.0, 1.0, 0.5),
-                linear_exposure_scale: 1.0,
+                middle_gray_illuminance_seconds: 0.18,
+                develop_exposure_ev: 0.0,
             },
         )
         .expect("developed raster");
@@ -461,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_linear_exposure_scale_changes_developed_acescg_without_changing_raw() {
+    fn explicit_middle_gray_placement_changes_developed_acescg_without_changing_raw() {
         let sensor = identity_sensor(BayerPattern::Rggb);
         let raw = RawSensorRaster {
             width: 4,
@@ -469,7 +489,8 @@ mod tests {
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
             codes: vec![16_384; 16],
-            clipped: vec![false; 16],
+            full_well_clipped: vec![false; 16],
+            adc_clipped: vec![false; 16],
         };
         let original = raw.clone();
         let developed = develop_raw_to_acescg(
@@ -477,7 +498,8 @@ mod tests {
             sensor,
             CameraDevelopment {
                 white_balance: LinearRgb::new(1.0, 1.0, 1.0),
-                linear_exposure_scale: 4.0,
+                middle_gray_illuminance_seconds: 0.045,
+                develop_exposure_ev: 0.0,
             },
         )
         .expect("developed raster");
@@ -500,7 +522,8 @@ mod tests {
             bayer_pattern: BayerPattern::Bggr,
             adc_bits: 16,
             codes: vec![0; 16],
-            clipped: vec![false; 16],
+            full_well_clipped: vec![false; 16],
+            adc_clipped: vec![false; 16],
         };
         assert_eq!(
             develop_raw_to_acescg(&raw, sensor, CameraDevelopment::NEUTRAL),
@@ -524,7 +547,8 @@ mod tests {
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
             codes: codes.clone(),
-            clipped: vec![false; 64],
+            full_well_clipped: vec![false; 64],
+            adc_clipped: vec![false; 64],
         };
         let full = develop_raw_to_acescg(&full_raw, sensor, CameraDevelopment::NEUTRAL)
             .expect("complete development");
@@ -547,7 +571,8 @@ mod tests {
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
             codes: region_codes,
-            clipped: vec![false; usize::from(halo.width) * usize::from(halo.height)],
+            full_well_clipped: vec![false; usize::from(halo.width) * usize::from(halo.height)],
+            adc_clipped: vec![false; usize::from(halo.width) * usize::from(halo.height)],
         };
         let region = develop_raw_region_to_acescg(&region_raw, sensor, CameraDevelopment::NEUTRAL)
             .expect("region development");

@@ -19,7 +19,8 @@ pub struct SensorProfile {
     pub native_height: u16,
     pub bayer_pattern: BayerPattern,
     pub acescg_to_sensor: [[f32; 3]; 3],
-    pub saturation_exposure: LinearRgb,
+    /// Per-channel image-plane illuminance exposure in lux-seconds that fills the charge well.
+    pub saturation_illuminance_seconds: LinearRgb,
     pub full_well_electrons: f32,
     pub dark_current_electrons_per_second: f32,
     pub read_noise_electrons_rms: f32,
@@ -32,7 +33,8 @@ pub struct IntegratedOpticalExposure {
     pub width: u32,
     pub height: u32,
     pub duration_seconds: f32,
-    pub acescg_irradiance_seconds: Vec<LinearRgb>,
+    /// Image-plane illuminance exposure in lux-seconds, expressed in the ACEScg basis.
+    pub acescg_illuminance_seconds: Vec<LinearRgb>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,7 +50,8 @@ pub struct RawSensorRaster {
     pub bayer_pattern: BayerPattern,
     pub adc_bits: u8,
     pub codes: Vec<u16>,
-    pub clipped: Vec<bool>,
+    pub full_well_clipped: Vec<bool>,
+    pub adc_clipped: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +70,8 @@ pub struct RawSensorRegion {
     pub bayer_pattern: BayerPattern,
     pub adc_bits: u8,
     pub codes: Vec<u16>,
-    pub clipped: Vec<bool>,
+    pub full_well_clipped: Vec<bool>,
+    pub adc_clipped: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +98,7 @@ impl SensorProfile {
         native_height: 2_160,
         bayer_pattern: BayerPattern::Rggb,
         acescg_to_sensor: [[0.72, 0.21, 0.07], [0.10, 0.82, 0.08], [0.03, 0.16, 0.81]],
-        saturation_exposure: LinearRgb::new(0.018, 0.018, 0.018),
+        saturation_illuminance_seconds: LinearRgb::new(2.4, 2.4, 2.4),
         full_well_electrons: 45_000.0,
         dark_current_electrons_per_second: 0.1,
         read_noise_electrons_rms: 2.0,
@@ -110,9 +114,9 @@ impl SensorProfile {
             return Err(SensorError::InvalidColorMatrix);
         }
         if [
-            self.saturation_exposure.r,
-            self.saturation_exposure.g,
-            self.saturation_exposure.b,
+            self.saturation_illuminance_seconds.r,
+            self.saturation_illuminance_seconds.g,
+            self.saturation_illuminance_seconds.b,
         ]
         .into_iter()
         .any(|value| !value.is_finite() || value <= 0.0)
@@ -147,7 +151,7 @@ impl IntegratedOpticalExposure {
         if self.width == 0 || self.height == 0 {
             return Err(SensorError::EmptyRaster);
         }
-        if self.acescg_irradiance_seconds.len() as u64
+        if self.acescg_illuminance_seconds.len() as u64
             != u64::from(self.width) * u64::from(self.height)
         {
             return Err(SensorError::PixelCountMismatch);
@@ -156,7 +160,7 @@ impl IntegratedOpticalExposure {
             return Err(SensorError::InvalidDuration);
         }
         if self
-            .acescg_irradiance_seconds
+            .acescg_illuminance_seconds
             .iter()
             .any(|pixel| !pixel.r.is_finite() || !pixel.g.is_finite() || !pixel.b.is_finite())
         {
@@ -179,10 +183,11 @@ pub fn expose_raw(
         return Err(SensorError::RasterProfileMismatch);
     }
     let maximum_code = (1_u32 << profile.adc_bits) - 1;
-    let mut codes = Vec::with_capacity(exposure.acescg_irradiance_seconds.len());
-    let mut clipped = Vec::with_capacity(exposure.acescg_irradiance_seconds.len());
+    let mut codes = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
+    let mut full_well_clipped_mask = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
+    let mut adc_clipped_mask = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
     for (index, acescg) in exposure
-        .acescg_irradiance_seconds
+        .acescg_illuminance_seconds
         .iter()
         .copied()
         .enumerate()
@@ -193,9 +198,9 @@ pub fn expose_raw(
         let sensor_rgb = mat_vec(profile.acescg_to_sensor, acescg);
         let native_exposure = [sensor_rgb.r, sensor_rgb.g, sensor_rgb.b][channel].max(0.0);
         let saturation = [
-            profile.saturation_exposure.r,
-            profile.saturation_exposure.g,
-            profile.saturation_exposure.b,
+            profile.saturation_illuminance_seconds.r,
+            profile.saturation_illuminance_seconds.g,
+            profile.saturation_illuminance_seconds.b,
         ][channel];
         let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
             * f64::from(profile.full_well_electrons);
@@ -217,7 +222,8 @@ pub fn expose_raw(
         let adc_clipped = normalized >= 1.0;
         let code = (normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16;
         codes.push(code);
-        clipped.push(full_well_clipped || adc_clipped);
+        full_well_clipped_mask.push(full_well_clipped);
+        adc_clipped_mask.push(adc_clipped);
     }
     Ok(RawSensorRaster {
         width: exposure.width,
@@ -225,7 +231,8 @@ pub fn expose_raw(
         bayer_pattern: profile.bayer_pattern,
         adc_bits: profile.adc_bits,
         codes,
-        clipped,
+        full_well_clipped: full_well_clipped_mask,
+        adc_clipped: adc_clipped_mask,
     })
 }
 
@@ -242,10 +249,11 @@ pub fn expose_raw_region(
         return Err(SensorError::RasterProfileMismatch);
     }
     let maximum_code = (1_u32 << profile.adc_bits) - 1;
-    let mut codes = Vec::with_capacity(exposure.acescg_irradiance_seconds.len());
-    let mut clipped = Vec::with_capacity(exposure.acescg_irradiance_seconds.len());
+    let mut codes = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
+    let mut full_well_clipped_mask = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
+    let mut adc_clipped_mask = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
     for (local_index, acescg) in exposure
-        .acescg_irradiance_seconds
+        .acescg_illuminance_seconds
         .iter()
         .copied()
         .enumerate()
@@ -258,9 +266,9 @@ pub fn expose_raw_region(
         let sensor_rgb = mat_vec(profile.acescg_to_sensor, acescg);
         let native_exposure = [sensor_rgb.r, sensor_rgb.g, sensor_rgb.b][channel].max(0.0);
         let saturation = [
-            profile.saturation_exposure.r,
-            profile.saturation_exposure.g,
-            profile.saturation_exposure.b,
+            profile.saturation_illuminance_seconds.r,
+            profile.saturation_illuminance_seconds.g,
+            profile.saturation_illuminance_seconds.b,
         ][channel];
         let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
             * f64::from(profile.full_well_electrons);
@@ -282,7 +290,8 @@ pub fn expose_raw_region(
         let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
         let adc_clipped = normalized >= 1.0;
         codes.push((normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16);
-        clipped.push(full_well_clipped || adc_clipped);
+        full_well_clipped_mask.push(full_well_clipped);
+        adc_clipped_mask.push(adc_clipped);
     }
     Ok(RawSensorRegion {
         sensor_width: profile.native_width,
@@ -291,7 +300,8 @@ pub fn expose_raw_region(
         bayer_pattern: profile.bayer_pattern,
         adc_bits: profile.adc_bits,
         codes,
-        clipped,
+        full_well_clipped: full_well_clipped_mask,
+        adc_clipped: adc_clipped_mask,
     })
 }
 
@@ -510,16 +520,16 @@ mod tests {
     #[test]
     fn noiseless_exposure_quantizes_native_cfa_and_saturates() {
         let profile = noiseless_profile(2, 2);
-        let half = profile.saturation_exposure.r * 0.5;
+        let half = profile.saturation_illuminance_seconds.r * 0.5;
         let exposure = IntegratedOpticalExposure {
             width: 2,
             height: 2,
             duration_seconds: 1.0 / 48.0,
-            acescg_irradiance_seconds: vec![
+            acescg_illuminance_seconds: vec![
                 LinearRgb::new(half, 0.0, 0.0),
                 LinearRgb::new(0.0, half, 0.0),
                 LinearRgb::new(0.0, half, 0.0),
-                LinearRgb::new(0.0, 0.0, profile.saturation_exposure.b * 2.0),
+                LinearRgb::new(0.0, 0.0, profile.saturation_illuminance_seconds.b * 2.0),
             ],
         };
         let raw = expose_raw(
@@ -536,7 +546,38 @@ mod tests {
             assert!((i64::from(*code) - i64::from(half_code)).abs() <= 256);
         }
         assert_eq!(raw.codes[3], (1_u16 << profile.adc_bits) - 1);
-        assert_eq!(raw.clipped, vec![false, false, false, true]);
+        assert_eq!(raw.full_well_clipped, vec![false, false, false, true]);
+        assert_eq!(raw.adc_clipped, vec![false, false, false, true]);
+    }
+
+    #[test]
+    fn calibrated_five_hundred_nit_screen_exposure_preserves_full_well_headroom() {
+        let profile = noiseless_profile(2, 2);
+        let white_exposure = 500.0 * core::f32::consts::FRAC_PI_4 / 16.0 / 48.0;
+        let exposure = IntegratedOpticalExposure {
+            width: 2,
+            height: 2,
+            duration_seconds: 1.0 / 48.0,
+            acescg_illuminance_seconds: vec![
+                LinearRgb::new(
+                    white_exposure,
+                    white_exposure,
+                    white_exposure,
+                );
+                4
+            ],
+        };
+        let raw = expose_raw(
+            profile,
+            &exposure,
+            CaptureIdentity {
+                noise_seed: 1,
+                frame_index: 0,
+            },
+        )
+        .expect("calibrated RAW capture");
+        assert!(raw.full_well_clipped.iter().all(|clipped| !clipped));
+        assert!(raw.adc_clipped.iter().all(|clipped| !clipped));
     }
 
     #[test]
@@ -550,7 +591,7 @@ mod tests {
             width: 8,
             height: 8,
             duration_seconds: 1.0 / 48.0,
-            acescg_irradiance_seconds: vec![LinearRgb::new(0.01, 0.01, 0.01); 64],
+            acescg_illuminance_seconds: vec![LinearRgb::new(0.01, 0.01, 0.01); 64],
         };
         let first = expose_raw(
             profile,
@@ -599,7 +640,7 @@ mod tests {
             width: 8,
             height: 8,
             duration_seconds: 1.0 / 48.0,
-            acescg_irradiance_seconds: vec![pixel; 64],
+            acescg_illuminance_seconds: vec![pixel; 64],
         };
         let full = expose_raw(profile, &full_exposure, identity).expect("full capture");
         let region = SensorRegion {
@@ -612,7 +653,7 @@ mod tests {
             width: 3,
             height: 4,
             duration_seconds: 1.0 / 48.0,
-            acescg_irradiance_seconds: vec![pixel; 12],
+            acescg_illuminance_seconds: vec![pixel; 12],
         };
         let cropped =
             expose_raw_region(profile, &region_exposure, identity, region).expect("region capture");
@@ -623,7 +664,14 @@ mod tests {
                     + local_x;
                 let region_index = local_y * usize::from(region.width) + local_x;
                 assert_eq!(cropped.codes[region_index], full.codes[full_index]);
-                assert_eq!(cropped.clipped[region_index], full.clipped[full_index]);
+                assert_eq!(
+                    cropped.full_well_clipped[region_index],
+                    full.full_well_clipped[full_index]
+                );
+                assert_eq!(
+                    cropped.adc_clipped[region_index],
+                    full.adc_clipped[full_index]
+                );
             }
         }
     }
@@ -636,8 +684,8 @@ mod tests {
             width: 1,
             height: 1,
             duration_seconds: 1.0,
-            acescg_irradiance_seconds: vec![LinearRgb::new(
-                profile.saturation_exposure.r * 2.0,
+            acescg_illuminance_seconds: vec![LinearRgb::new(
+                profile.saturation_illuminance_seconds.r * 2.0,
                 0.0,
                 0.0,
             )],
@@ -653,7 +701,8 @@ mod tests {
         .expect("valid saturated capture");
         let half_scale = ((1_u32 << profile.adc_bits) - 1) / 2;
         assert!((i64::from(raw.codes[0]) - i64::from(half_scale)).abs() <= 1);
-        assert_eq!(raw.clipped, vec![true]);
+        assert_eq!(raw.full_well_clipped, vec![true]);
+        assert_eq!(raw.adc_clipped, vec![false]);
     }
 
     #[test]
@@ -674,7 +723,7 @@ mod tests {
             width: 1,
             height: 1,
             duration_seconds: 0.0,
-            acescg_irradiance_seconds: vec![LinearRgb::new(0.0, 0.0, 0.0)],
+            acescg_illuminance_seconds: vec![LinearRgb::new(0.0, 0.0, 0.0)],
         };
         assert_eq!(exposure.validate(), Err(SensorError::InvalidDuration));
 
@@ -682,7 +731,7 @@ mod tests {
             width: 1,
             height: 1,
             duration_seconds: 1.0,
-            acescg_irradiance_seconds: vec![LinearRgb::new(0.0, 0.0, 0.0)],
+            acescg_illuminance_seconds: vec![LinearRgb::new(0.0, 0.0, 0.0)],
         };
         assert_eq!(
             expose_raw(

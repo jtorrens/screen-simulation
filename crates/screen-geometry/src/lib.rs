@@ -849,7 +849,7 @@ pub fn panel_uv_aperture_samples_with_count<const SAMPLE_COUNT: usize>(
                 channel,
             )
         });
-        let aperture_throughput = 1.0 / (camera.f_stop * camera.f_stop);
+        let aperture_throughput = core::f32::consts::FRAC_PI_4 / (camera.f_stop * camera.f_stop);
         OpticalSample {
             panel_uv: hits.map(|hit| hit.map(|value| value.0)),
             emission_cosine: hits.map(|hit| hit.map_or(0.0, |value| value.1)),
@@ -1495,6 +1495,8 @@ mod tests {
             .irradiance_weight[1]
         };
         assert!((weight(f4) / weight(f8) - 4.0).abs() < 1.0e-4);
+        let expected_center = core::f32::consts::FRAC_PI_4 / 16.0 * f4.lens.transmission_rgb[1];
+        assert!((weight(f4) - expected_center).abs() < 1.0e-6);
     }
 
     #[test]

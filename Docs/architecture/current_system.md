@@ -17,13 +17,14 @@ media source
 → colorimetrically declared, angle-dependent LCD emission
 → independently animated screen/camera projection
 → deterministic sensor-footprint and thin-lens integration
-→ immutable linear ACEScg optical result
+→ immutable linear ACEScg optical result in image-plane illuminance
   ├→ explicit optical-preview or still-output transform
   └→ exact global/rolling-shutter temporal integration
-     → Bayer photosite charge, noise, saturation, gain and RAW quantization
+     → explicit photometric exposure, optical ND and shutter integration in lux-seconds
+     → Bayer photosite charge, full-well saturation, noise, gain and ADC quantization
      → single reference Bayer demosaic
      → explicit native-sensor white balance
-     → explicit linear camera exposure scale
+     → explicit EI middle-gray placement and develop push/pull
      → immutable linear ACEScg developed camera result
      → explicit OCIO output transform
 ```
@@ -34,9 +35,9 @@ Media sample selection consumes exact project time and one authored policy. `Exa
 
 ## Technology
 
-The cross-platform implementation uses Rust 1.97.1. GPU work uses `wgpu` and WGSL, selecting Metal on macOS and Direct3D 12 on Windows. The technical desktop UI uses Slint with one compiled `fluent-dark` style and its WGPU renderer on both platforms. Slint remains confined to `screen-desktop`; domain and application packages expose no UI types. The desktop bundle includes the required Slint attribution through the standard `AboutSlint` component. Media decode uses one linked FFmpeg configuration. The Platform adapter owns one small audited unsafe bridge to `sws_setColorspaceDetails` because the safe Rust wrapper does not expose this required libswscale operation; no unsafe code crosses the adapter boundary. The current local macOS test packager copies its complete non-system Mach-O dependency closure into the application, rewrites every route to the bundle and rejects remaining machine-specific paths. A distributable FFmpeg build configuration and its identical Windows counterpart remain required before release packaging. OpenColorIO 2.5.2 is statically built through the `screen-color` dependency boundary; `screen-color` opens the exact upstream built-in `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` configuration and never reads the process environment or a workstation configuration path. Its CPU processor is the current reference implementation. OpenEXR remains behind its own format adapter.
+The current macOS-first implementation uses Rust 1.97.1. GPU work targets Metal on Apple Silicon; the physical core and typed domain boundaries remain platform-independent, but the current version does not require, ship or validate a Windows/D3D12 adapter. The technical desktop UI uses Slint with one compiled `fluent-dark` style and its WGPU renderer on macOS. Slint remains confined to `screen-desktop`; domain and application packages expose no UI types. The desktop bundle includes the required Slint attribution through the standard `AboutSlint` component. Media decode uses one linked FFmpeg configuration. The Platform adapter owns one small audited unsafe bridge to `sws_setColorspaceDetails` because the safe Rust wrapper does not expose this required libswscale operation; no unsafe code crosses the adapter boundary. The current local macOS packager copies its complete non-system Mach-O dependency closure into the application, rewrites every route to the bundle and rejects remaining machine-specific paths. OpenColorIO 2.5.2 is statically built through the `screen-color` dependency boundary; `screen-color` opens the exact upstream built-in `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` configuration and never reads the process environment or a workstation configuration path. Its CPU processor is the current reference implementation. OpenEXR remains behind its own format adapter.
 
-The initial supported systems are Apple Silicon on macOS 14 or later and x86-64 on Windows 11.
+The current supported system is Apple Silicon on macOS 14 or later. Windows and D3D12 are outside the current version and impose no parity requirement on Metal work.
 
 ## Physical packages
 

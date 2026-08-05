@@ -112,6 +112,9 @@ export component MainWindow inherits Window {
     in-out property <float> white-balance-g: 1;
     in-out property <float> white-balance-b: 1;
     in-out property <float> camera-exposure-ev: 0;
+    in-out property <float> capture-exposure-index: 800;
+    in-out property <float> shutter-angle-degrees: 180;
+    in-out property <float> neutral-density-stops: 0;
     in-out property <int> output-transform-index: 0;
     in-out property <int> capture-preset-index: 0;
     in property <[string]> capture-preset-model;
@@ -947,6 +950,38 @@ export component MainWindow inherits Window {
                             text: "CAPTURE SETTINGS";
                             color: #71819b;
                             font-size: 11px;
+                            visible: root.view-index == 4;
+                        }
+
+                        ValueRow {
+                            label: "EI / ISO";
+                            minimum: 25;
+                            maximum: 12800;
+                            step: 25;
+                            value <=> root.capture-exposure-index;
+                            numeric-value: round(root.capture-exposure-index);
+                            visible: root.view-index == 4;
+                        }
+
+                        ValueRow {
+                            label: "Shutter";
+                            minimum: 1;
+                            maximum: 360;
+                            step: 1;
+                            value <=> root.shutter-angle-degrees;
+                            numeric-value: round(root.shutter-angle-degrees * 10) / 10;
+                            suffix: "°";
+                            visible: root.view-index == 4;
+                        }
+
+                        ValueRow {
+                            label: "Optical ND";
+                            minimum: 0;
+                            maximum: 16;
+                            step: 0.1;
+                            value <=> root.neutral-density-stops;
+                            numeric-value: round(root.neutral-density-stops * 10) / 10;
+                            suffix: "EV";
                             visible: root.view-index == 4;
                         }
 

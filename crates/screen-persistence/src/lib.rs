@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -270,7 +270,7 @@ pub struct SensorDocument {
     pub native_height: u16,
     pub bayer_pattern: BayerSelection,
     pub acescg_to_sensor: [[f32; 3]; 3],
-    pub saturation_exposure: [f32; 3],
+    pub saturation_illuminance_seconds: [f32; 3],
     pub full_well_electrons: f32,
     pub dark_current_electrons_per_second: f32,
     pub read_noise_electrons_rms: f32,
@@ -303,8 +303,12 @@ pub struct ShotDocument {
     pub screen_id: OpaqueId,
     pub project_frame_rate: ExactFrameRate,
     pub sensor_noise_seed: u64,
+    pub neutral_density_stops: f32,
     pub white_balance_gains: [f32; 3],
-    pub camera_linear_exposure_scale: f32,
+    pub exposure_index: f32,
+    pub middle_gray_illuminance_seconds_at_reference_ei: f32,
+    pub reference_exposure_index: f32,
+    pub develop_exposure_ev: f32,
     pub camera_output_transform_id: String,
 }
 
@@ -411,8 +415,19 @@ impl ProjectPackage {
             .white_balance_gains
             .into_iter()
             .any(|value| !value.is_finite() || !(0.01..=100.0).contains(&value))
-            || !self.shot.camera_linear_exposure_scale.is_finite()
-            || !(0.000_001..=1_000_000.0).contains(&self.shot.camera_linear_exposure_scale)
+            || !self.shot.neutral_density_stops.is_finite()
+            || !(0.0..=16.0).contains(&self.shot.neutral_density_stops)
+            || !self.shot.exposure_index.is_finite()
+            || !(25.0..=12_800.0).contains(&self.shot.exposure_index)
+            || !self
+                .shot
+                .middle_gray_illuminance_seconds_at_reference_ei
+                .is_finite()
+            || self.shot.middle_gray_illuminance_seconds_at_reference_ei <= 0.0
+            || !self.shot.reference_exposure_index.is_finite()
+            || !(25.0..=12_800.0).contains(&self.shot.reference_exposure_index)
+            || !self.shot.develop_exposure_ev.is_finite()
+            || !(-16.0..=16.0).contains(&self.shot.develop_exposure_ev)
             || self.shot.camera_output_transform_id.is_empty()
         {
             return Err(PersistenceError::InvalidCameraDevelopment);
@@ -762,7 +777,7 @@ fn validate_sensor(sensor: &SensorDocument) -> Result<(), PersistenceError> {
         .acescg_to_sensor
         .iter()
         .flatten()
-        .chain(sensor.saturation_exposure.iter())
+        .chain(sensor.saturation_illuminance_seconds.iter())
         .copied()
         .chain([
             sensor.full_well_electrons,
@@ -784,7 +799,10 @@ fn validate_sensor(sensor: &SensorDocument) -> Result<(), PersistenceError> {
         || sensor.native_height == 0
         || sensor.shutter_duration.numerator <= 0
         || !(1..=64).contains(&sensor.temporal_samples)
-        || sensor.saturation_exposure.iter().any(|value| *value <= 0.0)
+        || sensor
+            .saturation_illuminance_seconds
+            .iter()
+            .any(|value| *value <= 0.0)
         || sensor.full_well_electrons <= 0.0
         || sensor.dark_current_electrons_per_second < 0.0
         || sensor.read_noise_electrons_rms < 0.0
@@ -1062,7 +1080,7 @@ mod tests {
                 native_height: 2_160,
                 bayer_pattern: BayerSelection::Rggb,
                 acescg_to_sensor: [[0.72, 0.21, 0.07], [0.10, 0.82, 0.08], [0.03, 0.16, 0.81]],
-                saturation_exposure: [0.018, 0.018, 0.018],
+                saturation_illuminance_seconds: [2.4, 2.4, 2.4],
                 full_well_electrons: 45_000.0,
                 dark_current_electrons_per_second: 0.1,
                 read_noise_electrons_rms: 2.0,
@@ -1095,8 +1113,12 @@ mod tests {
                     denominator: 1,
                 },
                 sensor_noise_seed: 42,
+                neutral_density_stops: 0.0,
                 white_balance_gains: [2.0, 1.0, 1.5],
-                camera_linear_exposure_scale: 55.555_557,
+                exposure_index: 800.0,
+                middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
+                reference_exposure_index: 800.0,
+                develop_exposure_ev: 0.0,
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
             },
         }
@@ -1141,7 +1163,7 @@ mod tests {
         let text = fs::read_to_string(&manifest_path).expect("manifest");
         fs::write(
             &manifest_path,
-            text.replace("\"version\": 1,", "\"version\": 1,\n  \"legacy\": true,"),
+            text.replace("\"version\": 2,", "\"version\": 2,\n  \"legacy\": true,"),
         )
         .expect("alter manifest");
         assert!(matches!(
@@ -1159,12 +1181,12 @@ mod tests {
         let text = fs::read_to_string(&manifest_path).expect("manifest");
         fs::write(
             &manifest_path,
-            text.replace("\"version\": 1", "\"version\": 2"),
+            text.replace("\"version\": 2", "\"version\": 3"),
         )
         .expect("alter manifest");
         assert!(matches!(
             open_project(&root),
-            Err(PersistenceError::UnknownVersion { version: 2, .. })
+            Err(PersistenceError::UnknownVersion { version: 3, .. })
         ));
     }
 

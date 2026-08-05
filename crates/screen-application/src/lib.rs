@@ -42,6 +42,9 @@ pub struct CaptureDevicePreset {
     pub gate_height: Millimeters,
     pub focal_length: Millimeters,
     pub f_stop: f32,
+    pub reference_exposure_index: f32,
+    pub middle_gray_illuminance_seconds_at_reference_ei: f32,
+    pub default_shutter_angle_degrees: f32,
     pub optics_authority: CaptureOpticsAuthority,
 }
 
@@ -55,7 +58,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             native_height: 3_164,
             bayer_pattern: BayerPattern::Rggb,
             acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
-            saturation_exposure: SensorProfile::REFERENCE.saturation_exposure,
+            saturation_illuminance_seconds: LinearRgb::new(2.4, 2.4, 2.4),
             full_well_electrons: 65_000.0,
             dark_current_electrons_per_second: 0.1,
             read_noise_electrons_rms: 2.0,
@@ -66,6 +69,9 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         gate_height: Millimeters(19.22),
         focal_length: Millimeters(50.0),
         f_stop: 4.0,
+        reference_exposure_index: 800.0,
+        middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
+        default_shutter_angle_degrees: 180.0,
         optics_authority: CaptureOpticsAuthority::InterchangeableReferenceLens,
     },
     CaptureDevicePreset {
@@ -77,7 +83,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             native_height: 6_048,
             bayer_pattern: BayerPattern::Rggb,
             acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
-            saturation_exposure: SensorProfile::REFERENCE.saturation_exposure,
+            saturation_illuminance_seconds: LinearRgb::new(0.8, 0.8, 0.8),
             full_well_electrons: 10_000.0,
             dark_current_electrons_per_second: 0.05,
             read_noise_electrons_rms: 1.5,
@@ -88,6 +94,9 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         gate_height: Millimeters(4.361_539),
         focal_length: Millimeters(4.2),
         f_stop: 1.64,
+        reference_exposure_index: 100.0,
+        middle_gray_illuminance_seconds_at_reference_ei: 0.1,
+        default_shutter_angle_degrees: 30.0,
         optics_authority: CaptureOpticsAuthority::IntegratedFixedLens,
     },
 ];
@@ -447,6 +456,8 @@ pub struct ShutterRequest {
     pub duration: RationalTime,
     pub temporal_samples: u16,
     pub readout: SensorReadout,
+    /// Optical neutral-density attenuation applied before sensor charge collection.
+    pub neutral_density_stops: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -457,11 +468,17 @@ pub struct FrameCaptureRequest {
     pub duration: RationalTime,
     pub temporal_samples: u16,
     pub readout: SensorReadout,
+    pub neutral_density_stops: f32,
     pub noise_seed: u64,
 }
 
 impl FrameCaptureRequest {
     fn resolve(self) -> Result<(ShutterRequest, CaptureIdentity), ApplicationError> {
+        if !self.neutral_density_stops.is_finite()
+            || !(0.0..=16.0).contains(&self.neutral_density_stops)
+        {
+            return Err(ApplicationError::InvalidOpticalAttenuation);
+        }
         let mut optics = self.optics;
         optics.time = self
             .frame_rate
@@ -473,6 +490,7 @@ impl FrameCaptureRequest {
                 duration: self.duration,
                 temporal_samples: self.temporal_samples,
                 readout: self.readout,
+                neutral_density_stops: self.neutral_density_stops,
             },
             CaptureIdentity {
                 noise_seed: self.noise_seed,
@@ -941,7 +959,13 @@ where
             sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
         }
     }
-    finish_integrated_exposure(width, height, request.duration, accumulated)
+    finish_integrated_exposure(
+        width,
+        height,
+        request.duration,
+        request.neutral_density_stops,
+        accumulated,
+    )
 }
 
 fn integrate_procedural_global_region(
@@ -970,7 +994,13 @@ fn integrate_procedural_global_region(
             sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
         }
     }
-    finish_integrated_exposure(region.width, region.height, request.duration, accumulated)
+    finish_integrated_exposure(
+        region.width,
+        region.height,
+        request.duration,
+        request.neutral_density_stops,
+        accumulated,
+    )
 }
 
 fn integrate_device_signal_global_region(
@@ -1003,7 +1033,13 @@ fn integrate_device_signal_global_region(
             sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
         }
     }
-    finish_integrated_exposure(region.width, region.height, request.duration, accumulated)
+    finish_integrated_exposure(
+        region.width,
+        region.height,
+        request.duration,
+        request.neutral_density_stops,
+        accumulated,
+    )
 }
 
 fn crop_developed_region(
@@ -1034,18 +1070,26 @@ fn finish_integrated_exposure(
     width: u16,
     height: u16,
     duration: RationalTime,
+    neutral_density_stops: f32,
     accumulated: Vec<[f64; 3]>,
 ) -> Result<IntegratedOpticalExposure, ApplicationError> {
     let duration_seconds = duration.as_seconds();
-    let acescg_irradiance_seconds = accumulated
+    let photometric_scale = 2.0_f64.powf(-f64::from(neutral_density_stops));
+    let acescg_illuminance_seconds = accumulated
         .into_iter()
-        .map(|sum| LinearRgb::new(sum[0] as f32, sum[1] as f32, sum[2] as f32))
+        .map(|sum| {
+            LinearRgb::new(
+                (sum[0] * photometric_scale) as f32,
+                (sum[1] * photometric_scale) as f32,
+                (sum[2] * photometric_scale) as f32,
+            )
+        })
         .collect();
     let exposure = IntegratedOpticalExposure {
         width: u32::from(width),
         height: u32::from(height),
         duration_seconds: duration_seconds as f32,
-        acescg_irradiance_seconds,
+        acescg_illuminance_seconds,
     };
     exposure.validate().map_err(ApplicationError::Sensor)?;
     Ok(exposure)
@@ -1104,7 +1148,13 @@ where
             }
         }
     }
-    finish_integrated_exposure(width, height, request.duration, accumulated)
+    finish_integrated_exposure(
+        width,
+        height,
+        request.duration,
+        request.neutral_density_stops,
+        accumulated,
+    )
 }
 
 fn rolling_row_center_time(
@@ -2276,6 +2326,7 @@ pub enum ApplicationError {
     InvalidPreviewExposure,
     InvalidShutter,
     InvalidSensorReadout,
+    InvalidOpticalAttenuation,
     OpticalSampleRasterMismatch,
     SensorViewportAspectMismatch {
         sensor_aspect: f32,
@@ -2321,6 +2372,8 @@ impl fmt::Display for ApplicationError {
             Self::InvalidSensorReadout => formatter.write_str(
                 "sensor readout duration and row coordinates must define a valid shutter interval",
             ),
+            Self::InvalidOpticalAttenuation => formatter
+                .write_str("neutral-density attenuation must be finite and in [0, 16] stops"),
             Self::OpticalSampleRasterMismatch => formatter
                 .write_str("all temporal optical samples must match the authored sensor raster"),
             Self::SensorViewportAspectMismatch {
@@ -2476,6 +2529,9 @@ mod tests {
             assert!(ids.insert(preset.id));
             preset.sensor.validate().expect("valid sensor profile");
             assert!(preset.gate_width.0 > 0.0 && preset.gate_height.0 > 0.0);
+            assert!((25.0..=12_800.0).contains(&preset.reference_exposure_index));
+            assert!(preset.middle_gray_illuminance_seconds_at_reference_ei > 0.0);
+            assert!((1.0..=360.0).contains(&preset.default_shutter_angle_degrees));
             let raster_aspect =
                 f32::from(preset.sensor.native_width) / f32::from(preset.sensor.native_height);
             let gate_aspect = preset.gate_width.0 / preset.gate_height.0;
@@ -2618,6 +2674,7 @@ mod tests {
             duration: RationalTime::new(1, 48).expect("valid shutter"),
             temporal_samples: 4,
             readout: SensorReadout::Global,
+            neutral_density_stops: 0.0,
             noise_seed: 42,
         };
         let sensor = SensorProfile {
@@ -2674,6 +2731,7 @@ mod tests {
             duration: RationalTime::new(1, 48).expect("valid shutter"),
             temporal_samples: 1,
             readout: SensorReadout::Global,
+            neutral_density_stops: 0.0,
             noise_seed: 7,
         };
         let sensor = SensorProfile {
@@ -2696,7 +2754,8 @@ mod tests {
             sensor,
             CameraDevelopment {
                 white_balance: LinearRgb::new(2.0, 1.0, 1.5),
-                linear_exposure_scale: 1.0,
+                middle_gray_illuminance_seconds: 0.18,
+                develop_exposure_ev: 0.0,
             },
         )
         .expect("captured camera frame");
@@ -2729,6 +2788,7 @@ mod tests {
                 duration: RationalTime::new(1, 100).unwrap(),
                 temporal_samples: 1,
                 readout: SensorReadout::Global,
+                neutral_density_stops: 0.0,
             },
             32,
             18,
@@ -2748,6 +2808,7 @@ mod tests {
                 duration: RationalTime::new(1, 100).unwrap(),
                 temporal_samples: 1,
                 readout: SensorReadout::Global,
+                neutral_density_stops: 0.0,
             },
             32,
             18,
@@ -2756,9 +2817,24 @@ mod tests {
         )
         .expect("pulsed exposure");
         let index = 9 * 32 + 16;
-        let continuous_value = continuous.acescg_irradiance_seconds[index].g;
-        let pulsed_value = pulsed.acescg_irradiance_seconds[index].g;
+        let continuous_value = continuous.acescg_illuminance_seconds[index].g;
+        let pulsed_value = pulsed.acescg_illuminance_seconds[index].g;
         assert!((pulsed_value / continuous_value - 0.5).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn photometric_boundary_converts_panel_luminance_to_lux_seconds_and_nd_is_exact() {
+        let shutter = RationalTime::new(1, 48).unwrap();
+        let illuminance_integral = 500.0_f64 * core::f64::consts::FRAC_PI_4 / 16.0 / 48.0;
+        let open = finish_integrated_exposure(1, 1, shutter, 0.0, vec![[illuminance_integral; 3]])
+            .expect("calibrated exposure");
+        let nd_three =
+            finish_integrated_exposure(1, 1, shutter, 3.0, vec![[illuminance_integral; 3]])
+                .expect("attenuated exposure");
+        let expected = 500.0_f32 * core::f32::consts::FRAC_PI_4 / 16.0 / 48.0;
+        let measured = open.acescg_illuminance_seconds[0].g;
+        assert!((measured - expected).abs() < 1.0e-6);
+        assert!((nd_three.acescg_illuminance_seconds[0].g / measured - 0.125).abs() < 1.0e-6);
     }
 
     #[test]
@@ -2801,6 +2877,7 @@ mod tests {
                     duration: RationalTime::new(1, 100).unwrap(),
                     direction: RollingDirection::TopToBottom,
                 },
+                neutral_density_stops: 0.0,
             },
             32,
             18,
@@ -2808,8 +2885,8 @@ mod tests {
             |_| Ok(Arc::clone(&prepared)),
         )
         .expect("rolling exposure");
-        let top = exposure.acescg_irradiance_seconds[2 * 32 + 16].g;
-        let bottom = exposure.acescg_irradiance_seconds[15 * 32 + 16].g;
+        let top = exposure.acescg_illuminance_seconds[2 * 32 + 16].g;
+        let bottom = exposure.acescg_illuminance_seconds[15 * 32 + 16].g;
         assert_eq!(top, 0.0);
         assert!(bottom > 0.0);
     }

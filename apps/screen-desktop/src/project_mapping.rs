@@ -35,6 +35,7 @@ pub struct ProjectScene {
     pub temporal_samples: u16,
     pub sensor_readout: SensorReadout,
     pub sensor_noise_seed: u64,
+    pub neutral_density_stops: f32,
     pub camera_development: CameraDevelopment,
     pub camera_output_transform: CameraOutputTransform,
 }
@@ -156,10 +157,10 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 BayerSelection::Gbrg => BayerPattern::Gbrg,
             },
             acescg_to_sensor: package.sensor.acescg_to_sensor,
-            saturation_exposure: LinearRgb::new(
-                package.sensor.saturation_exposure[0],
-                package.sensor.saturation_exposure[1],
-                package.sensor.saturation_exposure[2],
+            saturation_illuminance_seconds: LinearRgb::new(
+                package.sensor.saturation_illuminance_seconds[0],
+                package.sensor.saturation_illuminance_seconds[1],
+                package.sensor.saturation_illuminance_seconds[2],
             ),
             full_well_electrons: package.sensor.full_well_electrons,
             dark_current_electrons_per_second: package.sensor.dark_current_electrons_per_second,
@@ -185,13 +186,19 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             },
         },
         sensor_noise_seed: package.shot.sensor_noise_seed,
+        neutral_density_stops: package.shot.neutral_density_stops,
         camera_development: CameraDevelopment {
             white_balance: LinearRgb::new(
                 package.shot.white_balance_gains[0],
                 package.shot.white_balance_gains[1],
                 package.shot.white_balance_gains[2],
             ),
-            linear_exposure_scale: package.shot.camera_linear_exposure_scale,
+            middle_gray_illuminance_seconds: package
+                .shot
+                .middle_gray_illuminance_seconds_at_reference_ei
+                * package.shot.reference_exposure_index
+                / package.shot.exposure_index,
+            develop_exposure_ev: package.shot.develop_exposure_ev,
         }
         .validate()
         .map_err(|error| error.to_string())?,
@@ -390,7 +397,7 @@ mod tests {
                 native_height: 2_160,
                 bayer_pattern: BayerSelection::Rggb,
                 acescg_to_sensor: [[0.72, 0.21, 0.07], [0.10, 0.82, 0.08], [0.03, 0.16, 0.81]],
-                saturation_exposure: [0.018, 0.018, 0.018],
+                saturation_illuminance_seconds: [2.4, 2.4, 2.4],
                 full_well_electrons: 45_000.0,
                 dark_current_electrons_per_second: 0.1,
                 read_noise_electrons_rms: 2.0,
@@ -429,8 +436,12 @@ mod tests {
                     denominator: 1,
                 },
                 sensor_noise_seed: 42,
+                neutral_density_stops: 0.0,
                 white_balance_gains: [2.0, 1.0, 1.5],
-                camera_linear_exposure_scale: 55.555_557,
+                exposure_index: 800.0,
+                middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
+                reference_exposure_index: 800.0,
+                develop_exposure_ev: 0.0,
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
             },
         };
@@ -459,7 +470,11 @@ mod tests {
             scene.camera_development.white_balance,
             LinearRgb::new(2.0, 1.0, 1.5)
         );
-        assert_eq!(scene.camera_development.linear_exposure_scale, 55.555_557);
+        assert_eq!(
+            scene.camera_development.middle_gray_illuminance_seconds,
+            0.0125
+        );
+        assert_eq!(scene.camera_development.develop_exposure_ev, 0.0);
         assert_eq!(
             scene.camera_output_transform,
             CameraOutputTransform::SrgbSdr100

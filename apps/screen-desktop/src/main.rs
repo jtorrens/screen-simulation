@@ -72,6 +72,9 @@ struct RenderControls {
     white_balance_g: f32,
     white_balance_b: f32,
     camera_exposure_ev: f32,
+    capture_exposure_index: f32,
+    shutter_angle_degrees: f32,
+    neutral_density_stops: f32,
     output_transform_index: i32,
     capture_preset_index: i32,
     capture_sensor_width: f32,
@@ -116,6 +119,9 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         white_balance_g: window.get_white_balance_g(),
         white_balance_b: window.get_white_balance_b(),
         camera_exposure_ev: window.get_camera_exposure_ev(),
+        capture_exposure_index: window.get_capture_exposure_index(),
+        shutter_angle_degrees: window.get_shutter_angle_degrees(),
+        neutral_density_stops: window.get_neutral_density_stops(),
         output_transform_index: window.get_output_transform_index(),
         capture_preset_index: window.get_capture_preset_index(),
         capture_sensor_width: window.get_capture_sensor_width(),
@@ -185,6 +191,8 @@ struct InteractionState {
     last_render_controls: Option<RenderControls>,
     last_capture_controls: Option<RenderControls>,
     capture_sensor: SensorProfile,
+    capture_reference_exposure_index: f32,
+    capture_middle_gray_at_reference_ei: f32,
     capture_render_requested: bool,
     capture_cancel: Option<Arc<AtomicBool>>,
     preview_pending: bool,
@@ -349,6 +357,9 @@ impl InteractionState {
             last_render_controls: None,
             last_capture_controls: None,
             capture_sensor: CAPTURE_DEVICE_PRESETS[0].sensor,
+            capture_reference_exposure_index: CAPTURE_DEVICE_PRESETS[0].reference_exposure_index,
+            capture_middle_gray_at_reference_ei: CAPTURE_DEVICE_PRESETS[0]
+                .middle_gray_illuminance_seconds_at_reference_ei,
             capture_render_requested: false,
             capture_cancel: None,
             preview_pending: false,
@@ -772,6 +783,9 @@ fn apply_capture_preset(
         .expect("resolved capture preset belongs to the current catalog");
     window.set_capture_preset_index(preset_index as i32);
     state.capture_sensor = preset.sensor;
+    state.capture_reference_exposure_index = preset.reference_exposure_index;
+    state.capture_middle_gray_at_reference_ei =
+        preset.middle_gray_illuminance_seconds_at_reference_ei;
     state.last_capture_controls = None;
     window.set_capture_sensor_width(f32::from(preset.sensor.native_width));
     window.set_capture_sensor_height(f32::from(preset.sensor.native_height));
@@ -779,6 +793,9 @@ fn apply_capture_preset(
     window.set_capture_gate_height_mm(preset.gate_height.0);
     window.set_focal_mm(preset.focal_length.0);
     window.set_f_stop(preset.f_stop);
+    window.set_capture_exposure_index(preset.reference_exposure_index);
+    window.set_shutter_angle_degrees(preset.default_shutter_angle_degrees);
+    window.set_neutral_density_stops(0.0);
     window.set_capture_fixed_optics(
         preset.optics_authority == CaptureOpticsAuthority::IntegratedFixedLens,
     );
@@ -977,7 +994,11 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             window,
             request,
             embedded_signal.map(|signal| (signal, RasterPlacement::Fit)),
-            sensor,
+            CapturePhotometricProfile {
+                sensor,
+                reference_exposure_index: state.capture_reference_exposure_index,
+                middle_gray_at_reference_ei: state.capture_middle_gray_at_reference_ei,
+            },
             region,
             started,
             cancel,
@@ -1064,7 +1085,11 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                     window,
                     request,
                     Some((prepared_signal, placement)),
-                    sensor,
+                    CapturePhotometricProfile {
+                        sensor,
+                        reference_exposure_index: state.capture_reference_exposure_index,
+                        middle_gray_at_reference_ei: state.capture_middle_gray_at_reference_ei,
+                    },
                     region,
                     started,
                     cancel,
@@ -1298,11 +1323,12 @@ fn render_camera_result(
     window: &MainWindow,
     request: SimulationRequest,
     source: Option<(Arc<PreparedDeviceSignalRaster>, RasterPlacement)>,
-    sensor: SensorProfile,
+    capture_profile: CapturePhotometricProfile,
     region: SensorRegion,
     started: Instant,
     cancel: Arc<AtomicBool>,
 ) {
+    let sensor = capture_profile.sensor;
     window.set_render_progress_visible(true);
     window.set_render_progress(0.0);
     window.set_render_progress_label("Native sensor capture".into());
@@ -1314,19 +1340,18 @@ fn render_camera_result(
             return;
         }
     };
-    let shutter_denominator = match frame_rate.numerator().checked_mul(2) {
-        Some(value) => value,
-        None => {
-            window.set_capture_rendering(false);
-            block_preview(
-                window,
-                "project frame rate is too large for a 180-degree shutter",
-            );
-            return;
-        }
-    };
-    let shutter_duration =
-        match RationalTime::new(i64::from(frame_rate.denominator()), shutter_denominator) {
+    let shutter_angle = window.get_shutter_angle_degrees();
+    if !shutter_angle.is_finite() || !(1.0..=360.0).contains(&shutter_angle) {
+        window.set_capture_rendering(false);
+        block_preview(
+            window,
+            "shutter angle must be finite and in [1, 360] degrees",
+        );
+        return;
+    }
+    let shutter_angle_tenths = (shutter_angle * 10.0).round() as i64;
+    let frame_duration =
+        match RationalTime::new(i64::from(frame_rate.denominator()), frame_rate.numerator()) {
             Ok(value) => value,
             Err(error) => {
                 window.set_capture_rendering(false);
@@ -1334,6 +1359,20 @@ fn render_camera_result(
                 return;
             }
         };
+    let shutter_duration = match frame_duration.checked_mul_ratio(shutter_angle_tenths, 3_600) {
+        Ok(value) => value,
+        Err(error) => {
+            window.set_capture_rendering(false);
+            block_preview(window, &error.to_string());
+            return;
+        }
+    };
+    let exposure_index = window.get_capture_exposure_index();
+    if !exposure_index.is_finite() || !(25.0..=12_800.0).contains(&exposure_index) {
+        window.set_capture_rendering(false);
+        block_preview(window, "EI / ISO must be finite and in [25, 12800]");
+        return;
+    }
     let capture = FrameCaptureRequest {
         optics: request.optics,
         frame_rate,
@@ -1341,6 +1380,7 @@ fn render_camera_result(
         duration: shutter_duration,
         temporal_samples: 1,
         readout: SensorReadout::Global,
+        neutral_density_stops: window.get_neutral_density_stops(),
         noise_seed: 42,
     };
     let development = CameraDevelopment {
@@ -1349,8 +1389,10 @@ fn render_camera_result(
             window.get_white_balance_g(),
             window.get_white_balance_b(),
         ),
-        linear_exposure_scale: sensor.saturation_exposure.g.recip()
-            * window.get_camera_exposure_ev().exp2(),
+        middle_gray_illuminance_seconds: capture_profile.middle_gray_at_reference_ei
+            * capture_profile.reference_exposure_index
+            / exposure_index,
+        develop_exposure_ev: window.get_camera_exposure_ev(),
     };
     let transform = match window.get_output_transform_index() {
         0 => CameraOutputTransform::SrgbSdr100,
@@ -1423,10 +1465,18 @@ struct NativeCaptureOutput {
     width: u16,
     height: u16,
     pixels: Vec<[u8; 4]>,
-    clipped: usize,
+    full_well_clipped: usize,
+    adc_clipped: usize,
     sensor: SensorProfile,
     region: SensorRegion,
     transform: CameraOutputTransform,
+}
+
+#[derive(Clone, Copy)]
+struct CapturePhotometricProfile {
+    sensor: SensorProfile,
+    reference_exposure_index: f32,
+    middle_gray_at_reference_ei: f32,
 }
 
 struct NativeStagingPreview {
@@ -1460,7 +1510,8 @@ fn run_native_capture_job(
         vec![[0_u8, 0_u8, 0_u8, 255_u8]; usize::from(region.width) * usize::from(region.height)];
     let tiles = sensor_tiles(region, 512);
     let tile_count = tiles.len();
-    let mut clipped = 0_usize;
+    let mut full_well_clipped = 0_usize;
+    let mut adc_clipped = 0_usize;
     let mut last_staging_update = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
@@ -1482,7 +1533,9 @@ fn run_native_capture_job(
             }
         }
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
-        clipped += clipped_in_region(&captured.raw, tile);
+        let (tile_full_well_clipped, tile_adc_clipped) = clipping_in_region(&captured.raw, tile);
+        full_well_clipped += tile_full_well_clipped;
+        adc_clipped += tile_adc_clipped;
         let mut output = Vec::with_capacity(captured.developed.acescg.len() * 4);
         for pixel in &captured.developed.acescg {
             output.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
@@ -1520,7 +1573,8 @@ fn run_native_capture_job(
         width: region.width,
         height: region.height,
         pixels,
-        clipped,
+        full_well_clipped,
+        adc_clipped,
         sensor,
         region,
         transform,
@@ -1581,8 +1635,12 @@ fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, star
     window.set_preview_image(Image::from_rgba8(buffer));
     window.set_scale_text(
         format!(
-            "CAMERA SENSOR {} × {} · {}-BIT BAYER · NATIVE VIEW · {} CLIPPED",
-            output.width, output.height, output.sensor.adc_bits, output.clipped
+            "CAMERA SENSOR {} × {} · {}-BIT BAYER · NATIVE VIEW · WELL {} · ADC {} CLIPPED",
+            output.width,
+            output.height,
+            output.sensor.adc_bits,
+            output.full_well_clipped,
+            output.adc_clipped
         )
         .into(),
     );
@@ -1595,7 +1653,7 @@ fn present_native_capture(window: &MainWindow, output: NativeCaptureOutput, star
         .into(),
     );
     window.set_inspection_text(if output.region == SensorRegion::full(output.sensor) {
-        "COMPLETE DEVELOPED CAMERA FRAME · 180° GLOBAL SHUTTER".into()
+        "COMPLETE DEVELOPED CAMERA FRAME · GLOBAL SHUTTER".into()
     } else {
         format!(
             "NATIVE SENSOR ROI · x{} y{} · {} × {}",
@@ -1634,19 +1692,27 @@ fn sensor_tiles(region: SensorRegion, edge: u16) -> Vec<SensorRegion> {
     tiles
 }
 
-fn clipped_in_region(raw: &screen_sensor::RawSensorRegion, region: SensorRegion) -> usize {
+fn clipping_in_region(
+    raw: &screen_sensor::RawSensorRegion,
+    region: SensorRegion,
+) -> (usize, usize) {
     let offset_x = usize::from(region.origin_x - raw.region.origin_x);
     let offset_y = usize::from(region.origin_y - raw.region.origin_y);
     let stride = usize::from(raw.region.width);
-    let mut count = 0;
+    let mut full_well_count = 0;
+    let mut adc_count = 0;
     for row in 0..usize::from(region.height) {
         let start = (offset_y + row) * stride + offset_x;
-        count += raw.clipped[start..start + usize::from(region.width)]
+        full_well_count += raw.full_well_clipped[start..start + usize::from(region.width)]
+            .iter()
+            .filter(|value| **value)
+            .count();
+        adc_count += raw.adc_clipped[start..start + usize::from(region.width)]
             .iter()
             .filter(|value| **value)
             .count();
     }
-    count
+    (full_well_count, adc_count)
 }
 
 fn block_preview(window: &MainWindow, message: &str) {
