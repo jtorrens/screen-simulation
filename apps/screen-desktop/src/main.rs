@@ -1485,6 +1485,77 @@ struct NativeStagingPreview {
     pixels: Vec<[u8; 4]>,
 }
 
+struct NativeStagingAccumulator {
+    width: u16,
+    height: u16,
+    source_width: u16,
+    source_height: u16,
+    sums: Vec<[u64; 3]>,
+    samples: Vec<u32>,
+}
+
+impl NativeStagingAccumulator {
+    fn new(region: SensorRegion, maximum_width: u16) -> Self {
+        let width = region.width.min(maximum_width);
+        let height = ((u32::from(region.height) * u32::from(width)) / u32::from(region.width))
+            .max(1)
+            .min(u32::from(u16::MAX)) as u16;
+        let pixel_count = usize::from(width) * usize::from(height);
+        Self {
+            width,
+            height,
+            source_width: region.width,
+            source_height: region.height,
+            sums: vec![[0; 3]; pixel_count],
+            samples: vec![0; pixel_count],
+        }
+    }
+
+    fn add_pixel(&mut self, source_x: usize, source_y: usize, pixel: [u8; 4]) {
+        let target_x = source_x * usize::from(self.width) / usize::from(self.source_width);
+        let target_y = source_y * usize::from(self.height) / usize::from(self.source_height);
+        let target = target_y * usize::from(self.width) + target_x;
+        self.sums[target][0] += u64::from(pixel[0]);
+        self.sums[target][1] += u64::from(pixel[1]);
+        self.sums[target][2] += u64::from(pixel[2]);
+        self.samples[target] += 1;
+    }
+
+    fn snapshot(&self) -> NativeStagingPreview {
+        let pixels = self
+            .sums
+            .iter()
+            .zip(&self.samples)
+            .enumerate()
+            .map(|(index, (sum, samples))| {
+                if *samples == 0 {
+                    let x = index % usize::from(self.width);
+                    let y = index / usize::from(self.width);
+                    let pending = if (x / 12 + y / 12).is_multiple_of(2) {
+                        17
+                    } else {
+                        23
+                    };
+                    [pending, pending, pending, 255]
+                } else {
+                    let samples = u64::from(*samples);
+                    [
+                        ((sum[0] + samples / 2) / samples) as u8,
+                        ((sum[1] + samples / 2) / samples) as u8,
+                        ((sum[2] + samples / 2) / samples) as u8,
+                        255,
+                    ]
+                }
+            })
+            .collect();
+        NativeStagingPreview {
+            width: self.width,
+            height: self.height,
+            pixels,
+        }
+    }
+}
+
 enum NativeCaptureError {
     Cancelled,
     Failed(String),
@@ -1508,6 +1579,7 @@ fn run_native_capture_job(
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
     let mut pixels =
         vec![[0_u8, 0_u8, 0_u8, 255_u8]; usize::from(region.width) * usize::from(region.height)];
+    let mut staging_accumulator = NativeStagingAccumulator::new(region, 960);
     let tiles = sensor_tiles(region, 512);
     let tile_count = tiles.len();
     let mut full_well_clipped = 0_usize;
@@ -1554,8 +1626,9 @@ fn run_native_capture_job(
                 .enumerate()
             {
                 let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-                pixels[target_start + column] =
-                    [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255];
+                let pixel = [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255];
+                pixels[target_start + column] = pixel;
+                staging_accumulator.add_pixel(offset_x + column, offset_y + row, pixel);
             }
         }
         let completed = tile_index + 1;
@@ -1563,7 +1636,7 @@ fn run_native_capture_job(
             || last_staging_update.elapsed() >= Duration::from_millis(100)
         {
             last_staging_update = Instant::now();
-            Some(downsample_native_staging(region, &pixels, 960))
+            Some(staging_accumulator.snapshot())
         } else {
             None
         };
@@ -1579,30 +1652,6 @@ fn run_native_capture_job(
         region,
         transform,
     })
-}
-
-fn downsample_native_staging(
-    region: SensorRegion,
-    pixels: &[[u8; 4]],
-    maximum_width: u16,
-) -> NativeStagingPreview {
-    let width = region.width.min(maximum_width);
-    let height = ((u32::from(region.height) * u32::from(width)) / u32::from(region.width))
-        .max(1)
-        .min(u32::from(u16::MAX)) as u16;
-    let mut preview = Vec::with_capacity(usize::from(width) * usize::from(height));
-    for y in 0..height {
-        let source_y = usize::from(y) * usize::from(region.height) / usize::from(height);
-        for x in 0..width {
-            let source_x = usize::from(x) * usize::from(region.width) / usize::from(width);
-            preview.push(pixels[source_y * usize::from(region.width) + source_x]);
-        }
-    }
-    NativeStagingPreview {
-        width,
-        height,
-        pixels: preview,
-    }
 }
 
 fn present_native_staging(window: &MainWindow, staging: NativeStagingPreview) {
@@ -2360,5 +2409,49 @@ mod interaction_tests {
             assert_eq!([image.width(), image.height()], [3_840, 2_160]);
             assert!(image.to_rgba8().pixels().all(|pixel| pixel[3] == 255));
         }
+    }
+
+    #[test]
+    fn native_staging_averages_high_frequency_sensor_samples() {
+        let region = SensorRegion {
+            origin_x: 0,
+            origin_y: 0,
+            width: 16,
+            height: 2,
+        };
+        let mut staging = NativeStagingAccumulator::new(region, 2);
+        for y in 0..2 {
+            for x in 0..16 {
+                let value = if x % 2 == 0 { 0 } else { 255 };
+                staging.add_pixel(x, y, [value, value, value, 255]);
+            }
+        }
+
+        let preview = staging.snapshot();
+        assert_eq!((preview.width, preview.height), (2, 1));
+        assert!(
+            preview
+                .pixels
+                .iter()
+                .all(|pixel| pixel[0] == 128 && pixel[1] == 128 && pixel[2] == 128)
+        );
+    }
+
+    #[test]
+    fn pending_native_tiles_do_not_darken_completed_staging_pixels() {
+        let region = SensorRegion {
+            origin_x: 0,
+            origin_y: 0,
+            width: 4,
+            height: 1,
+        };
+        let mut staging = NativeStagingAccumulator::new(region, 2);
+        staging.add_pixel(0, 0, [240, 180, 120, 255]);
+        staging.add_pixel(1, 0, [240, 180, 120, 255]);
+
+        let preview = staging.snapshot();
+        assert_eq!(preview.pixels[0], [240, 180, 120, 255]);
+        assert_ne!(preview.pixels[1], [0, 0, 0, 255]);
+        assert_ne!(preview.pixels[1], preview.pixels[0]);
     }
 }
