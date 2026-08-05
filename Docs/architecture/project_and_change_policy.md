@@ -2,7 +2,7 @@
 
 Status: normative.
 
-The current device document carries the complete materialized optical-cover profile in addition to the LCD profile. The current shot document carries the complete authored environment profile. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs.
+The current schema version is 5. The current device document carries the complete materialized optical-cover profile in addition to the LCD profile. The current shot document carries the complete authored environment profile, including its required structured-pattern identity and ACEScg radiance values. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs. Version 4 is obsolete and rejected; there is no normal-reader compatibility route.
 
 The portable project is a `.screensim` package directory with one strict root manifest and separate owner documents for sources, device profiles, camera/screen tracks and simulation shots. SQLite is not a project format.
 

@@ -20,9 +20,8 @@ use screen_cover::{
 use screen_geometry::APERTURE_SAMPLE_COUNT;
 use screen_geometry::{
     CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion, ProjectedScreen,
-    ScreenSample, ScreenTrack, cover_surface_sample_at_viewport, panel_uv_aperture_samples,
-    panel_uv_aperture_samples_with_count, panel_uv_at_viewport, project_scene_point,
-    project_screen,
+    ScreenSample, ScreenTrack, panel_uv_aperture_samples, panel_uv_aperture_samples_with_count,
+    panel_uv_at_viewport, project_scene_point, project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{LcdProfile, PanelError, PanelTemporalEmission, ValidatedPanelEvaluator};
@@ -51,6 +50,8 @@ pub struct CaptureDevicePreset {
     pub reference_exposure_index: f32,
     pub middle_gray_illuminance_seconds_at_reference_ei: f32,
     pub default_shutter_angle_degrees: f32,
+    pub default_temporal_samples: u16,
+    pub default_readout_duration_milliseconds: f32,
     pub optics_authority: CaptureOpticsAuthority,
 }
 
@@ -79,6 +80,8 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         reference_exposure_index: 800.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
         default_shutter_angle_degrees: 180.0,
+        default_temporal_samples: 8,
+        default_readout_duration_milliseconds: 7.8,
         optics_authority: CaptureOpticsAuthority::InterchangeableReferenceLens,
     },
     CaptureDevicePreset {
@@ -105,6 +108,8 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         reference_exposure_index: 100.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.1,
         default_shutter_angle_degrees: 30.0,
+        default_temporal_samples: 8,
+        default_readout_duration_milliseconds: 12.0,
         optics_authority: CaptureOpticsAuthority::IntegratedFixedLens,
     },
 ];
@@ -810,6 +815,38 @@ fn evaluate_linear_optics_region(
     )
 }
 
+fn evaluate_procedural_optical_sensor_row(
+    request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    global_row: u16,
+) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
+    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let raster = evaluate_optical_window_with_signal(
+        request.clone(),
+        RasterWindow {
+            full_width: sensor.native_width,
+            full_height: sensor.native_height,
+            origin_x: region.origin_x,
+            origin_y: global_row,
+            width: region.width,
+            height: 1,
+        },
+        DiagnosticView::Composite,
+        &|uv| diagnostic_signal(request.procedural_pattern, uv, request.time),
+        &|minimum, maximum| {
+            diagnostic_area_signal(
+                request.procedural_pattern,
+                minimum,
+                maximum,
+                request.time,
+                panel_evaluator,
+            )
+        },
+    )?;
+    Ok(raster.pixels)
+}
+
 pub fn integrate_procedural_shutter(
     request: ShutterRequest,
     width: u16,
@@ -868,7 +905,7 @@ pub fn capture_and_develop_procedural_region(
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
     let (shutter, identity) = request.resolve()?;
-    let exposure = integrate_procedural_global_region(shutter, sensor, evaluation_region)?;
+    let exposure = integrate_procedural_region(shutter, sensor, evaluation_region)?;
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
         .map_err(ApplicationError::Sensor)?;
     let developed = develop_raw_region_to_acescg(&raw, sensor, development)
@@ -893,13 +930,71 @@ pub fn capture_and_develop_device_signal_region(
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
     let (shutter, identity) = request.resolve()?;
-    let exposure = integrate_device_signal_global_region(
-        shutter,
-        sensor,
-        evaluation_region,
-        signal,
-        placement,
-    )?;
+    let exposure =
+        integrate_device_signal_region(shutter, sensor, evaluation_region, signal, placement)?;
+    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
+        .map_err(ApplicationError::Sensor)?;
+    let developed = develop_raw_region_to_acescg(&raw, sensor, development)
+        .map_err(ApplicationError::CameraDevelopment)?;
+    Ok(CapturedCameraRegion {
+        raw,
+        developed: crop_developed_region(developed, requested_region),
+    })
+}
+
+/// Region-authoritative capture for animated device content. Every temporal and rolling-shutter
+/// sample resolves the source at its exact rational time; tiled capture therefore cannot freeze
+/// the source at the nominal frame time.
+pub fn capture_and_develop_device_signal_region_sequence<F>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    placement: RasterPlacement,
+    mut signal_at_time: F,
+) -> Result<CapturedCameraRegion, ApplicationError>
+where
+    F: FnMut(RationalTime) -> Result<Arc<PreparedDeviceSignalRaster>, ApplicationError>,
+{
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let requested_region = requested_region
+        .validate(sensor)
+        .map_err(ApplicationError::Sensor)?;
+    let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let (shutter, identity) = request.resolve()?;
+    let exposure = match shutter.readout {
+        SensorReadout::Global => integrate_global_region(shutter, evaluation_region, |optics| {
+            let signal = signal_at_time(optics.time)?;
+            evaluate_linear_optics_region_from_prepared_device_signal(
+                optics,
+                sensor,
+                evaluation_region,
+                &signal,
+                placement,
+            )
+        }),
+        SensorReadout::Rolling {
+            duration,
+            direction,
+        } => integrate_rolling_region(
+            shutter,
+            sensor,
+            evaluation_region,
+            duration,
+            direction,
+            |optics, row| {
+                let signal = signal_at_time(optics.time)?;
+                evaluate_device_signal_optical_sensor_row(
+                    optics,
+                    sensor,
+                    evaluation_region,
+                    row,
+                    &signal,
+                    placement,
+                )
+            },
+        ),
+    }?;
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
         .map_err(ApplicationError::Sensor)?;
     let developed = develop_raw_region_to_acescg(&raw, sensor, development)
@@ -1040,14 +1135,65 @@ where
     )
 }
 
-fn integrate_procedural_global_region(
+fn integrate_procedural_region(
     request: ShutterRequest,
     sensor: SensorProfile,
     region: SensorRegion,
 ) -> Result<IntegratedOpticalExposure, ApplicationError> {
-    if request.readout != SensorReadout::Global {
-        return Err(ApplicationError::InvalidSensorReadout);
+    match request.readout {
+        SensorReadout::Global => integrate_global_region(request, region, |optics| {
+            evaluate_linear_optics_region(optics, sensor, region)
+        }),
+        SensorReadout::Rolling {
+            duration,
+            direction,
+        } => integrate_rolling_region(
+            request,
+            sensor,
+            region,
+            duration,
+            direction,
+            |optics, row| evaluate_procedural_optical_sensor_row(optics, sensor, region, row),
+        ),
     }
+}
+
+fn integrate_device_signal_region(
+    request: ShutterRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    signal: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<IntegratedOpticalExposure, ApplicationError> {
+    match request.readout {
+        SensorReadout::Global => integrate_global_region(request, region, |optics| {
+            evaluate_linear_optics_region_from_prepared_device_signal(
+                optics, sensor, region, signal, placement,
+            )
+        }),
+        SensorReadout::Rolling {
+            duration,
+            direction,
+        } => integrate_rolling_region(
+            request,
+            sensor,
+            region,
+            duration,
+            direction,
+            |optics, row| {
+                evaluate_device_signal_optical_sensor_row(
+                    optics, sensor, region, row, signal, placement,
+                )
+            },
+        ),
+    }
+}
+
+fn integrate_global_region(
+    request: ShutterRequest,
+    region: SensorRegion,
+    mut optical_at_time: impl FnMut(OpticalRequest) -> Result<LinearOpticalRaster, ApplicationError>,
+) -> Result<IntegratedOpticalExposure, ApplicationError> {
     let samples = shutter_quadrature(
         request.optics.time,
         request.duration,
@@ -1059,7 +1205,7 @@ fn integrate_procedural_global_region(
     for sample in samples {
         let mut optics = request.optics.clone();
         optics.time = sample.time;
-        let raster = evaluate_linear_optics_region(optics, sensor, region)?;
+        let raster = optical_at_time(optics)?;
         for (sum, pixel) in accumulated.iter_mut().zip(raster.pixels) {
             sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
             sum[1] += f64::from(pixel.acescg_irradiance.g) * sample.weight_seconds;
@@ -1075,34 +1221,51 @@ fn integrate_procedural_global_region(
     )
 }
 
-fn integrate_device_signal_global_region(
+#[allow(clippy::too_many_arguments)]
+fn integrate_rolling_region(
     request: ShutterRequest,
     sensor: SensorProfile,
     region: SensorRegion,
-    signal: &PreparedDeviceSignalRaster,
-    placement: RasterPlacement,
+    readout_duration: RationalTime,
+    direction: RollingDirection,
+    mut optical_row_at_time: impl FnMut(
+        OpticalRequest,
+        u16,
+    ) -> Result<Vec<LinearOpticalPixel>, ApplicationError>,
 ) -> Result<IntegratedOpticalExposure, ApplicationError> {
-    if request.readout != SensorReadout::Global {
+    if readout_duration.numerator() <= 0 {
         return Err(ApplicationError::InvalidSensorReadout);
     }
-    let samples = shutter_quadrature(
-        request.optics.time,
-        request.duration,
-        request.temporal_samples,
-        request.optics.panel.temporal_emission,
-    )?;
-    let pixel_count = usize::from(region.width) * usize::from(region.height);
-    let mut accumulated = vec![[0.0_f64; 3]; pixel_count];
-    for sample in samples {
-        let mut optics = request.optics.clone();
-        optics.time = sample.time;
-        let raster = evaluate_linear_optics_region_from_prepared_device_signal(
-            optics, sensor, region, signal, placement,
+    let mut accumulated =
+        vec![[0.0_f64; 3]; usize::from(region.width) * usize::from(region.height)];
+    for local_row in 0..usize::from(region.height) {
+        let global_row = usize::from(region.origin_y) + local_row;
+        let row_center = rolling_row_center_time(
+            request.optics.time,
+            readout_duration,
+            global_row,
+            usize::from(sensor.native_height),
+            direction,
         )?;
-        for (sum, pixel) in accumulated.iter_mut().zip(raster.pixels) {
-            sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
-            sum[1] += f64::from(pixel.acescg_irradiance.g) * sample.weight_seconds;
-            sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
+        let samples = shutter_quadrature(
+            row_center,
+            request.duration,
+            request.temporal_samples,
+            request.optics.panel.temporal_emission,
+        )?;
+        for sample in samples {
+            let mut optics = request.optics.clone();
+            optics.time = sample.time;
+            let row = optical_row_at_time(optics, global_row as u16)?;
+            if row.len() != usize::from(region.width) {
+                return Err(ApplicationError::OpticalSampleRasterMismatch);
+            }
+            for (column, pixel) in row.into_iter().enumerate() {
+                let sum = &mut accumulated[local_row * usize::from(region.width) + column];
+                sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
+                sum[1] += f64::from(pixel.acescg_irradiance.g) * sample.weight_seconds;
+                sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
+            }
         }
     }
     finish_integrated_exposure(
@@ -1516,6 +1679,50 @@ fn evaluate_linear_optics_region_from_prepared_device_signal(
             )
         },
     )
+}
+
+fn evaluate_device_signal_optical_sensor_row(
+    request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    global_row: u16,
+    source: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
+    let source_raster = source.raster_size();
+    let device_raster = [request.panel.native_width, request.panel.native_height];
+    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let emission_integral = linear_emission_integral(&source.source, panel_evaluator);
+    let raster = evaluate_optical_window_with_signal(
+        request,
+        RasterWindow {
+            full_width: sensor.native_width,
+            full_height: sensor.native_height,
+            origin_x: region.origin_x,
+            origin_y: global_row,
+            width: region.width,
+            height: 1,
+        },
+        DiagnosticView::Composite,
+        &|device_uv| {
+            source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
+                .map_or(DeviceRgb::BLACK, |source_uv| {
+                    source.source.sample_native_pixel(source_uv)
+                })
+        },
+        &|minimum, maximum| {
+            sample_placed_area(
+                &source.integral,
+                &emission_integral,
+                source_raster,
+                device_raster,
+                placement,
+                minimum,
+                maximum,
+            )
+        },
+    )?;
+    Ok(raster.pixels)
 }
 
 fn evaluate_procedural_optical_row(
@@ -2020,7 +2227,7 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
         },
     ]
     .map(trace);
-    if !subpixels_resolved_for_samples(&footprint, request.panel) {
+    if !subpixels_resolved_for_samples(&footprint, request.panel, cover_evaluator, view) {
         let integrated = integrate_aperture_samples(
             &footprint,
             view,
@@ -2029,20 +2236,14 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
             panel_temporal_gain,
             signal_at,
             signal_area,
-        );
-        return apply_cover(
-            integrated,
-            view,
-            frame,
-            request,
-            pixel_center_ndc,
             cover_evaluator,
         );
+        return integrated;
     }
     let aperture_samples = RESOLVED_SENSOR_BOX
         .map(|offset| expand_sensor_footprint(offset, psf_radius))
         .map(trace);
-    let integrated = integrate_aperture_samples(
+    integrate_aperture_samples(
         &aperture_samples,
         view,
         request.panel,
@@ -2050,66 +2251,35 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
         panel_temporal_gain,
         signal_at,
         signal_area,
-    );
-    apply_cover(
-        integrated,
-        view,
-        frame,
-        request,
-        pixel_center_ndc,
         cover_evaluator,
     )
 }
 
-fn apply_cover(
-    pixel: LinearOpticalPixel,
-    view: DiagnosticView,
-    frame: &PreparedFrame,
-    request: &OpticalRequest,
-    viewport_ndc: Vec2,
-    evaluator: ValidatedCoverEvaluator,
-) -> LinearOpticalPixel {
-    if view != DiagnosticView::Composite {
-        return pixel;
-    }
-    let Some(surface) = cover_surface_sample_at_viewport(
-        frame.camera,
-        frame.screen,
-        request.panel.active_width,
-        request.panel.active_height,
-        viewport_ndc,
-    )
-    .filter(|sample| {
-        (0.0..=1.0).contains(&sample.panel_uv.x) && (0.0..=1.0).contains(&sample.panel_uv.y)
-    }) else {
-        return pixel;
-    };
-    LinearOpticalPixel {
-        acescg_irradiance: evaluator.evaluate(
-            pixel.acescg_irradiance,
-            CoverSurfaceSample {
-                view_cosine: surface.view_cosine,
-                reflection_direction_local: [
-                    surface.reflection_direction_local.x,
-                    surface.reflection_direction_local.y,
-                    surface.reflection_direction_local.z,
-                ],
-                lens_irradiance_weight: LinearRgb::new(
-                    surface.lens_irradiance_weight[0],
-                    surface.lens_irradiance_weight[1],
-                    surface.lens_irradiance_weight[2],
-                ),
-            },
-        ),
-        on_panel: pixel.on_panel,
+fn expand_sensor_footprint(offset: Vec2, psf_radius_pixels: f32) -> Vec2 {
+    let disk = concentric_disk_sample(offset);
+    Vec2 {
+        x: offset.x + disk.x * psf_radius_pixels,
+        y: offset.y + disk.y * psf_radius_pixels,
     }
 }
 
-fn expand_sensor_footprint(offset: Vec2, psf_radius_pixels: f32) -> Vec2 {
-    let scale = 1.0 + 2.0 * psf_radius_pixels;
+fn concentric_disk_sample(sample: Vec2) -> Vec2 {
+    let x = 2.0 * sample.x - 1.0;
+    let y = 2.0 * sample.y - 1.0;
+    if x == 0.0 && y == 0.0 {
+        return Vec2 { x: 0.0, y: 0.0 };
+    }
+    let (radius, angle) = if x.abs() > y.abs() {
+        (x, core::f32::consts::FRAC_PI_4 * (y / x))
+    } else {
+        (
+            y,
+            core::f32::consts::FRAC_PI_2 - core::f32::consts::FRAC_PI_4 * (x / y),
+        )
+    };
     Vec2 {
-        x: 0.5 + (offset.x - 0.5) * scale,
-        y: 0.5 + (offset.y - 0.5) * scale,
+        x: radius * angle.cos(),
+        y: radius * angle.sin(),
     }
 }
 
@@ -2127,9 +2297,10 @@ fn approximate_psf_radius_pixels(
         + (camera.lens.edge_softness_micrometers - camera.lens.center_softness_micrometers)
             * field_amount;
     let lens_softness_mm = lens_softness_micrometers * 0.001;
-    ((lens_softness_mm + airy_radius_mm) / photosite_pitch_mm).min(2.5)
+    (lens_softness_mm + airy_radius_mm) / photosite_pitch_mm
 }
 
+#[allow(clippy::too_many_arguments)]
 fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
     spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
     view: DiagnosticView,
@@ -2138,10 +2309,12 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
     panel_temporal_gain: f32,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
     signal_area: &(dyn Fn(Vec2, Vec2) -> AreaSignalSample + Sync),
+    cover: ValidatedCoverEvaluator,
 ) -> LinearOpticalPixel {
-    let subpixels_resolved = subpixels_resolved_for_samples(spatial_samples, panel);
+    let subpixels_resolved = subpixels_resolved_for_samples(spatial_samples, panel, cover, view);
     let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
     let mut on_panel = false;
+    let reflected = reflected_environment_average(spatial_samples, view, cover);
     if !subpixels_resolved {
         for aperture in 0..SAMPLE_COUNT {
             for channel in 0..3 {
@@ -2157,7 +2330,7 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                 let mut count = 0;
                 for spatial in spatial_samples {
                     let optical = spatial[aperture];
-                    let Some(uv) = optical.panel_uv[channel]
+                    let Some(uv) = transmitted_panel_uv(cover, optical, panel, view, channel)
                         .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
                     else {
                         continue;
@@ -2172,7 +2345,7 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                         panel_temporal_gain,
                         view,
                         channel,
-                    );
+                    ) * cover_transmission_channel(cover, optical, view, channel);
                     count += 1;
                 }
                 if count == 0 {
@@ -2218,14 +2391,19 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
             acescg_irradiance: if view == DiagnosticView::DeviceSignal {
                 native_average
             } else {
-                evaluator.native_to_acescg(native_average)
+                let emitted = evaluator.native_to_acescg(native_average);
+                LinearRgb::new(
+                    emitted.r + reflected.r,
+                    emitted.g + reflected.g,
+                    emitted.b + reflected.b,
+                )
             },
             on_panel,
         };
     }
     for optical_sample in spatial_samples.iter().flatten() {
         for channel in 0..3 {
-            let Some(uv) = optical_sample.panel_uv[channel]
+            let Some(uv) = transmitted_panel_uv(cover, *optical_sample, panel, view, channel)
                 .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
             else {
                 continue;
@@ -2257,6 +2435,8 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                 channel,
             );
             let weighted = value * optical_weight;
+            let weighted =
+                weighted * cover_transmission_channel(cover, *optical_sample, view, channel);
             match channel {
                 0 => sum.r += weighted,
                 1 => sum.g += weighted,
@@ -2269,12 +2449,84 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
     let average = if view == DiagnosticView::DeviceSignal {
         native_average
     } else {
-        evaluator.native_to_acescg(native_average)
+        let emitted = evaluator.native_to_acescg(native_average);
+        LinearRgb::new(
+            emitted.r + reflected.r,
+            emitted.g + reflected.g,
+            emitted.b + reflected.b,
+        )
     };
     LinearOpticalPixel {
         acescg_irradiance: average,
         on_panel,
     }
+}
+
+fn cover_transmission_channel(
+    cover: ValidatedCoverEvaluator,
+    optical: OpticalSample,
+    view: DiagnosticView,
+    channel: usize,
+) -> f32 {
+    if view != DiagnosticView::Composite {
+        return 1.0;
+    }
+    let transmission = cover.transmission(optical.emission_cosine[channel]);
+    [transmission.r, transmission.g, transmission.b][channel]
+}
+
+fn transmitted_panel_uv(
+    cover: ValidatedCoverEvaluator,
+    optical: OpticalSample,
+    panel: LcdProfile,
+    view: DiagnosticView,
+    channel: usize,
+) -> Option<Vec2> {
+    let uv = optical.panel_uv[channel]?;
+    if view != DiagnosticView::Composite {
+        return Some(uv);
+    }
+    let direction = optical.reflection_direction_local[channel]?;
+    let offset = cover.transmitted_lateral_offset_meters([direction.x, direction.y, direction.z]);
+    Some(Vec2 {
+        x: uv.x + offset[0] / panel.active_width.0,
+        y: uv.y - offset[1] / panel.active_height.0,
+    })
+}
+
+fn reflected_environment_average<const SAMPLE_COUNT: usize>(
+    spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
+    view: DiagnosticView,
+    cover: ValidatedCoverEvaluator,
+) -> LinearRgb {
+    if view != DiagnosticView::Composite {
+        return LinearRgb::new(0.0, 0.0, 0.0);
+    }
+    let mut sum = [0.0_f32; 3];
+    for optical in spatial_samples.iter().flatten() {
+        for channel in 0..3 {
+            let Some(_uv) = optical.panel_uv[channel]
+                .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
+            else {
+                continue;
+            };
+            let Some(direction) = optical.reflection_direction_local[channel] else {
+                continue;
+            };
+            let reflected = cover.reflected_illuminance(CoverSurfaceSample {
+                view_cosine: optical.emission_cosine[channel],
+                reflection_direction_local: [direction.x, direction.y, direction.z],
+                lens_irradiance_weight: LinearRgb::new(
+                    optical.irradiance_weight[0],
+                    optical.irradiance_weight[1],
+                    optical.irradiance_weight[2],
+                ),
+            });
+            sum[channel] += [reflected.r, reflected.g, reflected.b][channel];
+        }
+    }
+    let scale = 1.0 / (SAMPLE_COUNT * spatial_samples.len()) as f32;
+    LinearRgb::new(sum[0] * scale, sum[1] * scale, sum[2] * scale)
 }
 
 fn optical_channel_weight(
@@ -2295,6 +2547,8 @@ fn optical_channel_weight(
 fn subpixels_resolved_for_samples<const SAMPLE_COUNT: usize>(
     spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
     panel: LcdProfile,
+    cover: ValidatedCoverEvaluator,
+    view: DiagnosticView,
 ) -> bool {
     (0..3).all(|channel| {
         let mut minimum = Vec2 {
@@ -2309,7 +2563,7 @@ fn subpixels_resolved_for_samples<const SAMPLE_COUNT: usize>(
         for uv in spatial_samples
             .iter()
             .flatten()
-            .filter_map(|sample| sample.panel_uv[channel])
+            .filter_map(|sample| transmitted_panel_uv(cover, *sample, panel, view, channel))
         {
             minimum.x = minimum.x.min(uv.x);
             minimum.y = minimum.y.min(uv.y);
@@ -2583,6 +2837,7 @@ pub enum ApplicationError {
         actual: u64,
     },
     DecodedPixelStorageTooLarge,
+    MediaSampleUnavailable,
     AlphaAssociationUnresolved,
     Color(ColorError),
     Panel(PanelError),
@@ -2647,6 +2902,9 @@ impl fmt::Display for ApplicationError {
             ),
             Self::DecodedPixelStorageTooLarge => {
                 formatter.write_str("decoded source is too large for RGBA color processing")
+            }
+            Self::MediaSampleUnavailable => {
+                formatter.write_str("media sample is unavailable at the requested exact time")
             }
             Self::AlphaAssociationUnresolved => formatter.write_str(
                 "alpha metadata does not identify Straight or Premultiplied association",
@@ -2855,6 +3113,104 @@ mod tests {
                 assert_eq!(cropped.pixels[region_index], full.pixels[full_index]);
             }
         }
+    }
+
+    #[test]
+    fn rolling_sensor_region_is_an_exact_crop_of_the_complete_exposure() {
+        let mut optics = request().optical_request();
+        optics.viewport_aspect = 1.0;
+        optics.camera.intrinsics.keyframes[0].sensor_height = Millimeters(36.0);
+        let shutter = ShutterRequest {
+            optics,
+            duration: RationalTime::new(1, 48).unwrap(),
+            temporal_samples: 3,
+            readout: SensorReadout::Rolling {
+                duration: RationalTime::new(1, 120).unwrap(),
+                direction: RollingDirection::TopToBottom,
+            },
+            neutral_density_stops: 0.0,
+        };
+        let sensor = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 2,
+            origin_y: 3,
+            width: 3,
+            height: 2,
+        };
+        let full = integrate_procedural_shutter(shutter.clone(), 8, 8).expect("full exposure");
+        let cropped =
+            integrate_procedural_region(shutter, sensor, region).expect("region exposure");
+        for local_y in 0..usize::from(region.height) {
+            for local_x in 0..usize::from(region.width) {
+                let full_index = (usize::from(region.origin_y) + local_y) * 8
+                    + usize::from(region.origin_x)
+                    + local_x;
+                let region_index = local_y * usize::from(region.width) + local_x;
+                assert_eq!(
+                    cropped.acescg_illuminance_seconds[region_index],
+                    full.acescg_illuminance_seconds[full_index]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn animated_region_capture_resolves_source_at_each_rolling_sample_time() {
+        let mut optics = request().optics;
+        optics.viewport_aspect = 1.0;
+        optics.camera.intrinsics.keyframes[0].sensor_height = Millimeters(36.0);
+        let capture = FrameCaptureRequest {
+            optics,
+            frame_rate: FrameRate::new(24, 1).unwrap(),
+            frame_index: 0,
+            duration: RationalTime::new(1, 48).unwrap(),
+            temporal_samples: 2,
+            readout: SensorReadout::Rolling {
+                duration: RationalTime::new(1, 120).unwrap(),
+                direction: RollingDirection::TopToBottom,
+            },
+            neutral_density_stops: 0.0,
+            noise_seed: 4,
+        };
+        let sensor = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            ..SensorProfile::REFERENCE
+        };
+        let mut sampled = Vec::new();
+        capture_and_develop_device_signal_region_sequence(
+            capture,
+            sensor,
+            CameraDevelopment::NEUTRAL,
+            SensorRegion {
+                origin_x: 3,
+                origin_y: 3,
+                width: 2,
+                height: 2,
+            },
+            RasterPlacement::Stretch,
+            |time| {
+                sampled.push(time);
+                Ok(Arc::new(PreparedDeviceSignalRaster::new(
+                    DeviceSignalRaster {
+                        width: 1,
+                        height: 1,
+                        pixels: vec![DeviceRgb::new(0.25, 0.5, 0.75)],
+                    },
+                )?))
+            },
+        )
+        .expect("animated rolling region");
+        sampled.sort();
+        sampled.dedup();
+        assert!(
+            sampled.len() > 2,
+            "rolling rows must not freeze one frame sample"
+        );
     }
 
     #[test]
@@ -3267,7 +3623,11 @@ mod tests {
         assert!(at_3840 > at_960);
         assert!(at_edge > at_3840);
         assert!(at_f16 > at_3840);
-        assert!(at_f16 <= 2.5);
+        let very_dense = approximate_psf_radius_pixels(stopped_down, 65_535, center);
+        assert!(
+            very_dense > 2.5,
+            "the physical PSF must not be silently capped"
+        );
     }
 
     #[test]
@@ -3276,7 +3636,12 @@ mod tests {
         assert_eq!(base, Vec2 { x: 0.125, y: 0.875 });
 
         let expanded = expand_sensor_footprint(Vec2 { x: 0.125, y: 0.875 }, 0.5);
-        assert_eq!(expanded, Vec2 { x: -0.25, y: 1.25 });
+        let displacement = Vec2 {
+            x: expanded.x - 0.125,
+            y: expanded.y - 0.875,
+        };
+        assert!(displacement.x.hypot(displacement.y) <= 0.5 + f32::EPSILON);
+        assert!(displacement.x < 0.0 && displacement.y > 0.0);
         let opposite = expand_sensor_footprint(Vec2 { x: 0.875, y: 0.125 }, 0.5);
         assert!((expanded.x + opposite.x - 1.0).abs() < f32::EPSILON);
         assert!((expanded.y + opposite.y - 1.0).abs() < f32::EPSILON);
@@ -3288,8 +3653,16 @@ mod tests {
         let optical = OpticalSample {
             panel_uv: [Some(Vec2 { x: 0.5, y: 0.5 }); 3],
             emission_cosine: [1.0; 3],
+            reflection_direction_local: [Some(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            }); 3],
             irradiance_weight: [1.0; 3],
         };
+        let neutral_cover = CoverGlassProfile::NEUTRAL
+            .evaluator(ProceduralEnvironment::DARK)
+            .expect("valid neutral cover");
         let resolved_spatial = [[optical; APERTURE_SAMPLE_COUNT]];
         let white_area = AreaSignalSample {
             device_code: DeviceRgb::WHITE,
@@ -3303,6 +3676,7 @@ mod tests {
             1.0,
             &|_| DeviceRgb::WHITE,
             &|_, _| white_area,
+            neutral_cover,
         );
         let mut offset = optical;
         offset.panel_uv = [Some(Vec2 { x: 0.51, y: 0.51 }); 3];
@@ -3318,6 +3692,7 @@ mod tests {
             1.0,
             &|_| DeviceRgb::WHITE,
             &|_, _| white_area,
+            neutral_cover,
         );
         assert_eq!(resolved.acescg_irradiance, LinearRgb::new(0.0, 0.0, 0.0));
         assert!(unresolved.acescg_irradiance.g > 0.0);

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 4;
+pub const CURRENT_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -336,6 +336,14 @@ pub struct EnvironmentDocument {
     pub key_radiance: [f32; 3],
     pub key_direction_local: [f32; 3],
     pub key_angular_radius_degrees: f32,
+    pub pattern: EnvironmentPatternDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentPatternDocument {
+    UniformKey,
+    ReflectionChart,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -806,6 +814,8 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
 }
 
 fn validate_cover(cover: &CoverDocument) -> Result<(), PersistenceError> {
+    // Persistence owns only a finite serialized representation. Optical meaning and certified
+    // ranges are validated once by screen-cover at the composition boundary.
     let finite = [
         cover.character_strength,
         cover.thickness_millimeters,
@@ -819,18 +829,7 @@ fn validate_cover(cover: &CoverDocument) -> Result<(), PersistenceError> {
     ]
     .into_iter()
     .all(f32::is_finite);
-    if !finite
-        || !(0.0..=2.0).contains(&cover.character_strength)
-        || !(0.01..=20.0).contains(&cover.thickness_millimeters)
-        || !(1.0..=2.5).contains(&cover.refractive_index)
-        || !(0.0..=1.0).contains(&cover.anti_reflective_efficiency)
-        || cover
-            .absorption_per_millimeter
-            .into_iter()
-            .any(|value| !(0.0..=2.0).contains(&value))
-        || !(0.0..=1.0).contains(&cover.roughness)
-        || !(0.0..=1.0).contains(&cover.haze)
-    {
+    if !finite {
         return Err(PersistenceError::InvalidOpticalCover);
     }
     Ok(())
@@ -852,22 +851,7 @@ fn validate_environment(environment: &EnvironmentDocument) -> Result<(), Persist
     ]
     .into_iter()
     .all(f32::is_finite);
-    let direction_length_squared = environment
-        .key_direction_local
-        .into_iter()
-        .map(|value| value * value)
-        .sum::<f32>();
-    if !finite
-        || !(0.0..=4.0).contains(&environment.character_strength)
-        || environment
-            .ambient_radiance
-            .into_iter()
-            .chain(environment.key_radiance)
-            .any(|value| !(0.0..=100_000.0).contains(&value))
-        || (direction_length_squared - 1.0).abs() > 1.0e-3
-        || environment.key_direction_local[2] < 0.0
-        || !(0.1..=89.0).contains(&environment.key_angular_radius_degrees)
-    {
+    if !finite {
         return Err(PersistenceError::InvalidEnvironment);
     }
     Ok(())
@@ -1243,6 +1227,7 @@ mod tests {
                     key_radiance: [220.0; 3],
                     key_direction_local: [-0.45, 0.35, 0.821_584],
                     key_angular_radius_degrees: 18.0,
+                    pattern: EnvironmentPatternDocument::UniformKey,
                 },
             },
         }

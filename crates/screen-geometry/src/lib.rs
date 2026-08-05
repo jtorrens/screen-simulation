@@ -925,49 +925,8 @@ pub const MAX_APERTURE_SAMPLE_COUNT: usize = 128;
 pub struct OpticalSample {
     pub panel_uv: [Option<Vec2>; 3],
     pub emission_cosine: [f32; 3],
+    pub reflection_direction_local: [Option<Vec3>; 3],
     pub irradiance_weight: [f32; 3],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CoverSurfaceGeometrySample {
-    pub panel_uv: Vec2,
-    pub view_cosine: f32,
-    pub reflection_direction_local: Vec3,
-    pub lens_irradiance_weight: [f32; 3],
-}
-
-/// Resolves one central green-channel surface ray for the cover layer. The cover uses this
-/// smooth geometric sample once per output pixel; native panel structure remains integrated
-/// independently through the complete aperture sample set.
-pub fn cover_surface_sample_at_viewport(
-    camera: CameraSample,
-    screen: ScreenSample,
-    active_width: Meters,
-    active_height: Meters,
-    viewport_ndc: Vec2,
-) -> Option<CoverSurfaceGeometrySample> {
-    let ideal = inverse_distortion(
-        Vec2 {
-            x: viewport_ndc.x + 2.0 * camera.lens_shift.x,
-            y: -viewport_ndc.y - 2.0 * camera.lens_shift.y,
-        },
-        camera.lens,
-    )?;
-    let (panel_uv, view_cosine, reflection_direction_local) = panel_uv_for_lens_sample(
-        camera,
-        screen,
-        active_width,
-        active_height,
-        ideal,
-        Vec2 { x: 0.0, y: 0.0 },
-        1,
-    )?;
-    Some(CoverSurfaceGeometrySample {
-        panel_uv,
-        view_cosine,
-        reflection_direction_local,
-        lens_irradiance_weight: lens_irradiance_weight(camera, ideal),
-    })
 }
 
 pub fn panel_uv_aperture_samples(
@@ -1007,6 +966,7 @@ pub fn panel_uv_aperture_samples_with_count<const SAMPLE_COUNT: usize>(
         return [OpticalSample {
             panel_uv: [None; 3],
             emission_cosine: [0.0; 3],
+            reflection_direction_local: [None; 3],
             irradiance_weight: [0.0; 3],
         }; SAMPLE_COUNT];
     };
@@ -1026,6 +986,7 @@ pub fn panel_uv_aperture_samples_with_count<const SAMPLE_COUNT: usize>(
         OpticalSample {
             panel_uv: hits.map(|hit| hit.map(|value| value.0)),
             emission_cosine: hits.map(|hit| hit.map_or(0.0, |value| value.1)),
+            reflection_direction_local: hits.map(|hit| hit.map(|value| value.2)),
             irradiance_weight: lens_irradiance_weight(camera, ideal),
         }
     })
@@ -1420,37 +1381,6 @@ mod tests {
             .expect("sample");
         assert!((start.yaw_degrees + 18.0).abs() < 0.001);
         assert!((middle.yaw_degrees - 18.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn cover_surface_sample_is_centered_and_energy_weighted() {
-        let camera = rig()
-            .sample(RationalTime::new(24, 24).expect("valid time"))
-            .expect("camera sample");
-        let screen = ScreenSample::IDENTITY;
-        let sample = cover_surface_sample_at_viewport(
-            camera,
-            screen,
-            Meters(0.6),
-            Meters(0.34),
-            Vec2 { x: 0.0, y: 0.0 },
-        )
-        .expect("cover sample");
-
-        assert!((sample.panel_uv.x - 0.5).abs() < 1.0e-4);
-        assert!((sample.panel_uv.y - 0.5).abs() < 1.0e-4);
-        assert!(sample.view_cosine > 0.9);
-        let reflected = sample.reflection_direction_local;
-        let reflected_length =
-            (reflected.x * reflected.x + reflected.y * reflected.y + reflected.z * reflected.z)
-                .sqrt();
-        assert!(reflected_length > 0.999);
-        assert!(
-            sample
-                .lens_irradiance_weight
-                .iter()
-                .all(|weight| *weight > 0.0)
-        );
     }
 
     #[test]

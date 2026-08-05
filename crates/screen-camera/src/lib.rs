@@ -76,6 +76,41 @@ pub enum CameraDevelopmentError {
     NonFiniteDevelopedPixel,
 }
 
+/// Applies native-sensor white-balance gains while keeping the public value in ACEScg.
+/// This is the authoritative approximation used by interactive camera previews before RAW
+/// mosaicing; gains must never be multiplied directly into ACEScg channels.
+pub fn apply_sensor_white_balance_to_acescg(
+    acescg: LinearRgb,
+    sensor: SensorProfile,
+    white_balance: LinearRgb,
+) -> Result<LinearRgb, CameraDevelopmentError> {
+    let sensor = sensor
+        .validate()
+        .map_err(|_| CameraDevelopmentError::InvalidSensorProfile)?;
+    if [white_balance.r, white_balance.g, white_balance.b]
+        .into_iter()
+        .any(|value| !value.is_finite() || !(0.01..=100.0).contains(&value))
+    {
+        return Err(CameraDevelopmentError::InvalidWhiteBalance);
+    }
+    let sensor_to_acescg =
+        inverse3(sensor.acescg_to_sensor).ok_or(CameraDevelopmentError::InvalidColorMatrix)?;
+    let native = mat_vec(sensor.acescg_to_sensor, [acescg.r, acescg.g, acescg.b]);
+    let corrected = [
+        native.r * white_balance.r,
+        native.g * white_balance.g,
+        native.b * white_balance.b,
+    ];
+    let result = mat_vec(sensor_to_acescg, corrected);
+    if [result.r, result.g, result.b]
+        .into_iter()
+        .any(|value| !value.is_finite())
+    {
+        return Err(CameraDevelopmentError::NonFiniteDevelopedPixel);
+    }
+    Ok(result)
+}
+
 pub fn develop_raw_to_acescg(
     raw: &RawSensorRaster,
     sensor: SensorProfile,
@@ -89,6 +124,7 @@ pub fn develop_raw_to_acescg(
         || raw.height != u32::from(sensor.native_height)
         || raw.bayer_pattern != sensor.bayer_pattern
         || raw.adc_bits != sensor.adc_bits
+        || raw.sensor_profile != sensor
     {
         return Err(CameraDevelopmentError::RawProfileMismatch);
     }
@@ -172,6 +208,7 @@ pub fn develop_raw_region_to_acescg(
         || raw.sensor_height != sensor.native_height
         || raw.bayer_pattern != sensor.bayer_pattern
         || raw.adc_bits != sensor.adc_bits
+        || raw.sensor_profile != sensor
         || raw.region.validate(sensor).is_err()
     {
         return Err(CameraDevelopmentError::RawProfileMismatch);
@@ -478,6 +515,7 @@ mod tests {
                 height: 4,
                 bayer_pattern: pattern,
                 adc_bits: 16,
+                sensor_profile: sensor,
                 codes,
                 full_well_clipped: vec![false; 16],
                 adc_clipped: vec![false; 16],
@@ -500,6 +538,7 @@ mod tests {
             height: 4,
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
+            sensor_profile: sensor,
             codes: vec![32_768; 16],
             full_well_clipped: vec![false; 16],
             adc_clipped: vec![false; 16],
@@ -521,6 +560,26 @@ mod tests {
     }
 
     #[test]
+    fn ideal_preview_white_balance_uses_sensor_basis_not_acescg_channels() {
+        let sensor = SensorProfile::REFERENCE;
+        let input = LinearRgb::new(0.2, 0.4, 0.8);
+        let neutral =
+            apply_sensor_white_balance_to_acescg(input, sensor, LinearRgb::new(1.0, 1.0, 1.0))
+                .expect("neutral preview WB");
+        assert!((neutral.r - input.r).abs() < 1.0e-5);
+        assert!((neutral.g - input.g).abs() < 1.0e-5);
+        assert!((neutral.b - input.b).abs() < 1.0e-5);
+
+        let corrected =
+            apply_sensor_white_balance_to_acescg(input, sensor, LinearRgb::new(2.0, 1.0, 0.5))
+                .expect("authored preview WB");
+        assert_ne!(
+            corrected,
+            LinearRgb::new(input.r * 2.0, input.g, input.b * 0.5)
+        );
+    }
+
+    #[test]
     fn explicit_middle_gray_placement_changes_developed_acescg_without_changing_raw() {
         let sensor = identity_sensor(BayerPattern::Rggb);
         let raw = RawSensorRaster {
@@ -528,6 +587,7 @@ mod tests {
             height: 4,
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
+            sensor_profile: sensor,
             codes: vec![16_384; 16],
             full_well_clipped: vec![false; 16],
             adc_clipped: vec![false; 16],
@@ -561,6 +621,30 @@ mod tests {
             height: 4,
             bayer_pattern: BayerPattern::Bggr,
             adc_bits: 16,
+            sensor_profile: identity_sensor(BayerPattern::Bggr),
+            codes: vec![0; 16],
+            full_well_clipped: vec![false; 16],
+            adc_clipped: vec![false; 16],
+        };
+        assert_eq!(
+            develop_raw_to_acescg(&raw, sensor, CameraDevelopment::NEUTRAL),
+            Err(CameraDevelopmentError::RawProfileMismatch)
+        );
+    }
+
+    #[test]
+    fn raw_identity_rejects_dimension_compatible_but_different_sensor_calibration() {
+        let sensor = identity_sensor(BayerPattern::Rggb);
+        let exposed_with = SensorProfile {
+            full_well_electrons: sensor.full_well_electrons * 0.5,
+            ..sensor
+        };
+        let raw = RawSensorRaster {
+            width: 4,
+            height: 4,
+            bayer_pattern: BayerPattern::Rggb,
+            adc_bits: 16,
+            sensor_profile: exposed_with,
             codes: vec![0; 16],
             full_well_clipped: vec![false; 16],
             adc_clipped: vec![false; 16],
@@ -586,6 +670,7 @@ mod tests {
             height: 16,
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
+            sensor_profile: sensor,
             codes: codes.clone(),
             full_well_clipped: vec![false; 256],
             adc_clipped: vec![false; 256],
@@ -610,6 +695,7 @@ mod tests {
             region: halo,
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
+            sensor_profile: sensor,
             codes: region_codes,
             full_well_clipped: vec![false; usize::from(halo.width) * usize::from(halo.height)],
             adc_clipped: vec![false; usize::from(halo.width) * usize::from(halo.height)],
@@ -649,6 +735,7 @@ mod tests {
             height: 8,
             bayer_pattern: BayerPattern::Rggb,
             adc_bits: 16,
+            sensor_profile: sensor,
             codes,
             full_well_clipped: vec![false; 64],
             adc_clipped: vec![false; 64],

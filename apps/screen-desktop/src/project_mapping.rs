@@ -2,7 +2,7 @@ use screen_application::{RasterPlacement, RollingDirection, SensorReadout};
 use screen_camera::CameraDevelopment;
 use screen_color::{CameraOutputTransform, OcioInputTransform, SourceColorInterpretation};
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
-use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
+use screen_cover::{AcesCgRadiance, CoverGlassProfile, EnvironmentPattern, ProceduralEnvironment};
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, LensModel,
     Quaternion, ScreenTrack, TransformKeyframe, TransformTrack,
@@ -141,18 +141,26 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
         .map_err(|error| error.to_string())?,
         environment: ProceduralEnvironment {
             character_strength: package.shot.environment.character_strength,
-            ambient_radiance: LinearRgb::new(
+            ambient_radiance: AcesCgRadiance(LinearRgb::new(
                 package.shot.environment.ambient_radiance[0],
                 package.shot.environment.ambient_radiance[1],
                 package.shot.environment.ambient_radiance[2],
-            ),
-            key_radiance: LinearRgb::new(
+            )),
+            key_radiance: AcesCgRadiance(LinearRgb::new(
                 package.shot.environment.key_radiance[0],
                 package.shot.environment.key_radiance[1],
                 package.shot.environment.key_radiance[2],
-            ),
+            )),
             key_direction_local: package.shot.environment.key_direction_local,
             key_angular_radius_degrees: package.shot.environment.key_angular_radius_degrees,
+            pattern: match package.shot.environment.pattern {
+                screen_persistence::EnvironmentPatternDocument::UniformKey => {
+                    EnvironmentPattern::UniformKey
+                }
+                screen_persistence::EnvironmentPatternDocument::ReflectionChart => {
+                    EnvironmentPattern::ReflectionChart
+                }
+            },
         }
         .validate()
         .map_err(|error| error.to_string())?,
@@ -497,6 +505,7 @@ mod tests {
                     key_radiance: [220.0; 3],
                     key_direction_local: [-0.45, 0.35, 0.821_584],
                     key_angular_radius_degrees: 18.0,
+                    pattern: screen_persistence::EnvironmentPatternDocument::UniformKey,
                 },
             },
         };
@@ -524,7 +533,7 @@ mod tests {
         assert_eq!(scene.cover.thickness_millimeters, 0.8);
         assert_eq!(scene.cover.anti_reflective_efficiency, 0.62);
         assert_eq!(
-            scene.environment.ambient_radiance,
+            scene.environment.ambient_radiance.0,
             LinearRgb::new(30.0, 30.0, 30.0)
         );
         assert_eq!(scene.environment.key_angular_radius_degrees, 18.0);

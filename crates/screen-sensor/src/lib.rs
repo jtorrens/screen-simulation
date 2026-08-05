@@ -43,12 +43,15 @@ pub struct CaptureIdentity {
     pub frame_index: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RawSensorRaster {
     pub width: u32,
     pub height: u32,
     pub bayer_pattern: BayerPattern,
     pub adc_bits: u8,
+    /// Complete profile identity used for this exposure; RAW must not be developed by a merely
+    /// dimension-compatible sensor profile.
+    pub sensor_profile: SensorProfile,
     pub codes: Vec<u16>,
     pub full_well_clipped: Vec<bool>,
     pub adc_clipped: Vec<bool>,
@@ -62,13 +65,14 @@ pub struct SensorRegion {
     pub height: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RawSensorRegion {
     pub sensor_width: u16,
     pub sensor_height: u16,
     pub region: SensorRegion,
     pub bayer_pattern: BayerPattern,
     pub adc_bits: u8,
+    pub sensor_profile: SensorProfile,
     pub codes: Vec<u16>,
     pub full_well_clipped: Vec<bool>,
     pub adc_clipped: Vec<bool>,
@@ -230,6 +234,7 @@ pub fn expose_raw(
         height: exposure.height,
         bayer_pattern: profile.bayer_pattern,
         adc_bits: profile.adc_bits,
+        sensor_profile: profile,
         codes,
         full_well_clipped: full_well_clipped_mask,
         adc_clipped: adc_clipped_mask,
@@ -299,6 +304,7 @@ pub fn expose_raw_region(
         region,
         bayer_pattern: profile.bayer_pattern,
         adc_bits: profile.adc_bits,
+        sensor_profile: profile,
         codes,
         full_well_clipped: full_well_clipped_mask,
         adc_clipped: adc_clipped_mask,

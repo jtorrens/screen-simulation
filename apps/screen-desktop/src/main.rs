@@ -21,12 +21,13 @@ use screen_application::{
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
     PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel, ProceduralTestPattern,
     RasterPlacement, SensorReadout, SimulationRequest, capture_and_develop_device_signal_region,
-    capture_and_develop_procedural_region, capture_device_preset, decoded_frame_to_device_signal,
-    evaluate_linear_optics, evaluate_linear_optics_from_device_signal,
-    evaluate_linear_optics_from_prepared_device_signal, inspection_region_from_drag,
-    prepare_raster, prepare_raster_from_device_signal, prepare_raster_from_prepared_device_signal,
+    capture_and_develop_device_signal_region_sequence, capture_and_develop_procedural_region,
+    capture_device_preset, decoded_frame_to_device_signal, evaluate_linear_optics,
+    evaluate_linear_optics_from_device_signal, evaluate_linear_optics_from_prepared_device_signal,
+    inspection_region_from_drag, prepare_raster, prepare_raster_from_device_signal,
+    prepare_raster_from_prepared_device_signal,
 };
-use screen_camera::CameraDevelopment;
+use screen_camera::{CameraDevelopment, apply_sensor_white_balance_to_acescg};
 use screen_color::{
     CameraOutputTransform, ColorEngine, DeviceColorTarget, OcioInputTransform, PreviewRgb,
     SourceColorInterpretation, SourceToDeviceProcessor, propose_ocio_input,
@@ -85,6 +86,10 @@ struct RenderControls {
     camera_exposure_ev: f32,
     capture_exposure_index: f32,
     shutter_angle_degrees: f32,
+    temporal_samples: f32,
+    sensor_readout_index: i32,
+    readout_duration_ms: f32,
+    sensor_noise_seed: f32,
     neutral_density_stops: f32,
     output_transform_index: i32,
     capture_preset_index: i32,
@@ -137,6 +142,10 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         camera_exposure_ev: window.get_camera_exposure_ev(),
         capture_exposure_index: window.get_capture_exposure_index(),
         shutter_angle_degrees: window.get_shutter_angle_degrees(),
+        temporal_samples: window.get_temporal_samples(),
+        sensor_readout_index: window.get_sensor_readout_index(),
+        readout_duration_ms: window.get_readout_duration_ms(),
+        sensor_noise_seed: window.get_sensor_noise_seed(),
         neutral_density_stops: window.get_neutral_density_stops(),
         output_transform_index: window.get_output_transform_index(),
         capture_preset_index: window.get_capture_preset_index(),
@@ -924,6 +933,9 @@ fn apply_capture_preset(
     window.set_f_stop(preset.f_stop);
     window.set_capture_exposure_index(preset.reference_exposure_index);
     window.set_shutter_angle_degrees(preset.default_shutter_angle_degrees);
+    window.set_temporal_samples(f32::from(preset.default_temporal_samples));
+    window.set_sensor_readout_index(1);
+    window.set_readout_duration_ms(preset.default_readout_duration_milliseconds);
     window.set_neutral_density_stops(0.0);
     window.set_capture_fixed_optics(
         preset.optics_authority == CaptureOpticsAuthority::IntegratedFixedLens,
@@ -1159,7 +1171,12 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         render_camera_result(
             window,
             request,
-            embedded_signal.map(|signal| (signal, RasterPlacement::Fit)),
+            embedded_signal.map_or(NativeCaptureSource::Procedural, |signal| {
+                NativeCaptureSource::Static {
+                    signal,
+                    placement: RasterPlacement::Fit,
+                }
+            }),
             CapturePhotometricProfile {
                 sensor,
                 reference_exposure_index: state.capture_reference_exposure_index,
@@ -1242,18 +1259,18 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             if window.get_view_index() == 4 && native_quality {
                 let (sensor, region, cancel) =
                     capture_selection.expect("capture selection resolved above");
-                let prepared_signal = match PreparedDeviceSignalRaster::new(signal.clone()) {
-                    Ok(signal) => Arc::new(signal),
-                    Err(error) => {
-                        window.set_capture_rendering(false);
-                        block_preview(window, &error.to_string());
-                        return;
-                    }
-                };
                 render_camera_result(
                     window,
                     request,
-                    Some((prepared_signal, placement)),
+                    NativeCaptureSource::Media(Box::new(NativeMediaSource {
+                        path: source.path.clone(),
+                        descriptor: source.descriptor.clone(),
+                        decode_interpretation,
+                        color_interpretation: interpretation,
+                        alpha_interpretation,
+                        sample_policy,
+                        placement,
+                    })),
                     CapturePhotometricProfile {
                         sensor,
                         reference_exposure_index: state.capture_reference_exposure_index,
@@ -1432,12 +1449,18 @@ fn prepare_camera_preview_raster(
     let exposure_scale = camera_preview_exposure_scale(settings);
     let mut rgba = Vec::with_capacity(linear.pixels.len() * 4);
     for pixel in &linear.pixels {
-        rgba.extend_from_slice(&[
-            pixel.acescg_irradiance.r * exposure_scale * development.white_balance.r,
-            pixel.acescg_irradiance.g * exposure_scale * development.white_balance.g,
-            pixel.acescg_irradiance.b * exposure_scale * development.white_balance.b,
-            1.0,
-        ]);
+        let exposed = LinearRgb::new(
+            pixel.acescg_irradiance.r * exposure_scale,
+            pixel.acescg_irradiance.g * exposure_scale,
+            pixel.acescg_irradiance.b * exposure_scale,
+        );
+        let corrected = apply_sensor_white_balance_to_acescg(
+            exposed,
+            settings.sensor,
+            development.white_balance,
+        )
+        .map_err(|error| error.to_string())?;
+        rgba.extend_from_slice(&[corrected.r, corrected.g, corrected.b, 1.0]);
     }
     ColorEngine::bundled()
         .map_err(|error| error.to_string())?
@@ -1648,7 +1671,7 @@ fn present_procedural_source(window: &MainWindow) {
 fn render_camera_result(
     window: &MainWindow,
     request: SimulationRequest,
-    source: Option<(Arc<PreparedDeviceSignalRaster>, RasterPlacement)>,
+    source: NativeCaptureSource,
     capture_profile: CapturePhotometricProfile,
     region: SensorRegion,
     session: NativeRenderSession,
@@ -1670,10 +1693,10 @@ fn render_camera_result(
         frame_rate: settings.frame_rate,
         frame_index: i64::from(window.get_frame_number()),
         duration: settings.shutter_duration,
-        temporal_samples: 1,
-        readout: SensorReadout::Global,
+        temporal_samples: settings.temporal_samples,
+        readout: settings.readout,
         neutral_density_stops: settings.neutral_density_stops,
-        noise_seed: 42,
+        noise_seed: settings.noise_seed,
     };
     window.set_native_staging_ready(false);
     window.set_preview_aspect(f32::from(region.width) / f32::from(region.height));
@@ -1795,8 +1818,12 @@ struct CapturePhotometricProfile {
 
 #[derive(Clone, Copy)]
 struct CapturePipelineSettings {
+    sensor: SensorProfile,
     frame_rate: FrameRate,
     shutter_duration: RationalTime,
+    temporal_samples: u16,
+    readout: SensorReadout,
+    noise_seed: u64,
     neutral_density_stops: f32,
     development: CameraDevelopment,
     transform: CameraOutputTransform,
@@ -1817,6 +1844,36 @@ fn capture_pipeline_settings(
     let shutter_duration = frame_duration
         .checked_mul_ratio((shutter_angle * 10.0).round() as i64, 3_600)
         .map_err(|error| error.to_string())?;
+    let temporal_samples_value = window.get_temporal_samples();
+    if !temporal_samples_value.is_finite() || !(1.0..=64.0).contains(&temporal_samples_value) {
+        return Err("temporal samples must be finite and in [1, 64]".into());
+    }
+    let temporal_samples = temporal_samples_value.round() as u16;
+    let readout = match window.get_sensor_readout_index() {
+        0 => SensorReadout::Global,
+        direction @ (1 | 2) => {
+            let milliseconds = window.get_readout_duration_ms();
+            if !milliseconds.is_finite() || !(0.1..=100.0).contains(&milliseconds) {
+                return Err("sensor readout must be finite and in [0.1, 100] ms".into());
+            }
+            let duration = RationalTime::new((milliseconds * 1_000.0).round() as i64, 1_000_000)
+                .map_err(|error| error.to_string())?;
+            SensorReadout::Rolling {
+                duration,
+                direction: if direction == 1 {
+                    screen_application::RollingDirection::TopToBottom
+                } else {
+                    screen_application::RollingDirection::BottomToTop
+                },
+            }
+        }
+        _ => return Err("select an explicit sensor readout mode".into()),
+    };
+    let noise_seed_value = window.get_sensor_noise_seed();
+    if !noise_seed_value.is_finite() || !(0.0..=16_777_215.0).contains(&noise_seed_value) {
+        return Err("sensor noise seed must be finite and in [0, 16777215]".into());
+    }
+    let noise_seed = noise_seed_value.round() as u64;
     let exposure_index = window.get_capture_exposure_index();
     if !exposure_index.is_finite() || !(25.0..=12_800.0).contains(&exposure_index) {
         return Err("EI / ISO must be finite and in [25, 12800]".into());
@@ -1845,8 +1902,12 @@ fn capture_pipeline_settings(
         _ => return Err("select an explicit camera output transform".into()),
     };
     Ok(CapturePipelineSettings {
+        sensor: capture_profile.sensor,
         frame_rate,
         shutter_duration,
+        temporal_samples,
+        readout,
+        noise_seed,
         neutral_density_stops,
         development,
         transform,
@@ -1935,10 +1996,29 @@ enum NativeCaptureError {
     Failed(String),
 }
 
+enum NativeCaptureSource {
+    Procedural,
+    Static {
+        signal: Arc<PreparedDeviceSignalRaster>,
+        placement: RasterPlacement,
+    },
+    Media(Box<NativeMediaSource>),
+}
+
+struct NativeMediaSource {
+    path: PathBuf,
+    descriptor: MediaDescriptor,
+    decode_interpretation: ResolvedSourceDecode,
+    color_interpretation: SourceColorInterpretation,
+    alpha_interpretation: AlphaInterpretation,
+    sample_policy: FrameSelectionPolicy,
+    placement: RasterPlacement,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_native_capture_job(
     capture: FrameCaptureRequest,
-    source: Option<(Arc<PreparedDeviceSignalRaster>, RasterPlacement)>,
+    source: NativeCaptureSource,
     sensor: SensorProfile,
     development: CameraDevelopment,
     region: SensorRegion,
@@ -1952,6 +2032,18 @@ fn run_native_capture_job(
     let processor = color_engine
         .camera_output_processor(transform)
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
+    let media_processor = match &source {
+        NativeCaptureSource::Media(media) => Some(
+            color_engine
+                .source_to_device_processor(
+                    media.color_interpretation,
+                    DeviceColorTarget::SrgbDisplay,
+                )
+                .map_err(|error| NativeCaptureError::Failed(error.to_string()))?,
+        ),
+        _ => None,
+    };
+    let mut media_cache: Vec<(RationalTime, Arc<PreparedDeviceSignalRaster>)> = Vec::new();
     let mut timings = NativeCaptureTimings {
         setup: setup_started.elapsed(),
         ..NativeCaptureTimings::default()
@@ -1974,17 +2066,54 @@ fn run_native_capture_job(
         }
         let capture_started = Instant::now();
         let captured = match &source {
-            Some((prepared, placement)) => capture_and_develop_device_signal_region(
+            NativeCaptureSource::Static { signal, placement } => {
+                capture_and_develop_device_signal_region(
+                    capture.clone(),
+                    sensor,
+                    development,
+                    tile,
+                    signal,
+                    *placement,
+                )
+            }
+            NativeCaptureSource::Procedural => {
+                capture_and_develop_procedural_region(capture.clone(), sensor, development, tile)
+            }
+            NativeCaptureSource::Media(media) => capture_and_develop_device_signal_region_sequence(
                 capture.clone(),
                 sensor,
                 development,
                 tile,
-                prepared,
-                *placement,
+                media.placement,
+                |time| {
+                    if let Some((_, signal)) =
+                        media_cache.iter().find(|(cached, _)| *cached == time)
+                    {
+                        return Ok(Arc::clone(signal));
+                    }
+                    let (resolved_descriptor, frame) = decode_frame_at_time(
+                        &media.path,
+                        time,
+                        media.sample_policy,
+                        media.decode_interpretation,
+                    )
+                    .map_err(|_| ApplicationError::MediaSampleUnavailable)?;
+                    if resolved_descriptor != media.descriptor {
+                        return Err(ApplicationError::MediaSampleUnavailable);
+                    }
+                    let signal = decoded_frame_to_device_signal(
+                        &frame,
+                        media.descriptor.alpha,
+                        media.alpha_interpretation,
+                        media_processor
+                            .as_ref()
+                            .expect("media processor exists for media source"),
+                    )?;
+                    let prepared = Arc::new(PreparedDeviceSignalRaster::new(signal)?);
+                    media_cache.push((time, Arc::clone(&prepared)));
+                    Ok(prepared)
+                },
             ),
-            None => {
-                capture_and_develop_procedural_region(capture.clone(), sensor, development, tile)
-            }
         }
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
         timings.capture_and_develop += capture_started.elapsed();
@@ -3127,8 +3256,12 @@ mod interaction_tests {
     #[test]
     fn camera_preview_uses_capture_shutter_nd_and_development_exposure() {
         let base = CapturePipelineSettings {
+            sensor: SensorProfile::REFERENCE,
             frame_rate: FrameRate::new(24, 1).unwrap(),
             shutter_duration: RationalTime::new(1, 48).unwrap(),
+            temporal_samples: 8,
+            readout: SensorReadout::Global,
+            noise_seed: 42,
             neutral_density_stops: 0.0,
             development: CameraDevelopment {
                 white_balance: LinearRgb::new(1.0, 1.0, 1.0),
