@@ -146,8 +146,9 @@ export component MainWindow inherits Window {
     in-out property <int> environment-preset-index: 0;
     in property <[string]> environment-preset-model;
     in property <[string]> environment-preset-ids;
-    in-out property <string> environment-summary: "Procedural environment radiance · HDR-ready boundary";
+    in-out property <string> environment-summary: "Synthetic latitude-longitude HDR · linear ACEScg";
     in-out property <float> environment-strength: 1;
+    in-out property <float> environment-rotation-degrees: 0;
     in-out property <int> render-quality-index: 1;
     in-out property <bool> capture-rendering: false;
     in-out property <bool> preview-rendering: false;
@@ -1004,6 +1005,16 @@ export component MainWindow inherits Window {
                             step: 0.01;
                             value <=> root.environment-strength;
                             numeric-value: round(root.environment-strength * 100) / 100;
+                        }
+
+                        ValueRow {
+                            label: "Env rotation";
+                            minimum: -180;
+                            maximum: 180;
+                            step: 1;
+                            value <=> root.environment-rotation-degrees;
+                            numeric-value: round(root.environment-rotation-degrees * 10) / 10;
+                            suffix: "°";
                         }
 
                         Rectangle { height: 1px; background: #303744; }

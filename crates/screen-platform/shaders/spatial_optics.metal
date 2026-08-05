@@ -34,7 +34,7 @@ struct SpatialParams {
     float4 cover_haze;
     float4 environment_ambient_strength; // ambient rgb, strength
     float4 environment_key_radius; // key rgb, angular radius radians
-    float4 environment_direction;
+    float4 environment_direction; // key direction xyz, environment rotation radians
     float4 procedural_time;
 };
 
@@ -193,19 +193,35 @@ inline float2 transmitted_uv(RayHit hit, constant SpatialParams& p) {
 
 inline float3 environment_radiance(float3 direction, constant SpatialParams& p) {
     direction = normalize(direction);
+    float rotation_sine = sin(p.environment_direction.w);
+    float rotation_cosine = cos(p.environment_direction.w);
+    direction = float3(
+        direction.x * rotation_cosine + direction.z * rotation_sine,
+        direction.y,
+        -direction.x * rotation_sine + direction.z * rotation_cosine
+    );
     float alignment = clamp(dot(direction, p.environment_direction.xyz), -1.0f, 1.0f);
     float edge = cos(p.environment_key_radius.w);
     float softness = 0.005f + p.cover_absorption_roughness.w * 0.35f;
     float key_amount = smoothstep(edge - softness, edge + softness, alignment);
-    float pattern_amount;
+    float pattern_amount = 0.0f;
     if (p.panel_meta.w == 1) {
-        float u = direction.x * 0.5f + 0.5f;
-        float v = direction.y * 0.5f + 0.5f;
-        float border = abs(u - 0.5f) < 0.42f && abs(v - 0.5f) < 0.34f ? 1.0f : 0.04f;
-        int cells = (int(floor(u * 8.0f)) + int(floor(v * 6.0f))) & 1;
-        pattern_amount = border * (0.08f + 0.92f * float(cells));
-    } else {
-        pattern_amount = key_amount;
+        float large_x = 1.0f - smoothstep(0.30f - softness, 0.30f + softness, abs(direction.x + 0.48f));
+        float large_y = 1.0f - smoothstep(0.42f - softness, 0.42f + softness, abs(direction.y - 0.02f));
+        float large = large_x * large_y * smoothstep(0.0f, 0.12f, direction.z);
+        float top_x = 1.0f - smoothstep(0.46f - softness, 0.46f + softness, abs(direction.x - 0.18f));
+        float top_y = 1.0f - smoothstep(0.16f - softness, 0.16f + softness, abs(direction.y - 0.68f));
+        float top = top_x * top_y * smoothstep(0.0f, 0.12f, direction.z);
+        pattern_amount = min(1.0f, large + top * 0.55f + key_amount * 0.08f);
+    } else if (p.panel_meta.w == 2) {
+        float u = atan2(direction.x, direction.z) / (2.0f * PI) + 0.5f;
+        float v = asin(direction.y) / PI + 0.5f;
+        float longitude = abs(fract(u * 24.0f) - 0.5f);
+        float latitude = abs(fract(v * 12.0f) - 0.5f);
+        float lines = longitude > 0.46f || latitude > 0.43f ? 1.0f : 0.0f;
+        float stop_band = clamp(floor(u * 8.0f), 0.0f, 7.0f);
+        float calibrated = pow(2.0f, stop_band - 7.0f);
+        pattern_amount = max(lines, calibrated);
     }
     float redistribution = clamp(p.cover_absorption_roughness.w * 0.75f + p.cover_haze.x * 0.25f, 0.0f, 1.0f);
     pattern_amount = mix(pattern_amount, 0.5f, redistribution);

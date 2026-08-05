@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 6;
+pub const CURRENT_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -340,14 +340,16 @@ pub struct EnvironmentDocument {
     pub key_radiance: [f32; 3],
     pub key_direction_local: [f32; 3],
     pub key_angular_radius_degrees: f32,
+    pub rotation_degrees: f32,
     pub pattern: EnvironmentPatternDocument,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentPatternDocument {
-    UniformKey,
-    ReflectionChart,
+    UniformNeutral,
+    StudioSoftboxes,
+    CalibrationGrid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -857,6 +859,7 @@ fn validate_environment(environment: &EnvironmentDocument) -> Result<(), Persist
         environment.key_direction_local[1],
         environment.key_direction_local[2],
         environment.key_angular_radius_degrees,
+        environment.rotation_degrees,
     ]
     .into_iter()
     .all(f32::is_finite);
@@ -1245,8 +1248,9 @@ mod tests {
                     ambient_radiance: [30.0; 3],
                     key_radiance: [220.0; 3],
                     key_direction_local: [-0.45, 0.35, 0.821_584],
-                    key_angular_radius_degrees: 18.0,
-                    pattern: EnvironmentPatternDocument::UniformKey,
+                    key_angular_radius_degrees: 24.0,
+                    rotation_degrees: 15.0,
+                    pattern: EnvironmentPatternDocument::StudioSoftboxes,
                 },
             },
         }
@@ -1303,25 +1307,26 @@ mod tests {
 
     #[test]
     fn unknown_versions_are_rejected_without_dispatch() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let root = temp.path().join("test.screensim");
-        create_complete_project(&root);
-        let manifest_path = root.join(MANIFEST_NAME);
-        let text = fs::read_to_string(&manifest_path).expect("manifest");
-        let unknown = CURRENT_VERSION + 1;
-        fs::write(
-            &manifest_path,
-            text.replacen(
-                &format!("\"version\": {CURRENT_VERSION}"),
-                &format!("\"version\": {unknown}"),
-                1,
-            ),
-        )
-        .expect("alter manifest");
-        assert!(matches!(
-            open_project(&root),
-            Err(PersistenceError::UnknownVersion { version, .. }) if version == unknown
-        ));
+        for unknown in [CURRENT_VERSION - 1, CURRENT_VERSION + 1] {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let root = temp.path().join("test.screensim");
+            create_complete_project(&root);
+            let manifest_path = root.join(MANIFEST_NAME);
+            let text = fs::read_to_string(&manifest_path).expect("manifest");
+            fs::write(
+                &manifest_path,
+                text.replacen(
+                    &format!("\"version\": {CURRENT_VERSION}"),
+                    &format!("\"version\": {unknown}"),
+                    1,
+                ),
+            )
+            .expect("alter manifest");
+            assert!(matches!(
+                open_project(&root),
+                Err(PersistenceError::UnknownVersion { version, .. }) if version == unknown
+            ));
+        }
     }
 
     #[test]

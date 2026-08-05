@@ -3865,7 +3865,7 @@ mod tests {
                     temporal_emission: PanelTemporalEmission::continuous(),
                 },
                 cover: CoverGlassProfile::NEUTRAL,
-                environment: ProceduralEnvironment::DARK,
+                environment: ProceduralEnvironment::NONE,
                 camera: CameraRig {
                     transform: screen_geometry::TransformTrack {
                         keyframes: vec![screen_geometry::TransformKeyframe {
@@ -4994,7 +4994,7 @@ mod tests {
             irradiance_weight: [1.0; 3],
         };
         let neutral_cover = CoverGlassProfile::NEUTRAL
-            .evaluator(ProceduralEnvironment::DARK)
+            .evaluator(ProceduralEnvironment::NONE)
             .expect("valid neutral cover");
         let resolved_spatial = [[optical; APERTURE_SAMPLE_COUNT]];
         let white_area = AreaSignalSample {

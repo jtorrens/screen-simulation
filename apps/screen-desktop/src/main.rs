@@ -101,6 +101,7 @@ struct RenderControls {
     cover_strength: f32,
     environment_preset_index: i32,
     environment_strength: f32,
+    environment_rotation_degrees: f32,
     capture_sensor_width: f32,
     capture_sensor_height: f32,
     capture_gate_width_mm: f32,
@@ -157,6 +158,7 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         cover_strength: window.get_cover_strength(),
         environment_preset_index: window.get_environment_preset_index(),
         environment_strength: window.get_environment_strength(),
+        environment_rotation_degrees: window.get_environment_rotation_degrees(),
         capture_sensor_width: window.get_capture_sensor_width(),
         capture_sensor_height: window.get_capture_sensor_height(),
         capture_gate_width_mm: window.get_capture_gate_width_mm(),
@@ -405,7 +407,7 @@ impl InteractionState {
             active_cover: cover_glass_preset("cover-glossy-strong-ar")
                 .expect("initial cover preset must resolve")
                 .profile,
-            active_environment: environment_preset("environment-dark-studio")
+            active_environment: environment_preset("environment-uniform-neutral")
                 .expect("initial environment preset must resolve")
                 .environment,
             capture_render_requested: false,
@@ -742,6 +744,7 @@ fn simulation_request(
     cover.character_strength = window.get_cover_strength();
     let mut environment = authored_environment;
     environment.character_strength = window.get_environment_strength();
+    environment.rotation_degrees = window.get_environment_rotation_degrees();
     Ok(SimulationRequest {
         optics: OpticalRequest {
             time: frame_rate
@@ -927,7 +930,7 @@ fn apply_environment_preset(
 ) -> Result<(), String> {
     if id == "custom" {
         window.set_environment_preset_index(ENVIRONMENT_PRESETS.len() as i32);
-        window.set_environment_summary("Custom procedural incident radiance".into());
+        window.set_environment_summary("Custom synthetic linear HDR environment".into());
         return Ok(());
     }
     let preset = environment_preset(id)
@@ -939,7 +942,8 @@ fn apply_environment_preset(
     state.active_environment = preset.environment;
     window.set_environment_preset_index(index as i32);
     window.set_environment_strength(preset.environment.character_strength);
-    window.set_environment_summary("Procedural environment radiance · HDR-ready boundary".into());
+    window.set_environment_rotation_degrees(preset.environment.rotation_degrees);
+    window.set_environment_summary("Synthetic latitude-longitude HDR · linear ACEScg".into());
     Ok(())
 }
 
@@ -2710,7 +2714,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut state.borrow_mut(),
         "lcd-macbook-pro-retina-14",
     )?;
-    apply_environment_preset(&window, &mut state.borrow_mut(), "environment-dark-studio")?;
+    apply_environment_preset(
+        &window,
+        &mut state.borrow_mut(),
+        "environment-uniform-neutral",
+    )?;
     apply_capture_preset(&window, &mut state.borrow_mut(), "arri-alexa-35-open-gate")?;
 
     {

@@ -160,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             temporal_emission: PanelTemporalEmission::clean_lcd(),
         },
         cover: CoverGlassProfile::NEUTRAL,
-        environment: ProceduralEnvironment::DARK,
+        environment: ProceduralEnvironment::NONE,
         camera,
         screen,
         inspection: None,

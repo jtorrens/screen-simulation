@@ -11,8 +11,9 @@ pub struct AcesCgRadiance(pub LinearRgb);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvironmentPattern {
-    UniformKey,
-    ReflectionChart,
+    UniformNeutral,
+    StudioSoftboxes,
+    CalibrationGrid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -147,6 +148,8 @@ pub struct ProceduralEnvironment {
     pub key_radiance: AcesCgRadiance,
     pub key_direction_local: [f32; 3],
     pub key_angular_radius_degrees: f32,
+    /// Horizontal rotation of the complete synthetic latitude-longitude environment around panel-local Y.
+    pub rotation_degrees: f32,
     pub pattern: EnvironmentPattern,
 }
 
@@ -159,51 +162,42 @@ pub struct EnvironmentPreset {
 
 pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
     EnvironmentPreset {
-        id: "environment-dark-studio",
-        label: "Dark studio",
+        id: "environment-uniform-neutral",
+        label: "HDR · uniform neutral",
         environment: ProceduralEnvironment {
             character_strength: 1.0,
-            ambient_radiance: AcesCgRadiance(rgb(0.02)),
+            ambient_radiance: AcesCgRadiance(rgb(50.0)),
             key_radiance: AcesCgRadiance(rgb(0.0)),
             key_direction_local: [0.0, 0.0, 1.0],
             key_angular_radius_degrees: 20.0,
-            pattern: EnvironmentPattern::UniformKey,
+            rotation_degrees: 0.0,
+            pattern: EnvironmentPattern::UniformNeutral,
         },
     },
     EnvironmentPreset {
-        id: "environment-neutral-office",
-        label: "Neutral office",
+        id: "environment-studio-softboxes",
+        label: "HDR · studio softboxes",
         environment: ProceduralEnvironment {
             character_strength: 1.0,
-            ambient_radiance: AcesCgRadiance(rgb(30.0)),
-            key_radiance: AcesCgRadiance(rgb(220.0)),
+            ambient_radiance: AcesCgRadiance(LinearRgb::new(4.0, 4.2, 4.5)),
+            key_radiance: AcesCgRadiance(LinearRgb::new(900.0, 940.0, 1_000.0)),
             key_direction_local: [-0.45, 0.35, 0.821_584],
-            key_angular_radius_degrees: 18.0,
-            pattern: EnvironmentPattern::UniformKey,
+            key_angular_radius_degrees: 24.0,
+            rotation_degrees: 0.0,
+            pattern: EnvironmentPattern::StudioSoftboxes,
         },
     },
     EnvironmentPreset {
-        id: "environment-bright-window",
-        label: "Bright window",
+        id: "environment-calibration-grid",
+        label: "HDR · calibration grid",
         environment: ProceduralEnvironment {
             character_strength: 1.0,
-            ambient_radiance: AcesCgRadiance(LinearRgb::new(65.0, 70.0, 78.0)),
-            key_radiance: AcesCgRadiance(LinearRgb::new(1_250.0, 1_330.0, 1_500.0)),
-            key_direction_local: [0.52, 0.18, 0.834_985],
-            key_angular_radius_degrees: 13.0,
-            pattern: EnvironmentPattern::UniformKey,
-        },
-    },
-    EnvironmentPreset {
-        id: "environment-reflection-chart",
-        label: "Reflection chart",
-        environment: ProceduralEnvironment {
-            character_strength: 1.0,
-            ambient_radiance: AcesCgRadiance(rgb(4.0)),
-            key_radiance: AcesCgRadiance(rgb(500.0)),
-            key_direction_local: [-0.25, 0.22, 0.942_921],
+            ambient_radiance: AcesCgRadiance(rgb(1.0)),
+            key_radiance: AcesCgRadiance(rgb(1_000.0)),
+            key_direction_local: [0.0, 0.0, 1.0],
             key_angular_radius_degrees: 10.0,
-            pattern: EnvironmentPattern::ReflectionChart,
+            rotation_degrees: 0.0,
+            pattern: EnvironmentPattern::CalibrationGrid,
         },
     },
 ];
@@ -289,7 +283,15 @@ impl CoverGlassProfile {
 }
 
 impl ProceduralEnvironment {
-    pub const DARK: Self = ENVIRONMENT_PRESETS[0].environment;
+    pub const NONE: Self = Self {
+        character_strength: 0.0,
+        ambient_radiance: AcesCgRadiance(rgb(0.0)),
+        key_radiance: AcesCgRadiance(rgb(0.0)),
+        key_direction_local: [0.0, 0.0, 1.0],
+        key_angular_radius_degrees: 20.0,
+        rotation_degrees: 0.0,
+        pattern: EnvironmentPattern::UniformNeutral,
+    };
 
     pub fn validate(self) -> Result<Self, CoverError> {
         if !self.character_strength.is_finite() || !(0.0..=4.0).contains(&self.character_strength) {
@@ -326,6 +328,10 @@ impl ProceduralEnvironment {
             || !(0.1..=89.0).contains(&self.key_angular_radius_degrees)
         {
             return Err(CoverError::InvalidEnvironmentSourceSize);
+        }
+        if !self.rotation_degrees.is_finite() || !(-180.0..=180.0).contains(&self.rotation_degrees)
+        {
+            return Err(CoverError::InvalidEnvironmentRotation);
         }
         Ok(self)
     }
@@ -406,7 +412,7 @@ impl ValidatedCoverEvaluator {
     }
 
     fn environment_radiance(self, direction: [f32; 3]) -> LinearRgb {
-        let direction = normalize(direction);
+        let direction = rotate_environment(normalize(direction), self.environment.rotation_degrees);
         let alignment = direction
             .into_iter()
             .zip(self.environment.key_direction_local)
@@ -417,18 +423,14 @@ impl ValidatedCoverEvaluator {
         let edge = radius.cos();
         let softness = 0.005 + self.cover.roughness * 0.35;
         let key_amount = smoothstep(edge - softness, edge + softness, alignment);
-        let pattern_amount = if self.environment.pattern == EnvironmentPattern::ReflectionChart {
-            let u = direction[0] * 0.5 + 0.5;
-            let v = direction[1] * 0.5 + 0.5;
-            let border = if (u - 0.5).abs() < 0.42 && (v - 0.5).abs() < 0.34 {
-                1.0
-            } else {
-                0.04
-            };
-            let cells = (((u * 8.0).floor() as i32 + (v * 6.0).floor() as i32) & 1) as f32;
-            border * (0.08 + 0.92 * cells)
-        } else {
-            key_amount
+        let pattern_amount = match self.environment.pattern {
+            EnvironmentPattern::UniformNeutral => 0.0,
+            EnvironmentPattern::StudioSoftboxes => {
+                let large = rectangular_source(direction, [-0.48, 0.02], [0.30, 0.42], softness);
+                let top = rectangular_source(direction, [0.18, 0.68], [0.46, 0.16], softness);
+                (large + top * 0.55 + key_amount * 0.08).min(1.0)
+            }
+            EnvironmentPattern::CalibrationGrid => calibration_grid(direction),
         };
         let strength = self.environment.character_strength;
         // Roughness and haze redistribute the authored key lobe toward its mean instead of
@@ -456,6 +458,52 @@ fn normalize(value: [f32; 3]) -> [f32; 3] {
     [value[0] / length, value[1] / length, value[2] / length]
 }
 
+fn rotate_environment(direction: [f32; 3], rotation_degrees: f32) -> [f32; 3] {
+    let angle = rotation_degrees.to_radians();
+    let (sine, cosine) = angle.sin_cos();
+    [
+        direction[0] * cosine + direction[2] * sine,
+        direction[1],
+        -direction[0] * sine + direction[2] * cosine,
+    ]
+}
+
+fn rectangular_source(
+    direction: [f32; 3],
+    center: [f32; 2],
+    half_extent: [f32; 2],
+    softness: f32,
+) -> f32 {
+    let x = 1.0
+        - smoothstep(
+            half_extent[0] - softness,
+            half_extent[0] + softness,
+            (direction[0] - center[0]).abs(),
+        );
+    let y = 1.0
+        - smoothstep(
+            half_extent[1] - softness,
+            half_extent[1] + softness,
+            (direction[1] - center[1]).abs(),
+        );
+    x * y * smoothstep(0.0, 0.12, direction[2])
+}
+
+fn calibration_grid(direction: [f32; 3]) -> f32 {
+    let u = direction[0].atan2(direction[2]) / (2.0 * core::f32::consts::PI) + 0.5;
+    let v = direction[1].asin() / core::f32::consts::PI + 0.5;
+    let longitude = ((u * 24.0).fract() - 0.5).abs();
+    let latitude = ((v * 12.0).fract() - 0.5).abs();
+    let lines: f32 = if longitude > 0.46 || latitude > 0.43 {
+        1.0
+    } else {
+        0.0
+    };
+    let stop_band = (u * 8.0).floor().clamp(0.0, 7.0);
+    let calibrated = 2.0_f32.powf(stop_band - 7.0);
+    lines.max(calibrated)
+}
+
 fn smoothstep(first: f32, second: f32, value: f32) -> f32 {
     let amount = ((value - first) / (second - first)).clamp(0.0, 1.0);
     amount * amount * (3.0 - 2.0 * amount)
@@ -473,6 +521,7 @@ pub enum CoverError {
     InvalidEnvironmentRadiance,
     InvalidEnvironmentDirection,
     InvalidEnvironmentSourceSize,
+    InvalidEnvironmentRotation,
 }
 
 impl fmt::Display for CoverError {
@@ -492,7 +541,10 @@ impl fmt::Display for CoverError {
                 "environment key direction must be normalized on the front hemisphere"
             }
             Self::InvalidEnvironmentSourceSize => {
-                "environment key angular radius must be finite in [0.1, 89] degrees"
+                "environment source size must be finite in [0.1, 89] degrees"
+            }
+            Self::InvalidEnvironmentRotation => {
+                "environment rotation must be finite in [-180, 180] degrees"
             }
         })
     }
@@ -570,6 +622,28 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_hdr_rotation_moves_the_reflected_distribution() {
+        let mut environment = ENVIRONMENT_PRESETS[1].environment;
+        environment.rotation_degrees = -90.0;
+        let rotated = COVER_GLASS_PRESETS[1]
+            .profile
+            .evaluator(environment)
+            .expect("valid negative rotation");
+        environment.rotation_degrees = 0.0;
+        let unrotated = COVER_GLASS_PRESETS[1]
+            .profile
+            .evaluator(environment)
+            .expect("valid unrotated environment");
+        let mut softbox = sample(1.0);
+        softbox.reflection_direction_local = [-0.48, 0.02, 0.877_268];
+        let black = rgb(0.0);
+        assert_ne!(
+            rotated.evaluate(black, softbox),
+            unrotated.evaluate(black, softbox)
+        );
+    }
+
+    #[test]
     fn physically_zero_interfaces_do_not_reflect_at_extreme_angles() {
         let environment = ENVIRONMENT_PRESETS[2].environment;
         let base = CoverGlassProfile {
@@ -594,16 +668,16 @@ mod tests {
     }
 
     #[test]
-    fn reflection_chart_is_spatially_structured_and_roughness_reduces_contrast() {
-        let environment = ENVIRONMENT_PRESETS[3].environment;
+    fn calibration_grid_is_spatially_structured_and_roughness_reduces_contrast() {
+        let environment = ENVIRONMENT_PRESETS[2].environment;
         let glossy = COVER_GLASS_PRESETS[1]
             .profile
             .evaluator(environment)
-            .expect("valid glossy chart");
+            .expect("valid glossy grid");
         let mut dark = sample(1.0);
-        dark.reflection_direction_local = [-0.95, -0.95, 0.2];
+        dark.reflection_direction_local = [-0.048, -0.988, -0.148];
         let mut bright = sample(1.0);
-        bright.reflection_direction_local = [-0.1, -0.1, 0.99];
+        bright.reflection_direction_local = [0.0, 0.0, 1.0];
         let glossy_contrast =
             (glossy.evaluate(rgb(0.0), bright).r - glossy.evaluate(rgb(0.0), dark).r).abs();
         assert!(glossy_contrast > 0.01);
@@ -613,7 +687,7 @@ mod tests {
             ..COVER_GLASS_PRESETS[1].profile
         }
         .evaluator(environment)
-        .expect("valid rough chart");
+        .expect("valid rough grid");
         let rough_contrast =
             (rough.evaluate(rgb(0.0), bright).r - rough.evaluate(rgb(0.0), dark).r).abs();
         assert!(rough_contrast < glossy_contrast);
@@ -623,14 +697,14 @@ mod tests {
     fn thick_cover_refracts_emission_toward_the_surface_normal() {
         let cover = COVER_GLASS_PRESETS[5]
             .profile
-            .evaluator(ProceduralEnvironment::DARK)
+            .evaluator(ProceduralEnvironment::NONE)
             .expect("valid thick cover");
         let offset = cover.transmitted_lateral_offset_meters([0.6, 0.0, 0.8]);
         assert!(offset[0] < -0.001);
         assert_eq!(offset[1], 0.0);
 
         let neutral = CoverGlassProfile::NEUTRAL
-            .evaluator(ProceduralEnvironment::DARK)
+            .evaluator(ProceduralEnvironment::NONE)
             .expect("valid neutral cover");
         assert_eq!(
             neutral.transmitted_lateral_offset_meters([0.6, 0.0, 0.8]),

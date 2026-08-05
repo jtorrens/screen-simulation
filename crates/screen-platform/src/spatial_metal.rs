@@ -125,8 +125,9 @@ impl SpatialParams {
                     StripeLayout::Bgr => 1,
                 },
                 match plan.environment.pattern {
-                    EnvironmentPattern::UniformKey => 0,
-                    EnvironmentPattern::ReflectionChart => 1,
+                    EnvironmentPattern::UniformNeutral => 0,
+                    EnvironmentPattern::StudioSoftboxes => 1,
+                    EnvironmentPattern::CalibrationGrid => 2,
                 },
             ],
             camera_position_focal: [position.x, position.y, position.z, focal_length.0],
@@ -213,7 +214,10 @@ impl SpatialParams {
                 plan.environment.key_radiance.0.b,
                 plan.environment.key_angular_radius_degrees.to_radians(),
             ],
-            environment_direction: pad(plan.environment.key_direction_local, 0.0),
+            environment_direction: pad(
+                plan.environment.key_direction_local,
+                plan.environment.rotation_degrees.to_radians(),
+            ),
             procedural_time: [time_seconds, 0.0, 0.0, 0.0],
         }
     }
@@ -618,7 +622,9 @@ mod tests {
     };
     use screen_camera::CameraDevelopment;
     use screen_contracts::{DeviceRgb, FrameRate, Meters, Millimeters, RationalTime, Vec2, Vec3};
-    use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
+    use screen_cover::{
+        COVER_GLASS_PRESETS, CoverGlassProfile, ENVIRONMENT_PRESETS, ProceduralEnvironment,
+    };
     use screen_geometry::{
         CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation,
         LensModel, Quaternion, TransformKeyframe, TransformTrack,
@@ -650,7 +656,7 @@ mod tests {
                 temporal_emission: PanelTemporalEmission::continuous(),
             },
             cover: CoverGlassProfile::NEUTRAL,
-            environment: ProceduralEnvironment::DARK,
+            environment: ProceduralEnvironment::NONE,
             camera: CameraRig {
                 transform: TransformTrack {
                     keyframes: vec![TransformKeyframe {
@@ -750,6 +756,24 @@ mod tests {
             request.procedural_pattern = pattern;
             let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), sensor, region)
                 .expect("CPU oracle");
+            let plan =
+                prepare_procedural_spatial_plan(request, sensor, region).expect("spatial plan");
+            let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
+            assert_spatial_parity(&cpu, &gpu);
+        }
+    }
+
+    #[test]
+    fn metal_matches_all_synthetic_hdr_environments_and_rotation() {
+        let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
+        let (sensor, region) = sensor_and_region();
+        for preset in ENVIRONMENT_PRESETS {
+            let mut request = request();
+            request.cover = COVER_GLASS_PRESETS[1].profile;
+            request.environment = preset.environment;
+            request.environment.rotation_degrees = 37.0;
+            let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), sensor, region)
+                .expect("CPU synthetic HDR oracle");
             let plan =
                 prepare_procedural_spatial_plan(request, sensor, region).expect("spatial plan");
             let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");

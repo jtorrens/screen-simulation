@@ -162,12 +162,16 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             )),
             key_direction_local: package.shot.environment.key_direction_local,
             key_angular_radius_degrees: package.shot.environment.key_angular_radius_degrees,
+            rotation_degrees: package.shot.environment.rotation_degrees,
             pattern: match package.shot.environment.pattern {
-                screen_persistence::EnvironmentPatternDocument::UniformKey => {
-                    EnvironmentPattern::UniformKey
+                screen_persistence::EnvironmentPatternDocument::UniformNeutral => {
+                    EnvironmentPattern::UniformNeutral
                 }
-                screen_persistence::EnvironmentPatternDocument::ReflectionChart => {
-                    EnvironmentPattern::ReflectionChart
+                screen_persistence::EnvironmentPatternDocument::StudioSoftboxes => {
+                    EnvironmentPattern::StudioSoftboxes
+                }
+                screen_persistence::EnvironmentPatternDocument::CalibrationGrid => {
+                    EnvironmentPattern::CalibrationGrid
                 }
             },
         }
@@ -523,8 +527,9 @@ mod tests {
                     ambient_radiance: [30.0; 3],
                     key_radiance: [220.0; 3],
                     key_direction_local: [-0.45, 0.35, 0.821_584],
-                    key_angular_radius_degrees: 18.0,
-                    pattern: screen_persistence::EnvironmentPatternDocument::UniformKey,
+                    key_angular_radius_degrees: 24.0,
+                    rotation_degrees: 15.0,
+                    pattern: screen_persistence::EnvironmentPatternDocument::StudioSoftboxes,
                 },
             },
         };
@@ -555,7 +560,8 @@ mod tests {
             scene.environment.ambient_radiance.0,
             LinearRgb::new(30.0, 30.0, 30.0)
         );
-        assert_eq!(scene.environment.key_angular_radius_degrees, 18.0);
+        assert_eq!(scene.environment.key_angular_radius_degrees, 24.0);
+        assert_eq!(scene.environment.rotation_degrees, 15.0);
         assert_eq!(
             scene.camera_development.white_balance,
             LinearRgb::new(2.0, 1.0, 1.5)
