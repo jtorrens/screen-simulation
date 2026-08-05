@@ -425,6 +425,55 @@ impl ValidatedPanelEvaluator {
         self.native_channel(signal, channel) * covered_fraction * 3.0 / visible_area
     }
 
+    pub fn linear_native_channel_over_device_rect(
+        self,
+        linear_native_channel: f32,
+        minimum: screen_contracts::Vec2,
+        maximum: screen_contracts::Vec2,
+        channel: usize,
+    ) -> f32 {
+        let width = maximum.x - minimum.x;
+        let height = maximum.y - minimum.y;
+        if width <= f32::EPSILON || height <= f32::EPSILON {
+            let pixel_uv = screen_contracts::Vec2 {
+                x: minimum.x.rem_euclid(1.0),
+                y: minimum.y.rem_euclid(1.0),
+            };
+            let margin = self.profile.black_matrix_fraction * 0.5;
+            if pixel_uv.x < margin
+                || pixel_uv.x > 1.0 - margin
+                || pixel_uv.y < margin
+                || pixel_uv.y > 1.0 - margin
+            {
+                return 0.0;
+            }
+            let stripe = ((pixel_uv.x - margin) / (1.0 - 2.0 * margin) * 3.0)
+                .floor()
+                .clamp(0.0, 2.0) as usize;
+            let emitter = match self.profile.stripe_layout {
+                StripeLayout::Rgb => stripe,
+                StripeLayout::Bgr => 2 - stripe,
+            };
+            if emitter != channel {
+                return 0.0;
+            }
+            return linear_native_channel * 3.0
+                / (1.0 - self.profile.black_matrix_fraction).powi(2);
+        }
+        let margin = self.profile.black_matrix_fraction * 0.5;
+        let active_span = 1.0 - 2.0 * margin;
+        let emitter = match self.profile.stripe_layout {
+            StripeLayout::Rgb => channel,
+            StripeLayout::Bgr => 2 - channel,
+        };
+        let stripe_start = margin + emitter as f32 * active_span / 3.0;
+        let stripe_end = margin + (emitter + 1) as f32 * active_span / 3.0;
+        let covered_x = periodic_interval_coverage(minimum.x, maximum.x, stripe_start, stripe_end);
+        let covered_y = periodic_interval_coverage(minimum.y, maximum.y, margin, 1.0 - margin);
+        let covered_fraction = covered_x * covered_y / (width * height);
+        linear_native_channel * covered_fraction * 3.0 / (active_span * active_span)
+    }
+
     pub fn angular_channel(self, emission_cosine: f32, channel: usize) -> f32 {
         let cosine = emission_cosine.clamp(0.0, 1.0);
         if cosine == 0.0 {
