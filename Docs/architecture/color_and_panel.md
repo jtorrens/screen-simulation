@@ -45,7 +45,8 @@ The developed camera result enters `screen-color` as immutable linear ACEScg. Ca
 
 Native level-zero publication crosses one presentation-only backend contract after this immutable
 ACEScg result. That backend must resolve the selected pinned OCIO processor and produce the final
-RGBA8 bytes exactly; it cannot own a color choice or physical operation. The current macOS product
-uses one mandatory parallel CPU implementation because the OCIO-generated Metal shader has failed
-byte-exact final-output parity. The Metal candidate remains test-only rather than becoming a second
-product route or runtime fallback.
+RGBA8 bytes; it cannot own a color choice or physical operation. The current macOS product uses one
+mandatory OCIO-generated Metal implementation and quantizes in the same compute dispatch. It has no
+CPU product route or fallback. The pinned CPU processor is a test oracle only; maximum permitted
+final-output deviation is one 8-bit code value per channel and no more than 0.5% differing channels
+over the current adversarial conformance matrix.
