@@ -670,8 +670,8 @@ pub enum SpatialSignalPlan {
     Raster {
         width: u32,
         height: u32,
-        device_signal: Vec<DeviceRgb>,
-        linear_native_emission: Vec<LinearRgb>,
+        device_signal: Arc<[DeviceRgb]>,
+        linear_native_emission: Arc<[LinearRgb]>,
         placement: RasterPlacement,
     },
 }
@@ -709,6 +709,16 @@ pub trait SpatialOpticalBackend {
         &self,
         plan: &SpatialOpticalPlan,
     ) -> Result<Vec<LinearOpticalPixel>, Self::Error>;
+
+    fn evaluate_spatial_batch(
+        &self,
+        plans: &[SpatialOpticalPlan],
+    ) -> Result<Vec<Vec<LinearOpticalPixel>>, Self::Error> {
+        plans
+            .iter()
+            .map(|plan| self.evaluate_spatial(plan))
+            .collect()
+    }
 }
 
 impl RasterWindow {
@@ -776,7 +786,20 @@ pub fn prepare_device_signal_spatial_plan(
 ) -> Result<SpatialOpticalPlan, ApplicationError> {
     let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
     let region = region.validate(sensor).map_err(ApplicationError::Sensor)?;
-    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let signal = prepare_device_signal_spatial_signal(request.panel, source, placement)?;
+    prepare_spatial_plan(
+        request,
+        RasterWindow::from_sensor_region(sensor, region),
+        signal,
+    )
+}
+
+fn prepare_device_signal_spatial_signal(
+    panel: LcdProfile,
+    source: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<SpatialSignalPlan, ApplicationError> {
+    let panel_evaluator = panel.evaluator().map_err(ApplicationError::Panel)?;
     let linear_native_emission = source
         .source
         .pixels
@@ -788,18 +811,14 @@ pub fn prepare_device_signal_spatial_plan(
                 panel_evaluator.native_channel(*pixel, 2),
             )
         })
-        .collect();
-    prepare_spatial_plan(
-        request,
-        RasterWindow::from_sensor_region(sensor, region),
-        SpatialSignalPlan::Raster {
-            width: source.source.width,
-            height: source.source.height,
-            device_signal: source.source.pixels.clone(),
-            linear_native_emission,
-            placement,
-        },
-    )
+        .collect::<Vec<_>>();
+    Ok(SpatialSignalPlan::Raster {
+        width: source.source.width,
+        height: source.source.height,
+        device_signal: Arc::from(source.source.pixels.clone()),
+        linear_native_emission: Arc::from(linear_native_emission),
+        placement,
+    })
 }
 
 fn prepare_spatial_plan(
@@ -1017,7 +1036,7 @@ pub fn evaluate_procedural_spatial_cpu_oracle(
     sensor: SensorProfile,
     region: SensorRegion,
 ) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
-    request.panel.temporal_emission = PanelTemporalEmission::continuous();
+    request.panel_temporal_evaluation = PanelTemporalEvaluation::ExposureAverage(1.0);
     evaluate_linear_optics_region(request, sensor, region).map(|raster| raster.pixels)
 }
 
@@ -1139,6 +1158,43 @@ pub fn capture_and_develop_procedural_region_with_backend<B: RawDevelopmentBacke
     })
 }
 
+/// Product compute composition with independent spatial-optics and RAW-development ports.
+pub fn capture_and_develop_procedural_region_with_compute_backends<S, R>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    spatial_backend: &S,
+    raw_backend: &R,
+) -> Result<CapturedCameraRegion, ApplicationError>
+where
+    S: SpatialOpticalBackend,
+    R: RawDevelopmentBackend,
+{
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let requested_region = requested_region
+        .validate(sensor)
+        .map_err(ApplicationError::Sensor)?;
+    let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let (shutter, identity) = request.resolve()?;
+    let exposure = integrate_spatial_region_with_backend(
+        shutter,
+        sensor,
+        evaluation_region,
+        spatial_backend,
+        |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+    )?;
+    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
+        .map_err(ApplicationError::Sensor)?;
+    let developed = raw_backend
+        .develop_region(&raw, sensor, development)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
+    Ok(CapturedCameraRegion {
+        raw,
+        developed: crop_developed_region(developed, requested_region),
+    })
+}
+
 pub fn capture_and_develop_device_signal_region(
     request: FrameCaptureRequest,
     sensor: SensorProfile,
@@ -1179,6 +1235,53 @@ pub fn capture_and_develop_device_signal_region_with_backend<B: RawDevelopmentBa
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
         .map_err(ApplicationError::Sensor)?;
     let developed = backend
+        .develop_region(&raw, sensor, development)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
+    Ok(CapturedCameraRegion {
+        raw,
+        developed: crop_developed_region(developed, requested_region),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn capture_and_develop_device_signal_region_with_compute_backends<S, R>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    signal: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+    spatial_backend: &S,
+    raw_backend: &R,
+) -> Result<CapturedCameraRegion, ApplicationError>
+where
+    S: SpatialOpticalBackend,
+    R: RawDevelopmentBackend,
+{
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let requested_region = requested_region
+        .validate(sensor)
+        .map_err(ApplicationError::Sensor)?;
+    let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let spatial_signal =
+        prepare_device_signal_spatial_signal(request.optics.panel, signal, placement)?;
+    let (shutter, identity) = request.resolve()?;
+    let exposure = integrate_spatial_region_with_backend(
+        shutter,
+        sensor,
+        evaluation_region,
+        spatial_backend,
+        |optics, region| {
+            prepare_spatial_plan(
+                optics,
+                RasterWindow::from_sensor_region(sensor, region),
+                spatial_signal.clone(),
+            )
+        },
+    )?;
+    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
+        .map_err(ApplicationError::Sensor)?;
+    let developed = raw_backend
         .develop_region(&raw, sensor, development)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
     Ok(CapturedCameraRegion {
@@ -1268,6 +1371,49 @@ where
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
         .map_err(ApplicationError::Sensor)?;
     let developed = backend
+        .develop_region(&raw, sensor, development)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
+    Ok(CapturedCameraRegion {
+        raw,
+        developed: crop_developed_region(developed, requested_region),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn capture_and_develop_device_signal_region_sequence_with_compute_backends<F, S, R>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    placement: RasterPlacement,
+    mut signal_at_time: F,
+    spatial_backend: &S,
+    raw_backend: &R,
+) -> Result<CapturedCameraRegion, ApplicationError>
+where
+    F: FnMut(RationalTime) -> Result<Arc<PreparedDeviceSignalRaster>, ApplicationError>,
+    S: SpatialOpticalBackend,
+    R: RawDevelopmentBackend,
+{
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let requested_region = requested_region
+        .validate(sensor)
+        .map_err(ApplicationError::Sensor)?;
+    let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let (shutter, identity) = request.resolve()?;
+    let exposure = integrate_spatial_region_with_backend(
+        shutter,
+        sensor,
+        evaluation_region,
+        spatial_backend,
+        |optics, region| {
+            let signal = signal_at_time(optics.time)?;
+            prepare_device_signal_spatial_plan(optics, sensor, region, &signal, placement)
+        },
+    )?;
+    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
+        .map_err(ApplicationError::Sensor)?;
+    let developed = raw_backend
         .develop_region(&raw, sensor, development)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
     Ok(CapturedCameraRegion {
@@ -1464,6 +1610,129 @@ fn integrate_device_signal_region(
             },
         ),
     }
+}
+
+fn integrate_spatial_region_with_backend<B, F>(
+    request: ShutterRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    backend: &B,
+    mut plan_at: F,
+) -> Result<IntegratedOpticalExposure, ApplicationError>
+where
+    B: SpatialOpticalBackend,
+    F: FnMut(OpticalRequest, SensorRegion) -> Result<SpatialOpticalPlan, ApplicationError>,
+{
+    struct BatchSample {
+        destination_offset: usize,
+        expected_pixels: usize,
+        weight_seconds: f64,
+        temporal_gain: f32,
+    }
+
+    let mut plans = Vec::new();
+    let mut batch_samples = Vec::new();
+    match request.readout {
+        SensorReadout::Global => {
+            for sample in shutter_quadrature(
+                request.optics.time,
+                request.duration,
+                request.temporal_samples,
+            )? {
+                let temporal_gain = request
+                    .optics
+                    .panel
+                    .temporal_emission
+                    .average_gain(sample.start, sample.end)
+                    .map_err(ApplicationError::Panel)?;
+                let mut optics = request.optics.clone();
+                optics.time = sample.time;
+                optics.panel_temporal_evaluation =
+                    PanelTemporalEvaluation::ExposureAverage(temporal_gain);
+                plans.push(plan_at(optics, region)?);
+                batch_samples.push(BatchSample {
+                    destination_offset: 0,
+                    expected_pixels: usize::from(region.width) * usize::from(region.height),
+                    weight_seconds: sample.weight_seconds,
+                    temporal_gain,
+                });
+            }
+        }
+        SensorReadout::Rolling {
+            duration,
+            direction,
+        } => {
+            if duration.numerator() <= 0 {
+                return Err(ApplicationError::InvalidSensorReadout);
+            }
+            for local_row in 0..usize::from(region.height) {
+                let global_row = usize::from(region.origin_y) + local_row;
+                let row_center = rolling_row_center_time(
+                    request.optics.time,
+                    duration,
+                    global_row,
+                    usize::from(sensor.native_height),
+                    direction,
+                )?;
+                for sample in
+                    shutter_quadrature(row_center, request.duration, request.temporal_samples)?
+                {
+                    let temporal_gain = request
+                        .optics
+                        .panel
+                        .temporal_emission
+                        .average_gain(sample.start, sample.end)
+                        .map_err(ApplicationError::Panel)?;
+                    let mut optics = request.optics.clone();
+                    optics.time = sample.time;
+                    optics.panel_temporal_evaluation =
+                        PanelTemporalEvaluation::ExposureAverage(temporal_gain);
+                    plans.push(plan_at(
+                        optics,
+                        SensorRegion {
+                            origin_x: region.origin_x,
+                            origin_y: global_row as u16,
+                            width: region.width,
+                            height: 1,
+                        },
+                    )?);
+                    batch_samples.push(BatchSample {
+                        destination_offset: local_row * usize::from(region.width),
+                        expected_pixels: usize::from(region.width),
+                        weight_seconds: sample.weight_seconds,
+                        temporal_gain,
+                    });
+                }
+            }
+        }
+    }
+    let batches = backend
+        .evaluate_spatial_batch(&plans)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
+    if batches.len() != batch_samples.len() {
+        return Err(ApplicationError::OpticalSampleRasterMismatch);
+    }
+    let mut accumulated =
+        vec![[0.0_f64; 3]; usize::from(region.width) * usize::from(region.height)];
+    for (pixels, sample) in batches.into_iter().zip(batch_samples) {
+        if pixels.len() != sample.expected_pixels {
+            return Err(ApplicationError::OpticalSampleRasterMismatch);
+        }
+        for (index, pixel) in pixels.into_iter().enumerate() {
+            let sum = &mut accumulated[sample.destination_offset + index];
+            let scale = f64::from(sample.temporal_gain) * sample.weight_seconds;
+            sum[0] += f64::from(pixel.acescg_irradiance.r) * scale;
+            sum[1] += f64::from(pixel.acescg_irradiance.g) * scale;
+            sum[2] += f64::from(pixel.acescg_irradiance.b) * scale;
+        }
+    }
+    finish_integrated_exposure(
+        region.width,
+        region.height,
+        request.duration,
+        request.neutral_density_stops,
+        accumulated,
+    )
 }
 
 fn integrate_global_region(
@@ -1969,7 +2238,7 @@ pub fn evaluate_device_signal_spatial_cpu_oracle(
     source: &PreparedDeviceSignalRaster,
     placement: RasterPlacement,
 ) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
-    request.panel.temporal_emission = PanelTemporalEmission::continuous();
+    request.panel_temporal_evaluation = PanelTemporalEvaluation::ExposureAverage(1.0);
     evaluate_linear_optics_region_from_prepared_device_signal(
         request, sensor, region, source, placement,
     )
@@ -3240,6 +3509,41 @@ mod tests {
     use screen_panel::{AnalyticBanding, PanelTemporalEmission};
     use screen_panel::{DEVICE_PRESETS, PanelColorimetry, StripeLayout};
     use std::collections::HashSet;
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct UnitSpatialBackend {
+        last_batch_size: AtomicUsize,
+    }
+
+    impl SpatialOpticalBackend for UnitSpatialBackend {
+        type Error = Infallible;
+
+        fn evaluate_spatial(
+            &self,
+            plan: &SpatialOpticalPlan,
+        ) -> Result<Vec<LinearOpticalPixel>, Self::Error> {
+            Ok(vec![
+                LinearOpticalPixel {
+                    acescg_irradiance: LinearRgb::new(1.0, 1.0, 1.0),
+                    on_panel: true,
+                };
+                usize::from(plan.raster.width)
+                    * usize::from(plan.raster.height)
+            ])
+        }
+
+        fn evaluate_spatial_batch(
+            &self,
+            plans: &[SpatialOpticalPlan],
+        ) -> Result<Vec<Vec<LinearOpticalPixel>>, Self::Error> {
+            self.last_batch_size.store(plans.len(), Ordering::Relaxed);
+            plans
+                .iter()
+                .map(|plan| self.evaluate_spatial(plan))
+                .collect()
+        }
+    }
 
     fn request() -> SimulationRequest {
         SimulationRequest {
@@ -3333,11 +3637,8 @@ mod tests {
         let mut optics = request().optics;
         optics.viewport_aspect = 1.0;
         optics.camera.intrinsics.keyframes[0].sensor_height = Millimeters(36.0);
-        optics.panel.temporal_emission = PanelTemporalEmission {
-            pwm_period: RationalTime::new(1, 960).unwrap(),
-            pwm_on_duration: RationalTime::new(1, 1_920).unwrap(),
-            phase: RationalTime::new(1, 7_680).unwrap(),
-        };
+        optics.panel.temporal_emission = PanelTemporalEmission::clean_lcd();
+        optics.panel.temporal_emission.analytic_banding.amount = 1.0;
         let sensor = SensorProfile {
             native_width: 8,
             native_height: 8,
@@ -3361,6 +3662,107 @@ mod tests {
                 .flatten()
                 .all(f32::is_finite)
         );
+    }
+
+    #[test]
+    fn spatial_batch_applies_analytic_temporal_gain_exactly_once() {
+        let mut optics = request().optics;
+        optics.panel.temporal_emission = PanelTemporalEmission::continuous();
+        optics.panel.temporal_emission.analytic_banding = AnalyticBanding {
+            period: RationalTime::new(1, 120).unwrap(),
+            on_duration: RationalTime::new(1, 240).unwrap(),
+            phase: RationalTime::new(0, 1).unwrap(),
+            amount: 0.6,
+        };
+        let duration = RationalTime::new(1, 48).unwrap();
+        let half = RationalTime::new(1, 96).unwrap();
+        let open = optics.time.checked_sub(half).unwrap();
+        let close = optics.time.checked_add(half).unwrap();
+        let expected_gain = optics
+            .panel
+            .temporal_emission
+            .average_gain(open, close)
+            .unwrap();
+        let shutter = ShutterRequest {
+            optics,
+            duration,
+            temporal_samples: 8,
+            readout: SensorReadout::Global,
+            neutral_density_stops: 0.0,
+        };
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 2,
+            origin_y: 2,
+            width: 3,
+            height: 2,
+        };
+        let backend = UnitSpatialBackend {
+            last_batch_size: AtomicUsize::new(0),
+        };
+        let exposure = integrate_spatial_region_with_backend(
+            shutter,
+            sensor,
+            region,
+            &backend,
+            |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+        )
+        .unwrap();
+        assert_eq!(backend.last_batch_size.load(Ordering::Relaxed), 8);
+        let expected = duration.as_seconds() as f32 * expected_gain;
+        for pixel in exposure.acescg_illuminance_seconds {
+            assert!((pixel.r - expected).abs() <= 2.0e-7);
+            assert!((pixel.g - expected).abs() <= 2.0e-7);
+            assert!((pixel.b - expected).abs() <= 2.0e-7);
+        }
+    }
+
+    #[test]
+    fn analytic_banding_amount_zero_is_exact_spatial_identity() {
+        let mut clean = request().optics;
+        clean.panel.temporal_emission = PanelTemporalEmission::continuous();
+        let mut zero_amount = clean.clone();
+        zero_amount.panel.temporal_emission.analytic_banding = AnalyticBanding {
+            period: RationalTime::new(1, 37).unwrap(),
+            on_duration: RationalTime::new(1, 777).unwrap(),
+            phase: RationalTime::new(13, 997).unwrap(),
+            amount: 0.0,
+        };
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 1,
+            origin_y: 1,
+            width: 2,
+            height: 2,
+        };
+        let backend = UnitSpatialBackend {
+            last_batch_size: AtomicUsize::new(0),
+        };
+        let integrate = |optics| {
+            integrate_spatial_region_with_backend(
+                ShutterRequest {
+                    optics,
+                    duration: RationalTime::new(1, 96).unwrap(),
+                    temporal_samples: 8,
+                    readout: SensorReadout::Global,
+                    neutral_density_stops: 0.0,
+                },
+                sensor,
+                region,
+                &backend,
+                |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+            )
+            .unwrap()
+        };
+        assert_eq!(integrate(zero_amount), integrate(clean));
     }
 
     #[test]

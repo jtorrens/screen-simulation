@@ -1,10 +1,10 @@
 use std::time::Instant;
 
 use screen_application::{
-    CAPTURE_DEVICE_PRESETS, FrameCaptureRequest, OpticalRequest, ProceduralTestPattern,
-    RollingDirection, SensorReadout, SpatialOpticalBackend,
-    capture_and_develop_procedural_region_with_backend, evaluate_procedural_spatial_cpu_oracle,
-    prepare_procedural_spatial_plan,
+    CAPTURE_DEVICE_PRESETS, FrameCaptureRequest, OpticalRequest, PanelTemporalEvaluation,
+    ProceduralTestPattern, RollingDirection, SensorReadout, SpatialOpticalBackend,
+    capture_and_develop_procedural_region_with_compute_backends,
+    evaluate_procedural_spatial_cpu_oracle, prepare_procedural_spatial_plan,
 };
 use screen_camera::{CameraDevelopment, CpuRawDevelopment, RawDevelopmentBackend};
 use screen_contracts::{FrameRate, Meters, RationalTime, Vec2, Vec3};
@@ -81,6 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let optics = OpticalRequest {
         time: at_zero,
+        panel_temporal_evaluation: PanelTemporalEvaluation::Instantaneous,
         viewport_aspect: f32::from(SENSOR_WIDTH) / f32::from(SENSOR_HEIGHT),
         panel: LcdProfile {
             native_width: DEVICE_PRESETS[0].native_width,
@@ -147,11 +148,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metal_spatial_throughput =
         spatial_pixels * SPATIAL_THROUGHPUT_ITERATIONS as f64 / throughput_elapsed.as_secs_f64();
     let render_started = Instant::now();
-    let result = capture_and_develop_procedural_region_with_backend(
+    let result = capture_and_develop_procedural_region_with_compute_backends(
         capture,
         sensor,
         development,
         tile_region,
+        &metal,
         &metal,
     )?;
     let elapsed = render_started.elapsed();

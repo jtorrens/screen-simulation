@@ -19,11 +19,11 @@ use image::ImageEncoder;
 use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
-    PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel, ProceduralTestPattern,
-    PanelTemporalEvaluation, RasterPlacement, SensorReadout, SimulationRequest,
-    capture_and_develop_device_signal_region_sequence_with_backend,
-    capture_and_develop_device_signal_region_with_backend,
-    capture_and_develop_procedural_region_with_backend, capture_device_preset,
+    PanelTemporalEvaluation, PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel,
+    ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
+    capture_and_develop_device_signal_region_sequence_with_compute_backends,
+    capture_and_develop_device_signal_region_with_compute_backends,
+    capture_and_develop_procedural_region_with_compute_backends, capture_device_preset,
     decoded_frame_to_device_signal, evaluate_linear_optics,
     evaluate_linear_optics_from_device_signal, evaluate_linear_optics_from_prepared_device_signal,
     inspection_region_from_drag, prepare_raster, prepare_raster_from_device_signal,
@@ -730,16 +730,14 @@ fn simulation_request(
     {
         return Err("panel temporal controls are outside the certified range".to_owned());
     }
-    let flicker_period = RationalTime::new(1, flicker_hz.round() as u32)
-        .map_err(|error| error.to_string())?;
+    let flicker_period =
+        RationalTime::new(1, flicker_hz.round() as u32).map_err(|error| error.to_string())?;
     let banding_frequency = banding_hz.round() as u32;
     let banding_period =
         RationalTime::new(1, banding_frequency).map_err(|error| error.to_string())?;
-    let banding_on_duration = RationalTime::new(
-        banding_duty_percent.round() as i64,
-        banding_frequency * 100,
-    )
-    .map_err(|error| error.to_string())?;
+    let banding_on_duration =
+        RationalTime::new(banding_duty_percent.round() as i64, banding_frequency * 100)
+            .map_err(|error| error.to_string())?;
     let mut cover = authored_cover;
     cover.character_strength = window.get_cover_strength();
     let mut environment = authored_environment;
@@ -2115,7 +2113,7 @@ fn run_native_capture_job(
         let capture_started = Instant::now();
         let captured = match &source {
             NativeCaptureSource::Static { signal, placement } => {
-                capture_and_develop_device_signal_region_with_backend(
+                capture_and_develop_device_signal_region_with_compute_backends(
                     capture.clone(),
                     sensor,
                     development,
@@ -2123,17 +2121,21 @@ fn run_native_capture_job(
                     signal,
                     *placement,
                     &metal,
+                    &metal,
                 )
             }
-            NativeCaptureSource::Procedural => capture_and_develop_procedural_region_with_backend(
-                capture.clone(),
-                sensor,
-                development,
-                tile,
-                &metal,
-            ),
+            NativeCaptureSource::Procedural => {
+                capture_and_develop_procedural_region_with_compute_backends(
+                    capture.clone(),
+                    sensor,
+                    development,
+                    tile,
+                    &metal,
+                    &metal,
+                )
+            }
             NativeCaptureSource::Media(media) => {
-                capture_and_develop_device_signal_region_sequence_with_backend(
+                capture_and_develop_device_signal_region_sequence_with_compute_backends(
                     capture.clone(),
                     sensor,
                     development,
@@ -2167,6 +2169,7 @@ fn run_native_capture_job(
                         media_cache.push((time, Arc::clone(&prepared)));
                         Ok(prepared)
                     },
+                    &metal,
                     &metal,
                 )
             }

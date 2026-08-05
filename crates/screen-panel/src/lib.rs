@@ -537,8 +537,7 @@ impl PanelTemporalEmission {
             },
             analytic_banding: AnalyticBanding {
                 period: RationalTime::new(1, 960).expect("clean banding period is valid"),
-                on_duration: RationalTime::new(1, 1_920)
-                    .expect("clean banding duty is valid"),
+                on_duration: RationalTime::new(1, 1_920).expect("clean banding duty is valid"),
                 phase: RationalTime::new(0, 1).expect("clean banding phase is valid"),
                 amount: 0.0,
             },
@@ -578,11 +577,7 @@ impl PanelTemporalEmission {
         Ok(residual * banding)
     }
 
-    pub fn average_gain(
-        self,
-        start: RationalTime,
-        end: RationalTime,
-    ) -> Result<f32, PanelError> {
+    pub fn average_gain(self, start: RationalTime, end: RationalTime) -> Result<f32, PanelError> {
         self.validate()?;
         if end <= start {
             return Err(PanelError::InvalidTemporalInterval);
@@ -594,7 +589,10 @@ impl PanelTemporalEmission {
         boundaries.extend(self.banding_transitions_between(start, end)?);
         boundaries.sort_unstable();
         boundaries.dedup();
-        let duration = end.checked_sub(start).map_err(PanelError::Time)?.as_seconds();
+        let duration = end
+            .checked_sub(start)
+            .map_err(PanelError::Time)?
+            .as_seconds();
         let mut integral = 0.0;
         for interval in boundaries.windows(2) {
             let width = interval[1]
