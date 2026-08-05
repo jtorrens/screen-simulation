@@ -80,6 +80,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     const SENSOR_HEIGHT: u16 = 192;
     const TILE_EDGE: u16 = 128;
     const MOTION_SAMPLES: u16 = 8;
+    let product_stripe_height = std::env::var("SCREEN_BENCH_STRIPE_HEIGHT")
+        .map_or(Ok(TILE_EDGE), |value| value.parse::<u16>())?;
+    if product_stripe_height == 0 {
+        return Err("SCREEN_BENCH_STRIPE_HEIGHT must be positive".into());
+    }
     let iphone = CAPTURE_DEVICE_PRESETS
         .iter()
         .find(|preset| preset.id == "iphone-16e-main-48mp")
@@ -346,7 +351,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin_x: 0,
         origin_y: 0,
         width: iphone.sensor.native_width,
-        height: TILE_EDGE,
+        height: product_stripe_height.min(iphone.sensor.native_height),
     };
     let output_processor =
         ColorEngine::bundled()?.camera_output_processor(CameraOutputTransform::SrgbSdr100)?;
@@ -356,7 +361,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "exact publication backend setup: {:.3} s",
         publication_setup_started.elapsed().as_secs_f64()
     );
-    let stripe_count = usize::from(iphone.sensor.native_height).div_ceil(usize::from(TILE_EDGE));
+    let stripe_count =
+        usize::from(iphone.sensor.native_height).div_ceil(usize::from(product_stripe.height));
     let run_product_stripe = |label: &str,
                               capture: FrameCaptureRequest|
      -> Result<Duration, Box<dyn std::error::Error>> {

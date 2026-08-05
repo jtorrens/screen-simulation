@@ -716,6 +716,42 @@ impl SpatialOpticalPlan {
             && self.signal.has_identical_spatial_evaluation(&other.signal)
     }
 
+    fn time_varying_procedural_template_for_region(
+        &self,
+        time: RationalTime,
+        region: SensorRegion,
+    ) -> Option<Self> {
+        let mut plan = self.clone();
+        plan.frame.time = time;
+        plan.raster.origin_x = region.origin_x;
+        plan.raster.origin_y = region.origin_y;
+        plan.raster.width = region.width;
+        plan.raster.height = region.height;
+        let SpatialSignalPlan::Procedural {
+            pattern,
+            time_seconds,
+        } = &mut plan.signal
+        else {
+            return None;
+        };
+        *time_seconds = time.as_seconds() as f32;
+        let signal = diagnostic_signal(*pattern, Vec2 { x: 0.5, y: 0.5 }, time);
+        let span = plan.panel.white_level_nits - plan.panel.black_level_nits;
+        let channel = |value: f32| {
+            plan.panel.black_level_nits
+                + span * value.abs().powf(plan.panel.eotf_gamma).copysign(value)
+        };
+        let native = LinearRgb::new(channel(signal.r), channel(signal.g), channel(signal.b));
+        let matrix = plan.panel_native_to_acescg;
+        plan.frame.representative_signal = signal;
+        plan.frame.representative_emission = LinearRgb::new(
+            matrix[0][0] * native.r + matrix[0][1] * native.g + matrix[0][2] * native.b,
+            matrix[1][0] * native.r + matrix[1][1] * native.g + matrix[1][2] * native.b,
+            matrix[2][0] * native.r + matrix[2][1] * native.g + matrix[2][2] * native.b,
+        );
+        Some(plan)
+    }
+
     fn static_template_for_region(&self, time: RationalTime, region: SensorRegion) -> Self {
         let mut plan = self.clone();
         plan.frame.time = time;
@@ -1777,16 +1813,15 @@ where
     let preparation_started = Instant::now();
     struct BatchSample {
         plan_index: usize,
-        destination_offset: usize,
         expected_pixels: usize,
         weight_seconds: f64,
         temporal_gain: f32,
     }
 
-    let can_reuse_spatial_samples = source_is_static
-        && request.optics.camera.transform.keyframes.len() == 1
+    let spatial_tracks_are_static = request.optics.camera.transform.keyframes.len() == 1
         && request.optics.camera.intrinsics.keyframes.len() == 1
         && request.optics.screen.keyframes.len() == 1;
+    let can_reuse_spatial_samples = source_is_static && spatial_tracks_are_static;
     let mut plans = Vec::new();
     let mut batch_samples = Vec::new();
     let intern_plan =
@@ -1804,6 +1839,7 @@ where
     match request.readout {
         SensorReadout::Global => {
             let mut reused_plan_index = None;
+            let mut procedural_template: Option<SpatialOpticalPlan> = None;
             for sample in shutter_quadrature(
                 request.optics.time,
                 request.duration,
@@ -1828,11 +1864,26 @@ where
                         index
                     }
                 } else {
-                    intern_plan(&mut plans, 0, plan_at(optics, region)?)
+                    let plan = if spatial_tracks_are_static {
+                        if let Some(plan) = procedural_template.as_ref().and_then(|template| {
+                            template
+                                .time_varying_procedural_template_for_region(sample.time, region)
+                        }) {
+                            plan
+                        } else {
+                            let plan = plan_at(optics, region)?;
+                            if matches!(plan.signal, SpatialSignalPlan::Procedural { .. }) {
+                                procedural_template = Some(plan.clone());
+                            }
+                            plan
+                        }
+                    } else {
+                        plan_at(optics, region)?
+                    };
+                    intern_plan(&mut plans, 0, plan)
                 };
                 batch_samples.push(BatchSample {
                     plan_index,
-                    destination_offset: 0,
                     expected_pixels: usize::from(region.width) * usize::from(region.height),
                     weight_seconds: sample.weight_seconds,
                     temporal_gain,
@@ -1846,7 +1897,7 @@ where
             if duration.numerator() <= 0 {
                 return Err(ApplicationError::InvalidSensorReadout);
             }
-            let mut static_row_template: Option<SpatialOpticalPlan> = None;
+            let mut row_template: Option<SpatialOpticalPlan> = None;
             for local_row in 0..usize::from(region.height) {
                 let row_plan_start = plans.len();
                 let mut reused_plan_index = None;
@@ -1881,11 +1932,11 @@ where
                         if let Some(index) = reused_plan_index {
                             index
                         } else {
-                            let plan = if let Some(template) = &static_row_template {
+                            let plan = if let Some(template) = &row_template {
                                 template.static_template_for_region(sample.time, row_region)
                             } else {
                                 let plan = plan_at(optics, row_region)?;
-                                static_row_template = Some(plan.clone());
+                                row_template = Some(plan.clone());
                                 plan
                             };
                             let index = intern_plan(&mut plans, row_plan_start, plan);
@@ -1893,11 +1944,28 @@ where
                             index
                         }
                     } else {
-                        intern_plan(&mut plans, row_plan_start, plan_at(optics, row_region)?)
+                        let plan = if spatial_tracks_are_static {
+                            if let Some(plan) = row_template.as_ref().and_then(|template| {
+                                template.time_varying_procedural_template_for_region(
+                                    sample.time,
+                                    row_region,
+                                )
+                            }) {
+                                plan
+                            } else {
+                                let plan = plan_at(optics, row_region)?;
+                                if matches!(plan.signal, SpatialSignalPlan::Procedural { .. }) {
+                                    row_template = Some(plan.clone());
+                                }
+                                plan
+                            }
+                        } else {
+                            plan_at(optics, row_region)?
+                        };
+                        intern_plan(&mut plans, row_plan_start, plan)
                     };
                     batch_samples.push(BatchSample {
                         plan_index,
-                        destination_offset: local_row * usize::from(region.width),
                         expected_pixels: usize::from(region.width),
                         weight_seconds: sample.weight_seconds,
                         temporal_gain,
@@ -1915,20 +1983,44 @@ where
     if batches.len() != plans.len() {
         return Err(ApplicationError::OpticalSampleRasterMismatch);
     }
+    for sample in &batch_samples {
+        if batches[sample.plan_index].len() != sample.expected_pixels {
+            return Err(ApplicationError::OpticalSampleRasterMismatch);
+        }
+    }
     let integration_started = Instant::now();
     let mut accumulated =
         vec![[0.0_f64; 3]; usize::from(region.width) * usize::from(region.height)];
-    for sample in batch_samples {
-        let pixels = &batches[sample.plan_index];
-        if pixels.len() != sample.expected_pixels {
-            return Err(ApplicationError::OpticalSampleRasterMismatch);
-        }
-        for (index, pixel) in pixels.iter().enumerate() {
-            let sum = &mut accumulated[sample.destination_offset + index];
-            let scale = f64::from(sample.temporal_gain) * sample.weight_seconds;
-            sum[0] += f64::from(pixel.acescg_irradiance.r) * scale;
-            sum[1] += f64::from(pixel.acescg_irradiance.g) * scale;
-            sum[2] += f64::from(pixel.acescg_irradiance.b) * scale;
+    match request.readout {
+        SensorReadout::Global => accumulated
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(index, sum)| {
+                for sample in &batch_samples {
+                    let pixel = batches[sample.plan_index][index];
+                    let scale = f64::from(sample.temporal_gain) * sample.weight_seconds;
+                    sum[0] += f64::from(pixel.acescg_irradiance.r) * scale;
+                    sum[1] += f64::from(pixel.acescg_irradiance.g) * scale;
+                    sum[2] += f64::from(pixel.acescg_irradiance.b) * scale;
+                }
+            }),
+        SensorReadout::Rolling { .. } => {
+            let row_width = usize::from(region.width);
+            let samples_per_row = usize::from(request.temporal_samples);
+            accumulated
+                .par_chunks_mut(row_width)
+                .zip(batch_samples.par_chunks(samples_per_row))
+                .for_each(|(row, samples)| {
+                    for sample in samples {
+                        let pixels = &batches[sample.plan_index];
+                        let scale = f64::from(sample.temporal_gain) * sample.weight_seconds;
+                        for (sum, pixel) in row.iter_mut().zip(pixels) {
+                            sum[0] += f64::from(pixel.acescg_irradiance.r) * scale;
+                            sum[1] += f64::from(pixel.acescg_irradiance.g) * scale;
+                            sum[2] += f64::from(pixel.acescg_irradiance.b) * scale;
+                        }
+                    }
+                });
         }
     }
     let exposure = finish_integrated_exposure(
@@ -4088,6 +4180,130 @@ mod tests {
             template.static_template_for_region(second_time, second_region),
             fresh
         );
+    }
+
+    #[test]
+    fn animated_procedural_row_template_is_exactly_the_fresh_prepared_plan() {
+        let mut first = request().optics;
+        first.procedural_pattern = ProceduralTestPattern::AnimatedCheckerboard;
+        first.time = RationalTime::new(1, 24).unwrap();
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let first_region = SensorRegion {
+            origin_x: 2,
+            origin_y: 2,
+            width: 3,
+            height: 1,
+        };
+        let template =
+            prepare_procedural_spatial_plan(first.clone(), sensor, first_region).unwrap();
+        let second_time = RationalTime::new(7, 120).unwrap();
+        let second_region = SensorRegion {
+            origin_y: 3,
+            ..first_region
+        };
+        let mut second = first;
+        second.time = second_time;
+        let fresh = prepare_procedural_spatial_plan(second, sensor, second_region).unwrap();
+        assert_eq!(
+            template.time_varying_procedural_template_for_region(second_time, second_region),
+            Some(fresh)
+        );
+    }
+
+    #[test]
+    fn animated_procedural_rolling_prepares_once_without_reusing_spatial_results() {
+        let mut optics = request().optics;
+        optics.procedural_pattern = ProceduralTestPattern::AnimatedCheckerboard;
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 2,
+            origin_y: 2,
+            width: 3,
+            height: 2,
+        };
+        let backend = UnitSpatialBackend {
+            last_batch_size: AtomicUsize::new(0),
+        };
+        let plan_preparations = AtomicUsize::new(0);
+        integrate_spatial_region_with_backend(
+            ShutterRequest {
+                optics,
+                duration: RationalTime::new(1, 48).unwrap(),
+                temporal_samples: 2,
+                readout: SensorReadout::Rolling {
+                    duration: RationalTime::new(1, 100).unwrap(),
+                    direction: RollingDirection::TopToBottom,
+                },
+                neutral_density_stops: 0.0,
+            },
+            sensor,
+            region,
+            false,
+            &backend,
+            |optics, region| {
+                plan_preparations.fetch_add(1, Ordering::Relaxed);
+                prepare_procedural_spatial_plan(optics, sensor, region)
+            },
+        )
+        .unwrap();
+        assert_eq!(plan_preparations.load(Ordering::Relaxed), 1);
+        assert_eq!(backend.last_batch_size.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn parallel_spatial_integration_is_thread_count_invariant() {
+        let mut optics = request().optics;
+        optics.procedural_pattern = ProceduralTestPattern::AnimatedCheckerboard;
+        let sensor = SensorProfile {
+            native_width: 32,
+            native_height: 18,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 3,
+            origin_y: 2,
+            width: 23,
+            height: 13,
+        };
+        let shutter = ShutterRequest {
+            optics,
+            duration: RationalTime::new(1, 48).unwrap(),
+            temporal_samples: 8,
+            readout: SensorReadout::Rolling {
+                duration: RationalTime::new(1, 120).unwrap(),
+                direction: RollingDirection::TopToBottom,
+            },
+            neutral_density_stops: 0.7,
+        };
+        let integrate_with_threads = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    let backend = UnitSpatialBackend {
+                        last_batch_size: AtomicUsize::new(0),
+                    };
+                    integrate_spatial_region_with_backend(
+                        shutter.clone(),
+                        sensor,
+                        region,
+                        false,
+                        &backend,
+                        |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+                    )
+                    .unwrap()
+                })
+        };
+        assert_eq!(integrate_with_threads(1), integrate_with_threads(4));
     }
 
     #[test]

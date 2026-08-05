@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+rayon = "1.11"
 screen-color = { path = "../screen-color" }
 screen-camera = { path = "../screen-camera" }
 screen-application = { path = "../screen-application" }

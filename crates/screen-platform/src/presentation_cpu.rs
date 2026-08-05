@@ -2,6 +2,7 @@ use core::fmt;
 use std::sync::Mutex;
 use std::thread;
 
+use rayon::prelude::*;
 use screen_color::{CameraOutputProcessor, CameraOutputTransform, ColorEngine};
 use screen_contracts::LinearRgb;
 
@@ -46,40 +47,35 @@ impl DisplayPublicationBackend for ExactCpuDisplayPublication {
     type Error = DisplayPublicationError;
 
     fn publish_acescg_rgba8(&self, pixels: &[LinearRgb]) -> Result<Vec<u8>, Self::Error> {
-        let mut rgba = Vec::with_capacity(pixels.len() * 4);
-        for pixel in pixels {
-            rgba.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
-        }
+        let mut rgba = vec![0.0_f32; pixels.len() * 4];
+        rgba.par_chunks_mut(4)
+            .zip(pixels.par_iter())
+            .for_each(|(rgba, pixel)| rgba.copy_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]));
         let chunk_pixels = pixels.len().div_ceil(self.processors.len());
         let chunk_scalars = chunk_pixels.max(1) * 4;
-        thread::scope(|scope| {
-            let handles = rgba
-                .chunks_mut(chunk_scalars)
-                .zip(&self.processors)
-                .map(|(chunk, processor)| {
-                    scope.spawn(move || {
-                        processor
-                            .lock()
-                            .map_err(|error| DisplayPublicationError(error.to_string()))?
-                            .apply_acescg_rgba_buffer(chunk)
-                            .map_err(DisplayPublicationError::from_display)
-                    })
-                })
-                .collect::<Vec<_>>();
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| DisplayPublicationError("OCIO worker panicked".to_owned()))??;
-            }
-            Ok::<(), DisplayPublicationError>(())
-        })?;
-        Ok(rgba
-            .chunks_exact(4)
-            .flat_map(|pixel| {
+        rgba.par_chunks_mut(chunk_scalars)
+            .zip(self.processors.par_iter())
+            .try_for_each(|(chunk, processor)| {
+                processor
+                    .lock()
+                    .map_err(|error| DisplayPublicationError(error.to_string()))?
+                    .apply_acescg_rgba_buffer(chunk)
+                    .map_err(DisplayPublicationError::from_display)
+            })?;
+        let mut output = vec![0_u8; pixels.len() * 4];
+        output
+            .par_chunks_mut(4)
+            .zip(rgba.par_chunks(4))
+            .for_each(|(output, pixel)| {
                 let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-                [channel(pixel[0]), channel(pixel[1]), channel(pixel[2]), 255]
-            })
-            .collect())
+                output.copy_from_slice(&[
+                    channel(pixel[0]),
+                    channel(pixel[1]),
+                    channel(pixel[2]),
+                    255,
+                ]);
+            });
+        Ok(output)
     }
 }
 

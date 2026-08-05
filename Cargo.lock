@@ -4539,6 +4539,7 @@ version = "0.1.0"
 dependencies = [
  "ffmpeg-next",
  "metal",
+ "rayon",
  "screen-application",
  "screen-camera",
  "screen-color",
@@ -4554,6 +4555,7 @@ dependencies = [
 name = "screen-sensor"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "screen-contracts",
 ]
 

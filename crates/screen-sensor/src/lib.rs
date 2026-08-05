@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
+use rayon::prelude::*;
 use screen_contracts::LinearRgb;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,50 +255,54 @@ pub fn expose_raw_region(
         return Err(SensorError::RasterProfileMismatch);
     }
     let maximum_code = (1_u32 << profile.adc_bits) - 1;
-    let mut codes = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
-    let mut full_well_clipped_mask = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
-    let mut adc_clipped_mask = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
-    for (local_index, acescg) in exposure
-        .acescg_illuminance_seconds
-        .iter()
-        .copied()
+    let pixel_count = exposure.acescg_illuminance_seconds.len();
+    let mut codes = vec![0_u16; pixel_count];
+    let mut full_well_clipped_mask = vec![false; pixel_count];
+    let mut adc_clipped_mask = vec![false; pixel_count];
+    codes
+        .par_iter_mut()
+        .zip(full_well_clipped_mask.par_iter_mut())
+        .zip(adc_clipped_mask.par_iter_mut())
         .enumerate()
-    {
-        let local_x = local_index % usize::from(region.width);
-        let local_y = local_index / usize::from(region.width);
-        let x = u32::from(region.origin_x) + local_x as u32;
-        let y = u32::from(region.origin_y) + local_y as u32;
-        let channel = profile.bayer_pattern.channel_at(x, y);
-        let sensor_rgb = mat_vec(profile.acescg_to_sensor, acescg);
-        let native_exposure = [sensor_rgb.r, sensor_rgb.g, sensor_rgb.b][channel].max(0.0);
-        let saturation = [
-            profile.saturation_illuminance_seconds.r,
-            profile.saturation_illuminance_seconds.g,
-            profile.saturation_illuminance_seconds.b,
-        ][channel];
-        let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
-            * f64::from(profile.full_well_electrons);
-        let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
-        let key = pixel_noise_key(identity, global_index);
-        let photoelectrons = sample_poisson(ideal_photoelectrons, key);
-        let dark_electrons = sample_poisson(
-            f64::from(profile.dark_current_electrons_per_second)
-                * f64::from(exposure.duration_seconds),
-            key ^ 0xA076_1D64_78BD_642F,
+        .for_each(
+            |(local_index, ((code, full_well_clipped_mask), adc_clipped_mask))| {
+                let acescg = exposure.acescg_illuminance_seconds[local_index];
+                let local_x = local_index % usize::from(region.width);
+                let local_y = local_index / usize::from(region.width);
+                let x = u32::from(region.origin_x) + local_x as u32;
+                let y = u32::from(region.origin_y) + local_y as u32;
+                let channel = profile.bayer_pattern.channel_at(x, y);
+                let sensor_rgb = mat_vec(profile.acescg_to_sensor, acescg);
+                let native_exposure = [sensor_rgb.r, sensor_rgb.g, sensor_rgb.b][channel].max(0.0);
+                let saturation = [
+                    profile.saturation_illuminance_seconds.r,
+                    profile.saturation_illuminance_seconds.g,
+                    profile.saturation_illuminance_seconds.b,
+                ][channel];
+                let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
+                    * f64::from(profile.full_well_electrons);
+                let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
+                let key = pixel_noise_key(identity, global_index);
+                let photoelectrons = sample_poisson(ideal_photoelectrons, key);
+                let dark_electrons = sample_poisson(
+                    f64::from(profile.dark_current_electrons_per_second)
+                        * f64::from(exposure.duration_seconds),
+                    key ^ 0xA076_1D64_78BD_642F,
+                );
+                let read_electrons = f64::from(profile.read_noise_electrons_rms)
+                    * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB);
+                let full_well = f64::from(profile.full_well_electrons);
+                let collected_electrons = photoelectrons + dark_electrons;
+                let full_well_clipped = collected_electrons >= full_well;
+                let well_electrons = collected_electrons.clamp(0.0, full_well);
+                let post_read_electrons = (well_electrons + read_electrons).max(0.0);
+                let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
+                let adc_clipped = normalized >= 1.0;
+                *code = (normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16;
+                *full_well_clipped_mask = full_well_clipped;
+                *adc_clipped_mask = adc_clipped;
+            },
         );
-        let read_electrons = f64::from(profile.read_noise_electrons_rms)
-            * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB);
-        let full_well = f64::from(profile.full_well_electrons);
-        let collected_electrons = photoelectrons + dark_electrons;
-        let full_well_clipped = collected_electrons >= full_well;
-        let well_electrons = collected_electrons.clamp(0.0, full_well);
-        let post_read_electrons = (well_electrons + read_electrons).max(0.0);
-        let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
-        let adc_clipped = normalized >= 1.0;
-        codes.push((normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16);
-        full_well_clipped_mask.push(full_well_clipped);
-        adc_clipped_mask.push(adc_clipped);
-    }
     Ok(RawSensorRegion {
         sensor_width: profile.native_width,
         sensor_height: profile.native_height,
@@ -680,6 +685,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn parallel_region_exposure_is_thread_count_invariant() {
+        let profile = SensorProfile {
+            native_width: 64,
+            native_height: 48,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 7,
+            origin_y: 5,
+            width: 41,
+            height: 31,
+        };
+        let exposure = IntegratedOpticalExposure {
+            width: u32::from(region.width),
+            height: u32::from(region.height),
+            duration_seconds: 1.0 / 47.952,
+            acescg_illuminance_seconds: (0..usize::from(region.width) * usize::from(region.height))
+                .map(|index| {
+                    let level = 0.002 + (index % 97) as f32 * 0.000_31;
+                    LinearRgb::new(level, level * 0.83, level * 1.17)
+                })
+                .collect(),
+        };
+        let identity = CaptureIdentity {
+            noise_seed: 0x5A17,
+            frame_index: 43,
+        };
+        let expose_with_threads = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| expose_raw_region(profile, &exposure, identity, region).unwrap())
+        };
+        assert_eq!(expose_with_threads(1), expose_with_threads(4));
     }
 
     #[test]
