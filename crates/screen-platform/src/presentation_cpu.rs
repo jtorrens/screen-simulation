@@ -16,9 +16,7 @@ pub struct DisplayPublicationError(String);
 
 impl ExactCpuDisplayPublication {
     pub fn new(transform: CameraOutputTransform) -> Result<Self, DisplayPublicationError> {
-        let worker_count = thread::available_parallelism()
-            .map_or(1, usize::from)
-            .min(8);
+        let worker_count = thread::available_parallelism().map_or(1, usize::from);
         let engine = ColorEngine::bundled().map_err(DisplayPublicationError::from_display)?;
         let processors = (0..worker_count)
             .map(|_| {
@@ -93,12 +91,6 @@ mod tests {
 
     #[test]
     fn parallel_publication_is_byte_exact_against_single_ocio_processor() {
-        let transform = CameraOutputTransform::SrgbSdr100;
-        let backend = ExactCpuDisplayPublication::new(transform).expect("publication backend");
-        let engine = ColorEngine::bundled().expect("bundled OCIO");
-        let reference = engine
-            .camera_output_processor(transform)
-            .expect("reference processor");
         let mut pixels = vec![
             LinearRgb::new(f32::NAN, f32::INFINITY, f32::NEG_INFINITY),
             LinearRgb::new(-0.1, 0.18, 4.0),
@@ -110,23 +102,30 @@ mod tests {
             let value = index as f32 / 16_384.0 - 2.0;
             LinearRgb::new(value, value * 0.37, value * 1.91)
         }));
-        let actual = backend
-            .publish_acescg_rgba8(&pixels)
-            .expect("parallel publication");
-        let mut reference_rgba = Vec::with_capacity(pixels.len() * 4);
-        for pixel in pixels {
-            reference_rgba.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
+        let engine = ColorEngine::bundled().expect("bundled OCIO");
+        for transform in CameraOutputTransform::ALL {
+            let backend = ExactCpuDisplayPublication::new(transform).expect("publication backend");
+            let reference = engine
+                .camera_output_processor(transform)
+                .expect("reference processor");
+            let actual = backend
+                .publish_acescg_rgba8(&pixels)
+                .expect("parallel publication");
+            let mut reference_rgba = Vec::with_capacity(pixels.len() * 4);
+            for pixel in &pixels {
+                reference_rgba.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
+            }
+            reference
+                .apply_acescg_rgba_buffer(&mut reference_rgba)
+                .expect("reference OCIO");
+            let expected = reference_rgba
+                .chunks_exact(4)
+                .flat_map(|pixel| {
+                    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    [channel(pixel[0]), channel(pixel[1]), channel(pixel[2]), 255]
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{}", transform.label());
         }
-        reference
-            .apply_acescg_rgba_buffer(&mut reference_rgba)
-            .expect("reference OCIO");
-        let expected = reference_rgba
-            .chunks_exact(4)
-            .flat_map(|pixel| {
-                let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-                [channel(pixel[0]), channel(pixel[1]), channel(pixel[2]), 255]
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
     }
 }
