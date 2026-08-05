@@ -449,7 +449,7 @@ export component MainWindow inherits Window {
                             }
 
                             Rectangle {
-                                visible: root.view-index == 4 && !root.capture-rendering && (!root.native-capture-ready || root.native-capture-stale);
+                                visible: root.view-index == 4 && root.render-quality-index >= 3 && !root.capture-rendering && (!root.native-capture-ready || root.native-capture-stale);
                                 width: 260px;
                                 height: 96px;
                                 x: (parent.width - self.width) / 2;
@@ -560,12 +560,6 @@ export component MainWindow inherits Window {
                                     ComboBox {
                                         model: ["Composite", "Device signal", "RGB subpixels", "Emitted radiance", "Camera result"];
                                         current-index <=> root.view-index;
-                                        selected(value) => {
-                                            if (self.current-index == 4 && root.render-quality-index < 3) {
-                                                root.render-quality-index = 3;
-                                                root.select-render-quality(3);
-                                            }
-                                        }
                                     }
                                 }
 
@@ -592,7 +586,7 @@ export component MainWindow inherits Window {
                                     height: 32px;
                                     Text { text: "Quality"; color: #aeb7c8; width: 78px; vertical-alignment: center; }
                                     ComboBox {
-                                        model: ["Draft", "Medium", "High", "Native · center ROI", "Native · complete frame"];
+                                        model: ["Draft", "Medium", "High", "Native · 1024 px sensor crop", "Native · complete frame"];
                                         current-index <=> root.render-quality-index;
                                         selected(value) => { root.select-render-quality(self.current-index); }
                                     }

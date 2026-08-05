@@ -15,14 +15,16 @@ use std::time::{Duration, Instant};
 use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PreparedDeviceSignalRaster,
-    PreparedRaster, ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
-    capture_and_develop_device_signal_region, capture_and_develop_procedural_region,
-    capture_device_preset, decoded_frame_to_device_signal, inspection_region_from_drag,
+    PreparedRaster, PreviewPixel, ProceduralTestPattern, RasterPlacement, SensorReadout,
+    SimulationRequest, capture_and_develop_device_signal_region,
+    capture_and_develop_procedural_region, capture_device_preset, decoded_frame_to_device_signal,
+    evaluate_linear_optics, evaluate_linear_optics_from_device_signal,
+    evaluate_linear_optics_from_prepared_device_signal, inspection_region_from_drag,
     prepare_raster, prepare_raster_from_device_signal, prepare_raster_from_prepared_device_signal,
 };
 use screen_camera::CameraDevelopment;
 use screen_color::{
-    CameraOutputTransform, ColorEngine, DeviceColorTarget, OcioInputTransform,
+    CameraOutputTransform, ColorEngine, DeviceColorTarget, OcioInputTransform, PreviewRgb,
     SourceColorInterpretation, SourceToDeviceProcessor, propose_ocio_input,
 };
 use screen_contracts::{
@@ -914,6 +916,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         2 => PreviewQuality::High,
         _ => PreviewQuality::Medium,
     };
+    let native_quality = window.get_render_quality_index() >= 3;
     window.set_preview_invalidated(false);
     state.last_render_controls = Some(current_controls);
     if state.source.is_none() {
@@ -944,24 +947,25 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             return;
         }
     };
-    let capture_selection = if window.get_view_index() == 4 && state.capture_render_requested {
-        match capture_sensor(window, state) {
-            Ok(sensor) => {
-                let cancel = Arc::new(AtomicBool::new(false));
-                state.capture_cancel = Some(Arc::clone(&cancel));
-                window.set_capture_rendering(true);
-                Some((sensor, selected_sensor_region(window, sensor), cancel))
+    let capture_selection =
+        if window.get_view_index() == 4 && native_quality && state.capture_render_requested {
+            match capture_sensor(window, state) {
+                Ok(sensor) => {
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    state.capture_cancel = Some(Arc::clone(&cancel));
+                    window.set_capture_rendering(true);
+                    Some((sensor, selected_sensor_region(window, sensor), cancel))
+                }
+                Err(error) => {
+                    block_preview(window, &error);
+                    state.capture_render_requested = false;
+                    return;
+                }
             }
-            Err(error) => {
-                block_preview(window, &error);
-                state.capture_render_requested = false;
-                return;
-            }
-        }
-    } else {
-        None
-    };
-    if window.get_view_index() == 4 && !state.capture_render_requested {
+        } else {
+            None
+        };
+    if window.get_view_index() == 4 && native_quality && !state.capture_render_requested {
         if state.last_capture_controls != Some(current_controls) {
             window.set_native_capture_stale(window.get_native_capture_ready());
             window.set_scale_text(if window.get_native_capture_ready() {
@@ -988,7 +992,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         None
     };
     let color_engine = &state.color_engine;
-    if window.get_view_index() == 4 && state.source.is_none() {
+    if window.get_view_index() == 4 && native_quality && state.source.is_none() {
         let (sensor, region, cancel) = capture_selection.expect("capture selection resolved above");
         render_camera_result(
             window,
@@ -1070,7 +1074,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 3 => RasterPlacement::OneToOne,
                 _ => RasterPlacement::Fit,
             };
-            if window.get_view_index() == 4 {
+            if window.get_view_index() == 4 && native_quality {
                 let (sensor, region, cancel) =
                     capture_selection.expect("capture selection resolved above");
                 let prepared_signal = match PreparedDeviceSignalRaster::new(signal.clone()) {
@@ -1102,15 +1106,36 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
             PreviewJobSource::DeviceSignal(signal.clone(), placement)
         }
     };
+    let camera_preview_settings = if window.get_view_index() == 4 {
+        match capture_pipeline_settings(
+            window,
+            CapturePhotometricProfile {
+                sensor: state.capture_sensor,
+                reference_exposure_index: state.capture_reference_exposure_index,
+                middle_gray_at_reference_ei: state.capture_middle_gray_at_reference_ei,
+            },
+        ) {
+            Ok(settings) => Some(settings),
+            Err(error) => {
+                block_preview(window, &error);
+                return;
+            }
+        }
+    } else {
+        None
+    };
     state.last_render_controls = Some(current_controls);
     render_preview_async(
         window,
-        request,
-        preview_source,
-        preview_width,
-        preview_height,
-        started,
-        preview_quality,
+        PreviewRenderJob {
+            request,
+            source: preview_source,
+            width: preview_width,
+            height: preview_height,
+            started,
+            quality: preview_quality,
+            camera_settings: camera_preview_settings,
+        },
     );
 }
 
@@ -1120,15 +1145,36 @@ enum PreviewJobSource {
     PreparedDeviceSignal(Arc<PreparedDeviceSignalRaster>, RasterPlacement),
 }
 
-fn render_preview_async(
-    window: &MainWindow,
+struct PreviewRenderJob {
     request: SimulationRequest,
     source: PreviewJobSource,
     width: u16,
     height: u16,
     started: Instant,
     quality: PreviewQuality,
-) {
+    camera_settings: Option<CapturePipelineSettings>,
+}
+
+#[derive(Clone, Copy)]
+struct PreviewPresentation {
+    width: u16,
+    height: u16,
+    rendered_view_index: i32,
+    started: Instant,
+    quality: PreviewQuality,
+    camera_preview: bool,
+}
+
+fn render_preview_async(window: &MainWindow, job: PreviewRenderJob) {
+    let PreviewRenderJob {
+        request,
+        source,
+        width,
+        height,
+        started,
+        quality,
+        camera_settings,
+    } = job;
     window.set_preview_rendering(true);
     window.set_render_progress_visible(true);
     window.set_render_progress(0.05);
@@ -1142,18 +1188,24 @@ fn render_preview_async(
     window.set_render_text(format!("Rendering {quality_label} preview…").into());
     window.set_error_text("".into());
     let rendered_view_index = window.get_view_index();
+    let camera_preview = camera_settings.is_some();
     let weak_window = window.as_weak();
     thread::spawn(move || {
-        let result = match source {
-            PreviewJobSource::Procedural => prepare_raster(request, width, height),
-            PreviewJobSource::DeviceSignal(signal, placement) => {
-                prepare_raster_from_device_signal(request, width, height, &signal, placement)
+        let result = if let Some(settings) = camera_settings {
+            prepare_camera_preview_raster(request, source, width, height, settings)
+        } else {
+            match source {
+                PreviewJobSource::Procedural => prepare_raster(request, width, height),
+                PreviewJobSource::DeviceSignal(signal, placement) => {
+                    prepare_raster_from_device_signal(request, width, height, &signal, placement)
+                }
+                PreviewJobSource::PreparedDeviceSignal(signal, placement) => {
+                    prepare_raster_from_prepared_device_signal(
+                        request, width, height, &signal, placement,
+                    )
+                }
             }
-            PreviewJobSource::PreparedDeviceSignal(signal, placement) => {
-                prepare_raster_from_prepared_device_signal(
-                    request, width, height, &signal, placement,
-                )
-            }
+            .map_err(|error| error.to_string())
         };
         let _ = weak_window.upgrade_in_event_loop(move |window| {
             window.set_preview_rendering(false);
@@ -1163,28 +1215,111 @@ fn render_preview_async(
                 Ok(raster) => present_preview_raster(
                     &window,
                     raster,
-                    width,
-                    height,
-                    rendered_view_index,
-                    started,
-                    quality,
+                    PreviewPresentation {
+                        width,
+                        height,
+                        rendered_view_index,
+                        started,
+                        quality,
+                        camera_preview,
+                    },
                 ),
-                Err(error) => block_preview(&window, &error.to_string()),
+                Err(error) => block_preview(&window, &error),
             }
             window.invoke_continue_preview_render();
         });
     });
 }
 
+fn prepare_camera_preview_raster(
+    request: SimulationRequest,
+    source: PreviewJobSource,
+    width: u16,
+    height: u16,
+    settings: CapturePipelineSettings,
+) -> Result<PreparedRaster, String> {
+    let linear = match source {
+        PreviewJobSource::Procedural => evaluate_linear_optics(request.optics, width, height),
+        PreviewJobSource::DeviceSignal(signal, placement) => {
+            evaluate_linear_optics_from_device_signal(
+                request.optics,
+                width,
+                height,
+                &signal,
+                placement,
+            )
+        }
+        PreviewJobSource::PreparedDeviceSignal(signal, placement) => {
+            evaluate_linear_optics_from_prepared_device_signal(
+                request.optics,
+                width,
+                height,
+                &signal,
+                placement,
+            )
+        }
+    }
+    .map_err(|error| error.to_string())?;
+    let development = settings.development;
+    let exposure_scale = camera_preview_exposure_scale(settings);
+    let mut rgba = Vec::with_capacity(linear.pixels.len() * 4);
+    for pixel in &linear.pixels {
+        rgba.extend_from_slice(&[
+            pixel.acescg_irradiance.r * exposure_scale * development.white_balance.r,
+            pixel.acescg_irradiance.g * exposure_scale * development.white_balance.g,
+            pixel.acescg_irradiance.b * exposure_scale * development.white_balance.b,
+            1.0,
+        ]);
+    }
+    ColorEngine::bundled()
+        .map_err(|error| error.to_string())?
+        .camera_output_processor(settings.transform)
+        .map_err(|error| error.to_string())?
+        .apply_acescg_rgba_buffer(&mut rgba)
+        .map_err(|error| error.to_string())?;
+    let pixels = linear
+        .pixels
+        .iter()
+        .zip(rgba.chunks_exact(4))
+        .map(|(source, output)| PreviewPixel {
+            rgb: PreviewRgb {
+                r: output[0],
+                g: output[1],
+                b: output[2],
+            },
+            on_panel: source.on_panel,
+        })
+        .collect();
+    Ok(PreparedRaster {
+        frame: linear.frame,
+        width: linear.width,
+        height: linear.height,
+        pixels,
+        preview_scale_percent: linear.projected_device_pixel_percent,
+        inspection_field_meters: linear.inspection_field_meters,
+        subpixels_resolved_at_center: linear.subpixels_resolved_at_center,
+    })
+}
+
+fn camera_preview_exposure_scale(settings: CapturePipelineSettings) -> f32 {
+    settings.shutter_duration.as_seconds() as f32 * (-settings.neutral_density_stops).exp2() * 0.18
+        / settings.development.middle_gray_illuminance_seconds
+        * settings.development.develop_exposure_ev.exp2()
+}
+
 fn present_preview_raster(
     window: &MainWindow,
     raster: PreparedRaster,
-    width: u16,
-    height: u16,
-    rendered_view_index: i32,
-    started: Instant,
-    quality: PreviewQuality,
+    presentation: PreviewPresentation,
 ) {
+    let PreviewPresentation {
+        width,
+        height,
+        rendered_view_index,
+        started,
+        quality,
+        camera_preview,
+    } = presentation;
     if window.get_preview_invalidated() {
         return;
     }
@@ -1215,12 +1350,17 @@ fn present_preview_raster(
     } else {
         "UNRESOLVED"
     };
-    window.set_scale_text(
+    window.set_scale_text(if camera_preview {
+        format!(
+            "CAMERA PREVIEW · DEVICE PIXEL {device_pixel_width:.2} px · RGB STRIPE {subpixel_width:.2} px · {resolution}"
+        )
+        .into()
+    } else {
         format!(
             "DEVICE PIXEL {device_pixel_width:.2} px · RGB STRIPE {subpixel_width:.2} px · {resolution}"
         )
-        .into(),
-    );
+        .into()
+    });
     let quality_label = match quality {
         PreviewQuality::Draft => "DRAFT",
         PreviewQuality::Medium => "MEDIUM",
@@ -1332,7 +1472,7 @@ fn render_camera_result(
     window.set_render_progress_visible(true);
     window.set_render_progress(0.0);
     window.set_render_progress_label("Native sensor capture".into());
-    let frame_rate = match project_frame_rate(window) {
+    let settings = match capture_pipeline_settings(window, capture_profile) {
         Ok(value) => value,
         Err(error) => {
             window.set_capture_rendering(false);
@@ -1340,69 +1480,15 @@ fn render_camera_result(
             return;
         }
     };
-    let shutter_angle = window.get_shutter_angle_degrees();
-    if !shutter_angle.is_finite() || !(1.0..=360.0).contains(&shutter_angle) {
-        window.set_capture_rendering(false);
-        block_preview(
-            window,
-            "shutter angle must be finite and in [1, 360] degrees",
-        );
-        return;
-    }
-    let shutter_angle_tenths = (shutter_angle * 10.0).round() as i64;
-    let frame_duration =
-        match RationalTime::new(i64::from(frame_rate.denominator()), frame_rate.numerator()) {
-            Ok(value) => value,
-            Err(error) => {
-                window.set_capture_rendering(false);
-                block_preview(window, &error.to_string());
-                return;
-            }
-        };
-    let shutter_duration = match frame_duration.checked_mul_ratio(shutter_angle_tenths, 3_600) {
-        Ok(value) => value,
-        Err(error) => {
-            window.set_capture_rendering(false);
-            block_preview(window, &error.to_string());
-            return;
-        }
-    };
-    let exposure_index = window.get_capture_exposure_index();
-    if !exposure_index.is_finite() || !(25.0..=12_800.0).contains(&exposure_index) {
-        window.set_capture_rendering(false);
-        block_preview(window, "EI / ISO must be finite and in [25, 12800]");
-        return;
-    }
     let capture = FrameCaptureRequest {
         optics: request.optics,
-        frame_rate,
+        frame_rate: settings.frame_rate,
         frame_index: i64::from(window.get_frame_number()),
-        duration: shutter_duration,
+        duration: settings.shutter_duration,
         temporal_samples: 1,
         readout: SensorReadout::Global,
-        neutral_density_stops: window.get_neutral_density_stops(),
+        neutral_density_stops: settings.neutral_density_stops,
         noise_seed: 42,
-    };
-    let development = CameraDevelopment {
-        white_balance: LinearRgb::new(
-            window.get_white_balance_r(),
-            window.get_white_balance_g(),
-            window.get_white_balance_b(),
-        ),
-        middle_gray_illuminance_seconds: capture_profile.middle_gray_at_reference_ei
-            * capture_profile.reference_exposure_index
-            / exposure_index,
-        develop_exposure_ev: window.get_camera_exposure_ev(),
-    };
-    let transform = match window.get_output_transform_index() {
-        0 => CameraOutputTransform::SrgbSdr100,
-        1 => CameraOutputTransform::Rec709Sdr100,
-        2 => CameraOutputTransform::Rec2100Pq1000,
-        _ => {
-            window.set_capture_rendering(false);
-            block_preview(window, "select an explicit camera output transform");
-            return;
-        }
     };
     window.set_native_staging_ready(false);
     window.set_preview_aspect(f32::from(region.width) / f32::from(region.height));
@@ -1413,9 +1499,9 @@ fn render_camera_result(
             capture,
             source,
             sensor,
-            development,
+            settings.development,
             region,
-            transform,
+            settings.transform,
             &cancel,
             move |completed, total, tile, staging| {
                 let _ = progress_window.upgrade_in_event_loop(move |window| {
@@ -1477,6 +1563,66 @@ struct CapturePhotometricProfile {
     sensor: SensorProfile,
     reference_exposure_index: f32,
     middle_gray_at_reference_ei: f32,
+}
+
+#[derive(Clone, Copy)]
+struct CapturePipelineSettings {
+    frame_rate: FrameRate,
+    shutter_duration: RationalTime,
+    neutral_density_stops: f32,
+    development: CameraDevelopment,
+    transform: CameraOutputTransform,
+}
+
+fn capture_pipeline_settings(
+    window: &MainWindow,
+    capture_profile: CapturePhotometricProfile,
+) -> Result<CapturePipelineSettings, String> {
+    let frame_rate = project_frame_rate(window)?;
+    let shutter_angle = window.get_shutter_angle_degrees();
+    if !shutter_angle.is_finite() || !(1.0..=360.0).contains(&shutter_angle) {
+        return Err("shutter angle must be finite and in [1, 360] degrees".into());
+    }
+    let frame_duration =
+        RationalTime::new(i64::from(frame_rate.denominator()), frame_rate.numerator())
+            .map_err(|error| error.to_string())?;
+    let shutter_duration = frame_duration
+        .checked_mul_ratio((shutter_angle * 10.0).round() as i64, 3_600)
+        .map_err(|error| error.to_string())?;
+    let exposure_index = window.get_capture_exposure_index();
+    if !exposure_index.is_finite() || !(25.0..=12_800.0).contains(&exposure_index) {
+        return Err("EI / ISO must be finite and in [25, 12800]".into());
+    }
+    let neutral_density_stops = window.get_neutral_density_stops();
+    if !neutral_density_stops.is_finite() || !(0.0..=16.0).contains(&neutral_density_stops) {
+        return Err("optical ND must be finite and in [0, 16] stops".into());
+    }
+    let development = CameraDevelopment {
+        white_balance: LinearRgb::new(
+            window.get_white_balance_r(),
+            window.get_white_balance_g(),
+            window.get_white_balance_b(),
+        ),
+        middle_gray_illuminance_seconds: capture_profile.middle_gray_at_reference_ei
+            * capture_profile.reference_exposure_index
+            / exposure_index,
+        develop_exposure_ev: window.get_camera_exposure_ev(),
+    }
+    .validate()
+    .map_err(|error| error.to_string())?;
+    let transform = match window.get_output_transform_index() {
+        0 => CameraOutputTransform::SrgbSdr100,
+        1 => CameraOutputTransform::Rec709Sdr100,
+        2 => CameraOutputTransform::Rec2100Pq1000,
+        _ => return Err("select an explicit camera output transform".into()),
+    };
+    Ok(CapturePipelineSettings {
+        frame_rate,
+        shutter_duration,
+        neutral_density_stops,
+        development,
+        transform,
+    })
 }
 
 struct NativeStagingPreview {
@@ -1998,10 +2144,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             if quality >= 3 {
                 window.set_view_index(4);
-            } else {
-                if window.get_view_index() == 4 {
-                    window.set_view_index(0);
-                }
             }
             render_preview(&window, &mut state.borrow_mut());
         });
@@ -2453,5 +2595,34 @@ mod interaction_tests {
         assert_eq!(preview.pixels[0], [240, 180, 120, 255]);
         assert_ne!(preview.pixels[1], [0, 0, 0, 255]);
         assert_ne!(preview.pixels[1], preview.pixels[0]);
+    }
+
+    #[test]
+    fn camera_preview_uses_capture_shutter_nd_and_development_exposure() {
+        let base = CapturePipelineSettings {
+            frame_rate: FrameRate::new(24, 1).unwrap(),
+            shutter_duration: RationalTime::new(1, 48).unwrap(),
+            neutral_density_stops: 0.0,
+            development: CameraDevelopment {
+                white_balance: LinearRgb::new(1.0, 1.0, 1.0),
+                middle_gray_illuminance_seconds: 0.09,
+                develop_exposure_ev: 0.0,
+            },
+            transform: CameraOutputTransform::SrgbSdr100,
+        };
+        let base_scale = camera_preview_exposure_scale(base);
+        assert!((base_scale - 1.0 / 24.0).abs() < 1.0e-6);
+        assert!(
+            (camera_preview_exposure_scale(CapturePipelineSettings {
+                neutral_density_stops: 2.0,
+                development: CameraDevelopment {
+                    develop_exposure_ev: 1.0,
+                    ..base.development
+                },
+                ..base
+            }) - base_scale * 0.5)
+                .abs()
+                < 1.0e-6
+        );
     }
 }
