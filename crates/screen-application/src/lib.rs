@@ -651,6 +651,66 @@ struct RasterWindow {
     height: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpatialRasterWindow {
+    pub full_width: u16,
+    pub full_height: u16,
+    pub origin_x: u16,
+    pub origin_y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpatialSignalPlan {
+    Procedural {
+        pattern: ProceduralTestPattern,
+        time_seconds: f32,
+    },
+    Raster {
+        width: u32,
+        height: u32,
+        device_signal: Vec<DeviceRgb>,
+        linear_native_emission: Vec<LinearRgb>,
+        placement: RasterPlacement,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpatialPanelPlan {
+    pub native_width: u32,
+    pub native_height: u32,
+    pub active_width_meters: f32,
+    pub active_height_meters: f32,
+    pub stripe_layout: screen_panel::StripeLayout,
+    pub black_matrix_fraction: f32,
+    pub eotf_gamma: f32,
+    pub black_level_nits: f32,
+    pub white_level_nits: f32,
+    pub angular_emission_power: LinearRgb,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpatialOpticalPlan {
+    pub frame: PreparedFrame,
+    pub raster: SpatialRasterWindow,
+    pub panel: SpatialPanelPlan,
+    pub panel_native_to_acescg: [[f32; 3]; 3],
+    pub cover: CoverGlassProfile,
+    pub environment: ProceduralEnvironment,
+    pub aperture_sample_count: u16,
+    pub signal: SpatialSignalPlan,
+}
+
+pub trait SpatialOpticalBackend {
+    type Error: fmt::Display;
+
+    fn evaluate_spatial(
+        &self,
+        plan: &SpatialOpticalPlan,
+    ) -> Result<Vec<LinearOpticalPixel>, Self::Error>;
+}
+
 impl RasterWindow {
     fn full(width: u16, height: u16) -> Self {
         Self {
@@ -673,6 +733,130 @@ impl RasterWindow {
             height: region.height,
         }
     }
+}
+
+impl From<RasterWindow> for SpatialRasterWindow {
+    fn from(value: RasterWindow) -> Self {
+        Self {
+            full_width: value.full_width,
+            full_height: value.full_height,
+            origin_x: value.origin_x,
+            origin_y: value.origin_y,
+            width: value.width,
+            height: value.height,
+        }
+    }
+}
+
+pub fn prepare_procedural_spatial_plan(
+    request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+) -> Result<SpatialOpticalPlan, ApplicationError> {
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let region = region.validate(sensor).map_err(ApplicationError::Sensor)?;
+    let pattern = request.procedural_pattern;
+    let time_seconds = request.time.as_seconds() as f32;
+    prepare_spatial_plan(
+        request,
+        RasterWindow::from_sensor_region(sensor, region),
+        SpatialSignalPlan::Procedural {
+            pattern,
+            time_seconds,
+        },
+    )
+}
+
+pub fn prepare_device_signal_spatial_plan(
+    request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    source: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<SpatialOpticalPlan, ApplicationError> {
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let region = region.validate(sensor).map_err(ApplicationError::Sensor)?;
+    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let linear_native_emission = source
+        .source
+        .pixels
+        .iter()
+        .map(|pixel| {
+            LinearRgb::new(
+                panel_evaluator.native_channel(*pixel, 0),
+                panel_evaluator.native_channel(*pixel, 1),
+                panel_evaluator.native_channel(*pixel, 2),
+            )
+        })
+        .collect();
+    prepare_spatial_plan(
+        request,
+        RasterWindow::from_sensor_region(sensor, region),
+        SpatialSignalPlan::Raster {
+            width: source.source.width,
+            height: source.source.height,
+            device_signal: source.source.pixels.clone(),
+            linear_native_emission,
+            placement,
+        },
+    )
+}
+
+fn prepare_spatial_plan(
+    request: OpticalRequest,
+    raster: RasterWindow,
+    signal: SpatialSignalPlan,
+) -> Result<SpatialOpticalPlan, ApplicationError> {
+    if raster.width == 0 || raster.height == 0 {
+        return Err(ApplicationError::EmptyPreviewRaster);
+    }
+    let frame = prepare_frame(request.clone())?;
+    if !raster_represents_viewport(raster.full_width, raster.full_height, frame.viewport_aspect) {
+        return Err(ApplicationError::RasterViewportAspectMismatch {
+            raster_aspect: f32::from(raster.full_width) / f32::from(raster.full_height),
+            viewport_aspect: frame.viewport_aspect,
+        });
+    }
+    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    request
+        .cover
+        .evaluator(request.environment)
+        .map_err(ApplicationError::Cover)?;
+    let basis = [
+        panel_evaluator.native_to_acescg(LinearRgb::new(1.0, 0.0, 0.0)),
+        panel_evaluator.native_to_acescg(LinearRgb::new(0.0, 1.0, 0.0)),
+        panel_evaluator.native_to_acescg(LinearRgb::new(0.0, 0.0, 1.0)),
+    ];
+    Ok(SpatialOpticalPlan {
+        frame,
+        raster: raster.into(),
+        panel: SpatialPanelPlan {
+            native_width: request.panel.native_width,
+            native_height: request.panel.native_height,
+            active_width_meters: request.panel.active_width.0,
+            active_height_meters: request.panel.active_height.0,
+            stripe_layout: request.panel.stripe_layout,
+            black_matrix_fraction: request.panel.black_matrix_fraction,
+            eotf_gamma: request.panel.eotf_gamma,
+            black_level_nits: request.panel.black_level_nits,
+            white_level_nits: request.panel.white_level_nits,
+            angular_emission_power: request.panel.angular_emission_power,
+        },
+        panel_native_to_acescg: [
+            [basis[0].r, basis[1].r, basis[2].r],
+            [basis[0].g, basis[1].g, basis[2].g],
+            [basis[0].b, basis[1].b, basis[2].b],
+        ],
+        cover: request.cover,
+        environment: request.environment,
+        aperture_sample_count: aperture_sample_count(
+            frame.camera,
+            frame.screen,
+            request.panel,
+            raster.full_width,
+        ) as u16,
+        signal,
+    })
 }
 
 pub fn prepare_frame(request: OpticalRequest) -> Result<PreparedFrame, ApplicationError> {
@@ -3112,6 +3296,41 @@ mod tests {
                 .is_some_and(|screen| screen.facing_ratio > 0.9)
         );
         assert!(frame.representative_emission.b > frame.representative_emission.g);
+    }
+
+    #[test]
+    fn spatial_plan_is_complete_and_excludes_display_modulation() {
+        let mut optics = request().optics;
+        optics.viewport_aspect = 1.0;
+        optics.camera.intrinsics.keyframes[0].sensor_height = Millimeters(36.0);
+        optics.panel.temporal_emission = PanelTemporalEmission {
+            pwm_period: RationalTime::new(1, 960).unwrap(),
+            pwm_on_duration: RationalTime::new(1, 1_920).unwrap(),
+            phase: RationalTime::new(1, 7_680).unwrap(),
+        };
+        let sensor = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            ..SensorProfile::REFERENCE
+        };
+        let plan = prepare_procedural_spatial_plan(optics, sensor, SensorRegion::full(sensor))
+            .expect("valid spatial plan");
+        assert_eq!(plan.raster.width, 8);
+        assert_eq!(plan.raster.height, 8);
+        assert!(matches!(plan.aperture_sample_count, 16 | 32 | 64 | 128));
+        assert!(matches!(
+            plan.signal,
+            SpatialSignalPlan::Procedural {
+                pattern: ProceduralTestPattern::AnimatedCheckerboard,
+                ..
+            }
+        ));
+        assert!(
+            plan.panel_native_to_acescg
+                .into_iter()
+                .flatten()
+                .all(f32::is_finite)
+        );
     }
 
     #[test]
