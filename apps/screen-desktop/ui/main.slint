@@ -154,7 +154,6 @@ export component MainWindow inherits Window {
     in-out property <bool> can-redo: false;
     in-out property <bool> camera-edit-pending: false;
     in-out property <float> viewer-zoom: 1;
-    in-out property <float> viewer-one-to-one-zoom: 1;
     in-out property <float> viewer-pan-x: 0;
     in-out property <float> viewer-pan-y: 0;
     private property <bool> zoom-key-held: false;
@@ -359,7 +358,7 @@ export component MainWindow inherits Window {
                             Button {
                                 text: "100%";
                                 clicked => {
-                                    root.viewer-zoom = clamp(root.viewer-one-to-one-zoom, 1, 8);
+                                    root.viewer-zoom = clamp(root.preview-image.width * 1px / preview.width, 1, 8);
                                     root.viewer-pan-x = 0;
                                     root.viewer-pan-y = 0;
                                 }

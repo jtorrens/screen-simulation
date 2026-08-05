@@ -792,7 +792,6 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     };
     match prepared {
         Ok(raster) => {
-            window.set_viewer_one_to_one_zoom(1.0);
             let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(
                 u32::from(PREVIEW_WIDTH),
                 u32::from(PREVIEW_HEIGHT),
@@ -1028,7 +1027,6 @@ fn render_camera_result(
         };
     }
     let clipped = captured.raw.clipped.iter().filter(|value| **value).count();
-    window.set_viewer_one_to_one_zoom(f32::from(sensor_width) / f32::from(PREVIEW_WIDTH));
     window.set_preview_image(Image::from_rgba8(buffer));
     window.set_scale_text(
         format!(
