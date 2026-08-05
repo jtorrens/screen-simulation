@@ -9,10 +9,12 @@ use screen_camera::{
 };
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{ContractError, DeviceRgb, FrameRate, LinearRgb, RationalTime, Vec2, Vec3};
+#[cfg(test)]
+use screen_geometry::APERTURE_SAMPLE_COUNT;
 use screen_geometry::{
-    APERTURE_SAMPLE_COUNT, CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion,
-    ProjectedScreen, ScreenSample, ScreenTrack, panel_uv_aperture_samples, panel_uv_at_viewport,
-    project_scene_point, project_screen,
+    CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion, ProjectedScreen,
+    ScreenSample, ScreenTrack, panel_uv_aperture_samples, panel_uv_aperture_samples_with_count,
+    panel_uv_at_viewport, project_scene_point, project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{LcdProfile, PanelError, PanelTemporalEmission, ValidatedPanelEvaluator};
@@ -1107,23 +1109,36 @@ fn evaluate_optical_row_with_signal(
     let temporal_gain = evaluator
         .temporal_gain(request.time)
         .map_err(ApplicationError::Panel)?;
-    Ok((0..usize::from(width))
-        .map(|column| {
-            evaluate_optical_pixel(
-                &frame,
-                &request,
-                width,
-                height,
-                row,
-                column,
-                DiagnosticView::Composite,
-                evaluator,
-                temporal_gain,
-                signal_at,
-                signal_area,
-            )
-        })
-        .collect())
+    macro_rules! evaluate_row {
+        ($sample_count:literal) => {
+            (0..usize::from(width))
+                .map(|column| {
+                    evaluate_optical_pixel::<$sample_count>(
+                        &frame,
+                        &request,
+                        width,
+                        height,
+                        row,
+                        column,
+                        DiagnosticView::Composite,
+                        evaluator,
+                        temporal_gain,
+                        signal_at,
+                        signal_area,
+                    )
+                })
+                .collect()
+        };
+    }
+    Ok(
+        match aperture_sample_count(frame.camera, frame.screen, width) {
+            16 => evaluate_row!(16),
+            32 => evaluate_row!(32),
+            64 => evaluate_row!(64),
+            128 => evaluate_row!(128),
+            _ => unreachable!("aperture sample policy only emits supported quality levels"),
+        },
+    )
 }
 
 fn prepare_raster_with_signal(
@@ -1229,26 +1244,57 @@ fn evaluate_optical_raster_with_signal(
         };
         usize::from(width) * usize::from(height)
     ];
-    pixels
-        .par_chunks_mut(usize::from(width))
-        .enumerate()
-        .for_each(|(row, output_row)| {
-            for (column, output) in output_row.iter_mut().enumerate() {
-                *output = evaluate_optical_pixel(
-                    &frame,
-                    &request,
-                    width,
-                    height,
-                    row,
-                    column,
-                    view,
-                    panel_evaluator,
-                    panel_temporal_gain,
-                    signal_at,
-                    signal_area,
-                );
-            }
-        });
+    match aperture_sample_count(frame.camera, frame.screen, width) {
+        16 => evaluate_optical_pixels::<16>(
+            &mut pixels,
+            &frame,
+            &request,
+            width,
+            height,
+            view,
+            panel_evaluator,
+            panel_temporal_gain,
+            signal_at,
+            signal_area,
+        ),
+        32 => evaluate_optical_pixels::<32>(
+            &mut pixels,
+            &frame,
+            &request,
+            width,
+            height,
+            view,
+            panel_evaluator,
+            panel_temporal_gain,
+            signal_at,
+            signal_area,
+        ),
+        64 => evaluate_optical_pixels::<64>(
+            &mut pixels,
+            &frame,
+            &request,
+            width,
+            height,
+            view,
+            panel_evaluator,
+            panel_temporal_gain,
+            signal_at,
+            signal_area,
+        ),
+        128 => evaluate_optical_pixels::<128>(
+            &mut pixels,
+            &frame,
+            &request,
+            width,
+            height,
+            view,
+            panel_evaluator,
+            panel_temporal_gain,
+            signal_at,
+            signal_area,
+        ),
+        _ => unreachable!("aperture sample policy only emits supported quality levels"),
+    }
     let inspection_field_meters = request.inspection.map(|region| {
         [
             (region.max.x - region.min.x) * request.panel.active_width.0,
@@ -1267,7 +1313,74 @@ fn evaluate_optical_raster_with_signal(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn evaluate_optical_pixel(
+fn evaluate_optical_pixels<const SAMPLE_COUNT: usize>(
+    pixels: &mut [LinearOpticalPixel],
+    frame: &PreparedFrame,
+    request: &OpticalRequest,
+    width: u16,
+    height: u16,
+    view: DiagnosticView,
+    panel_evaluator: ValidatedPanelEvaluator,
+    panel_temporal_gain: f32,
+    signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+    signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
+) {
+    pixels
+        .par_chunks_mut(usize::from(width))
+        .enumerate()
+        .for_each(|(row, output_row)| {
+            for (column, output) in output_row.iter_mut().enumerate() {
+                *output = evaluate_optical_pixel::<SAMPLE_COUNT>(
+                    frame,
+                    request,
+                    width,
+                    height,
+                    row,
+                    column,
+                    view,
+                    panel_evaluator,
+                    panel_temporal_gain,
+                    signal_at,
+                    signal_area,
+                );
+            }
+        });
+}
+
+fn aperture_sample_count(camera: CameraSample, screen: ScreenSample, raster_width: u16) -> usize {
+    let panel_center = screen.local_to_world(Vec3 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    });
+    let offset = Vec3 {
+        x: panel_center.x - camera.position.x,
+        y: panel_center.y - camera.position.y,
+        z: panel_center.z - camera.position.z,
+    };
+    let panel_distance = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z)
+        .sqrt()
+        .max(0.001);
+    let relative_defocus = (1.0 - panel_distance / camera.focus_distance.0).abs();
+    let focal_length_meters = camera.focal_length.0 * 0.001;
+    let sensor_width_meters = camera.sensor_width.0 * 0.001;
+    let aperture_radius = focal_length_meters / (2.0 * camera.f_stop);
+    let projected_pixel_width =
+        panel_distance * sensor_width_meters / focal_length_meters / f32::from(raster_width);
+    let blur_radius_pixels = aperture_radius * relative_defocus / projected_pixel_width;
+    if blur_radius_pixels < 0.5 {
+        16
+    } else if blur_radius_pixels < 1.5 {
+        32
+    } else if blur_radius_pixels < 4.0 {
+        64
+    } else {
+        128
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
     frame: &PreparedFrame,
     request: &OpticalRequest,
     width: u16,
@@ -1303,7 +1416,7 @@ fn evaluate_optical_pixel(
             x: (column as f32 + offset.x) / f32::from(width) * 2.0 - 1.0,
             y: (row as f32 + offset.y) / f32::from(height) * 2.0 - 1.0,
         };
-        panel_uv_aperture_samples(
+        panel_uv_aperture_samples_with_count::<SAMPLE_COUNT>(
             frame.camera,
             frame.screen,
             request.panel.active_width,
@@ -1364,8 +1477,8 @@ fn approximate_psf_radius_pixels(camera: CameraSample, raster_width: u16) -> f32
     (REFERENCE_LENS_SOFTNESS_PIXELS + airy_radius_mm / photosite_pitch_mm).min(1.5)
 }
 
-fn integrate_aperture_samples(
-    spatial_samples: &[[OpticalSample; APERTURE_SAMPLE_COUNT]],
+fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
+    spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
     view: DiagnosticView,
     panel: LcdProfile,
     evaluator: ValidatedPanelEvaluator,
@@ -1377,7 +1490,7 @@ fn integrate_aperture_samples(
     let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
     let mut on_panel = false;
     if !subpixels_resolved {
-        for aperture in 0..APERTURE_SAMPLE_COUNT {
+        for aperture in 0..SAMPLE_COUNT {
             for channel in 0..3 {
                 let mut minimum = Vec2 {
                     x: f32::INFINITY,
@@ -1438,7 +1551,7 @@ fn integrate_aperture_samples(
                 }
             }
         }
-        let scale = 1.0 / APERTURE_SAMPLE_COUNT as f32;
+        let scale = 1.0 / SAMPLE_COUNT as f32;
         let native_average = LinearRgb::new(sum.r * scale, sum.g * scale, sum.b * scale);
         return LinearOpticalPixel {
             acescg_irradiance: if view == DiagnosticView::DeviceSignal {
@@ -1490,7 +1603,7 @@ fn integrate_aperture_samples(
             }
         }
     }
-    let scale = 1.0 / (APERTURE_SAMPLE_COUNT * spatial_samples.len()) as f32;
+    let scale = 1.0 / (SAMPLE_COUNT * spatial_samples.len()) as f32;
     let native_average = LinearRgb::new(sum.r * scale, sum.g * scale, sum.b * scale);
     let average = if view == DiagnosticView::DeviceSignal {
         native_average
@@ -1518,8 +1631,8 @@ fn optical_channel_weight(
         * panel_temporal_gain
 }
 
-fn subpixels_resolved_for_samples(
-    spatial_samples: &[[OpticalSample; APERTURE_SAMPLE_COUNT]],
+fn subpixels_resolved_for_samples<const SAMPLE_COUNT: usize>(
+    spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
     panel: LcdProfile,
 ) -> bool {
     (0..3).all(|channel| {
@@ -1954,6 +2067,26 @@ mod tests {
                 .is_some_and(|screen| screen.facing_ratio > 0.9)
         );
         assert!(frame.representative_emission.b > frame.representative_emission.g);
+    }
+
+    #[test]
+    fn aperture_quality_tracks_global_defocus_without_per_pixel_seams() {
+        let mut camera = prepare_frame(request().optical_request())
+            .expect("valid request")
+            .camera;
+        assert_eq!(
+            aperture_sample_count(camera, ScreenSample::IDENTITY, 960),
+            16
+        );
+
+        camera.position.z = 0.5;
+        camera.focus_distance = Meters(0.55);
+        camera.focal_length = Millimeters(63.5);
+        camera.f_stop = 1.2;
+        assert_eq!(
+            aperture_sample_count(camera, ScreenSample::IDENTITY, 960),
+            128
+        );
     }
 
     #[test]

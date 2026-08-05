@@ -5,6 +5,7 @@
 use core::fmt;
 use screen_contracts::{Meters, Millimeters, RationalTime, Vec2, Vec3};
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyframeInterpolation {
@@ -786,6 +787,7 @@ pub fn panel_uv_at_viewport(
 }
 
 pub const APERTURE_SAMPLE_COUNT: usize = 16;
+pub const MAX_APERTURE_SAMPLE_COUNT: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OpticalSample {
@@ -801,72 +803,26 @@ pub fn panel_uv_aperture_samples(
     active_height: Meters,
     viewport_ndc: Vec2,
 ) -> [OpticalSample; APERTURE_SAMPLE_COUNT] {
-    const DISK: [Vec2; APERTURE_SAMPLE_COUNT] = [
-        Vec2 {
-            x: 0.176_777,
-            y: 0.000_000,
-        },
-        Vec2 {
-            x: -0.225_772,
-            y: 0.206_826,
-        },
-        Vec2 {
-            x: 0.034_558,
-            y: -0.393_771,
-        },
-        Vec2 {
-            x: 0.284_571,
-            y: 0.371_173,
-        },
-        Vec2 {
-            x: -0.522_223,
-            y: -0.092_374,
-        },
-        Vec2 {
-            x: 0.494_695,
-            y: -0.314_685,
-        },
-        Vec2 {
-            x: -0.165_466,
-            y: 0.615_525,
-        },
-        Vec2 {
-            x: -0.315_561,
-            y: -0.607_594,
-        },
-        Vec2 {
-            x: 0.684_642,
-            y: 0.250_030,
-        },
-        Vec2 {
-            x: -0.712_256,
-            y: 0.294_009,
-        },
-        Vec2 {
-            x: 0.343_354,
-            y: -0.733_729,
-        },
-        Vec2 {
-            x: 0.253_730,
-            y: 0.808_932,
-        },
-        Vec2 {
-            x: -0.764_746,
-            y: -0.443_186,
-        },
-        Vec2 {
-            x: 0.897_134,
-            y: -0.197_232,
-        },
-        Vec2 {
-            x: -0.547_507,
-            y: 0.778_772,
-        },
-        Vec2 {
-            x: -0.126_487,
-            y: -0.976_090,
-        },
-    ];
+    panel_uv_aperture_samples_with_count::<APERTURE_SAMPLE_COUNT>(
+        camera,
+        screen,
+        active_width,
+        active_height,
+        viewport_ndc,
+    )
+}
+
+/// Traces one of the supported nested aperture sample sets. The first N points are
+/// identical at every quality level, so changing quality cannot move existing rays.
+pub fn panel_uv_aperture_samples_with_count<const SAMPLE_COUNT: usize>(
+    camera: CameraSample,
+    screen: ScreenSample,
+    active_width: Meters,
+    active_height: Meters,
+    viewport_ndc: Vec2,
+) -> [OpticalSample; SAMPLE_COUNT] {
+    assert!(matches!(SAMPLE_COUNT, 16 | 32 | 64 | 128));
+    let disk = aperture_disk_samples();
     let Some(ideal) = inverse_distortion(
         Vec2 {
             x: viewport_ndc.x + 2.0 * camera.lens_shift.x,
@@ -878,9 +834,10 @@ pub fn panel_uv_aperture_samples(
             panel_uv: [None; 3],
             emission_cosine: [0.0; 3],
             irradiance_weight: [0.0; 3],
-        }; APERTURE_SAMPLE_COUNT];
+        }; SAMPLE_COUNT];
     };
-    DISK.map(|lens_sample| {
+    core::array::from_fn(|sample_index| {
+        let lens_sample = disk[sample_index];
         let hits = core::array::from_fn(|channel| {
             panel_uv_for_lens_sample(
                 camera,
@@ -909,6 +866,27 @@ pub fn panel_uv_aperture_samples(
             }),
         }
     })
+}
+
+fn aperture_disk_samples() -> &'static [Vec2; MAX_APERTURE_SAMPLE_COUNT] {
+    static SAMPLES: OnceLock<[Vec2; MAX_APERTURE_SAMPLE_COUNT]> = OnceLock::new();
+    SAMPLES.get_or_init(|| {
+        const GOLDEN_ANGLE: f32 = 2.399_963_1;
+        core::array::from_fn(|index| {
+            let radius = radical_inverse_base_two(index as u32 + 1).sqrt();
+            let angle = index as f32 * GOLDEN_ANGLE;
+            let (sin, cos) = angle.sin_cos();
+            Vec2 {
+                x: radius * cos,
+                y: radius * sin,
+            }
+        })
+    })
+}
+
+fn radical_inverse_base_two(mut value: u32) -> f32 {
+    value = value.reverse_bits();
+    value as f32 * (1.0 / 4_294_967_296.0)
 }
 
 fn panel_uv_for_lens_sample(
@@ -1403,6 +1381,28 @@ mod tests {
             assert!((sample.x - center.x).abs() < 1.0e-5);
             assert!((sample.y - center.y).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn aperture_quality_levels_are_nested_and_deterministic() {
+        let camera = rig()
+            .sample(RationalTime::new(0, 24).expect("valid time"))
+            .expect("camera sample");
+        let low = panel_uv_aperture_samples_with_count::<16>(
+            camera,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.2, y: -0.1 },
+        );
+        let high = panel_uv_aperture_samples_with_count::<128>(
+            camera,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.2, y: -0.1 },
+        );
+        assert_eq!(low.as_slice(), &high[..16]);
     }
 
     #[test]

@@ -9,6 +9,19 @@ component ValueRow inherits Rectangle {
     in property <string> numeric-value;
     in property <string> suffix;
     in property <bool> enabled: true;
+    private property <string> edit-text: root.numeric-value;
+    private property <bool> input-focused: value-input.has-focus;
+
+    changed numeric-value => {
+        if (!root.input-focused) {
+            root.edit-text = root.numeric-value;
+        }
+    }
+    changed input-focused => {
+        if (!root.input-focused) {
+            root.edit-text = root.numeric-value;
+        }
+    }
 
     height: 38px;
     background: transparent;
@@ -45,7 +58,7 @@ component ValueRow inherits Rectangle {
                 y: 1px;
                 width: parent.width - (root.suffix == "" ? 10px : 30px);
                 height: parent.height - 2px;
-                text: root.numeric-value;
+                text <=> root.edit-text;
                 enabled: root.enabled;
                 color: #e6ebf3;
                 selection-background-color: #3677d7;
@@ -57,7 +70,7 @@ component ValueRow inherits Rectangle {
                     if (self.text.is-float()) {
                         root.value = clamp(self.text.to-float(), root.minimum, root.maximum);
                     }
-                    self.text = root.numeric-value;
+                    root.edit-text = root.numeric-value;
                 }
             }
 
@@ -141,6 +154,7 @@ export component MainWindow inherits Window {
     in-out property <bool> can-redo: false;
     in-out property <bool> camera-edit-pending: false;
     in-out property <float> viewer-zoom: 1;
+    in-out property <float> viewer-one-to-one-zoom: 1;
     in-out property <float> viewer-pan-x: 0;
     in-out property <float> viewer-pan-y: 0;
     private property <bool> zoom-key-held: false;
@@ -324,11 +338,45 @@ export component MainWindow inherits Window {
 
                         HorizontalLayout {
                             height: 24px;
+                            spacing: 8px;
 
                             Text {
                                 text: "PHYSICAL CAMERA PREVIEW";
                                 color: #b8c4d8;
                                 font-size: 12px;
+                                vertical-alignment: center;
+                            }
+
+                            Button {
+                                text: "Fit";
+                                clicked => {
+                                    root.viewer-zoom = 1;
+                                    root.viewer-pan-x = 0;
+                                    root.viewer-pan-y = 0;
+                                }
+                            }
+
+                            Button {
+                                text: "100%";
+                                clicked => {
+                                    root.viewer-zoom = clamp(root.viewer-one-to-one-zoom, 1, 8);
+                                    root.viewer-pan-x = 0;
+                                    root.viewer-pan-y = 0;
+                                }
+                            }
+
+                            Slider {
+                                minimum: 1;
+                                maximum: 8;
+                                step: 0.25;
+                                value <=> root.viewer-zoom;
+                                width: 100px;
+                            }
+
+                            Text {
+                                text: round(root.viewer-zoom * 100) / 100 + "×";
+                                color: #aeb7c8;
+                                width: 38px;
                                 vertical-alignment: center;
                             }
 
@@ -353,10 +401,10 @@ export component MainWindow inherits Window {
 
                             Image {
                                 source: root.preview-image;
-                                width: parent.width * (root.view-index == 4 ? root.viewer-zoom : 1);
-                                height: parent.height * (root.view-index == 4 ? root.viewer-zoom : 1);
-                                x: root.view-index == 4 ? (-(self.width - parent.width) / 2 + root.viewer-pan-x * parent.width) : 0px;
-                                y: root.view-index == 4 ? (-(self.height - parent.height) / 2 + root.viewer-pan-y * parent.height) : 0px;
+                                width: parent.width * root.viewer-zoom;
+                                height: parent.height * root.viewer-zoom;
+                                x: -(self.width - parent.width) / 2 + root.viewer-pan-x * parent.width;
+                                y: -(self.height - parent.height) / 2 + root.viewer-pan-y * parent.height;
                                 image-fit: fill;
                             }
 
@@ -372,9 +420,9 @@ export component MainWindow inherits Window {
                             }
 
                             drag-area := TouchArea {
-                                mouse-cursor: root.zoom-key-held ? crosshair : (root.view-index == 4 && root.viewer-zoom > 1 ? move : default);
+                                mouse-cursor: root.zoom-key-held ? crosshair : (root.viewer-zoom > 1 ? move : default);
                                 moved => {
-                                    if (self.pressed && !root.zoom-key-held && root.view-index == 4 && root.viewer-zoom > 1) {
+                                    if (self.pressed && !root.zoom-key-held && root.viewer-zoom > 1) {
                                         root.viewer-pan-x = clamp(root.pan-start-x + (self.mouse-x - self.pressed-x) / preview.width, -(root.viewer-zoom - 1) / 2, (root.viewer-zoom - 1) / 2);
                                         root.viewer-pan-y = clamp(root.pan-start-y + (self.mouse-y - self.pressed-y) / preview.height, -(root.viewer-zoom - 1) / 2, (root.viewer-zoom - 1) / 2);
                                     }
@@ -627,8 +675,8 @@ export component MainWindow inherits Window {
 
                         ValueRow {
                             label: "Distance";
-                            minimum: 0.5;
-                            maximum: 1.5;
+                            minimum: 0.05;
+                            maximum: 20;
                             step: 0.01;
                             value <=> root.distance-m;
                             numeric-value: round(root.distance-m * 100) / 100;
@@ -667,8 +715,8 @@ export component MainWindow inherits Window {
 
                         ValueRow {
                             label: "Focus";
-                            minimum: 0.1;
-                            maximum: 5;
+                            minimum: 0.05;
+                            maximum: 20;
                             step: 0.01;
                             value <=> root.focus-distance-m;
                             numeric-value: round(root.focus-distance-m * 100) / 100;
@@ -738,17 +786,6 @@ export component MainWindow inherits Window {
                             numeric-value: round(root.preview-exposure-ev * 10) / 10;
                             suffix: "EV";
                             visible: root.view-index != 4;
-                        }
-
-                        ValueRow {
-                            label: "View zoom";
-                            minimum: 1;
-                            maximum: 8;
-                            step: 0.25;
-                            value <=> root.viewer-zoom;
-                            numeric-value: round(root.viewer-zoom * 100) / 100;
-                            suffix: "×";
-                            visible: root.view-index == 4;
                         }
 
                         Text {
