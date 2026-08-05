@@ -18,14 +18,16 @@ use screen_application::{
     PreparedRaster, ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
     capture_and_develop_device_signal_region, capture_and_develop_procedural_region,
     capture_device_preset, decoded_frame_to_device_signal, inspection_region_from_drag,
-    prepare_raster, prepare_raster_from_device_signal,
+    prepare_raster, prepare_raster_from_device_signal, prepare_raster_from_prepared_device_signal,
 };
 use screen_camera::CameraDevelopment;
 use screen_color::{
     CameraOutputTransform, ColorEngine, DeviceColorTarget, OcioInputTransform,
     SourceColorInterpretation, SourceToDeviceProcessor, propose_ocio_input,
 };
-use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
+use screen_contracts::{
+    DeviceRgb, FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3,
+};
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, LensModel,
     PanelRegion, Quaternion, ScreenTrack, TransformKeyframe, TransformTrack,
@@ -186,6 +188,7 @@ struct InteractionState {
     capture_render_requested: bool,
     capture_cancel: Option<Arc<AtomicBool>>,
     preview_pending: bool,
+    embedded_source: Option<(i32, Arc<PreparedDeviceSignalRaster>)>,
 }
 
 struct CameraEditor {
@@ -349,6 +352,7 @@ impl InteractionState {
             capture_render_requested: false,
             capture_cancel: None,
             preview_pending: false,
+            embedded_source: None,
         }
     }
 }
@@ -668,7 +672,12 @@ fn preview_raster(window: &MainWindow, width: u16) -> Result<(u16, u16), String>
     if !(1.0..=f32::from(u16::MAX)).contains(&height) {
         return Err("capture preview raster is outside the supported range".to_owned());
     }
-    Ok((width, height as u16))
+    let height = height as u16;
+    let quantized_width = (f32::from(height) * aspect).round();
+    if !(1.0..=f32::from(u16::MAX)).contains(&quantized_width) {
+        return Err("capture preview raster is outside the supported range".to_owned());
+    }
+    Ok((quantized_width as u16, height))
 }
 
 fn device_geometry(window: &MainWindow) -> Result<(u32, u32, Meters, Meters), String> {
@@ -814,6 +823,55 @@ fn selected_sensor_region(window: &MainWindow, sensor: SensorProfile) -> SensorR
     }
 }
 
+fn embedded_test_signal(
+    state: &mut InteractionState,
+    pattern_index: i32,
+) -> Result<Option<Arc<PreparedDeviceSignalRaster>>, String> {
+    let encoded = match pattern_index {
+        2 => include_bytes!("../assets/editorial-text-reference.png").as_slice(),
+        3 => include_bytes!("../assets/camera-color-reference.png").as_slice(),
+        _ => {
+            state.embedded_source = None;
+            return Ok(None);
+        }
+    };
+    if let Some((cached_index, signal)) = &state.embedded_source
+        && *cached_index == pattern_index
+    {
+        return Ok(Some(Arc::clone(signal)));
+    }
+    let decoded = image::load_from_memory_with_format(encoded, image::ImageFormat::Png)
+        .map_err(|error| format!("bundled test image cannot be decoded: {error}"))?
+        .into_rgb8();
+    let width = decoded.width();
+    let height = decoded.height();
+    if [width, height] != [3_840, 2_160] {
+        return Err(format!(
+            "bundled test image must be 3840 × 2160, got {width} × {height}"
+        ));
+    }
+    let pixels = decoded
+        .pixels()
+        .map(|pixel| {
+            DeviceRgb::new(
+                f32::from(pixel[0]) / 255.0,
+                f32::from(pixel[1]) / 255.0,
+                f32::from(pixel[2]) / 255.0,
+            )
+        })
+        .collect();
+    let signal = Arc::new(
+        PreparedDeviceSignalRaster::new(DeviceSignalRaster {
+            width,
+            height,
+            pixels,
+        })
+        .map_err(|error| error.to_string())?,
+    );
+    state.embedded_source = Some((pattern_index, Arc::clone(&signal)));
+    Ok(Some(signal))
+}
+
 fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     let current_controls = render_controls(window);
     if window.get_capture_rendering() {
@@ -885,7 +943,6 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     } else {
         None
     };
-    let color_engine = &state.color_engine;
     if window.get_view_index() == 4 && !state.capture_render_requested {
         if state.last_capture_controls != Some(current_controls) {
             window.set_native_capture_stale(window.get_native_capture_ready());
@@ -901,15 +958,37 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         }
         return;
     }
+    let embedded_signal = if state.source.is_none() {
+        match embedded_test_signal(state, window.get_procedural_pattern_index()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                block_preview(window, &error);
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let color_engine = &state.color_engine;
     if window.get_view_index() == 4 && state.source.is_none() {
         let (sensor, region, cancel) = capture_selection.expect("capture selection resolved above");
-        render_camera_result(window, request, None, sensor, region, started, cancel);
+        render_camera_result(
+            window,
+            request,
+            embedded_signal.map(|signal| (signal, RasterPlacement::Fit)),
+            sensor,
+            region,
+            started,
+            cancel,
+        );
         state.capture_render_requested = false;
         state.last_capture_controls = Some(current_controls);
         return;
     }
     let preview_source = match &mut state.source {
-        None => PreviewJobSource::Procedural,
+        None => embedded_signal.map_or(PreviewJobSource::Procedural, |signal| {
+            PreviewJobSource::PreparedDeviceSignal(signal, RasterPlacement::Fit)
+        }),
         Some(source) => {
             let decode_interpretation = match source
                 .descriptor
@@ -1012,6 +1091,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
 enum PreviewJobSource {
     Procedural,
     DeviceSignal(DeviceSignalRaster, RasterPlacement),
+    PreparedDeviceSignal(Arc<PreparedDeviceSignalRaster>, RasterPlacement),
 }
 
 fn render_preview_async(
@@ -1042,6 +1122,11 @@ fn render_preview_async(
             PreviewJobSource::Procedural => prepare_raster(request, width, height),
             PreviewJobSource::DeviceSignal(signal, placement) => {
                 prepare_raster_from_device_signal(request, width, height, &signal, placement)
+            }
+            PreviewJobSource::PreparedDeviceSignal(signal, placement) => {
+                prepare_raster_from_prepared_device_signal(
+                    request, width, height, &signal, placement,
+                )
             }
         };
         let _ = weak_window.upgrade_in_event_loop(move |window| {
@@ -1176,14 +1261,28 @@ fn present_loaded_source_interpretation(
 }
 
 fn present_procedural_source(window: &MainWindow) {
-    if window.get_procedural_pattern_index() == 1 {
-        window.set_source_title("Eye chart".into());
-        window.set_source_details("3840 × 2160 · black optotypes on white".into());
-        window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
-    } else {
-        window.set_source_title("Procedural diagnostic".into());
-        window.set_source_details("3840 × 2160 · animated checkerboard".into());
-        window.set_source_interpretation("Explicit device signal".into());
+    match window.get_procedural_pattern_index() {
+        1 => {
+            window.set_source_title("Eye chart".into());
+            window.set_source_details("3840 × 2160 · black optotypes on white".into());
+            window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
+        }
+        2 => {
+            window.set_source_title("Editorial text reference".into());
+            window.set_source_details("3840 × 2160 · common document and UI text sizes".into());
+            window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
+        }
+        3 => {
+            window.set_source_title("Camera color reference".into());
+            window
+                .set_source_details("3840 × 2160 · skin, textiles, neutrals and materials".into());
+            window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
+        }
+        _ => {
+            window.set_source_title("Procedural diagnostic".into());
+            window.set_source_details("3840 × 2160 · animated checkerboard".into());
+            window.set_source_interpretation("Explicit device signal".into());
+        }
     }
 }
 
@@ -2173,5 +2272,18 @@ mod interaction_tests {
         editor.commit_preview();
         assert_eq!(editor.committed.transform.keyframes[0].id, transform_id);
         assert_eq!(editor.committed.intrinsics.keyframes[0].id, intrinsics_id);
+    }
+
+    #[test]
+    fn bundled_raster_test_sources_are_authored_4k_rgb_images() {
+        for encoded in [
+            include_bytes!("../assets/editorial-text-reference.png").as_slice(),
+            include_bytes!("../assets/camera-color-reference.png").as_slice(),
+        ] {
+            let image = image::load_from_memory_with_format(encoded, image::ImageFormat::Png)
+                .expect("bundled PNG must decode");
+            assert_eq!([image.width(), image.height()], [3_840, 2_160]);
+            assert!(image.to_rgba8().pixels().all(|pixel| pixel[3] == 255));
+        }
     }
 }

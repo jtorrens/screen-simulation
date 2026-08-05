@@ -4417,6 +4417,7 @@ version = "0.1.0"
 name = "screen-desktop"
 version = "0.1.0"
 dependencies = [
+ "image",
  "rfd",
  "screen-application",
  "screen-camera",

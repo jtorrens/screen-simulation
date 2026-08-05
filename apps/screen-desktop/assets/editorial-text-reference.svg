@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160">
+  <rect width="3840" height="2160" fill="#d9dde3"/>
+  <rect x="0" y="0" width="3840" height="86" fill="#f7f8fa"/>
+  <rect x="0" y="86" width="3840" height="104" fill="#ffffff"/>
+  <path d="M0 86H3840M0 190H3840" stroke="#b8bec7" stroke-width="2"/>
+  <text x="42" y="55" font-family="Arial, Helvetica, sans-serif" font-size="28" fill="#20242a">Documento de referencia — texto y detalle</text>
+  <g font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#424850">
+    <text x="46" y="151">Archivo</text><text x="158" y="151">Editar</text><text x="258" y="151">Ver</text>
+    <text x="332" y="151">Insertar</text><text x="452" y="151">Formato</text><text x="584" y="151">Herramientas</text>
+  </g>
+  <rect x="1180" y="111" width="1480" height="54" rx="8" fill="#f2f4f7" stroke="#c8cdd5" stroke-width="2"/>
+  <text x="1210" y="147" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#2e333a">Arial</text>
+  <text x="2530" y="147" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#2e333a">100 %</text>
+
+  <rect x="456" y="238" width="2928" height="1848" fill="#9da4ae" opacity="0.35"/>
+  <rect x="438" y="220" width="2928" height="1848" fill="#ffffff"/>
+
+  <g font-family="Arial, Helvetica, sans-serif" fill="#111318">
+    <text x="690" y="388" font-size="64" font-weight="700">Legibilidad y reproducción de texto en pantalla</text>
+    <text x="690" y="450" font-size="28" fill="#626975">Documento de prueba · tamaños habituales en un procesador de textos</text>
+    <line x1="690" y1="492" x2="3114" y2="492" stroke="#c6cbd2" stroke-width="2"/>
+
+    <text x="690" y="584" font-size="42" font-weight="700">Título de sección — 42 px</text>
+    <text x="690" y="640" font-size="30" font-weight="700">Subtítulo de lectura — 30 px</text>
+    <text x="690" y="696" font-size="26">Texto principal 26 px. La imagen de una pantalla combina bordes de alto contraste,</text>
+    <text x="690" y="738" font-size="26">curvas, diagonales y espacios finos. Este párrafo permite valorar nitidez, foco,</text>
+    <text x="690" y="780" font-size="26">aberración cromática, trama física, aliasing y contraste local del dispositivo.</text>
+
+    <text x="690" y="876" font-size="34" font-weight="700">Jerarquía editorial y pesos</text>
+    <text x="690" y="930" font-size="24" font-weight="700">Negrita 24 px — información destacada dentro del documento.</text>
+    <text x="690" y="974" font-size="24" font-style="italic">Cursiva 24 px — formas inclinadas y terminales delicados.</text>
+    <text x="690" y="1018" font-size="24">Regular 24 px — El veloz murciélago hindú comía feliz cardillo y kiwi.</text>
+    <text x="690" y="1062" font-size="22" fill="#30343a">Regular 22 px — ABCDEFGHIJKLMNÑOPQRSTUVWXYZ · 0123456789</text>
+    <text x="690" y="1102" font-size="20" fill="#454b54">Regular 20 px — abcdefghijklmnñopqrstuvwxyz · ¿? ¡! @ # % &amp;</text>
+
+    <rect x="674" y="1150" width="2456" height="54" rx="4" fill="#cfe2ff"/>
+    <text x="690" y="1187" font-size="22">Texto seleccionado 22 px — evaluación de contraste sobre azul claro.</text>
+    <rect x="690" y="1248" width="3" height="34" fill="#1867c0"/>
+    <text x="710" y="1275" font-size="20">Cursor y texto 20 px con antialiasing sobre blanco puro.</text>
+
+    <text x="690" y="1368" font-size="28" font-weight="700">Dos columnas de cuerpo habitual</text>
+    <g font-size="18" fill="#20242a">
+      <text x="690" y="1420">Cuerpo 18 px. Una tipografía de interfaz</text>
+      <text x="690" y="1452">debe conservar contraformas, ritmo y color</text>
+      <text x="690" y="1484">uniforme incluso cuando el sensor no resuelve</text>
+      <text x="690" y="1516">la estructura completa de cada píxel físico.</text>
+      <text x="1920" y="1420">Cuerpo 18 px. Las líneas finas revelan la</text>
+      <text x="1920" y="1452">orientación RGB, el enfoque y las pequeñas</text>
+      <text x="1920" y="1484">diferencias de exposición o respuesta tonal</text>
+      <text x="1920" y="1516">sin necesitar una carta puramente abstracta.</text>
+    </g>
+
+    <g font-size="16" fill="#30353d">
+      <text x="690" y="1598">16 px — Texto pequeño habitual: Preferencias · Comentarios · Revisión · Compartir · Guardar</text>
+      <text x="690" y="1630">16 px — 1 l I | 0 O Q · rn m · cl d · vv w · signos .,:; y acentos áéíóú ü ñ</text>
+    </g>
+    <g font-family="Menlo, Monaco, monospace" fill="#252a31">
+      <text x="690" y="1700" font-size="15">Monoespaciada 15 px  |  0123456789  |  RGB(255, 255, 255)  |  #7A8FA6</text>
+      <text x="690" y="1732" font-size="13">Monoespaciada 13 px  |  width: 3840px; height: 2160px; scale: 100%;</text>
+    </g>
+
+    <line x1="690" y1="1802" x2="3114" y2="1802" stroke="#111318" stroke-width="1"/>
+    <line x1="690" y1="1824" x2="3114" y2="1824" stroke="#7d838c" stroke-width="2"/>
+    <line x1="690" y1="1848" x2="3114" y2="1848" stroke="#c4c8ce" stroke-width="3"/>
+    <text x="690" y="1906" font-size="12" fill="#575e68">Nota al pie 12 px — detalle fino, grises medios y líneas de uno, dos y tres píxeles.</text>
+    <text x="690" y="1940" font-size="10" fill="#777e88">Microtexto 10 px — destinado a comprobar el límite práctico de lectura y el comportamiento del muestreo.</text>
+    <text x="3046" y="2008" font-size="14" fill="#5d646e">1 / 1</text>
+  </g>
+</svg>

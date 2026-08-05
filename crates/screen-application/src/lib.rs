@@ -1238,6 +1238,41 @@ pub fn prepare_raster_from_device_signal(
     )
 }
 
+pub fn prepare_raster_from_prepared_device_signal(
+    request: SimulationRequest,
+    width: u16,
+    height: u16,
+    source: &PreparedDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<PreparedRaster, ApplicationError> {
+    let source_raster = source.raster_size();
+    let device_raster = [
+        request.optics.panel.native_width,
+        request.optics.panel.native_height,
+    ];
+    prepare_raster_with_signal(
+        request,
+        width,
+        height,
+        &|device_uv| {
+            source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
+                .map_or(DeviceRgb::BLACK, |source_uv| {
+                    source.source.sample_native_pixel(source_uv)
+                })
+        },
+        &|minimum, maximum| {
+            sample_placed_area(
+                &source.integral,
+                source_raster,
+                device_raster,
+                placement,
+                minimum,
+                maximum,
+            )
+        },
+    )
+}
+
 pub fn evaluate_linear_optics_from_device_signal(
     request: OpticalRequest,
     width: u16,
@@ -2525,6 +2560,8 @@ mod tests {
         let authored_aspect = 27.99 / 19.22;
         assert!(raster_represents_viewport(960, 659, authored_aspect));
         assert!(!raster_represents_viewport(960, 658, authored_aspect));
+        assert!(raster_represents_viewport(1_919, 1_318, authored_aspect));
+        assert!(!raster_represents_viewport(1_920, 1_318, authored_aspect));
     }
 
     #[test]
@@ -2906,6 +2943,33 @@ mod tests {
             .sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
         assert_eq!(hdr_average, DeviceRgb::new(high, high, high));
         assert!(hdr_average.r.is_finite());
+    }
+
+    #[test]
+    fn prepared_device_signal_preview_is_identical_to_direct_device_signal_preview() {
+        let source = DeviceSignalRaster {
+            width: 2,
+            height: 2,
+            pixels: vec![
+                DeviceRgb::new(0.1, 0.2, 0.3),
+                DeviceRgb::new(0.7, 0.3, 0.1),
+                DeviceRgb::new(0.2, 0.8, 0.4),
+                DeviceRgb::new(0.9, 0.9, 0.9),
+            ],
+        };
+        let prepared = PreparedDeviceSignalRaster::new(source.clone()).expect("valid signal");
+        let direct =
+            prepare_raster_from_device_signal(request(), 64, 36, &source, RasterPlacement::Stretch)
+                .expect("direct preview");
+        let reused = prepare_raster_from_prepared_device_signal(
+            request(),
+            64,
+            36,
+            &prepared,
+            RasterPlacement::Stretch,
+        )
+        .expect("prepared preview");
+        assert_eq!(direct, reused);
     }
 
     #[test]
