@@ -1403,7 +1403,7 @@ fn evaluate_optical_row_with_signal(
     }
     let frame = prepare_frame(request.clone())?;
     let raster_aspect = f32::from(width) / f32::from(height);
-    if (raster_aspect - frame.viewport_aspect).abs() > 1.0e-4 {
+    if !raster_represents_viewport(width, height, frame.viewport_aspect) {
         return Err(ApplicationError::RasterViewportAspectMismatch {
             raster_aspect,
             viewport_aspect: frame.viewport_aspect,
@@ -1534,7 +1534,7 @@ fn evaluate_optical_window_with_signal(
     }
     let mut frame = prepare_frame(request.clone())?;
     let raster_aspect = f32::from(raster.full_width) / f32::from(raster.full_height);
-    if (raster_aspect - frame.viewport_aspect).abs() > 1.0e-4 {
+    if !raster_represents_viewport(raster.full_width, raster.full_height, frame.viewport_aspect) {
         return Err(ApplicationError::RasterViewportAspectMismatch {
             raster_aspect,
             viewport_aspect: frame.viewport_aspect,
@@ -1631,6 +1631,11 @@ fn evaluate_optical_window_with_signal(
         inspection_field_meters,
         subpixels_resolved_at_center,
     })
+}
+
+fn raster_represents_viewport(width: u16, height: u16, viewport_aspect: f32) -> bool {
+    let expected_width = f32::from(height) * viewport_aspect;
+    (f32::from(width) - expected_width).abs() <= 0.5 + f32::EPSILON
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2513,6 +2518,13 @@ mod tests {
             prepare_frame(request.optical_request()),
             Err(ApplicationError::SensorViewportAspectMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn discrete_preview_raster_may_round_the_authored_viewport_by_half_a_pixel() {
+        let authored_aspect = 27.99 / 19.22;
+        assert!(raster_represents_viewport(960, 659, authored_aspect));
+        assert!(!raster_represents_viewport(960, 658, authored_aspect));
     }
 
     #[test]

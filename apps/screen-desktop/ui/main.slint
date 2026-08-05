@@ -121,6 +121,10 @@ export component MainWindow inherits Window {
     in-out property <bool> capture-fixed-optics: false;
     in-out property <int> capture-scope-index: 0;
     in-out property <bool> capture-rendering: false;
+    in-out property <bool> preview-rendering: false;
+    in-out property <bool> render-progress-visible: false;
+    in-out property <float> render-progress: 0;
+    in-out property <string> render-progress-label: "";
     in-out property <float> preview-aspect: 1.5;
     in-out property <int> device-preset-index: 3;
     in property <[string]> device-preset-model;
@@ -182,6 +186,7 @@ export component MainWindow inherits Window {
     callback select-capture-preset(string);
     callback render-capture-frame();
     callback cancel-capture-frame();
+    callback continue-preview-render();
 
     MenuBar {
         Menu {
@@ -481,18 +486,62 @@ export component MainWindow inherits Window {
                     border-width: 1px;
                     border-color: #303744;
 
-                    ScrollView {
+                    VerticalLayout {
+                        spacing: 0px;
+
+                        Rectangle {
+                            height: 154px;
+                            background: #171c25;
+                            border-width: 1px;
+                            border-color: #303744;
+
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: "SCENE INSPECTOR";
+                                    color: #e2e8f2;
+                                    font-size: 13px;
+                                    font-weight: 700;
+                                }
+
+                                HorizontalLayout {
+                                    height: 32px;
+                                    Text { text: "View"; color: #aeb7c8; width: 78px; vertical-alignment: center; }
+                                    ComboBox {
+                                        model: ["Composite", "Device signal", "RGB subpixels", "Emitted radiance", "Camera result"];
+                                        current-index <=> root.view-index;
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    height: 32px;
+                                    Text { text: "Camera"; color: #aeb7c8; width: 78px; vertical-alignment: center; }
+                                    ComboBox {
+                                        model: root.capture-preset-model;
+                                        current-index <=> root.capture-preset-index;
+                                        selected(value) => {
+                                            root.select-capture-preset(root.capture-preset-ids[self.current-index]);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: root.capture-summary;
+                                    color: #8794a9;
+                                    font-size: 10px;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        ScrollView {
+                            vertical-scrollbar-policy: ScrollBarPolicy.always-on;
                         VerticalLayout {
                             padding: 18px;
                             padding-right: 24px;
                             spacing: 5px;
-
-                        Text {
-                            text: "SCENE INSPECTOR";
-                            color: #e2e8f2;
-                            font-size: 13px;
-                            font-weight: 700;
-                        }
 
                         HorizontalLayout {
                             height: 30px;
@@ -790,7 +839,7 @@ export component MainWindow inherits Window {
                         }
 
                         Rectangle { height: 1px; background: #303744; }
-                        Text { text: "DIAGNOSTIC VIEW"; color: #71819b; font-size: 11px; }
+                        Text { text: "VIEW SETTINGS"; color: #71819b; font-size: 11px; }
 
                         ValueRow {
                             label: "Preview EV";
@@ -804,19 +853,10 @@ export component MainWindow inherits Window {
                         }
 
                         Text {
-                            text: "CAPTURE DEVICE";
+                            text: "CAPTURE SETTINGS";
                             color: #71819b;
                             font-size: 11px;
                             visible: root.view-index == 4;
-                        }
-
-                        ComboBox {
-                            model: root.capture-preset-model;
-                            current-index <=> root.capture-preset-index;
-                            visible: root.view-index == 4;
-                            selected(value) => {
-                                root.select-capture-preset(root.capture-preset-ids[self.current-index]);
-                            }
                         }
 
                         ValueRow {
@@ -867,14 +907,6 @@ export component MainWindow inherits Window {
                             text: root.capture-sensor-width + " × " + root.capture-sensor-height + " · " + root.capture-gate-width-mm + " × " + root.capture-gate-height-mm + " mm";
                             color: #c3ccda;
                             font-size: 11px;
-                            visible: root.view-index == 4;
-                        }
-
-                        Text {
-                            text: root.capture-summary;
-                            color: #8794a9;
-                            font-size: 11px;
-                            wrap: word-wrap;
                             visible: root.view-index == 4;
                         }
 
@@ -944,19 +976,62 @@ export component MainWindow inherits Window {
                             visible: root.view-index == 4;
                         }
 
-                        ComboBox {
-                            model: ["Composite", "Device signal", "RGB subpixels", "Emitted radiance", "Camera result"];
-                            current-index <=> root.view-index;
+                        Text {
+                            text: "Screen Simulation 0.1.0";
+                            color: #66748a;
+                            font-size: 11px;
                         }
+                    }
+                }
+                }
+            }
+            }
 
-                        Rectangle { vertical-stretch: 1; }
+            Rectangle {
+                height: root.render-progress-visible ? 34px : 0px;
+                visible: root.render-progress-visible;
+                background: #111720;
+                border-width: 1px;
+                border-color: #2a3442;
 
-                            Text {
-                                text: "Screen Simulation 0.1.0";
-                                color: #66748a;
-                                font-size: 11px;
-                            }
+                HorizontalLayout {
+                    padding-left: 18px;
+                    padding-right: 18px;
+                    spacing: 12px;
+
+                    Text {
+                        text: root.render-progress-label;
+                        color: #b9c5d8;
+                        width: 250px;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        height: 8px;
+                        border-radius: 4px;
+                        background: #27303d;
+                        horizontal-stretch: 1;
+
+                        Rectangle {
+                            width: parent.width * clamp(root.render-progress, 0, 1);
+                            height: parent.height;
+                            border-radius: 4px;
+                            background: #55b7f3;
                         }
+                    }
+
+                    Text {
+                        text: round(clamp(root.render-progress, 0, 1) * 100) + "%";
+                        color: #8fa0b8;
+                        width: 44px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+
+                    Button {
+                        text: "Cancel";
+                        visible: root.capture-rendering;
+                        clicked => { root.cancel-capture-frame(); }
                     }
                 }
             }

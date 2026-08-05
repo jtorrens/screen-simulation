@@ -15,7 +15,7 @@ use std::time::Instant;
 use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PreparedDeviceSignalRaster,
-    ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
+    PreparedRaster, ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
     capture_and_develop_device_signal_region, capture_and_develop_procedural_region,
     capture_device_preset, decoded_frame_to_device_signal, inspection_region_from_drag,
     prepare_raster, prepare_raster_from_device_signal,
@@ -177,6 +177,7 @@ struct InteractionState {
     capture_sensor: SensorProfile,
     capture_render_requested: bool,
     capture_cancel: Option<Arc<AtomicBool>>,
+    preview_pending: bool,
 }
 
 struct CameraEditor {
@@ -339,6 +340,7 @@ impl InteractionState {
             capture_sensor: CAPTURE_DEVICE_PRESETS[0].sensor,
             capture_render_requested: false,
             capture_cancel: None,
+            preview_pending: false,
         }
     }
 }
@@ -734,6 +736,7 @@ fn apply_capture_preset(
     id: &str,
 ) -> Result<(), String> {
     if id == "custom" {
+        window.set_capture_preset_index(CAPTURE_DEVICE_PRESETS.len() as i32);
         window.set_capture_fixed_optics(false);
         window.set_capture_summary("Custom complete capture profile".into());
         state.last_capture_controls = None;
@@ -741,6 +744,11 @@ fn apply_capture_preset(
     }
     let preset = capture_device_preset(id)
         .ok_or_else(|| format!("unknown current capture preset id {id}"))?;
+    let preset_index = CAPTURE_DEVICE_PRESETS
+        .iter()
+        .position(|candidate| candidate.id == id)
+        .expect("resolved capture preset belongs to the current catalog");
+    window.set_capture_preset_index(preset_index as i32);
     state.capture_sensor = preset.sensor;
     state.last_capture_controls = None;
     window.set_capture_sensor_width(f32::from(preset.sensor.native_width));
@@ -804,6 +812,11 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         }
         return;
     }
+    if window.get_preview_rendering() {
+        state.preview_pending = true;
+        window.set_render_text("Current preview finishing · update queued".into());
+        return;
+    }
     state.last_render_controls = Some(current_controls);
     if state.source.is_none() {
         present_procedural_source(window);
@@ -864,8 +877,8 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         state.last_capture_controls = Some(current_controls);
         return;
     }
-    let prepared = match &mut state.source {
-        None => prepare_raster(request, preview_width, preview_height),
+    let preview_source = match &mut state.source {
+        None => PreviewJobSource::Procedural,
         Some(source) => {
             let decode_interpretation = match source
                 .descriptor
@@ -949,119 +962,168 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 state.last_capture_controls = Some(current_controls);
                 return;
             }
-            prepare_raster_from_device_signal(
-                request,
-                preview_width,
-                preview_height,
-                signal,
-                placement,
-            )
+            present_loaded_source_interpretation(window, source, sample_key, decode_interpretation);
+            PreviewJobSource::DeviceSignal(signal.clone(), placement)
         }
     };
-    match prepared {
-        Ok(raster) => {
-            let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(
-                u32::from(preview_width),
-                u32::from(preview_height),
-            );
-            for (target, source) in buffer.make_mut_slice().iter_mut().zip(&raster.pixels) {
-                let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-                *target = if source.on_panel {
-                    Rgba8Pixel {
-                        r: channel(source.rgb.r),
-                        g: channel(source.rgb.g),
-                        b: channel(source.rgb.b),
-                        a: 255,
-                    }
-                } else {
-                    Rgba8Pixel {
-                        r: 7,
-                        g: 9,
-                        b: 12,
-                        a: 255,
-                    }
-                };
+    state.last_render_controls = Some(current_controls);
+    render_preview_async(
+        window,
+        request,
+        preview_source,
+        preview_width,
+        preview_height,
+        started,
+    );
+}
+
+enum PreviewJobSource {
+    Procedural,
+    DeviceSignal(DeviceSignalRaster, RasterPlacement),
+}
+
+fn render_preview_async(
+    window: &MainWindow,
+    request: SimulationRequest,
+    source: PreviewJobSource,
+    width: u16,
+    height: u16,
+    started: Instant,
+) {
+    window.set_preview_rendering(true);
+    window.set_render_progress_visible(true);
+    window.set_render_progress(0.05);
+    window.set_render_progress_label(format!("Physical preview · {width} × {height}").into());
+    window.set_render_text("Rendering physical preview…".into());
+    window.set_error_text("".into());
+    let rendered_view_index = window.get_view_index();
+    let weak_window = window.as_weak();
+    thread::spawn(move || {
+        let result = match source {
+            PreviewJobSource::Procedural => prepare_raster(request, width, height),
+            PreviewJobSource::DeviceSignal(signal, placement) => {
+                prepare_raster_from_device_signal(request, width, height, &signal, placement)
             }
-            window.set_preview_image(Image::from_rgba8(buffer));
-            let device_pixel_width = raster.preview_scale_percent / 100.0;
-            let subpixel_width = device_pixel_width / 3.0;
-            let resolution = if raster.subpixels_resolved_at_center {
-                "RESOLVED"
-            } else {
-                "UNRESOLVED"
-            };
-            window.set_scale_text(
-                format!(
-                    "DEVICE PIXEL {device_pixel_width:.2} px · RGB STRIPE {subpixel_width:.2} px · {resolution}"
-                )
-                .into(),
-            );
-            window.set_render_text(
-                format!(
-                    "{} × {} · {:.1} ms",
-                    preview_width,
-                    preview_height,
-                    started.elapsed().as_secs_f64() * 1_000.0
-                )
-                .into(),
-            );
-            window.set_inspection_text(match raster.inspection_field_meters {
-                Some([width, height]) => format!(
-                    "INSPECTION · FIELD {:.2} × {:.2} mm",
-                    width * 1_000.0,
-                    height * 1_000.0
-                )
-                .into(),
-                None => "FIT · MAIN CAMERA".into(),
-            });
-            window.set_hint_text(
-                if window.get_view_index() == 2 && !raster.subpixels_resolved_at_center {
-                    "Hold Z and drag on the panel to resolve physical subpixels".into()
-                } else if raster.frame.inspection.is_some() {
-                    "Esc or Shift+Z · return to main camera".into()
-                } else {
-                    "Hold Z and drag · physical inspection camera".into()
-                },
-            );
-            window.set_error_text("".into());
-            if let Some(source) = &state.source {
-                let (interpretation, interpretation_label) = source_color_interpretation(window)
-                    .expect("rendered media has an explicit interpretation");
-                let interpretation_description = match interpretation {
-                    SourceColorInterpretation::IdentityDeviceSignal => {
-                        interpretation_label.to_owned()
-                    }
-                    SourceColorInterpretation::Ocio(_) => {
-                        format!("{interpretation_label} → sRGB device")
-                    }
-                };
-                let alpha = match source.descriptor.alpha {
-                    AlphaPresence::Absent => "opaque",
-                    AlphaPresence::Present if window.get_alpha_index() == 1 => {
-                        "straight → opaque black"
-                    }
-                    AlphaPresence::Present => "premultiplied → opaque black",
-                };
-                let sample_key = source
-                    .decoded_sample_key
-                    .expect("rendered media has a resolved decoded sample");
-                let decoded_timestamp = source
-                    .decoded_timestamp
-                    .expect("rendered media has an exact decoded timestamp");
-                window.set_source_interpretation(
-                    format!(
-                        "{} · {interpretation_description} · {alpha} · sample {}/{} s · {:?}",
-                        decode_interpretation_description(sample_key.interpretation),
-                        decoded_timestamp.numerator(),
-                        decoded_timestamp.denominator(),
-                        sample_key.sample_policy
-                    )
-                    .into(),
-                );
+        };
+        let _ = weak_window.upgrade_in_event_loop(move |window| {
+            window.set_preview_rendering(false);
+            window.set_render_progress(1.0);
+            window.set_render_progress_visible(false);
+            match result {
+                Ok(raster) => present_preview_raster(
+                    &window,
+                    raster,
+                    width,
+                    height,
+                    rendered_view_index,
+                    started,
+                ),
+                Err(error) => block_preview(&window, &error.to_string()),
             }
-        }
-        Err(error) => window.set_error_text(error.to_string().into()),
+            window.invoke_continue_preview_render();
+        });
+    });
+}
+
+fn present_preview_raster(
+    window: &MainWindow,
+    raster: PreparedRaster,
+    width: u16,
+    height: u16,
+    rendered_view_index: i32,
+    started: Instant,
+) {
+    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(width), u32::from(height));
+    for (target, source) in buffer.make_mut_slice().iter_mut().zip(&raster.pixels) {
+        let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        *target = if source.on_panel {
+            Rgba8Pixel {
+                r: channel(source.rgb.r),
+                g: channel(source.rgb.g),
+                b: channel(source.rgb.b),
+                a: 255,
+            }
+        } else {
+            Rgba8Pixel {
+                r: 7,
+                g: 9,
+                b: 12,
+                a: 255,
+            }
+        };
     }
+    window.set_preview_image(Image::from_rgba8(buffer));
+    let device_pixel_width = raster.preview_scale_percent / 100.0;
+    let subpixel_width = device_pixel_width / 3.0;
+    let resolution = if raster.subpixels_resolved_at_center {
+        "RESOLVED"
+    } else {
+        "UNRESOLVED"
+    };
+    window.set_scale_text(
+        format!(
+            "DEVICE PIXEL {device_pixel_width:.2} px · RGB STRIPE {subpixel_width:.2} px · {resolution}"
+        )
+        .into(),
+    );
+    window.set_render_text(
+        format!(
+            "{width} × {height} · {:.1} ms",
+            started.elapsed().as_secs_f64() * 1_000.0
+        )
+        .into(),
+    );
+    window.set_inspection_text(match raster.inspection_field_meters {
+        Some([field_width, field_height]) => format!(
+            "INSPECTION · FIELD {:.2} × {:.2} mm",
+            field_width * 1_000.0,
+            field_height * 1_000.0
+        )
+        .into(),
+        None => "FIT · MAIN CAMERA".into(),
+    });
+    window.set_hint_text(
+        if rendered_view_index == 2 && !raster.subpixels_resolved_at_center {
+            "Hold Z and drag on the panel to resolve physical subpixels".into()
+        } else if raster.frame.inspection.is_some() {
+            "Esc or Shift+Z · return to main camera".into()
+        } else {
+            "Hold Z and drag · physical inspection camera".into()
+        },
+    );
+    window.set_error_text("".into());
+}
+
+fn present_loaded_source_interpretation(
+    window: &MainWindow,
+    source: &LoadedSource,
+    sample_key: DecodedSampleKey,
+    decode_interpretation: ResolvedSourceDecode,
+) {
+    let (interpretation, interpretation_label) =
+        source_color_interpretation(window).expect("prepared media has an explicit interpretation");
+    let interpretation_description = match interpretation {
+        SourceColorInterpretation::IdentityDeviceSignal => interpretation_label.to_owned(),
+        SourceColorInterpretation::Ocio(_) => format!("{interpretation_label} → sRGB device"),
+    };
+    let alpha = match source.descriptor.alpha {
+        AlphaPresence::Absent => "opaque",
+        AlphaPresence::Present if window.get_alpha_index() == 1 => "straight → opaque black",
+        AlphaPresence::Present => "premultiplied → opaque black",
+    };
+    let decoded_timestamp = source
+        .decoded_timestamp
+        .expect("prepared media has an exact decoded timestamp");
+    window.set_source_interpretation(
+        format!(
+            "{} · {interpretation_description} · {alpha} · sample {}/{} s · {:?}",
+            decode_interpretation_description(decode_interpretation),
+            decoded_timestamp.numerator(),
+            decoded_timestamp.denominator(),
+            sample_key.sample_policy
+        )
+        .into(),
+    );
 }
 
 fn present_procedural_source(window: &MainWindow) {
@@ -1085,6 +1147,9 @@ fn render_camera_result(
     started: Instant,
     cancel: Arc<AtomicBool>,
 ) {
+    window.set_render_progress_visible(true);
+    window.set_render_progress(0.0);
+    window.set_render_progress_label("Native sensor capture".into());
     let frame_rate = match project_frame_rate(window) {
         Ok(value) => value,
         Err(error) => {
@@ -1154,6 +1219,10 @@ fn render_camera_result(
             &cancel,
             move |completed, total, tile| {
                 let _ = progress_window.upgrade_in_event_loop(move |window| {
+                    window.set_render_progress(completed as f32 / total as f32);
+                    window.set_render_progress_label(
+                        format!("Native sensor capture · tile {completed}/{total}").into(),
+                    );
                     window.set_render_text(
                         format!(
                             "Native tile {completed} / {total} · {} × {}",
@@ -1167,12 +1236,20 @@ fn render_camera_result(
         let _ = weak_window.upgrade_in_event_loop(move |window| {
             window.set_capture_rendering(false);
             match result {
-                Ok(output) => present_native_capture(&window, output, started),
+                Ok(output) => {
+                    window.set_render_progress(1.0);
+                    window.set_render_progress_visible(false);
+                    present_native_capture(&window, output, started);
+                }
                 Err(NativeCaptureError::Cancelled) => {
+                    window.set_render_progress_visible(false);
                     window.set_render_text("Native capture cancelled".into());
                     window.set_hint_text("No partial frame was published".into());
                 }
-                Err(NativeCaptureError::Failed(error)) => block_preview(&window, &error),
+                Err(NativeCaptureError::Failed(error)) => {
+                    window.set_render_progress_visible(false);
+                    block_preview(&window, &error);
+                }
             }
         });
     });
@@ -1352,6 +1429,10 @@ fn clipped_in_region(raw: &screen_sensor::RawSensorRegion, region: SensorRegion)
 
 fn block_preview(window: &MainWindow, message: &str) {
     window.set_preview_image(Image::default());
+    window.set_preview_rendering(false);
+    window.set_capture_rendering(false);
+    window.set_render_progress_visible(false);
+    window.set_render_text("Preview blocked · see error".into());
     window.set_source_interpretation(message.into());
     window.set_error_text(message.into());
 }
@@ -1593,6 +1674,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         window.on_cancel_capture_frame(move || {
             if let Some(cancel) = &state.borrow().capture_cancel {
                 cancel.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_continue_preview_render(move || {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let mut state = state.borrow_mut();
+            if state.preview_pending {
+                state.preview_pending = false;
+                render_preview(&window, &mut state);
             }
         });
     }
