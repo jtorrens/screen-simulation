@@ -67,6 +67,102 @@ pub struct LcdProfile {
     pub temporal_emission: PanelTemporalEmission,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeviceGeometryPreset {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub native_width: u32,
+    pub native_height: u32,
+    pub active_width: Meters,
+    pub active_height: Meters,
+}
+
+impl DeviceGeometryPreset {
+    pub fn pixels_per_inch(self) -> f32 {
+        let diagonal_pixels = (self.native_width as f32).hypot(self.native_height as f32);
+        let diagonal_meters = self.active_width.0.hypot(self.active_height.0);
+        diagonal_pixels / (diagonal_meters / 0.0254)
+    }
+
+    pub fn diagonal_inches(self) -> f32 {
+        self.active_width.0.hypot(self.active_height.0) / 0.0254
+    }
+}
+
+pub const DEVICE_GEOMETRY_PRESETS: [DeviceGeometryPreset; 8] = [
+    DeviceGeometryPreset {
+        id: "lcd-phone-4_7-retina",
+        label: "Phone LCD · 4.7 Retina",
+        native_width: 750,
+        native_height: 1_334,
+        active_width: Meters(0.058_436),
+        active_height: Meters(0.103_941),
+    },
+    DeviceGeometryPreset {
+        id: "lcd-phone-6_1-liquid-retina",
+        label: "Phone LCD · 6.1 Liquid Retina",
+        native_width: 828,
+        native_height: 1_792,
+        active_width: Meters(0.064_517),
+        active_height: Meters(0.139_607),
+    },
+    DeviceGeometryPreset {
+        id: "lcd-phone-6_5-high-density",
+        label: "Phone LCD · 6.5 high density",
+        native_width: 1_080,
+        native_height: 2_400,
+        active_width: Meters(0.067_733),
+        active_height: Meters(0.150_519),
+    },
+    DeviceGeometryPreset {
+        id: "lcd-macbook-pro-retina-14",
+        label: "MacBook Pro Retina · 14.2",
+        native_width: 3_024,
+        native_height: 1_964,
+        active_width: Meters(0.302_4),
+        active_height: Meters(0.196_4),
+    },
+    DeviceGeometryPreset {
+        id: "lcd-laptop-fhd-15_6",
+        label: "Laptop LCD · 15.6 Full HD",
+        native_width: 1_920,
+        native_height: 1_080,
+        active_width: Meters(0.345_353),
+        active_height: Meters(0.194_261),
+    },
+    DeviceGeometryPreset {
+        id: "lcd-tv-hd-32",
+        label: "TV LCD · 32 HD",
+        native_width: 1_366,
+        native_height: 768,
+        active_width: Meters(0.708_500),
+        active_height: Meters(0.398_337),
+    },
+    DeviceGeometryPreset {
+        id: "lcd-tv-fhd-43",
+        label: "TV LCD · 43 Full HD",
+        native_width: 1_920,
+        native_height: 1_080,
+        active_width: Meters(0.951_935),
+        active_height: Meters(0.535_463),
+    },
+    DeviceGeometryPreset {
+        id: "lcd-tv-uhd-55",
+        label: "TV LCD · 55 UHD",
+        native_width: 3_840,
+        native_height: 2_160,
+        active_width: Meters(1.217_591),
+        active_height: Meters(0.684_895),
+    },
+];
+
+pub fn device_geometry_preset(id: &str) -> Option<DeviceGeometryPreset> {
+    DEVICE_GEOMETRY_PRESETS
+        .iter()
+        .copied()
+        .find(|preset| preset.id == id)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PanelTemporalEmission {
     pub pwm_period: RationalTime,
@@ -643,6 +739,20 @@ mod tests {
         let profile = profile().validate().expect("valid panel");
         assert!((profile.pixel_pitch_meters() - 0.000_155_4).abs() < 0.000_000_1);
         assert!((profile.pixels_per_inch() - 163.5).abs() < 0.2);
+    }
+
+    #[test]
+    fn bundled_device_geometry_presets_have_stable_unique_ids_and_complete_scale() {
+        let mut ids = std::collections::BTreeSet::new();
+        for preset in DEVICE_GEOMETRY_PRESETS {
+            assert!(ids.insert(preset.id));
+            assert!(preset.native_width > 0 && preset.native_height > 0);
+            assert!(preset.active_width.0 > 0.0 && preset.active_height.0 > 0.0);
+            assert!((40.0..500.0).contains(&preset.pixels_per_inch()));
+            assert!((4.0..60.0).contains(&preset.diagonal_inches()));
+            assert_eq!(device_geometry_preset(preset.id), Some(preset));
+        }
+        assert_eq!(device_geometry_preset("retired-or-unknown"), None);
     }
 
     #[test]

@@ -785,7 +785,7 @@ pub fn panel_uv_at_viewport(
     .map(|hit| hit.0)
 }
 
-pub const APERTURE_SAMPLE_COUNT: usize = 8;
+pub const APERTURE_SAMPLE_COUNT: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OpticalSample {
@@ -802,31 +802,69 @@ pub fn panel_uv_aperture_samples(
     viewport_ndc: Vec2,
 ) -> [OpticalSample; APERTURE_SAMPLE_COUNT] {
     const DISK: [Vec2; APERTURE_SAMPLE_COUNT] = [
-        Vec2 { x: 0.250, y: 0.000 },
         Vec2 {
-            x: -0.319,
-            y: 0.293,
+            x: 0.176_777,
+            y: 0.000_000,
         },
         Vec2 {
-            x: 0.048,
-            y: -0.557,
-        },
-        Vec2 { x: 0.403, y: 0.524 },
-        Vec2 {
-            x: -0.739,
-            y: -0.131,
+            x: -0.225_772,
+            y: 0.206_826,
         },
         Vec2 {
-            x: 0.700,
-            y: -0.444,
+            x: 0.034_558,
+            y: -0.393_771,
         },
         Vec2 {
-            x: -0.236,
-            y: 0.870,
+            x: 0.284_571,
+            y: 0.371_173,
         },
         Vec2 {
-            x: -0.444,
-            y: -0.861,
+            x: -0.522_223,
+            y: -0.092_374,
+        },
+        Vec2 {
+            x: 0.494_695,
+            y: -0.314_685,
+        },
+        Vec2 {
+            x: -0.165_466,
+            y: 0.615_525,
+        },
+        Vec2 {
+            x: -0.315_561,
+            y: -0.607_594,
+        },
+        Vec2 {
+            x: 0.684_642,
+            y: 0.250_030,
+        },
+        Vec2 {
+            x: -0.712_256,
+            y: 0.294_009,
+        },
+        Vec2 {
+            x: 0.343_354,
+            y: -0.733_729,
+        },
+        Vec2 {
+            x: 0.253_730,
+            y: 0.808_932,
+        },
+        Vec2 {
+            x: -0.764_746,
+            y: -0.443_186,
+        },
+        Vec2 {
+            x: 0.897_134,
+            y: -0.197_232,
+        },
+        Vec2 {
+            x: -0.547_507,
+            y: 0.778_772,
+        },
+        Vec2 {
+            x: -0.126_487,
+            y: -0.976_090,
         },
     ];
     let Some(ideal) = inverse_distortion(

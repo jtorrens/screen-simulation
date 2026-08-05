@@ -1280,12 +1280,6 @@ fn evaluate_optical_pixel(
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
     signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) -> LinearOpticalPixel {
-    const FOOTPRINT_CORNERS: [Vec2; 4] = [
-        Vec2 { x: 0.001, y: 0.001 },
-        Vec2 { x: 0.999, y: 0.001 },
-        Vec2 { x: 0.001, y: 0.999 },
-        Vec2 { x: 0.999, y: 0.999 },
-    ];
     const RESOLVED_SENSOR_BOX: [Vec2; 16] = [
         Vec2 { x: 0.125, y: 0.125 },
         Vec2 { x: 0.375, y: 0.125 },
@@ -1317,7 +1311,28 @@ fn evaluate_optical_pixel(
             viewport_ndc,
         )
     };
-    let footprint = FOOTPRINT_CORNERS.map(trace);
+    let psf_radius = approximate_psf_radius_pixels(frame.camera, width);
+    let minimum = 0.001 - psf_radius;
+    let maximum = 0.999 + psf_radius;
+    let footprint = [
+        Vec2 {
+            x: minimum,
+            y: minimum,
+        },
+        Vec2 {
+            x: maximum,
+            y: minimum,
+        },
+        Vec2 {
+            x: minimum,
+            y: maximum,
+        },
+        Vec2 {
+            x: maximum,
+            y: maximum,
+        },
+    ]
+    .map(trace);
     if !subpixels_resolved_for_samples(&footprint, request.panel) {
         return integrate_aperture_samples(
             &footprint,
@@ -1339,6 +1354,14 @@ fn evaluate_optical_pixel(
         signal_at,
         signal_area,
     )
+}
+
+fn approximate_psf_radius_pixels(camera: CameraSample, raster_width: u16) -> f32 {
+    const GREEN_WAVELENGTH_MM: f32 = 0.000_550;
+    const REFERENCE_LENS_SOFTNESS_PIXELS: f32 = 0.18;
+    let photosite_pitch_mm = camera.sensor_width.0 / f32::from(raster_width);
+    let airy_radius_mm = 1.22 * GREEN_WAVELENGTH_MM * camera.f_stop;
+    (REFERENCE_LENS_SOFTNESS_PIXELS + airy_radius_mm / photosite_pitch_mm).min(1.5)
 }
 
 fn integrate_aperture_samples(
@@ -2210,6 +2233,19 @@ mod tests {
         let raster = prepare_raster(request, 320, 180).expect("valid raster");
         assert!(!raster.subpixels_resolved_at_center);
         assert!(raster.pixels.iter().any(|pixel| pixel.on_panel));
+    }
+
+    #[test]
+    fn approximate_optical_psf_scales_with_f_number_and_sensor_sampling_density() {
+        let frame = prepare_frame(request().optical_request()).expect("valid frame");
+        let at_960 = approximate_psf_radius_pixels(frame.camera, 960);
+        let at_3840 = approximate_psf_radius_pixels(frame.camera, 3_840);
+        let mut stopped_down = frame.camera;
+        stopped_down.f_stop *= 2.0;
+        let at_f16 = approximate_psf_radius_pixels(stopped_down, 3_840);
+        assert!(at_3840 > at_960);
+        assert!(at_f16 > at_3840);
+        assert!(at_f16 <= 1.5);
     }
 
     #[test]

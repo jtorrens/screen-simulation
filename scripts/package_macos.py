@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import plistlib
+import os
 import shutil
 import stat
 import subprocess
@@ -20,8 +21,8 @@ BUNDLED_BINARY = MACOS / "screen-desktop"
 LOADER_RPATH = "@executable_path/../Frameworks"
 
 
-def run(command: list[str]) -> None:
-    subprocess.run(command, cwd=ROOT, check=True)
+def run(command: list[str], *, environment: dict[str, str] | None = None) -> None:
+    subprocess.run(command, cwd=ROOT, check=True, env=environment)
 
 
 def capture(command: list[str]) -> str:
@@ -154,7 +155,14 @@ def verify_portable_dependencies(binaries: list[Path]) -> None:
 
 
 def main() -> int:
-    run(["cargo", "build", "--release", "-p", "screen-desktop"])
+    build_environment = os.environ.copy()
+    build_environment["SCREEN_SIM_BUILD_ID"] = capture(
+        ["git", "rev-parse", "--short=8", "HEAD"]
+    ).strip()
+    run(
+        ["cargo", "build", "--release", "-p", "screen-desktop"],
+        environment=build_environment,
+    )
 
     if BUNDLE.exists():
         shutil.rmtree(BUNDLE)

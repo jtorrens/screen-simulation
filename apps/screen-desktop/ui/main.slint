@@ -8,6 +8,7 @@ component ValueRow inherits Rectangle {
     in-out property <float> value;
     in property <string> numeric-value;
     in property <string> suffix;
+    in property <bool> enabled: true;
 
     height: 38px;
     background: transparent;
@@ -17,7 +18,7 @@ component ValueRow inherits Rectangle {
 
         Text {
             text: root.label;
-            color: #aeb7c8;
+            color: root.enabled ? #aeb7c8 : #697386;
             width: 84px;
             vertical-alignment: center;
         }
@@ -28,6 +29,7 @@ component ValueRow inherits Rectangle {
             step: root.step;
             value <=> root.value;
             width: 124px;
+            enabled: root.enabled;
         }
 
         Rectangle {
@@ -44,7 +46,7 @@ component ValueRow inherits Rectangle {
                 width: parent.width - (root.suffix == "" ? 10px : 30px);
                 height: parent.height - 2px;
                 text: root.numeric-value;
-                input-type: number;
+                enabled: root.enabled;
                 color: #e6ebf3;
                 selection-background-color: #3677d7;
                 selection-foreground-color: #ffffff;
@@ -55,6 +57,7 @@ component ValueRow inherits Rectangle {
                     if (self.text.is-float()) {
                         root.value = clamp(self.text.to-float(), root.minimum, root.maximum);
                     }
+                    self.text = root.numeric-value;
                 }
             }
 
@@ -95,6 +98,16 @@ export component MainWindow inherits Window {
     in-out property <float> camera-exposure-ev: 0;
     in-out property <int> output-transform-index: 0;
     in-out property <int> sensor-raster-index: 1;
+    in-out property <int> device-preset-index: 3;
+    in property <[string]> device-preset-model;
+    in property <[string]> device-preset-ids;
+    in-out property <float> device-native-width: 3024;
+    in-out property <float> device-native-height: 1964;
+    in-out property <float> device-active-width-mm: 302.4;
+    in-out property <float> device-active-height-mm: 196.4;
+    in-out property <string> device-summary: "14.2 in · 254.0 PPI · 0.100 mm pitch";
+    in property <string> build-id: "development";
+    in-out property <int> focus-mode-index: 0;
     in-out property <float> yaw-degrees: 0;
     in-out property <float> pitch-degrees: 0;
     in-out property <int> camera-key-count: 1;
@@ -127,7 +140,12 @@ export component MainWindow inherits Window {
     in-out property <bool> can-undo: false;
     in-out property <bool> can-redo: false;
     in-out property <bool> camera-edit-pending: false;
+    in-out property <float> viewer-zoom: 1;
+    in-out property <float> viewer-pan-x: 0;
+    in-out property <float> viewer-pan-y: 0;
     private property <bool> zoom-key-held: false;
+    private property <float> pan-start-x: 0;
+    private property <float> pan-start-y: 0;
 
     callback inspect(float, float, float, float);
     callback reset-inspection();
@@ -136,6 +154,7 @@ export component MainWindow inherits Window {
     callback set-camera-keyframe();
     callback undo();
     callback redo();
+    callback select-device-preset(string);
 
     MenuBar {
         Menu {
@@ -205,7 +224,7 @@ export component MainWindow inherits Window {
                 }
 
                 Text {
-                    text: "Version 0.1.0 · Physical screen imaging";
+                    text: "Version 0.1.0 · Build " + root.build-id;
                     color: #aeb7c8;
                     horizontal-alignment: center;
                 }
@@ -334,8 +353,10 @@ export component MainWindow inherits Window {
 
                             Image {
                                 source: root.preview-image;
-                                width: 100%;
-                                height: 100%;
+                                width: parent.width * (root.view-index == 4 ? root.viewer-zoom : 1);
+                                height: parent.height * (root.view-index == 4 ? root.viewer-zoom : 1);
+                                x: root.view-index == 4 ? (-(self.width - parent.width) / 2 + root.viewer-pan-x * parent.width) : 0px;
+                                y: root.view-index == 4 ? (-(self.height - parent.height) / 2 + root.viewer-pan-y * parent.height) : 0px;
                                 image-fit: fill;
                             }
 
@@ -351,9 +372,19 @@ export component MainWindow inherits Window {
                             }
 
                             drag-area := TouchArea {
-                                mouse-cursor: root.zoom-key-held ? crosshair : default;
+                                mouse-cursor: root.zoom-key-held ? crosshair : (root.view-index == 4 && root.viewer-zoom > 1 ? move : default);
+                                moved => {
+                                    if (self.pressed && !root.zoom-key-held && root.view-index == 4 && root.viewer-zoom > 1) {
+                                        root.viewer-pan-x = clamp(root.pan-start-x + (self.mouse-x - self.pressed-x) / preview.width, -(root.viewer-zoom - 1) / 2, (root.viewer-zoom - 1) / 2);
+                                        root.viewer-pan-y = clamp(root.pan-start-y + (self.mouse-y - self.pressed-y) / preview.height, -(root.viewer-zoom - 1) / 2, (root.viewer-zoom - 1) / 2);
+                                    }
+                                }
                                 pointer-event(event) => {
-                                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.zoom-key-held) {
+                                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                        root.pan-start-x = root.viewer-pan-x;
+                                        root.pan-start-y = root.viewer-pan-y;
+                                    }
+                                    if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.zoom-key-held && root.view-index != 4) {
                                         if (abs(self.mouse-x - self.pressed-x) >= 4px && abs(self.mouse-y - self.pressed-y) >= 4px) {
                                             root.inspect(
                                                 self.pressed-x / preview.width,
@@ -483,6 +514,68 @@ export component MainWindow inherits Window {
                         }
                         Rectangle { height: 1px; background: #303744; }
 
+                        Text { text: "DEVICE"; color: #71819b; font-size: 11px; }
+
+                        ComboBox {
+                            model: root.device-preset-model;
+                            current-index <=> root.device-preset-index;
+                            selected(value) => {
+                                root.select-device-preset(root.device-preset-ids[self.current-index]);
+                            }
+                        }
+
+                        Text {
+                            text: root.device-native-width + " × " + root.device-native-height + " px · " + root.device-active-width-mm + " × " + root.device-active-height-mm + " mm";
+                            color: #c3ccda;
+                            font-size: 11px;
+                        }
+
+                        Text { text: root.device-summary; color: #8794a9; font-size: 11px; }
+
+                        ValueRow {
+                            visible: root.device-preset-index == root.device-preset-model.length - 1;
+                            label: "Width px";
+                            minimum: 320;
+                            maximum: 8192;
+                            step: 1;
+                            value <=> root.device-native-width;
+                            numeric-value: round(root.device-native-width);
+                        }
+
+                        ValueRow {
+                            visible: root.device-preset-index == root.device-preset-model.length - 1;
+                            label: "Height px";
+                            minimum: 240;
+                            maximum: 8192;
+                            step: 1;
+                            value <=> root.device-native-height;
+                            numeric-value: round(root.device-native-height);
+                        }
+
+                        ValueRow {
+                            visible: root.device-preset-index == root.device-preset-model.length - 1;
+                            label: "Width";
+                            minimum: 40;
+                            maximum: 2000;
+                            step: 0.1;
+                            value <=> root.device-active-width-mm;
+                            numeric-value: round(root.device-active-width-mm * 10) / 10;
+                            suffix: "mm";
+                        }
+
+                        ValueRow {
+                            visible: root.device-preset-index == root.device-preset-model.length - 1;
+                            label: "Height";
+                            minimum: 40;
+                            maximum: 1200;
+                            step: 0.1;
+                            value <=> root.device-active-height-mm;
+                            numeric-value: round(root.device-active-height-mm * 10) / 10;
+                            suffix: "mm";
+                        }
+
+                        Rectangle { height: 1px; background: #303744; }
+
                         Text { text: "LCD PANEL"; color: #71819b; font-size: 11px; }
 
                         ValueRow {
@@ -580,6 +673,16 @@ export component MainWindow inherits Window {
                             value <=> root.focus-distance-m;
                             numeric-value: round(root.focus-distance-m * 100) / 100;
                             suffix: "m";
+                            enabled: root.focus-mode-index == 1;
+                        }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Focus mode"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: ["Panel", "Manual"];
+                                current-index <=> root.focus-mode-index;
+                            }
                         }
 
                         ValueRow {
@@ -635,6 +738,17 @@ export component MainWindow inherits Window {
                             numeric-value: round(root.preview-exposure-ev * 10) / 10;
                             suffix: "EV";
                             visible: root.view-index != 4;
+                        }
+
+                        ValueRow {
+                            label: "View zoom";
+                            minimum: 1;
+                            maximum: 8;
+                            step: 0.25;
+                            value <=> root.viewer-zoom;
+                            numeric-value: round(root.viewer-zoom * 100) / 100;
+                            suffix: "×";
+                            visible: root.view-index == 4;
                         }
 
                         Text {

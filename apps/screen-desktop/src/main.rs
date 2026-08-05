@@ -32,7 +32,10 @@ use screen_media::{
     MediaDescriptor, ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix,
     SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
 };
-use screen_panel::{LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout};
+use screen_panel::{
+    DEVICE_GEOMETRY_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
+    device_geometry_preset,
+};
 use screen_platform::{decode_frame_at_time, probe_media};
 use screen_sensor::SensorProfile;
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
@@ -59,8 +62,13 @@ struct RenderControls {
     camera_exposure_ev: f32,
     output_transform_index: i32,
     sensor_raster_index: i32,
+    device_native_width: f32,
+    device_native_height: f32,
+    device_active_width_mm: f32,
+    device_active_height_mm: f32,
     yaw_degrees: f32,
     pitch_degrees: f32,
+    focus_mode_index: i32,
     camera_interpolation_index: i32,
     stripe_index: i32,
     view_index: i32,
@@ -93,8 +101,13 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         camera_exposure_ev: window.get_camera_exposure_ev(),
         output_transform_index: window.get_output_transform_index(),
         sensor_raster_index: window.get_sensor_raster_index(),
+        device_native_width: window.get_device_native_width(),
+        device_native_height: window.get_device_native_height(),
+        device_active_width_mm: window.get_device_active_width_mm(),
+        device_active_height_mm: window.get_device_active_height_mm(),
         yaw_degrees: window.get_yaw_degrees(),
         pitch_degrees: window.get_pitch_degrees(),
+        focus_mode_index: window.get_focus_mode_index(),
         camera_interpolation_index: window.get_camera_interpolation_index(),
         stripe_index: window.get_stripe_index(),
         view_index: window.get_view_index(),
@@ -118,7 +131,11 @@ fn camera_edit_from_controls(controls: RenderControls) -> CameraEdit {
         yaw_degrees: controls.yaw_degrees,
         pitch_degrees: controls.pitch_degrees,
         focal_mm: controls.focal_mm,
-        focus_distance_m: controls.focus_distance_m,
+        focus_distance_m: if controls.focus_mode_index == 0 {
+            controls.distance_m
+        } else {
+            controls.focus_distance_m
+        },
         f_stop: controls.f_stop,
         interpolation: match controls.camera_interpolation_index {
             0 => KeyframeInterpolation::Hold,
@@ -323,7 +340,11 @@ fn camera_edit_from_window(window: &MainWindow) -> CameraEdit {
         yaw_degrees: window.get_yaw_degrees(),
         pitch_degrees: window.get_pitch_degrees(),
         focal_mm: window.get_focal_mm(),
-        focus_distance_m: window.get_focus_distance_m(),
+        focus_distance_m: if window.get_focus_mode_index() == 0 {
+            window.get_distance_m()
+        } else {
+            window.get_focus_distance_m()
+        },
         f_stop: window.get_f_stop(),
         interpolation: match window.get_camera_interpolation_index() {
             0 => KeyframeInterpolation::Hold,
@@ -547,6 +568,7 @@ fn simulation_request(
     screen: &ScreenTrack,
 ) -> Result<SimulationRequest, String> {
     let frame_rate = project_frame_rate(window)?;
+    let (native_width, native_height, active_width, active_height) = device_geometry(window)?;
     let view = match window.get_view_index() {
         1 => DiagnosticView::DeviceSignal,
         2 => DiagnosticView::Subpixels,
@@ -560,10 +582,10 @@ fn simulation_request(
                 .map_err(|error| error.to_string())?,
             viewport_aspect: f32::from(PREVIEW_WIDTH) / f32::from(PREVIEW_HEIGHT),
             panel: LcdProfile {
-                native_width: 3840,
-                native_height: 2160,
-                active_width: Meters(0.596_736),
-                active_height: Meters(0.335_664),
+                native_width,
+                native_height,
+                active_width,
+                active_height,
                 stripe_layout: if window.get_stripe_index() == 1 {
                     StripeLayout::Bgr
                 } else {
@@ -589,6 +611,73 @@ fn simulation_request(
         view,
         preview_exposure_ev: window.get_preview_exposure_ev(),
     })
+}
+
+fn device_geometry(window: &MainWindow) -> Result<(u32, u32, Meters, Meters), String> {
+    let width = window.get_device_native_width();
+    let height = window.get_device_native_height();
+    let active_width_mm = window.get_device_active_width_mm();
+    let active_height_mm = window.get_device_active_height_mm();
+    if !width.is_finite()
+        || !height.is_finite()
+        || width.fract() != 0.0
+        || height.fract() != 0.0
+        || !(320.0..=8_192.0).contains(&width)
+        || !(240.0..=8_192.0).contains(&height)
+    {
+        return Err(
+            "device native resolution must contain complete pixels in the supported range"
+                .to_owned(),
+        );
+    }
+    if !active_width_mm.is_finite()
+        || !active_height_mm.is_finite()
+        || !(40.0..=2_000.0).contains(&active_width_mm)
+        || !(40.0..=1_200.0).contains(&active_height_mm)
+    {
+        return Err("device active dimensions must be finite physical millimeters".to_owned());
+    }
+    Ok((
+        width as u32,
+        height as u32,
+        Meters(active_width_mm * 0.001),
+        Meters(active_height_mm * 0.001),
+    ))
+}
+
+fn update_device_summary(window: &MainWindow) {
+    let Ok((width, height, active_width, active_height)) = device_geometry(window) else {
+        window.set_device_summary("Invalid device geometry".into());
+        return;
+    };
+    let diagonal_pixels = (width as f32).hypot(height as f32);
+    let diagonal_meters = active_width.0.hypot(active_height.0);
+    let ppi = diagonal_pixels / (diagonal_meters / 0.0254);
+    let pitch_mm = active_width.0 * 1_000.0 / width as f32;
+    window.set_device_summary(
+        format!(
+            "{:.1} in · {:.1} PPI · {:.3} mm pixel pitch",
+            diagonal_meters / 0.0254,
+            ppi,
+            pitch_mm
+        )
+        .into(),
+    );
+}
+
+fn apply_device_preset(window: &MainWindow, id: &str) -> Result<(), String> {
+    if id == "custom" {
+        update_device_summary(window);
+        return Ok(());
+    }
+    let preset = device_geometry_preset(id)
+        .ok_or_else(|| format!("unknown current device preset id {id}"))?;
+    window.set_device_native_width(preset.native_width as f32);
+    window.set_device_native_height(preset.native_height as f32);
+    window.set_device_active_width_mm(preset.active_width.0 * 1_000.0);
+    window.set_device_active_height_mm(preset.active_height.0 * 1_000.0);
+    update_device_summary(window);
+    Ok(())
 }
 
 fn render_preview(window: &MainWindow, state: &mut InteractionState) {
@@ -914,10 +1003,8 @@ fn render_camera_result(
             return;
         }
     };
-    let preview_linear =
-        downsample_camera_preview(&captured.developed.acescg, sensor_width, sensor_height);
-    let mut output = Vec::with_capacity(preview_linear.len() * 4);
-    for pixel in &preview_linear {
+    let mut output = Vec::with_capacity(captured.developed.acescg.len() * 4);
+    for pixel in &captured.developed.acescg {
         output.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
     }
     if let Err(error) = processor.apply_acescg_rgba_buffer(&mut output) {
@@ -925,7 +1012,7 @@ fn render_camera_result(
         return;
     }
     let mut buffer =
-        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(PREVIEW_WIDTH), u32::from(PREVIEW_HEIGHT));
+        SharedPixelBuffer::<Rgba8Pixel>::new(u32::from(sensor_width), u32::from(sensor_height));
     for (target, rgba) in buffer
         .make_mut_slice()
         .iter_mut()
@@ -943,8 +1030,8 @@ fn render_camera_result(
     window.set_preview_image(Image::from_rgba8(buffer));
     window.set_scale_text(
         format!(
-            "CAMERA SENSOR {} × {} · {}-BIT BAYER · PREVIEW {} × {} · {} CLIPPED",
-            sensor_width, sensor_height, sensor.adc_bits, PREVIEW_WIDTH, PREVIEW_HEIGHT, clipped
+            "CAMERA SENSOR {} × {} · {}-BIT BAYER · NATIVE VIEW · {} CLIPPED",
+            sensor_width, sensor_height, sensor.adc_bits, clipped
         )
         .into(),
     );
@@ -957,7 +1044,10 @@ fn render_camera_result(
         .into(),
     );
     window.set_inspection_text("DEVELOPED CAMERA FRAME · 180° GLOBAL SHUTTER".into());
-    window.set_hint_text("Authoritative RAW and linear ACEScg retained before ODT".into());
+    window.set_hint_text(
+        "Native sensor result · increase View zoom and drag to inspect without moving camera"
+            .into(),
+    );
     window.set_error_text("".into());
 }
 
@@ -968,43 +1058,6 @@ fn sensor_raster(index: i32) -> Result<(u16, u16), &'static str> {
         2 => Ok((3_840, 2_160)),
         _ => Err("select an explicit sensor raster"),
     }
-}
-
-fn downsample_camera_preview(
-    source: &[LinearRgb],
-    source_width: u16,
-    source_height: u16,
-) -> Vec<LinearRgb> {
-    let horizontal_scale = source_width / PREVIEW_WIDTH;
-    let vertical_scale = source_height / PREVIEW_HEIGHT;
-    assert_eq!(source_width % PREVIEW_WIDTH, 0);
-    assert_eq!(source_height % PREVIEW_HEIGHT, 0);
-    assert_eq!(horizontal_scale, vertical_scale);
-    let scale = usize::from(horizontal_scale);
-    let source_width = usize::from(source_width);
-    let mut output = Vec::with_capacity(usize::from(PREVIEW_WIDTH) * usize::from(PREVIEW_HEIGHT));
-    for target_y in 0..usize::from(PREVIEW_HEIGHT) {
-        for target_x in 0..usize::from(PREVIEW_WIDTH) {
-            let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
-            for offset_y in 0..scale {
-                for offset_x in 0..scale {
-                    let source_y = target_y * scale + offset_y;
-                    let source_x = target_x * scale + offset_x;
-                    let pixel = source[source_y * source_width + source_x];
-                    sum.r += pixel.r;
-                    sum.g += pixel.g;
-                    sum.b += pixel.b;
-                }
-            }
-            let weight = (scale * scale) as f32;
-            output.push(LinearRgb::new(
-                sum.r / weight,
-                sum.g / weight,
-                sum.b / weight,
-            ));
-        }
-    }
-    output
 }
 
 fn block_preview(window: &MainWindow, message: &str) {
@@ -1165,8 +1218,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(Into::into)
         .collect();
     window.set_idt_model(ModelRc::new(VecModel::from(idt_labels)));
+    let device_labels: Vec<SharedString> = DEVICE_GEOMETRY_PRESETS
+        .iter()
+        .map(|preset| preset.label.into())
+        .chain(std::iter::once("Custom".into()))
+        .collect();
+    let device_ids: Vec<SharedString> = DEVICE_GEOMETRY_PRESETS
+        .iter()
+        .map(|preset| preset.id.into())
+        .chain(std::iter::once("custom".into()))
+        .collect();
+    window.set_device_preset_model(ModelRc::new(VecModel::from(device_labels)));
+    window.set_device_preset_ids(ModelRc::new(VecModel::from(device_ids)));
+    window.set_build_id(
+        option_env!("SCREEN_SIM_BUILD_ID")
+            .unwrap_or("development")
+            .into(),
+    );
+    apply_device_preset(&window, "lcd-macbook-pro-retina-14")?;
     let color_engine = ColorEngine::bundled()?;
     let state = Rc::new(RefCell::new(InteractionState::new(color_engine)));
+
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_select_device_preset(move |id| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            match apply_device_preset(&window, id.as_str()) {
+                Ok(()) => render_preview(&window, &mut state.borrow_mut()),
+                Err(error) => block_preview(&window, &error),
+            }
+        });
+    }
 
     {
         let weak_window = window.as_weak();
@@ -1344,6 +1429,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Some(window) = weak_window.upgrade() else {
                 return;
             };
+            if window.get_focus_mode_index() == 0
+                && window.get_focus_distance_m() != window.get_distance_m()
+            {
+                window.set_focus_distance_m(window.get_distance_m());
+            }
+            update_device_summary(&window);
             let now = Instant::now();
             let mut state = state.borrow_mut();
             let elapsed = now.duration_since(state.last_tick).as_secs_f64();
@@ -1509,14 +1600,5 @@ mod interaction_tests {
         editor.commit_preview();
         assert_eq!(editor.committed.transform.keyframes[0].id, transform_id);
         assert_eq!(editor.committed.intrinsics.keyframes[0].id, intrinsics_id);
-    }
-
-    #[test]
-    fn camera_preview_downsample_preserves_a_constant_linear_signal() {
-        let constant = LinearRgb::new(0.25, 1.5, -0.1);
-        let source = vec![constant; usize::from(PREVIEW_WIDTH) * usize::from(PREVIEW_HEIGHT)];
-        let preview = downsample_camera_preview(&source, PREVIEW_WIDTH, PREVIEW_HEIGHT);
-        assert_eq!(preview.len(), source.len());
-        assert!(preview.into_iter().all(|pixel| pixel == constant));
     }
 }
