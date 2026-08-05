@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use screen_application::{
     CAPTURE_DEVICE_PRESETS, FrameCaptureRequest, OpticalRequest, PanelTemporalEvaluation,
@@ -115,12 +115,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cpu_spatial_started = Instant::now();
     evaluate_procedural_spatial_cpu_oracle(optics.clone(), sensor, tile_region)?;
     let cpu_spatial_elapsed = cpu_spatial_started.elapsed();
-    let capture = FrameCaptureRequest {
+    let default_capture = FrameCaptureRequest {
         optics,
         frame_rate: FrameRate::new(24, 1)?,
         frame_index: 0,
         duration: RationalTime::new(1, 288)?,
-        temporal_samples: MOTION_SAMPLES,
+        temporal_samples: 1,
         readout: SensorReadout::Rolling {
             duration: RationalTime::new(3, 250)?,
             direction: RollingDirection::TopToBottom,
@@ -148,34 +148,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let throughput_elapsed = throughput_started.elapsed();
     let metal_spatial_throughput =
         spatial_pixels * SPATIAL_THROUGHPUT_ITERATIONS as f64 / throughput_elapsed.as_secs_f64();
-    let render_started = Instant::now();
-    let result = capture_and_develop_procedural_region_with_compute_backends(
-        capture,
-        sensor,
-        development,
-        tile_region,
-        &metal,
-        &metal,
-    )?;
-    let elapsed = render_started.elapsed();
-    let pixels = result.developed.acescg.len() as f64;
-    let throughput = pixels / elapsed.as_secs_f64();
+    let run_capture =
+        |capture: FrameCaptureRequest| -> Result<(Duration, f64), Box<dyn std::error::Error>> {
+            let started = Instant::now();
+            let result = capture_and_develop_procedural_region_with_compute_backends(
+                capture,
+                sensor,
+                development,
+                tile_region,
+                &metal,
+                &metal,
+            )?;
+            Ok((started.elapsed(), result.developed.acescg.len() as f64))
+        };
+    let (default_elapsed, pixels) = run_capture(default_capture.clone())?;
+    let mut static_eight_capture = default_capture;
+    static_eight_capture.temporal_samples = MOTION_SAMPLES;
+    static_eight_capture.optics.procedural_pattern = ProceduralTestPattern::EyeChart;
+    let (static_eight_elapsed, static_pixels) = run_capture(static_eight_capture)?;
+    let default_throughput = pixels / default_elapsed.as_secs_f64();
+    let static_eight_throughput = static_pixels / static_eight_elapsed.as_secs_f64();
     let iphone_pixels =
         f64::from(iphone.sensor.native_width) * f64::from(iphone.sensor.native_height);
     println!("backend: Metal · {}", metal.device_name());
-    println!("scene: iPhone 16e model · rolling shutter · 8 temporal samples");
+    println!("scene: iPhone 16e model · rolling shutter · clean LCD timing");
     println!("benchmark tile: {TILE_EDGE}x{TILE_EDGE} ({pixels:.0} pixels)");
     println!("cold backend setup: {:.3} s", setup.as_secs_f64());
     println!(
         "time to first complete product tile: {:.3} s",
-        elapsed.as_secs_f64()
+        default_elapsed.as_secs_f64()
     );
     println!(
-        "rolling batch: {} exact row-sample plans ({} motion samples)",
-        usize::from(tile_region.expanded_for_demosaic(sensor).height) * usize::from(MOTION_SAMPLES),
-        MOTION_SAMPLES
+        "default 1 motion sample: {:.3} s · {:.0} pixels/s",
+        default_elapsed.as_secs_f64(),
+        default_throughput
     );
-    println!("end-to-end physical throughput: {throughput:.2} sensor pixels/s");
+    let rolling_rows = usize::from(tile_region.expanded_for_demosaic(sensor).height);
+    println!(
+        "static 8 motion samples: {:.3} s · {:.0} pixels/s · {} authored row-samples reused as {} spatial plans",
+        static_eight_elapsed.as_secs_f64(),
+        static_eight_throughput,
+        rolling_rows * usize::from(MOTION_SAMPLES),
+        rolling_rows
+    );
     println!(
         "CPU spatial oracle: {:.3} s · {:.0} pixels/s",
         cpu_spatial_elapsed.as_secs_f64(),
@@ -194,10 +209,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         iphone_pixels / metal_spatial_throughput
     );
     println!(
-        "48 MP end-to-end measured extrapolation: {:.1} min ({}x{}; rolling, 8 motion samples)",
-        iphone_pixels / throughput / 60.0,
+        "48 MP default end-to-end extrapolation: {:.1} min ({}x{}; rolling, 1 motion sample)",
+        iphone_pixels / default_throughput / 60.0,
         iphone.sensor.native_width,
         iphone.sensor.native_height
+    );
+    println!(
+        "48 MP static/8 end-to-end extrapolation: {:.1} min (same exact 8-sample integration)",
+        iphone_pixels / static_eight_throughput / 60.0
     );
 
     let backend_sensor = SensorProfile {

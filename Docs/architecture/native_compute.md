@@ -54,6 +54,13 @@ static raster storage use one parameter array, one signal upload and one Metal d
 animated raster samples retain their exact authored source and may require separate dispatches.
 The batch changes command granularity only and never drops a row or motion sample.
 
+Application reuses a spatial result only when the source is explicitly static and camera
+transform, camera intrinsics and screen transform each contain exactly one authored keyframe. It
+still constructs and integrates every requested shutter interval and its analytical per-row gain;
+only the identical modulation-free spatial value is referenced more than once. An animated
+procedural source, media sequence or any multi-keyframe spatial track selects the complete plan
+batch automatically. This is an optimization inside the same result contract, not another route.
+
 Native work is partitioned into 128-pixel sensor tiles. Progress publishes after each completed tile
 and cancellation is checked before the next tile. Completed staging remains non-authoritative and a
 cancelled job never publishes a partial result.
@@ -65,29 +72,32 @@ cargo run --release -p screen-desktop --bin native_benchmark
 ```
 
 It reports cold Metal setup, time to the first complete Native tile, end-to-end physical throughput
-for the iPhone 16e model with rolling shutter and eight temporal samples, a measured 48 MP
-extrapolation, and isolated CPU/Metal RAW-development time. Extrapolation is diagnostic evidence,
-not a promise: it assumes linear pixel scaling for the same authored scene and hardware.
+for the iPhone 16e model with rolling shutter for both the default one-motion-sample case and a
+static eight-motion-sample case, measured 48 MP extrapolations, and isolated CPU/Metal
+RAW-development time. Extrapolation is diagnostic evidence, not a promise: it assumes linear pixel
+scaling for the same authored scene and hardware.
 
 The pre-port 2026-08-05 release measurement on Apple M3 Ultra reported 2.065 s to the first
 128×128 product tile, 7,936 sensor pixels/s and a 1.7 h linear 8064×6048 extrapolation.
 
-After product connection and temporal factorization, the representative release run reported
-0.047 s cold setup and 0.542 s to the first complete 128×128 tile. That tile batched 1,048 exact
-rolling row/sample plans (the demosaic halo included) for eight requested motion samples. Measured
-end-to-end throughput was 30,202 sensor pixels/s, corresponding to a 26.9 minute linear iPhone 16e
-48 MP extrapolation for the same rolling/eight-sample scene. This is the end-to-end estimate; the
-separate one-sample spatial figure must not be presented as such.
+After exact static reuse, the representative release run reported 0.047 s cold setup and 0.080 s
+to the first complete 128×128 default tile. The default rolling/one-motion-sample path measured
+205,276 sensor pixels/s, corresponding to a 4.0 minute linear iPhone 16e 48 MP extrapolation. The
+static/eight-motion-sample case preserved 1,048 authored row/sample intervals while referencing 131
+unique spatial plans, completed the tile in 0.071 s at 231,147 pixels/s and extrapolated to 3.5
+minutes. Run-to-run GPU variance makes the small ordering difference between those two cases
+non-semantic; both execute one unique spatial evaluation per rolling row.
 
 The isolated spatial kernel delivered its first tile in 0.010 s and sustained 13.19 million
 pixels/s, a 3.7 s one-sample 48 MP extrapolation. Isolated 1024×768 RAW development measured
-0.017 s CPU versus 0.003 s Metal, or 5.53×. Exact motion sampling is now the dominant cost in the
-representative benchmark, not old PWM subdivision or CPU optics.
+0.017 s CPU versus 0.003 s Metal, or 5.53×. For moving sources or multi-keyframe geometry, exact
+motion sampling remains the dominant cost; old PWM subdivision and CPU optics are absent from the
+product route.
 
 Remaining performance work is precisely bounded:
 
-1. Detect provably static camera/screen/source intervals so eight authorized motion samples may
-   reuse one spatial result without changing the requested quadrature contract.
-2. Share prepared linear-emission storage across time-equivalent decoded media samples.
+1. Share prepared linear-emission storage across time-equivalent decoded media samples.
+2. Extend proof of static intervals beyond single-key tracks only where exact keyframe-segment
+   identity can be established without heuristic tolerances.
 3. Consider multi-tile GPU scheduling only if it preserves sub-second progress and cooperative
    cancellation at the existing publication boundary.
