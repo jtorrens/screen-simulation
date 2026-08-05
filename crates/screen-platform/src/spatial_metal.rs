@@ -353,6 +353,7 @@ mod tests {
     };
     use screen_panel::{LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout};
     use screen_sensor::{SensorProfile, SensorRegion};
+    use std::collections::BTreeMap;
 
     fn request() -> OpticalRequest {
         let time = RationalTime::new(17, 24).expect("valid time");
@@ -519,5 +520,47 @@ mod tests {
         .expect("spatial plan");
         let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
         assert_spatial_parity(&cpu, &gpu);
+    }
+
+    #[test]
+    fn metal_matches_every_aperture_quality_level_without_sample_reduction() {
+        let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
+        let mut plans = BTreeMap::new();
+        for width in [32_u16, 128, 512] {
+            let sensor = SensorProfile {
+                native_width: width,
+                native_height: width * 9 / 16,
+                ..SensorProfile::REFERENCE
+            };
+            let region = SensorRegion {
+                origin_x: 0,
+                origin_y: 0,
+                width: 3,
+                height: 3,
+            };
+            for focus_distance in [0.8_f32, 0.7, 0.5, 0.3] {
+                for f_stop in [1.4_f32, 2.8, 5.6, 16.0] {
+                    let mut request = request();
+                    request.camera.intrinsics.keyframes[0].focus_distance = Meters(focus_distance);
+                    request.camera.intrinsics.keyframes[0].f_stop = f_stop;
+                    let plan = prepare_procedural_spatial_plan(request.clone(), sensor, region)
+                        .expect("spatial plan");
+                    plans
+                        .entry(plan.aperture_sample_count)
+                        .or_insert((request, sensor, region, plan));
+                }
+            }
+        }
+        assert_eq!(
+            plans.keys().copied().collect::<Vec<_>>(),
+            vec![16, 32, 64, 128]
+        );
+        for (sample_count, (request, sensor, region, plan)) in plans {
+            assert_eq!(plan.aperture_sample_count, sample_count);
+            let cpu = evaluate_procedural_spatial_cpu_oracle(request, sensor, region)
+                .expect("CPU oracle");
+            let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
+            assert_spatial_parity(&cpu, &gpu);
+        }
     }
 }
