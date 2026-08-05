@@ -353,13 +353,34 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
         }
         let shared_count = usize::from(plans[0].raster.width) * usize::from(plans[0].raster.height);
         let shares_signal_and_shape = plans.iter().all(|plan| {
-            let shared_signal_storage = matches!(
-                (&plans[0].signal, &plan.signal),
+            let shared_signal_storage = match (&plans[0].signal, &plan.signal) {
+                (SpatialSignalPlan::Procedural { .. }, SpatialSignalPlan::Procedural { .. }) => {
+                    true
+                }
                 (
-                    SpatialSignalPlan::Procedural { .. },
-                    SpatialSignalPlan::Procedural { .. }
-                )
-            ) || plan.signal == plans[0].signal;
+                    SpatialSignalPlan::Raster {
+                        width: first_width,
+                        height: first_height,
+                        device_signal: first_device,
+                        linear_native_emission: first_emission,
+                        placement: first_placement,
+                    },
+                    SpatialSignalPlan::Raster {
+                        width,
+                        height,
+                        device_signal,
+                        linear_native_emission,
+                        placement,
+                    },
+                ) => {
+                    first_width == width
+                        && first_height == height
+                        && first_placement == placement
+                        && std::sync::Arc::ptr_eq(first_device, device_signal)
+                        && std::sync::Arc::ptr_eq(first_emission, linear_native_emission)
+                }
+                _ => false,
+            };
             usize::from(plan.raster.width) * usize::from(plan.raster.height) == shared_count
                 && shared_signal_storage
         });
