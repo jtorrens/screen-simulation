@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -222,6 +222,8 @@ pub struct LensDocument {
     pub lateral_chromatic_scale: [f32; 3],
     pub vignetting_strength: f32,
     pub transmission_rgb: [f32; 3],
+    pub center_softness_micrometers: f32,
+    pub edge_softness_micrometers: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -684,7 +686,11 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
             .chain(keyframe.lens.longitudinal_chromatic_meters)
             .chain(keyframe.lens.lateral_chromatic_scale)
             .chain([keyframe.lens.vignetting_strength])
-            .chain(keyframe.lens.transmission_rgb);
+            .chain(keyframe.lens.transmission_rgb)
+            .chain([
+                keyframe.lens.center_softness_micrometers,
+                keyframe.lens.edge_softness_micrometers,
+            ]);
         if !lens_values.clone().all(f32::is_finite) {
             return Err(PersistenceError::NonFiniteNumber);
         }
@@ -708,6 +714,8 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
                 .transmission_rgb
                 .into_iter()
                 .any(|value| !(0.0..=1.0).contains(&value))
+            || !(0.0..=100.0).contains(&keyframe.lens.center_softness_micrometers)
+            || !(0.0..=100.0).contains(&keyframe.lens.edge_softness_micrometers)
         {
             return Err(PersistenceError::InvalidCameraIntrinsics);
         }
@@ -1068,6 +1076,8 @@ mod tests {
                         lateral_chromatic_scale: [1.000_8, 1.0, 0.999_1],
                         vignetting_strength: 0.65,
                         transmission_rgb: [0.92, 0.94, 0.95],
+                        center_softness_micrometers: 1.8,
+                        edge_softness_micrometers: 2.2,
                     },
                     interpolation: InterpolationSelection::Linear,
                 }],
@@ -1161,9 +1171,10 @@ mod tests {
         create_complete_project(&root);
         let manifest_path = root.join(MANIFEST_NAME);
         let text = fs::read_to_string(&manifest_path).expect("manifest");
+        let current = format!("\"version\": {CURRENT_VERSION},");
         fs::write(
             &manifest_path,
-            text.replace("\"version\": 2,", "\"version\": 2,\n  \"legacy\": true,"),
+            text.replacen(&current, &format!("{current}\n  \"legacy\": true,"), 1),
         )
         .expect("alter manifest");
         assert!(matches!(
@@ -1179,14 +1190,19 @@ mod tests {
         create_complete_project(&root);
         let manifest_path = root.join(MANIFEST_NAME);
         let text = fs::read_to_string(&manifest_path).expect("manifest");
+        let unknown = CURRENT_VERSION + 1;
         fs::write(
             &manifest_path,
-            text.replace("\"version\": 2", "\"version\": 3"),
+            text.replacen(
+                &format!("\"version\": {CURRENT_VERSION}"),
+                &format!("\"version\": {unknown}"),
+                1,
+            ),
         )
         .expect("alter manifest");
         assert!(matches!(
             open_project(&root),
-            Err(PersistenceError::UnknownVersion { version: 3, .. })
+            Err(PersistenceError::UnknownVersion { version, .. }) if version == unknown
         ));
     }
 

@@ -258,6 +258,8 @@ fn map_intrinsics(key: &StoredIntrinsics) -> Result<CameraIntrinsicsKeyframe, St
             lateral_chromatic_scale: key.lens.lateral_chromatic_scale,
             vignetting_strength: key.lens.vignetting_strength,
             transmission_rgb: key.lens.transmission_rgb,
+            center_softness_micrometers: key.lens.center_softness_micrometers,
+            edge_softness_micrometers: key.lens.edge_softness_micrometers,
         },
         interpolation: map_interpolation(key.interpolation),
     })
@@ -385,6 +387,8 @@ mod tests {
                         lateral_chromatic_scale: [1.0008, 1.0, 0.9991],
                         vignetting_strength: 0.65,
                         transmission_rgb: [0.92, 0.94, 0.95],
+                        center_softness_micrometers: 1.8,
+                        edge_softness_micrometers: 2.2,
                     },
                     interpolation: InterpolationSelection::Linear,
                 }],

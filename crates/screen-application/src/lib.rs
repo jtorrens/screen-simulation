@@ -1879,7 +1879,11 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
             viewport_ndc,
         )
     };
-    let psf_radius = approximate_psf_radius_pixels(frame.camera, width);
+    let pixel_center_ndc = Vec2 {
+        x: (column as f32 + 0.5) / f32::from(width) * 2.0 - 1.0,
+        y: (row as f32 + 0.5) / f32::from(height) * 2.0 - 1.0,
+    };
+    let psf_radius = approximate_psf_radius_pixels(frame.camera, width, pixel_center_ndc);
     let minimum = 0.001 - psf_radius;
     let maximum = 0.999 + psf_radius;
     let footprint = [
@@ -1934,12 +1938,21 @@ fn expand_sensor_footprint(offset: Vec2, psf_radius_pixels: f32) -> Vec2 {
     }
 }
 
-fn approximate_psf_radius_pixels(camera: CameraSample, raster_width: u16) -> f32 {
+fn approximate_psf_radius_pixels(
+    camera: CameraSample,
+    raster_width: u16,
+    viewport_ndc: Vec2,
+) -> f32 {
     const GREEN_WAVELENGTH_MM: f32 = 0.000_550;
-    const REFERENCE_LENS_SOFTNESS_PIXELS: f32 = 0.18;
     let photosite_pitch_mm = camera.sensor_width.0 / f32::from(raster_width);
     let airy_radius_mm = 1.22 * GREEN_WAVELENGTH_MM * camera.f_stop;
-    (REFERENCE_LENS_SOFTNESS_PIXELS + airy_radius_mm / photosite_pitch_mm).min(1.5)
+    let field_amount =
+        ((viewport_ndc.x * viewport_ndc.x + viewport_ndc.y * viewport_ndc.y) * 0.5).clamp(0.0, 1.0);
+    let lens_softness_micrometers = camera.lens.center_softness_micrometers
+        + (camera.lens.edge_softness_micrometers - camera.lens.center_softness_micrometers)
+            * field_amount;
+    let lens_softness_mm = lens_softness_micrometers * 0.001;
+    ((lens_softness_mm + airy_radius_mm) / photosite_pitch_mm).min(2.5)
 }
 
 fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
@@ -2999,14 +3012,18 @@ mod tests {
     #[test]
     fn approximate_optical_psf_scales_with_f_number_and_sensor_sampling_density() {
         let frame = prepare_frame(request().optical_request()).expect("valid frame");
-        let at_960 = approximate_psf_radius_pixels(frame.camera, 960);
-        let at_3840 = approximate_psf_radius_pixels(frame.camera, 3_840);
+        let center = Vec2 { x: 0.0, y: 0.0 };
+        let edge = Vec2 { x: 1.0, y: 1.0 };
+        let at_960 = approximate_psf_radius_pixels(frame.camera, 960, center);
+        let at_3840 = approximate_psf_radius_pixels(frame.camera, 3_840, center);
+        let at_edge = approximate_psf_radius_pixels(frame.camera, 3_840, edge);
         let mut stopped_down = frame.camera;
         stopped_down.f_stop *= 2.0;
-        let at_f16 = approximate_psf_radius_pixels(stopped_down, 3_840);
+        let at_f16 = approximate_psf_radius_pixels(stopped_down, 3_840, center);
         assert!(at_3840 > at_960);
+        assert!(at_edge > at_3840);
         assert!(at_f16 > at_3840);
-        assert!(at_f16 <= 1.5);
+        assert!(at_f16 <= 2.5);
     }
 
     #[test]

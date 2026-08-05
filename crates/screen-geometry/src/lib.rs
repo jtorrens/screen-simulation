@@ -30,6 +30,8 @@ pub struct LensModel {
     pub lateral_chromatic_scale: [f32; 3],
     pub vignetting_strength: f32,
     pub transmission_rgb: [f32; 3],
+    pub center_softness_micrometers: f32,
+    pub edge_softness_micrometers: f32,
 }
 
 impl LensModel {
@@ -40,6 +42,8 @@ impl LensModel {
         lateral_chromatic_scale: [1.000_8, 1.0, 0.999_1],
         vignetting_strength: 0.65,
         transmission_rgb: [0.92, 0.94, 0.95],
+        center_softness_micrometers: 1.8,
+        edge_softness_micrometers: 2.2,
     };
 }
 
@@ -71,6 +75,8 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             lateral_chromatic_scale: [1.001_5, 1.0, 0.998_3],
             vignetting_strength: 0.9,
             transmission_rgb: [0.88, 0.9, 0.91],
+            center_softness_micrometers: 2.4,
+            edge_softness_micrometers: 4.0,
         },
     },
     LensPreset {
@@ -85,6 +91,8 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             lateral_chromatic_scale: [1.001_2, 1.0, 0.998_7],
             vignetting_strength: 0.82,
             transmission_rgb: [0.9, 0.92, 0.93],
+            center_softness_micrometers: 2.2,
+            edge_softness_micrometers: 3.4,
         },
     },
     LensPreset {
@@ -99,6 +107,8 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             lateral_chromatic_scale: [1.000_9, 1.0, 0.999],
             vignetting_strength: 0.72,
             transmission_rgb: [0.92, 0.94, 0.95],
+            center_softness_micrometers: 2.0,
+            edge_softness_micrometers: 2.8,
         },
     },
     LensPreset {
@@ -120,6 +130,8 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             lateral_chromatic_scale: [1.000_55, 1.0, 0.999_4],
             vignetting_strength: 0.52,
             transmission_rgb: [0.93, 0.95, 0.96],
+            center_softness_micrometers: 2.0,
+            edge_softness_micrometers: 2.6,
         },
     },
     LensPreset {
@@ -134,6 +146,8 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             lateral_chromatic_scale: [1.000_4, 1.0, 0.999_55],
             vignetting_strength: 0.45,
             transmission_rgb: [0.93, 0.95, 0.96],
+            center_softness_micrometers: 2.3,
+            edge_softness_micrometers: 3.2,
         },
     },
     LensPreset {
@@ -148,6 +162,8 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             lateral_chromatic_scale: [1.001_8, 1.0, 0.998],
             vignetting_strength: 0.88,
             transmission_rgb: [0.86, 0.89, 0.9],
+            center_softness_micrometers: 0.75,
+            edge_softness_micrometers: 1.1,
         },
     },
 ];
@@ -749,6 +765,10 @@ fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
         .chain(lens.lateral_chromatic_scale)
         .chain([lens.vignetting_strength])
         .chain(lens.transmission_rgb)
+        .chain([
+            lens.center_softness_micrometers,
+            lens.edge_softness_micrometers,
+        ])
         .all(f32::is_finite)
         && (0.0..=1.0).contains(&lens.vignetting_strength)
         && lens
@@ -759,6 +779,8 @@ fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
             .transmission_rgb
             .into_iter()
             .all(|value| (0.0..=1.0).contains(&value))
+        && (0.0..=100.0).contains(&lens.center_softness_micrometers)
+        && (0.0..=100.0).contains(&lens.edge_softness_micrometers)
         && distortion_is_certified_family(lens)
         && distortion_is_invertible(lens, lens_shift)
 }
@@ -795,6 +817,14 @@ fn interpolate_lens(
         ),
         vignetting_strength: lerp(left.vignetting_strength, right.vignetting_strength),
         transmission_rgb: array3(left.transmission_rgb, right.transmission_rgb),
+        center_softness_micrometers: lerp(
+            left.center_softness_micrometers,
+            right.center_softness_micrometers,
+        ),
+        edge_softness_micrometers: lerp(
+            left.edge_softness_micrometers,
+            right.edge_softness_micrometers,
+        ),
     }
 }
 
