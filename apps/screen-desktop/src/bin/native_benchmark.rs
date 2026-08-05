@@ -8,7 +8,7 @@ use screen_application::{
     evaluate_procedural_spatial_cpu_oracle, prepare_procedural_spatial_plan,
 };
 use screen_camera::{CameraDevelopment, CpuRawDevelopment, RawDevelopmentBackend};
-use screen_color::{CameraOutputTransform, ColorEngine, DisplayPublicationBackend};
+use screen_color::{CameraOutputTransform, ColorEngine};
 use screen_contracts::{FrameRate, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
 use screen_geometry::{
@@ -18,7 +18,7 @@ use screen_geometry::{
 use screen_panel::{
     DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
 };
-use screen_platform::{ExactCpuDisplayPublication, MetalRawDevelopment};
+use screen_platform::{DisplayPublicationBackend, ExactCpuDisplayPublication, MetalRawDevelopment};
 use screen_sensor::{RawSensorRegion, SensorProfile, SensorRegion};
 
 struct BenchmarkStaging {

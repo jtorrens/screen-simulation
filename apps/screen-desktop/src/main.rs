@@ -31,9 +31,8 @@ use screen_application::{
 };
 use screen_camera::{CameraDevelopment, apply_sensor_white_balance_to_acescg};
 use screen_color::{
-    CameraOutputTransform, ColorEngine, DeviceColorTarget, DisplayPublicationBackend,
-    OcioInputTransform, PreviewRgb, SourceColorInterpretation, SourceToDeviceProcessor,
-    propose_ocio_input,
+    CameraOutputTransform, ColorEngine, DeviceColorTarget, OcioInputTransform, PreviewRgb,
+    SourceColorInterpretation, SourceToDeviceProcessor, propose_ocio_input,
 };
 use screen_contracts::{
     DeviceRgb, FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3,
@@ -56,7 +55,7 @@ use screen_panel::{
     AnalyticBanding, DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission,
     ResidualFlicker, StripeLayout, device_preset,
 };
-use screen_platform::{ExactCpuDisplayPublication, MetalRawDevelopment};
+use screen_platform::{DisplayPublicationBackend, ExactCpuDisplayPublication, MetalRawDevelopment};
 use screen_platform::{decode_frame_at_time, probe_media};
 use screen_sensor::{SensorProfile, SensorRegion};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};

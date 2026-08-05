@@ -2,10 +2,16 @@ use core::fmt;
 use std::sync::Mutex;
 use std::thread;
 
-use screen_color::{
-    CameraOutputProcessor, CameraOutputTransform, ColorEngine, DisplayPublicationBackend,
-};
+use screen_color::{CameraOutputProcessor, CameraOutputTransform, ColorEngine};
 use screen_contracts::LinearRgb;
+
+/// Presentation-only platform boundary from immutable developed ACEScg to final RGBA8 bytes.
+/// Implementations cannot mutate or reinterpret the authoritative scene-linear input.
+pub trait DisplayPublicationBackend {
+    type Error: fmt::Display;
+
+    fn publish_acescg_rgba8(&self, pixels: &[LinearRgb]) -> Result<Vec<u8>, Self::Error>;
+}
 
 pub struct ExactCpuDisplayPublication {
     processors: Vec<Mutex<CameraOutputProcessor>>,

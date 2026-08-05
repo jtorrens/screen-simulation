@@ -13,7 +13,9 @@ mod spatial_metal;
 #[cfg(target_os = "macos")]
 pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 #[cfg(target_os = "macos")]
-pub use presentation_cpu::{DisplayPublicationError, ExactCpuDisplayPublication};
+pub use presentation_cpu::{
+    DisplayPublicationBackend, DisplayPublicationError, ExactCpuDisplayPublication,
+};
 
 use core::fmt;
 use std::path::Path;

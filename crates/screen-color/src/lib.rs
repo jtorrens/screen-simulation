@@ -374,14 +374,6 @@ pub struct CameraOutputProcessor {
     processor: CPUProcessor,
 }
 
-/// Replaceable presentation-only boundary from immutable developed ACEScg to final RGBA8 bytes.
-/// Implementations cannot mutate or reinterpret the authoritative scene-linear input.
-pub trait DisplayPublicationBackend {
-    type Error: fmt::Display;
-
-    fn publish_acescg_rgba8(&self, pixels: &[LinearRgb]) -> Result<Vec<u8>, Self::Error>;
-}
-
 impl CameraOutputProcessor {
     pub const fn transform(&self) -> CameraOutputTransform {
         self.transform
@@ -650,19 +642,20 @@ mod tests {
 
     #[test]
     fn pinned_camera_output_generates_complete_msl_resources() {
-        let shader = ColorEngine::bundled()
-            .expect("bundled color engine")
-            .camera_output_gpu_shader(CameraOutputTransform::SrgbSdr100)
-            .expect("camera output GPU shader");
-        assert!(shader.source.contains(&shader.function_name));
-        assert_eq!(shader.textures.len(), 2);
-        assert!(
-            shader
-                .textures
-                .iter()
-                .all(|texture| texture.dimension == OcioGpuTextureDimension::Two)
-        );
-        assert_eq!(shader.uniform_count, 0);
+        let engine = ColorEngine::bundled().expect("bundled color engine");
+        for transform in CameraOutputTransform::ALL {
+            let shader = engine
+                .camera_output_gpu_shader(transform)
+                .unwrap_or_else(|error| panic!("{} GPU shader failed: {error}", transform.label()));
+            assert!(shader.source.contains(&shader.function_name));
+            assert!(!shader.textures.is_empty());
+            assert!(shader.textures.iter().all(|texture| matches!(
+                texture.dimension,
+                OcioGpuTextureDimension::One
+                    | OcioGpuTextureDimension::Two
+                    | OcioGpuTextureDimension::Three
+            )));
+        }
     }
 
     #[test]
