@@ -8,6 +8,7 @@ use screen_application::{
     evaluate_procedural_spatial_cpu_oracle, prepare_procedural_spatial_plan,
 };
 use screen_camera::{CameraDevelopment, CpuRawDevelopment, RawDevelopmentBackend};
+use screen_color::{CameraOutputTransform, ColorEngine};
 use screen_contracts::{FrameRate, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
 use screen_geometry::{
@@ -293,12 +294,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         width: iphone.sensor.native_width,
         height: TILE_EDGE,
     };
+    let output_processor =
+        ColorEngine::bundled()?.camera_output_processor(CameraOutputTransform::SrgbSdr100)?;
     let stripe_count = usize::from(iphone.sensor.native_height).div_ceil(usize::from(TILE_EDGE));
     let run_product_stripe = |label: &str,
                               capture: FrameCaptureRequest|
      -> Result<Duration, Box<dyn std::error::Error>> {
         let started = Instant::now();
-        let (_, stages) = capture_and_develop_procedural_region_with_compute_backends_timed(
+        let (result, stages) = capture_and_develop_procedural_region_with_compute_backends_timed(
             capture,
             iphone.sensor,
             development,
@@ -306,9 +309,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &metal,
             &metal,
         )?;
+        let output_started = Instant::now();
+        let mut display = Vec::with_capacity(result.developed.acescg.len() * 4);
+        for pixel in result.developed.acescg {
+            display.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
+        }
+        output_processor.apply_acescg_rgba_buffer(&mut display)?;
+        let display_bytes = display
+            .chunks_exact(4)
+            .flat_map(|rgba| {
+                let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+                [channel(rgba[0]), channel(rgba[1]), channel(rgba[2]), 255]
+            })
+            .collect::<Vec<_>>();
+        std::hint::black_box(display_bytes);
+        let output_elapsed = output_started.elapsed();
         let elapsed = started.elapsed();
         println!(
-            "product stripe {label}: {}x{} · {:.3} s to {} logical tile publications · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s",
+            "product stripe {label}: {}x{} · {:.3} s to first visual publication · {} logical tiles ready · prep {:.3} s · spatial {:.3} s · integration/sensor {:.3} s · RAW {:.3} s · OCIO/assembly {:.3} s",
             product_stripe.width,
             product_stripe.height,
             elapsed.as_secs_f64(),
@@ -317,6 +335,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stages.spatial_backend.as_secs_f64(),
             stages.integration_and_sensor_cpu.as_secs_f64(),
             stages.raw_development_backend.as_secs_f64(),
+            output_elapsed.as_secs_f64(),
         );
         Ok(elapsed)
     };

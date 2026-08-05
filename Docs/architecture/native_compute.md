@@ -100,18 +100,24 @@ integration. Thus the previous minute-scale number was an invalid extrapolation 
 preparation, not sustained GPU work.
 
 With horizontal stripe scheduling connected to the product, an actual 8064×128 iPhone stripe took
-0.102 s default/one-sample and 0.107 s static/eight. It exposes 63 logical progress tiles and projects
-48 stripes to 4.9 s and 5.2 s respectively. The benchmark process reported 200 MiB maximum resident
-set size; principal 1536×1152 staging is 27.0 MiB spatial float4, 40.5 MiB accumulated f64x3 and
-20.2 MiB developed float3. The isolated spatial kernel sustained 13.93 million pixels/s, while
-1024×768 RAW development measured 0.017 s CPU versus 0.003 s Metal. For moving sources or
-multi-keyframe geometry, exact motion sampling remains the dominant cost; old PWM subdivision and
-CPU optics are absent from the product route.
+about 0.10 s through developed linear ACEScg for both default/one-sample and static/eight. Including
+the real CPU OCIO display transform and RGBA8 assembly, first visual publication measured 0.350 s
+and 0.359 s. It exposes 63 logical progress tiles and projects 48 stripes to 16.8 s and 17.2 s
+respectively. Of the default stripe, 0.066 s was plan preparation, 0.014 s spatial Metal, 0.017 s
+integration/sensor, 0.003 s RAW Metal and 0.248 s display transform/assembly. The benchmark process
+reported 200 MiB maximum resident set size (595 MiB macOS peak footprint); principal 1536×1152
+staging is 27.0 MiB spatial float4, 40.5 MiB accumulated f64x3 and 20.2 MiB developed float3. The
+isolated spatial kernel sustained about 13 million pixels/s, while 1024×768 RAW development measured
+0.017 s CPU versus 0.003 s Metal. For moving sources or multi-keyframe geometry, exact motion
+sampling remains the dominant capture cost; old PWM subdivision and CPU optics are absent from the
+product route.
 
 Remaining performance work is precisely bounded:
 
 1. Share prepared linear-emission storage across time-equivalent decoded media samples.
 2. Extend proof of static intervals beyond single-key tracks only where exact keyframe-segment
    identity can be established without heuristic tolerances.
-3. Reduce exact CPU row-plan construction cost (currently the dominant large-ROI stage) without
+3. Reduce exact CPU row-plan construction cost (the dominant large-ROI capture stage) without
    weakening authored motion detection or temporal integration.
+4. Move or batch the exact OCIO display transform/assembly, now the dominant time-to-publication
+   stage; it is presentation work and must not mutate authoritative developed ACEScg.
