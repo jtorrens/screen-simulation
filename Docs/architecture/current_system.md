@@ -4,7 +4,7 @@ Status: normative.
 
 ## Product boundary
 
-The application consumes an explicitly interpreted animated raster and evaluates a physical fixed-pixel LCD through animated screen/camera geometry and ideal final sampling. The FFmpeg adapter accepts the video and still-image formats enabled in the one shipped decoder configuration, including H.264 and ProRes. ProRes 4444 is a recommended high-quality production source, not an input restriction. OpenEXR sequences use the explicit OpenEXR adapter. No codec or container chooses color interpretation.
+The application consumes an explicitly interpreted animated raster and evaluates a physical fixed-pixel LCD through animated screen/camera geometry and phase-preserving photosite-footprint sampling. The FFmpeg adapter accepts the video and still-image formats enabled in the one shipped decoder configuration, including H.264 and ProRes. ProRes 4444 is a recommended high-quality production source, not an input restriction. OpenEXR sequences use the explicit OpenEXR adapter. No codec or container chooses color interpretation.
 
 The current processing chain is:
 
@@ -59,3 +59,5 @@ Domain packages expose narrow capabilities and do not depend on sibling implemen
 ## Current scope
 
 The current implementation target is one source clip per simulation shot, one authored rational project frame rate, one project-owned complete LCD profile and sensor profile, internally authored independent camera-transform, camera-intrinsics and screen-transform tracks, an RGB/BGR stripe panel, transformed physical projection, deterministic reference sampling, a public linear optical result, exact global/rolling-shutter integration with panel PWM phase, mosaiced RAW capture, debug views and still export. The technical desktop also authors one explicit procedural source: either the animated checkerboard or a static black-on-white eye chart whose device-signal channels remain in `[0,1]`; neither is a media fallback. A source whose raster differs from the device native raster requires one authored placement policy: `Fit`, `FillCrop`, `Stretch`, or `OneToOne`. Pixel decode matrix, pixel decode range, source IDT and alpha association are independent explicit decisions. Alpha is resolved to the current explicit opaque-black target before panel evaluation.
+
+The technical desktop camera-result view selects one explicit 16:9 sensor raster: 960×540, 1920×1080 or 3840×2160. RAW capture and development occur at that complete sensor raster. Only the developed linear ACEScg result is box-reduced to the fixed 960×540 workstation preview before the selected output transform; sensor sampling is never performed at preview resolution and presented as a higher-resolution capture.

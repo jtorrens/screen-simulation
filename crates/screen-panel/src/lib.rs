@@ -257,6 +257,40 @@ impl ValidatedPanelEvaluator {
         self.native_channel(signal, channel) * 3.0 / visible_area
     }
 
+    pub fn native_channel_over_device_rect(
+        self,
+        signal: DeviceRgb,
+        minimum: screen_contracts::Vec2,
+        maximum: screen_contracts::Vec2,
+        channel: usize,
+    ) -> f32 {
+        let width = maximum.x - minimum.x;
+        let height = maximum.y - minimum.y;
+        if width <= f32::EPSILON || height <= f32::EPSILON {
+            return self.native_channel_at_pixel(
+                signal,
+                screen_contracts::Vec2 {
+                    x: minimum.x.rem_euclid(1.0),
+                    y: minimum.y.rem_euclid(1.0),
+                },
+                channel,
+            );
+        }
+        let margin = self.profile.black_matrix_fraction * 0.5;
+        let active_span = 1.0 - 2.0 * margin;
+        let emitter = match self.profile.stripe_layout {
+            StripeLayout::Rgb => channel,
+            StripeLayout::Bgr => 2 - channel,
+        };
+        let stripe_start = margin + emitter as f32 * active_span / 3.0;
+        let stripe_end = margin + (emitter + 1) as f32 * active_span / 3.0;
+        let covered_x = periodic_interval_coverage(minimum.x, maximum.x, stripe_start, stripe_end);
+        let covered_y = periodic_interval_coverage(minimum.y, maximum.y, margin, 1.0 - margin);
+        let covered_fraction = covered_x * covered_y / (width * height);
+        let visible_area = active_span * active_span;
+        self.native_channel(signal, channel) * covered_fraction * 3.0 / visible_area
+    }
+
     pub fn angular_channel(self, emission_cosine: f32, channel: usize) -> f32 {
         let cosine = emission_cosine.clamp(0.0, 1.0);
         if cosine == 0.0 {
@@ -283,6 +317,16 @@ impl ValidatedPanelEvaluator {
     pub fn temporal_gain(self, time: RationalTime) -> Result<f32, PanelError> {
         self.profile.temporal_emission.gain(time)
     }
+}
+
+fn periodic_interval_coverage(minimum: f32, maximum: f32, start: f32, end: f32) -> f32 {
+    fn integral(position: f32, start: f32, end: f32) -> f32 {
+        let cell = position.floor();
+        let phase = position - cell;
+        cell * (end - start) + (phase - start).clamp(0.0, end - start)
+    }
+
+    integral(maximum, start, end) - integral(minimum, start, end)
 }
 
 impl PanelTemporalEmission {
@@ -613,6 +657,48 @@ mod tests {
     fn eotf_preserves_negative_linear_excursions() {
         let emission = profile().native_emission(DeviceRgb::new(-0.25, 0.0, 0.0));
         assert!(emission.r < 0.0);
+    }
+
+    #[test]
+    fn phase_preserving_rect_integration_averages_only_complete_device_cells() {
+        let evaluator = profile().evaluator().expect("valid panel");
+        let signal = DeviceRgb::new(0.8, 0.6, 0.4);
+        for channel in 0..3 {
+            let complete_cell = evaluator.native_channel_over_device_rect(
+                signal,
+                screen_contracts::Vec2 { x: 11.0, y: 7.0 },
+                screen_contracts::Vec2 { x: 12.0, y: 8.0 },
+                channel,
+            );
+            assert!((complete_cell - evaluator.native_channel(signal, channel)).abs() < 1.0e-3);
+        }
+    }
+
+    #[test]
+    fn phase_preserving_rect_integration_distinguishes_emitter_and_matrix_regions() {
+        let evaluator = profile().evaluator().expect("valid panel");
+        let signal = DeviceRgb::WHITE;
+        let red_emitter = evaluator.native_channel_over_device_rect(
+            signal,
+            screen_contracts::Vec2 { x: 4.08, y: 2.20 },
+            screen_contracts::Vec2 { x: 4.18, y: 2.80 },
+            0,
+        );
+        let green_at_red_phase = evaluator.native_channel_over_device_rect(
+            signal,
+            screen_contracts::Vec2 { x: 4.08, y: 2.20 },
+            screen_contracts::Vec2 { x: 4.18, y: 2.80 },
+            1,
+        );
+        let matrix = evaluator.native_channel_over_device_rect(
+            signal,
+            screen_contracts::Vec2 { x: 4.01, y: 2.01 },
+            screen_contracts::Vec2 { x: 4.04, y: 2.04 },
+            0,
+        );
+        assert!(red_emitter > evaluator.native_channel(signal, 0));
+        assert_eq!(green_at_red_phase, 0.0);
+        assert_eq!(matrix, 0.0);
     }
 
     #[test]

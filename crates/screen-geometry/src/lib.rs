@@ -53,6 +53,21 @@ impl Quaternion {
         }
     }
 
+    pub fn from_orbit_yaw_pitch_degrees(yaw: f32, pitch: f32) -> Self {
+        let yaw_half = yaw.to_radians() * 0.5;
+        let pitch_half = pitch.to_radians() * 0.5;
+        let yaw_sine = yaw_half.sin();
+        let yaw_cosine = yaw_half.cos();
+        let pitch_sine = pitch_half.sin();
+        let pitch_cosine = pitch_half.cos();
+        Self {
+            x: -yaw_cosine * pitch_sine,
+            y: yaw_sine * pitch_cosine,
+            z: yaw_sine * pitch_sine,
+            w: yaw_cosine * pitch_cosine,
+        }
+    }
+
     fn normalized(self) -> Self {
         let length = (self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w).sqrt();
         Self {
@@ -1135,6 +1150,26 @@ impl std::error::Error for GeometryError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orbit_yaw_pitch_rotation_looks_from_spherical_position_to_origin() {
+        let yaw = 31.0_f32;
+        let pitch = 19.0_f32;
+        let horizontal = pitch.to_radians().cos();
+        let position = Vec3 {
+            x: horizontal * yaw.to_radians().sin(),
+            y: pitch.to_radians().sin(),
+            z: horizontal * yaw.to_radians().cos(),
+        };
+        let forward = Quaternion::from_orbit_yaw_pitch_degrees(yaw, pitch).rotate(Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: -1.0,
+        });
+        assert!((forward.x + position.x).abs() < 1.0e-6);
+        assert!((forward.y + position.y).abs() < 1.0e-6);
+        assert!((forward.z + position.z).abs() < 1.0e-6);
+    }
 
     fn rig() -> CameraRig {
         let keys = |id: &str, frame, yaw: f32| {

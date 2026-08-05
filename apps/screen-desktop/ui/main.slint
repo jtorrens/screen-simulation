@@ -94,7 +94,9 @@ export component MainWindow inherits Window {
     in-out property <float> white-balance-b: 1;
     in-out property <float> camera-exposure-ev: 0;
     in-out property <int> output-transform-index: 0;
+    in-out property <int> sensor-raster-index: 1;
     in-out property <float> yaw-degrees: 0;
+    in-out property <float> pitch-degrees: 0;
     in-out property <int> camera-key-count: 1;
     in-out property <int> camera-interpolation-index: 2;
     in-out property <int> stripe-index: 0;
@@ -551,12 +553,22 @@ export component MainWindow inherits Window {
                         }
 
                         ValueRow {
-                            label: "Yaw";
+                            label: "Orbit yaw";
                             minimum: -45;
                             maximum: 35;
                             step: 0.1;
                             value <=> root.yaw-degrees;
                             numeric-value: round(root.yaw-degrees * 10) / 10;
+                            suffix: "°";
+                        }
+
+                        ValueRow {
+                            label: "Orbit pitch";
+                            minimum: -35;
+                            maximum: 35;
+                            step: 0.1;
+                            value <=> root.pitch-degrees;
+                            numeric-value: round(root.pitch-degrees * 10) / 10;
                             suffix: "°";
                         }
 
@@ -629,6 +641,12 @@ export component MainWindow inherits Window {
                             text: "CAMERA DEVELOPMENT";
                             color: #71819b;
                             font-size: 11px;
+                            visible: root.view-index == 4;
+                        }
+
+                        ComboBox {
+                            model: ["Sensor 960 × 540", "Sensor 1920 × 1080", "Sensor 3840 × 2160"];
+                            current-index <=> root.sensor-raster-index;
                             visible: root.view-index == 4;
                         }
 

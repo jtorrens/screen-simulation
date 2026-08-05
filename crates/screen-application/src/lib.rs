@@ -1394,7 +1394,18 @@ fn integrate_aperture_samples(
                 let value = if view == DiagnosticView::DeviceSignal {
                     [signal.r, signal.g, signal.b][channel]
                 } else {
-                    evaluator.native_channel(signal, channel)
+                    evaluator.native_channel_over_device_rect(
+                        signal,
+                        Vec2 {
+                            x: minimum.x * panel.native_width as f32,
+                            y: minimum.y * panel.native_height as f32,
+                        },
+                        Vec2 {
+                            x: maximum.x * panel.native_width as f32,
+                            y: maximum.y * panel.native_height as f32,
+                        },
+                        channel,
+                    )
                 };
                 let contribution = value * weight_sum / spatial_samples.len() as f32;
                 match channel {

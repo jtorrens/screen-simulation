@@ -58,7 +58,9 @@ struct RenderControls {
     white_balance_b: f32,
     camera_exposure_ev: f32,
     output_transform_index: i32,
+    sensor_raster_index: i32,
     yaw_degrees: f32,
+    pitch_degrees: f32,
     camera_interpolation_index: i32,
     stripe_index: i32,
     view_index: i32,
@@ -90,7 +92,9 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         white_balance_b: window.get_white_balance_b(),
         camera_exposure_ev: window.get_camera_exposure_ev(),
         output_transform_index: window.get_output_transform_index(),
+        sensor_raster_index: window.get_sensor_raster_index(),
         yaw_degrees: window.get_yaw_degrees(),
+        pitch_degrees: window.get_pitch_degrees(),
         camera_interpolation_index: window.get_camera_interpolation_index(),
         stripe_index: window.get_stripe_index(),
         view_index: window.get_view_index(),
@@ -112,6 +116,7 @@ fn camera_edit_from_controls(controls: RenderControls) -> CameraEdit {
     CameraEdit {
         distance: controls.distance_m,
         yaw_degrees: controls.yaw_degrees,
+        pitch_degrees: controls.pitch_degrees,
         focal_mm: controls.focal_mm,
         focus_distance_m: controls.focus_distance_m,
         f_stop: controls.f_stop,
@@ -269,6 +274,7 @@ impl InteractionState {
                     CameraEdit {
                         distance: 0.82,
                         yaw_degrees: 0.0,
+                        pitch_degrees: 0.0,
                         focal_mm: 50.0,
                         focus_distance_m: 0.82,
                         f_stop: 8.0,
@@ -304,6 +310,7 @@ impl InteractionState {
 struct CameraEdit {
     distance: f32,
     yaw_degrees: f32,
+    pitch_degrees: f32,
     focal_mm: f32,
     focus_distance_m: f32,
     f_stop: f32,
@@ -314,6 +321,7 @@ fn camera_edit_from_window(window: &MainWindow) -> CameraEdit {
     CameraEdit {
         distance: window.get_distance_m(),
         yaw_degrees: window.get_yaw_degrees(),
+        pitch_degrees: window.get_pitch_degrees(),
         focal_mm: window.get_focal_mm(),
         focus_distance_m: window.get_focus_distance_m(),
         f_stop: window.get_f_stop(),
@@ -331,16 +339,21 @@ fn camera_keyframes(
     edit: CameraEdit,
 ) -> (TransformKeyframe, CameraIntrinsicsKeyframe) {
     let yaw = edit.yaw_degrees.to_radians();
+    let pitch = edit.pitch_degrees.to_radians();
+    let horizontal_distance = edit.distance * pitch.cos();
     (
         TransformKeyframe {
             id: format!("{id}-transform"),
             time,
             translation: Vec3 {
-                x: edit.distance * yaw.sin(),
-                y: 0.0,
-                z: edit.distance * yaw.cos(),
+                x: horizontal_distance * yaw.sin(),
+                y: edit.distance * pitch.sin(),
+                z: horizontal_distance * yaw.cos(),
             },
-            rotation: Quaternion::from_yaw_degrees(edit.yaw_degrees),
+            rotation: Quaternion::from_orbit_yaw_pitch_degrees(
+                edit.yaw_degrees,
+                edit.pitch_degrees,
+            ),
             interpolation: edit.interpolation,
         },
         CameraIntrinsicsKeyframe {
@@ -412,11 +425,18 @@ fn set_camera_controls_from_committed(
         .committed
         .sample(time)
         .map_err(|error| error.to_string())?;
-    let distance =
-        (sample.position.x * sample.position.x + sample.position.z * sample.position.z).sqrt();
+    let distance = (sample.position.x * sample.position.x
+        + sample.position.y * sample.position.y
+        + sample.position.z * sample.position.z)
+        .sqrt();
     let yaw_degrees = sample.position.x.atan2(sample.position.z).to_degrees();
+    let pitch_degrees = (sample.position.y / distance)
+        .clamp(-1.0, 1.0)
+        .asin()
+        .to_degrees();
     window.set_distance_m(distance);
     window.set_yaw_degrees(yaw_degrees);
+    window.set_pitch_degrees(pitch_degrees);
     window.set_focal_mm(sample.focal_length.0);
     window.set_focus_distance_m(sample.focus_distance.0);
     window.set_f_stop(sample.f_stop);
@@ -840,9 +860,16 @@ fn render_camera_result(
         readout: SensorReadout::Global,
         noise_seed: 42,
     };
+    let (sensor_width, sensor_height) = match sensor_raster(window.get_sensor_raster_index()) {
+        Ok(value) => value,
+        Err(error) => {
+            block_preview(window, error);
+            return;
+        }
+    };
     let sensor = SensorProfile {
-        native_width: PREVIEW_WIDTH,
-        native_height: PREVIEW_HEIGHT,
+        native_width: sensor_width,
+        native_height: sensor_height,
         ..SensorProfile::REFERENCE
     };
     let development = CameraDevelopment {
@@ -887,8 +914,10 @@ fn render_camera_result(
             return;
         }
     };
-    let mut output = Vec::with_capacity(captured.developed.acescg.len() * 4);
-    for pixel in &captured.developed.acescg {
+    let preview_linear =
+        downsample_camera_preview(&captured.developed.acescg, sensor_width, sensor_height);
+    let mut output = Vec::with_capacity(preview_linear.len() * 4);
+    for pixel in &preview_linear {
         output.extend_from_slice(&[pixel.r, pixel.g, pixel.b, 1.0]);
     }
     if let Err(error) = processor.apply_acescg_rgba_buffer(&mut output) {
@@ -914,8 +943,8 @@ fn render_camera_result(
     window.set_preview_image(Image::from_rgba8(buffer));
     window.set_scale_text(
         format!(
-            "CAMERA SENSOR {} × {} · {}-BIT BAYER · {} CLIPPED",
-            PREVIEW_WIDTH, PREVIEW_HEIGHT, sensor.adc_bits, clipped
+            "CAMERA SENSOR {} × {} · {}-BIT BAYER · PREVIEW {} × {} · {} CLIPPED",
+            sensor_width, sensor_height, sensor.adc_bits, PREVIEW_WIDTH, PREVIEW_HEIGHT, clipped
         )
         .into(),
     );
@@ -930,6 +959,52 @@ fn render_camera_result(
     window.set_inspection_text("DEVELOPED CAMERA FRAME · 180° GLOBAL SHUTTER".into());
     window.set_hint_text("Authoritative RAW and linear ACEScg retained before ODT".into());
     window.set_error_text("".into());
+}
+
+fn sensor_raster(index: i32) -> Result<(u16, u16), &'static str> {
+    match index {
+        0 => Ok((960, 540)),
+        1 => Ok((1_920, 1_080)),
+        2 => Ok((3_840, 2_160)),
+        _ => Err("select an explicit sensor raster"),
+    }
+}
+
+fn downsample_camera_preview(
+    source: &[LinearRgb],
+    source_width: u16,
+    source_height: u16,
+) -> Vec<LinearRgb> {
+    let horizontal_scale = source_width / PREVIEW_WIDTH;
+    let vertical_scale = source_height / PREVIEW_HEIGHT;
+    assert_eq!(source_width % PREVIEW_WIDTH, 0);
+    assert_eq!(source_height % PREVIEW_HEIGHT, 0);
+    assert_eq!(horizontal_scale, vertical_scale);
+    let scale = usize::from(horizontal_scale);
+    let source_width = usize::from(source_width);
+    let mut output = Vec::with_capacity(usize::from(PREVIEW_WIDTH) * usize::from(PREVIEW_HEIGHT));
+    for target_y in 0..usize::from(PREVIEW_HEIGHT) {
+        for target_x in 0..usize::from(PREVIEW_WIDTH) {
+            let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
+            for offset_y in 0..scale {
+                for offset_x in 0..scale {
+                    let source_y = target_y * scale + offset_y;
+                    let source_x = target_x * scale + offset_x;
+                    let pixel = source[source_y * source_width + source_x];
+                    sum.r += pixel.r;
+                    sum.g += pixel.g;
+                    sum.b += pixel.b;
+                }
+            }
+            let weight = (scale * scale) as f32;
+            output.push(LinearRgb::new(
+                sum.r / weight,
+                sum.g / weight,
+                sum.b / weight,
+            ));
+        }
+    }
+    output
 }
 
 fn block_preview(window: &MainWindow, message: &str) {
@@ -1367,6 +1442,7 @@ mod interaction_tests {
                 CameraEdit {
                     distance: 0.8,
                     yaw_degrees: 0.0,
+                    pitch_degrees: 0.0,
                     focal_mm: 50.0,
                     focus_distance_m: 0.8,
                     f_stop: 8.0,
@@ -1385,6 +1461,7 @@ mod interaction_tests {
         let edit = CameraEdit {
             distance: 1.2,
             yaw_degrees: 18.0,
+            pitch_degrees: 11.0,
             focal_mm: 65.0,
             focus_distance_m: 1.2,
             f_stop: 4.0,
@@ -1422,6 +1499,7 @@ mod interaction_tests {
             CameraEdit {
                 distance: 0.9,
                 yaw_degrees: -12.0,
+                pitch_degrees: -8.0,
                 focal_mm: 35.0,
                 focus_distance_m: 0.9,
                 f_stop: 5.6,
@@ -1431,5 +1509,14 @@ mod interaction_tests {
         editor.commit_preview();
         assert_eq!(editor.committed.transform.keyframes[0].id, transform_id);
         assert_eq!(editor.committed.intrinsics.keyframes[0].id, intrinsics_id);
+    }
+
+    #[test]
+    fn camera_preview_downsample_preserves_a_constant_linear_signal() {
+        let constant = LinearRgb::new(0.25, 1.5, -0.1);
+        let source = vec![constant; usize::from(PREVIEW_WIDTH) * usize::from(PREVIEW_HEIGHT)];
+        let preview = downsample_camera_preview(&source, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+        assert_eq!(preview.len(), source.len());
+        assert!(preview.into_iter().all(|pixel| pixel == constant));
     }
 }
