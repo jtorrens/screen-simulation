@@ -6,6 +6,7 @@ members = [
     "crates/screen-camera",
     "crates/screen-color",
     "crates/screen-contracts",
+    "crates/screen-cover",
     "crates/screen-geometry",
     "crates/screen-media",
     "crates/screen-panel",

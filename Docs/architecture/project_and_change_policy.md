@@ -2,6 +2,8 @@
 
 Status: normative.
 
+The current device document carries the complete materialized optical-cover profile in addition to the LCD profile. The current shot document carries the complete authored environment profile. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs.
+
 The portable project is a `.screensim` package directory with one strict root manifest and separate owner documents for sources, device profiles, camera/screen tracks and simulation shots. SQLite is not a project format.
 
 The current package root is `project.json`. It references exactly one source document, device document, camera document, sensor document, screen document and shot document through portable relative paths. Each document carries its one exact schema name and version. The source document references its packaged media resource separately; no resource path may overlap a document path. Creation writes a complete package to a private sibling staging directory and publishes it by one rename only after every document and the source resource have been written. It never overwrites an existing package.

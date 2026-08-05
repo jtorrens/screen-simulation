@@ -12,12 +12,17 @@ use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToD
 use screen_contracts::{
     ContractError, DeviceRgb, FrameRate, LinearRgb, Millimeters, RationalTime, Vec2, Vec3,
 };
+use screen_cover::{
+    CoverError, CoverGlassProfile, CoverSurfaceSample, ProceduralEnvironment,
+    ValidatedCoverEvaluator,
+};
 #[cfg(test)]
 use screen_geometry::APERTURE_SAMPLE_COUNT;
 use screen_geometry::{
     CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion, ProjectedScreen,
-    ScreenSample, ScreenTrack, panel_uv_aperture_samples, panel_uv_aperture_samples_with_count,
-    panel_uv_at_viewport, project_scene_point, project_screen,
+    ScreenSample, ScreenTrack, cover_surface_sample_at_viewport, panel_uv_aperture_samples,
+    panel_uv_aperture_samples_with_count, panel_uv_at_viewport, project_scene_point,
+    project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{LcdProfile, PanelError, PanelTemporalEmission, ValidatedPanelEvaluator};
@@ -450,6 +455,8 @@ pub struct OpticalRequest {
     pub time: RationalTime,
     pub viewport_aspect: f32,
     pub panel: LcdProfile,
+    pub cover: CoverGlassProfile,
+    pub environment: ProceduralEnvironment,
     pub camera: CameraRig,
     pub screen: ScreenTrack,
     pub inspection: Option<PanelRegion>,
@@ -624,6 +631,10 @@ pub fn prepare_frame(request: OpticalRequest) -> Result<PreparedFrame, Applicati
         return Err(ApplicationError::InvalidViewportAspect);
     }
     let panel = request.panel.validate().map_err(ApplicationError::Panel)?;
+    request
+        .cover
+        .evaluator(request.environment)
+        .map_err(ApplicationError::Cover)?;
     request
         .camera
         .validate()
@@ -1501,6 +1512,10 @@ fn evaluate_optical_row_with_signal(
         });
     }
     let evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let cover_evaluator = request
+        .cover
+        .evaluator(request.environment)
+        .map_err(ApplicationError::Cover)?;
     let temporal_gain = evaluator
         .temporal_gain(request.time)
         .map_err(ApplicationError::Panel)?;
@@ -1518,6 +1533,7 @@ fn evaluate_optical_row_with_signal(
                         DiagnosticView::Composite,
                         evaluator,
                         temporal_gain,
+                        cover_evaluator,
                         signal_at,
                         signal_area,
                     )
@@ -1633,6 +1649,10 @@ fn evaluate_optical_window_with_signal(
     }
     frame.representative_signal = signal_at(Vec2 { x: 0.5, y: 0.5 });
     let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let cover_evaluator = request
+        .cover
+        .evaluator(request.environment)
+        .map_err(ApplicationError::Cover)?;
     let panel_temporal_gain = panel_evaluator
         .temporal_gain(request.time)
         .map_err(ApplicationError::Panel)?;
@@ -1669,6 +1689,7 @@ fn evaluate_optical_window_with_signal(
             view,
             panel_evaluator,
             panel_temporal_gain,
+            cover_evaluator,
             signal_at,
             signal_area,
         ),
@@ -1680,6 +1701,7 @@ fn evaluate_optical_window_with_signal(
             view,
             panel_evaluator,
             panel_temporal_gain,
+            cover_evaluator,
             signal_at,
             signal_area,
         ),
@@ -1691,6 +1713,7 @@ fn evaluate_optical_window_with_signal(
             view,
             panel_evaluator,
             panel_temporal_gain,
+            cover_evaluator,
             signal_at,
             signal_area,
         ),
@@ -1702,6 +1725,7 @@ fn evaluate_optical_window_with_signal(
             view,
             panel_evaluator,
             panel_temporal_gain,
+            cover_evaluator,
             signal_at,
             signal_area,
         ),
@@ -1738,6 +1762,7 @@ fn evaluate_optical_pixels<const SAMPLE_COUNT: usize>(
     view: DiagnosticView,
     panel_evaluator: ValidatedPanelEvaluator,
     panel_temporal_gain: f32,
+    cover_evaluator: ValidatedCoverEvaluator,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
     signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) {
@@ -1756,6 +1781,7 @@ fn evaluate_optical_pixels<const SAMPLE_COUNT: usize>(
                     view,
                     panel_evaluator,
                     panel_temporal_gain,
+                    cover_evaluator,
                     signal_at,
                     signal_area,
                 );
@@ -1845,6 +1871,7 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
     view: DiagnosticView,
     panel_evaluator: ValidatedPanelEvaluator,
     panel_temporal_gain: f32,
+    cover_evaluator: ValidatedCoverEvaluator,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
     signal_area: &(dyn Fn(Vec2, Vec2) -> DeviceRgb + Sync),
 ) -> LinearOpticalPixel {
@@ -1906,7 +1933,7 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
     ]
     .map(trace);
     if !subpixels_resolved_for_samples(&footprint, request.panel) {
-        return integrate_aperture_samples(
+        let integrated = integrate_aperture_samples(
             &footprint,
             view,
             request.panel,
@@ -1915,11 +1942,19 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
             signal_at,
             signal_area,
         );
+        return apply_cover(
+            integrated,
+            view,
+            frame,
+            request,
+            pixel_center_ndc,
+            cover_evaluator,
+        );
     }
     let aperture_samples = RESOLVED_SENSOR_BOX
         .map(|offset| expand_sensor_footprint(offset, psf_radius))
         .map(trace);
-    integrate_aperture_samples(
+    let integrated = integrate_aperture_samples(
         &aperture_samples,
         view,
         request.panel,
@@ -1927,7 +1962,59 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
         panel_temporal_gain,
         signal_at,
         signal_area,
+    );
+    apply_cover(
+        integrated,
+        view,
+        frame,
+        request,
+        pixel_center_ndc,
+        cover_evaluator,
     )
+}
+
+fn apply_cover(
+    pixel: LinearOpticalPixel,
+    view: DiagnosticView,
+    frame: &PreparedFrame,
+    request: &OpticalRequest,
+    viewport_ndc: Vec2,
+    evaluator: ValidatedCoverEvaluator,
+) -> LinearOpticalPixel {
+    if view != DiagnosticView::Composite {
+        return pixel;
+    }
+    let Some(surface) = cover_surface_sample_at_viewport(
+        frame.camera,
+        frame.screen,
+        request.panel.active_width,
+        request.panel.active_height,
+        viewport_ndc,
+    )
+    .filter(|sample| {
+        (0.0..=1.0).contains(&sample.panel_uv.x) && (0.0..=1.0).contains(&sample.panel_uv.y)
+    }) else {
+        return pixel;
+    };
+    LinearOpticalPixel {
+        acescg_irradiance: evaluator.evaluate(
+            pixel.acescg_irradiance,
+            CoverSurfaceSample {
+                view_cosine: surface.view_cosine,
+                reflection_direction_local: [
+                    surface.reflection_direction_local.x,
+                    surface.reflection_direction_local.y,
+                    surface.reflection_direction_local.z,
+                ],
+                lens_irradiance_weight: LinearRgb::new(
+                    surface.lens_irradiance_weight[0],
+                    surface.lens_irradiance_weight[1],
+                    surface.lens_irradiance_weight[2],
+                ),
+            },
+        ),
+        on_panel: pixel.on_panel,
+    }
 }
 
 fn expand_sensor_footprint(offset: Vec2, psf_radius_pixels: f32) -> Vec2 {
@@ -2391,6 +2478,7 @@ pub enum ApplicationError {
     AlphaAssociationUnresolved,
     Color(ColorError),
     Panel(PanelError),
+    Cover(CoverError),
     Geometry(GeometryError),
     Sensor(SensorError),
     CameraDevelopment(CameraDevelopmentError),
@@ -2457,6 +2545,7 @@ impl fmt::Display for ApplicationError {
             ),
             Self::Color(error) => write!(formatter, "invalid color transform: {error}"),
             Self::Panel(error) => write!(formatter, "invalid panel: {error}"),
+            Self::Cover(error) => write!(formatter, "invalid optical cover: {error}"),
             Self::Geometry(error) => write!(formatter, "invalid camera: {error}"),
             Self::Sensor(error) => write!(formatter, "invalid sensor capture: {error}"),
             Self::CameraDevelopment(error) => write!(formatter, "camera development: {error}"),
@@ -2472,9 +2561,10 @@ mod tests {
     use super::*;
     use screen_color::{ColorEngine, DeviceColorTarget, SourceColorInterpretation};
     use screen_contracts::{Meters, Millimeters};
+    use screen_cover::{COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset};
     use screen_geometry::lens_preset;
     use screen_panel::PanelTemporalEmission;
-    use screen_panel::{PanelColorimetry, StripeLayout};
+    use screen_panel::{DEVICE_PRESETS, PanelColorimetry, StripeLayout};
     use std::collections::HashSet;
 
     fn request() -> SimulationRequest {
@@ -2496,6 +2586,8 @@ mod tests {
                     angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
                     temporal_emission: PanelTemporalEmission::continuous(),
                 },
+                cover: CoverGlassProfile::NEUTRAL,
+                environment: ProceduralEnvironment::DARK,
                 camera: CameraRig {
                     transform: screen_geometry::TransformTrack {
                         keyframes: vec![screen_geometry::TransformKeyframe {
@@ -2559,6 +2651,50 @@ mod tests {
                 .is_some_and(|screen| screen.facing_ratio > 0.9)
         );
         assert!(frame.representative_emission.b > frame.representative_emission.g);
+    }
+
+    #[test]
+    fn every_device_default_resolves_to_one_current_cover_preset() {
+        for device in DEVICE_PRESETS {
+            assert!(
+                cover_glass_preset(device.default_cover_glass_preset_id).is_some(),
+                "{} references an unknown cover preset",
+                device.id
+            );
+        }
+    }
+
+    #[test]
+    fn cover_is_neutral_at_zero_and_isolated_from_emission_diagnostics() {
+        let baseline = request();
+        let baseline_composite =
+            evaluate_linear_optics(baseline.optical_request(), 32, 18).expect("baseline composite");
+
+        let mut neutralized = baseline.clone();
+        neutralized.optics.cover = COVER_GLASS_PRESETS[1].profile;
+        neutralized.optics.cover.character_strength = 0.0;
+        neutralized.optics.environment = ENVIRONMENT_PRESETS[1].environment;
+        neutralized.optics.environment.character_strength = 0.0;
+        let neutral_composite = evaluate_linear_optics(neutralized.optical_request(), 32, 18)
+            .expect("neutral composite");
+        assert_eq!(baseline_composite.pixels, neutral_composite.pixels);
+
+        let mut physical = baseline.clone();
+        physical.optics.cover = COVER_GLASS_PRESETS[1].profile;
+        physical.optics.environment = ENVIRONMENT_PRESETS[1].environment;
+        let physical_composite =
+            evaluate_linear_optics(physical.optical_request(), 32, 18).expect("physical composite");
+        assert_ne!(baseline_composite.pixels, physical_composite.pixels);
+
+        let mut baseline_emission = baseline;
+        baseline_emission.view = DiagnosticView::EmittedRadiance;
+        let mut physical_emission = physical;
+        physical_emission.view = DiagnosticView::EmittedRadiance;
+        let baseline_diagnostic =
+            prepare_raster(baseline_emission, 32, 18).expect("baseline emission diagnostic");
+        let physical_diagnostic =
+            prepare_raster(physical_emission, 32, 18).expect("physical emission diagnostic");
+        assert_eq!(baseline_diagnostic.pixels, physical_diagnostic.pixels);
     }
 
     #[test]

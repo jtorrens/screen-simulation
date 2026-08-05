@@ -27,6 +27,12 @@
       "allowed_local_dependencies": ["screen-contracts"]
     },
     {
+      "name": "screen-cover",
+      "path": "crates/screen-cover",
+      "owner": "optical-cover",
+      "allowed_local_dependencies": ["screen-contracts"]
+    },
+    {
       "name": "screen-geometry",
       "path": "crates/screen-geometry",
       "owner": "geometry",
@@ -52,6 +58,7 @@
         "screen-camera",
         "screen-color",
         "screen-contracts",
+        "screen-cover",
         "screen-geometry",
         "screen-media",
         "screen-panel",
@@ -83,6 +90,7 @@
         "screen-camera",
         "screen-color",
         "screen-contracts",
+        "screen-cover",
         "screen-geometry",
         "screen-media",
         "screen-panel",

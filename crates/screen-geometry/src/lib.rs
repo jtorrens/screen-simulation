@@ -928,6 +928,48 @@ pub struct OpticalSample {
     pub irradiance_weight: [f32; 3],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoverSurfaceGeometrySample {
+    pub panel_uv: Vec2,
+    pub view_cosine: f32,
+    pub reflection_direction_local: Vec3,
+    pub lens_irradiance_weight: [f32; 3],
+}
+
+/// Resolves one central green-channel surface ray for the cover layer. The cover uses this
+/// smooth geometric sample once per output pixel; native panel structure remains integrated
+/// independently through the complete aperture sample set.
+pub fn cover_surface_sample_at_viewport(
+    camera: CameraSample,
+    screen: ScreenSample,
+    active_width: Meters,
+    active_height: Meters,
+    viewport_ndc: Vec2,
+) -> Option<CoverSurfaceGeometrySample> {
+    let ideal = inverse_distortion(
+        Vec2 {
+            x: viewport_ndc.x + 2.0 * camera.lens_shift.x,
+            y: -viewport_ndc.y - 2.0 * camera.lens_shift.y,
+        },
+        camera.lens,
+    )?;
+    let (panel_uv, view_cosine, reflection_direction_local) = panel_uv_for_lens_sample(
+        camera,
+        screen,
+        active_width,
+        active_height,
+        ideal,
+        Vec2 { x: 0.0, y: 0.0 },
+        1,
+    )?;
+    Some(CoverSurfaceGeometrySample {
+        panel_uv,
+        view_cosine,
+        reflection_direction_local,
+        lens_irradiance_weight: lens_irradiance_weight(camera, ideal),
+    })
+}
+
 pub fn panel_uv_aperture_samples(
     camera: CameraSample,
     screen: ScreenSample,
@@ -981,21 +1023,10 @@ pub fn panel_uv_aperture_samples_with_count<const SAMPLE_COUNT: usize>(
                 channel,
             )
         });
-        let aperture_throughput = core::f32::consts::FRAC_PI_4 / (camera.f_stop * camera.f_stop);
         OpticalSample {
             panel_uv: hits.map(|hit| hit.map(|value| value.0)),
             emission_cosine: hits.map(|hit| hit.map_or(0.0, |value| value.1)),
-            irradiance_weight: core::array::from_fn(|channel| {
-                let scale = camera.lens.lateral_chromatic_scale[channel];
-                let tangent_x =
-                    ideal.x * scale * camera.sensor_width.0 / (2.0 * camera.focal_length.0);
-                let tangent_y =
-                    ideal.y * scale * camera.sensor_height.0 / (2.0 * camera.focal_length.0);
-                let cosine = 1.0 / (1.0 + tangent_x * tangent_x + tangent_y * tangent_y).sqrt();
-                let natural = cosine.powi(4);
-                let vignette = 1.0 + (natural - 1.0) * camera.lens.vignetting_strength;
-                aperture_throughput * vignette * camera.lens.transmission_rgb[channel]
-            }),
+            irradiance_weight: lens_irradiance_weight(camera, ideal),
         }
     })
 }
@@ -1021,6 +1052,19 @@ fn radical_inverse_base_two(mut value: u32) -> f32 {
     value as f32 * (1.0 / 4_294_967_296.0)
 }
 
+fn lens_irradiance_weight(camera: CameraSample, ideal: Vec2) -> [f32; 3] {
+    let aperture_throughput = core::f32::consts::FRAC_PI_4 / (camera.f_stop * camera.f_stop);
+    core::array::from_fn(|channel| {
+        let scale = camera.lens.lateral_chromatic_scale[channel];
+        let tangent_x = ideal.x * scale * camera.sensor_width.0 / (2.0 * camera.focal_length.0);
+        let tangent_y = ideal.y * scale * camera.sensor_height.0 / (2.0 * camera.focal_length.0);
+        let cosine = 1.0 / (1.0 + tangent_x * tangent_x + tangent_y * tangent_y).sqrt();
+        let natural = cosine.powi(4);
+        let vignette = 1.0 + (natural - 1.0) * camera.lens.vignetting_strength;
+        aperture_throughput * vignette * camera.lens.transmission_rgb[channel]
+    })
+}
+
 fn panel_uv_for_lens_sample(
     camera: CameraSample,
     screen: ScreenSample,
@@ -1029,7 +1073,7 @@ fn panel_uv_for_lens_sample(
     ideal_sensor: Vec2,
     lens_sample: Vec2,
     channel: usize,
-) -> Option<(Vec2, f32)> {
+) -> Option<(Vec2, f32, Vec3)> {
     let (right, up, forward) = camera_basis(camera);
     let mut ideal = ideal_sensor;
     ideal.x *= camera.lens.lateral_chromatic_scale[channel];
@@ -1081,6 +1125,11 @@ fn panel_uv_for_lens_sample(
             y: 0.5 - local_point.y / active_height.0,
         },
         (-local_ray.z).clamp(0.0, 1.0),
+        Vec3 {
+            x: local_ray.x,
+            y: local_ray.y,
+            z: -local_ray.z,
+        },
     ))
 }
 
@@ -1371,6 +1420,37 @@ mod tests {
             .expect("sample");
         assert!((start.yaw_degrees + 18.0).abs() < 0.001);
         assert!((middle.yaw_degrees - 18.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn cover_surface_sample_is_centered_and_energy_weighted() {
+        let camera = rig()
+            .sample(RationalTime::new(24, 24).expect("valid time"))
+            .expect("camera sample");
+        let screen = ScreenSample::IDENTITY;
+        let sample = cover_surface_sample_at_viewport(
+            camera,
+            screen,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.0, y: 0.0 },
+        )
+        .expect("cover sample");
+
+        assert!((sample.panel_uv.x - 0.5).abs() < 1.0e-4);
+        assert!((sample.panel_uv.y - 0.5).abs() < 1.0e-4);
+        assert!(sample.view_cosine > 0.9);
+        let reflected = sample.reflection_direction_local;
+        let reflected_length =
+            (reflected.x * reflected.x + reflected.y * reflected.y + reflected.z * reflected.z)
+                .sqrt();
+        assert!(reflected_length > 0.999);
+        assert!(
+            sample
+                .lens_irradiance_weight
+                .iter()
+                .all(|weight| *weight > 0.0)
+        );
     }
 
     #[test]

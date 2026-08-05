@@ -34,6 +34,10 @@ use screen_color::{
 use screen_contracts::{
     DeviceRgb, FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3,
 };
+use screen_cover::{
+    COVER_GLASS_PRESETS, CoverGlassProfile, ENVIRONMENT_PRESETS, ProceduralEnvironment,
+    cover_glass_preset, environment_preset,
+};
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation,
     LENS_PRESETS, LensModel, PanelRegion, Quaternion, ScreenTrack, TransformKeyframe,
@@ -85,6 +89,10 @@ struct RenderControls {
     output_transform_index: i32,
     capture_preset_index: i32,
     lens_preset_index: i32,
+    cover_preset_index: i32,
+    cover_strength: f32,
+    environment_preset_index: i32,
+    environment_strength: f32,
     capture_sensor_width: f32,
     capture_sensor_height: f32,
     capture_gate_width_mm: f32,
@@ -133,6 +141,10 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         output_transform_index: window.get_output_transform_index(),
         capture_preset_index: window.get_capture_preset_index(),
         lens_preset_index: window.get_lens_preset_index(),
+        cover_preset_index: window.get_cover_preset_index(),
+        cover_strength: window.get_cover_strength(),
+        environment_preset_index: window.get_environment_preset_index(),
+        environment_strength: window.get_environment_strength(),
         capture_sensor_width: window.get_capture_sensor_width(),
         capture_sensor_height: window.get_capture_sensor_height(),
         capture_gate_width_mm: window.get_capture_gate_width_mm(),
@@ -204,6 +216,8 @@ struct InteractionState {
     capture_reference_exposure_index: f32,
     capture_middle_gray_at_reference_ei: f32,
     active_lens: LensModel,
+    active_cover: CoverGlassProfile,
+    active_environment: ProceduralEnvironment,
     capture_render_requested: bool,
     capture_cancel: Option<Arc<AtomicBool>>,
     latest_native_export: Arc<Mutex<Option<NativeExportFrame>>>,
@@ -376,6 +390,12 @@ impl InteractionState {
             active_lens: lens_preset(CAPTURE_DEVICE_PRESETS[0].default_lens_preset_id)
                 .expect("initial capture template lens must resolve")
                 .lens,
+            active_cover: cover_glass_preset("cover-glossy-strong-ar")
+                .expect("initial cover preset must resolve")
+                .profile,
+            active_environment: environment_preset("environment-dark-studio")
+                .expect("initial environment preset must resolve")
+                .environment,
             capture_render_requested: false,
             capture_cancel: None,
             latest_native_export: Arc::new(Mutex::new(None)),
@@ -653,6 +673,8 @@ fn simulation_request(
     inspection: Option<PanelRegion>,
     camera: &CameraRig,
     screen: &ScreenTrack,
+    authored_cover: CoverGlassProfile,
+    authored_environment: ProceduralEnvironment,
 ) -> Result<SimulationRequest, String> {
     let frame_rate = project_frame_rate(window)?;
     let (native_width, native_height, active_width, active_height) = device_geometry(window)?;
@@ -678,6 +700,10 @@ fn simulation_request(
     }
     let viewport_aspect = gate_width / gate_height;
     window.set_preview_aspect(viewport_aspect);
+    let mut cover = authored_cover;
+    cover.character_strength = window.get_cover_strength();
+    let mut environment = authored_environment;
+    environment.character_strength = window.get_environment_strength();
     Ok(SimulationRequest {
         optics: OpticalRequest {
             time: frame_rate
@@ -702,6 +728,8 @@ fn simulation_request(
                 angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
                 temporal_emission: PanelTemporalEmission::continuous(),
             },
+            cover,
+            environment,
             camera,
             screen: screen.clone(),
             inspection,
@@ -785,7 +813,11 @@ fn update_device_summary(window: &MainWindow) {
     );
 }
 
-fn apply_device_preset(window: &MainWindow, id: &str) -> Result<(), String> {
+fn apply_device_preset(
+    window: &MainWindow,
+    state: &mut InteractionState,
+    id: &str,
+) -> Result<(), String> {
     if id == "custom" {
         window.set_device_reference_white_nits(window.get_white_nits());
         window.set_device_white_basis("Custom authored operating white".into());
@@ -801,7 +833,62 @@ fn apply_device_preset(window: &MainWindow, id: &str) -> Result<(), String> {
     window.set_white_nits(preset.reference_white_nits);
     window.set_device_reference_white_nits(preset.reference_white_nits);
     window.set_device_white_basis(preset.white_basis.into());
+    apply_cover_preset(window, state, preset.default_cover_glass_preset_id)?;
     update_device_summary(window);
+    Ok(())
+}
+
+fn apply_cover_preset(
+    window: &MainWindow,
+    state: &mut InteractionState,
+    id: &str,
+) -> Result<(), String> {
+    if id == "custom" {
+        window.set_cover_preset_index(COVER_GLASS_PRESETS.len() as i32);
+        window.set_cover_summary("Custom complete optical-cover parameters".into());
+        return Ok(());
+    }
+    let preset = cover_glass_preset(id)
+        .ok_or_else(|| format!("unknown current cover-glass preset id {id}"))?;
+    let index = COVER_GLASS_PRESETS
+        .iter()
+        .position(|candidate| candidate.id == id)
+        .expect("resolved cover preset belongs to the current catalog");
+    state.active_cover = preset.profile;
+    window.set_cover_preset_index(index as i32);
+    window.set_cover_strength(preset.profile.character_strength);
+    window.set_cover_summary(
+        format!(
+            "{:.2} mm · IOR {:.2} · roughness {:.2}",
+            preset.profile.thickness_millimeters,
+            preset.profile.refractive_index,
+            preset.profile.roughness
+        )
+        .into(),
+    );
+    Ok(())
+}
+
+fn apply_environment_preset(
+    window: &MainWindow,
+    state: &mut InteractionState,
+    id: &str,
+) -> Result<(), String> {
+    if id == "custom" {
+        window.set_environment_preset_index(ENVIRONMENT_PRESETS.len() as i32);
+        window.set_environment_summary("Custom procedural incident radiance".into());
+        return Ok(());
+    }
+    let preset = environment_preset(id)
+        .ok_or_else(|| format!("unknown current environment preset id {id}"))?;
+    let index = ENVIRONMENT_PRESETS
+        .iter()
+        .position(|candidate| candidate.id == id)
+        .expect("resolved environment preset belongs to the current catalog");
+    state.active_environment = preset.environment;
+    window.set_environment_preset_index(index as i32);
+    window.set_environment_strength(preset.environment.character_strength);
+    window.set_environment_summary("Procedural environment radiance · HDR-ready boundary".into());
     Ok(())
 }
 
@@ -1001,6 +1088,8 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         state.inspection,
         state.camera_editor.effective(),
         &state.screen,
+        state.active_cover,
+        state.active_environment,
     ) {
         Ok(request) => request,
         Err(error) => {
@@ -2358,14 +2447,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     window.set_lens_preset_model(ModelRc::new(VecModel::from(lens_labels)));
     window.set_lens_preset_ids(ModelRc::new(VecModel::from(lens_ids)));
+    let cover_labels: Vec<SharedString> = COVER_GLASS_PRESETS
+        .iter()
+        .map(|preset| preset.label.into())
+        .chain(std::iter::once("Custom".into()))
+        .collect();
+    let cover_ids: Vec<SharedString> = COVER_GLASS_PRESETS
+        .iter()
+        .map(|preset| preset.id.into())
+        .chain(std::iter::once("custom".into()))
+        .collect();
+    window.set_cover_preset_model(ModelRc::new(VecModel::from(cover_labels)));
+    window.set_cover_preset_ids(ModelRc::new(VecModel::from(cover_ids)));
+    let environment_labels: Vec<SharedString> = ENVIRONMENT_PRESETS
+        .iter()
+        .map(|preset| preset.label.into())
+        .chain(std::iter::once("Custom".into()))
+        .collect();
+    let environment_ids: Vec<SharedString> = ENVIRONMENT_PRESETS
+        .iter()
+        .map(|preset| preset.id.into())
+        .chain(std::iter::once("custom".into()))
+        .collect();
+    window.set_environment_preset_model(ModelRc::new(VecModel::from(environment_labels)));
+    window.set_environment_preset_ids(ModelRc::new(VecModel::from(environment_ids)));
     window.set_build_id(
         option_env!("SCREEN_SIM_BUILD_ID")
             .unwrap_or("development")
             .into(),
     );
-    apply_device_preset(&window, "lcd-macbook-pro-retina-14")?;
     let color_engine = ColorEngine::bundled()?;
     let state = Rc::new(RefCell::new(InteractionState::new(color_engine)));
+    apply_device_preset(
+        &window,
+        &mut state.borrow_mut(),
+        "lcd-macbook-pro-retina-14",
+    )?;
+    apply_environment_preset(&window, &mut state.borrow_mut(), "environment-dark-studio")?;
     apply_capture_preset(&window, &mut state.borrow_mut(), "arri-alexa-35-open-gate")?;
 
     {
@@ -2375,8 +2493,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Some(window) = weak_window.upgrade() else {
                 return;
             };
-            match apply_device_preset(&window, id.as_str()) {
-                Ok(()) => render_preview(&window, &mut state.borrow_mut()),
+            let mut state = state.borrow_mut();
+            match apply_device_preset(&window, &mut state, id.as_str()) {
+                Ok(()) => render_preview(&window, &mut state),
+                Err(error) => block_preview(&window, &error),
+            }
+        });
+    }
+
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_select_cover_preset(move |id| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let mut state = state.borrow_mut();
+            match apply_cover_preset(&window, &mut state, id.as_str()) {
+                Ok(()) => render_preview(&window, &mut state),
+                Err(error) => block_preview(&window, &error),
+            }
+        });
+    }
+
+    {
+        let weak_window = window.as_weak();
+        let state = Rc::clone(&state);
+        window.on_select_environment_preset(move |id| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let mut state = state.borrow_mut();
+            match apply_environment_preset(&window, &mut state, id.as_str()) {
+                Ok(()) => render_preview(&window, &mut state),
                 Err(error) => block_preview(&window, &error),
             }
         });
@@ -2587,6 +2736,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state_ref.inspection,
                 state_ref.camera_editor.effective(),
                 &state_ref.screen,
+                state_ref.active_cover,
+                state_ref.active_environment,
             ) {
                 Ok(request) => request,
                 Err(error) => {

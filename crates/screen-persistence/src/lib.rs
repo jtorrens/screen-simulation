@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 3;
+pub const CURRENT_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -162,6 +162,19 @@ pub struct DeviceDocument {
     pub pwm_period: ExactTime,
     pub pwm_on_duration: ExactTime,
     pub pwm_phase: ExactTime,
+    pub cover: CoverDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverDocument {
+    pub character_strength: f32,
+    pub thickness_millimeters: f32,
+    pub refractive_index: f32,
+    pub anti_reflective_efficiency: f32,
+    pub absorption_per_millimeter: [f32; 3],
+    pub roughness: f32,
+    pub haze: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,6 +325,17 @@ pub struct ShotDocument {
     pub reference_exposure_index: f32,
     pub develop_exposure_ev: f32,
     pub camera_output_transform_id: String,
+    pub environment: EnvironmentDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentDocument {
+    pub character_strength: f32,
+    pub ambient_radiance: [f32; 3],
+    pub key_radiance: [f32; 3],
+    pub key_direction_local: [f32; 3],
+    pub key_angular_radius_degrees: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,6 +435,7 @@ impl ProjectPackage {
         validate_intrinsics(&self.camera.intrinsics_keyframes)?;
         validate_keyframes(&self.screen.transform_keyframes)?;
         validate_device(&self.device)?;
+        validate_environment(&self.shot.environment)?;
         validate_sensor(&self.sensor)?;
         if self
             .shot
@@ -776,6 +801,75 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
     {
         return Err(PersistenceError::InvalidDeviceProfile);
     }
+    validate_cover(&device.cover)?;
+    Ok(())
+}
+
+fn validate_cover(cover: &CoverDocument) -> Result<(), PersistenceError> {
+    let finite = [
+        cover.character_strength,
+        cover.thickness_millimeters,
+        cover.refractive_index,
+        cover.anti_reflective_efficiency,
+        cover.absorption_per_millimeter[0],
+        cover.absorption_per_millimeter[1],
+        cover.absorption_per_millimeter[2],
+        cover.roughness,
+        cover.haze,
+    ]
+    .into_iter()
+    .all(f32::is_finite);
+    if !finite
+        || !(0.0..=2.0).contains(&cover.character_strength)
+        || !(0.01..=20.0).contains(&cover.thickness_millimeters)
+        || !(1.0..=2.5).contains(&cover.refractive_index)
+        || !(0.0..=1.0).contains(&cover.anti_reflective_efficiency)
+        || cover
+            .absorption_per_millimeter
+            .into_iter()
+            .any(|value| !(0.0..=2.0).contains(&value))
+        || !(0.0..=1.0).contains(&cover.roughness)
+        || !(0.0..=1.0).contains(&cover.haze)
+    {
+        return Err(PersistenceError::InvalidOpticalCover);
+    }
+    Ok(())
+}
+
+fn validate_environment(environment: &EnvironmentDocument) -> Result<(), PersistenceError> {
+    let finite = [
+        environment.character_strength,
+        environment.ambient_radiance[0],
+        environment.ambient_radiance[1],
+        environment.ambient_radiance[2],
+        environment.key_radiance[0],
+        environment.key_radiance[1],
+        environment.key_radiance[2],
+        environment.key_direction_local[0],
+        environment.key_direction_local[1],
+        environment.key_direction_local[2],
+        environment.key_angular_radius_degrees,
+    ]
+    .into_iter()
+    .all(f32::is_finite);
+    let direction_length_squared = environment
+        .key_direction_local
+        .into_iter()
+        .map(|value| value * value)
+        .sum::<f32>();
+    if !finite
+        || !(0.0..=4.0).contains(&environment.character_strength)
+        || environment
+            .ambient_radiance
+            .into_iter()
+            .chain(environment.key_radiance)
+            .any(|value| !(0.0..=100_000.0).contains(&value))
+        || (direction_length_squared - 1.0).abs() > 1.0e-3
+        || environment.key_direction_local[2] < 0.0
+        || !(0.1..=89.0).contains(&environment.key_angular_radius_degrees)
+    {
+        return Err(PersistenceError::InvalidEnvironment);
+    }
     Ok(())
 }
 
@@ -863,6 +957,8 @@ pub enum PersistenceError {
     NonNormalizedQuaternion,
     InvalidCameraIntrinsics,
     InvalidDeviceProfile,
+    InvalidOpticalCover,
+    InvalidEnvironment,
     InvalidSensorProfile,
     InvalidCameraDevelopment,
     NonFiniteNumber,
@@ -932,6 +1028,8 @@ impl fmt::Display for PersistenceError {
             }
             Self::InvalidCameraIntrinsics => formatter.write_str("camera intrinsics are invalid"),
             Self::InvalidDeviceProfile => formatter.write_str("device profile is invalid"),
+            Self::InvalidOpticalCover => formatter.write_str("optical cover profile is invalid"),
+            Self::InvalidEnvironment => formatter.write_str("environment profile is invalid"),
             Self::InvalidSensorProfile => formatter.write_str("sensor profile is invalid"),
             Self::InvalidCameraDevelopment => formatter.write_str(
                 "camera development requires explicit white balance and output transform",
@@ -1049,6 +1147,15 @@ mod tests {
                     numerator: 0,
                     denominator: 1,
                 },
+                cover: CoverDocument {
+                    character_strength: 1.0,
+                    thickness_millimeters: 0.8,
+                    refractive_index: 1.5,
+                    anti_reflective_efficiency: 0.62,
+                    absorption_per_millimeter: [0.012; 3],
+                    roughness: 0.46,
+                    haze: 0.03,
+                },
             },
             camera: CameraDocument {
                 schema: "screen_simulation_camera".into(),
@@ -1130,6 +1237,13 @@ mod tests {
                 reference_exposure_index: 800.0,
                 develop_exposure_ev: 0.0,
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
+                environment: EnvironmentDocument {
+                    character_strength: 1.0,
+                    ambient_radiance: [30.0; 3],
+                    key_radiance: [220.0; 3],
+                    key_direction_local: [-0.45, 0.35, 0.821_584],
+                    key_angular_radius_degrees: 18.0,
+                },
             },
         }
     }

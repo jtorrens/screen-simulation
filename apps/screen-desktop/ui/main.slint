@@ -129,6 +129,16 @@ export component MainWindow inherits Window {
     in property <[string]> lens-preset-model;
     in property <[string]> lens-preset-ids;
     in-out property <string> lens-summary: "Generic photographic approximation";
+    in-out property <int> cover-preset-index: 0;
+    in property <[string]> cover-preset-model;
+    in property <[string]> cover-preset-ids;
+    in-out property <string> cover-summary: "0.75 mm · IOR 1.52 · roughness 0.03";
+    in-out property <float> cover-strength: 1;
+    in-out property <int> environment-preset-index: 0;
+    in property <[string]> environment-preset-model;
+    in property <[string]> environment-preset-ids;
+    in-out property <string> environment-summary: "Procedural environment radiance · HDR-ready boundary";
+    in-out property <float> environment-strength: 1;
     in-out property <int> render-quality-index: 1;
     in-out property <bool> capture-rendering: false;
     in-out property <bool> preview-rendering: false;
@@ -208,6 +218,8 @@ export component MainWindow inherits Window {
     callback select-device-preset(string);
     callback select-capture-preset(string);
     callback select-lens-preset(string);
+    callback select-cover-preset(string);
+    callback select-environment-preset(string);
     callback render-capture-frame();
     callback cancel-capture-frame();
     callback export-native-frame();
@@ -880,6 +892,56 @@ export component MainWindow inherits Window {
                                 model: ["RGB", "BGR"];
                                 current-index <=> root.stripe-index;
                             }
+                        }
+
+                        Rectangle { height: 1px; background: #303744; }
+
+                        Text { text: "COVER GLASS"; color: #71819b; font-size: 11px; }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Glass"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: root.cover-preset-model;
+                                current-index <=> root.cover-preset-index;
+                                selected(value) => {
+                                    root.select-cover-preset(root.cover-preset-ids[self.current-index]);
+                                }
+                            }
+                        }
+
+                        Text { text: root.cover-summary; color: #8794a9; font-size: 10px; overflow: elide; }
+
+                        ValueRow {
+                            label: "Glass amount";
+                            minimum: 0;
+                            maximum: 2;
+                            step: 0.01;
+                            value <=> root.cover-strength;
+                            numeric-value: round(root.cover-strength * 100) / 100;
+                        }
+
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Environment"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: root.environment-preset-model;
+                                current-index <=> root.environment-preset-index;
+                                selected(value) => {
+                                    root.select-environment-preset(root.environment-preset-ids[self.current-index]);
+                                }
+                            }
+                        }
+
+                        Text { text: root.environment-summary; color: #8794a9; font-size: 10px; overflow: elide; }
+
+                        ValueRow {
+                            label: "Env amount";
+                            minimum: 0;
+                            maximum: 4;
+                            step: 0.01;
+                            value <=> root.environment-strength;
+                            numeric-value: round(root.environment-strength * 100) / 100;
                         }
 
                         Rectangle { height: 1px; background: #303744; }

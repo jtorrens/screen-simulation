@@ -10,6 +10,7 @@ rayon = "1.11"
 screen-camera = { path = "../screen-camera" }
 screen-color = { path = "../screen-color" }
 screen-contracts = { path = "../screen-contracts" }
+screen-cover = { path = "../screen-cover" }
 screen-geometry = { path = "../screen-geometry" }
 screen-media = { path = "../screen-media" }
 screen-panel = { path = "../screen-panel" }

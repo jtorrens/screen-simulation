@@ -13,6 +13,7 @@ screen-application = { path = "../../crates/screen-application" }
 screen-camera = { path = "../../crates/screen-camera" }
 screen-color = { path = "../../crates/screen-color" }
 screen-contracts = { path = "../../crates/screen-contracts" }
+screen-cover = { path = "../../crates/screen-cover" }
 screen-geometry = { path = "../../crates/screen-geometry" }
 screen-media = { path = "../../crates/screen-media" }
 screen-panel = { path = "../../crates/screen-panel" }

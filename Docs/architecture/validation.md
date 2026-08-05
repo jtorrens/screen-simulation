@@ -14,4 +14,6 @@ Photometric coverage owns one explicit device-code scale and verifies every patc
 
 Lens coverage requires unique stable template ids, complete finite coefficients including physical center/edge softness, successful full-gate inversion certification for every bundled model and valid midpoint interpolation across the current catalog. Capture templates must resolve one explicit lens template whose nominal focal length equals the capture default. PSF coverage requires physical softness to grow correctly with sensor sampling density, authored image height and f-number.
 
+Optical-cover coverage requires unique stable current cover and environment ids, valid complete material profiles and successful resolution of every device template's default cover id. Zero cover character must be bit-exact identity, zero environment character must contribute no reflection, grazing incidence must not reduce Fresnel response, and cover changes must affect Composite without changing the pre-cover Emitted Radiance diagnostic. Draft and Native consume the same authored cover/environment request.
+
 Broad tests are never a fallback for an unclassified change. The validation-owner manifest must first assign the changed path to its semantic owner and exact checks.

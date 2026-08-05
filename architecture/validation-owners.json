@@ -50,6 +50,11 @@
       "checks": ["architecture", "workspace", "panel"]
     },
     {
+      "id": "optical-cover",
+      "paths": ["crates/screen-cover/**"],
+      "checks": ["architecture", "workspace", "optical-cover"]
+    },
+    {
       "id": "geometry",
       "paths": ["crates/screen-geometry/**"],
       "checks": ["architecture", "workspace", "geometry"]

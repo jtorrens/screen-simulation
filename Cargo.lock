@@ -4387,6 +4387,7 @@ dependencies = [
  "screen-camera",
  "screen-color",
  "screen-contracts",
+ "screen-cover",
  "screen-geometry",
  "screen-media",
  "screen-panel",
@@ -4414,6 +4415,13 @@ name = "screen-contracts"
 version = "0.1.0"
 
 [[package]]
+name = "screen-cover"
+version = "0.1.0"
+dependencies = [
+ "screen-contracts",
+]
+
+[[package]]
 name = "screen-desktop"
 version = "0.1.0"
 dependencies = [
@@ -4423,6 +4431,7 @@ dependencies = [
  "screen-camera",
  "screen-color",
  "screen-contracts",
+ "screen-cover",
  "screen-geometry",
  "screen-media",
  "screen-panel",

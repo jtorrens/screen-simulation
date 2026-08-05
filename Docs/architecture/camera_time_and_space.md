@@ -2,6 +2,8 @@
 
 Status: normative.
 
+Geometry resolves one optical-cover incidence and reflection ray from the same camera/screen projection used by lens integration. Application applies angle-dependent cover transmission and authored environment reflection in linear radiance before the lens boundary. This belongs to the shared Draft and Native optical request, not to a post-process route.
+
 The canonical scene is right-handed. `+X` is right, `+Y` is up and `+Z` points from the screen toward a frontal viewer. A screen's local active area lies on XY, its center is the local origin and its front normal is `+Z`. A camera looks along local `-Z`.
 
 Scene translation and physical screen dimensions use meters. Focal length and sensor aperture use millimeters. Persisted values always name their unit through the owning contract rather than relying on UI labels.

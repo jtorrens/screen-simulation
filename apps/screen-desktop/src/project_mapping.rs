@@ -2,6 +2,7 @@ use screen_application::{RasterPlacement, RollingDirection, SensorReadout};
 use screen_camera::CameraDevelopment;
 use screen_color::{CameraOutputTransform, OcioInputTransform, SourceColorInterpretation};
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
+use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, LensModel,
     Quaternion, ScreenTrack, TransformKeyframe, TransformTrack,
@@ -28,6 +29,8 @@ pub struct ProjectScene {
     pub placement: RasterPlacement,
     pub frame_rate: FrameRate,
     pub panel: LcdProfile,
+    pub cover: CoverGlassProfile,
+    pub environment: ProceduralEnvironment,
     pub camera: CameraRig,
     pub screen: ScreenTrack,
     pub sensor: SensorProfile,
@@ -118,6 +121,38 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 pwm_on_duration: map_time(device.pwm_on_duration)?,
                 phase: map_time(device.pwm_phase)?,
             },
+        }
+        .validate()
+        .map_err(|error| error.to_string())?,
+        cover: CoverGlassProfile {
+            character_strength: device.cover.character_strength,
+            thickness_millimeters: device.cover.thickness_millimeters,
+            refractive_index: device.cover.refractive_index,
+            anti_reflective_efficiency: device.cover.anti_reflective_efficiency,
+            absorption_per_millimeter: LinearRgb::new(
+                device.cover.absorption_per_millimeter[0],
+                device.cover.absorption_per_millimeter[1],
+                device.cover.absorption_per_millimeter[2],
+            ),
+            roughness: device.cover.roughness,
+            haze: device.cover.haze,
+        }
+        .validate()
+        .map_err(|error| error.to_string())?,
+        environment: ProceduralEnvironment {
+            character_strength: package.shot.environment.character_strength,
+            ambient_radiance: LinearRgb::new(
+                package.shot.environment.ambient_radiance[0],
+                package.shot.environment.ambient_radiance[1],
+                package.shot.environment.ambient_radiance[2],
+            ),
+            key_radiance: LinearRgb::new(
+                package.shot.environment.key_radiance[0],
+                package.shot.environment.key_radiance[1],
+                package.shot.environment.key_radiance[2],
+            ),
+            key_direction_local: package.shot.environment.key_direction_local,
+            key_angular_radius_degrees: package.shot.environment.key_angular_radius_degrees,
         }
         .validate()
         .map_err(|error| error.to_string())?,
@@ -360,6 +395,15 @@ mod tests {
                     numerator: 0,
                     denominator: 1,
                 },
+                cover: CoverDocument {
+                    character_strength: 1.0,
+                    thickness_millimeters: 0.8,
+                    refractive_index: 1.5,
+                    anti_reflective_efficiency: 0.62,
+                    absorption_per_millimeter: [0.012; 3],
+                    roughness: 0.46,
+                    haze: 0.03,
+                },
             },
             camera: CameraDocument {
                 schema: "screen_simulation_camera".into(),
@@ -447,6 +491,13 @@ mod tests {
                 reference_exposure_index: 800.0,
                 develop_exposure_ev: 0.0,
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
+                environment: EnvironmentDocument {
+                    character_strength: 1.0,
+                    ambient_radiance: [30.0; 3],
+                    key_radiance: [220.0; 3],
+                    key_direction_local: [-0.45, 0.35, 0.821_584],
+                    key_angular_radius_degrees: 18.0,
+                },
             },
         };
         let scene = map_project_scene(&package).expect("strict complete mapping");
@@ -470,6 +521,13 @@ mod tests {
             }
         );
         assert_eq!(scene.sensor_noise_seed, 42);
+        assert_eq!(scene.cover.thickness_millimeters, 0.8);
+        assert_eq!(scene.cover.anti_reflective_efficiency, 0.62);
+        assert_eq!(
+            scene.environment.ambient_radiance,
+            LinearRgb::new(30.0, 30.0, 30.0)
+        );
+        assert_eq!(scene.environment.key_angular_radius_degrees, 18.0);
         assert_eq!(
             scene.camera_development.white_balance,
             LinearRgb::new(2.0, 1.0, 1.5)

@@ -77,6 +77,7 @@ pub struct DevicePreset {
     pub active_height: Meters,
     pub reference_white_nits: f32,
     pub white_basis: &'static str,
+    pub default_cover_glass_preset_id: &'static str,
 }
 
 impl DevicePreset {
@@ -101,6 +102,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.103_941),
         reference_white_nits: 625.0,
         white_basis: "Generic authored reference",
+        default_cover_glass_preset_id: "cover-glossy-strong-ar",
     },
     DevicePreset {
         id: "lcd-phone-6_1-liquid-retina",
@@ -111,6 +113,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.139_607),
         reference_white_nits: 625.0,
         white_basis: "Generic authored reference",
+        default_cover_glass_preset_id: "cover-glossy-strong-ar",
     },
     DevicePreset {
         id: "lcd-phone-6_5-high-density",
@@ -121,6 +124,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.150_519),
         reference_white_nits: 500.0,
         white_basis: "Generic authored reference",
+        default_cover_glass_preset_id: "cover-glossy-strong-ar",
     },
     DevicePreset {
         id: "lcd-macbook-pro-retina-14",
@@ -131,6 +135,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.196_4),
         reference_white_nits: 500.0,
         white_basis: "Published SDR reference",
+        default_cover_glass_preset_id: "cover-glossy-strong-ar",
     },
     DevicePreset {
         id: "lcd-laptop-fhd-15_6",
@@ -141,6 +146,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.194_261),
         reference_white_nits: 300.0,
         white_basis: "Generic authored reference",
+        default_cover_glass_preset_id: "cover-semi-gloss",
     },
     DevicePreset {
         id: "lcd-tv-hd-32",
@@ -151,6 +157,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.398_337),
         reference_white_nits: 250.0,
         white_basis: "Generic authored reference",
+        default_cover_glass_preset_id: "cover-semi-gloss",
     },
     DevicePreset {
         id: "lcd-tv-fhd-43",
@@ -161,6 +168,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.535_463),
         reference_white_nits: 300.0,
         white_basis: "Generic authored reference",
+        default_cover_glass_preset_id: "cover-glossy-standard-ar",
     },
     DevicePreset {
         id: "lcd-tv-uhd-55",
@@ -171,6 +179,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.684_895),
         reference_white_nits: 350.0,
         white_basis: "Generic authored reference",
+        default_cover_glass_preset_id: "cover-glossy-standard-ar",
     },
     DevicePreset {
         id: "lcd-asus-proart-pa329cv",
@@ -181,6 +190,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         active_height: Meters(0.398_520),
         reference_white_nits: 350.0,
         white_basis: "ASUS published typical SDR",
+        default_cover_glass_preset_id: "cover-matte-ar",
     },
 ];
 
