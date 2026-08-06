@@ -85,6 +85,16 @@
       "checks": ["architecture", "workspace", "platform"]
     },
     {
+      "id": "studio-color",
+      "paths": ["packages/StudioColor/**"],
+      "checks": ["architecture", "studio-color"]
+    },
+    {
+      "id": "native-macos-composition",
+      "paths": ["apps/screen-native-macos/**", "crates/screen-native-bridge/**", "Docs/NATIVE_MACOS_CUTOVER.md"],
+      "checks": ["architecture", "workspace", "native-macos"]
+    },
+    {
       "id": "desktop-composition",
       "paths": ["apps/screen-desktop/**"],
       "checks": ["architecture", "workspace", "desktop"]

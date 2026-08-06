@@ -88,6 +88,12 @@
       ]
     },
     {
+      "name": "screen-native-bridge",
+      "path": "crates/screen-native-bridge",
+      "owner": "native-macos-composition",
+      "allowed_local_dependencies": []
+    },
+    {
       "name": "screen-desktop",
       "path": "apps/screen-desktop",
       "owner": "desktop-composition",

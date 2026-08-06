@@ -4517,6 +4517,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "screen-native-bridge"
+version = "0.1.0"
+
+[[package]]
 name = "screen-panel"
 version = "0.1.0"
 dependencies = [
