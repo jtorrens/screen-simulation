@@ -4521,10 +4521,12 @@ name = "screen-native-bridge"
 version = "0.1.0"
 dependencies = [
  "image",
+ "metal",
  "screen-application",
  "screen-contracts",
  "screen-cover",
  "screen-panel",
+ "screen-platform",
 ]
 
 [[package]]
