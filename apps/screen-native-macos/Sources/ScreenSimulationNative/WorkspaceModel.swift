@@ -837,6 +837,17 @@ final class WorkspaceModel: ObservableObject {
             sourceACEScgFrame,
             output: deviceSignalTransform
         )
+        let contributions = physicalModel.orderedContributions
+        guard let spreadAmount = contributions.first(where: {
+            $0.stage == .screen(.panelLightSpread)
+        })?.amount else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "Falta la contribución resuelta de Panel Light Spread."
+            )
+        }
+        var effectiveDeviceDefinition = resolvedDevice.definition
+        effectiveDeviceDefinition.panelLightSpread.characterStrength = spreadAmount
+        let effectiveDevice = try effectiveDeviceDefinition.resolved()
         physicalIdentityCounter &+= 1
         let identity = PhysicalFrameIdentity(
             high: physicalModel.parameterRevision,
@@ -850,12 +861,12 @@ final class WorkspaceModel: ObservableObject {
                 timeNumerator: Int64(currentFrame),
                 timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
             ),
-            resolvedDevice: resolvedDevice,
+            resolvedDevice: effectiveDevice,
             resolvedPipeline: resolvedPhysicalPipeline,
             quality: quality,
             screenAmount: physicalModel.screenAmount,
             captureAmount: physicalModel.captureAmount,
-            contributions: physicalModel.orderedContributions,
+            contributions: contributions,
             requestedDimensions: try physicalRequestedDimensions(
                 quality: quality,
                 device: resolvedDevice.definition
