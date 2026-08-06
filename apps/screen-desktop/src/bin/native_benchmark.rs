@@ -159,6 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             white_level_nits: DEVICE_PRESETS[0].reference_white_nits,
             colorimetry: PanelColorimetry::SRGB_D65,
             angular_emission_power: screen_contracts::LinearRgb::new(1.7, 1.5, 1.8),
+            light_spread: screen_panel::PanelLightSpreadProfile::LCD_DESKTOP,
             temporal_emission: PanelTemporalEmission::clean_lcd(),
         },
         cover: CoverGlassProfile::NEUTRAL,

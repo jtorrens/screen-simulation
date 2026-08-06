@@ -64,7 +64,153 @@ pub struct LcdProfile {
     pub white_level_nits: f32,
     pub colorimetry: PanelColorimetry,
     pub angular_emission_power: LinearRgb,
+    pub light_spread: PanelLightSpreadProfile,
     pub temporal_emission: PanelTemporalEmission,
+}
+
+/// Energy-conserving lateral transport at the emitted panel plane.
+///
+/// Radii are physical micrometers, not output-raster pixels. `core_weight` and
+/// `tail_weight` are the fractions assigned to four deterministic samples on
+/// each ring; the remaining energy stays at the emitter position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelLightSpreadProfile {
+    pub character_strength: f32,
+    pub core_radius_micrometers: LinearRgb,
+    pub core_weight: LinearRgb,
+    pub tail_radius_micrometers: LinearRgb,
+    pub tail_weight: LinearRgb,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelLightSpreadSample {
+    pub offset_meters: screen_contracts::Vec2,
+    pub weight: f32,
+}
+
+impl PanelLightSpreadProfile {
+    pub const LCD_MOBILE: Self = Self {
+        character_strength: 1.0,
+        core_radius_micrometers: LinearRgb::new(12.0, 10.0, 14.0),
+        core_weight: LinearRgb::new(0.20, 0.18, 0.22),
+        tail_radius_micrometers: LinearRgb::new(48.0, 42.0, 54.0),
+        tail_weight: LinearRgb::new(0.035, 0.030, 0.040),
+    };
+
+    pub const LCD_DESKTOP: Self = Self {
+        character_strength: 1.0,
+        core_radius_micrometers: LinearRgb::new(22.0, 18.0, 25.0),
+        core_weight: LinearRgb::new(0.22, 0.20, 0.24),
+        tail_radius_micrometers: LinearRgb::new(90.0, 78.0, 102.0),
+        tail_weight: LinearRgb::new(0.040, 0.035, 0.045),
+    };
+
+    pub const LCD_TV: Self = Self {
+        character_strength: 1.0,
+        core_radius_micrometers: LinearRgb::new(35.0, 30.0, 40.0),
+        core_weight: LinearRgb::new(0.24, 0.22, 0.26),
+        tail_radius_micrometers: LinearRgb::new(150.0, 130.0, 170.0),
+        tail_weight: LinearRgb::new(0.045, 0.040, 0.050),
+    };
+
+    /// Contained authored profile for future OLED device materialization.
+    pub const OLED_CONTAINED: Self = Self {
+        character_strength: 1.0,
+        core_radius_micrometers: LinearRgb::new(5.0, 4.0, 6.0),
+        core_weight: LinearRgb::new(0.08, 0.07, 0.09),
+        tail_radius_micrometers: LinearRgb::new(18.0, 16.0, 20.0),
+        tail_weight: LinearRgb::new(0.010, 0.008, 0.012),
+    };
+
+    /// Very contained authored profile for future micro-LED materialization.
+    pub const MICRO_LED_CONTAINED: Self = Self {
+        character_strength: 1.0,
+        core_radius_micrometers: LinearRgb::new(2.0, 2.0, 2.5),
+        core_weight: LinearRgb::new(0.04, 0.04, 0.05),
+        tail_radius_micrometers: LinearRgb::new(8.0, 7.0, 9.0),
+        tail_weight: LinearRgb::new(0.005, 0.004, 0.006),
+    };
+
+    pub fn validate(self) -> Result<Self, PanelError> {
+        for channel in 0..3 {
+            let core_radius = channel_value(self.core_radius_micrometers, channel);
+            let core_weight = channel_value(self.core_weight, channel);
+            let tail_radius = channel_value(self.tail_radius_micrometers, channel);
+            let tail_weight = channel_value(self.tail_weight, channel);
+            if !self.character_strength.is_finite()
+                || !(0.0..=3.0).contains(&self.character_strength)
+                || !core_radius.is_finite()
+                || core_radius <= 0.0
+                || !tail_radius.is_finite()
+                || tail_radius <= core_radius
+                || !core_weight.is_finite()
+                || core_weight < 0.0
+                || !tail_weight.is_finite()
+                || tail_weight < 0.0
+                || core_weight + tail_weight > 1.0
+            {
+                return Err(PanelError::InvalidLightSpread);
+            }
+        }
+        Ok(self)
+    }
+
+    pub fn samples_for_channel(self, channel: usize) -> [PanelLightSpreadSample; 9] {
+        debug_assert!(channel < 3);
+        let core_weight = channel_value(self.core_weight, channel);
+        let tail_weight = channel_value(self.tail_weight, channel);
+        let core =
+            channel_value(self.core_radius_micrometers, channel) * self.character_strength * 1.0e-6;
+        let tail = channel_value(self.tail_radius_micrometers, channel)
+            * self.character_strength
+            * core::f32::consts::FRAC_1_SQRT_2
+            * 1.0e-6;
+        let center = PanelLightSpreadSample {
+            offset_meters: screen_contracts::Vec2 { x: 0.0, y: 0.0 },
+            weight: 1.0 - core_weight - tail_weight,
+        };
+        let core_sample = core_weight * 0.25;
+        let tail_sample = tail_weight * 0.25;
+        [
+            center,
+            PanelLightSpreadSample {
+                offset_meters: screen_contracts::Vec2 { x: core, y: 0.0 },
+                weight: core_sample,
+            },
+            PanelLightSpreadSample {
+                offset_meters: screen_contracts::Vec2 { x: -core, y: 0.0 },
+                weight: core_sample,
+            },
+            PanelLightSpreadSample {
+                offset_meters: screen_contracts::Vec2 { x: 0.0, y: core },
+                weight: core_sample,
+            },
+            PanelLightSpreadSample {
+                offset_meters: screen_contracts::Vec2 { x: 0.0, y: -core },
+                weight: core_sample,
+            },
+            PanelLightSpreadSample {
+                offset_meters: screen_contracts::Vec2 { x: tail, y: tail },
+                weight: tail_sample,
+            },
+            PanelLightSpreadSample {
+                offset_meters: screen_contracts::Vec2 { x: -tail, y: tail },
+                weight: tail_sample,
+            },
+            PanelLightSpreadSample {
+                offset_meters: screen_contracts::Vec2 { x: tail, y: -tail },
+                weight: tail_sample,
+            },
+            PanelLightSpreadSample {
+                offset_meters: screen_contracts::Vec2 { x: -tail, y: -tail },
+                weight: tail_sample,
+            },
+        ]
+    }
+}
+
+fn channel_value(value: LinearRgb, channel: usize) -> f32 {
+    [value.r, value.g, value.b][channel]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,6 +224,7 @@ pub struct DevicePreset {
     pub reference_white_nits: f32,
     pub white_basis: &'static str,
     pub default_cover_glass_preset_id: &'static str,
+    pub light_spread: PanelLightSpreadProfile,
 }
 
 impl DevicePreset {
@@ -103,6 +250,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 625.0,
         white_basis: "Generic authored reference",
         default_cover_glass_preset_id: "cover-glossy-strong-ar",
+        light_spread: PanelLightSpreadProfile::LCD_MOBILE,
     },
     DevicePreset {
         id: "lcd-phone-6_1-liquid-retina",
@@ -114,6 +262,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 625.0,
         white_basis: "Generic authored reference",
         default_cover_glass_preset_id: "cover-glossy-strong-ar",
+        light_spread: PanelLightSpreadProfile::LCD_MOBILE,
     },
     DevicePreset {
         id: "lcd-phone-6_5-high-density",
@@ -125,6 +274,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 500.0,
         white_basis: "Generic authored reference",
         default_cover_glass_preset_id: "cover-glossy-strong-ar",
+        light_spread: PanelLightSpreadProfile::LCD_MOBILE,
     },
     DevicePreset {
         id: "lcd-macbook-pro-retina-14",
@@ -136,6 +286,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 500.0,
         white_basis: "Published SDR reference",
         default_cover_glass_preset_id: "cover-glossy-strong-ar",
+        light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
     },
     DevicePreset {
         id: "lcd-laptop-fhd-15_6",
@@ -147,6 +298,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 300.0,
         white_basis: "Generic authored reference",
         default_cover_glass_preset_id: "cover-semi-gloss",
+        light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
     },
     DevicePreset {
         id: "lcd-tv-hd-32",
@@ -158,6 +310,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 250.0,
         white_basis: "Generic authored reference",
         default_cover_glass_preset_id: "cover-semi-gloss",
+        light_spread: PanelLightSpreadProfile::LCD_TV,
     },
     DevicePreset {
         id: "lcd-tv-fhd-43",
@@ -169,6 +322,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 300.0,
         white_basis: "Generic authored reference",
         default_cover_glass_preset_id: "cover-glossy-standard-ar",
+        light_spread: PanelLightSpreadProfile::LCD_TV,
     },
     DevicePreset {
         id: "lcd-tv-uhd-55",
@@ -180,6 +334,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 350.0,
         white_basis: "Generic authored reference",
         default_cover_glass_preset_id: "cover-glossy-standard-ar",
+        light_spread: PanelLightSpreadProfile::LCD_TV,
     },
     DevicePreset {
         id: "lcd-asus-proart-pa329cv",
@@ -191,6 +346,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         reference_white_nits: 350.0,
         white_basis: "ASUS published typical SDR",
         default_cover_glass_preset_id: "cover-matte-ar",
+        light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
     },
 ];
 
@@ -267,6 +423,7 @@ impl LcdProfile {
         {
             return Err(PanelError::InvalidAngularResponse);
         }
+        self.light_spread.validate()?;
         self.temporal_emission.validate()?;
         Ok(self)
     }
@@ -873,6 +1030,7 @@ pub enum PanelError {
     InvalidLuminanceRange,
     InvalidColorimetry,
     InvalidAngularResponse,
+    InvalidLightSpread,
     InvalidTemporalEmission,
     InvalidTemporalInterval,
     TooManyTemporalTransitions,
@@ -894,6 +1052,9 @@ impl fmt::Display for PanelError {
             }
             Self::InvalidAngularResponse => {
                 "panel angular-emission powers must be finite and non-negative"
+            }
+            Self::InvalidLightSpread => {
+                "panel light-spread radii and normalized core/tail weights are outside their certified ranges"
             }
             Self::InvalidTemporalEmission => {
                 "panel residual flicker and analytic banding parameters are outside their certified ranges"
@@ -929,6 +1090,7 @@ mod tests {
             white_level_nits: 600.0,
             colorimetry: PanelColorimetry::SRGB_D65,
             angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+            light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
             temporal_emission: PanelTemporalEmission::continuous(),
         }
     }
@@ -938,6 +1100,82 @@ mod tests {
         let profile = profile().validate().expect("valid panel");
         assert!((profile.pixel_pitch_meters() - 0.000_155_4).abs() < 0.000_000_1);
         assert!((profile.pixels_per_inch() - 163.5).abs() < 0.2);
+    }
+
+    #[test]
+    fn light_spread_kernel_is_energy_conserving_for_every_channel_and_preset() {
+        for profile in [
+            PanelLightSpreadProfile::LCD_MOBILE,
+            PanelLightSpreadProfile::LCD_DESKTOP,
+            PanelLightSpreadProfile::LCD_TV,
+            PanelLightSpreadProfile::OLED_CONTAINED,
+            PanelLightSpreadProfile::MICRO_LED_CONTAINED,
+        ] {
+            for channel in 0..3 {
+                let total: f32 = profile
+                    .samples_for_channel(channel)
+                    .into_iter()
+                    .map(|sample| sample.weight)
+                    .sum();
+                assert!((total - 1.0).abs() <= 2.0 * f32::EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    fn light_spread_strength_zero_has_zero_physical_offset_and_three_scales_radius() {
+        let mut identity = PanelLightSpreadProfile::LCD_DESKTOP;
+        identity.character_strength = 0.0;
+        for channel in 0..3 {
+            assert!(
+                identity
+                    .samples_for_channel(channel)
+                    .into_iter()
+                    .all(|sample| {
+                        sample.offset_meters == screen_contracts::Vec2 { x: 0.0, y: 0.0 }
+                    })
+            );
+        }
+        let calibrated = PanelLightSpreadProfile::LCD_DESKTOP.samples_for_channel(0);
+        let mut artistic = PanelLightSpreadProfile::LCD_DESKTOP;
+        artistic.character_strength = 3.0;
+        let artistic = artistic.samples_for_channel(0);
+        assert_eq!(
+            artistic[1].offset_meters.x,
+            calibrated[1].offset_meters.x * 3.0
+        );
+    }
+
+    #[test]
+    fn physical_light_spread_scale_does_not_depend_on_capture_raster() {
+        let samples = PanelLightSpreadProfile::LCD_DESKTOP.samples_for_channel(2);
+        let radius_at_uhd_capture = samples[1].offset_meters.x;
+        let radius_at_48mp_capture = samples[1].offset_meters.x;
+        assert_eq!(radius_at_uhd_capture, radius_at_48mp_capture);
+        assert_eq!(radius_at_uhd_capture, 25.0e-6);
+    }
+
+    #[test]
+    fn emissive_presets_and_channels_retain_distinct_physical_spread() {
+        let lcd = PanelLightSpreadProfile::LCD_DESKTOP.samples_for_channel(0)[1]
+            .offset_meters
+            .x;
+        let oled = PanelLightSpreadProfile::OLED_CONTAINED.samples_for_channel(0)[1]
+            .offset_meters
+            .x;
+        let micro_led = PanelLightSpreadProfile::MICRO_LED_CONTAINED.samples_for_channel(0)[1]
+            .offset_meters
+            .x;
+        assert!(lcd > oled && oled > micro_led);
+        let profile = PanelLightSpreadProfile::LCD_DESKTOP;
+        assert_ne!(
+            profile.samples_for_channel(0),
+            profile.samples_for_channel(1)
+        );
+        assert_ne!(
+            profile.samples_for_channel(1),
+            profile.samples_for_channel(2)
+        );
     }
 
     #[test]
@@ -951,6 +1189,7 @@ mod tests {
             assert!((4.0..60.0).contains(&preset.diagonal_inches()));
             assert!(preset.reference_white_nits > 0.0);
             assert!(!preset.white_basis.is_empty());
+            assert!(preset.light_spread.validate().is_ok());
             assert_eq!(device_preset(preset.id), Some(preset));
         }
         assert_eq!(device_preset("retired-or-unknown"), None);

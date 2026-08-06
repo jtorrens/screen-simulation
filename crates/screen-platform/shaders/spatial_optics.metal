@@ -29,6 +29,10 @@ struct SpatialParams {
     float4 panel_matrix_0;
     float4 panel_matrix_1;
     float4 panel_matrix_2;
+    float4 panel_spread_core_radius; // RGB micrometers, strength
+    float4 panel_spread_core_weight;
+    float4 panel_spread_tail_radius; // RGB micrometers
+    float4 panel_spread_tail_weight;
     float4 cover_geometry; // strength, thickness mm, ior, AR efficiency
     float4 cover_absorption_roughness; // absorption rgb, roughness
     float4 cover_haze;
@@ -389,6 +393,96 @@ inline float resolved_native_channel(float3 code, float2 uv, uint channel, const
     return linear * 3.0f / (active * active);
 }
 
+inline void light_spread_sample(uint index, uint channel, constant SpatialParams& p,
+                                thread float2& offset_uv, thread float& weight) {
+    float core_weight = p.panel_spread_core_weight[channel];
+    float tail_weight = p.panel_spread_tail_weight[channel];
+    if (index == 0) {
+        offset_uv = 0.0f;
+        weight = 1.0f - core_weight - tail_weight;
+        return;
+    }
+    if (index <= 4) {
+        float radius = p.panel_spread_core_radius[channel]
+            * p.panel_spread_core_radius.w * 1.0e-6f;
+        constexpr float2 directions[4] = {
+            float2(1.0f, 0.0f), float2(-1.0f, 0.0f),
+            float2(0.0f, 1.0f), float2(0.0f, -1.0f)
+        };
+        float2 meters = directions[index - 1] * radius;
+        offset_uv = meters / p.panel_geometry.xy;
+        weight = core_weight * 0.25f;
+        return;
+    }
+    float component = p.panel_spread_tail_radius[channel]
+        * p.panel_spread_core_radius.w * 0.7071067811865476f * 1.0e-6f;
+    constexpr float2 directions[4] = {
+        float2(1.0f, 1.0f), float2(-1.0f, 1.0f),
+        float2(1.0f, -1.0f), float2(-1.0f, -1.0f)
+    };
+    float2 meters = directions[index - 5] * component;
+    offset_uv = meters / p.panel_geometry.xy;
+    weight = tail_weight * 0.25f;
+}
+
+inline float base_resolved_native_channel(float2 uv, uint channel,
+                                          device const float4* signal,
+                                          constant SpatialParams& p) {
+    if (!all(uv >= 0.0f) || !all(uv <= 1.0f)) return 0.0f;
+    float3 code = point_signal(uv, signal, p);
+    float span = p.panel_levels_angular_r.y - p.panel_levels_angular_r.x;
+    float ideal = p.panel_levels_angular_r.x
+        + span * sign(code[channel]) * pow(abs(code[channel]), p.panel_geometry.w);
+    float physical = resolved_native_channel(code, uv, channel, p);
+    return max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
+}
+
+inline float spread_resolved_native_channel(float2 uv, uint channel,
+                                            device const float4* signal,
+                                            constant SpatialParams& p) {
+    if (p.panel_spread_core_radius.w == 0.0f)
+        return base_resolved_native_channel(uv, channel, signal, p);
+    float result = 0.0f;
+    for (uint sample = 0; sample < 9; ++sample) {
+        float2 offset; float weight;
+        light_spread_sample(sample, channel, p, offset, weight);
+        result += base_resolved_native_channel(uv + offset, channel, signal, p) * weight;
+    }
+    return result;
+}
+
+inline float base_area_native_channel(float2 minimum, float2 maximum, uint channel,
+                                      device const float4* emission_integral,
+                                      constant SpatialParams& p) {
+    float2 clipped_minimum = max(minimum, 0.0f);
+    float2 clipped_maximum = min(maximum, 1.0f);
+    if (any(clipped_maximum <= clipped_minimum)) return 0.0f;
+    float ideal = area_signal(clipped_minimum, clipped_maximum, emission_integral, p, true)[channel];
+    float physical = linear_channel_over_rect(ideal, clipped_minimum * float2(p.panel_meta.xy),
+                                              clipped_maximum * float2(p.panel_meta.xy), channel, p);
+    float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
+    if (all(clipped_minimum == minimum) && all(clipped_maximum == maximum)) return value;
+    float original_area = max((maximum.x - minimum.x) * (maximum.y - minimum.y), FLT_EPSILON);
+    float retained_area = (clipped_maximum.x - clipped_minimum.x)
+        * (clipped_maximum.y - clipped_minimum.y);
+    return value * retained_area / original_area;
+}
+
+inline float spread_area_native_channel(float2 minimum, float2 maximum, uint channel,
+                                        device const float4* emission_integral,
+                                        constant SpatialParams& p) {
+    if (p.panel_spread_core_radius.w == 0.0f)
+        return base_area_native_channel(minimum, maximum, channel, emission_integral, p);
+    float result = 0.0f;
+    for (uint sample = 0; sample < 9; ++sample) {
+        float2 offset; float weight;
+        light_spread_sample(sample, channel, p, offset, weight);
+        result += base_area_native_channel(minimum + offset, maximum + offset, channel,
+                                           emission_integral, p) * weight;
+    }
+    return result;
+}
+
 inline float channel_weight(float3 irradiance, RayHit hit, uint channel, constant SpatialParams& p) {
     float angular = hit.cosine == 0.0f ? 0.0f : pow(clamp(hit.cosine, 0.0f, 1.0f),
         channel == 0 ? p.panel_levels_angular_r.z : (channel == 1 ? p.panel_levels_angular_r.w : p.panel_angular_b.x));
@@ -475,10 +569,8 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
             }
             if (count == 0) continue;
             on_panel = true;
-            float ideal = area_signal(uv_min, uv_max, emission_integral, p, true)[channel];
-            float physical = linear_channel_over_rect(ideal, uv_min * float2(p.panel_meta.xy),
-                                                      uv_max * float2(p.panel_meta.xy), channel, p);
-            float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
+            float value = spread_area_native_channel(
+                uv_min, uv_max, channel, emission_integral, p);
             native[channel] += value * weight_sum / 4.0f;
         }
         native /= float(p.window.z);
@@ -497,12 +589,7 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
                 float2 uv = transmitted_uv(hit, p);
                 if (!all(uv >= 0.0f) || !all(uv <= 1.0f)) continue;
                 on_panel = true;
-                float3 code = point_signal(uv, signal, p);
-                float span = p.panel_levels_angular_r.y - p.panel_levels_angular_r.x;
-                float ideal = p.panel_levels_angular_r.x
-                    + span * sign(code[channel]) * pow(abs(code[channel]), p.panel_geometry.w);
-                float physical = resolved_native_channel(code, uv, channel, p);
-                float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
+                float value = spread_resolved_native_channel(uv, channel, signal, p);
                 native[channel] += value * channel_weight(weights, hit, channel, p)
                     * cover_transmission(hit.cosine, p)[channel];
             }

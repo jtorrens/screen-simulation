@@ -698,6 +698,7 @@ pub struct SpatialPanelPlan {
     pub black_level_nits: f32,
     pub white_level_nits: f32,
     pub angular_emission_power: LinearRgb,
+    pub light_spread: screen_panel::PanelLightSpreadProfile,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -997,6 +998,7 @@ fn prepare_spatial_plan(
             black_level_nits: request.panel.black_level_nits,
             white_level_nits: request.panel.white_level_nits,
             angular_emission_power: request.panel.angular_emission_power,
+            light_spread: request.panel.light_spread,
         },
         panel_native_to_acescg: [
             [basis[0].r, basis[1].r, basis[2].r],
@@ -3317,36 +3319,23 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                     continue;
                 }
                 on_panel = true;
-                let signal = signal_area(minimum, maximum);
                 let value = if view == DiagnosticView::DeviceSignal {
+                    let signal = signal_area(minimum, maximum);
                     [
                         signal.device_code.r,
                         signal.device_code.g,
                         signal.device_code.b,
                     ][channel]
                 } else {
-                    let ideal = [
-                        signal.linear_native_emission.r,
-                        signal.linear_native_emission.g,
-                        signal.linear_native_emission.b,
-                    ][channel];
-                    let physical = evaluator.linear_native_channel_over_device_rect(
-                        [
-                            signal.linear_native_emission.r,
-                            signal.linear_native_emission.g,
-                            signal.linear_native_emission.b,
-                        ][channel],
-                        Vec2 {
-                            x: minimum.x * panel.native_width as f32,
-                            y: minimum.y * panel.native_height as f32,
-                        },
-                        Vec2 {
-                            x: maximum.x * panel.native_width as f32,
-                            y: maximum.y * panel.native_height as f32,
-                        },
+                    spread_area_native_channel(
+                        panel,
+                        evaluator,
+                        panel_character_strength,
+                        signal_area,
+                        minimum,
+                        maximum,
                         channel,
-                    );
-                    (ideal + panel_character_strength * (physical - ideal)).max(0.0)
+                    )
                 };
                 let contribution = value * weight_sum / spatial_samples.len() as f32;
                 match channel {
@@ -3380,25 +3369,30 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                 continue;
             };
             on_panel = true;
-            let signal = signal_at(uv);
             let value = match view {
-                DiagnosticView::DeviceSignal => [signal.r, signal.g, signal.b][channel],
+                DiagnosticView::DeviceSignal => {
+                    let signal = signal_at(uv);
+                    [signal.r, signal.g, signal.b][channel]
+                }
                 DiagnosticView::Composite
                 | DiagnosticView::EmittedRadiance
                 | DiagnosticView::Subpixels
                     if subpixels_resolved =>
                 {
-                    let pixel_uv = Vec2 {
-                        x: (uv.x * panel.native_width as f32).fract(),
-                        y: (uv.y * panel.native_height as f32).fract(),
-                    };
-                    let ideal = evaluator.native_channel(signal, channel);
-                    let physical = evaluator.native_channel_at_pixel(signal, pixel_uv, channel);
-                    (ideal + panel_character_strength * (physical - ideal)).max(0.0)
+                    spread_resolved_native_channel(
+                        panel,
+                        evaluator,
+                        panel_character_strength,
+                        signal_at,
+                        uv,
+                        channel,
+                    )
                 }
                 DiagnosticView::Composite
                 | DiagnosticView::EmittedRadiance
-                | DiagnosticView::Subpixels => evaluator.native_channel(signal, channel),
+                | DiagnosticView::Subpixels => {
+                    spread_resolved_native_channel(panel, evaluator, 0.0, signal_at, uv, channel)
+                }
             };
             let optical_weight = optical_channel_weight(
                 *optical_sample,
@@ -3433,6 +3427,163 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
         acescg_irradiance: average,
         on_panel,
     }
+}
+
+fn base_resolved_native_channel(
+    panel: LcdProfile,
+    evaluator: ValidatedPanelEvaluator,
+    panel_character_strength: f32,
+    signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+    uv: Vec2,
+    channel: usize,
+) -> f32 {
+    if !(0.0..=1.0).contains(&uv.x) || !(0.0..=1.0).contains(&uv.y) {
+        return 0.0;
+    }
+    let signal = signal_at(uv);
+    let pixel_uv = Vec2 {
+        x: (uv.x * panel.native_width as f32).fract(),
+        y: (uv.y * panel.native_height as f32).fract(),
+    };
+    let ideal = evaluator.native_channel(signal, channel);
+    let physical = evaluator.native_channel_at_pixel(signal, pixel_uv, channel);
+    (ideal + panel_character_strength * (physical - ideal)).max(0.0)
+}
+
+fn spread_resolved_native_channel(
+    panel: LcdProfile,
+    evaluator: ValidatedPanelEvaluator,
+    panel_character_strength: f32,
+    signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
+    uv: Vec2,
+    channel: usize,
+) -> f32 {
+    if panel.light_spread.character_strength == 0.0 {
+        return base_resolved_native_channel(
+            panel,
+            evaluator,
+            panel_character_strength,
+            signal_at,
+            uv,
+            channel,
+        );
+    }
+    panel
+        .light_spread
+        .samples_for_channel(channel)
+        .into_iter()
+        .map(|sample| {
+            let shifted = Vec2 {
+                x: uv.x + sample.offset_meters.x / panel.active_width.0,
+                y: uv.y + sample.offset_meters.y / panel.active_height.0,
+            };
+            base_resolved_native_channel(
+                panel,
+                evaluator,
+                panel_character_strength,
+                signal_at,
+                shifted,
+                channel,
+            ) * sample.weight
+        })
+        .sum()
+}
+
+fn base_area_native_channel(
+    panel: LcdProfile,
+    evaluator: ValidatedPanelEvaluator,
+    panel_character_strength: f32,
+    signal_area: &(dyn Fn(Vec2, Vec2) -> AreaSignalSample + Sync),
+    minimum: Vec2,
+    maximum: Vec2,
+    channel: usize,
+) -> f32 {
+    let clipped_minimum = Vec2 {
+        x: minimum.x.max(0.0),
+        y: minimum.y.max(0.0),
+    };
+    let clipped_maximum = Vec2 {
+        x: maximum.x.min(1.0),
+        y: maximum.y.min(1.0),
+    };
+    if clipped_maximum.x <= clipped_minimum.x || clipped_maximum.y <= clipped_minimum.y {
+        return 0.0;
+    }
+    let was_clipped = clipped_minimum != minimum || clipped_maximum != maximum;
+    let signal = signal_area(clipped_minimum, clipped_maximum);
+    let ideal = [
+        signal.linear_native_emission.r,
+        signal.linear_native_emission.g,
+        signal.linear_native_emission.b,
+    ][channel];
+    let physical = evaluator.linear_native_channel_over_device_rect(
+        ideal,
+        Vec2 {
+            x: clipped_minimum.x * panel.native_width as f32,
+            y: clipped_minimum.y * panel.native_height as f32,
+        },
+        Vec2 {
+            x: clipped_maximum.x * panel.native_width as f32,
+            y: clipped_maximum.y * panel.native_height as f32,
+        },
+        channel,
+    );
+    let value = (ideal + panel_character_strength * (physical - ideal)).max(0.0);
+    if !was_clipped {
+        return value;
+    }
+    let original_area = ((maximum.x - minimum.x) * (maximum.y - minimum.y)).max(f32::EPSILON);
+    let retained_area =
+        (clipped_maximum.x - clipped_minimum.x) * (clipped_maximum.y - clipped_minimum.y);
+    value * retained_area / original_area
+}
+
+fn spread_area_native_channel(
+    panel: LcdProfile,
+    evaluator: ValidatedPanelEvaluator,
+    panel_character_strength: f32,
+    signal_area: &(dyn Fn(Vec2, Vec2) -> AreaSignalSample + Sync),
+    minimum: Vec2,
+    maximum: Vec2,
+    channel: usize,
+) -> f32 {
+    if panel.light_spread.character_strength == 0.0 {
+        return base_area_native_channel(
+            panel,
+            evaluator,
+            panel_character_strength,
+            signal_area,
+            minimum,
+            maximum,
+            channel,
+        );
+    }
+    panel
+        .light_spread
+        .samples_for_channel(channel)
+        .into_iter()
+        .map(|sample| {
+            let offset = Vec2 {
+                x: sample.offset_meters.x / panel.active_width.0,
+                y: sample.offset_meters.y / panel.active_height.0,
+            };
+            base_area_native_channel(
+                panel,
+                evaluator,
+                panel_character_strength,
+                signal_area,
+                Vec2 {
+                    x: minimum.x + offset.x,
+                    y: minimum.y + offset.y,
+                },
+                Vec2 {
+                    x: maximum.x + offset.x,
+                    y: maximum.y + offset.y,
+                },
+                channel,
+            ) * sample.weight
+        })
+        .sum()
 }
 
 fn cover_transmission_channel(
@@ -3967,6 +4118,7 @@ mod tests {
                     white_level_nits: 500.0,
                     colorimetry: PanelColorimetry::SRGB_D65,
                     angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+                    light_spread: screen_panel::PanelLightSpreadProfile::LCD_DESKTOP,
                     temporal_emission: PanelTemporalEmission::continuous(),
                 },
                 cover: CoverGlassProfile::NEUTRAL,
@@ -5139,8 +5291,9 @@ mod tests {
     }
 
     #[test]
-    fn composite_uses_physical_black_matrix_when_resolved() {
-        let request = request();
+    fn composite_uses_physical_black_matrix_when_resolved_and_spread_is_identity() {
+        let mut request = request();
+        request.optics.panel.light_spread.character_strength = 0.0;
         let optical = OpticalSample {
             panel_uv: [Some(Vec2 { x: 0.5, y: 0.5 }); 3],
             emission_cosine: [1.0; 3],
@@ -5189,6 +5342,19 @@ mod tests {
         );
         assert_eq!(resolved.acescg_irradiance, LinearRgb::new(0.0, 0.0, 0.0));
         assert!(unresolved.acescg_irradiance.g > 0.0);
+    }
+
+    #[test]
+    fn panel_light_spread_moves_emitted_energy_laterally_across_black_matrix() {
+        let request = request();
+        let panel = request.optics.panel;
+        let evaluator = panel.evaluator().expect("valid panel");
+        let uv = Vec2 { x: 0.5, y: 0.5 };
+        let signal = |_| DeviceRgb::WHITE;
+        let identity = base_resolved_native_channel(panel, evaluator, 1.0, &signal, uv, 0);
+        let spread = spread_resolved_native_channel(panel, evaluator, 1.0, &signal, uv, 0);
+        assert_eq!(identity, 0.0);
+        assert!(spread > 0.0);
     }
 
     #[test]
@@ -5572,5 +5738,26 @@ mod tests {
             half.pixels[center].acescg_irradiance.g / white.pixels[center].acescg_irradiance.g;
         let expected = 0.5_f32.powf(optics.panel.eotf_gamma);
         assert!((measured - expected).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn panel_light_spread_strength_zero_is_exact_identity() {
+        let mut identity = request().optics;
+        identity.panel.light_spread.character_strength = 0.0;
+        let first = evaluate_linear_optics(identity.clone(), 32, 18).expect("identity optics");
+        identity.panel.light_spread.core_radius_micrometers = LinearRgb::new(2.0, 3.0, 4.0);
+        identity.panel.light_spread.tail_radius_micrometers = LinearRgb::new(200.0, 300.0, 400.0);
+        identity.panel.light_spread.core_weight = LinearRgb::new(0.4, 0.3, 0.2);
+        identity.panel.light_spread.tail_weight = LinearRgb::new(0.1, 0.1, 0.1);
+        let second = evaluate_linear_optics(identity, 32, 18).expect("identity optics");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn panel_light_spread_cpu_oracle_is_deterministic() {
+        let authored = request().optics;
+        let first = evaluate_linear_optics(authored.clone(), 32, 18).expect("first evaluation");
+        let second = evaluate_linear_optics(authored, 32, 18).expect("second evaluation");
+        assert_eq!(first, second);
     }
 }

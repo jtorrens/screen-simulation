@@ -146,6 +146,7 @@ export component MainWindow inherits Window {
     in-out property <string> cover-summary: "0.75 mm · IOR 1.52 · roughness 0.03";
     in-out property <float> cover-strength: 1;
     in-out property <float> panel-character-strength: 1;
+    in-out property <float> panel-light-spread-strength: 1;
     in-out property <float> lens-character-strength: 1;
     in-out property <int> environment-preset-index: 0;
     in property <[string]> environment-preset-model;
@@ -802,7 +803,7 @@ export component MainWindow inherits Window {
                         }
 
                         Rectangle {
-                            height: 166px;
+                            height: 200px;
                             background: #171c24;
                             border-width: 1px;
                             border-color: #303744;
@@ -819,6 +820,14 @@ export component MainWindow inherits Window {
                                     step: 0.01;
                                     value <=> root.panel-character-strength;
                                     numeric-value: round(root.panel-character-strength * 100) / 100;
+                                }
+                                ValueRow {
+                                    label: "Panel light spread";
+                                    minimum: 0;
+                                    maximum: 3;
+                                    step: 0.01;
+                                    value <=> root.panel-light-spread-strength;
+                                    numeric-value: round(root.panel-light-spread-strength * 100) / 100;
                                 }
                                 ValueRow {
                                     label: "Glass";

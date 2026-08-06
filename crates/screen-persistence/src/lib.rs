@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 7;
+pub const CURRENT_VERSION: u32 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -160,6 +160,7 @@ pub struct DeviceDocument {
     pub primary_xy: [[f32; 2]; 3],
     pub white_xy: [f32; 2],
     pub angular_emission_power: [f32; 3],
+    pub light_spread: PanelLightSpreadDocument,
     pub residual_flicker_period: ExactTime,
     pub residual_flicker_amplitude: f32,
     pub residual_flicker_phase: ExactTime,
@@ -168,6 +169,16 @@ pub struct DeviceDocument {
     pub banding_phase: ExactTime,
     pub banding_amount: f32,
     pub cover: CoverDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelLightSpreadDocument {
+    pub character_strength: f32,
+    pub core_radius_micrometers: [f32; 3],
+    pub core_weight: [f32; 3],
+    pub tail_radius_micrometers: [f32; 3],
+    pub tail_weight: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -773,6 +784,7 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
     validate_time(device.banding_period)?;
     validate_time(device.banding_on_duration)?;
     validate_time(device.banding_phase)?;
+    validate_light_spread(&device.light_spread)?;
     let values = [
         device.active_width_meters,
         device.active_height_meters,
@@ -822,6 +834,30 @@ fn validate_device(device: &DeviceDocument) -> Result<(), PersistenceError> {
         return Err(PersistenceError::InvalidDeviceProfile);
     }
     validate_cover(&device.cover)?;
+    Ok(())
+}
+
+fn validate_light_spread(spread: &PanelLightSpreadDocument) -> Result<(), PersistenceError> {
+    if !spread.character_strength.is_finite() || !(0.0..=3.0).contains(&spread.character_strength) {
+        return Err(PersistenceError::InvalidDeviceProfile);
+    }
+    for channel in 0..3 {
+        let values = [
+            spread.core_radius_micrometers[channel],
+            spread.core_weight[channel],
+            spread.tail_radius_micrometers[channel],
+            spread.tail_weight[channel],
+        ];
+        if !values.into_iter().all(f32::is_finite)
+            || spread.core_radius_micrometers[channel] <= 0.0
+            || spread.tail_radius_micrometers[channel] <= spread.core_radius_micrometers[channel]
+            || spread.core_weight[channel] < 0.0
+            || spread.tail_weight[channel] < 0.0
+            || spread.core_weight[channel] + spread.tail_weight[channel] > 1.0
+        {
+            return Err(PersistenceError::InvalidDeviceProfile);
+        }
+    }
     Ok(())
 }
 
@@ -1132,6 +1168,13 @@ mod tests {
                 primary_xy: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
                 white_xy: [0.3127, 0.3290],
                 angular_emission_power: [1.7, 1.5, 1.8],
+                light_spread: PanelLightSpreadDocument {
+                    character_strength: 1.0,
+                    core_radius_micrometers: [22.0, 18.0, 25.0],
+                    core_weight: [0.22, 0.20, 0.24],
+                    tail_radius_micrometers: [90.0, 78.0, 102.0],
+                    tail_weight: [0.040, 0.035, 0.045],
+                },
                 residual_flicker_period: ExactTime {
                     numerator: 1,
                     denominator: 240,

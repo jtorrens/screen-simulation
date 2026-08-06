@@ -100,6 +100,7 @@ struct RenderControls {
     cover_preset_index: i32,
     cover_strength: f32,
     panel_character_strength: f32,
+    panel_light_spread_strength: f32,
     lens_character_strength: f32,
     environment_preset_index: i32,
     environment_strength: f32,
@@ -159,6 +160,7 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         cover_preset_index: window.get_cover_preset_index(),
         cover_strength: window.get_cover_strength(),
         panel_character_strength: window.get_panel_character_strength(),
+        panel_light_spread_strength: window.get_panel_light_spread_strength(),
         lens_character_strength: window.get_lens_character_strength(),
         environment_preset_index: window.get_environment_preset_index(),
         environment_strength: window.get_environment_strength(),
@@ -235,6 +237,7 @@ struct InteractionState {
     capture_middle_gray_at_reference_ei: f32,
     active_lens: LensModel,
     active_cover: CoverGlassProfile,
+    active_panel_light_spread: screen_panel::PanelLightSpreadProfile,
     active_environment: ProceduralEnvironment,
     capture_render_requested: bool,
     capture_cancel: Option<Arc<AtomicBool>>,
@@ -411,6 +414,7 @@ impl InteractionState {
             active_cover: cover_glass_preset("cover-glossy-strong-ar")
                 .expect("initial cover preset must resolve")
                 .profile,
+            active_panel_light_spread: screen_panel::PanelLightSpreadProfile::LCD_DESKTOP,
             active_environment: environment_preset("environment-uniform-neutral")
                 .expect("initial environment preset must resolve")
                 .environment,
@@ -693,6 +697,7 @@ fn simulation_request(
     screen: &ScreenTrack,
     authored_cover: CoverGlassProfile,
     authored_environment: ProceduralEnvironment,
+    authored_panel_light_spread: screen_panel::PanelLightSpreadProfile,
 ) -> Result<SimulationRequest, String> {
     let frame_rate = project_frame_rate(window)?;
     let (native_width, native_height, active_width, active_height) = device_geometry(window)?;
@@ -753,6 +758,8 @@ fn simulation_request(
     let mut environment = authored_environment;
     environment.character_strength = window.get_environment_strength();
     environment.rotation_degrees = window.get_environment_rotation_degrees();
+    let mut state_light_spread = authored_panel_light_spread;
+    state_light_spread.character_strength = window.get_panel_light_spread_strength();
     Ok(SimulationRequest {
         optics: OpticalRequest {
             time: frame_rate
@@ -778,6 +785,7 @@ fn simulation_request(
                 white_level_nits: window.get_white_nits(),
                 colorimetry: PanelColorimetry::SRGB_D65,
                 angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+                light_spread: state_light_spread,
                 temporal_emission: PanelTemporalEmission {
                     residual_flicker: ResidualFlicker {
                         period: flicker_period,
@@ -897,6 +905,8 @@ fn apply_device_preset(
     window.set_white_nits(preset.reference_white_nits);
     window.set_device_reference_white_nits(preset.reference_white_nits);
     window.set_device_white_basis(preset.white_basis.into());
+    state.active_panel_light_spread = preset.light_spread;
+    window.set_panel_light_spread_strength(preset.light_spread.character_strength);
     apply_cover_preset(window, state, preset.default_cover_glass_preset_id)?;
     update_device_summary(window);
     Ok(())
@@ -1158,6 +1168,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         &state.screen,
         state.active_cover,
         state.active_environment,
+        state.active_panel_light_spread,
     ) {
         Ok(request) => request,
         Err(error) => {
@@ -2985,6 +2996,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &state_ref.screen,
                 state_ref.active_cover,
                 state_ref.active_environment,
+                state_ref.active_panel_light_spread,
             ) {
                 Ok(request) => request,
                 Err(error) => {

@@ -11,8 +11,8 @@ use screen_media::{
     AlphaInterpretation, SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
 };
 use screen_panel::{
-    AnalyticBanding, Chromaticity, LcdProfile, PanelColorimetry, PanelTemporalEmission,
-    ResidualFlicker, StripeLayout,
+    AnalyticBanding, Chromaticity, LcdProfile, PanelColorimetry, PanelLightSpreadProfile,
+    PanelTemporalEmission, ResidualFlicker, StripeLayout,
 };
 use screen_persistence::{
     AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics, ExactTime,
@@ -118,6 +118,29 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 device.angular_emission_power[1],
                 device.angular_emission_power[2],
             ),
+            light_spread: PanelLightSpreadProfile {
+                character_strength: device.light_spread.character_strength,
+                core_radius_micrometers: LinearRgb::new(
+                    device.light_spread.core_radius_micrometers[0],
+                    device.light_spread.core_radius_micrometers[1],
+                    device.light_spread.core_radius_micrometers[2],
+                ),
+                core_weight: LinearRgb::new(
+                    device.light_spread.core_weight[0],
+                    device.light_spread.core_weight[1],
+                    device.light_spread.core_weight[2],
+                ),
+                tail_radius_micrometers: LinearRgb::new(
+                    device.light_spread.tail_radius_micrometers[0],
+                    device.light_spread.tail_radius_micrometers[1],
+                    device.light_spread.tail_radius_micrometers[2],
+                ),
+                tail_weight: LinearRgb::new(
+                    device.light_spread.tail_weight[0],
+                    device.light_spread.tail_weight[1],
+                    device.light_spread.tail_weight[2],
+                ),
+            },
             temporal_emission: PanelTemporalEmission {
                 residual_flicker: ResidualFlicker {
                     period: map_time(device.residual_flicker_period)?,
@@ -405,6 +428,13 @@ mod tests {
                 primary_xy: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
                 white_xy: [0.3127, 0.3290],
                 angular_emission_power: [1.7, 1.5, 1.8],
+                light_spread: PanelLightSpreadDocument {
+                    character_strength: 1.0,
+                    core_radius_micrometers: [22.0, 18.0, 25.0],
+                    core_weight: [0.22, 0.20, 0.24],
+                    tail_radius_micrometers: [90.0, 78.0, 102.0],
+                    tail_weight: [0.040, 0.035, 0.045],
+                },
                 residual_flicker_period: ExactTime {
                     numerator: 1,
                     denominator: 240,

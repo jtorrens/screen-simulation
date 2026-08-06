@@ -37,6 +37,10 @@ struct SpatialParams {
     panel_matrix_0: [f32; 4],
     panel_matrix_1: [f32; 4],
     panel_matrix_2: [f32; 4],
+    panel_spread_core_radius: [f32; 4],
+    panel_spread_core_weight: [f32; 4],
+    panel_spread_tail_radius: [f32; 4],
+    panel_spread_tail_weight: [f32; 4],
     cover_geometry: [f32; 4],
     cover_absorption_roughness: [f32; 4],
     cover_haze: [f32; 4],
@@ -190,6 +194,38 @@ impl SpatialParams {
             panel_matrix_0: pad(plan.panel_native_to_acescg[0], 0.0),
             panel_matrix_1: pad(plan.panel_native_to_acescg[1], 0.0),
             panel_matrix_2: pad(plan.panel_native_to_acescg[2], 0.0),
+            panel_spread_core_radius: pad(
+                [
+                    plan.panel.light_spread.core_radius_micrometers.r,
+                    plan.panel.light_spread.core_radius_micrometers.g,
+                    plan.panel.light_spread.core_radius_micrometers.b,
+                ],
+                plan.panel.light_spread.character_strength,
+            ),
+            panel_spread_core_weight: pad(
+                [
+                    plan.panel.light_spread.core_weight.r,
+                    plan.panel.light_spread.core_weight.g,
+                    plan.panel.light_spread.core_weight.b,
+                ],
+                0.0,
+            ),
+            panel_spread_tail_radius: pad(
+                [
+                    plan.panel.light_spread.tail_radius_micrometers.r,
+                    plan.panel.light_spread.tail_radius_micrometers.g,
+                    plan.panel.light_spread.tail_radius_micrometers.b,
+                ],
+                0.0,
+            ),
+            panel_spread_tail_weight: pad(
+                [
+                    plan.panel.light_spread.tail_weight.r,
+                    plan.panel.light_spread.tail_weight.g,
+                    plan.panel.light_spread.tail_weight.b,
+                ],
+                0.0,
+            ),
             cover_geometry: [
                 plan.cover.character_strength,
                 plan.cover.thickness_millimeters,
@@ -706,6 +742,7 @@ mod tests {
                 white_level_nits: 500.0,
                 colorimetry: PanelColorimetry::SRGB_D65,
                 angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+                light_spread: screen_panel::PanelLightSpreadProfile::LCD_DESKTOP,
                 temporal_emission: PanelTemporalEmission::continuous(),
             },
             cover: CoverGlassProfile::NEUTRAL,
@@ -809,6 +846,7 @@ mod tests {
                 let mut request = request();
                 request.procedural_pattern = pattern;
                 request.panel_character_strength = strength;
+                request.panel.light_spread.character_strength = strength.min(3.0);
                 request.lens_character_strength = strength;
                 let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), sensor, region)
                     .expect("CPU oracle");
