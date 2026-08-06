@@ -24,10 +24,14 @@ public enum StudioColorMetalError: Error, LocalizedError {
 
 public final class StudioColorMetalFrame: @unchecked Sendable {
     public let texture: MTLTexture
+    fileprivate let submittedAt: CFTimeInterval
     public var width: Int { texture.width }
     public var height: Int { texture.height }
 
-    fileprivate init(texture: MTLTexture) { self.texture = texture }
+    fileprivate init(texture: MTLTexture, submittedAt: CFTimeInterval = CACurrentMediaTime()) {
+        self.texture = texture
+        self.submittedAt = submittedAt
+    }
 }
 
 /// Exact extraction of the CREDITOS-HDR OCIO-generated-MSL display boundary.
@@ -50,6 +54,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     private var frame: StudioColorLinearFrame?
     private var metalFrame: StudioColorMetalFrame?
     private var output = StudioColorOutputTransform.catalog[0]
+    public private(set) var lastCompletedEndToEndMilliseconds = 0.0
 
     public init(engine: StudioColorEngine = try! .bundled()) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -150,6 +155,15 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
                 fitInputAspect: true
             )
             command.present(drawable)
+            if let metalFrame {
+                let submittedAt = metalFrame.submittedAt
+                command.addCompletedHandler { [weak self] _ in
+                    Task { @MainActor in
+                        self?.lastCompletedEndToEndMilliseconds =
+                            (CACurrentMediaTime() - submittedAt) * 1_000
+                    }
+                }
+            }
             command.commit()
         } catch {
             assertionFailure(error.localizedDescription)
@@ -165,6 +179,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         input: StudioColorInputTransform,
         alpha: StudioColorAlphaAssociation
     ) throws -> StudioColorMetalFrame {
+        let submittedAt = CACurrentMediaTime()
         guard width > 0, height > 0, encodedRGBA.count == width * height * 4 else {
             throw StudioColorError.invalidPixelBuffer
         }
@@ -182,7 +197,9 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
                 withBytes: $0.baseAddress!, bytesPerRow: width * 4 * MemoryLayout<Float>.size
             )
         }
-        return try applyInputTransform(source, input: input, alpha: alpha)
+        return try applyInputTransform(
+            source, input: input, alpha: alpha, submittedAt: submittedAt
+        )
     }
 
     /// Converts an IOSurface-backed Apple decoder buffer to encoded RGB and runs
@@ -194,10 +211,13 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         matrix: StudioColorSignalMatrix,
         range: StudioColorSignalRange
     ) throws -> StudioColorMetalFrame {
+        let submittedAt = CACurrentMediaTime()
         let encoded = try makeEncodedRGB(
             pixelBuffer: pixelBuffer, matrix: matrix, range: range
         )
-        return try applyInputTransform(encoded, input: input, alpha: alpha)
+        return try applyInputTransform(
+            encoded, input: input, alpha: alpha, submittedAt: submittedAt
+        )
     }
 
     public func renderRGBA8(
@@ -335,7 +355,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     private func applyInputTransform(
         _ source: MTLTexture,
         input: StudioColorInputTransform,
-        alpha: StudioColorAlphaAssociation
+        alpha: StudioColorAlphaAssociation,
+        submittedAt: CFTimeInterval
     ) throws -> StudioColorMetalFrame {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: source.width, height: source.height, mipmapped: false
@@ -390,7 +411,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
         command.commit()
-        return StudioColorMetalFrame(texture: target)
+        return StudioColorMetalFrame(texture: target, submittedAt: submittedAt)
     }
 
     private func makeEncodedRGB(

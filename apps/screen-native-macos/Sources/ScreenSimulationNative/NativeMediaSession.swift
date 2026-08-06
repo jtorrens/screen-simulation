@@ -46,6 +46,9 @@ final class NativeMediaSession {
         }
         let duration = try await asset.load(.duration)
         let nominalRate = Double(try await track.load(.nominalFrameRate))
+        let naturalSize = try await track.load(.naturalSize)
+        let preferredTransform = try await track.load(.preferredTransform)
+        let displaySize = naturalSize.applying(preferredTransform)
         let frameRate = nominalRate > 0 ? nominalRate : 24
         let audio = try await !asset.loadTracks(withMediaType: .audio).isEmpty
         let pixelFormat: OSType = hasAlpha
@@ -69,7 +72,7 @@ final class NativeMediaSession {
         let count = max(1, Int((duration.seconds * frameRate).rounded()))
         let result = NativeSourceInfo(
             name: url.lastPathComponent,
-            detail: "Video · \(Int(frameRate.rounded())) fps · \(audio ? "audio" : "sin audio")",
+            detail: "Video · \(Int(abs(displaySize.width))) × \(Int(abs(displaySize.height))) · \(Int(frameRate.rounded())) fps · \(audio ? "audio" : "sin audio")",
             duration: duration,
             frameRate: frameRate,
             frameCount: count,
@@ -139,7 +142,7 @@ final class NativeMediaSession {
             guard let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: &displayTime) else {
                 return nil
             }
-            return NativeMediaSample(pixelBuffer: buffer, time: displayTime.isValid ? displayTime : player.currentTime())
+            return NativeMediaSample(pixelBuffer: buffer, time: time)
         case let .images(urls):
             let fps = info?.frameRate ?? 24
             let seconds = max(0, requested?.seconds ?? 0)

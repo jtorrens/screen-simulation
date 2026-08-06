@@ -376,6 +376,9 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func tickPlayback() {
+        if metalDisplay.lastCompletedEndToEndMilliseconds > 0 {
+            decodeToPreviewMilliseconds = metalDisplay.lastCompletedEndToEndMilliseconds
+        }
         guard isPlaying else { return }
         if sourceIsPattern {
             let next = currentFrame + 1
