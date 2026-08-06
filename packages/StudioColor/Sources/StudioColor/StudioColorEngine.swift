@@ -226,6 +226,7 @@ public final class StudioColorEngine: @unchecked Sendable {
     private let reference: SCConfigRef
     private let cacheLock = NSLock()
     private var colorSpaceProcessors: [String: StudioColorProcessor] = [:]
+    private var inverseDisplayProcessors: [String: StudioColorProcessor] = [:]
     private var displayProcessors: [String: StudioColorProcessor] = [:]
 
     private init(reference: SCConfigRef) {
@@ -384,6 +385,24 @@ public final class StudioColorEngine: @unchecked Sendable {
         #else
         throw StudioColorError.unavailableOnPlatform
         #endif
+    }
+
+    public func cachedInverseDisplayProcessor(
+        destination: String,
+        display: String,
+        view: String
+    ) throws -> StudioColorProcessor {
+        let key = "\(display)→\(view)→\(destination)"
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cached = inverseDisplayProcessors[key] { return cached }
+        let processor = try makeInverseDisplayProcessor(
+            destination: destination,
+            display: display,
+            view: view
+        )
+        inverseDisplayProcessors[key] = processor
+        return processor
     }
 }
 

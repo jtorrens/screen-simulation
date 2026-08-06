@@ -12,12 +12,40 @@ import Testing
         width: 2,
         height: 1,
         encodedRGBA: [-0.25, 0.18, 4.0, 0.5, 1.5, 0.0, 0.25, 1.0],
-        input: StudioColorInputTransform.catalog[2],
+        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
         alpha: .straight
     )
     #expect(frame.premultipliedRGBA[0] < 0)
     #expect(frame.premultipliedRGBA[2] > 1)
     #expect(frame.premultipliedRGBA[3] == 0.5)
+}
+
+@Test func displayRec709InverseRoundTripsThroughMatchingACESOutput() throws {
+    let pipeline = StudioColorPipeline()
+    let input = StudioColorInputTransform.catalog.first {
+        $0.id == "display-rec709-aces2-sdr"
+    }!
+    let output = StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-rec709-sdr-100"
+    }!
+    let samples: [Float] = [
+        0, 0, 0, 1,
+        1, 1, 1, 1,
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+        0, 0, 1, 1,
+        0.18, 0.42, 0.73, 1,
+    ]
+    let frame = try pipeline.prepareInput(
+        width: samples.count / 4,
+        height: 1,
+        encodedRGBA: samples,
+        input: input,
+        alpha: .straight
+    )
+    let result = try pipeline.cpuOracleRGBA8(frame, output: output)
+    let expected = samples.map { UInt8((min(1, max(0, $0)) * 255).rounded()) }
+    #expect(zip(result, expected).map { abs(Int($0) - Int($1)) }.max() ?? 0 <= 1)
 }
 
 @Test @MainActor func metalMatchesCreditsCPUOracleForEveryOutput() throws {

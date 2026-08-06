@@ -396,9 +396,16 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         guard let target = device.makeTexture(descriptor: descriptor),
               let command = queue.makeCommandBuffer()
         else { throw StudioColorMetalError.textureCreation }
-        let processor = try engine.cachedColorSpaceProcessor(
-            source: input.ocioColorSpace, destination: "ACEScg"
-        )
+        let processor: StudioColorProcessor = switch input.processor {
+        case let .colorSpace(source):
+            try engine.cachedColorSpaceProcessor(
+                source: source, destination: "ACEScg"
+            )
+        case let .inverseDisplay(display, view):
+            try engine.cachedInverseDisplayProcessor(
+                destination: "ACEScg", display: display, view: view
+            )
+        }
         let shader = try processor.makeMetalShader(functionName: "studioColorInput")
         let key = "idt:\(input.id):\(alpha.rawValue)"
         let resource: Resources

@@ -41,10 +41,7 @@ public final class StudioColorPipeline: @unchecked Sendable {
                 }
             }
         }
-        let processor = try engine.cachedColorSpaceProcessor(
-            source: input.ocioColorSpace,
-            destination: Self.workingSpace
-        )
+        let processor = try inputProcessor(input)
         try processor.apply(toRGBA: &values)
         for offset in stride(from: 0, to: values.count, by: 4) {
             let a = values[offset + 3]
@@ -57,6 +54,21 @@ public final class StudioColorPipeline: @unchecked Sendable {
             height: height,
             premultipliedRGBA: values
         )
+    }
+
+    private func inputProcessor(
+        _ input: StudioColorInputTransform
+    ) throws -> StudioColorProcessor {
+        switch input.processor {
+        case let .colorSpace(source):
+            try engine.cachedColorSpaceProcessor(
+                source: source, destination: Self.workingSpace
+            )
+        case let .inverseDisplay(display, view):
+            try engine.cachedInverseDisplayProcessor(
+                destination: Self.workingSpace, display: display, view: view
+            )
+        }
     }
 
     public func cpuOracleRGBA8(
@@ -103,4 +115,3 @@ public enum StudioColorBuildIdentity {
     public static let nativeBridgeSHA256 = "680eef3911af83b3579d7b7dbe27c9970d273859edd3b5fbdc0a2cc8968ee67f"
     public static let configurationSHA256 = "ebe2293968975e3540c6b32cfbee2ca1274b5bf3c9ff610235abb07b65da970b"
 }
-

@@ -2,28 +2,57 @@ import CoreGraphics
 import Foundation
 
 public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
+    public enum Processor: Hashable, Sendable {
+        case colorSpace(String)
+        case inverseDisplay(display: String, view: String)
+    }
+
     public let id: String
     public let label: String
-    public let ocioColorSpace: String
+    public let processor: Processor
 
-    public init(id: String, label: String, ocioColorSpace: String) {
+    public init(id: String, label: String, processor: Processor) {
         self.id = id
         self.label = label
-        self.ocioColorSpace = ocioColorSpace
+        self.processor = processor
     }
 
     public static let catalog: [Self] = [
-        .init(id: "input-rec709", label: "Input · Rec.709", ocioColorSpace: "Input - Rec.709"),
-        .init(id: "srgb-encoded-rec709", label: "sRGB encoded Rec.709", ocioColorSpace: "sRGB Encoded Rec.709 (sRGB)"),
-        .init(id: "acescg", label: "ACEScg (identity)", ocioColorSpace: "ACEScg"),
-        .init(id: "arri-logc3-ei800", label: "ARRI LogC3 (EI800)", ocioColorSpace: "ARRI LogC3 (EI800)"),
-        .init(id: "arri-logc4", label: "ARRI LogC4", ocioColorSpace: "ARRI LogC4"),
-        .init(id: "bmd-film-gen5", label: "Blackmagic Film Gen 5", ocioColorSpace: "BMDFilm WideGamut Gen5"),
-        .init(id: "davinci-intermediate", label: "DaVinci Intermediate", ocioColorSpace: "DaVinci Intermediate WideGamut"),
-        .init(id: "canon-log3", label: "Canon Log 3 Cinema Gamut D55", ocioColorSpace: "CanonLog3 CinemaGamut D55"),
-        .init(id: "vlog-vgamut", label: "V-Log V-Gamut", ocioColorSpace: "V-Log V-Gamut"),
-        .init(id: "log3g10", label: "Log3G10 REDWideGamutRGB", ocioColorSpace: "Log3G10 REDWideGamutRGB"),
-        .init(id: "slog3-sgamut3-cine", label: "S-Log3 S-Gamut3.Cine", ocioColorSpace: "S-Log3 S-Gamut3.Cine"),
+        .init(
+            id: "display-rec709-aces2-sdr",
+            label: "Display · Rec.709 (ACES 2.0 SDR)",
+            processor: .inverseDisplay(
+                display: "Rec.1886 Rec.709 - Display",
+                view: "ACES 2.0 - SDR 100 nits (Rec.709)"
+            )
+        ),
+        .init(
+            id: "display-srgb-aces2-sdr",
+            label: "Display · sRGB (ACES 2.0 SDR)",
+            processor: .inverseDisplay(
+                display: "sRGB - Display",
+                view: "ACES 2.0 - SDR 100 nits (Rec.709)"
+            )
+        ),
+        .init(
+            id: "display-rec2100-pq-aces2-hdr-1000",
+            label: "Display · Rec.2100 PQ (ACES 2.0 HDR 1000)",
+            processor: .inverseDisplay(
+                display: "Rec.2100-PQ - Display",
+                view: "ACES 2.0 - HDR 1000 nits (Rec.2020)"
+            )
+        ),
+        .init(id: "input-rec709", label: "Camera · Rec.709", processor: .colorSpace("Input - Rec.709")),
+        .init(id: "srgb-encoded-rec709", label: "sRGB encoded Rec.709", processor: .colorSpace("sRGB Encoded Rec.709 (sRGB)")),
+        .init(id: "acescg", label: "ACEScg (identity)", processor: .colorSpace("ACEScg")),
+        .init(id: "arri-logc3-ei800", label: "ARRI LogC3 (EI800)", processor: .colorSpace("ARRI LogC3 (EI800)")),
+        .init(id: "arri-logc4", label: "ARRI LogC4", processor: .colorSpace("ARRI LogC4")),
+        .init(id: "bmd-film-gen5", label: "Blackmagic Film Gen 5", processor: .colorSpace("BMDFilm WideGamut Gen5")),
+        .init(id: "davinci-intermediate", label: "DaVinci Intermediate", processor: .colorSpace("DaVinci Intermediate WideGamut")),
+        .init(id: "canon-log3", label: "Canon Log 3 Cinema Gamut D55", processor: .colorSpace("CanonLog3 CinemaGamut D55")),
+        .init(id: "vlog-vgamut", label: "V-Log V-Gamut", processor: .colorSpace("V-Log V-Gamut")),
+        .init(id: "log3g10", label: "Log3G10 REDWideGamutRGB", processor: .colorSpace("Log3G10 REDWideGamutRGB")),
+        .init(id: "slog3-sgamut3-cine", label: "S-Log3 S-Gamut3.Cine", processor: .colorSpace("S-Log3 S-Gamut3.Cine")),
     ]
 }
 
