@@ -241,7 +241,16 @@ public final class StudioColorEngine: @unchecked Sendable {
 
     public static func bundled() throws -> StudioColorEngine {
         #if canImport(StudioColorABI)
-        guard let configurationURL = Bundle.module.url(
+        #if DEBUG
+        let resourceBundle = Bundle.module
+        #else
+        guard let resourceURL = Bundle.main.resourceURL,
+              let resourceBundle = Bundle(
+                url: resourceURL.appendingPathComponent("StudioColor_StudioColor.bundle")
+              )
+        else { throw StudioColorError.missingBundledConfiguration }
+        #endif
+        guard let configurationURL = resourceBundle.url(
             forResource: configurationFileName,
             withExtension: "ocio"
         ) else {

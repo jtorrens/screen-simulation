@@ -105,7 +105,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
                 output: drawable.texture,
                 pass: pass,
                 transform: output,
-                command: command
+                command: command,
+                fitInputAspect: true
             )
             command.present(drawable)
             command.commit()
@@ -132,14 +133,16 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         else { throw StudioColorMetalError.textureCreation }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
-        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
         try encode(
             input: input,
             output: target,
             pass: pass,
             transform: output,
-            command: command
+            command: command,
+            fitInputAspect: false
         )
         command.commit()
         command.waitUntilCompleted()
@@ -186,7 +189,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         output: MTLTexture,
         pass: MTLRenderPassDescriptor,
         transform: StudioColorOutputTransform,
-        command: MTLCommandBuffer
+        command: MTLCommandBuffer,
+        fitInputAspect: Bool
     ) throws {
         let resources = try displayResources(transform, pixelFormat: output.pixelFormat)
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else {
@@ -200,12 +204,21 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
             encoder.setFragmentSamplerState(resources.samplers[index], index: index + 1)
         }
         var presentation = SIMD4<Float>(1, 1, 0, 0)
+        if fitInputAspect {
+            let inputAspect = Float(input.width) / Float(input.height)
+            let outputAspect = Float(output.width) / Float(output.height)
+            if outputAspect > inputAspect {
+                presentation.x = inputAspect / outputAspect
+            } else {
+                presentation.y = outputAspect / inputAspect
+            }
+        }
         encoder.setVertexBytes(
             &presentation,
             length: MemoryLayout<SIMD4<Float>>.stride,
             index: 0
         )
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
     }
 
@@ -259,8 +272,14 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         using namespace metal;
         struct FullscreenOutput { float4 position [[position]]; float2 textureCoordinate; };
         vertex FullscreenOutput fullscreenVertex(uint vertexID [[vertex_id]], constant float4 &presentation [[buffer(0)]]) {
-            constexpr float2 positions[3] = { float2(-1.0,-1.0), float2(3.0,-1.0), float2(-1.0,3.0) };
-            constexpr float2 coordinates[3] = { float2(0.0,1.0), float2(2.0,1.0), float2(0.0,-1.0) };
+            constexpr float2 positions[6] = {
+                float2(-1.0,-1.0), float2(1.0,-1.0), float2(-1.0,1.0),
+                float2(-1.0,1.0), float2(1.0,-1.0), float2(1.0,1.0)
+            };
+            constexpr float2 coordinates[6] = {
+                float2(0.0,1.0), float2(1.0,1.0), float2(0.0,0.0),
+                float2(0.0,0.0), float2(1.0,1.0), float2(1.0,0.0)
+            };
             FullscreenOutput output;
             output.position = float4(positions[vertexID].x * presentation.x + presentation.z, positions[vertexID].y * presentation.y + presentation.w, 0.0, 1.0);
             output.textureCoordinate = coordinates[vertexID];
