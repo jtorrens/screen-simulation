@@ -186,14 +186,6 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
-    float native_to_acescg[9];
-    float eotf_gamma;
-    float black_level_nits;
-    float white_level_nits;
-} ScreenDeviceEvaluationParametersV2;
-
-typedef struct {
-    uint32_t abi_version;
     uint32_t authority;
     float character_strength;
     float thickness_millimeters;
@@ -319,17 +311,6 @@ ScreenDeviceProfileRef screen_device_profile_create(
     const char **error_message
 );
 void screen_device_profile_release(ScreenDeviceProfileRef profile);
-bool screen_device_profile_evaluation_parameters(
-    ScreenDeviceProfileRef profile,
-    ScreenDeviceEvaluationParametersV2 *parameters
-);
-bool screen_device_profile_evaluate_rgba32f(
-    ScreenDeviceProfileRef profile,
-    const float *device_code,
-    float *acescg,
-    size_t pixel_count
-);
-
 /*
  * Physical-frame ABI v2. These declarations are the single UI/engine contract.
  * The opaque input carries both the source linear ACEScg RGBA texture and the

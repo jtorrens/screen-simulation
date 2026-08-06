@@ -82,7 +82,6 @@ final class WorkspaceModel: ObservableObject {
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
-    let deviceMetalStage: DeviceMetalStage
     let physicalModel = PhysicalModelController()
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
@@ -93,7 +92,6 @@ final class WorkspaceModel: ObservableObject {
 
     init() {
         metalDisplay = try! StudioColorMetalDisplay()
-        deviceMetalStage = try! DeviceMetalStage()
         physicalModel.interactiveInvalidation = { [weak self] in
             self?.rebuildPhysicalSelectedFrame()
         }
@@ -746,17 +744,8 @@ final class WorkspaceModel: ObservableObject {
         _ frame: StudioColorMetalFrame
     ) throws -> StudioColorMetalFrame {
         guard deviceStageAmount > 0 else { return frame }
-        guard let resolvedDevice else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "La etapa Device física necesita un snapshot resuelto."
-            )
-        }
-        return try deviceMetalStage.process(
-            frame,
-            device: resolvedDevice,
-            amount: deviceStageAmount,
-            placement: sourcePlacement,
-            color: metalDisplay
+        throw DeviceDomainError.invalidPhysicalProfile(
+            "La ruta Swift/Metal anterior fue retirada; esta rama requiere adopción del job físico ABI v2."
         )
     }
 
