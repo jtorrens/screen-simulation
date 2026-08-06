@@ -475,13 +475,15 @@ kernel void evaluate_physical_pipeline(
 kernel void accumulate_physical_pipeline(
     texture2d<float, access::read> sample [[texture(0)]],
     texture2d<float, access::read_write> accumulated [[texture(1)]],
-    constant float2 &weight_reset [[buffer(0)]],
+    constant float4 &weight_reset_row [[buffer(0)]],
     uint2 position [[thread_position_in_grid]])
 {
-    if (position.x >= sample.get_width() || position.y >= sample.get_height()) {
+    const uint2 target = uint2(position.x, position.y + uint(weight_reset_row.z));
+    if (target.x >= sample.get_width() || target.y >= sample.get_height()
+        || position.y >= uint(weight_reset_row.w)) {
         return;
     }
-    const float4 weighted = sample.read(position) * weight_reset.x;
-    accumulated.write(weight_reset.y != 0.0f ? weighted : accumulated.read(position) + weighted,
-        position);
+    const float4 weighted = sample.read(target) * weight_reset_row.x;
+    accumulated.write(weight_reset_row.y != 0.0f ? weighted : accumulated.read(target) + weighted,
+        target);
 }

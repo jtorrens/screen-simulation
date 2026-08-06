@@ -730,35 +730,6 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             return std::ptr::null_mut();
         }
     };
-    if !track_covers(&camera_track.track, shutter_open, shutter_close)
-        || !track_covers(&screen_track.track, shutter_open, shutter_close)
-    {
-        unsafe {
-            set_error(
-                error_message,
-                b"pose tracks do not cover the shutter interval\0",
-            )
-        };
-        return std::ptr::null_mut();
-    }
-    if input.samples.len() > 1
-        && (input
-            .samples
-            .first()
-            .is_none_or(|sample| sample.time > shutter_open)
-            || input
-                .samples
-                .last()
-                .is_none_or(|sample| sample.time < shutter_close))
-    {
-        unsafe {
-            set_error(
-                error_message,
-                b"timed input range does not cover the shutter interval\0",
-            )
-        };
-        return std::ptr::null_mut();
-    }
     let Some(source_index) = timed_sample_index(&input.samples, frame_time, input.sampling_policy)
     else {
         unsafe {
@@ -804,6 +775,17 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         Ok(value) => value,
         Err(_) => {
             unsafe { set_error(error_message, b"invalid physical device geometry\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let work_sampling = match device.profile.flat_panel_sampling(
+        quality,
+        request.requested_width,
+        request.requested_height,
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"invalid requested physical sampling\0") };
             return std::ptr::null_mut();
         }
     };
@@ -902,26 +884,12 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     let temporally_varying = input.samples.len() > 1
         || !track_is_constant(&camera_track.track)
         || !track_is_constant(&screen_track.track);
-    if temporally_varying
-        && matches!(
-            pipeline.shutter_motion.readout,
-            SensorReadout::Rolling { .. }
-        )
-    {
-        unsafe {
-            set_error(
-                error_message,
-                b"animated rolling-shutter integration is not yet supported by the Metal batch executor\0",
-            )
-        };
-        return std::ptr::null_mut();
-    }
     let schedule = match physical_shutter_schedule(
         shutter_open,
         shutter_close,
         pipeline.shutter_motion.temporal_samples,
         pipeline.shutter_motion.readout,
-        request.requested_height as usize,
+        work_sampling.effective_height as usize,
     ) {
         Ok(value) => value,
         Err(_) => {
@@ -929,9 +897,48 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             return std::ptr::null_mut();
         }
     };
+    let required_open = schedule
+        .iter()
+        .map(|sample| sample.start)
+        .min()
+        .expect("validated schedule is non-empty");
+    let required_close = schedule
+        .iter()
+        .map(|sample| sample.end)
+        .max()
+        .expect("validated schedule is non-empty");
+    if !track_covers(&camera_track.track, required_open, required_close)
+        || !track_covers(&screen_track.track, required_open, required_close)
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"pose tracks do not cover the required shutter/readout range\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
+    if input.samples.len() > 1
+        && (input
+            .samples
+            .first()
+            .is_none_or(|sample| sample.time > required_open)
+            || input
+                .samples
+                .last()
+                .is_none_or(|sample| sample.time < required_close))
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"timed input range does not cover the required shutter/readout range\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
     let mut temporal_inputs = Vec::new();
     if temporally_varying {
-        for sample in schedule.iter().filter(|sample| sample.row.is_none()) {
+        for sample in &schedule {
             let Some(index) =
                 timed_sample_index(&input.samples, sample.time, input.sampling_policy)
             else {
@@ -995,6 +1002,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
                 input.samples[index].device_signal.to_owned(),
                 sample_plan,
                 sample.weight_seconds as f32,
+                sample.row.map(|row| row as u32),
             ));
         }
     } else {
@@ -1003,6 +1011,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             input.samples[source_index].device_signal.to_owned(),
             plan,
             1.0,
+            None,
         ));
     }
     let shared = Arc::new(PhysicalJobShared {
@@ -1017,7 +1026,9 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         let result = MetalPhysicalPipeline::new(device).and_then(|backend| {
             let borrowed = temporal_inputs
                 .iter()
-                .map(|(source, signal, plan, weight)| (&**source, &**signal, *plan, *weight))
+                .map(|(source, signal, plan, weight, row)| {
+                    (&**source, &**signal, *plan, *weight, *row)
+                })
                 .collect::<Vec<_>>();
             backend.evaluate_temporal(
                 &borrowed,

@@ -118,11 +118,17 @@ impl MetalPhysicalPipeline {
         })
     }
 
-    /// Evaluates an already scheduled global-shutter sequence entirely on
-    /// Metal and accumulates normalized quadrature weights.
+    /// Evaluates a Rust-scheduled global or row-addressed rolling sequence on
+    /// Metal and accumulates normalized quadrature weights per output row.
     pub fn evaluate_temporal(
         &self,
-        samples: &[(&TextureRef, &TextureRef, PhysicalPipelineExecutionPlan, f32)],
+        samples: &[(
+            &TextureRef,
+            &TextureRef,
+            PhysicalPipelineExecutionPlan,
+            f32,
+            Option<u32>,
+        )],
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -137,28 +143,21 @@ impl MetalPhysicalPipeline {
                 "temporal weights must have a positive finite sum".to_owned(),
             ));
         }
-        if samples.len() == 1 {
-            return self.evaluate(
-                samples[0].0,
-                samples[0].1,
-                samples[0].2,
-                report_progress,
-                is_cancelled,
-            );
-        }
         let mut accumulated: Option<Texture> = None;
         let mut final_geometry = None;
         let mut final_sampling = None;
-        for (index, (source, signal, plan, weight)) in samples.iter().enumerate() {
+        for (index, (source, signal, plan, weight, row)) in samples.iter().enumerate() {
             if is_cancelled() {
                 return Err(MetalPhysicalPipelineError::Cancelled);
             }
             let base = index as f32 / samples.len() as f32;
             let span = 0.85 / samples.len() as f32;
-            let evaluated = self.evaluate(
+            let row_range = row.map(|row| (row, 1));
+            let evaluated = self.evaluate_rows(
                 source,
                 signal,
                 *plan,
+                row_range,
                 |progress| report_progress(base + progress * span),
                 &is_cancelled,
             )?;
@@ -179,7 +178,23 @@ impl MetalPhysicalPipeline {
                     "temporal samples changed output geometry".to_owned(),
                 ));
             }
-            let weight_reset = [*weight / weight_sum, if index == 0 { 1.0 } else { 0.0 }];
+            let local_weight_sum = if let Some(row) = row {
+                samples
+                    .iter()
+                    .filter(|sample| sample.4 == Some(*row))
+                    .map(|sample| sample.3)
+                    .sum::<f32>()
+            } else {
+                weight_sum
+            };
+            let reset = !samples[..index].iter().any(|sample| sample.4 == *row);
+            let (row_origin, row_count) = row_range.unwrap_or((0, output.height() as u32));
+            let weight_reset = [
+                *weight / local_weight_sum,
+                if reset { 1.0 } else { 0.0 },
+                row_origin as f32,
+                row_count as f32,
+            ];
             let command = self.queue.new_command_buffer();
             let encoder = command.new_compute_command_encoder();
             encoder.set_compute_pipeline_state(&self.accumulator);
@@ -187,14 +202,14 @@ impl MetalPhysicalPipeline {
             encoder.set_texture(1, Some(output));
             encoder.set_bytes(
                 0,
-                size_of::<[f32; 2]>() as u64,
+                size_of::<[f32; 4]>() as u64,
                 weight_reset.as_ptr().cast(),
             );
             let thread_width = self.accumulator.thread_execution_width();
             let thread_height =
                 (self.accumulator.max_total_threads_per_threadgroup() / thread_width).max(1);
             encoder.dispatch_threads(
-                MTLSize::new(output.width(), output.height(), 1),
+                MTLSize::new(output.width(), u64::from(row_count), 1),
                 MTLSize::new(thread_width, thread_height, 1),
             );
             encoder.end_encoding();
@@ -221,6 +236,25 @@ impl MetalPhysicalPipeline {
         source_acescg: &TextureRef,
         device_signal: &TextureRef,
         plan: PhysicalPipelineExecutionPlan,
+        report_progress: impl FnMut(f32),
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        self.evaluate_rows(
+            source_acescg,
+            device_signal,
+            plan,
+            None,
+            report_progress,
+            is_cancelled,
+        )
+    }
+
+    fn evaluate_rows(
+        &self,
+        source_acescg: &TextureRef,
+        device_signal: &TextureRef,
+        plan: PhysicalPipelineExecutionPlan,
+        row_range: Option<(u32, u32)>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -545,13 +579,19 @@ impl MetalPhysicalPipeline {
             MTLResourceOptions::StorageModeShared,
         );
 
-        let tile_count = sampling.effective_height.div_ceil(TILE_ROWS);
+        let (work_origin, work_height) = row_range.unwrap_or((0, sampling.effective_height));
+        if work_height == 0 || work_origin.saturating_add(work_height) > sampling.effective_height {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "physical work rows exceed the output domain".to_owned(),
+            ));
+        }
+        let tile_count = work_height.div_ceil(TILE_ROWS);
         for tile in 0..tile_count {
             if is_cancelled() {
                 return Err(MetalPhysicalPipelineError::Cancelled);
             }
-            let origin_y = tile * TILE_ROWS;
-            let height = TILE_ROWS.min(sampling.effective_height - origin_y);
+            let origin_y = work_origin + tile * TILE_ROWS;
+            let height = TILE_ROWS.min(work_origin + work_height - origin_y);
             params.output_tile[2] = origin_y;
             let command = self.queue.new_command_buffer();
             let encoder = command.new_compute_command_encoder();
@@ -1031,8 +1071,8 @@ mod tests {
         let second = texture(&device, input.width, input.height, &second_values);
         let signal = texture(&device, input.width, input.height, &first_values);
         let scheduled = [
-            (&*first, &*signal, plan, 1.0_f32),
-            (&*second, &*signal, plan, 3.0_f32),
+            (&*first, &*signal, plan, 1.0_f32, None),
+            (&*second, &*signal, plan, 3.0_f32, None),
         ];
         let one = backend
             .evaluate_temporal(&scheduled, |_| {}, || false)
@@ -1046,6 +1086,43 @@ mod tests {
             for (actual, expected) in pixel.into_iter().zip(expected) {
                 assert!((actual - expected).abs() <= 1.0e-7);
             }
+        }
+    }
+
+    #[test]
+    fn metal_rolling_executor_integrates_only_the_addressed_rows() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.0,
+            0.0,
+        );
+        plan.screen_amount = 0.0;
+        plan.requested_width = input.width;
+        plan.requested_height = input.height;
+        let dark_values = vec![[0.0, 0.0, 0.0, 0.25]; input.acescg.len()];
+        let bright_values = vec![[1.0, 2.0, 3.0, 0.75]; input.acescg.len()];
+        let dark = texture(&device, input.width, input.height, &dark_values);
+        let bright = texture(&device, input.width, input.height, &bright_values);
+        let signal = texture(&device, input.width, input.height, &dark_values);
+        let scheduled = [
+            (&*dark, &*signal, plan, 1.0, Some(0)),
+            (&*bright, &*signal, plan, 3.0, Some(0)),
+            (&*dark, &*signal, plan, 3.0, Some(1)),
+            (&*bright, &*signal, plan, 1.0, Some(1)),
+        ];
+        let result = backend
+            .evaluate_temporal(&scheduled, |_| {}, || false)
+            .expect("rolling sequence");
+        let pixels = read(&result.texture);
+        for pixel in &pixels[..input.width as usize] {
+            assert_eq!(*pixel, [0.75, 1.5, 2.25, 0.625]);
+        }
+        for pixel in &pixels[input.width as usize..] {
+            assert_eq!(*pixel, [0.25, 0.5, 0.75, 0.375]);
         }
     }
 }
