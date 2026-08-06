@@ -1,5 +1,19 @@
 # Screen Simulation
 
+## Media preparation benchmark
+
+The macOS product keeps FFmpeg as its single decoder and sends one RGBA16 sample directly to the
+authoritative Metal Source-to-Device/OCIO and panel-prefix preparation path. The complete CPU float
+materialization remains only as the before/oracle measurement in this benchmark:
+
+```text
+cargo run --release -p screen-desktop --bin media_benchmark -- /path/to/source.mov
+```
+
+The report separates probe/decode, transfer plus IDT, panel-prefix preparation, first Draft and
+1024-wide Native spatial previews, exact cache hits, reuse of another request resolving to the same
+source frame, and next-frame invalidation.
+
 Cross-platform application for physically coherent simulation of digital screens photographed or filmed by a camera.
 
 The current physical slice covers device-native media, explicit color interpretation, a fixed-pixel LCD with PWM emission, animated camera/screen geometry, thin-lens integration, exact global/rolling-shutter sampling and deterministic Bayer RAW sensor capture.

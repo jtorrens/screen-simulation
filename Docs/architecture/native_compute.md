@@ -30,7 +30,10 @@ owner and are bit-identical because Metal begins strictly after the authoritativ
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and
 colorimetry, cover and complete rotated synthetic-HDR environment, globally selected 16–128 aperture sample count, and either the
-procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
+procedural signal, the CPU-oracle raster values, or one opaque retained native raster resource.
+The native resource crosses only an Application-owned capability contract and exposes no Metal
+type to a physical domain. It contains the device signal and the code/emission row prefixes already
+prepared for the authored panel-signal contract. It deliberately cannot
 represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
 and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
 Fresnel/transmission/reflection, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
@@ -42,6 +45,18 @@ nearby values are subtracted late in a UHD image, producing non-physical large s
 Row prefixes bound accumulation by source width; the kernel then integrates exactly the source
 rows crossed by the optical footprint. The CPU oracle retains its higher-precision area integral,
 and conformance compares both implementations at the spatial boundary.
+
+The product media path resolves one sample through FFmpeg into RGBA16 integer storage. A generated
+OCIO MSL prepass applies explicit alpha unassociation/association and the authored Source-to-Device
+processor into retained shared Metal storage. `Ignore` forces alpha one before OCIO, including when
+decoded alpha is zero. A second Metal pass builds both row-prefix resources. The cache authority is
+the resolved source timestamp plus frame policy, resolved YUV matrix/range, Source-to-Device id,
+alpha interpretation, decode dimensions and panel EOTF/level identity. Constant-cadence selection
+may reuse a cached resolved frame only inside the exact authored Floor or Nearest interval; the
+boundary tie remains earlier for Nearest. At most the current two prepared frames are retained.
+Changing frame, interpretation, quality or panel-signal identity invalidates the resource. CPU
+decoded floats and CPU OCIO remain callable only through explicitly named oracle functions and are
+not composed by Desktop.
 
 The scalar implementation remains available only through explicitly named CPU-oracle functions.
 Optical conformance currently covers procedural and raster signals, RGB/BGR layouts, resolved and
@@ -192,3 +207,14 @@ OCIO publication and staging. Forty-eight stripes project to about 2.1 s for 806
 complete 128×128 tile remained available in 0.012–0.013 s. These measured projections preserve the
 CPU-oracle spatial tolerance at full sensor coordinate phase; they do not reintroduce a faster
 phase-unstable route.
+
+The retained media-input boundary was measured on 2026-08-06 in Release on Apple M3 Ultra with
+`FOQN_E06_0010.mov` (ProRes 4444, 3840×2400, `yuva444p12le`, 25 fps, limited-range Rec.709). The
+CPU oracle took 199.737 ms to decode, 2,251.956 ms for the Camera Rec.709 IDT and 32.727 ms for
+panel prefixes: 2,484.419 ms total. The authoritative Metal route took 177.265 ms to decode one
+frame through the single FFmpeg decoder, 30.765 ms for upload plus OCIO MSL, and 17.524 ms for GPU
+panel prefixes: 225.554 ms total. An exact hit and a different request resolving to that same frame
+both took 0 ms and did not decode or transform again; the next 25 fps frame invalidated the cache
+and took 211.561 ms. The explicit 960×600 Draft preparation took 163.118 ms, with its first spatial
+preview completing in 8.344 ms (171.462 ms media plus preview). A 1024×640 spatial preview using
+the retained Native resource took 36.912 ms without repeating the IDT or rebuilding prefixes.

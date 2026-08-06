@@ -187,7 +187,8 @@ def validate_native_backend_composition(paths: list[str]) -> None:
         "MetalRawDevelopment::new()",
         "capture_and_develop_procedural_region_with_compute_backends(",
         "capture_and_develop_device_signal_region_with_compute_backends(",
-        "capture_and_develop_device_signal_region_sequence_with_compute_backends(",
+        "capture_and_develop_native_device_signal_region_sequence_with_compute_backends(",
+        "MetalMediaFrameCache::new(",
     ]
     absent = [call for call in required_calls if call not in desktop]
     if absent:
@@ -196,6 +197,8 @@ def validate_native_backend_composition(paths: list[str]) -> None:
         "capture_and_develop_procedural_region(",
         "capture_and_develop_device_signal_region(",
         "capture_and_develop_device_signal_region_sequence(",
+        "decode_frame_at_time_cpu_oracle(",
+        "decoded_frame_to_device_signal_cpu_oracle(",
     ]
     present = [call for call in cpu_calls if call in desktop]
     if present:
