@@ -145,7 +145,6 @@ typedef struct {
     ScreenPhysicalPipelineSnapshotRef resolved_pipeline;
     uint32_t quality;
     float screen_amount;
-    float capture_amount;
     const ScreenPhysicalStageContributionV2 *stage_contributions;
     size_t stage_contribution_count;
     uint32_t requested_width;
