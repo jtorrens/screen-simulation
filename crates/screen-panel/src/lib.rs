@@ -11,6 +11,11 @@ pub enum StripeLayout {
     Bgr,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelTechnology {
+    IpsLcd,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Chromaticity {
     pub x: f32,
@@ -71,6 +76,8 @@ pub struct LcdProfile {
 pub struct DevicePreset {
     pub id: &'static str,
     pub label: &'static str,
+    pub category: &'static str,
+    pub panel_technology: PanelTechnology,
     pub native_width: u32,
     pub native_height: u32,
     pub active_width: Meters,
@@ -81,6 +88,35 @@ pub struct DevicePreset {
 }
 
 impl DevicePreset {
+    pub fn profile(self) -> LcdProfile {
+        LcdProfile {
+            native_width: self.native_width,
+            native_height: self.native_height,
+            active_width: self.active_width,
+            active_height: self.active_height,
+            stripe_layout: StripeLayout::Rgb,
+            black_matrix_fraction: 0.12,
+            eotf_gamma: 2.2,
+            black_level_nits: 0.08,
+            white_level_nits: self.reference_white_nits,
+            colorimetry: PanelColorimetry::SRGB_D65,
+            angular_emission_power: LinearRgb::new(1.7, 1.5, 1.8),
+            temporal_emission: PanelTemporalEmission {
+                residual_flicker: ResidualFlicker {
+                    period: RationalTime::new(1, 240).expect("preset period is valid"),
+                    amplitude: 0.002,
+                    phase: RationalTime::new(0, 1).expect("preset phase is valid"),
+                },
+                analytic_banding: AnalyticBanding {
+                    period: RationalTime::new(1, 960).expect("preset period is valid"),
+                    on_duration: RationalTime::new(1, 1_920).expect("preset duty is valid"),
+                    phase: RationalTime::new(0, 1).expect("preset phase is valid"),
+                    amount: 0.0,
+                },
+            },
+        }
+    }
+
     pub fn pixels_per_inch(self) -> f32 {
         let diagonal_pixels = (self.native_width as f32).hypot(self.native_height as f32);
         let diagonal_meters = self.active_width.0.hypot(self.active_height.0);
@@ -96,6 +132,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-phone-4_7-retina",
         label: "Phone LCD · 4.7 Retina",
+        category: "Phone",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 750,
         native_height: 1_334,
         active_width: Meters(0.058_436),
@@ -107,6 +145,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-phone-6_1-liquid-retina",
         label: "Phone LCD · 6.1 Liquid Retina",
+        category: "Phone",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 828,
         native_height: 1_792,
         active_width: Meters(0.064_517),
@@ -118,6 +158,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-phone-6_5-high-density",
         label: "Phone LCD · 6.5 high density",
+        category: "Phone",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 1_080,
         native_height: 2_400,
         active_width: Meters(0.067_733),
@@ -129,6 +171,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-macbook-pro-retina-14",
         label: "MacBook Pro Retina · 14.2",
+        category: "Laptop",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 3_024,
         native_height: 1_964,
         active_width: Meters(0.302_4),
@@ -140,6 +184,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-laptop-fhd-15_6",
         label: "Laptop LCD · 15.6 Full HD",
+        category: "Laptop",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 1_920,
         native_height: 1_080,
         active_width: Meters(0.345_353),
@@ -151,6 +197,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-tv-hd-32",
         label: "TV LCD · 32 HD",
+        category: "Television",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 1_366,
         native_height: 768,
         active_width: Meters(0.708_500),
@@ -162,6 +210,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-tv-fhd-43",
         label: "TV LCD · 43 Full HD",
+        category: "Television",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 1_920,
         native_height: 1_080,
         active_width: Meters(0.951_935),
@@ -173,6 +223,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-tv-uhd-55",
         label: "TV LCD · 55 UHD",
+        category: "Television",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 3_840,
         native_height: 2_160,
         active_width: Meters(1.217_591),
@@ -184,6 +236,8 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
     DevicePreset {
         id: "lcd-asus-proart-pa329cv",
         label: "ASUS ProArt PA329CV · 32 UHD",
+        category: "Desktop monitor",
+        panel_technology: PanelTechnology::IpsLcd,
         native_width: 3_840,
         native_height: 2_160,
         active_width: Meters(0.708_480),
@@ -951,6 +1005,8 @@ mod tests {
             assert!((4.0..60.0).contains(&preset.diagonal_inches()));
             assert!(preset.reference_white_nits > 0.0);
             assert!(!preset.white_basis.is_empty());
+            assert_eq!(preset.panel_technology, PanelTechnology::IpsLcd);
+            assert!(preset.profile().validate().is_ok());
             assert_eq!(device_preset(preset.id), Some(preset));
         }
         assert_eq!(device_preset("retired-or-unknown"), None);

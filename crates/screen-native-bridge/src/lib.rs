@@ -5,7 +5,307 @@
 use std::ffi::{c_char, c_float};
 
 use screen_application::{ProceduralTestPattern, diagnostic_signal};
-use screen_contracts::{RationalTime, Vec2};
+use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2};
+use screen_panel::{
+    AnalyticBanding, Chromaticity, DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTechnology,
+    PanelTemporalEmission, ResidualFlicker, StripeLayout,
+};
+
+#[repr(C)]
+pub struct ScreenUtf8View {
+    bytes: *const u8,
+    count: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenDeviceParametersV1 {
+    abi_version: u32,
+    native_width: u32,
+    native_height: u32,
+    panel_technology: u32,
+    stripe_layout: u32,
+    active_width_meters: f32,
+    active_height_meters: f32,
+    black_matrix_fraction: f32,
+    eotf_gamma: f32,
+    black_level_nits: f32,
+    white_level_nits: f32,
+    primary_xy: [f32; 6],
+    white_xy: [f32; 2],
+    angular_emission_power: [f32; 3],
+    residual_period_numerator: i64,
+    residual_period_denominator: u32,
+    residual_amplitude: f32,
+    residual_phase_numerator: i64,
+    residual_phase_denominator: u32,
+    banding_period_numerator: i64,
+    banding_period_denominator: u32,
+    banding_on_numerator: i64,
+    banding_on_denominator: u32,
+    banding_phase_numerator: i64,
+    banding_phase_denominator: u32,
+    banding_amount: f32,
+}
+
+pub struct ScreenDeviceProfile {
+    _profile: LcdProfile,
+}
+
+fn utf8_view(value: &'static str) -> ScreenUtf8View {
+    ScreenUtf8View {
+        bytes: value.as_ptr(),
+        count: value.len(),
+    }
+}
+
+fn preset_at(index: usize) -> Option<screen_panel::DevicePreset> {
+    DEVICE_PRESETS.get(index).copied()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_count() -> usize {
+    DEVICE_PRESETS.len()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_id(index: usize) -> ScreenUtf8View {
+    preset_at(index).map_or(utf8_view(""), |preset| utf8_view(preset.id))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_label(index: usize) -> ScreenUtf8View {
+    preset_at(index).map_or(utf8_view(""), |preset| utf8_view(preset.label))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_category(index: usize) -> ScreenUtf8View {
+    preset_at(index).map_or(utf8_view(""), |preset| utf8_view(preset.category))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_white_basis(index: usize) -> ScreenUtf8View {
+    preset_at(index).map_or(utf8_view(""), |preset| utf8_view(preset.white_basis))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_default_cover_id(index: usize) -> ScreenUtf8View {
+    preset_at(index).map_or(utf8_view(""), |preset| {
+        utf8_view(preset.default_cover_glass_preset_id)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_device_preset_parameters(
+    index: usize,
+    parameters: *mut ScreenDeviceParametersV1,
+) -> bool {
+    let Some(preset) = preset_at(index) else {
+        return false;
+    };
+    if parameters.is_null() {
+        return false;
+    }
+    // SAFETY: the caller provided a writable V1 parameter structure.
+    unsafe { *parameters = parameters_from_profile(preset.profile(), preset.panel_technology) };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_device_profile_create(
+    parameters: *const ScreenDeviceParametersV1,
+    error_message: *mut *const c_char,
+) -> *mut ScreenDeviceProfile {
+    if parameters.is_null() {
+        unsafe { set_error(error_message, b"missing device parameters\0") };
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the non-null parameters pointer is valid for this call.
+    let parameters = unsafe { *parameters };
+    let profile = match profile_from_parameters(parameters) {
+        Ok(profile) => profile,
+        Err(message) => {
+            unsafe { set_error(error_message, message) };
+            return std::ptr::null_mut();
+        }
+    };
+    unsafe { set_error(error_message, b"\0") };
+    Box::into_raw(Box::new(ScreenDeviceProfile { _profile: profile }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_device_profile_release(profile: *mut ScreenDeviceProfile) {
+    if !profile.is_null() {
+        // SAFETY: the ABI requires the uniquely owned handle returned by create.
+        unsafe { drop(Box::from_raw(profile)) };
+    }
+}
+
+fn parameters_from_profile(
+    profile: LcdProfile,
+    technology: PanelTechnology,
+) -> ScreenDeviceParametersV1 {
+    ScreenDeviceParametersV1 {
+        abi_version: 1,
+        native_width: profile.native_width,
+        native_height: profile.native_height,
+        panel_technology: match technology {
+            PanelTechnology::IpsLcd => 0,
+        },
+        stripe_layout: match profile.stripe_layout {
+            StripeLayout::Rgb => 0,
+            StripeLayout::Bgr => 1,
+        },
+        active_width_meters: profile.active_width.0,
+        active_height_meters: profile.active_height.0,
+        black_matrix_fraction: profile.black_matrix_fraction,
+        eotf_gamma: profile.eotf_gamma,
+        black_level_nits: profile.black_level_nits,
+        white_level_nits: profile.white_level_nits,
+        primary_xy: [
+            profile.colorimetry.red.x,
+            profile.colorimetry.red.y,
+            profile.colorimetry.green.x,
+            profile.colorimetry.green.y,
+            profile.colorimetry.blue.x,
+            profile.colorimetry.blue.y,
+        ],
+        white_xy: [profile.colorimetry.white.x, profile.colorimetry.white.y],
+        angular_emission_power: [
+            profile.angular_emission_power.r,
+            profile.angular_emission_power.g,
+            profile.angular_emission_power.b,
+        ],
+        residual_period_numerator: profile
+            .temporal_emission
+            .residual_flicker
+            .period
+            .numerator(),
+        residual_period_denominator: profile
+            .temporal_emission
+            .residual_flicker
+            .period
+            .denominator(),
+        residual_amplitude: profile.temporal_emission.residual_flicker.amplitude,
+        residual_phase_numerator: profile.temporal_emission.residual_flicker.phase.numerator(),
+        residual_phase_denominator: profile
+            .temporal_emission
+            .residual_flicker
+            .phase
+            .denominator(),
+        banding_period_numerator: profile
+            .temporal_emission
+            .analytic_banding
+            .period
+            .numerator(),
+        banding_period_denominator: profile
+            .temporal_emission
+            .analytic_banding
+            .period
+            .denominator(),
+        banding_on_numerator: profile
+            .temporal_emission
+            .analytic_banding
+            .on_duration
+            .numerator(),
+        banding_on_denominator: profile
+            .temporal_emission
+            .analytic_banding
+            .on_duration
+            .denominator(),
+        banding_phase_numerator: profile.temporal_emission.analytic_banding.phase.numerator(),
+        banding_phase_denominator: profile
+            .temporal_emission
+            .analytic_banding
+            .phase
+            .denominator(),
+        banding_amount: profile.temporal_emission.analytic_banding.amount,
+    }
+}
+
+fn profile_from_parameters(
+    parameters: ScreenDeviceParametersV1,
+) -> Result<LcdProfile, &'static [u8]> {
+    if parameters.abi_version != 1 {
+        return Err(b"unsupported device parameter ABI\0");
+    }
+    if parameters.panel_technology != 0 {
+        return Err(b"unsupported panel technology\0");
+    }
+    let stripe_layout = match parameters.stripe_layout {
+        0 => StripeLayout::Rgb,
+        1 => StripeLayout::Bgr,
+        _ => return Err(b"unsupported subpixel layout\0"),
+    };
+    let time = |numerator, denominator| {
+        RationalTime::new(numerator, denominator).map_err(|_| b"invalid device exact time\0" as _)
+    };
+    let profile = LcdProfile {
+        native_width: parameters.native_width,
+        native_height: parameters.native_height,
+        active_width: Meters(parameters.active_width_meters),
+        active_height: Meters(parameters.active_height_meters),
+        stripe_layout,
+        black_matrix_fraction: parameters.black_matrix_fraction,
+        eotf_gamma: parameters.eotf_gamma,
+        black_level_nits: parameters.black_level_nits,
+        white_level_nits: parameters.white_level_nits,
+        colorimetry: PanelColorimetry {
+            red: Chromaticity {
+                x: parameters.primary_xy[0],
+                y: parameters.primary_xy[1],
+            },
+            green: Chromaticity {
+                x: parameters.primary_xy[2],
+                y: parameters.primary_xy[3],
+            },
+            blue: Chromaticity {
+                x: parameters.primary_xy[4],
+                y: parameters.primary_xy[5],
+            },
+            white: Chromaticity {
+                x: parameters.white_xy[0],
+                y: parameters.white_xy[1],
+            },
+        },
+        angular_emission_power: LinearRgb::new(
+            parameters.angular_emission_power[0],
+            parameters.angular_emission_power[1],
+            parameters.angular_emission_power[2],
+        ),
+        temporal_emission: PanelTemporalEmission {
+            residual_flicker: ResidualFlicker {
+                period: time(
+                    parameters.residual_period_numerator,
+                    parameters.residual_period_denominator,
+                )?,
+                amplitude: parameters.residual_amplitude,
+                phase: time(
+                    parameters.residual_phase_numerator,
+                    parameters.residual_phase_denominator,
+                )?,
+            },
+            analytic_banding: AnalyticBanding {
+                period: time(
+                    parameters.banding_period_numerator,
+                    parameters.banding_period_denominator,
+                )?,
+                on_duration: time(
+                    parameters.banding_on_numerator,
+                    parameters.banding_on_denominator,
+                )?,
+                phase: time(
+                    parameters.banding_phase_numerator,
+                    parameters.banding_phase_denominator,
+                )?,
+                amount: parameters.banding_amount,
+            },
+        },
+    };
+    profile
+        .validate()
+        .map_err(|_| b"invalid physical device profile\0" as &'static [u8])
+}
 
 pub struct ScreenPhysicalPipeline;
 
@@ -213,6 +513,47 @@ mod tests {
             let (mut width, mut height) = (0, 0);
             assert!(unsafe { screen_test_pattern_dimensions(pattern, &mut width, &mut height) });
             assert_eq!((width, height), (EMBEDDED_WIDTH, EMBEDDED_HEIGHT));
+        }
+    }
+
+    #[test]
+    fn device_catalog_exposes_complete_profiles_through_opaque_handles() {
+        assert_eq!(screen_device_preset_count(), 9);
+        for index in 0..screen_device_preset_count() {
+            let mut parameters = ScreenDeviceParametersV1 {
+                abi_version: 0,
+                native_width: 0,
+                native_height: 0,
+                panel_technology: 0,
+                stripe_layout: 0,
+                active_width_meters: 0.0,
+                active_height_meters: 0.0,
+                black_matrix_fraction: 0.0,
+                eotf_gamma: 0.0,
+                black_level_nits: 0.0,
+                white_level_nits: 0.0,
+                primary_xy: [0.0; 6],
+                white_xy: [0.0; 2],
+                angular_emission_power: [0.0; 3],
+                residual_period_numerator: 0,
+                residual_period_denominator: 0,
+                residual_amplitude: 0.0,
+                residual_phase_numerator: 0,
+                residual_phase_denominator: 0,
+                banding_period_numerator: 0,
+                banding_period_denominator: 0,
+                banding_on_numerator: 0,
+                banding_on_denominator: 0,
+                banding_phase_numerator: 0,
+                banding_phase_denominator: 0,
+                banding_amount: 0.0,
+            };
+            assert!(unsafe { screen_device_preset_parameters(index, &mut parameters) });
+            assert_eq!(parameters.abi_version, 1);
+            let profile =
+                unsafe { screen_device_profile_create(&parameters, std::ptr::null_mut()) };
+            assert!(!profile.is_null());
+            unsafe { screen_device_profile_release(profile) };
         }
     }
 }
