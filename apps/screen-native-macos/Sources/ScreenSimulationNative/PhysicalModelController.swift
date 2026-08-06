@@ -31,6 +31,10 @@ final class PhysicalModelController: ObservableObject {
     @Published private(set) var parameterRevision: UInt64 = 0
     @Published private(set) var completedFrame: CompletedFrame?
     @Published private(set) var isolatedStage: PhysicalStageID?
+    @Published private(set) var diagnostics: [PhysicalStageDiagnostic] = []
+    @Published private(set) var computedQuality = PhysicalQuality.draft
+    @Published private(set) var effectiveDimensions: PhysicalDimensions?
+    @Published private(set) var lastInteractiveSeconds: Double?
 
     var interactiveInvalidation: (() -> Void)?
     var cancelNativeWork: (() -> Void)?
@@ -43,12 +47,14 @@ final class PhysicalModelController: ObservableObject {
         for stage in PhysicalStageID.ordered {
             let discrete = stage == .capture(.sensorCFA)
                 || stage == .capture(.developDemosaic)
+            let implemented = stage == .screen(.emission)
+                || stage == .screen(.subpixelGeometry)
             values[stage] = StageValue(
                 stage: stage,
                 exactIdentityAtZero: !discrete,
                 control: discrete
-                    ? .discrete(enabled: true)
-                    : .continuous(amount: 1, limits: .standard)
+                    ? .discrete(enabled: false)
+                    : .continuous(amount: implemented ? 1 : 0, limits: .standard)
             )
         }
         stages = values
@@ -81,6 +87,9 @@ final class PhysicalModelController: ObservableObject {
 
     func setDomainAmount(_ amount: Double, domain: PhysicalDomainID) throws {
         try PhysicalContributionLimits.standard.validate(amount)
+        if domain == .capture, amount != 0 {
+            throw PhysicalModelStateError.stagePending
+        }
         switch domain {
         case .screen:
             guard screenAmount != amount else { return }
@@ -93,6 +102,9 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func setContinuousAmount(_ amount: Double, stage: PhysicalStageID) throws {
+        guard stage.isImplementedByPhysicalPanelV1 else {
+            throw PhysicalModelStateError.stagePending
+        }
         guard var value = stages[stage],
               case let .continuous(_, limits) = value.control
         else { throw PhysicalModelStateError.stageIsNotContinuous }
@@ -104,6 +116,9 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func setDiscreteEnabled(_ enabled: Bool, stage: PhysicalStageID) throws {
+        guard stage.isImplementedByPhysicalPanelV1 else {
+            throw PhysicalModelStateError.stagePending
+        }
         guard var value = stages[stage], case .discrete = value.control else {
             throw PhysicalModelStateError.stageIsNotDiscrete
         }
@@ -126,6 +141,9 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func toggleIsolation(_ stage: PhysicalStageID) throws {
+        guard stage.isImplementedByPhysicalPanelV1 else {
+            throw PhysicalModelStateError.stagePending
+        }
         if isolatedStage == stage {
             restoreIsolation()
             return
@@ -177,6 +195,23 @@ final class PhysicalModelController: ObservableObject {
         self.progress = min(1, max(0, progress))
     }
 
+    func publishInteractive(
+        _ snapshot: PhysicalMetalFrameSnapshot,
+        elapsedSeconds: Double
+    ) {
+        computedQuality = snapshot.computedQuality
+        effectiveDimensions = snapshot.effectiveDimensions
+        diagnostics = snapshot.diagnostics
+        lastInteractiveSeconds = max(0, elapsedSeconds)
+    }
+
+    func publishNative(_ snapshot: PhysicalMetalFrameSnapshot) {
+        computedQuality = snapshot.computedQuality
+        effectiveDimensions = snapshot.effectiveDimensions
+        diagnostics = snapshot.diagnostics
+        updateNativeProgress(snapshot.progress)
+    }
+
     func completeNative(
         nativeDimensions: PhysicalDimensions,
         effectiveDimensions: PhysicalDimensions
@@ -225,7 +260,14 @@ final class PhysicalModelController: ObservableObject {
 
     private func invalidateParameters() {
         parameterRevision &+= 1
-        if frameState == .complete { frameState = .stale }
+        if frameState == .rendering {
+            cancelNativeWork?()
+            nativeStartedAt = nil
+            progress = 0
+            frameState = completedFrame == nil ? .cancelled : .stale
+        } else if frameState == .complete {
+            frameState = .stale
+        }
         if quality != .native { interactiveInvalidation?() }
     }
 }
@@ -235,4 +277,5 @@ enum PhysicalModelStateError: Error, Equatable {
     case stageIsNotContinuous
     case stageIsNotDiscrete
     case nativeAlreadyRendering
+    case stagePending
 }

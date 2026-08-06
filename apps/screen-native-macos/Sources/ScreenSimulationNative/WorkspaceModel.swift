@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 import StudioColor
 import StudioMedia
@@ -76,14 +77,12 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var defaultSignalMatrix = StudioSignalMatrix.bt709
     @Published private(set) var defaultSignalRange = StudioSignalRange.full
     @Published private(set) var resolvedDevice: ResolvedDevice?
-    @Published private(set) var deviceStageAmount = 0.0
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
     @Published var sourcePlacement = SourcePlacement.fit
     @Published var modelViewerOneToOne = false
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
-    let deviceMetalStage: DeviceMetalStage
     let physicalModel = PhysicalModelController()
     private let deviceSignalTransform = StudioColorOutputTransform.catalog.first {
         $0.id == "aces2-srgb-sdr-100"
@@ -94,16 +93,21 @@ final class WorkspaceModel: ObservableObject {
     private var physicalSubscription: AnyCancellable?
     private var renderTask: Task<Void, Never>?
     private var physicalNativeTask: Task<Void, Never>?
+    private var physicalInteractiveTask: Task<Void, Never>?
+    private var physicalNativeJob: PhysicalMetalFrameJob?
+    private var physicalInteractiveJob: PhysicalMetalFrameJob?
+    private let physicalEngine = PhysicalMetalFrameEngine()
+    private var physicalIdentityCounter: UInt64 = 0
+    private var modelViewport = CGSize(width: 960, height: 540)
     private var isModelPageActive = false
 
     init() {
         metalDisplay = try! StudioColorMetalDisplay()
-        deviceMetalStage = try! DeviceMetalStage()
         physicalModel.interactiveInvalidation = { [weak self] in
             self?.rebuildPhysicalSelectedFrame()
         }
         physicalModel.cancelNativeWork = { [weak self] in
-            self?.physicalNativeTask?.cancel()
+            _ = self?.physicalNativeJob?.cancel()
         }
         physicalSubscription = physicalModel.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -117,10 +121,9 @@ final class WorkspaceModel: ObservableObject {
         "Input → YUV/rango → IDT → ACEScg → Pantalla → Captura → Display/ODT"
     }
 
-    func selectDevice(_ definition: DeviceDefinition, amount: Double) {
+    func selectDevice(_ definition: DeviceDefinition, amount _: Double) {
         do {
             resolvedDevice = try definition.resolved()
-            deviceStageAmount = min(1, max(0, amount))
             rebuildCurrent()
         } catch {
             errorMessage = error.localizedDescription
@@ -136,11 +139,6 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    func setDeviceStageAmount(_ amount: Double) {
-        deviceStageAmount = min(1, max(0, amount))
-        rebuildCurrent()
-    }
-
     func setModelPageActive(_ active: Bool) {
         isModelPageActive = active
         if active { pause() }
@@ -149,6 +147,17 @@ final class WorkspaceModel: ObservableObject {
 
     func changePhysicalQuality(_ quality: PhysicalQuality) {
         physicalModel.setQuality(quality)
+    }
+
+    func setModelViewportSize(_ size: CGSize) {
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 1, size.height > 1,
+              modelViewport != size
+        else { return }
+        modelViewport = size
+        if isModelPageActive, physicalModel.quality != .native {
+            rebuildPhysicalSelectedFrame()
+        }
     }
 
     func changePhysicalDomainAmount(_ amount: Double, domain: PhysicalDomainID) {
@@ -192,37 +201,26 @@ final class WorkspaceModel: ObservableObject {
         catch { return }
         physicalNativeTask = Task { [weak self] in
             guard let self else { return }
-            await Task.yield()
-            guard !Task.isCancelled else {
-                physicalNativeTask = nil
-                return
-            }
             do {
-                try evaluateExistingPhysicalStage()
-                guard !Task.isCancelled, let frame = metalFrame else {
-                    physicalNativeTask = nil
-                    return
-                }
-                let dimensions = try PhysicalDimensions(
-                    width: frame.width,
-                    height: frame.height
-                )
-                physicalModel.updateNativeProgress(1)
-                physicalModel.completeNative(
-                    nativeDimensions: dimensions,
-                    effectiveDimensions: dimensions
-                )
+                let job = try submitPhysicalJob(quality: .native)
+                physicalNativeJob = job
+                try await pollPhysicalJob(job, native: true)
+            } catch is CancellationError {
+                // Explicit cancellation or parameter invalidation owns the state.
             } catch {
-                physicalModel.failNative()
-                errorMessage = error.localizedDescription
+                if !Task.isCancelled {
+                    physicalModel.failNative()
+                    errorMessage = error.localizedDescription
+                }
             }
+            physicalNativeJob = nil
             physicalNativeTask = nil
         }
     }
 
     func cancelSelectedPhysicalFrameNative() {
         physicalModel.cancelNative()
-        physicalNativeTask = nil
+        physicalNativeTask?.cancel()
     }
 
     func changeSourcePlacement(_ placement: SourcePlacement) {
@@ -707,13 +705,14 @@ final class WorkspaceModel: ObservableObject {
                 input: inputTransform, alpha: effectiveAlpha
             )
             sourceACEScgFrame = base
-            metalFrame = try applyDeviceStage(base)
+            metalFrame = base
             if let metalFrame {
                 monitorOutput.update(frame: metalFrame, display: metalDisplay)
             }
             sourceDetail = "Patrón SCREEN canónico · \(decoded.width) × \(decoded.height)"
             decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
             status = "Textura ACEScg Metal · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
+            rebuildPhysicalSelectedFrame()
         } catch {
             metalFrame = nil
             errorMessage = error.localizedDescription
@@ -737,13 +736,14 @@ final class WorkspaceModel: ObservableObject {
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
         )
         sourceACEScgFrame = base
-        metalFrame = try applyDeviceStage(base)
+        metalFrame = base
         if let metalFrame {
             monitorOutput.update(frame: metalFrame, display: metalDisplay)
         }
         currentFrame = min(frameCount - 1, max(0, Int((sample.time.seconds * frameRate).rounded())))
         decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
         status = "CVPixelBuffer → ACEScg → Preview · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
+        rebuildPhysicalSelectedFrame()
     }
 
     private func renderFrame(_ index: Int) async throws -> StudioColorMetalFrame {
@@ -753,7 +753,7 @@ final class WorkspaceModel: ObservableObject {
                 width: decoded.width, height: decoded.height,
                 encodedRGBA: decoded.rgba, input: inputTransform, alpha: effectiveAlpha
             )
-            return try applyDeviceStage(base)
+            return base
         }
         let time = session.time(forFrame: index)
         try Task.checkCancellation()
@@ -764,74 +764,186 @@ final class WorkspaceModel: ObservableObject {
             pixelBuffer: sample.pixelBuffer, input: inputTransform,
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
         )
-        return try applyDeviceStage(base)
-    }
-
-    private func applyDeviceStage(
-        _ frame: StudioColorMetalFrame
-    ) throws -> StudioColorMetalFrame {
-        guard deviceStageAmount > 0 else { return frame }
-        guard let resolvedDevice else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "La etapa Device física necesita un snapshot resuelto."
-            )
-        }
-        let deviceSignal = try metalDisplay.transformToMetalFrame(
-            frame,
-            output: deviceSignalTransform
-        )
-        return try deviceMetalStage.process(
-            sourceACEScg: frame,
-            deviceSignal: deviceSignal,
-            device: resolvedDevice,
-            amount: deviceStageAmount,
-            placement: sourcePlacement.physicalRasterPlacement
-        )
+        return base
     }
 
     private func rebuildPhysicalSelectedFrame() {
         guard isModelPageActive else {
-            deviceStageAmount = 0
+            _ = physicalInteractiveJob?.cancel()
+            physicalInteractiveTask?.cancel()
             if let sourceACEScgFrame { metalFrame = sourceACEScgFrame }
             return
         }
         guard physicalModel.quality != .native else { return }
-        do {
-            try evaluateExistingPhysicalStage()
-        } catch {
-            status = error.localizedDescription
+        _ = physicalInteractiveJob?.cancel()
+        physicalInteractiveTask?.cancel()
+        let quality = physicalModel.quality
+        physicalInteractiveTask = Task { [weak self] in
+            guard let self else { return }
+            var submittedJob: PhysicalMetalFrameJob?
+            do {
+                let job = try submitPhysicalJob(quality: quality)
+                submittedJob = job
+                physicalInteractiveJob = job
+                try await pollPhysicalJob(job, native: false)
+            } catch is CancellationError {
+                // A newer parameter revision owns the next authoritative result.
+            } catch {
+                status = error.localizedDescription
+            }
+            if physicalInteractiveJob === submittedJob {
+                physicalInteractiveJob = nil
+            }
         }
     }
 
-    private func evaluateExistingPhysicalStage() throws {
+    private func submitPhysicalJob(
+        quality: PhysicalQuality
+    ) throws -> PhysicalMetalFrameJob {
         guard let sourceACEScgFrame else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
         }
-        guard physicalModel.captureAmount == 0 else {
-            throw PhysicalEvaluationAvailabilityError.capturePending
+        guard let resolvedDevice else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "El modelo físico necesita un snapshot de Device resuelto."
+            )
         }
-        guard physicalModel.screenAmount <= 1 else {
-            throw PhysicalEvaluationAvailabilityError.artisticScreenPending
-        }
-        let changedSection = physicalModel.orderedContributions.first { contribution in
-            let domainIsActive = contribution.stage.domain == .screen
-                ? physicalModel.screenAmount > 0
-                : physicalModel.captureAmount > 0
-            guard domainIsActive else { return false }
-            return switch contribution.control {
-            case let .continuous(amount, _): amount != 1
-            case let .discrete(enabled): !enabled
+        let deviceSignal = try metalDisplay.transformToMetalFrame(
+            sourceACEScgFrame,
+            output: deviceSignalTransform
+        )
+        physicalIdentityCounter &+= 1
+        let identity = PhysicalFrameIdentity(
+            high: physicalModel.parameterRevision,
+            low: physicalIdentityCounter
+        )
+        return try physicalEngine.submit(
+            sourceACEScg: sourceACEScgFrame,
+            deviceSignal: deviceSignal,
+            frame: try PhysicalFrameSelection(
+                frameIndex: Int64(currentFrame),
+                timeNumerator: Int64(currentFrame),
+                timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
+            ),
+            resolvedDevice: resolvedDevice,
+            quality: quality,
+            screenAmount: physicalModel.screenAmount,
+            captureAmount: physicalModel.captureAmount,
+            contributions: physicalModel.orderedContributions,
+            requestedDimensions: try physicalRequestedDimensions(
+                quality: quality,
+                device: resolvedDevice.definition
+            ),
+            cancellationIdentity: identity,
+            progressIdentity: identity,
+            parameterRevision: physicalModel.parameterRevision,
+            parameterHash: try physicalParameterHash(
+                quality: quality,
+                device: resolvedDevice.definition
+            ),
+            rasterPlacement: sourcePlacement.physicalRasterPlacement
+        )
+    }
+
+    private func pollPhysicalJob(
+        _ job: PhysicalMetalFrameJob,
+        native: Bool
+    ) async throws {
+        let started = ContinuousClock.now
+        while true {
+            try Task.checkCancellation()
+            let snapshot = try job.snapshot()
+            if native {
+                physicalModel.publishNative(snapshot)
+            }
+            switch snapshot.state {
+            case .idle, .stale, .rendering:
+                try await Task.sleep(for: .milliseconds(8))
+            case .cancelled:
+                throw CancellationError()
+            case .failed:
+                throw PhysicalMetalFrameEngineError.bridge(
+                    snapshot.diagnostics.last?.message ?? "La evaluación física ha fallado."
+                )
+            case .complete:
+                guard snapshot.parameterRevision == physicalModel.parameterRevision,
+                      let frame = snapshot.frame,
+                      let effective = snapshot.effectiveDimensions
+                else { throw CancellationError() }
+                metalFrame = frame
+                monitorOutput.update(frame: frame, display: metalDisplay)
+                let duration = started.duration(to: .now)
+                let elapsed = Double(duration.components.seconds)
+                    + Double(duration.components.attoseconds) / 1e18
+                if native {
+                    physicalModel.publishNative(snapshot)
+                    physicalModel.completeNative(
+                        nativeDimensions: snapshot.nativeDimensions,
+                        effectiveDimensions: effective
+                    )
+                } else {
+                    physicalModel.publishInteractive(snapshot, elapsedSeconds: elapsed)
+                }
+                let diagnostic = snapshot.diagnostics
+                    .filter { !$0.message.isEmpty }
+                    .map(\.message)
+                    .joined(separator: " · ")
+                status = "Modelo · \(snapshot.computedQuality.uiLabel) · \(effective.width)×\(effective.height) · \((elapsed * 1_000).formatted(.number.precision(.fractionLength(1)))) ms"
+                if !diagnostic.isEmpty { status += " · \(diagnostic)" }
+                return
             }
         }
-        guard changedSection == nil else {
-            throw PhysicalEvaluationAvailabilityError.sectionPending(changedSection!.stage)
+    }
+
+    private func physicalRequestedDimensions(
+        quality: PhysicalQuality,
+        device: DeviceDefinition
+    ) throws -> PhysicalDimensions {
+        if quality == .native {
+            return try PhysicalDimensions(
+                width: device.nativeWidth,
+                height: device.nativeHeight
+            )
         }
-        deviceStageAmount = physicalModel.screenAmount
-        metalFrame = try applyDeviceStage(sourceACEScgFrame)
-        if let metalFrame { monitorOutput.update(frame: metalFrame, display: metalDisplay) }
-        status = deviceStageAmount == 0
-            ? "Modelo · identidad exacta ACEScg"
-            : "Modelo · etapa Pantalla existente · ACEScg"
+        let aspect = Double(device.nativeWidth) / Double(device.nativeHeight)
+        var width = max(1, Int(modelViewport.width.rounded(.down)))
+        var height = max(1, Int((Double(width) / aspect).rounded(.down)))
+        if height > Int(modelViewport.height) {
+            height = max(1, Int(modelViewport.height.rounded(.down)))
+            width = max(1, Int((Double(height) * aspect).rounded(.down)))
+        }
+        let scale: Double = switch quality {
+        case .draft: 0.5
+        case .medium: 1
+        case .high: 1.5
+        case .native: 1
+        }
+        return try PhysicalDimensions(
+            width: min(device.nativeWidth, max(1, Int(Double(width) * scale))),
+            height: min(device.nativeHeight, max(1, Int(Double(height) * scale)))
+        )
+    }
+
+    private func physicalParameterHash(
+        quality: PhysicalQuality,
+        device: DeviceDefinition
+    ) throws -> PhysicalParameterHash {
+        var data = try JSONEncoder().encode(device)
+        let fields = [
+            quality.rawValue.description,
+            physicalModel.screenAmount.description,
+            physicalModel.captureAmount.description,
+            sourcePlacement.rawValue,
+            physicalModel.parameterRevision.description,
+            physicalModel.orderedContributions.map {
+                switch $0.control {
+                case let .continuous(amount, _): "\($0.id):c:\(amount)"
+                case let .discrete(enabled): "\($0.id):d:\(enabled)"
+                }
+            }.joined(separator: ","),
+        ].joined(separator: "|")
+        data.append(contentsOf: fields.utf8)
+        return try PhysicalParameterHash(bytes: Array(SHA256.hash(data: data)))
     }
 
     private static func isVideo(_ url: URL) -> Bool {
@@ -859,6 +971,17 @@ enum PhysicalEvaluationAvailabilityError: Error, LocalizedError {
             "Pantalla >1 está pendiente del motor físico ABI v1; se conserva el último resultado."
         case let .sectionPending(stage):
             "La contribución 0x\(String(stage.id, radix: 16)) está pendiente del motor ABI v1."
+        }
+    }
+}
+
+private extension PhysicalQuality {
+    var uiLabel: String {
+        switch self {
+        case .draft: "Draft"
+        case .medium: "Media"
+        case .high: "Alta"
+        case .native: "Nativa"
         }
     }
 }

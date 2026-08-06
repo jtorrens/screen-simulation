@@ -62,6 +62,10 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
     static let ordered: [Self] =
         ScreenPhysicalSection.allCases.map(Self.screen)
         + CapturePhysicalSection.allCases.map(Self.capture)
+
+    var isImplementedByPhysicalPanelV1: Bool {
+        self == .screen(.emission) || self == .screen(.subpixelGeometry)
+    }
 }
 
 struct PhysicalContributionLimits: Equatable, Sendable {
@@ -237,7 +241,8 @@ enum PhysicalFrameState: UInt32, CaseIterable, Sendable {
         if self == destination { return true }
         return switch (self, destination) {
         case (.idle, .rendering), (.stale, .rendering),
-             (.rendering, .cancelled), (.rendering, .failed), (.rendering, .complete),
+             (.rendering, .stale), (.rendering, .cancelled),
+             (.rendering, .failed), (.rendering, .complete),
              (.complete, .stale), (.complete, .rendering),
              (.cancelled, .idle), (.cancelled, .rendering),
              (.failed, .idle), (.failed, .rendering):

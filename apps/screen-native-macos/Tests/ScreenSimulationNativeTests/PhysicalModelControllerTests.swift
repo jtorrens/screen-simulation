@@ -7,26 +7,27 @@ import Testing
     #expect(model.screenAmount == 1)
     #expect(model.captureAmount == 0)
     try model.setDomainAmount(1.5, domain: .screen)
-    try model.setContinuousAmount(2, stage: .screen(.coverGlass))
+    try model.setContinuousAmount(2, stage: .screen(.subpixelGeometry))
     #expect(model.screenAmount == 1.5)
-    #expect(model.stageValue(.screen(.coverGlass)).control ==
+    #expect(model.stageValue(.screen(.subpixelGeometry)).control ==
         .continuous(amount: 2, limits: .standard))
+    #expect(throws: PhysicalModelStateError.stagePending) {
+        try model.setContinuousAmount(1, stage: .screen(.coverGlass))
+    }
 }
 
 @Test @MainActor func isolationRestoresTheExactPriorAuthoringState() throws {
     let model = PhysicalModelController()
     try model.setDomainAmount(1.3, domain: .screen)
-    try model.setDomainAmount(0.7, domain: .capture)
-    try model.setContinuousAmount(1.8, stage: .screen(.environment))
-    try model.setDiscreteEnabled(false, stage: .capture(.sensorCFA))
+    try model.setContinuousAmount(1.8, stage: .screen(.subpixelGeometry))
     let prior = model.orderedContributions
     try model.toggleIsolation(.screen(.emission))
     #expect(model.isolatedStage == .screen(.emission))
-    #expect(model.stageValue(.screen(.environment)).amount == 0)
+    #expect(model.stageValue(.screen(.subpixelGeometry)).amount == 0)
     try model.toggleIsolation(.screen(.emission))
     #expect(model.isolatedStage == nil)
     #expect(model.screenAmount == 1.3)
-    #expect(model.captureAmount == 0.7)
+    #expect(model.captureAmount == 0)
     #expect(model.orderedContributions == prior)
 }
 
