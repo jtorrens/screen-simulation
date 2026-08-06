@@ -5,11 +5,20 @@
 use core::cmp::Ordering;
 use core::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct RationalTime {
     numerator: i64,
     denominator: u32,
 }
+
+impl PartialEq for RationalTime {
+    fn eq(&self, other: &Self) -> bool {
+        i128::from(self.numerator) * i128::from(other.denominator)
+            == i128::from(other.numerator) * i128::from(self.denominator)
+    }
+}
+
+impl Eq for RationalTime {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameRate {
@@ -298,6 +307,13 @@ mod tests {
         let film = RationalTime::new(1_001, 24_000).expect("valid time");
         let video = RationalTime::new(1, 24).expect("valid time");
         assert!(film > video);
+    }
+
+    #[test]
+    fn rational_time_equality_is_independent_of_authored_fraction() {
+        let stream_timestamp = RationalTime::new(512, 12_800).expect("valid stream time");
+        let project_timestamp = RationalTime::new(1, 25).expect("valid project time");
+        assert_eq!(stream_timestamp, project_timestamp);
     }
 
     #[test]
