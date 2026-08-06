@@ -160,6 +160,11 @@ pub struct FlatPanelInput {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlatPanelRequest {
     pub input: FlatPanelInput,
+    pub plan: FlatPanelPlan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlatPanelPlan {
     pub panel: LcdProfile,
     pub placement: RasterPlacement,
     pub quality: FlatPanelQuality,
@@ -253,25 +258,24 @@ pub fn evaluate_flat_panel_cpu_oracle(
     request: FlatPanelRequest,
 ) -> Result<FlatPanelResult, ApplicationError> {
     request.input.validate()?;
-    if !request.amount.is_finite() || !(0.0..=4.0).contains(&request.amount) {
+    let plan = request.plan;
+    if !plan.amount.is_finite() || !(0.0..=4.0).contains(&plan.amount) {
         return Err(ApplicationError::InvalidCharacterStrength);
     }
     let geometry = request
+        .plan
         .panel
         .flat_panel_geometry()
         .map_err(ApplicationError::Panel)?;
     let sampling = request
+        .plan
         .panel
-        .flat_panel_sampling(
-            request.quality,
-            request.requested_width,
-            request.requested_height,
-        )
+        .flat_panel_sampling(plan.quality, plan.requested_width, plan.requested_height)
         .map_err(ApplicationError::Panel)?;
 
     // This stage can promise exact identity at zero because it returns the
     // borrowed coarse raster domain without resampling or float arithmetic.
-    if request.amount == 0.0 {
+    if plan.amount == 0.0 {
         return Ok(FlatPanelResult {
             width: request.input.width,
             height: request.input.height,
@@ -280,7 +284,7 @@ pub fn evaluate_flat_panel_cpu_oracle(
         });
     }
 
-    let evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let evaluator = plan.panel.evaluator().map_err(ApplicationError::Panel)?;
     let parameters = evaluator.device_stage_parameters();
     let prepared = PreparedDeviceSignalRaster::new(request.input.device_signal)?;
     let emission_integral = DeviceSignalIntegral::new_mapped(&prepared.source, |value| {
@@ -291,7 +295,7 @@ pub fn evaluate_flat_panel_cpu_oracle(
         )
     });
     let source_raster = [request.input.width, request.input.height];
-    let device_raster = [request.panel.native_width, request.panel.native_height];
+    let device_raster = [plan.panel.native_width, plan.panel.native_height];
     let side = match sampling.samples_per_output_pixel {
         1 => 1,
         4 => 2,
@@ -324,17 +328,17 @@ pub fn evaluate_flat_panel_cpu_oracle(
                         &emission_integral,
                         source_raster,
                         device_raster,
-                        request.placement,
+                        plan.placement,
                         minimum_uv,
                         maximum_uv,
                     );
                     let device_minimum = Vec2 {
-                        x: minimum_uv.x * request.panel.native_width as f32,
-                        y: minimum_uv.y * request.panel.native_height as f32,
+                        x: minimum_uv.x * plan.panel.native_width as f32,
+                        y: minimum_uv.y * plan.panel.native_height as f32,
                     };
                     let device_maximum = Vec2 {
-                        x: maximum_uv.x * request.panel.native_width as f32,
-                        y: maximum_uv.y * request.panel.native_height as f32,
+                        x: maximum_uv.x * plan.panel.native_width as f32,
+                        y: maximum_uv.y * plan.panel.native_height as f32,
                     };
                     physical_native.r += evaluator.native_channel_over_device_rect(
                         area.device_code,
@@ -361,7 +365,7 @@ pub fn evaluate_flat_panel_cpu_oracle(
                     if let Some(source_uv) = source_uv_for_device_uv(
                         source_raster,
                         device_raster,
-                        request.placement,
+                        plan.placement,
                         center,
                     ) {
                         let source_x = (source_uv.x * request.input.width as f32)
@@ -403,9 +407,9 @@ pub fn evaluate_flat_panel_cpu_oracle(
                     / parameters.white_level_nits,
             ];
             output.push([
-                ideal[0] + request.amount * (physical[0] - ideal[0]),
-                ideal[1] + request.amount * (physical[1] - ideal[1]),
-                ideal[2] + request.amount * (physical[2] - ideal[2]),
+                ideal[0] + plan.amount * (physical[0] - ideal[0]),
+                ideal[1] + plan.amount * (physical[1] - ideal[1]),
+                ideal[2] + plan.amount * (physical[2] - ideal[2]),
                 ideal[3],
             ]);
         }
@@ -5485,12 +5489,14 @@ mod tests {
                     ],
                 },
             },
-            panel,
-            placement,
-            quality,
-            requested_width: 4,
-            requested_height: 2,
-            amount,
+            plan: FlatPanelPlan {
+                panel,
+                placement,
+                quality,
+                requested_width: 4,
+                requested_height: 2,
+                amount,
+            },
         }
     }
 
@@ -5548,8 +5554,8 @@ mod tests {
     fn flat_panel_rgb_bgr_black_matrix_and_quality_geometry_are_physical() {
         let mut rgb_request =
             flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::Native, 1.0);
-        rgb_request.panel.native_width = 1;
-        rgb_request.panel.native_height = 1;
+        rgb_request.plan.panel.native_width = 1;
+        rgb_request.plan.panel.native_height = 1;
         rgb_request.input.width = 1;
         rgb_request.input.height = 1;
         rgb_request.input.acescg = vec![[1.0, 1.0, 1.0, 1.0]];
@@ -5558,17 +5564,17 @@ mod tests {
             height: 1,
             pixels: vec![DeviceRgb::WHITE],
         };
-        rgb_request.requested_width = 1;
-        rgb_request.requested_height = 1;
+        rgb_request.plan.requested_width = 1;
+        rgb_request.plan.requested_height = 1;
         let rgb = evaluate_flat_panel_cpu_oracle(rgb_request.clone()).expect("RGB native");
-        rgb_request.panel.stripe_layout = screen_panel::StripeLayout::Bgr;
+        rgb_request.plan.panel.stripe_layout = screen_panel::StripeLayout::Bgr;
         let bgr = evaluate_flat_panel_cpu_oracle(rgb_request.clone()).expect("BGR native");
         assert_eq!((rgb.width, rgb.height), (3, 1));
         assert!(rgb.acescg[0][0] > rgb.acescg[2][0]);
         assert!(bgr.acescg[0][2] > bgr.acescg[2][2]);
         assert_ne!(rgb.acescg, bgr.acescg);
 
-        rgb_request.panel.black_matrix_fraction = 0.5;
+        rgb_request.plan.panel.black_matrix_fraction = 0.5;
         let matrix = evaluate_flat_panel_cpu_oracle(rgb_request).expect("matrix result");
         let rgb_energy = rgb
             .acescg
