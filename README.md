@@ -33,3 +33,6 @@ the StudioColor extraction from CREDITOS-HDR for OCIO/ACES and calls Rust's
 `PhysicalPipeline(identity)` through one frame-granular C ABI. It does not
 replace the Slint product until every gate in `Docs/NATIVE_MACOS_CUTOVER.md`
 passes in one atomic cut.
+
+The completed native I/O, Metal, playback and output boundaries are documented
+in `Docs/NATIVE_IO_METAL_PHASE.md`.
