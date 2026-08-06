@@ -92,6 +92,7 @@ pub enum SensorError {
     InvalidFullWell,
     InvalidDarkCurrent,
     InvalidReadNoise,
+    InvalidNoiseAmount,
     InvalidAnalogGain,
     InvalidAdcBits,
     InvalidSensorRegion,
@@ -180,8 +181,24 @@ pub fn expose_raw(
     exposure: &IntegratedOpticalExposure,
     identity: CaptureIdentity,
 ) -> Result<RawSensorRaster, SensorError> {
+    expose_raw_with_noise_amount(profile, exposure, identity, 1.0)
+}
+
+/// Sensor oracle with a continuous stochastic contribution. Zero preserves the
+/// deterministic ideal charge before well/ADC quantization, one is the
+/// historical calibrated shot+dark+read model, and values above one extend the
+/// same sampled deviation without changing CFA topology.
+pub fn expose_raw_with_noise_amount(
+    profile: SensorProfile,
+    exposure: &IntegratedOpticalExposure,
+    identity: CaptureIdentity,
+    noise_amount: f32,
+) -> Result<RawSensorRaster, SensorError> {
     let profile = profile.validate()?;
     exposure.validate()?;
+    if !noise_amount.is_finite() || !(0.0..=4.0).contains(&noise_amount) {
+        return Err(SensorError::InvalidNoiseAmount);
+    }
     if exposure.width != u32::from(profile.native_width)
         || exposure.height != u32::from(profile.native_height)
     {
@@ -210,13 +227,17 @@ pub fn expose_raw(
         let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
             * f64::from(profile.full_well_electrons);
         let key = pixel_noise_key(identity, index as u64);
-        let photoelectrons = sample_poisson(ideal_photoelectrons, key);
-        let dark_electrons = sample_poisson(
-            f64::from(profile.dark_current_electrons_per_second)
-                * f64::from(exposure.duration_seconds),
-            key ^ 0xA076_1D64_78BD_642F,
-        );
-        let read_electrons = f64::from(profile.read_noise_electrons_rms)
+        let sampled_photoelectrons = sample_poisson(ideal_photoelectrons, key);
+        let photoelectrons = ideal_photoelectrons
+            + f64::from(noise_amount) * (sampled_photoelectrons - ideal_photoelectrons);
+        let dark_electrons = f64::from(noise_amount)
+            * sample_poisson(
+                f64::from(profile.dark_current_electrons_per_second)
+                    * f64::from(exposure.duration_seconds),
+                key ^ 0xA076_1D64_78BD_642F,
+            );
+        let read_electrons = f64::from(noise_amount)
+            * f64::from(profile.read_noise_electrons_rms)
             * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB);
         let full_well = f64::from(profile.full_well_electrons);
         let collected_electrons = photoelectrons + dark_electrons;
@@ -494,6 +515,7 @@ impl fmt::Display for SensorError {
             }
             Self::InvalidDarkCurrent => "sensor dark current must be finite and non-negative",
             Self::InvalidReadNoise => "sensor read noise must be finite and non-negative",
+            Self::InvalidNoiseAmount => "sensor noise amount must be finite and inside 0..=4",
             Self::InvalidAnalogGain => "sensor analog gain must be finite and positive",
             Self::InvalidAdcBits => "sensor ADC precision must be between 8 and 16 bits",
             Self::InvalidSensorRegion => "sensor region must lie inside the authored native raster",
@@ -633,6 +655,42 @@ mod tests {
         .expect("next capture");
         assert_eq!(first, repeated);
         assert_ne!(first.codes, next.codes);
+    }
+
+    #[test]
+    fn continuous_noise_zero_is_seed_independent_one_is_historical_and_above_one_is_bounded() {
+        let profile = noiseless_profile(2, 2);
+        let exposure = IntegratedOpticalExposure {
+            width: 2,
+            height: 2,
+            duration_seconds: 1.0 / 48.0,
+            acescg_illuminance_seconds: vec![LinearRgb::new(0.7, 0.5, 0.3); 4],
+        };
+        let identity = CaptureIdentity {
+            noise_seed: 7,
+            frame_index: 3,
+        };
+        let zero =
+            expose_raw_with_noise_amount(profile, &exposure, identity, 0.0).expect("zero noise");
+        let other_seed = expose_raw_with_noise_amount(
+            profile,
+            &exposure,
+            CaptureIdentity {
+                noise_seed: 99,
+                frame_index: 3,
+            },
+            0.0,
+        )
+        .expect("zero noise other seed");
+        assert_eq!(zero, other_seed);
+        assert_eq!(
+            expose_raw_with_noise_amount(profile, &exposure, identity, 1.0)
+                .expect("calibrated noise"),
+            expose_raw(profile, &exposure, identity).expect("historical noise")
+        );
+        let artistic = expose_raw_with_noise_amount(profile, &exposure, identity, 2.5)
+            .expect("artistic noise");
+        assert_eq!(artistic.codes.len(), 4);
     }
 
     #[test]

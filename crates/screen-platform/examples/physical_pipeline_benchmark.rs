@@ -117,6 +117,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     noise_seed: 0,
                 },
                 shutter_motion_amount: 0.0,
+                sensor: screen_sensor::SensorProfile::REFERENCE,
+                sensor_enabled: false,
+                sensor_noise_amount: 0.0,
+                development: screen_camera::CameraDevelopment::NEUTRAL,
+                development_enabled: false,
+                frame_index: 0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             };
             let mut first_tile = None;
