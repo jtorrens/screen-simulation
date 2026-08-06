@@ -21,18 +21,18 @@ use screen_application::{
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
     PanelTemporalEvaluation, PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel,
     ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
-    capture_and_develop_device_signal_region_sequence_with_compute_backends,
     capture_and_develop_device_signal_region_with_compute_backends,
+    capture_and_develop_native_device_signal_region_sequence_with_compute_backends,
     capture_and_develop_procedural_region_with_compute_backends, capture_device_preset,
-    decoded_frame_to_device_signal, evaluate_linear_optics,
-    evaluate_linear_optics_from_device_signal, evaluate_linear_optics_from_prepared_device_signal,
-    inspection_region_from_drag, prepare_raster, prepare_raster_from_device_signal,
+    evaluate_linear_optics, evaluate_linear_optics_from_native_device_signal_with_backend,
+    evaluate_linear_optics_from_prepared_device_signal, inspection_region_from_drag,
+    prepare_raster, prepare_raster_from_native_device_signal_with_backend,
     prepare_raster_from_prepared_device_signal,
 };
 use screen_camera::{CameraDevelopment, apply_sensor_white_balance_to_acescg};
 use screen_color::{
-    CameraOutputTransform, ColorEngine, DeviceColorTarget, OcioInputTransform, PreviewRgb,
-    SourceColorInterpretation, SourceToDeviceProcessor, propose_ocio_input,
+    CameraOutputTransform, ColorEngine, OcioInputTransform, PreviewRgb, SourceColorInterpretation,
+    propose_ocio_input,
 };
 use screen_contracts::{
     DeviceRgb, FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3,
@@ -47,16 +47,18 @@ use screen_geometry::{
     TransformTrack, lens_preset,
 };
 use screen_media::{
-    AlphaInterpretation, AlphaPresence, DecodedFrame, FrameCadence, FrameSelectionPolicy,
-    MediaDescriptor, ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix,
-    SignalRangeSelection, SourceDecodeInterpretation, YuvMatrixSelection,
+    AlphaInterpretation, AlphaPresence, FrameCadence, FrameSelectionPolicy, MediaDescriptor,
+    ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix, SignalRangeSelection,
+    SourceDecodeInterpretation, YuvMatrixSelection,
 };
 use screen_panel::{
     AnalyticBanding, DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTemporalEmission,
     ResidualFlicker, StripeLayout, device_preset,
 };
-use screen_platform::{DisplayPublicationBackend, MetalDisplayPublication, MetalRawDevelopment};
-use screen_platform::{decode_frame_at_time, probe_media};
+use screen_platform::{
+    DisplayPublicationBackend, MediaDecodeDimensions, MetalDisplayPublication,
+    MetalMediaFrameCache, MetalMediaFrameRequest, MetalRawDevelopment, probe_media,
+};
 use screen_sensor::{SensorProfile, SensorRegion};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
@@ -223,7 +225,6 @@ fn timeline_selection_changed(previous: RenderControls, current: RenderControls)
 struct InteractionState {
     inspection: Option<PanelRegion>,
     source: Option<LoadedSource>,
-    color_engine: ColorEngine,
     last_tick: Instant,
     playback_accumulator_seconds: f64,
     camera_editor: CameraEditor,
@@ -340,13 +341,7 @@ impl CameraEditor {
 struct LoadedSource {
     path: PathBuf,
     descriptor: MediaDescriptor,
-    decoded_sample_key: Option<DecodedSampleKey>,
-    decoded_timestamp: Option<RationalTime>,
-    decoded_frame: Option<DecodedFrame>,
-    processor_interpretation: Option<SourceColorInterpretation>,
-    color_processor: Option<SourceToDeviceProcessor>,
-    prepared_signal_key: Option<(SourceColorInterpretation, AlphaInterpretation)>,
-    device_signal: Option<DeviceSignalRaster>,
+    media_cache: Arc<Mutex<Option<MetalMediaFrameCache>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,11 +352,10 @@ struct DecodedSampleKey {
 }
 
 impl InteractionState {
-    fn new(color_engine: ColorEngine) -> Self {
+    fn new() -> Self {
         Self {
             inspection: None,
             source: None,
-            color_engine,
             last_tick: Instant::now(),
             playback_accumulator_seconds: 0.0,
             camera_editor: CameraEditor::new(
@@ -1221,7 +1215,6 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     } else {
         None
     };
-    let color_engine = &state.color_engine;
     if window.get_view_index() == 4 && native_quality && state.source.is_none() {
         let (sensor, region, cancel) = capture_selection.expect("capture selection resolved above");
         render_camera_result(
@@ -1291,22 +1284,6 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 sample_policy,
                 interpretation: decode_interpretation,
             };
-            if source.decoded_sample_key != Some(sample_key)
-                && let Err(error) = refresh_loaded_source(source, sample_key)
-            {
-                block_preview(window, &error);
-                return;
-            }
-            if let Err(error) =
-                ensure_device_signal(source, color_engine, interpretation, alpha_interpretation)
-            {
-                block_preview(window, &error.to_string());
-                return;
-            }
-            let signal = source
-                .device_signal
-                .as_ref()
-                .expect("source interpretation was prepared before raster evaluation");
             let placement = match window.get_placement_index() {
                 1 => RasterPlacement::FillCrop,
                 2 => RasterPlacement::Stretch,
@@ -1345,7 +1322,16 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 return;
             }
             present_loaded_source_interpretation(window, source, sample_key, decode_interpretation);
-            PreviewJobSource::DeviceSignal(signal.clone(), placement)
+            PreviewJobSource::Media(Box::new(PreviewMediaSource {
+                path: source.path.clone(),
+                descriptor: source.descriptor.clone(),
+                decode_interpretation,
+                color_interpretation: interpretation,
+                alpha_interpretation,
+                sample_policy,
+                placement,
+                cache: Arc::clone(&source.media_cache),
+            }))
         }
     };
     let camera_preview_settings = if window.get_view_index() == 4 {
@@ -1383,8 +1369,19 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
 
 enum PreviewJobSource {
     Procedural,
-    DeviceSignal(DeviceSignalRaster, RasterPlacement),
     PreparedDeviceSignal(Arc<PreparedDeviceSignalRaster>, RasterPlacement),
+    Media(Box<PreviewMediaSource>),
+}
+
+struct PreviewMediaSource {
+    path: PathBuf,
+    descriptor: MediaDescriptor,
+    decode_interpretation: ResolvedSourceDecode,
+    color_interpretation: SourceColorInterpretation,
+    alpha_interpretation: AlphaInterpretation,
+    sample_policy: FrameSelectionPolicy,
+    placement: RasterPlacement,
+    cache: Arc<Mutex<Option<MetalMediaFrameCache>>>,
 }
 
 struct PreviewRenderJob {
@@ -1438,13 +1435,13 @@ fn render_preview_async(window: &MainWindow, job: PreviewRenderJob) {
         } else {
             match source {
                 PreviewJobSource::Procedural => prepare_raster(request, width, height),
-                PreviewJobSource::DeviceSignal(signal, placement) => {
-                    prepare_raster_from_device_signal(request, width, height, &signal, placement)
-                }
                 PreviewJobSource::PreparedDeviceSignal(signal, placement) => {
                     prepare_raster_from_prepared_device_signal(
                         request, width, height, &signal, placement,
                     )
+                }
+                PreviewJobSource::Media(media) => {
+                    prepare_gpu_media_preview(request, &media, width, height)
                 }
             }
             .map_err(|error| error.to_string())
@@ -1473,6 +1470,25 @@ fn render_preview_async(window: &MainWindow, job: PreviewRenderJob) {
     });
 }
 
+fn prepare_gpu_media_preview(
+    request: SimulationRequest,
+    media: &PreviewMediaSource,
+    width: u16,
+    height: u16,
+) -> Result<PreparedRaster, ApplicationError> {
+    let signal = prepare_preview_media_frame(&request, media, width, height)?;
+    let metal = MetalRawDevelopment::new()
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
+    prepare_raster_from_native_device_signal_with_backend(
+        request,
+        width,
+        height,
+        &signal,
+        media.placement,
+        &metal,
+    )
+}
+
 fn prepare_camera_preview_raster(
     request: SimulationRequest,
     source: PreviewJobSource,
@@ -1482,15 +1498,6 @@ fn prepare_camera_preview_raster(
 ) -> Result<PreparedRaster, String> {
     let linear = match source {
         PreviewJobSource::Procedural => evaluate_linear_optics(request.optics, width, height),
-        PreviewJobSource::DeviceSignal(signal, placement) => {
-            evaluate_linear_optics_from_device_signal(
-                request.optics,
-                width,
-                height,
-                &signal,
-                placement,
-            )
-        }
         PreviewJobSource::PreparedDeviceSignal(signal, placement) => {
             evaluate_linear_optics_from_prepared_device_signal(
                 request.optics,
@@ -1498,6 +1505,19 @@ fn prepare_camera_preview_raster(
                 height,
                 &signal,
                 placement,
+            )
+        }
+        PreviewJobSource::Media(media) => {
+            let signal = prepare_preview_media_frame(&request, &media, width, height)
+                .map_err(|error| error.to_string())?;
+            let metal = MetalRawDevelopment::new().map_err(|error| error.to_string())?;
+            evaluate_linear_optics_from_native_device_signal_with_backend(
+                request.clone(),
+                width,
+                height,
+                &signal,
+                media.placement,
+                &metal,
             )
         }
     }
@@ -1547,6 +1567,42 @@ fn prepare_camera_preview_raster(
         inspection_field_meters: linear.inspection_field_meters,
         subpixels_resolved_at_center: linear.subpixels_resolved_at_center,
     })
+}
+
+fn prepare_preview_media_frame(
+    request: &SimulationRequest,
+    media: &PreviewMediaSource,
+    width: u16,
+    height: u16,
+) -> Result<Arc<screen_application::PreparedNativeDeviceSignalRaster>, ApplicationError> {
+    let mut cache = media.cache.lock().map_err(|_| {
+        ApplicationError::NativeBackend("media frame cache lock was poisoned".to_owned())
+    })?;
+    if cache.is_none() {
+        *cache = Some(
+            MetalMediaFrameCache::new(2)
+                .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?,
+        );
+    }
+    cache
+        .as_mut()
+        .expect("media cache initialized above")
+        .prepare(MetalMediaFrameRequest {
+            path: &media.path,
+            descriptor: &media.descriptor,
+            requested_time: request.optics.time,
+            policy: media.sample_policy,
+            decode_interpretation: media.decode_interpretation,
+            color_interpretation: media.color_interpretation,
+            alpha_interpretation: media.alpha_interpretation,
+            dimensions: MediaDecodeDimensions::Maximum {
+                width: u32::from(width),
+                height: u32::from(height),
+            },
+            panel: request.optics.panel,
+        })
+        .map(|prepared| prepared.signal)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))
 }
 
 fn camera_preview_exposure_scale(settings: CapturePipelineSettings) -> f32 {
@@ -1661,15 +1717,12 @@ fn present_loaded_source_interpretation(
         AlphaPresence::Present if window.get_alpha_index() == 2 => "premultiplied → opaque black",
         AlphaPresence::Present => "alpha ignored → opaque",
     };
-    let decoded_timestamp = source
-        .decoded_timestamp
-        .expect("prepared media has an exact decoded timestamp");
     window.set_source_interpretation(
         format!(
-            "{} · {interpretation_description} · {alpha} · sample {}/{} s · {:?}",
+            "{} · {interpretation_description} · {alpha} · request {}/{} s · {:?}",
             decode_interpretation_description(decode_interpretation),
-            decoded_timestamp.numerator(),
-            decoded_timestamp.denominator(),
+            sample_key.requested_time.numerator(),
+            sample_key.requested_time.denominator(),
             sample_key.sample_policy
         )
         .into(),
@@ -2086,22 +2139,12 @@ fn run_native_capture_job(
     mut progress: impl FnMut(usize, usize, SensorRegion, Option<NativeStagingPreview>),
 ) -> Result<NativeCaptureOutput, NativeCaptureError> {
     let setup_started = Instant::now();
-    let color_engine =
-        ColorEngine::bundled().map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
     let publication_backend = MetalDisplayPublication::new(transform)
         .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
-    let media_processor = match &source {
-        NativeCaptureSource::Media(media) => Some(
-            color_engine
-                .source_to_device_processor(
-                    media.color_interpretation,
-                    DeviceColorTarget::SrgbDisplay,
-                )
-                .map_err(|error| NativeCaptureError::Failed(error.to_string()))?,
-        ),
-        _ => None,
-    };
-    let mut media_cache: Vec<(RationalTime, Arc<PreparedDeviceSignalRaster>)> = Vec::new();
+    let mut media_cache = matches!(source, NativeCaptureSource::Media(_))
+        .then(|| MetalMediaFrameCache::new(2))
+        .transpose()
+        .map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
     let mut timings = NativeCaptureTimings {
         setup: setup_started.elapsed(),
         ..NativeCaptureTimings::default()
@@ -2154,39 +2197,29 @@ fn run_native_capture_job(
                 )
             }
             NativeCaptureSource::Media(media) => {
-                capture_and_develop_device_signal_region_sequence_with_compute_backends(
+                capture_and_develop_native_device_signal_region_sequence_with_compute_backends(
                     capture.clone(),
                     sensor,
                     development,
                     stripe,
                     media.placement,
                     |time| {
-                        if let Some((_, signal)) =
-                            media_cache.iter().find(|(cached, _)| *cached == time)
-                        {
-                            return Ok(Arc::clone(signal));
-                        }
-                        let (resolved_descriptor, frame) = decode_frame_at_time(
-                            &media.path,
-                            time,
-                            media.sample_policy,
-                            media.decode_interpretation,
-                        )
-                        .map_err(|_| ApplicationError::MediaSampleUnavailable)?;
-                        if resolved_descriptor != media.descriptor {
-                            return Err(ApplicationError::MediaSampleUnavailable);
-                        }
-                        let signal = decoded_frame_to_device_signal(
-                            &frame,
-                            media.descriptor.alpha,
-                            media.alpha_interpretation,
-                            media_processor
-                                .as_ref()
-                                .expect("media processor exists for media source"),
-                        )?;
-                        let prepared = Arc::new(PreparedDeviceSignalRaster::new(signal)?);
-                        media_cache.push((time, Arc::clone(&prepared)));
-                        Ok(prepared)
+                        media_cache
+                            .as_mut()
+                            .expect("media cache exists for media source")
+                            .prepare(MetalMediaFrameRequest {
+                                path: &media.path,
+                                descriptor: &media.descriptor,
+                                requested_time: time,
+                                policy: media.sample_policy,
+                                decode_interpretation: media.decode_interpretation,
+                                color_interpretation: media.color_interpretation,
+                                alpha_interpretation: media.alpha_interpretation,
+                                dimensions: MediaDecodeDimensions::Native,
+                                panel: capture.optics.panel,
+                            })
+                            .map(|prepared| prepared.signal)
+                            .map_err(|_| ApplicationError::MediaSampleUnavailable)
                     },
                     &metal,
                     &metal,
@@ -2524,73 +2557,8 @@ fn prepare_loaded_source(path: PathBuf, descriptor: MediaDescriptor) -> LoadedSo
     LoadedSource {
         path,
         descriptor,
-        decoded_sample_key: None,
-        decoded_timestamp: None,
-        decoded_frame: None,
-        processor_interpretation: None,
-        color_processor: None,
-        prepared_signal_key: None,
-        device_signal: None,
+        media_cache: Arc::new(Mutex::new(None)),
     }
-}
-
-fn ensure_device_signal(
-    source: &mut LoadedSource,
-    color_engine: &ColorEngine,
-    interpretation: SourceColorInterpretation,
-    alpha_interpretation: AlphaInterpretation,
-) -> Result<(), ApplicationError> {
-    let key = (interpretation, alpha_interpretation);
-    if source.prepared_signal_key == Some(key) {
-        return Ok(());
-    }
-    if source.processor_interpretation != Some(interpretation) {
-        source.color_processor = Some(
-            color_engine
-                .source_to_device_processor(interpretation, DeviceColorTarget::SrgbDisplay)
-                .map_err(ApplicationError::Color)?,
-        );
-        source.processor_interpretation = Some(interpretation);
-    }
-    let processor = source
-        .color_processor
-        .as_ref()
-        .expect("processor interpretation and processor are updated together");
-    let device_signal = decoded_frame_to_device_signal(
-        source
-            .decoded_frame
-            .as_ref()
-            .expect("device signal requires a resolved decoded sample"),
-        source.descriptor.alpha,
-        alpha_interpretation,
-        processor,
-    )?;
-    source.prepared_signal_key = Some(key);
-    source.device_signal = Some(device_signal);
-    Ok(())
-}
-
-fn refresh_loaded_source(
-    source: &mut LoadedSource,
-    sample_key: DecodedSampleKey,
-) -> Result<(), String> {
-    let (descriptor, frame) = decode_frame_at_time(
-        &source.path,
-        sample_key.requested_time,
-        sample_key.sample_policy,
-        sample_key.interpretation,
-    )
-    .map_err(|error| error.to_string())?;
-    if descriptor != source.descriptor {
-        return Err("source descriptor changed on disk; reopen the source explicitly".to_owned());
-    }
-    source.descriptor = descriptor;
-    source.decoded_sample_key = Some(sample_key);
-    source.decoded_timestamp = Some(frame.timestamp);
-    source.decoded_frame = Some(frame);
-    source.prepared_signal_key = None;
-    source.device_signal = None;
-    Ok(())
 }
 
 fn present_source(window: &MainWindow, path: &Path, descriptor: &MediaDescriptor) {
@@ -2719,8 +2687,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or("development")
             .into(),
     );
-    let color_engine = ColorEngine::bundled()?;
-    let state = Rc::new(RefCell::new(InteractionState::new(color_engine)));
+    ColorEngine::bundled()?;
+    let state = Rc::new(RefCell::new(InteractionState::new()));
     apply_device_preset(
         &window,
         &mut state.borrow_mut(),
