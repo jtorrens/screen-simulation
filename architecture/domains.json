@@ -93,7 +93,8 @@
       "owner": "native-macos-composition",
       "allowed_local_dependencies": [
         "screen-application",
-        "screen-contracts"
+        "screen-contracts",
+        "screen-panel"
       ]
     },
     {
