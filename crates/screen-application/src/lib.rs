@@ -24,7 +24,10 @@ use screen_geometry::{
     panel_uv_at_viewport, project_scene_point, project_screen,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
-use screen_panel::{LcdProfile, PanelError, ValidatedPanelEvaluator};
+use screen_panel::{
+    FlatPanelGeometry, FlatPanelQuality, FlatPanelSampling, LcdProfile, PanelError,
+    ValidatedPanelEvaluator,
+};
 use screen_sensor::{
     BayerPattern, CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
     SensorError, SensorProfile, SensorRegion, expose_raw, expose_raw_region,
@@ -144,6 +147,41 @@ pub struct PreparedDeviceSignalRaster {
     integral: DeviceSignalIntegral,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlatPanelInput {
+    pub width: u32,
+    pub height: u32,
+    /// Coarse linear ACEScg RGBA entering the physical boundary.
+    pub acescg: Vec<[f32; 4]>,
+    /// The explicitly color-resolved device code for the same source samples.
+    pub device_signal: DeviceSignalRaster,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlatPanelRequest {
+    pub input: FlatPanelInput,
+    pub panel: LcdProfile,
+    pub placement: RasterPlacement,
+    pub quality: FlatPanelQuality,
+    pub requested_width: u32,
+    pub requested_height: u32,
+    pub amount: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlatPanelDiagnostic {
+    pub geometry: FlatPanelGeometry,
+    pub sampling: FlatPanelSampling,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlatPanelResult {
+    pub width: u32,
+    pub height: u32,
+    pub acescg: Vec<[f32; 4]>,
+    pub diagnostic: FlatPanelDiagnostic,
+}
+
 impl DeviceSignalRaster {
     pub fn validate(&self) -> Result<(), ApplicationError> {
         if self.width == 0 || self.height == 0 {
@@ -187,6 +225,197 @@ impl PreparedDeviceSignalRaster {
     pub fn raster_size(&self) -> [u32; 2] {
         [self.source.width, self.source.height]
     }
+}
+
+impl FlatPanelInput {
+    fn validate(&self) -> Result<(), ApplicationError> {
+        if self.width == 0 || self.height == 0 {
+            return Err(ApplicationError::EmptyDeviceSignalRaster);
+        }
+        let expected = u64::from(self.width) * u64::from(self.height);
+        if self.acescg.len() as u64 != expected {
+            return Err(ApplicationError::DecodedPixelCountMismatch {
+                expected,
+                actual: self.acescg.len() as u64,
+            });
+        }
+        if self.device_signal.width != self.width || self.device_signal.height != self.height {
+            return Err(ApplicationError::OpticalSampleRasterMismatch);
+        }
+        self.device_signal.validate()
+    }
+}
+
+/// Deterministic scalar oracle for the flat, orthographic physical panel surface.
+/// Product composition uses the corresponding platform backend; this function
+/// owns the reference numeric result and never applies a camera or output transform.
+pub fn evaluate_flat_panel_cpu_oracle(
+    request: FlatPanelRequest,
+) -> Result<FlatPanelResult, ApplicationError> {
+    request.input.validate()?;
+    if !request.amount.is_finite() || !(0.0..=4.0).contains(&request.amount) {
+        return Err(ApplicationError::InvalidCharacterStrength);
+    }
+    let geometry = request
+        .panel
+        .flat_panel_geometry()
+        .map_err(ApplicationError::Panel)?;
+    let sampling = request
+        .panel
+        .flat_panel_sampling(
+            request.quality,
+            request.requested_width,
+            request.requested_height,
+        )
+        .map_err(ApplicationError::Panel)?;
+
+    // This stage can promise exact identity at zero because it returns the
+    // borrowed coarse raster domain without resampling or float arithmetic.
+    if request.amount == 0.0 {
+        return Ok(FlatPanelResult {
+            width: request.input.width,
+            height: request.input.height,
+            acescg: request.input.acescg,
+            diagnostic: FlatPanelDiagnostic { geometry, sampling },
+        });
+    }
+
+    let evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let parameters = evaluator.device_stage_parameters();
+    let prepared = PreparedDeviceSignalRaster::new(request.input.device_signal)?;
+    let emission_integral = DeviceSignalIntegral::new_mapped(&prepared.source, |value| {
+        DeviceRgb::new(
+            evaluator.native_channel(value, 0),
+            evaluator.native_channel(value, 1),
+            evaluator.native_channel(value, 2),
+        )
+    });
+    let source_raster = [request.input.width, request.input.height];
+    let device_raster = [request.panel.native_width, request.panel.native_height];
+    let side = match sampling.samples_per_output_pixel {
+        1 => 1,
+        4 => 2,
+        16 => 4,
+        _ => return Err(ApplicationError::InvalidCharacterStrength),
+    };
+    let output_count = u64::from(sampling.effective_width)
+        .checked_mul(u64::from(sampling.effective_height))
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(ApplicationError::DecodedPixelStorageTooLarge)?;
+    let mut output = Vec::with_capacity(output_count);
+    for y in 0..sampling.effective_height {
+        for x in 0..sampling.effective_width {
+            let mut physical_native = LinearRgb::new(0.0, 0.0, 0.0);
+            let mut ideal = [0.0_f32; 4];
+            for sy in 0..side {
+                for sx in 0..side {
+                    let minimum_uv = Vec2 {
+                        x: (x as f32 + sx as f32 / side as f32) / sampling.effective_width as f32,
+                        y: (y as f32 + sy as f32 / side as f32) / sampling.effective_height as f32,
+                    };
+                    let maximum_uv = Vec2 {
+                        x: (x as f32 + (sx + 1) as f32 / side as f32)
+                            / sampling.effective_width as f32,
+                        y: (y as f32 + (sy + 1) as f32 / side as f32)
+                            / sampling.effective_height as f32,
+                    };
+                    let area = sample_placed_area(
+                        &prepared.integral,
+                        &emission_integral,
+                        source_raster,
+                        device_raster,
+                        request.placement,
+                        minimum_uv,
+                        maximum_uv,
+                    );
+                    let device_minimum = Vec2 {
+                        x: minimum_uv.x * request.panel.native_width as f32,
+                        y: minimum_uv.y * request.panel.native_height as f32,
+                    };
+                    let device_maximum = Vec2 {
+                        x: maximum_uv.x * request.panel.native_width as f32,
+                        y: maximum_uv.y * request.panel.native_height as f32,
+                    };
+                    physical_native.r += evaluator.native_channel_over_device_rect(
+                        area.device_code,
+                        device_minimum,
+                        device_maximum,
+                        0,
+                    );
+                    physical_native.g += evaluator.native_channel_over_device_rect(
+                        area.device_code,
+                        device_minimum,
+                        device_maximum,
+                        1,
+                    );
+                    physical_native.b += evaluator.native_channel_over_device_rect(
+                        area.device_code,
+                        device_minimum,
+                        device_maximum,
+                        2,
+                    );
+                    let center = Vec2 {
+                        x: (minimum_uv.x + maximum_uv.x) * 0.5,
+                        y: (minimum_uv.y + maximum_uv.y) * 0.5,
+                    };
+                    if let Some(source_uv) = source_uv_for_device_uv(
+                        source_raster,
+                        device_raster,
+                        request.placement,
+                        center,
+                    ) {
+                        let source_x = (source_uv.x * request.input.width as f32)
+                            .floor()
+                            .clamp(0.0, request.input.width.saturating_sub(1) as f32)
+                            as u32;
+                        let source_y = (source_uv.y * request.input.height as f32)
+                            .floor()
+                            .clamp(0.0, request.input.height.saturating_sub(1) as f32)
+                            as u32;
+                        let value = request.input.acescg
+                            [(source_y * request.input.width + source_x) as usize];
+                        for channel in 0..4 {
+                            ideal[channel] += value[channel];
+                        }
+                    }
+                }
+            }
+            let reciprocal = 1.0 / sampling.samples_per_output_pixel as f32;
+            physical_native.r *= reciprocal;
+            physical_native.g *= reciprocal;
+            physical_native.b *= reciprocal;
+            for value in &mut ideal {
+                *value *= reciprocal;
+            }
+            let matrix = parameters.native_to_acescg;
+            let physical = [
+                (matrix[0][0] * physical_native.r
+                    + matrix[0][1] * physical_native.g
+                    + matrix[0][2] * physical_native.b)
+                    / parameters.white_level_nits,
+                (matrix[1][0] * physical_native.r
+                    + matrix[1][1] * physical_native.g
+                    + matrix[1][2] * physical_native.b)
+                    / parameters.white_level_nits,
+                (matrix[2][0] * physical_native.r
+                    + matrix[2][1] * physical_native.g
+                    + matrix[2][2] * physical_native.b)
+                    / parameters.white_level_nits,
+            ];
+            output.push([
+                ideal[0] + request.amount * (physical[0] - ideal[0]),
+                ideal[1] + request.amount * (physical[1] - ideal[1]),
+                ideal[2] + request.amount * (physical[2] - ideal[2]),
+                ideal[3],
+            ]);
+        }
+    }
+    Ok(FlatPanelResult {
+        width: sampling.effective_width,
+        height: sampling.effective_height,
+        acescg: output,
+        diagnostic: FlatPanelDiagnostic { geometry, sampling },
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -5230,6 +5459,183 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    fn flat_panel_request(
+        placement: RasterPlacement,
+        quality: FlatPanelQuality,
+        amount: f32,
+    ) -> FlatPanelRequest {
+        let mut panel = request().optics.panel;
+        panel.native_width = 2;
+        panel.native_height = 1;
+        panel.active_width = Meters(0.002);
+        panel.active_height = Meters(0.001);
+        FlatPanelRequest {
+            input: FlatPanelInput {
+                width: 2,
+                height: 1,
+                acescg: vec![[1.5, -0.25, 0.5, 0.25], [0.0, 0.5, 2.0, 0.75]],
+                device_signal: DeviceSignalRaster {
+                    width: 2,
+                    height: 1,
+                    pixels: vec![
+                        DeviceRgb::new(1.5, -0.25, 0.5),
+                        DeviceRgb::new(0.0, 0.5, 2.0),
+                    ],
+                },
+            },
+            panel,
+            placement,
+            quality,
+            requested_width: 4,
+            requested_height: 2,
+            amount,
+        }
+    }
+
+    #[test]
+    fn flat_panel_zero_is_bit_exact_identity_including_alpha_and_extremes() {
+        let mut request = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 0.0);
+        request.input.acescg[0][0] = f32::from_bits(0x7fc0_1234);
+        let expected = request
+            .input
+            .acescg
+            .iter()
+            .flatten()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>();
+        let result = evaluate_flat_panel_cpu_oracle(request).expect("identity result");
+        assert_eq!((result.width, result.height), (2, 1));
+        assert_eq!(
+            result
+                .acescg
+                .iter()
+                .flatten()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn flat_panel_all_placements_are_deterministic_and_preserve_alpha_semantics() {
+        for placement in [
+            RasterPlacement::Fit,
+            RasterPlacement::FillCrop,
+            RasterPlacement::Stretch,
+            RasterPlacement::OneToOne,
+        ] {
+            let first = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+                placement,
+                FlatPanelQuality::Medium,
+                1.0,
+            ))
+            .expect("first result");
+            let second = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+                placement,
+                FlatPanelQuality::Medium,
+                1.0,
+            ))
+            .expect("second result");
+            assert_eq!(first, second);
+            assert!(first.acescg.iter().all(|pixel| pixel[3].is_finite()));
+            assert!(first.acescg.iter().any(|pixel| pixel[3] > 0.0));
+        }
+    }
+
+    #[test]
+    fn flat_panel_rgb_bgr_black_matrix_and_quality_geometry_are_physical() {
+        let mut rgb_request =
+            flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::Native, 1.0);
+        rgb_request.panel.native_width = 1;
+        rgb_request.panel.native_height = 1;
+        rgb_request.input.width = 1;
+        rgb_request.input.height = 1;
+        rgb_request.input.acescg = vec![[1.0, 1.0, 1.0, 1.0]];
+        rgb_request.input.device_signal = DeviceSignalRaster {
+            width: 1,
+            height: 1,
+            pixels: vec![DeviceRgb::WHITE],
+        };
+        rgb_request.requested_width = 1;
+        rgb_request.requested_height = 1;
+        let rgb = evaluate_flat_panel_cpu_oracle(rgb_request.clone()).expect("RGB native");
+        rgb_request.panel.stripe_layout = screen_panel::StripeLayout::Bgr;
+        let bgr = evaluate_flat_panel_cpu_oracle(rgb_request.clone()).expect("BGR native");
+        assert_eq!((rgb.width, rgb.height), (3, 1));
+        assert!(rgb.acescg[0][0] > rgb.acescg[2][0]);
+        assert!(bgr.acescg[0][2] > bgr.acescg[2][2]);
+        assert_ne!(rgb.acescg, bgr.acescg);
+
+        rgb_request.panel.black_matrix_fraction = 0.5;
+        let matrix = evaluate_flat_panel_cpu_oracle(rgb_request).expect("matrix result");
+        let rgb_energy = rgb
+            .acescg
+            .iter()
+            .map(|pixel| pixel[0] + pixel[1] + pixel[2])
+            .sum::<f32>();
+        let matrix_energy = matrix
+            .acescg
+            .iter()
+            .map(|pixel| pixel[0] + pixel[1] + pixel[2])
+            .sum::<f32>();
+        assert!(matrix_energy <= rgb_energy * 1.001);
+        assert!(matrix.diagnostic.sampling.subpixel_geometry_resolved);
+        assert_eq!(matrix.diagnostic.geometry.pitch_x_meters, 0.002);
+    }
+
+    #[test]
+    fn flat_panel_quality_changes_precision_not_requested_domain() {
+        let draft = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            1.0,
+        ))
+        .expect("draft");
+        let medium = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Medium,
+            1.0,
+        ))
+        .expect("medium");
+        let high = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            1.0,
+        ))
+        .expect("high");
+        assert_eq!((draft.width, draft.height), (4, 2));
+        assert_eq!((medium.width, medium.height), (4, 2));
+        assert_eq!((high.width, high.height), (4, 2));
+        assert_eq!(
+            [
+                draft.diagnostic.sampling.samples_per_output_pixel,
+                medium.diagnostic.sampling.samples_per_output_pixel,
+                high.diagnostic.sampling.samples_per_output_pixel,
+            ],
+            [1, 4, 16]
+        );
+
+        let artistic = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            2.0,
+        ))
+        .expect("continuous extrapolation");
+        assert!(
+            artistic
+                .acescg
+                .iter()
+                .flatten()
+                .all(|value| value.is_finite())
+        );
+        let negative = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            -0.1,
+        ));
+        assert_eq!(negative, Err(ApplicationError::InvalidCharacterStrength));
     }
 
     #[test]
