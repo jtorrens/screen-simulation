@@ -1,5 +1,6 @@
 use core::fmt;
 use core::mem::size_of;
+use std::time::Instant;
 
 use metal::{
     ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
@@ -138,6 +139,7 @@ pub struct MetalPhysicalPipelineResult {
     pub texture: Texture,
     pub geometry: FlatPanelGeometry,
     pub sampling: FlatPanelSampling,
+    pub stage_elapsed_nanoseconds: [u64; 12],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -240,6 +242,7 @@ impl MetalPhysicalPipeline {
         if is_cancelled() {
             return Err(MetalPhysicalPipelineError::Cancelled);
         }
+        let capture_started = Instant::now();
         let sensor = plan
             .sensor
             .validate()
@@ -447,10 +450,21 @@ impl MetalPhysicalPipeline {
             ));
         }
         report_progress(1.0);
+        let mut stage_elapsed_nanoseconds = physical.stage_elapsed_nanoseconds;
+        let capture_elapsed = capture_started
+            .elapsed()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        stage_elapsed_nanoseconds[9] = capture_elapsed;
+        stage_elapsed_nanoseconds[10] = capture_elapsed;
+        if plan.development_enabled {
+            stage_elapsed_nanoseconds[11] = capture_elapsed;
+        }
         Ok(MetalPhysicalPipelineResult {
             texture: output,
             geometry: physical.geometry,
             sampling: physical.sampling,
+            stage_elapsed_nanoseconds,
         })
     }
 
@@ -482,6 +496,7 @@ impl MetalPhysicalPipeline {
         let mut accumulated: Option<Texture> = None;
         let mut final_geometry = None;
         let mut final_sampling = None;
+        let mut stage_elapsed_nanoseconds = [0_u64; 12];
         for (index, (source, signal, plan, weight, row)) in samples.iter().enumerate() {
             if is_cancelled() {
                 return Err(MetalPhysicalPipelineError::Cancelled);
@@ -563,11 +578,18 @@ impl MetalPhysicalPipeline {
             }
             final_geometry = Some(evaluated.geometry);
             final_sampling = Some(evaluated.sampling);
+            for (total, elapsed) in stage_elapsed_nanoseconds
+                .iter_mut()
+                .zip(evaluated.stage_elapsed_nanoseconds)
+            {
+                *total = total.saturating_add(elapsed);
+            }
         }
         let physical = MetalPhysicalPipelineResult {
             texture: accumulated.expect("non-empty schedule allocates output"),
             geometry: final_geometry.expect("non-empty schedule resolves geometry"),
             sampling: final_sampling.expect("non-empty schedule resolves sampling"),
+            stage_elapsed_nanoseconds,
         };
         self.evaluate_sensor_raw(
             physical,
@@ -621,6 +643,7 @@ impl MetalPhysicalPipeline {
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        let physical_started = Instant::now();
         if source_acescg.width() == 0
             || source_acescg.height() == 0
             || source_acescg.width() != device_signal.width()
@@ -704,6 +727,7 @@ impl MetalPhysicalPipeline {
                 texture: source_acescg.to_owned(),
                 geometry,
                 sampling,
+                stage_elapsed_nanoseconds: [0; 12],
             });
         }
 
@@ -985,10 +1009,17 @@ impl MetalPhysicalPipeline {
             }
             report_progress((tile + 1) as f32 / tile_count as f32);
         }
+        let elapsed = physical_started
+            .elapsed()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        let mut stage_elapsed_nanoseconds = [0_u64; 12];
+        stage_elapsed_nanoseconds[..9].fill(elapsed);
         Ok(MetalPhysicalPipelineResult {
             texture: output,
             geometry,
             sampling,
+            stage_elapsed_nanoseconds,
         })
     }
 }
