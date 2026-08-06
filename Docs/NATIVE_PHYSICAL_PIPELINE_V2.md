@@ -108,12 +108,25 @@ authoritative 3×3 subpixel lattice.
    later intermediates must fail instead of returning the final texture.
 7. Exercise progress, matching and nonmatching cancellation identities,
    failed jobs, Native stale publication and parameter revision/hash changes.
-8. Confirm all 12 diagnostics retain order; only the first three process and
+8. Confirm all 12 diagnostics retain order; the first four process and
    later stages remain explicitly unsupported.
+
+## Temporal-emission migration
+
+Panel temporal emission now reuses `PanelTemporalEmission::average_gain` as the
+exact rational CPU authority. The executor integrates the resolved residual
+flicker and optional analytic duty-cycle model over the explicit shutter
+interval before launching Metal. The shader receives only that materialized
+gain and applies it to panel emission after light spread; source alpha and
+environment light are not modulated. Stage amount zero is exact identity, one
+is calibrated, and values through four extrapolate the continuous deviation
+from unity. Residual flicker remains frame-uniform. The existing rolling-row
+phase is reserved for the shutter/motion cut, so no physical banding appears by
+default and no PWM subdivision has been reintroduced.
 
 ## Honest limitations
 
-- Camera, lens, cover/environment, temporal, shutter/motion, sensor/noise and
+- Camera, lens, cover/environment, shutter/motion, sensor/noise and
   RAW development are transported but not evaluated by this cut.
 - Supported-stage timing is fused job time, not isolated GPU counter timing.
 - Native memory is dominated by UHD input plus the 3×3 physical output lattice.

@@ -182,6 +182,12 @@ pub struct PhysicalPipelineExecutionPlan {
     pub screen_amount: f32,
     pub emission_amount: f32,
     pub subpixel_geometry_amount: f32,
+    /// Continuous contribution from the calibrated, shutter-integrated panel
+    /// temporal model. Zero is exact identity and one is the resolved profile.
+    pub temporal_emission_amount: f32,
+    /// Calibrated exposure-average emission gain resolved with exact rational
+    /// timing by the Rust executor. Metal only evaluates this materialized value.
+    pub temporal_emission_gain: f32,
     pub requested_intermediate: PhysicalIntermediate,
 }
 
@@ -320,9 +326,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         plan.screen_amount,
         plan.emission_amount,
         plan.subpixel_geometry_amount,
+        plan.temporal_emission_amount,
     ]
     .into_iter()
     .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
+        || !plan.temporal_emission_gain.is_finite()
     {
         return Err(ApplicationError::InvalidCharacterStrength);
     }
@@ -576,6 +584,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
                     + (spread[2] - physical[2]),
             ];
+            let temporal_gain =
+                1.0 + plan.temporal_emission_amount * (plan.temporal_emission_gain - 1.0);
+            let temporally_integrated = staged.map(|value| value * temporal_gain);
             let selected = match plan.requested_intermediate {
                 PhysicalIntermediate::SourceAcesCg => ideal[0..3].try_into().expect("RGB"),
                 PhysicalIntermediate::DeviceSignal => [
@@ -587,9 +598,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::SubpixelRadiance => physical,
                 PhysicalIntermediate::PanelLightSpread => spread,
                 PhysicalIntermediate::DevelopedAcesCg => [
-                    ideal[0] + plan.screen_amount * (staged[0] - ideal[0]),
-                    ideal[1] + plan.screen_amount * (staged[1] - ideal[1]),
-                    ideal[2] + plan.screen_amount * (staged[2] - ideal[2]),
+                    ideal[0] + plan.screen_amount * (temporally_integrated[0] - ideal[0]),
+                    ideal[1] + plan.screen_amount * (temporally_integrated[1] - ideal[1]),
+                    ideal[2] + plan.screen_amount * (temporally_integrated[2] - ideal[2]),
                 ],
                 _ => return Err(ApplicationError::UnsupportedPhysicalIntermediate),
             };
@@ -5687,6 +5698,8 @@ mod tests {
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                temporal_emission_amount: 0.0,
+                temporal_emission_gain: 1.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         }
@@ -5834,6 +5847,58 @@ mod tests {
             -0.1,
         ));
         assert_eq!(negative, Err(ApplicationError::InvalidCharacterStrength));
+    }
+
+    #[test]
+    fn temporal_emission_is_exact_at_zero_calibrated_at_one_and_stable_above_one() {
+        let baseline = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            1.0,
+        ))
+        .expect("temporal baseline");
+        let mut zero = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        zero.plan.temporal_emission_amount = 0.0;
+        zero.plan.temporal_emission_gain = 0.75;
+        assert_eq!(
+            evaluate_physical_pipeline_cpu_oracle(zero)
+                .expect("temporal identity")
+                .acescg,
+            baseline.acescg
+        );
+
+        let mut calibrated =
+            flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        calibrated.plan.temporal_emission_amount = 1.0;
+        calibrated.plan.temporal_emission_gain = 0.75;
+        let calibrated = evaluate_physical_pipeline_cpu_oracle(calibrated)
+            .expect("calibrated temporal emission");
+        let mut artistic =
+            flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        artistic.plan.temporal_emission_amount = 2.5;
+        artistic.plan.temporal_emission_gain = 0.75;
+        let artistic =
+            evaluate_physical_pipeline_cpu_oracle(artistic).expect("artistic temporal emission");
+        assert_ne!(calibrated.acescg, baseline.acescg);
+        assert!(
+            artistic
+                .acescg
+                .iter()
+                .flatten()
+                .all(|value| value.is_finite())
+        );
+        assert_eq!(
+            artistic
+                .acescg
+                .iter()
+                .map(|pixel| pixel[3])
+                .collect::<Vec<_>>(),
+            baseline
+                .acescg
+                .iter()
+                .map(|pixel| pixel[3])
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

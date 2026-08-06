@@ -302,7 +302,7 @@ fn intermediate(value: u32) -> Option<PhysicalIntermediate> {
 
 fn contribution_amounts(
     contributions: &[ScreenPhysicalStageContributionV2],
-) -> Option<(f32, f32, f32)> {
+) -> Option<(f32, f32, f32, f32)> {
     if contributions.len() != EXPECTED_STAGE_IDS.len() {
         return None;
     }
@@ -329,7 +329,7 @@ fn contribution_amounts(
             return None;
         }
     }
-    if contributions[3..9].iter().any(|value| value.amount != 0.0)
+    if contributions[4..9].iter().any(|value| value.amount != 0.0)
         || contributions[10].amount != 0.0
         || contributions[9].discrete_enabled
         || contributions[11].discrete_enabled
@@ -340,6 +340,7 @@ fn contribution_amounts(
         contributions[0].amount,
         contributions[1].amount,
         contributions[2].amount,
+        contributions[3].amount,
     ))
 }
 
@@ -350,10 +351,16 @@ fn diagnostic_snapshot(
     emission_message: String,
     geometry_message: String,
     spread_message: String,
+    temporal_message: String,
 ) -> Box<OwnedDiagnosticSnapshot> {
-    let mut authored_messages = vec![emission_message, geometry_message, spread_message];
+    let mut authored_messages = vec![
+        emission_message,
+        geometry_message,
+        spread_message,
+        temporal_message,
+    ];
     authored_messages.extend(
-        (3..EXPECTED_STAGE_IDS.len()).map(|_| {
+        (4..EXPECTED_STAGE_IDS.len()).map(|_| {
             "unsupported: snapshot validated, evaluator intentionally disabled".to_owned()
         }),
     );
@@ -368,9 +375,9 @@ fn diagnostic_snapshot(
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             domain_id: if index < 6 { DOMAIN_SCREEN } else { 0x200 },
             stage_id: *stage_id,
-            state: if index < 3 { state } else { 0 },
-            progress: if index < 3 { progress } else { 0.0 },
-            elapsed_nanoseconds: if index < 3 { elapsed_nanoseconds } else { 0 },
+            state: if index < 4 { state } else { 0 },
+            progress: if index < 4 { progress } else { 0.0 },
+            elapsed_nanoseconds: if index < 4 { elapsed_nanoseconds } else { 0 },
             message: ScreenUtf8View {
                 bytes: messages[index].as_ptr(),
                 count: messages[index].len(),
@@ -425,7 +432,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             request.stage_contribution_count,
         )
     };
-    let Some((emission_amount, subpixel_geometry_amount, light_spread_amount)) =
+    let Some((emission_amount, subpixel_geometry_amount, light_spread_amount, temporal_amount)) =
         contribution_amounts(contributions)
     else {
         unsafe {
@@ -498,6 +505,38 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         };
         return std::ptr::null_mut();
     }
+    let frame_time =
+        match RationalTime::new(request.frame_time_numerator, request.frame_time_denominator) {
+            Ok(value) => value,
+            Err(_) => {
+                unsafe { set_error(error_message, b"invalid exact physical frame time\0") };
+                return std::ptr::null_mut();
+            }
+        };
+    let half_exposure = match pipeline
+        .shutter_motion
+        .exposure_duration
+        .checked_mul_ratio(1, 2)
+    {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"invalid temporal exposure interval\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let temporal_gain = frame_time
+        .checked_sub(half_exposure)
+        .and_then(|start| {
+            frame_time
+                .checked_add(half_exposure)
+                .map(|end| (start, end))
+        })
+        .map_err(screen_panel::PanelError::Time)
+        .and_then(|(start, end)| device.profile.temporal_emission.average_gain(start, end));
+    let Ok(temporal_gain) = temporal_gain else {
+        unsafe { set_error(error_message, b"invalid panel temporal emission interval\0") };
+        return std::ptr::null_mut();
+    };
     let plan = PhysicalPipelineExecutionPlan {
         panel: device.profile,
         panel_light_spread: device.light_spread,
@@ -508,6 +547,8 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         screen_amount: request.screen_amount,
         emission_amount,
         subpixel_geometry_amount,
+        temporal_emission_amount: temporal_amount,
+        temporal_emission_gain: temporal_gain,
         requested_intermediate,
     };
     let shared = Arc::new(PhysicalJobShared {
@@ -627,6 +668,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         emission,
         geometry,
         spread,
+        temporal,
     ) = match &*outcome {
         PhysicalJobOutcome::Rendering => (
             STATE_RENDERING,
@@ -637,6 +679,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             "physical pipeline emission rendering".to_owned(),
             "subpixel geometry rendering".to_owned(),
             "panel light spread rendering".to_owned(),
+            "panel temporal emission rendering".to_owned(),
         ),
         PhysicalJobOutcome::Cancelled => (
             STATE_CANCELLED,
@@ -647,6 +690,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             "physical pipeline emission cancelled".to_owned(),
             "subpixel geometry cancelled".to_owned(),
             "panel light spread cancelled".to_owned(),
+            "panel temporal emission cancelled".to_owned(),
         ),
         PhysicalJobOutcome::Failed(message) => (
             STATE_FAILED,
@@ -657,6 +701,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             format!("physical pipeline backend failed: {message}"),
             format!("subpixel geometry failed: {message}"),
             format!("panel light spread failed: {message}"),
+            format!("panel temporal emission failed: {message}"),
         ),
         PhysicalJobOutcome::Complete {
             result: value,
@@ -687,6 +732,8 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
                 ),
                 "9 taps/channel; physical radii in micrometers; fused Metal elapsed time reported"
                     .to_owned(),
+                "exact rational shutter integral; residual flicker is frame-uniform unless analytic banding is enabled"
+                    .to_owned(),
             )
         }
     };
@@ -709,6 +756,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         emission,
         geometry,
         spread,
+        temporal,
     );
     let mut snapshots = job
         .snapshots
@@ -2004,7 +2052,8 @@ mod tests {
             screen_physical_pipeline_snapshot_create(&pipeline_parameters, std::ptr::null_mut())
         };
         assert!(!pipeline.is_null());
-        let contributions = contributions();
+        let mut contributions = contributions();
+        contributions[3].amount = 1.0;
         let identity = ScreenPhysicalIdentity128 { high: 7, low: 9 };
         let request = ScreenPhysicalFrameRequestV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
@@ -2072,10 +2121,10 @@ mod tests {
         assert!(messages[0].contains("PPI") && messages[0].contains("pitch"));
         assert!(messages[1].contains("samples/pixel"));
         assert!(messages[2].contains("9 taps/channel"));
-        assert!(messages[3].contains("unsupported"));
+        assert!(messages[3].contains("exact rational shutter integral"));
 
         let mut unsupported = contributions;
-        unsupported[3].amount = 1.0;
+        unsupported[4].amount = 1.0;
         let invalid_request = ScreenPhysicalFrameRequestV2 {
             stage_contributions: unsupported.as_ptr(),
             ..request
