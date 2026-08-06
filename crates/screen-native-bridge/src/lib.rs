@@ -494,13 +494,14 @@ fn contribution_amounts(
     for (index, contribution) in contributions.iter().enumerate() {
         let expected_domain = if index < 6 { 0x100 } else { 0x200 };
         let discrete = matches!(index, 9 | 11);
+        let expected_safe_maximum = if index == 4 { 2.0 } else { 4.0 };
         if contribution.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
             || contribution.domain_id != expected_domain
             || contribution.stage_id != EXPECTED_STAGE_IDS[index]
             || contribution.control_semantics != u32::from(discrete)
             || contribution.visual_minimum != 0.0
             || contribution.visual_maximum != 2.0
-            || contribution.safe_maximum != 4.0
+            || contribution.safe_maximum != expected_safe_maximum
         {
             return None;
         }
@@ -2364,7 +2365,7 @@ mod tests {
                 amount: if index < 3 { 1.0 } else { 0.0 },
                 visual_minimum: 0.0,
                 visual_maximum: 2.0,
-                safe_maximum: 4.0,
+                safe_maximum: if index == 4 { 2.0 } else { 4.0 },
                 discrete_enabled: false,
                 exact_identity_at_zero: !discrete,
             }

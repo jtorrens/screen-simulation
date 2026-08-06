@@ -1,3 +1,4 @@
+import Metal
 import StudioColor
 import Testing
 @testable import ScreenSimulationNative
@@ -7,14 +8,15 @@ import Testing
     let job = try submit(
         fixture: fixture,
         screenAmount: 0,
-        contributions: try contributions(),
-        intermediate: .developedACEScg,
+        contributions: try contributions(active: false),
+        intermediate: .sourceACEScg,
         identity: 1
     )
     let result = try await terminalSnapshot(job)
     #expect(result.state == .complete)
-    #expect(result.returnedIntermediate == .developedACEScg)
-    #expect(result.frame?.texture === fixture.source.texture)
+    #expect(result.returnedIntermediate == .sourceACEScg)
+    let output = try #require(result.frame?.texture)
+    #expect(readRGBA32(output) == readRGBA32(fixture.source.texture))
 }
 
 @Test @MainActor func unifiedPhysicalABIReturnsEverySupportedIntermediate() async throws {
@@ -35,24 +37,25 @@ import Testing
     }
 }
 
-@Test @MainActor func unifiedPhysicalABIRejectsUnsupportedActiveStage() async throws {
+@Test @MainActor func unifiedPhysicalABIReportsStaticInputForCompletePipeline() async throws {
     let fixture = try makePhysicalFixture()
-    var values = try contributions()
-    let index = try #require(values.firstIndex { $0.stage == .screen(.coverGlass) })
-    values[index] = try PhysicalStageContribution(
-        stage: .screen(.coverGlass),
-        control: .continuous(amount: 1, limits: .standard),
-        exactIdentityAtZero: true
+    let job = try submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(),
+        intermediate: .developedACEScg,
+        identity: 30
     )
-    #expect(throws: PhysicalMetalFrameEngineError.self) {
-        _ = try submit(
-            fixture: fixture,
-            screenAmount: 1,
-            contributions: values,
-            intermediate: .developedACEScg,
-            identity: 30
-        )
-    }
+    let result = try await terminalSnapshot(job)
+    #expect(result.state == .complete)
+    #expect(result.diagnostics.count == 12)
+    #expect(result.diagnostics[8].message.contains("STATIC_INPUT"))
+    #expect(result.diagnostics.prefix(9).allSatisfy {
+        $0.elapsedNanoseconds == result.diagnostics[0].elapsedNanoseconds
+    })
+    #expect(result.diagnostics.suffix(3).allSatisfy {
+        $0.elapsedNanoseconds == result.diagnostics[9].elapsedNanoseconds
+    })
 }
 
 @Test @MainActor func unifiedPhysicalABICoversTopologyPlacementAndSpreadMatrix() async throws {
@@ -79,6 +82,88 @@ import Testing
                 #expect(result.diagnostics.count == 12)
             }
         }
+    }
+}
+
+@Test @MainActor func unifiedPhysicalABIExecutesEveryAuthoredAmountAndEnable() async throws {
+    let fixture = try makePhysicalFixture()
+    let continuous = PhysicalStageID.ordered.filter {
+        $0 != .capture(.sensorCFA) && $0 != .capture(.developDemosaic)
+    }
+    var identity: UInt64 = 400
+    for stage in continuous {
+        let limits = stage.contributionLimits
+        for amount in [0.0, 1.0, min(2.5, limits.safeRange.upperBound)] {
+            var values = try contributions()
+            let index = try #require(values.firstIndex { $0.stage == stage })
+            values[index] = try PhysicalStageContribution(
+                stage: stage,
+                control: .continuous(amount: amount, limits: limits),
+                exactIdentityAtZero: true
+            )
+            identity &+= 1
+            let result = try await terminalSnapshot(submit(
+                fixture: fixture,
+                screenAmount: 1,
+                contributions: values,
+                intermediate: .developedACEScg,
+                identity: identity
+            ))
+            #expect(result.state == .complete)
+        }
+    }
+    for enabled in [false, true] {
+        var cfa = try contributions()
+        let cfaIndex = try #require(cfa.firstIndex { $0.stage == .capture(.sensorCFA) })
+        cfa[cfaIndex] = try PhysicalStageContribution(
+            stage: .capture(.sensorCFA),
+            control: .discrete(enabled: enabled),
+            exactIdentityAtZero: false
+        )
+        if !enabled {
+            let noiseIndex = try #require(cfa.firstIndex { $0.stage == .capture(.noise) })
+            cfa[noiseIndex] = try PhysicalStageContribution(
+                stage: .capture(.noise),
+                control: .continuous(amount: 0, limits: .standard),
+                exactIdentityAtZero: true
+            )
+            let developIndex = try #require(cfa.firstIndex {
+                $0.stage == .capture(.developDemosaic)
+            })
+            cfa[developIndex] = try PhysicalStageContribution(
+                stage: .capture(.developDemosaic),
+                control: .discrete(enabled: false),
+                exactIdentityAtZero: false
+            )
+        }
+        identity &+= 1
+        let cfaResult = try await terminalSnapshot(submit(
+            fixture: fixture,
+            screenAmount: 1,
+            contributions: cfa,
+            intermediate: enabled ? .rawMosaic : .shutterMotion,
+            identity: identity
+        ))
+        #expect(cfaResult.state == .complete)
+
+        var develop = try contributions()
+        let developIndex = try #require(develop.firstIndex {
+            $0.stage == .capture(.developDemosaic)
+        })
+        develop[developIndex] = try PhysicalStageContribution(
+            stage: .capture(.developDemosaic),
+            control: .discrete(enabled: enabled),
+            exactIdentityAtZero: false
+        )
+        identity &+= 1
+        let developResult = try await terminalSnapshot(submit(
+            fixture: fixture,
+            screenAmount: 1,
+            contributions: develop,
+            intermediate: enabled ? .developedACEScg : .rawMosaic,
+            identity: identity
+        ))
+        #expect(developResult.state == .complete)
     }
 }
 
@@ -115,16 +200,29 @@ private func makePhysicalFixture(
     useNativeDeviceRaster: Bool = false
 ) throws -> PhysicalFixture {
     let display = try StudioColorMetalDisplay()
-    let source = try display.makeACEScgFrame(
-        width: 4,
-        height: 4,
-        encodedRGBA: (0..<16).flatMap { index -> [Float] in
+    let sourcePixels = (0..<16).flatMap { index -> [Float] in
             let value = Float(index) / 15
             return [value, 1 - value, value * 1.25 - 0.1, Float(index) / 15]
-        },
-        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
-        alpha: .straight
+        }
+    let metal = try #require(MTLCreateSystemDefaultDevice())
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba32Float,
+        width: 4,
+        height: 4,
+        mipmapped: false
     )
+    descriptor.storageMode = .shared
+    descriptor.usage = [.shaderRead, .shaderWrite]
+    let sourceTexture = try #require(metal.makeTexture(descriptor: descriptor))
+    sourcePixels.withUnsafeBytes { bytes in
+        sourceTexture.replace(
+            region: MTLRegionMake2D(0, 0, 4, 4),
+            mipmapLevel: 0,
+            withBytes: bytes.baseAddress!,
+            bytesPerRow: 4 * 4 * MemoryLayout<Float>.size
+        )
+    }
+    let source = StudioColorMetalFrame(texture: sourceTexture)
     let output = StudioColorOutputTransform.catalog.first {
         $0.id == "aces2-srgb-sdr-100"
     }!
@@ -141,28 +239,50 @@ private func makePhysicalFixture(
             $0.id == device.defaultCoverGlassPresetID
         }
     )
+    let defaultPipeline = try PhysicalPipelineResolvedState.resolvedDefaults(
+        coverGlass: cover
+    )
+    var pipelineParameters = defaultPipeline.parameters
+    pipelineParameters.sensor_noise.native_width = 4
+    pipelineParameters.sensor_noise.native_height = 4
+    let pipeline = PhysicalPipelineResolvedState(
+        parameters: pipelineParameters,
+        coverGlassID: defaultPipeline.coverGlassID
+    )
     return PhysicalFixture(
         source: source,
         deviceSignal: signal,
         device: try device.resolved(),
-        pipeline: try .inactiveDownstreamStages(coverGlass: cover)
+        pipeline: pipeline
     )
 }
 
+private func readRGBA32(_ texture: MTLTexture) -> [Float] {
+    precondition(texture.pixelFormat == .rgba32Float)
+    var values = [Float](repeating: 0, count: texture.width * texture.height * 4)
+    texture.getBytes(
+        &values,
+        bytesPerRow: texture.width * 4 * MemoryLayout<Float>.size,
+        from: MTLRegionMake2D(0, 0, texture.width, texture.height),
+        mipmapLevel: 0
+    )
+    return values
+}
+
 private func contributions(
-    spreadAmount: Double = 1
+    spreadAmount: Double = 1,
+    active: Bool = true
 ) throws -> [PhysicalStageContribution] {
     try PhysicalStageID.ordered.map { stage in
-        let implemented = stage.isImplementedByUnifiedPipeline
         let discrete = stage == .capture(.sensorCFA)
             || stage == .capture(.developDemosaic)
-        let amount = stage == .screen(.panelLightSpread)
-            ? spreadAmount : implemented ? 1 : 0
+        let amount = stage == .screen(.panelLightSpread) && active
+            ? spreadAmount : active ? 1 : 0
         return try PhysicalStageContribution(
             stage: stage,
             control: discrete
-                ? .discrete(enabled: false)
-                : .continuous(amount: amount, limits: .standard),
+                ? .discrete(enabled: active)
+                : .continuous(amount: amount, limits: stage.contributionLimits),
             exactIdentityAtZero: !discrete
         )
     }
@@ -184,19 +304,19 @@ private func submit(
     }?.amount)
     var effectiveDefinition = fixture.device.definition
     effectiveDefinition.panelLightSpread.characterStrength = spreadAmount
+    let frame = try PhysicalFrameSelection(
+        frameIndex: 0,
+        timeNumerator: 0,
+        timeDenominator: 24
+    )
     return try PhysicalMetalFrameEngine().submit(
         sourceACEScg: fixture.source,
         deviceSignal: fixture.deviceSignal,
-        frame: try PhysicalFrameSelection(
-            frameIndex: 0,
-            timeNumerator: 0,
-            timeDenominator: 24
-        ),
+        orchestration: try .staticSelectedFrame(frame),
         resolvedDevice: try effectiveDefinition.resolved(),
-        resolvedPipeline: fixture.pipeline,
+        resolvedPipeline: try fixture.pipeline.resolving(contributions: contributions),
         quality: quality,
         screenAmount: screenAmount,
-        captureAmount: 0,
         contributions: contributions,
         requestedDimensions: try dimensions
             ?? PhysicalDimensions(width: 4, height: 4),
@@ -204,7 +324,7 @@ private func submit(
         progressIdentity: .init(high: identity, low: identity),
         parameterRevision: identity,
         parameterHash: try PhysicalParameterHash(
-            bytes: [UInt8](repeating: UInt8(identity), count: 32)
+            bytes: [UInt8](repeating: UInt8(truncatingIfNeeded: identity), count: 32)
         ),
         rasterPlacement: placement,
         requestedIntermediate: intermediate

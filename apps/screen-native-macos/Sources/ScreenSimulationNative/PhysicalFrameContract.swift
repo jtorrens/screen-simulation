@@ -64,8 +64,10 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         ScreenPhysicalSection.allCases.map(Self.screen)
         + CapturePhysicalSection.allCases.map(Self.capture)
 
-    var isImplementedByUnifiedPipeline: Bool {
-        true
+    var contributionLimits: PhysicalContributionLimits {
+        self == .screen(.coverGlass)
+            ? .init(visualRange: 0 ... 2, safeRange: 0 ... 2)
+            : .standard
     }
 }
 

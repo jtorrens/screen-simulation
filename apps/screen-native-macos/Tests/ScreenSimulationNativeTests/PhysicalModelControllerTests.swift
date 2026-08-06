@@ -5,15 +5,16 @@ import Testing
     let model = PhysicalModelController()
     #expect(model.orderedContributions.map(\.stage) == PhysicalStageID.ordered)
     #expect(model.screenAmount == 1)
-    #expect(model.captureAmount == 0)
+    #expect(throws: PhysicalModelStateError.domainHasNoContinuousMaster) {
+        try model.setDomainAmount(1, domain: .capture)
+    }
     try model.setDomainAmount(1.5, domain: .screen)
     try model.setContinuousAmount(2, stage: .screen(.subpixelGeometry))
     #expect(model.screenAmount == 1.5)
     #expect(model.stageValue(.screen(.subpixelGeometry)).control ==
         .continuous(amount: 2, limits: .standard))
-    #expect(throws: PhysicalModelStateError.stagePending) {
-        try model.setContinuousAmount(1, stage: .screen(.coverGlass))
-    }
+    try model.setContinuousAmount(1.25, stage: .screen(.coverGlass))
+    #expect(model.stageValue(.screen(.coverGlass)).amount == 1.25)
 }
 
 @Test @MainActor func isolationRestoresTheExactPriorAuthoringState() throws {
@@ -27,7 +28,6 @@ import Testing
     try model.toggleIsolation(.screen(.emission))
     #expect(model.isolatedStage == nil)
     #expect(model.screenAmount == 1.3)
-    #expect(model.captureAmount == 0)
     #expect(model.orderedContributions == prior)
 }
 

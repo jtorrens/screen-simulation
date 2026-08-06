@@ -50,7 +50,7 @@ final class PhysicalModelController: ObservableObject {
                 exactIdentityAtZero: !discrete,
                 control: discrete
                     ? .discrete(enabled: true)
-                    : .continuous(amount: 1, limits: .standard)
+                    : .continuous(amount: 1, limits: stage.contributionLimits)
             )
         }
         stages = values
@@ -94,6 +94,11 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func setContinuousAmount(_ amount: Double, stage: PhysicalStageID) throws {
+        if stage == .capture(.noise), amount > 0,
+           stageValue(.capture(.sensorCFA)).control == .discrete(enabled: false)
+        {
+            throw PhysicalModelStateError.invalidStageCombination
+        }
         guard var value = stages[stage],
               case let .continuous(_, limits) = value.control
         else { throw PhysicalModelStateError.stageIsNotContinuous }
@@ -105,12 +110,29 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func setDiscreteEnabled(_ enabled: Bool, stage: PhysicalStageID) throws {
+        if stage == .capture(.developDemosaic), enabled,
+           stageValue(.capture(.sensorCFA)).control == .discrete(enabled: false)
+        {
+            throw PhysicalModelStateError.invalidStageCombination
+        }
         guard var value = stages[stage], case .discrete = value.control else {
             throw PhysicalModelStateError.stageIsNotDiscrete
         }
         value.control = .discrete(enabled: enabled)
         guard stages[stage] != value else { return }
         stages[stage] = value
+        if stage == .capture(.sensorCFA), !enabled {
+            if var noise = stages[.capture(.noise)],
+               case let .continuous(_, limits) = noise.control
+            {
+                noise.control = .continuous(amount: 0, limits: limits)
+                stages[.capture(.noise)] = noise
+            }
+            if var develop = stages[.capture(.developDemosaic)] {
+                develop.control = .discrete(enabled: false)
+                stages[.capture(.developDemosaic)] = develop
+            }
+        }
         invalidateParameters()
     }
 
@@ -257,6 +279,6 @@ enum PhysicalModelStateError: Error, Equatable {
     case stageIsNotContinuous
     case stageIsNotDiscrete
     case nativeAlreadyRendering
-    case stagePending
     case domainHasNoContinuousMaster
+    case invalidStageCombination
 }
