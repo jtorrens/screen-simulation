@@ -17,6 +17,8 @@ RETIRED_FILES = (
     ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/DeviceMetalStage.swift",
     ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalPipeline.swift",
     ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/Resources/DeviceStage.metal",
+    ROOT / "crates/screen-platform/src/flat_panel_metal.rs",
+    ROOT / "crates/screen-platform/shaders/flat_panel.metal",
 )
 RETIRED_TOKENS = (
     "ScreenPhysicalFrameRequestV1",
@@ -24,6 +26,9 @@ RETIRED_TOKENS = (
     "ScreenPhysicalStageContributionV1",
     "screen_physical_pipeline_process_rgba32f",
     "SCREEN_PHYSICAL_FRAME_ABI_VERSION 1",
+    "ScreenPhysicalFrameInputRef",
+    "screen_physical_frame_input_create",
+    "capture_amount",
 )
 
 
@@ -62,6 +67,10 @@ def validate_sources() -> None:
         "ScreenPhysicalFrameResultV2",
         "screen_physical_frame_submit",
         "screen_physical_pipeline_snapshot_create",
+        "ScreenPhysicalTimedInputSetV2Ref",
+        "screen_physical_timed_input_set_v2_create",
+        "ScreenPhysicalCameraPoseTrackV2Ref",
+        "ScreenPhysicalScreenPoseTrackV2Ref",
     )
     missing = [token for token in required if token not in header]
     if missing:

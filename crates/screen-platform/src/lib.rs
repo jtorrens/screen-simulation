@@ -6,7 +6,7 @@
 mod native_metal;
 #[cfg(all(
     target_os = "macos",
-    any(feature = "physical-pipeline-metal", feature = "full-platform")
+    any(feature = "flat-panel-metal", feature = "full-platform")
 ))]
 mod physical_pipeline_metal;
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
@@ -19,7 +19,7 @@ mod spatial_metal;
 pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 #[cfg(all(
     target_os = "macos",
-    any(feature = "physical-pipeline-metal", feature = "full-platform")
+    any(feature = "flat-panel-metal", feature = "full-platform")
 ))]
 pub use physical_pipeline_metal::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,

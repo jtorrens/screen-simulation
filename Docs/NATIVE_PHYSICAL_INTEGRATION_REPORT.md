@@ -34,7 +34,7 @@ coarse submission boundary.
 - Architecture ownership, diff check, ABI-v2 source/header/symbol gate and
   native no-FFmpeg graph/Mach-O/rpath/resource gate passed.
 - The native dependency edge is
-  `screen-native-bridge -> screen-platform(physical-pipeline-metal)` with
+  `screen-native-bridge -> screen-platform(flat-panel-metal)` with
   default features disabled. AVFoundation, VideoToolbox and ImageIO remain the
   sole native I/O route.
 - Release bundle passed strict deep codesign verification with an ad-hoc
