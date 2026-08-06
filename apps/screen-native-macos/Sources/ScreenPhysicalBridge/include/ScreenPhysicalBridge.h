@@ -208,9 +208,8 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
+    /* Position + unit quaternion are the sole camera-pose authority. */
     float camera_position[3];
-    float camera_target[3];
-    float camera_yaw_degrees;
     float focal_length_millimeters;
     float sensor_width_millimeters;
     float sensor_height_millimeters;
@@ -230,7 +229,7 @@ typedef struct {
     float lens_edge_softness_micrometers;
     float screen_translation[3];
     float screen_rotation_xyzw[4];
-    float screen_scale[2];
+    /* Physical screen scale is owned only by the resolved device active size. */
 } ScreenSceneGeometryLensParametersV2;
 
 typedef struct {
