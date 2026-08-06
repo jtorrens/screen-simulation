@@ -21,7 +21,7 @@ use screen_application::{
     ResolvedShutterMotionSnapshot, RollingDirection, SensorReadout, diagnostic_signal,
 };
 use screen_camera::CameraDevelopment;
-use screen_contracts::{DeviceRgb, LinearRgb, Meters, RationalTime, Vec2, Vec3};
+use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
     EnvironmentPattern, ProceduralEnvironment,
@@ -30,7 +30,6 @@ use screen_geometry::{LensModel, Quaternion};
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, FlatPanelQuality, LcdProfile, PanelColorimetry,
     PanelLightSpreadProfile, PanelTechnology, PanelTemporalEmission, ResidualFlicker, StripeLayout,
-    ValidatedPanelEvaluator,
 };
 #[cfg(target_os = "macos")]
 use screen_platform::{
@@ -815,7 +814,6 @@ pub struct ScreenDeviceParametersV2 {
 pub struct ScreenDeviceProfile {
     profile: LcdProfile,
     light_spread: PanelLightSpreadProfile,
-    evaluator: ValidatedPanelEvaluator,
 }
 
 #[repr(C)]
@@ -937,15 +935,6 @@ pub struct ScreenPhysicalPipelineSnapshot {
 
 pub struct ScreenCoverGlassProfile {
     _profile: CoverGlassProfile,
-}
-
-#[repr(C)]
-pub struct ScreenDeviceEvaluationParametersV2 {
-    abi_version: u32,
-    native_to_acescg: [f32; 9],
-    eotf_gamma: f32,
-    black_level_nits: f32,
-    white_level_nits: f32,
 }
 
 fn utf8_view(value: &'static str) -> ScreenUtf8View {
@@ -1439,18 +1428,14 @@ pub unsafe extern "C" fn screen_device_profile_create(
             return std::ptr::null_mut();
         }
     };
-    let evaluator = match profile.evaluator() {
-        Ok(evaluator) => evaluator,
-        Err(_) => {
-            unsafe { set_error(error_message, b"invalid physical device evaluator\0") };
-            return std::ptr::null_mut();
-        }
-    };
+    if profile.evaluator().is_err() {
+        unsafe { set_error(error_message, b"invalid physical device evaluator\0") };
+        return std::ptr::null_mut();
+    }
     unsafe { set_error(error_message, b"\0") };
     Box::into_raw(Box::new(ScreenDeviceProfile {
         profile,
         light_spread,
-        evaluator,
     }))
 }
 
@@ -1460,66 +1445,6 @@ pub unsafe extern "C" fn screen_device_profile_release(profile: *mut ScreenDevic
         // SAFETY: the ABI requires the uniquely owned handle returned by create.
         unsafe { drop(Box::from_raw(profile)) };
     }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_device_profile_evaluation_parameters(
-    profile: *const ScreenDeviceProfile,
-    parameters: *mut ScreenDeviceEvaluationParametersV2,
-) -> bool {
-    if profile.is_null() || parameters.is_null() {
-        return false;
-    }
-    // SAFETY: both pointers were validated for the duration of this call.
-    let values = unsafe { (*profile).evaluator }.device_stage_parameters();
-    // SAFETY: the caller provided a writable current-version parameter structure.
-    unsafe {
-        *parameters = ScreenDeviceEvaluationParametersV2 {
-            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-            native_to_acescg: [
-                values.native_to_acescg[0][0],
-                values.native_to_acescg[0][1],
-                values.native_to_acescg[0][2],
-                values.native_to_acescg[1][0],
-                values.native_to_acescg[1][1],
-                values.native_to_acescg[1][2],
-                values.native_to_acescg[2][0],
-                values.native_to_acescg[2][1],
-                values.native_to_acescg[2][2],
-            ],
-            eotf_gamma: values.eotf_gamma,
-            black_level_nits: values.black_level_nits,
-            white_level_nits: values.white_level_nits,
-        };
-    }
-    true
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_device_profile_evaluate_rgba32f(
-    profile: *const ScreenDeviceProfile,
-    device_code: *const c_float,
-    acescg: *mut c_float,
-    pixel_count: usize,
-) -> bool {
-    if profile.is_null()
-        || (device_code.is_null() && pixel_count != 0)
-        || (acescg.is_null() && pixel_count != 0)
-    {
-        return false;
-    }
-    // SAFETY: the ABI requires complete RGBA arrays for pixel_count pixels.
-    let source = unsafe { std::slice::from_raw_parts(device_code, pixel_count * 4) };
-    // SAFETY: the ABI requires writable RGBA storage for pixel_count pixels.
-    let destination = unsafe { std::slice::from_raw_parts_mut(acescg, pixel_count * 4) };
-    // SAFETY: the non-null handle is immutable for the duration of this call.
-    let evaluator = unsafe { (*profile).evaluator };
-    for (input, output) in source.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
-        let value =
-            evaluator.normalized_device_emission(DeviceRgb::new(input[0], input[1], input[2]));
-        output.copy_from_slice(&[value.r, value.g, value.b, input[3]]);
-    }
-    true
 }
 
 fn parameters_from_profile(
