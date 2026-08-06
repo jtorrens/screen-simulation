@@ -3,6 +3,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(target_os = "macos")]
+mod flat_panel_metal;
+#[cfg(target_os = "macos")]
 mod native_metal;
 #[cfg(target_os = "macos")]
 mod presentation_cpu;
@@ -10,6 +12,8 @@ mod presentation_cpu;
 mod presentation_metal;
 #[cfg(target_os = "macos")]
 mod spatial_metal;
+#[cfg(target_os = "macos")]
+pub use flat_panel_metal::{MetalFlatPanel, MetalFlatPanelError, MetalFlatPanelResult};
 #[cfg(target_os = "macos")]
 pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 #[cfg(target_os = "macos")]
