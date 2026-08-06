@@ -167,7 +167,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
 
 struct ResolvedDevice: @unchecked Sendable {
     let definition: DeviceDefinition
-    fileprivate let parameters: ScreenDeviceParametersV1
+    let parameters: ScreenDeviceParametersV1
 
     var id: String { definition.id }
 

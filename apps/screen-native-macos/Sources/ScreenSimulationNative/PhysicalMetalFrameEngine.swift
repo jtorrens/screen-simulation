@@ -1,0 +1,320 @@
+import Foundation
+import Metal
+import ScreenPhysicalBridge
+import StudioColor
+
+struct PhysicalMetalFrameSnapshot: @unchecked Sendable {
+    let frame: StudioColorMetalFrame?
+    let nativeDimensions: PhysicalDimensions
+    let effectiveDimensions: PhysicalDimensions?
+    let computedQuality: PhysicalQuality
+    let state: PhysicalFrameState
+    let progress: Double
+    let diagnostics: [PhysicalStageDiagnostic]
+    let parameterRevision: UInt64
+    let parameterHash: PhysicalParameterHash
+}
+
+final class PhysicalMetalFrameJob: @unchecked Sendable {
+    let cancellationIdentity: PhysicalFrameIdentity
+
+    private let handle: ScreenPhysicalFrameJobRef
+    private let input: ScreenPhysicalFrameInputRef
+    private let sourceTexture: ScreenPhysicalTextureRef
+    private let deviceSignalTexture: ScreenPhysicalTextureRef
+    private let deviceProfile: ScreenDeviceProfileRef
+    private let sourceFrame: StudioColorMetalFrame
+    private let deviceSignalFrame: StudioColorMetalFrame
+
+    init(
+        handle: ScreenPhysicalFrameJobRef,
+        input: ScreenPhysicalFrameInputRef,
+        sourceTexture: ScreenPhysicalTextureRef,
+        deviceSignalTexture: ScreenPhysicalTextureRef,
+        deviceProfile: ScreenDeviceProfileRef,
+        sourceFrame: StudioColorMetalFrame,
+        deviceSignalFrame: StudioColorMetalFrame,
+        cancellationIdentity: PhysicalFrameIdentity
+    ) {
+        self.handle = handle
+        self.input = input
+        self.sourceTexture = sourceTexture
+        self.deviceSignalTexture = deviceSignalTexture
+        self.deviceProfile = deviceProfile
+        self.sourceFrame = sourceFrame
+        self.deviceSignalFrame = deviceSignalFrame
+        self.cancellationIdentity = cancellationIdentity
+    }
+
+    deinit {
+        screen_physical_frame_job_release(handle)
+        screen_physical_frame_input_release(input)
+        screen_physical_texture_release(deviceSignalTexture)
+        screen_physical_texture_release(sourceTexture)
+        screen_device_profile_release(deviceProfile)
+    }
+
+    func cancel() -> Bool {
+        screen_physical_frame_job_cancel(
+            handle,
+            ScreenPhysicalIdentity128(
+                high: cancellationIdentity.high,
+                low: cancellationIdentity.low
+            )
+        )
+    }
+
+    func snapshot() throws -> PhysicalMetalFrameSnapshot {
+        var raw = ScreenPhysicalFrameResultV1()
+        var error: UnsafePointer<CChar>?
+        guard screen_physical_frame_job_snapshot(handle, &raw, &error) else {
+            throw PhysicalMetalFrameEngineError.bridge(
+                error.map(String.init(cString:)) ?? "No se ha podido leer el job físico."
+            )
+        }
+        guard raw.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+              let quality = PhysicalQuality(rawValue: raw.computed_quality),
+              let state = PhysicalFrameState(rawValue: raw.state)
+        else {
+            throw PhysicalMetalFrameEngineError.invalidSnapshot
+        }
+        let native = try PhysicalDimensions(
+            width: Int(raw.native_width),
+            height: Int(raw.native_height)
+        )
+        let effective = raw.effective_width == 0 || raw.effective_height == 0
+            ? nil
+            : try PhysicalDimensions(
+                width: Int(raw.effective_width),
+                height: Int(raw.effective_height)
+            )
+        let diagnostics = try decodeDiagnostics(raw)
+        let hash = try withUnsafeBytes(of: raw.parameter_hash) {
+            try PhysicalParameterHash(bytes: Array($0))
+        }
+        let frame: StudioColorMetalFrame?
+        if let output = raw.acescg_texture,
+           let pointer = screen_physical_texture_borrow_metal(output) {
+            let object = Unmanaged<AnyObject>.fromOpaque(
+                UnsafeMutableRawPointer(mutating: pointer)
+            ).takeUnretainedValue()
+            guard let texture = object as? MTLTexture else {
+                throw PhysicalMetalFrameEngineError.invalidOutputTexture
+            }
+            frame = StudioColorMetalFrame(texture: texture)
+        } else {
+            frame = nil
+        }
+        return PhysicalMetalFrameSnapshot(
+            frame: frame,
+            nativeDimensions: native,
+            effectiveDimensions: effective,
+            computedQuality: quality,
+            state: state,
+            progress: Double(raw.progress),
+            diagnostics: diagnostics,
+            parameterRevision: raw.parameter_revision,
+            parameterHash: hash
+        )
+    }
+
+    private func decodeDiagnostics(
+        _ result: ScreenPhysicalFrameResultV1
+    ) throws -> [PhysicalStageDiagnostic] {
+        guard result.stage_diagnostic_count == 0 || result.stage_diagnostics != nil else {
+            throw PhysicalMetalFrameEngineError.invalidSnapshot
+        }
+        return try (0..<result.stage_diagnostic_count).map { index in
+            let raw = result.stage_diagnostics![index]
+            guard raw.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+                  let stage = PhysicalStageID(rawValue: raw.stage_id),
+                  stage.domain.rawValue == raw.domain_id,
+                  let state = PhysicalFrameState(rawValue: raw.state)
+            else { throw PhysicalMetalFrameEngineError.invalidSnapshot }
+            let message: String
+            if raw.message.count == 0 {
+                message = ""
+            } else if let bytes = raw.message.bytes {
+                message = String(
+                    decoding: UnsafeBufferPointer(start: bytes, count: raw.message.count),
+                    as: UTF8.self
+                )
+            } else {
+                throw PhysicalMetalFrameEngineError.invalidSnapshot
+            }
+            return PhysicalStageDiagnostic(
+                stage: stage,
+                state: state,
+                progress: Double(raw.progress),
+                message: message
+            )
+        }
+    }
+}
+
+@MainActor
+final class PhysicalMetalFrameEngine {
+    func submit(
+        sourceACEScg: StudioColorMetalFrame,
+        deviceSignal: StudioColorMetalFrame,
+        frame: PhysicalFrameSelection,
+        resolvedDevice: ResolvedDevice,
+        quality: PhysicalQuality,
+        screenAmount: Double,
+        captureAmount: Double,
+        contributions: [PhysicalStageContribution],
+        requestedDimensions: PhysicalDimensions,
+        cancellationIdentity: PhysicalFrameIdentity,
+        progressIdentity: PhysicalFrameIdentity,
+        parameterRevision: UInt64,
+        parameterHash: PhysicalParameterHash,
+        rasterPlacement: PhysicalRasterPlacement
+    ) throws -> PhysicalMetalFrameJob {
+        var error: UnsafePointer<CChar>?
+        let sourcePointer = Unmanaged.passUnretained(sourceACEScg.texture as AnyObject).toOpaque()
+        guard let sourceTexture = screen_physical_texture_create_borrowed_metal(
+            sourcePointer,
+            &error
+        ) else { throw bridgeError(error, fallback: "No se ha creado la vista ACEScg.") }
+        var deviceSignalTexture: ScreenPhysicalTextureRef?
+        var input: ScreenPhysicalFrameInputRef?
+        var deviceProfile: ScreenDeviceProfileRef?
+        var job: ScreenPhysicalFrameJobRef?
+        defer {
+            if job == nil {
+                if let input { screen_physical_frame_input_release(input) }
+                if let deviceSignalTexture {
+                    screen_physical_texture_release(deviceSignalTexture)
+                }
+                screen_physical_texture_release(sourceTexture)
+                if let deviceProfile { screen_device_profile_release(deviceProfile) }
+            }
+        }
+        let signalPointer = Unmanaged.passUnretained(deviceSignal.texture as AnyObject).toOpaque()
+        deviceSignalTexture = screen_physical_texture_create_borrowed_metal(
+            signalPointer,
+            &error
+        )
+        guard let deviceSignalTexture else {
+            throw bridgeError(error, fallback: "No se ha creado la vista Device RGB.")
+        }
+        input = screen_physical_frame_input_create(
+            sourceTexture,
+            deviceSignalTexture,
+            rasterPlacement.rawValue,
+            &error
+        )
+        guard let input else {
+            throw bridgeError(error, fallback: "No se ha creado el input físico.")
+        }
+        var deviceParameters = resolvedDevice.parameters
+        deviceProfile = screen_device_profile_create(&deviceParameters, &error)
+        guard let deviceProfile else {
+            throw bridgeError(error, fallback: "No se ha resuelto el Device físico.")
+        }
+        let rawContributions = contributions.map(rawContribution)
+        var raw = ScreenPhysicalFrameRequestV1()
+        raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+        raw.frame_index = frame.frameIndex
+        raw.frame_time_numerator = frame.timeNumerator
+        raw.frame_time_denominator = frame.timeDenominator
+        raw.input = input
+        raw.resolved_device = deviceProfile
+        raw.quality = quality.rawValue
+        raw.screen_amount = Float(screenAmount)
+        raw.capture_amount = Float(captureAmount)
+        raw.requested_width = UInt32(requestedDimensions.width)
+        raw.requested_height = UInt32(requestedDimensions.height)
+        raw.cancellation_identity = ScreenPhysicalIdentity128(
+            high: cancellationIdentity.high,
+            low: cancellationIdentity.low
+        )
+        raw.progress_identity = ScreenPhysicalIdentity128(
+            high: progressIdentity.high,
+            low: progressIdentity.low
+        )
+        raw.parameter_revision = parameterRevision
+        withUnsafeMutableBytes(of: &raw.parameter_hash) { destination in
+            destination.copyBytes(from: parameterHash.bytes)
+        }
+        job = rawContributions.withUnsafeBufferPointer { values in
+            raw.stage_contributions = values.baseAddress
+            raw.stage_contribution_count = values.count
+            return screen_physical_frame_submit(&raw, &error)
+        }
+        guard let job else {
+            throw bridgeError(error, fallback: "El motor físico rechazó el frame.")
+        }
+        return PhysicalMetalFrameJob(
+            handle: job,
+            input: input,
+            sourceTexture: sourceTexture,
+            deviceSignalTexture: deviceSignalTexture,
+            deviceProfile: deviceProfile,
+            sourceFrame: sourceACEScg,
+            deviceSignalFrame: deviceSignal,
+            cancellationIdentity: cancellationIdentity
+        )
+    }
+
+    private func rawContribution(
+        _ contribution: PhysicalStageContribution
+    ) -> ScreenPhysicalStageContributionV1 {
+        var raw = ScreenPhysicalStageContributionV1()
+        raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+        raw.domain_id = contribution.stage.domain.rawValue
+        raw.stage_id = contribution.stage.id
+        switch contribution.control {
+        case let .continuous(amount, limits):
+            raw.control_semantics = UInt32(SCREEN_PHYSICAL_CONTROL_CONTINUOUS.rawValue)
+            raw.amount = Float(amount)
+            raw.visual_minimum = Float(limits.visualRange.lowerBound)
+            raw.visual_maximum = Float(limits.visualRange.upperBound)
+            raw.safe_maximum = Float(limits.safeRange.upperBound)
+            raw.discrete_enabled = false
+        case let .discrete(enabled):
+            raw.control_semantics = UInt32(SCREEN_PHYSICAL_CONTROL_DISCRETE.rawValue)
+            raw.amount = 0
+            raw.visual_minimum = 0
+            raw.visual_maximum = 2
+            raw.safe_maximum = 4
+            raw.discrete_enabled = enabled
+        }
+        raw.exact_identity_at_zero = contribution.exactIdentityAtZero
+        raw.reserved = (0, 0)
+        return raw
+    }
+
+    private func bridgeError(
+        _ error: UnsafePointer<CChar>?,
+        fallback: String
+    ) -> PhysicalMetalFrameEngineError {
+        .bridge(error.map(String.init(cString:)) ?? fallback)
+    }
+}
+
+enum PhysicalMetalFrameEngineError: Error, LocalizedError {
+    case bridge(String)
+    case invalidSnapshot
+    case invalidOutputTexture
+
+    var errorDescription: String? {
+        switch self {
+        case let .bridge(message): message
+        case .invalidSnapshot: "El motor físico devolvió un snapshot ABI inválido."
+        case .invalidOutputTexture: "El motor físico devolvió una textura Metal inválida."
+        }
+    }
+}
+
+private extension PhysicalStageID {
+    init?(rawValue: UInt32) {
+        if let section = ScreenPhysicalSection(rawValue: rawValue) {
+            self = .screen(section)
+        } else if let section = CapturePhysicalSection(rawValue: rawValue) {
+            self = .capture(section)
+        } else {
+            return nil
+        }
+    }
+}
