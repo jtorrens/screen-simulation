@@ -51,6 +51,15 @@ The existing Slint executable remains the shipped composition root until the
 single cutover defined in `Docs/NATIVE_MACOS_CUTOVER.md`; there is no runtime
 backend selector or fallback between the two shells or color implementations.
 
+The candidate's one physical-frame boundary is the versioned coarse ABI in
+`ScreenPhysicalBridge.h`, specified by `Docs/NATIVE_PHYSICAL_FRAME_CONTRACT.md`.
+It carries one selected frame from an opaque linear-ACEScg input texture and an
+immutable resolved Device snapshot through ordered Screen and Capture domains
+to one opaque linear-ACEScg result texture. Rust/Metal owns physical stage
+semantics; Swift owns only request orchestration and presentation state.
+Preview, ColorSync, DeckLink and render output transforms remain downstream of
+this boundary and cannot appear as physical contributions.
+
 The current supported system is Apple Silicon on macOS 14 or later. Windows and D3D12 are outside the current version and impose no parity requirement on Metal work.
 
 ## Physical packages
