@@ -88,13 +88,15 @@ struct ModelInspectorView: View {
                     domainAmount(
                         title: "Pantalla",
                         domain: .screen,
-                        amount: physical.screenAmount
+                        amount: physical.screenAmount,
+                        enabled: true
                     )
                     Divider().gridCellColumns(3)
                     domainAmount(
                         title: "Captura",
                         domain: .capture,
-                        amount: physical.captureAmount
+                        amount: physical.captureAmount,
+                        enabled: false
                     )
                 }
                 .frame(maxWidth: .infinity)
@@ -115,6 +117,18 @@ struct ModelInspectorView: View {
                         value: "Pantalla \(physical.activeScreenStageCount) · Captura \(physical.activeCaptureStageCount)"
                     )
                     LabeledContent("Estado", value: physical.frameState.modelLabel)
+                    if let dimensions = physical.effectiveDimensions {
+                        LabeledContent(
+                            "Resultado efectivo",
+                            value: "\(dimensions.width) × \(dimensions.height) · \(physical.computedQuality.modelLabel)"
+                        )
+                    }
+                    if let seconds = physical.lastInteractiveSeconds {
+                        LabeledContent(
+                            "Último preview",
+                            value: "\((seconds * 1_000).formatted(.number.precision(.fractionLength(1)))) ms"
+                        )
+                    }
                     if let completed = physical.completedFrame {
                         LabeledContent(
                             "Último Native",
@@ -157,18 +171,20 @@ struct ModelInspectorView: View {
     private func domainAmount(
         title: String,
         domain: PhysicalDomainID,
-        amount: Double
+        amount: Double,
+        enabled: Bool
     ) -> some View {
         GridRow(alignment: .center) {
             Text(title)
                 .frame(width: 82, alignment: .leading)
-            Slider(value: detentedSliderBinding(
+            CleanSteppedSlider(value: detentedSliderBinding(
                 value: amount,
                 update: { workspace.changePhysicalDomainAmount($0, domain: domain) }
-            ), in: 0 ... 2, step: 0.05)
+            ), range: 0 ... 2, step: 0.05, identityDetent: 1,
+            accessibilityLabel: "Contribución maestra de \(title)")
             .frame(minWidth: 150, maxWidth: .infinity)
-            .accessibilityLabel("Contribución maestra de \(title)")
             .help("Incrementos de 0,05 · detente en 1 físico")
+            .disabled(!enabled)
             TextField("", value: Binding(
                 get: { amount },
                 set: { workspace.changePhysicalDomainAmount($0, domain: domain) }
@@ -177,6 +193,7 @@ struct ModelInspectorView: View {
             .frame(width: 68)
             .multilineTextAlignment(.trailing)
             .accessibilityLabel("Valor de contribución maestra de \(title)")
+            .disabled(!enabled)
         }
         GridRow {
             contributionState(amount)
@@ -254,9 +271,9 @@ struct ModelInspectorView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(explanation)
                     details()
-                    if stage.domain == .screen {
+                    if !stage.isImplementedByPhysicalPanelV1 {
                         Label(
-                            "Amount por sección pendiente de conexión al motor ABI v1.",
+                            "Pendiente del motor físico; permanece en bypass y no se simula.",
                             systemImage: "wrench.and.screwdriver"
                         )
                         .font(.caption)
@@ -271,6 +288,7 @@ struct ModelInspectorView: View {
                         Text(title).fontWeight(.medium)
                         Spacer(minLength: 6)
                         stageControl(stage, value: value)
+                            .disabled(!stage.isImplementedByPhysicalPanelV1)
                     }
                     Text(affects)
                         .font(.caption)
@@ -286,9 +304,11 @@ struct ModelInspectorView: View {
             ) {
                 workspace.togglePhysicalIsolation(stage)
             }
+            .disabled(!stage.isImplementedByPhysicalPanelV1)
             Button("Restablecer a físico") {
                 workspace.resetPhysicalStage(stage)
             }
+            .disabled(!stage.isImplementedByPhysicalPanelV1)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Etapa \(title). \(affects)")
@@ -301,12 +321,12 @@ struct ModelInspectorView: View {
     ) -> some View {
         switch value.control {
         case let .continuous(amount, limits):
-            Slider(value: detentedSliderBinding(
+            CleanSteppedSlider(value: detentedSliderBinding(
                 value: amount,
                 update: { workspace.changePhysicalStageAmount($0, stage: stage) }
-            ), in: limits.visualRange, step: 0.05)
+            ), range: limits.visualRange, step: 0.05, identityDetent: 1,
+            accessibilityLabel: "Contribución de la etapa")
             .frame(width: 116)
-            .accessibilityLabel("Contribución de la etapa")
             .help("Incrementos de 0,05 · detente en 1 físico")
             TextField("Amount", value: Binding(
                 get: { amount },
@@ -363,7 +383,7 @@ struct ModelInspectorView: View {
             get: { value },
             set: { proposed in
                 let stepped = (proposed / 0.05).rounded() * 0.05
-                let detented = abs(stepped - 1) <= 0.050_001 ? 1 : stepped
+                let detented = abs(proposed - 1) <= 0.027_5 ? 1 : stepped
                 update(detented)
             }
         )
@@ -433,6 +453,17 @@ private extension PhysicalFrameState {
         case .cancelled: "Cancelado"
         case .failed: "Fallido"
         case .complete: "Completo"
+        }
+    }
+}
+
+private extension PhysicalQuality {
+    var modelLabel: String {
+        switch self {
+        case .draft: "Draft"
+        case .medium: "Media"
+        case .high: "Alta"
+        case .native: "Nativa"
         }
     }
 }

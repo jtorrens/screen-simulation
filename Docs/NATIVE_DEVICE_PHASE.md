@@ -47,29 +47,28 @@ the I/O page. Its active graph is:
 Swift orchestrates the two explicit input views from the physical-frame
 contract. The source-to-device processor is the pinned StudioColor/OCIO
 processor and produces the nonlinear Device RGB view before the physical
-boundary. Metal
-then evaluates the Rust-resolved power EOTF, black/white luminance and
+boundary. The Rust/Metal physical-frame job then evaluates the Rust-resolved
+power EOTF, black/white luminance and
 native-primary-to-ACEScg matrix. Output is normalized by the authored white for
 the shared scene-linear preview boundary. At unresolved scale, subpixel order
 and black-matrix fill preserve the compensated mean by definition; their
 spatial structure becomes observable only when the later geometry/camera stage
-resolves the native panel footprint. Cover glass is associated but not evaluated
-in this Device-only cut.
+resolves the native panel footprint. Emission and subpixel geometry are the
+only active sections; Temporal, Cover Glass, Environment and every Capture
+section remain explicit zero/bypass pending implementation.
 
 The same input also carries `Fit`, `FillCrop`, `Stretch` or `OneToOne`; raster
 placement is never inferred from dimensions. `amount = 0` returns the exact
 original ACEScg texture without encoding a command.
 `amount = 1` evaluates the calibrated Device stage. Metal/CPU-oracle tests cover
 negative values, values above one and alpha, while the existing I/O page keeps
-Device at exact identity. Preview and any future Device render consumer call the
-same `DeviceMetalStage`; no second physical route exists.
-
-The reproducible Device-stage performance command is
-`SCREEN_DEVICE_BENCHMARK=1 swift test --filter deviceStagePlaybackBenchmarkWhenRequested`.
-It measures only physical Metal command completion because StudioColor resolves
-the Device signal once before the stage boundary. On the development
-Apple-silicon host, 30 completed 960×540 evaluations measured 0.477 ms median
-and 1.012 ms p95.
+Device at exact identity. Preview calls the single
+`screen_physical_frame_submit` job boundary. The former Swift
+`DeviceMetalStage` and its shader have been removed; no second physical route
+exists. Draft, Medium and High use the same framing at increasing requested
+resolution/sampling. Native evaluates the panel's authored raster on the
+authoritative 3×3 subpixel lattice and exposes progress, cancellation,
+parameter revision and diagnostics through stable snapshots.
 
 ## Native UX
 
@@ -91,7 +90,23 @@ native lists, visible lock state, forms, pickers, numeric fields, keyboard
 behavior and explicit Rust-domain validation.
 Definition editing does not appear on the Modelo page.
 
-Manual QA of the packaged Release confirmed the resizable split, ordered native
-cards, Device surface aspect, neutral viewport with no border/elevation,
-shared toolbar and bottom-page navigation. Fit/1:1, Native stale/cancel and
-accessibility are also enforced by their native controls and state tests.
+## Manual visual checklist
+
+Manual visual QA remains open until the packaged Release is reviewed on the
+desktop. Verify all of the following without treating launch/build checks as a
+visual substitute:
+
+- The resizable split, device surface aspect and neutral viewport have no
+  preview border or elevation; Fit and 1:1 retain the same framing.
+- Emission and Subpixel Geometry respond for RGB and BGR, black-matrix/fill and
+  `Fit`, `FillCrop`, `Stretch` and `OneToOne`; pending cards remain bypassed.
+- Screen and implemented section sliders have a clean native track with no
+  tick marks, move in 0.05 steps, detent exactly at Physical = 1, retain their
+  numeric field and expose complete accessibility labels.
+- Amount 0 preserves exact ACEScg identity; 1 is calibrated and values above 1
+  are labelled artistic.
+- Draft, Medium, High and Native preserve framing and converge as quality rises;
+  Native reports the 3×3 panel dimensions, progress, cancellation and stale
+  state after parameter changes.
+- The frequency and editorial patterns reveal expected subpixel structure
+  without changing preview ODT/ColorSync behavior.

@@ -1488,6 +1488,17 @@ struct ContentView: View {
                     .allowsHitTesting(false)
                 }
             }
+            .background {
+                if modelMode {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { model.setModelViewportSize(proxy.size) }
+                            .onChange(of: proxy.size) { _, size in
+                                model.setModelViewportSize(size)
+                            }
+                    }
+                }
+            }
             .clipped()
             if !modelMode {
                 Divider()
@@ -1522,7 +1533,7 @@ struct ContentView: View {
                 .help("Evaluar explícitamente el fotograma seleccionado a resolución nativa")
                 .accessibilityLabel("Renderizar fotograma físico Native")
             if let device = model.resolvedDevice?.definition {
-                Text("Nativa · Panel \(device.nativeWidth)×\(device.nativeHeight)")
+                Text("Nativa · Panel \(device.nativeWidth * 3)×\(device.nativeHeight * 3)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
