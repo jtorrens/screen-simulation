@@ -262,6 +262,22 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         )
     }
 
+    /// Applies the same authoritative input/IDT graph to an existing GPU
+    /// texture. This is used for typed encoded diagnostics without a CPU
+    /// readback or a second color implementation.
+    public func makeACEScgFrame(
+        encodedTexture: MTLTexture,
+        input: StudioColorInputTransform,
+        alpha: StudioColorAlphaAssociation
+    ) throws -> StudioColorMetalFrame {
+        try applyInputTransform(
+            encodedTexture,
+            input: input,
+            alpha: alpha,
+            submittedAt: CACurrentMediaTime()
+        )
+    }
+
     public func renderRGBA8(
         _ frame: StudioColorMetalFrame,
         output: StudioColorOutputTransform

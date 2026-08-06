@@ -88,6 +88,9 @@ final class WorkspaceModel: ObservableObject {
     private let deviceSignalTransform = StudioColorOutputTransform.catalog.first {
         $0.id == "aces2-srgb-sdr-100"
     }!
+    private let deviceSignalInverseTransform = StudioColorInputTransform.catalog.first {
+        $0.id == "display-srgb-aces2-sdr"
+    }!
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
     private var tickSubscription: AnyCancellable?
@@ -909,8 +912,18 @@ final class WorkspaceModel: ObservableObject {
                       let frame = snapshot.frame,
                       let effective = snapshot.effectiveDimensions
                 else { throw CancellationError() }
-                metalFrame = frame
-                monitorOutput.update(frame: frame, display: metalDisplay)
+                let presentationFrame: StudioColorMetalFrame
+                if snapshot.returnedIntermediate == .deviceSignal {
+                    presentationFrame = try metalDisplay.makeACEScgFrame(
+                        encodedTexture: frame.texture,
+                        input: deviceSignalInverseTransform,
+                        alpha: .premultiplied
+                    )
+                } else {
+                    presentationFrame = frame
+                }
+                metalFrame = presentationFrame
+                monitorOutput.update(frame: presentationFrame, display: metalDisplay)
                 let duration = started.duration(to: .now)
                 let elapsed = Double(duration.components.seconds)
                     + Double(duration.components.attoseconds) / 1e18
