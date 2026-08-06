@@ -12,7 +12,7 @@ Esta auditoría compara código, shaders, tests, benchmarks y documentación act
 |---|---|---|
 | Rust/Slint anterior | `main@715ec98f0acbe1d9855b66121e5aab111c5c452e` | Último estado integrado del producto Slint y del pipeline óptico/cámara completo. |
 | Light spread del panel | `feature/panel-light-spread@0121aa53a17ff63b8ae435bd94248de80b553d2a` | Autoridad posterior separada: implementación `b58525cec55d006879b5fb5e9f47399148378130` y contrato/documentación `0121aa5`. |
-| Motor plano actual | `feature/physical-panel-spatial-v1@04dbfb2a1e433d271cf8fc533c94597986f85307` | Oracle CPU, Metal y bridge ABI v1 para emisión y geometría píxel/subpíxel. |
+| Motor plano auditado | `feature/physical-panel-spatial-v1@04dbfb2a1e433d271cf8fc533c94597986f85307` | Estado histórico previo al contrato unificado: emisión y geometría píxel/subpíxel. |
 | Shell nativo consumidor | `feature/native-macos-shell@0742a42199fc15e609b627ae01e2a8c2a81abb9e` | UI y orquestación realmente conectadas al job físico Metal. |
 
 Los últimos commits por archivo no bastan para atribuir cada modelo. La matriz cita además el último cambio semántico relevante cuando difiere del `HEAD`: `93f10a1` (conexión espacial Metal), `a803fa9` (integración de área UHD estable), `18b8448` (flicker residual uniforme), `9d54b3f` (entornos HDR), `7ab435c` (cierre de auditoría óptica), `980cd3e` (softness en espacio sensor), `5e09962` (demosaic edge-directed), `0ac32e0` (RAW development Metal) y `b58525c` (light spread).
@@ -29,9 +29,9 @@ Validación ejecutada durante la auditoría:
 2. Ese código sigue físicamente presente en los crates de la rama del motor plano porque ésta parte de `main@715ec98`; la regresión actual es principalmente de **alcanzabilidad por el ABI y el shell nativo**, no de pérdida de fuentes.
 3. Emisión y geometría subpíxel sí están migradas al job nativo, con un nuevo backend plano especializado. Conservan el catálogo y `ValidatedPanelEvaluator`, pero todavía no consumen geometría cámara–pantalla, respuesta angular, cover ni captura.
 4. El bloom de píxeles, denominado autoritativamente **panel light spread**, quedó **implementado y conectado**, no parcial ni solamente documentado. Vive fuera de `main`, en `b58525c`, y dispone de CPU, Metal, UI Slint, persistencia schema 8, tests y benchmark.
-5. El ABI v1 actual no transporta `PanelLightSpreadProfile`. Tampoco pasa un `ScreenCoverGlassProfileRef` al frame job, no define un perfil de entorno y no lleva cámara/lente/sensor. Activar esas tarjetas de UI sin resolver primero el transporte sería inventar defaults o duplicar física en Swift.
-6. `ScreenDeviceParametersV1` ya transporta el perfil temporal completo. Flicker/banding es el corte pendiente que menos frontera nueva necesita, pero depende de definir su relación exacta con exposición/captura para no crear banding espacial falso.
-7. Hay tres superficies nativas anteriores que ya no forman parte de la ruta de producto: `DeviceMetalStage.swift`, `Resources/DeviceStage.metal` y `PhysicalPipeline.swift`/`screen_physical_pipeline_process_rgba32f`. No deben convertirse en fallback ni recibir nuevos modelos.
+5. En el estado auditado, el contrato binario no transportaba `PanelLightSpreadProfile`, cover/environment ni camera/lens/sensor. Esta carencia quedó resuelta posteriormente por el único ABI v2; no debe restaurarse la frontera insuficiente.
+6. `ScreenDeviceParametersV2` ya transporta el perfil temporal completo. Flicker/banding es el corte pendiente que menos frontera nueva necesita, pero depende de definir su relación exacta con exposición/captura para no crear banding espacial falso.
+7. La antigua identidad C y el evaluator Device-only de Swift/Metal fueron retirados en el corte unificado; no deben reaparecer como fallback ni recibir modelos.
 
 ## A. Pipeline anterior real
 
@@ -78,7 +78,7 @@ Orden real relevante:
 flowchart TD
     M["StudioMedia: decoded RGBA + exact selected time"] --> SC1["StudioColor: IDT → source ACEScg"]
     SC1 --> SC2["StudioColor: Source-to-Device → nonlinear Device RGB"]
-    SC1 --> ABI["ABI v1 opaque frame input"]
+    SC1 --> ABI["Coarse opaque frame input"]
     SC2 --> ABI
     P["Swift: placement, resolved immutable profiles, quality, job lifecycle"] --> ABI
     ABI --> SCREEN["Rust domain + Metal product: emission → geometry → light spread → temporal → cover/environment"]
@@ -144,10 +144,10 @@ Abreviaturas de estado actual: **M** migrado y conectado por el job; **P** parci
 
 ### P0 — pérdidas/regresiones actuales de paridad
 
-1. **Recuperar panel light spread como corte propio.** Es código validado fuera de `main`, y hoy se pierde por completo en el job nativo. Antes de portar debe resolverse cómo viaja el perfil materializado: el ABI v1 no contiene radios/pesos.
+1. **Recuperar panel light spread como corte propio.** Era código validado fuera de `main`; el corte unificado posterior materializa radios/pesos y lo conecta al job nativo.
 2. **Cerrar el transporte de perfiles físicos antes de habilitar tarjetas.** Temporal ya cabe en Device; cover tiene un handle pero el frame request no lo recibe; environment/camera/lens/sensor no tienen snapshot en el request.
 3. **No confundir presencia de crates con paridad de producto.** El pipeline óptico/cámara antiguo compila en la rama física, pero no es alcanzable desde el shell nativo porque el bridge rechaza Screen Temporal/Cover/Environment y cualquier Capture activo.
-4. **Congelar y retirar de futuras migraciones las rutas Swift huérfanas** `DeviceMetalStage`, `DeviceStage.metal` y `PhysicalPipeline(identity)`. Mientras existan, deben permanecer sin uso; nunca ser fallback.
+4. **Mantener retiradas las rutas Swift huérfanas** de Device-only y la antigua identidad del pipeline; nunca deben reaparecer como fallback.
 
 ### P1 — siguiente fase física
 
@@ -189,8 +189,8 @@ Ninguno de estos cortes requiere reescribir StudioColor/OCIO. Salvo light spread
 
 ## F. Qué no portar
 
-- `DeviceMetalStage.swift` + `Resources/DeviceStage.metal`: evaluator Swift/Metal anterior ya sustituido por el job Rust/Metal.
-- `PhysicalPipeline.swift` + `screen_physical_pipeline_process_rgba32f`: identidad histórica, no ruta física ni fallback.
+- El evaluator Device-only Swift/Metal anterior: retirado y sustituido por el job Rust/Metal.
+- La identidad histórica C/Swift del pipeline: retirada; no debe reaparecer como ruta física ni fallback.
 - Orquestación y reglas de `apps/screen-desktop/src/main.rs`: sirven como evidencia, pero la semántica debe permanecer en Application/domain; Swift solo materializa requests.
 - La ruta CPU de spatial optics o RAW como producto. Deben permanecer oracle/test, nunca fallback silencioso.
 - Camera preview aproximado que omite CFA/noise/demosaic como sustituto de Native.
@@ -280,8 +280,8 @@ No son benchmarks equivalentes: el anterior incluye optics/capture/publication p
 
 ## 4. Decisiones requeridas antes del siguiente código físico
 
-1. Confirmar cómo materializa ABI v1 el `PanelLightSpreadProfile` sin lookup de preset, adaptador o default implícito.
-2. Confirmar el snapshot completo de cover + environment que recibe cada frame job; el handle de cover actualmente no está referenciado por `ScreenPhysicalFrameRequestV1`.
+1. Mantener la materialización completa de `PanelLightSpreadProfile` del ABI v2 sin lookup de preset, adaptador o default implícito.
+2. Confirmar el snapshot completo de cover + environment que recibe cada frame job; el handle de cover actualmente no está referenciado por `ScreenPhysicalFrameRequestV2`.
 3. Definir el transporte inmutable de camera/screen tracks, intrinsics, shutter, sensor y development antes de activar Capture.
 4. Decidir si panel light spread se añade como etapa estable propia o como parámetro material del stage Emission. No debe confundirse con Subpixel Geometry ni interpolar layout.
 5. Mantener el stage list ABI actual como orden de alto nivel; los submodelos de esta matriz son responsabilidades internas de esas etapas, no excusa para crear ABI v2 o rutas paralelas.

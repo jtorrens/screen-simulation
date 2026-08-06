@@ -53,13 +53,13 @@ spatial structure becomes observable only when the later geometry/camera stage
 resolves the native panel footprint. Cover glass is associated but not evaluated
 in this Device-only cut.
 
-`amount = 0` returns the exact original texture without encoding a command.
-`amount = 1` evaluates the calibrated Device stage. Metal/CPU-oracle tests cover
-negative values, values above one and alpha, while the existing I/O page keeps
-Device at exact identity. Preview and any future Device render consumer call the
-same `DeviceMetalStage`; no second physical route exists.
+This section records the superseded Device-only cut. Its Swift evaluator and
+shader were removed when the unified Rust/Metal frame job became authoritative.
+The current `amount = 0` exact identity, calibrated evaluation, negative/>1 and
+alpha guarantees are owned by `NATIVE_PHYSICAL_PIPELINE_V2.md`; no Device-only
+runtime route remains.
 
-On the development Apple-silicon host, 30 completed 960×540 Device evaluations
+Historically, on the development Apple-silicon host, 30 completed 960×540 Device evaluations
 measured 0.974 ms median and 1.917 ms p95, including the pinned OCIO device-signal
 transform and Device Metal command completion. The reproducible command is
 `SCREEN_DEVICE_BENCHMARK=1 swift test --filter deviceStagePlaybackBenchmarkWhenRequested`.

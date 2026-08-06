@@ -8,8 +8,8 @@ Status: normative for the SwiftUI/AppKit replacement candidate.
 and the Rust/Metal physical engine. `SCREEN_PHYSICAL_FRAME_ABI_VERSION` is the
 only accepted ABI version. Swift owns request orchestration and presentation
 state; Rust and Metal own every physical meaning and evaluation. A request
-contains an immutable resolved Device snapshot and never a dynamic preset
-reference.
+contains immutable resolved Device and complete physical-pipeline snapshots;
+it never contains a dynamic preset reference or an implicit default.
 
 The ABI is coarse: one complete frame request creates one opaque job. Textures,
 frame inputs, jobs, Device profiles and results cross as opaque handles or
@@ -34,15 +34,16 @@ the physical Screen result, never either source encoding directly. The final
 physical output is linear ACEScg. Preview transforms, ColorSync, DeckLink and
 render ODTs are outside the physical engine and run only after its result.
 
-Version 1 has two ordered domains:
+Version 2 is the only live binary contract and has two ordered domains:
 
-1. Screen: Emission, Subpixel Geometry, Temporal, Cover Glass, Environment.
+1. Screen: Emission, Subpixel Geometry, Panel Light Spread, Temporal, Cover
+   Glass, Environment.
 2. Capture: Geometry, Lens, Exposure/Shutter, Sensor/CFA, Noise,
    Develop/Demosaic.
 
 Their numeric identifiers are stable and domain-partitioned. A new stage is
 appended to its owning typed section and to the same ABI version only when the
-addition is backward-compatible for every v1 consumer. A semantic or binary
+addition is backward-compatible for every current consumer. A semantic or binary
 change increments the one contract version and updates header, Swift types,
 Rust implementation, tests and documentation in one coordinated cut. It never
 creates a second evaluator, compatibility reader, alias or runtime selector.
@@ -68,15 +69,27 @@ same stable identifiers.
 
 ## Request, result and lifecycle
 
-`ScreenPhysicalFrameRequestV1` names one selected rational frame, opaque typed
-frame input, resolved Device handle, quality, master and ordered stage
-contributions, requested dimensions, cancellation/progress identities and the
-exact parameter revision/hash.
+`ScreenPhysicalFrameRequestV2` names one selected rational frame, opaque typed
+frame input, resolved Device handle, complete `ScreenPhysicalPipelineSnapshot`,
+quality, master and ordered stage contributions, requested dimensions, one
+typed intermediate selector, cancellation/progress identities and the exact
+parameter revision/hash. The snapshot materializes cover, procedural
+environment, resolved scene/camera/lens, shutter/readout/motion, sensor/noise
+and RAW development. Panel emission, temporal and complete light-spread radii
+and weights are materialized by the Device handle.
 
-`ScreenPhysicalFrameResultV1` returns an ACEScg texture, native and effective
-dimensions, calculated quality, progress/state, ordered diagnostics and the
-same parameter revision/hash. Result texture and diagnostic views are borrowed
-for the owning job lifetime.
+`ScreenPhysicalFrameResultV2` returns one borrowed texture and states which
+typed intermediate it contains, plus native/effective dimensions, calculated
+quality, progress/state, ordered diagnostics with elapsed nanoseconds and the
+same parameter revision/hash. Final and radiance intermediates are linear
+ACEScg; `DeviceSignal` retains its explicitly named nonlinear device domain.
+Result texture and diagnostic views are borrowed for the owning job lifetime.
+
+The currently functional cut evaluates Emission, Subpixel Geometry and Panel
+Light Spread. Their CPU implementation is an oracle only and Metal is the
+mandatory product backend. Temporal, Cover, Environment and all Capture stages
+must carry valid complete snapshots but are rejected if enabled; diagnostics
+report them as explicitly unsupported. No identity stub simulates their work.
 
 The states are `idle`, `stale`, `rendering`, `cancelled`, `failed` and
 `complete`. A completed Native result becomes stale when authored parameters

@@ -185,3 +185,44 @@ fn light_spread_zero_is_exact_and_calibrated_and_artistic_are_finite() {
         );
     }
 }
+
+#[test]
+fn supported_intermediate_outputs_match_frozen_domain_goldens() {
+    let mut hashes = Vec::new();
+    for intermediate in [
+        PhysicalIntermediate::SourceAcesCg,
+        PhysicalIntermediate::DeviceSignal,
+        PhysicalIntermediate::PanelEmission,
+        PhysicalIntermediate::SubpixelRadiance,
+        PhysicalIntermediate::PanelLightSpread,
+        PhysicalIntermediate::DevelopedAcesCg,
+    ] {
+        let mut value = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+        value.input.device_signal.pixels = vec![
+            DeviceRgb::new(0.1, 0.4, 0.8),
+            DeviceRgb::new(1.2, -0.1, 0.3),
+        ];
+        value.plan.panel_light_spread = PanelLightSpreadProfile::LCD_DESKTOP;
+        value.plan.requested_intermediate = intermediate;
+        let result = evaluate_physical_pipeline_cpu_oracle(value).expect("intermediate");
+        let hash = result
+            .acescg
+            .iter()
+            .flatten()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+                (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        hashes.push(hash);
+    }
+    assert_eq!(
+        hashes,
+        [
+            17_533_449_732_142_382_789,
+            15_685_145_297_129_364_453,
+            2_562_316_643_544_865_759,
+            17_584_836_761_831_715_200,
+            1_095_139_996_456_996_558,
+            5_832_955_122_466_670_301,
+        ]
+    );
+}
