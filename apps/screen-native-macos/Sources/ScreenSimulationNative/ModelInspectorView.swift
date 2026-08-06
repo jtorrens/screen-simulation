@@ -253,9 +253,7 @@ struct ModelInspectorView: View {
                             }
                         )
                     ) {
-                        Text("Etapa conectada al snapshot físico resuelto.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        captureDetails(section)
                     }
                 }
             }
@@ -462,6 +460,21 @@ struct ModelInspectorView: View {
             }
         } else {
             Text("Selecciona un Device en General.").foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func captureDetails(_ section: CapturePhysicalSection) -> some View {
+        switch section {
+        case .geometry, .lens:
+            CaptureGeometryLensDetails(
+                section: section,
+                pipeline: workspace.physicalPipelineState
+            )
+        default:
+            Text("Etapa conectada al snapshot físico resuelto.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
