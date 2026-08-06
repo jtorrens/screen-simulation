@@ -108,16 +108,9 @@ struct ModelInspectorView: View {
                         amount: physical.screenAmount,
                         enabled: true
                     )
-                    Divider().gridCellColumns(3)
-                    domainAmount(
-                        title: "Captura",
-                        domain: .capture,
-                        amount: physical.captureAmount,
-                        enabled: false
-                    )
                 }
                 .frame(maxWidth: .infinity)
-                Text("0 bypass/ideal · 1 físico calibrado · >1 artístico")
+                Text("Captura no tiene master continuo: CFA y Revelado son discretos; Obturación y Ruido conservan amounts propios.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -260,13 +253,9 @@ struct ModelInspectorView: View {
                             }
                         )
                     ) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Pendiente del motor físico ABI v2.")
-                                .foregroundStyle(.secondary)
-                            Text("No se aplica ninguna aproximación ni simulación provisional.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text("Etapa conectada al snapshot físico resuelto.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -288,14 +277,6 @@ struct ModelInspectorView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(explanation)
                     details()
-                    if !stage.isImplementedByUnifiedPipeline {
-                        Label(
-                            "Pendiente del motor físico; permanece en bypass y no se simula.",
-                            systemImage: "wrench.and.screwdriver"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 6)
@@ -310,7 +291,6 @@ struct ModelInspectorView: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    .disabled(!stage.isImplementedByUnifiedPipeline)
                     Text(affects)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -325,11 +305,9 @@ struct ModelInspectorView: View {
             ) {
                 workspace.togglePhysicalIsolation(stage)
             }
-            .disabled(!stage.isImplementedByUnifiedPipeline)
             Button("Restablecer a físico") {
                 workspace.resetPhysicalStage(stage)
             }
-            .disabled(!stage.isImplementedByUnifiedPipeline)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Etapa \(title). \(affects)")
@@ -470,13 +448,23 @@ struct ModelInspectorView: View {
             case .coverGlass:
                 LabeledContent("Preset asociado", value: device.defaultCoverGlassPresetID)
             case .environment:
-                Text("No hay un perfil de entorno conectado en el shell nativo actual.")
-                    .foregroundStyle(.secondary)
+                if let parameters = workspace.physicalPipelineState?.parameters.environment {
+                    LabeledContent("Patrón HDR", value: "\(parameters.pattern)")
+                    LabeledContent(
+                        "Ángulo de key",
+                        value: "\(parameters.key_angular_radius_degrees.formatted())°"
+                    )
+                    LabeledContent(
+                        "Rotación",
+                        value: "\(parameters.rotation_degrees.formatted())°"
+                    )
+                }
             }
         } else {
             Text("Selecciona un Device en General.").foregroundStyle(.secondary)
         }
     }
+
 }
 
 private extension PhysicalModelController.StageValue {
