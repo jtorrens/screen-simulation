@@ -20,9 +20,9 @@ emission.
 ## Global persistence
 
 Device presets are normal global user entries in `GlobalLibrary.v1.json` under
-current schema 2. A schema-1 library is decoded only by the explicit migration,
+current schema 4. Earlier supported schemas are decoded only by explicit atomic migrations,
 validated completely, seeded once from the Rust catalog and atomically replaced.
-Schema 2 never reseeds deleted entries or overwrites edits. Unknown or corrupt
+The current schema never reseeds deleted entries or overwrites edits. Unknown or corrupt
 schemas remain untouched and block the library with an explicit error.
 
 Selecting a Device copies an immutable resolved snapshot into the workspace.

@@ -29,7 +29,9 @@ models. This phase does not port or implement a physical formula.
   oracle and non-IOSurface encoder boundary.
 - `packages/StudioMedia` contains the metadata interpretation contract and the
   exact CREDITOS-HDR preset identifiers, H.264/H.265 quality constants and
-  output-format matrix. It contains no application UI or destination policy.
+  output capability matrix. Codec, pixel encoding, range and alpha are
+  independent effective fields. It contains no application UI or destination
+  policy.
 - The OpenEXR bridge, DPX packing and AVAssetWriter settings in
   `NativeOutputRenderer` are extracted from the corresponding CREDITOS-HDR
   adapters. They remain local to the candidate until an independent shared
@@ -57,6 +59,13 @@ Display/View into a TIFF.
 Peak nits is editable job metadata exactly as in CREDITOS-HDR's current
 resolver; it does not silently select a different OCIO view. No graphics-white
 control is present.
+
+The active writer advertises only combinations verified on the Apple adapter:
+H.264 Y′CbCr 4:2:0 8-bit legal/full, H.265 Main10 Y′CbCr 4:2:0 10-bit
+legal/full, and ProRes 4444/XQ Y′CbCr 4:4:4 12-bit legal. RGB/full-range
+ProRes files remain valid inputs when their metadata identifies that contract,
+but are not claimed as outputs by this AVAssetWriter implementation. Jobs store
+the resolved pixel encoding and range, not merely the codec name.
 
 ## Performance observation
 
