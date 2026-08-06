@@ -2,10 +2,13 @@ use core::fmt;
 use core::mem::size_of;
 
 use metal::{
-    ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLSize, MTLStorageMode,
-    MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
+    ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
+    MTLStorageMode, MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
 };
-use screen_application::{PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement};
+use screen_application::{
+    PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
+    physical_row_temporal_gain,
+};
 use screen_cover::EnvironmentPattern;
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
 
@@ -49,11 +52,13 @@ struct PhysicalPipelineParams {
     screen_translation: [f32; 4],
     screen_quaternion: [f32; 4],
     panel_angular_scene: [f32; 4],
+    shutter: [f32; 4],
 }
 
 pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
     pipeline: ComputePipelineState,
+    accumulator: ComputePipelineState,
 }
 
 pub struct MetalPhysicalPipelineResult {
@@ -100,9 +105,114 @@ impl MetalPhysicalPipeline {
         let pipeline = device
             .new_compute_pipeline_state_with_function(&function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let accumulator_function = library
+            .get_function("accumulate_physical_pipeline", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let accumulator = device
+            .new_compute_pipeline_state_with_function(&accumulator_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         Ok(Self {
             queue: device.new_command_queue(),
             pipeline,
+            accumulator,
+        })
+    }
+
+    /// Evaluates an already scheduled global-shutter sequence entirely on
+    /// Metal and accumulates normalized quadrature weights.
+    pub fn evaluate_temporal(
+        &self,
+        samples: &[(&TextureRef, &TextureRef, PhysicalPipelineExecutionPlan, f32)],
+        mut report_progress: impl FnMut(f32),
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        if samples.is_empty() {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "temporal schedule is empty".to_owned(),
+            ));
+        }
+        let weight_sum = samples.iter().map(|sample| sample.3).sum::<f32>();
+        if !weight_sum.is_finite() || weight_sum <= 0.0 {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "temporal weights must have a positive finite sum".to_owned(),
+            ));
+        }
+        if samples.len() == 1 {
+            return self.evaluate(
+                samples[0].0,
+                samples[0].1,
+                samples[0].2,
+                report_progress,
+                is_cancelled,
+            );
+        }
+        let mut accumulated: Option<Texture> = None;
+        let mut final_geometry = None;
+        let mut final_sampling = None;
+        for (index, (source, signal, plan, weight)) in samples.iter().enumerate() {
+            if is_cancelled() {
+                return Err(MetalPhysicalPipelineError::Cancelled);
+            }
+            let base = index as f32 / samples.len() as f32;
+            let span = 0.85 / samples.len() as f32;
+            let evaluated = self.evaluate(
+                source,
+                signal,
+                *plan,
+                |progress| report_progress(base + progress * span),
+                &is_cancelled,
+            )?;
+            let output = accumulated.get_or_insert_with(|| {
+                let descriptor = TextureDescriptor::new();
+                descriptor.set_texture_type(MTLTextureType::D2);
+                descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+                descriptor.set_width(evaluated.texture.width());
+                descriptor.set_height(evaluated.texture.height());
+                descriptor.set_storage_mode(MTLStorageMode::Shared);
+                descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+                evaluated.texture.device().new_texture(&descriptor)
+            });
+            if output.width() != evaluated.texture.width()
+                || output.height() != evaluated.texture.height()
+            {
+                return Err(MetalPhysicalPipelineError::InvalidPlan(
+                    "temporal samples changed output geometry".to_owned(),
+                ));
+            }
+            let weight_reset = [*weight / weight_sum, if index == 0 { 1.0 } else { 0.0 }];
+            let command = self.queue.new_command_buffer();
+            let encoder = command.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&self.accumulator);
+            encoder.set_texture(0, Some(&evaluated.texture));
+            encoder.set_texture(1, Some(output));
+            encoder.set_bytes(
+                0,
+                size_of::<[f32; 2]>() as u64,
+                weight_reset.as_ptr().cast(),
+            );
+            let thread_width = self.accumulator.thread_execution_width();
+            let thread_height =
+                (self.accumulator.max_total_threads_per_threadgroup() / thread_width).max(1);
+            encoder.dispatch_threads(
+                MTLSize::new(output.width(), output.height(), 1),
+                MTLSize::new(thread_width, thread_height, 1),
+            );
+            encoder.end_encoding();
+            command.commit();
+            command.wait_until_completed();
+            if command.status() != MTLCommandBufferStatus::Completed {
+                return Err(MetalPhysicalPipelineError::Backend(
+                    "temporal accumulation did not complete".to_owned(),
+                ));
+            }
+            final_geometry = Some(evaluated.geometry);
+            final_sampling = Some(evaluated.sampling);
+        }
+        report_progress(1.0);
+        Ok(MetalPhysicalPipelineResult {
+            texture: accumulated.expect("non-empty schedule allocates output"),
+            geometry: final_geometry.expect("non-empty schedule resolves geometry"),
+            sampling: final_sampling.expect("non-empty schedule resolves sampling"),
         })
     }
 
@@ -159,7 +269,13 @@ impl MetalPhysicalPipeline {
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let (camera, screen) = plan
             .scene_geometry_lens
-            .resolve(plan.lens_amount)
+            .resolve(
+                plan.camera_position,
+                plan.camera_rotation,
+                plan.screen_translation,
+                plan.screen_rotation,
+                plan.lens_amount,
+            )
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         if is_cancelled() {
             return Err(MetalPhysicalPipelineError::Cancelled);
@@ -173,6 +289,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::PanelLightSpread
                 | PhysicalIntermediate::CoverEnvironment
                 | PhysicalIntermediate::SceneGeometryLens
+                | PhysicalIntermediate::ShutterMotion
                 | PhysicalIntermediate::DevelopedAcesCg
         ) {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
@@ -405,8 +522,28 @@ impl MetalPhysicalPipeline {
                 plan.panel.angular_emission_power.b,
                 plan.scene_geometry_amount,
             ],
+            shutter: [
+                plan.shutter_motion_amount,
+                plan.shutter_close
+                    .checked_sub(plan.shutter_open)
+                    .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?
+                    .as_seconds() as f32,
+                plan.shutter_motion.neutral_density_stops,
+                0.0,
+            ],
         };
         params.levels[3] = plan.temporal_emission_gain;
+        let row_temporal_gains = (0..sampling.effective_height)
+            .map(|row| {
+                physical_row_temporal_gain(plan, row as usize, sampling.effective_height as usize)
+                    .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let row_temporal_buffer = device.new_buffer_with_data(
+            row_temporal_gains.as_ptr().cast(),
+            (row_temporal_gains.len() * size_of::<f32>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
 
         let tile_count = sampling.effective_height.div_ceil(TILE_ROWS);
         for tile in 0..tile_count {
@@ -427,6 +564,7 @@ impl MetalPhysicalPipeline {
                 size_of::<PhysicalPipelineParams>() as u64,
                 (&raw const params).cast(),
             );
+            encoder.set_buffer(1, Some(&row_temporal_buffer), 0);
             let thread_width = self.pipeline.thread_execution_width();
             let thread_height =
                 (self.pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
@@ -567,8 +705,30 @@ mod tests {
                 environment: screen_cover::ProceduralEnvironment::NONE,
                 scene_geometry_lens:
                     screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
+                camera_position: screen_contracts::Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                camera_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
+                screen_translation: screen_contracts::Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                screen_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
                 scene_geometry_amount: 0.0,
                 lens_amount: 0.0,
+                frame_time: screen_contracts::RationalTime::new(0, 1).expect("valid fixture time"),
+                shutter_open: screen_contracts::RationalTime::new(-1, 96).expect("valid open"),
+                shutter_close: screen_contracts::RationalTime::new(1, 96).expect("valid close"),
+                shutter_motion: screen_application::ResolvedShutterMotionSnapshot {
+                    temporal_samples: 1,
+                    readout: screen_application::SensorReadout::Global,
+                    neutral_density_stops: 0.0,
+                    noise_seed: 0,
+                },
+                shutter_motion_amount: 0.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         )
@@ -770,7 +930,7 @@ mod tests {
             );
             plan.scene_geometry_amount = 1.0;
             plan.lens_amount = lens_amount;
-            plan.scene_geometry_lens.camera_position = screen_contracts::Vec3 {
+            plan.camera_position = screen_contracts::Vec3 {
                 x: 0.0,
                 y: 0.0,
                 z: 0.01,
@@ -851,5 +1011,41 @@ mod tests {
             maximum <= 2.0e-3,
             "half input CPU/Metal deviation {maximum}"
         );
+    }
+
+    #[test]
+    fn metal_temporal_executor_accumulates_animated_source_and_alpha_deterministically() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.0,
+            0.0,
+        );
+        plan.screen_amount = 0.0;
+        let first_values = vec![[0.0, 0.5, 1.0, 0.25]; input.acescg.len()];
+        let second_values = vec![[2.0, 1.5, -1.0, 0.75]; input.acescg.len()];
+        let first = texture(&device, input.width, input.height, &first_values);
+        let second = texture(&device, input.width, input.height, &second_values);
+        let signal = texture(&device, input.width, input.height, &first_values);
+        let scheduled = [
+            (&*first, &*signal, plan, 1.0_f32),
+            (&*second, &*signal, plan, 3.0_f32),
+        ];
+        let one = backend
+            .evaluate_temporal(&scheduled, |_| {}, || false)
+            .expect("first deterministic sequence");
+        let two = backend
+            .evaluate_temporal(&scheduled, |_| {}, || false)
+            .expect("second deterministic sequence");
+        let expected = [1.5, 1.25, -0.5, 0.625];
+        assert_eq!(read(&one.texture), read(&two.texture));
+        for pixel in read(&one.texture) {
+            for (actual, expected) in pixel.into_iter().zip(expected) {
+                assert!((actual - expected).abs() <= 1.0e-7);
+            }
+        }
     }
 }

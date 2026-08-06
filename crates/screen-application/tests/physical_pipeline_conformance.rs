@@ -49,8 +49,30 @@ fn request(
             cover: screen_cover::CoverGlassProfile::NEUTRAL,
             environment: screen_cover::ProceduralEnvironment::NONE,
             scene_geometry_lens: screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
+            camera_position: screen_contracts::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            camera_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
+            screen_translation: screen_contracts::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            screen_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
             scene_geometry_amount: 0.0,
             lens_amount: 0.0,
+            frame_time: screen_contracts::RationalTime::new(0, 1).expect("valid fixture time"),
+            shutter_open: screen_contracts::RationalTime::new(-1, 96).expect("valid open"),
+            shutter_close: screen_contracts::RationalTime::new(1, 96).expect("valid close"),
+            shutter_motion: screen_application::ResolvedShutterMotionSnapshot {
+                temporal_samples: 1,
+                readout: screen_application::SensorReadout::Global,
+                neutral_density_stops: 0.0,
+                noise_seed: 0,
+            },
+            shutter_motion_amount: 0.0,
             requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
         },
     }
@@ -232,4 +254,60 @@ fn supported_intermediate_outputs_match_frozen_domain_goldens() {
             5_832_955_122_466_670_301,
         ]
     );
+}
+
+#[test]
+fn exact_shutter_schedule_preserves_bounds_for_one_and_many_samples() {
+    let open = screen_contracts::RationalTime::new(1_001, 24_000).expect("open");
+    let close = screen_contracts::RationalTime::new(2_002, 24_000).expect("close");
+    for count in [1, 7] {
+        let schedule = screen_application::physical_shutter_schedule(
+            open,
+            close,
+            count,
+            screen_application::SensorReadout::Global,
+            4,
+        )
+        .expect("global schedule");
+        assert_eq!(schedule.len(), usize::from(count));
+        assert_eq!(schedule.first().expect("first").start, open);
+        assert_eq!(schedule.last().expect("last").end, close);
+        assert!(schedule.windows(2).all(|pair| pair[0].end == pair[1].start));
+    }
+}
+
+#[test]
+fn rolling_schedule_is_row_ordered_and_direction_reversible() {
+    let open = screen_contracts::RationalTime::new(-1, 48).expect("open");
+    let close = screen_contracts::RationalTime::new(1, 48).expect("close");
+    let readout = screen_contracts::RationalTime::new(1, 24).expect("readout");
+    let top = screen_application::physical_shutter_schedule(
+        open,
+        close,
+        2,
+        screen_application::SensorReadout::Rolling {
+            duration: readout,
+            direction: screen_application::RollingDirection::TopToBottom,
+        },
+        3,
+    )
+    .expect("top-down schedule");
+    let bottom = screen_application::physical_shutter_schedule(
+        open,
+        close,
+        2,
+        screen_application::SensorReadout::Rolling {
+            duration: readout,
+            direction: screen_application::RollingDirection::BottomToTop,
+        },
+        3,
+    )
+    .expect("bottom-up schedule");
+    assert_eq!(top.len(), 6);
+    assert_eq!(
+        top.iter().map(|sample| sample.row).collect::<Vec<_>>(),
+        [Some(0), Some(0), Some(1), Some(1), Some(2), Some(2)]
+    );
+    assert_eq!(top[0].time, bottom[4].time);
+    assert_eq!(top[4].time, bottom[0].time);
 }

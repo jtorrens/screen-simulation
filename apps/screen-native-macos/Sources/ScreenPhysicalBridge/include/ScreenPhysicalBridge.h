@@ -9,7 +9,9 @@ typedef struct ScreenDeviceProfile *ScreenDeviceProfileRef;
 typedef struct ScreenCoverGlassProfile *ScreenCoverGlassProfileRef;
 typedef struct ScreenPhysicalPipelineSnapshot *ScreenPhysicalPipelineSnapshotRef;
 typedef struct ScreenPhysicalTexture *ScreenPhysicalTextureRef;
-typedef struct ScreenPhysicalFrameInput *ScreenPhysicalFrameInputRef;
+typedef struct ScreenPhysicalTimedInputSetV2 *ScreenPhysicalTimedInputSetV2Ref;
+typedef struct ScreenPhysicalCameraPoseTrackV2 *ScreenPhysicalCameraPoseTrackV2Ref;
+typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2Ref;
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 
 #define SCREEN_PHYSICAL_FRAME_ABI_VERSION 2u
@@ -69,6 +71,18 @@ typedef enum {
 } ScreenPhysicalRasterPlacement;
 
 typedef enum {
+    SCREEN_PHYSICAL_SOURCE_SAMPLE_EXACT = 0,
+    SCREEN_PHYSICAL_SOURCE_SAMPLE_FLOOR = 1,
+    SCREEN_PHYSICAL_SOURCE_SAMPLE_NEAREST = 2,
+} ScreenPhysicalSourceSamplingPolicy;
+
+typedef enum {
+    SCREEN_PHYSICAL_POSE_HOLD = 0,
+    SCREEN_PHYSICAL_POSE_LINEAR = 1,
+    SCREEN_PHYSICAL_POSE_SMOOTH = 2,
+} ScreenPhysicalPoseInterpolation;
+
+typedef enum {
     SCREEN_PHYSICAL_INTERMEDIATE_SOURCE_ACESCG = 0,
     SCREEN_PHYSICAL_INTERMEDIATE_DEVICE_SIGNAL = 1,
     SCREEN_PHYSICAL_INTERMEDIATE_PANEL_EMISSION = 2,
@@ -102,10 +116,31 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
+    int64_t time_numerator;
+    uint32_t time_denominator;
+    ScreenPhysicalTextureRef source_acescg;
+    ScreenPhysicalTextureRef device_signal;
+} ScreenPhysicalTimedInputSampleV2;
+
+typedef struct {
+    uint32_t abi_version;
+    int64_t time_numerator;
+    uint32_t time_denominator;
+    float position[3];
+    float rotation_xyzw[4];
+    uint32_t interpolation;
+} ScreenPhysicalPoseKnotV2;
+
+typedef struct {
+    uint32_t abi_version;
     int64_t frame_index;
-    int64_t frame_time_numerator;
-    uint32_t frame_time_denominator;
-    ScreenPhysicalFrameInputRef input;
+    ScreenPhysicalTimedInputSetV2Ref timed_inputs;
+    ScreenPhysicalCameraPoseTrackV2Ref camera_pose_track;
+    ScreenPhysicalScreenPoseTrackV2Ref screen_pose_track;
+    int64_t shutter_open_numerator;
+    uint32_t shutter_open_denominator;
+    int64_t shutter_close_numerator;
+    uint32_t shutter_close_denominator;
     ScreenDeviceProfileRef resolved_device;
     ScreenPhysicalPipelineSnapshotRef resolved_pipeline;
     uint32_t quality;
@@ -208,8 +243,6 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
-    /* Position + unit quaternion are the sole camera-pose authority. */
-    float camera_position[3];
     float focal_length_millimeters;
     float sensor_width_millimeters;
     float sensor_height_millimeters;
@@ -218,7 +251,6 @@ typedef struct {
     float f_stop;
     float near_clip_meters;
     float far_clip_meters;
-    float camera_rotation_xyzw[4];
     float lens_radial_distortion[3];
     float lens_tangential_distortion[2];
     float lens_longitudinal_chromatic_meters[3];
@@ -227,15 +259,10 @@ typedef struct {
     float lens_transmission_rgb[3];
     float lens_center_softness_micrometers;
     float lens_edge_softness_micrometers;
-    float screen_translation[3];
-    float screen_rotation_xyzw[4];
-    /* Physical screen scale is owned only by the resolved device active size. */
 } ScreenSceneGeometryLensParametersV2;
 
 typedef struct {
     uint32_t abi_version;
-    int64_t exposure_duration_numerator;
-    uint32_t exposure_duration_denominator;
     uint16_t temporal_samples;
     uint16_t readout_kind;
     int64_t readout_duration_numerator;
@@ -311,9 +338,12 @@ ScreenDeviceProfileRef screen_device_profile_create(
 void screen_device_profile_release(ScreenDeviceProfileRef profile);
 /*
  * Physical-frame ABI v2. These declarations are the single UI/engine contract.
- * The opaque input carries both the source linear ACEScg RGBA texture and the
- * nonlinear device-signal RGB texture resolved by StudioColor, plus explicit
- * raster placement. Result textures contain linear ACEScg RGBA. The engine
+ * The immutable timed input set retains every source linear ACEScg texture and
+ * matching nonlinear device-signal texture resolved by StudioColor until its
+ * release. A submitted job retains the selected Metal textures independently,
+ * so the set and its lightweight wrappers may be released after submit. Pose
+ * tracks and shutter bounds are exact rational-time inputs. Result textures
+ * contain linear ACEScg RGBA. The engine
  * never applies a preview, DeckLink or render ODT. Texture/result views are
  * borrowed for the documented lifetime of their owning opaque handle; no
  * per-pixel ABI exists.
@@ -324,13 +354,26 @@ ScreenPhysicalTextureRef screen_physical_texture_create_borrowed_metal(
 );
 const void *screen_physical_texture_borrow_metal(ScreenPhysicalTextureRef texture);
 void screen_physical_texture_release(ScreenPhysicalTextureRef texture);
-ScreenPhysicalFrameInputRef screen_physical_frame_input_create(
-    ScreenPhysicalTextureRef source_acescg,
-    ScreenPhysicalTextureRef device_signal,
+ScreenPhysicalTimedInputSetV2Ref screen_physical_timed_input_set_v2_create(
+    const ScreenPhysicalTimedInputSampleV2 *samples,
+    size_t sample_count,
     uint32_t raster_placement,
+    uint32_t sampling_policy,
     const char **error_message
 );
-void screen_physical_frame_input_release(ScreenPhysicalFrameInputRef input);
+void screen_physical_timed_input_set_v2_release(ScreenPhysicalTimedInputSetV2Ref input);
+ScreenPhysicalCameraPoseTrackV2Ref screen_physical_camera_pose_track_v2_create(
+    const ScreenPhysicalPoseKnotV2 *knots,
+    size_t knot_count,
+    const char **error_message
+);
+ScreenPhysicalScreenPoseTrackV2Ref screen_physical_screen_pose_track_v2_create(
+    const ScreenPhysicalPoseKnotV2 *knots,
+    size_t knot_count,
+    const char **error_message
+);
+void screen_physical_camera_pose_track_v2_release(ScreenPhysicalCameraPoseTrackV2Ref track);
+void screen_physical_screen_pose_track_v2_release(ScreenPhysicalScreenPoseTrackV2Ref track);
 ScreenPhysicalFrameJobRef screen_physical_frame_submit(
     const ScreenPhysicalFrameRequestV2 *request,
     const char **error_message

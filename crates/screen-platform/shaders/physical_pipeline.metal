@@ -36,6 +36,7 @@ struct PhysicalPipelineParams {
     float4 screen_translation;
     float4 screen_quaternion;
     float4 panel_angular_scene;
+    float4 shutter;
 };
 
 constant float PI = 3.14159265358979323846f;
@@ -367,6 +368,7 @@ kernel void evaluate_physical_pipeline(
     texture2d<float, access::read> device_signal [[texture(1)]],
     texture2d<float, access::write> output [[texture(2)]],
     constant PhysicalPipelineParams& p [[buffer(0)]],
+    device const float* row_temporal_gains [[buffer(1)]],
     uint2 local_position [[thread_position_in_grid]]
 ) {
     const uint2 position = uint2(local_position.x, local_position.y + p.output_tile.z);
@@ -450,9 +452,11 @@ kernel void evaluate_physical_pipeline(
         + p.strengths.y * (continuous - ideal.rgb)
         + p.strengths.z * (physical - continuous)
         + (spread - physical);
-    const float temporal_gain = 1.0f + p.strengths.w * (p.levels.w - 1.0f);
+    const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
     const float3 temporally_integrated = staged * temporal_gain;
     const float3 covered = apply_flat_cover(temporally_integrated, p);
+    const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);
+    const float3 shuttered = covered * shutter_scale;
     float3 selected;
     switch (p.semantics.z) {
         case 0: selected = ideal.rgb; break;
@@ -462,7 +466,22 @@ kernel void evaluate_physical_pipeline(
         case 4: selected = spread; break;
         case 5: selected = covered; break;
         case 6: selected = covered; break;
-        default: selected = ideal.rgb + p.strengths.x * (covered - ideal.rgb); break;
+        case 7: selected = shuttered; break;
+        default: selected = ideal.rgb + p.strengths.x * (shuttered - ideal.rgb); break;
     }
     output.write(float4(selected, ideal.a), position);
+}
+
+kernel void accumulate_physical_pipeline(
+    texture2d<float, access::read> sample [[texture(0)]],
+    texture2d<float, access::read_write> accumulated [[texture(1)]],
+    constant float2 &weight_reset [[buffer(0)]],
+    uint2 position [[thread_position_in_grid]])
+{
+    if (position.x >= sample.get_width() || position.y >= sample.get_height()) {
+        return;
+    }
+    const float4 weighted = sample.read(position) * weight_reset.x;
+    accumulated.write(weight_reset.y != 0.0f ? weighted : accumulated.read(position) + weighted,
+        position);
 }

@@ -191,8 +191,17 @@ pub struct PhysicalPipelineExecutionPlan {
     pub cover: CoverGlassProfile,
     pub environment: ProceduralEnvironment,
     pub scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
+    pub camera_position: Vec3,
+    pub camera_rotation: screen_geometry::Quaternion,
+    pub screen_translation: Vec3,
+    pub screen_rotation: screen_geometry::Quaternion,
     pub scene_geometry_amount: f32,
     pub lens_amount: f32,
+    pub frame_time: RationalTime,
+    pub shutter_open: RationalTime,
+    pub shutter_close: RationalTime,
+    pub shutter_motion: ResolvedShutterMotionSnapshot,
+    pub shutter_motion_amount: f32,
     pub requested_intermediate: PhysicalIntermediate,
 }
 
@@ -334,6 +343,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         plan.temporal_emission_amount,
         plan.scene_geometry_amount,
         plan.lens_amount,
+        plan.shutter_motion_amount,
     ]
     .into_iter()
     .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
@@ -350,7 +360,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         .map_err(ApplicationError::Cover)?;
     let resolved_scene = plan
         .scene_geometry_lens
-        .resolve(plan.lens_amount)
+        .resolve(
+            plan.camera_position,
+            plan.camera_rotation,
+            plan.screen_translation,
+            plan.screen_rotation,
+            plan.lens_amount,
+        )
         .map_err(ApplicationError::Geometry)?;
     let geometry = request
         .plan
@@ -668,8 +684,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
                     + (spread[2] - physical[2]),
             ];
+            let resolved_temporal_gain =
+                physical_row_temporal_gain(plan, y as usize, sampling.effective_height as usize)?;
             let temporal_gain =
-                1.0 + plan.temporal_emission_amount * (plan.temporal_emission_gain - 1.0);
+                1.0 + plan.temporal_emission_amount * (resolved_temporal_gain - 1.0);
             let temporally_integrated = staged.map(|value| value * temporal_gain);
             let covered = cover.evaluate(
                 LinearRgb::new(
@@ -687,6 +705,18 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     ),
                 },
             );
+            let exposure_duration = plan
+                .shutter_close
+                .checked_sub(plan.shutter_open)
+                .map_err(ApplicationError::Time)?;
+            let shutter_scale = (exposure_duration.as_seconds() as f32
+                * 2.0_f32.powf(-plan.shutter_motion.neutral_density_stops))
+            .powf(plan.shutter_motion_amount);
+            let shuttered = LinearRgb::new(
+                covered.r * shutter_scale,
+                covered.g * shutter_scale,
+                covered.b * shutter_scale,
+            );
             let selected = match plan.requested_intermediate {
                 PhysicalIntermediate::SourceAcesCg => ideal[0..3].try_into().expect("RGB"),
                 PhysicalIntermediate::DeviceSignal => [
@@ -699,10 +729,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::PanelLightSpread => spread,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::SceneGeometryLens => [covered.r, covered.g, covered.b],
+                PhysicalIntermediate::ShutterMotion => [shuttered.r, shuttered.g, shuttered.b],
                 PhysicalIntermediate::DevelopedAcesCg => [
-                    ideal[0] + plan.screen_amount * (covered.r - ideal[0]),
-                    ideal[1] + plan.screen_amount * (covered.g - ideal[1]),
-                    ideal[2] + plan.screen_amount * (covered.b - ideal[2]),
+                    ideal[0] + plan.screen_amount * (shuttered.r - ideal[0]),
+                    ideal[1] + plan.screen_amount * (shuttered.g - ideal[1]),
+                    ideal[2] + plan.screen_amount * (shuttered.b - ideal[2]),
                 ],
                 _ => return Err(ApplicationError::UnsupportedPhysicalIntermediate),
             };
@@ -715,6 +746,111 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         acescg: output,
         diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
     })
+}
+
+/// Reuses the historical exact rolling-row timing and analytic panel temporal
+/// integral. Residual flicker remains frame-uniform unless explicit analytic
+/// banding is enabled, matching the prior capture scheduler.
+pub fn physical_row_temporal_gain(
+    plan: PhysicalPipelineExecutionPlan,
+    row: usize,
+    height: usize,
+) -> Result<f32, ApplicationError> {
+    if matches!(plan.shutter_motion.readout, SensorReadout::Global)
+        || plan.panel.temporal_emission.analytic_banding.amount == 0.0
+    {
+        return Ok(plan.temporal_emission_gain);
+    }
+    let center = match plan.shutter_motion.readout {
+        SensorReadout::Rolling {
+            duration,
+            direction,
+        } => rolling_row_center_time(plan.frame_time, duration, row, height, direction)?,
+        SensorReadout::Global => unreachable!("global shutter returned above"),
+    };
+    let exposure_duration = plan
+        .shutter_close
+        .checked_sub(plan.shutter_open)
+        .map_err(ApplicationError::Time)?;
+    let half = exposure_duration
+        .checked_mul_ratio(1, 2)
+        .map_err(ApplicationError::Time)?;
+    let start = center.checked_sub(half).map_err(ApplicationError::Time)?;
+    let end = center.checked_add(half).map_err(ApplicationError::Time)?;
+    plan.panel
+        .temporal_emission
+        .average_gain(start, end)
+        .map_err(ApplicationError::Panel)
+}
+
+/// One exact quadrature interval scheduled by Rust for a global frame or one
+/// rolling-shutter row. `row` is `None` for global shutter and otherwise names
+/// the only output row to which the sample applies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhysicalShutterSample {
+    pub row: Option<usize>,
+    pub start: RationalTime,
+    pub time: RationalTime,
+    pub end: RationalTime,
+    pub weight_seconds: f64,
+}
+
+/// Reuses the historical shutter quadrature and rolling-row center semantics.
+/// The caller supplies exact open/close bounds; no frame rate or velocity is
+/// inferred. Motion sample count is bounded by the historical `[1, 64]` range.
+pub fn physical_shutter_schedule(
+    shutter_open: RationalTime,
+    shutter_close: RationalTime,
+    temporal_samples: u16,
+    readout: SensorReadout,
+    output_height: usize,
+) -> Result<Vec<PhysicalShutterSample>, ApplicationError> {
+    let duration = shutter_close
+        .checked_sub(shutter_open)
+        .map_err(ApplicationError::Time)?;
+    if duration.numerator() <= 0 || output_height == 0 {
+        return Err(ApplicationError::InvalidShutter);
+    }
+    let center = shutter_open
+        .checked_add(
+            duration
+                .checked_mul_ratio(1, 2)
+                .map_err(ApplicationError::Time)?,
+        )
+        .map_err(ApplicationError::Time)?;
+    let append = |row, center, output: &mut Vec<PhysicalShutterSample>| {
+        for sample in shutter_quadrature(center, duration, temporal_samples)? {
+            output.push(PhysicalShutterSample {
+                row,
+                start: sample.start,
+                time: sample.time,
+                end: sample.end,
+                weight_seconds: sample.weight_seconds,
+            });
+        }
+        Ok::<(), ApplicationError>(())
+    };
+    let mut scheduled = Vec::new();
+    match readout {
+        SensorReadout::Global => append(None, center, &mut scheduled)?,
+        SensorReadout::Rolling {
+            duration: readout_duration,
+            direction,
+        } => {
+            scheduled.reserve(output_height * usize::from(temporal_samples));
+            for row in 0..output_height {
+                let row_center = rolling_row_center_time(
+                    center,
+                    readout_duration,
+                    row,
+                    output_height,
+                    direction,
+                )?;
+                append(Some(row), row_center, &mut scheduled)?;
+            }
+        }
+    }
+    Ok(scheduled)
 }
 
 #[derive(Clone, Debug)]
@@ -5805,8 +5941,30 @@ mod tests {
                 cover: CoverGlassProfile::NEUTRAL,
                 environment: ProceduralEnvironment::NONE,
                 scene_geometry_lens: ResolvedSceneGeometryLensSnapshot::REFERENCE,
+                camera_position: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                camera_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
+                screen_translation: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                screen_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
                 scene_geometry_amount: 0.0,
                 lens_amount: 0.0,
+                frame_time: RationalTime::new(0, 1).expect("valid fixture time"),
+                shutter_open: RationalTime::new(-1, 96).expect("valid shutter open"),
+                shutter_close: RationalTime::new(1, 96).expect("valid shutter close"),
+                shutter_motion: ResolvedShutterMotionSnapshot {
+                    temporal_samples: 1,
+                    readout: SensorReadout::Global,
+                    neutral_density_stops: 0.0,
+                    noise_seed: 0,
+                },
+                shutter_motion_amount: 0.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         }
@@ -6058,7 +6216,7 @@ mod tests {
         let mut first = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
         first.plan.scene_geometry_amount = 1.0;
         first.plan.lens_amount = 1.0;
-        first.plan.scene_geometry_lens.camera_position = Vec3 {
+        first.plan.camera_position = Vec3 {
             x: 0.0,
             y: 0.0,
             z: 0.01,

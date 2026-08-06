@@ -14,11 +14,12 @@ use std::time::Instant;
 #[cfg(target_os = "macos")]
 use metal::foreign_types::{ForeignType, ForeignTypeRef};
 #[cfg(target_os = "macos")]
-use metal::{MTLTexture, TextureRef};
+use metal::{MTLTexture, Texture, TextureRef};
 use screen_application::{
     PhysicalIntermediate, PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot,
     ProceduralTestPattern, RasterPlacement, ResolvedSceneGeometryLensSnapshot,
     ResolvedShutterMotionSnapshot, RollingDirection, SensorReadout, diagnostic_signal,
+    physical_shutter_schedule,
 };
 use screen_camera::CameraDevelopment;
 use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
@@ -26,7 +27,9 @@ use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
     EnvironmentPattern, ProceduralEnvironment,
 };
-use screen_geometry::{LensModel, Quaternion};
+use screen_geometry::{
+    KeyframeInterpolation, LensModel, Quaternion, TransformKeyframe, TransformTrack,
+};
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, FlatPanelQuality, LcdProfile, PanelColorimetry,
     PanelLightSpreadProfile, PanelTechnology, PanelTemporalEmission, ResidualFlicker, StripeLayout,
@@ -57,10 +60,53 @@ pub struct ScreenPhysicalTexture {
     metal_texture: usize,
 }
 
-pub struct ScreenPhysicalFrameInput {
-    source_acescg: ScreenPhysicalTexture,
-    device_signal: ScreenPhysicalTexture,
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalTimedInputSampleV2 {
+    abi_version: u32,
+    time_numerator: i64,
+    time_denominator: u32,
+    source_acescg: *const ScreenPhysicalTexture,
+    device_signal: *const ScreenPhysicalTexture,
+}
+
+#[cfg(target_os = "macos")]
+struct OwnedTimedInputSample {
+    time: RationalTime,
+    source_acescg: Texture,
+    device_signal: Texture,
+}
+
+#[cfg(not(target_os = "macos"))]
+struct OwnedTimedInputSample {
+    time: RationalTime,
+    source_acescg: usize,
+    device_signal: usize,
+}
+
+pub struct ScreenPhysicalTimedInputSetV2 {
+    samples: Vec<OwnedTimedInputSample>,
     raster_placement: u32,
+    sampling_policy: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalPoseKnotV2 {
+    abi_version: u32,
+    time_numerator: i64,
+    time_denominator: u32,
+    position: [f32; 3],
+    rotation_xyzw: [f32; 4],
+    interpolation: u32,
+}
+
+pub struct ScreenPhysicalCameraPoseTrackV2 {
+    track: TransformTrack,
+}
+
+pub struct ScreenPhysicalScreenPoseTrackV2 {
+    track: TransformTrack,
 }
 
 #[repr(C)]
@@ -89,9 +135,13 @@ pub struct ScreenPhysicalStageContributionV2 {
 pub struct ScreenPhysicalFrameRequestV2 {
     abi_version: u32,
     frame_index: i64,
-    frame_time_numerator: i64,
-    frame_time_denominator: u32,
-    input: *const ScreenPhysicalFrameInput,
+    timed_inputs: *const ScreenPhysicalTimedInputSetV2,
+    camera_pose_track: *const ScreenPhysicalCameraPoseTrackV2,
+    screen_pose_track: *const ScreenPhysicalScreenPoseTrackV2,
+    shutter_open_numerator: i64,
+    shutter_open_denominator: u32,
+    shutter_close_numerator: i64,
+    shutter_close_denominator: u32,
     resolved_device: *const ScreenDeviceProfile,
     resolved_pipeline: *const ScreenPhysicalPipelineSnapshot,
     quality: u32,
@@ -183,6 +233,7 @@ pub struct ScreenPhysicalFrameJob {
     native_height: u32,
     parameter_revision: u64,
     parameter_hash: [u8; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
+    static_input: bool,
     worker: Mutex<Option<JoinHandle<()>>>,
     // Boxes keep every C-borrowed pointer stable when the owning vectors grow.
     #[allow(clippy::vec_box)]
@@ -225,37 +276,169 @@ pub unsafe extern "C" fn screen_physical_texture_release(texture: *mut ScreenPhy
     }
 }
 
+#[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_physical_frame_input_create(
-    source_acescg: *const ScreenPhysicalTexture,
-    device_signal: *const ScreenPhysicalTexture,
+pub unsafe extern "C" fn screen_physical_timed_input_set_v2_create(
+    samples: *const ScreenPhysicalTimedInputSampleV2,
+    sample_count: usize,
     raster_placement: u32,
+    sampling_policy: u32,
     error_message: *mut *const c_char,
-) -> *mut ScreenPhysicalFrameInput {
-    if source_acescg.is_null()
-        || device_signal.is_null()
+) -> *mut ScreenPhysicalTimedInputSetV2 {
+    if samples.is_null()
+        || sample_count == 0
         || raster_placement > SCREEN_PHYSICAL_RASTER_ONE_TO_ONE
+        || sampling_policy > 2
     {
-        unsafe { set_error(error_message, b"invalid physical frame input\0") };
+        unsafe { set_error(error_message, b"invalid timed physical input set\0") };
         return std::ptr::null_mut();
     }
-    // SAFETY: both non-null texture wrappers are borrowed for this call. The
-    // copied views do not duplicate the underlying Metal textures.
-    let source_acescg = unsafe { *source_acescg };
-    let device_signal = unsafe { *device_signal };
+    let samples = unsafe { std::slice::from_raw_parts(samples, sample_count) };
+    let mut owned = Vec::with_capacity(sample_count);
+    let mut previous = None;
+    for sample in samples {
+        if sample.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
+            || sample.source_acescg.is_null()
+            || sample.device_signal.is_null()
+        {
+            unsafe { set_error(error_message, b"invalid timed physical input sample\0") };
+            return std::ptr::null_mut();
+        }
+        let Ok(time) = RationalTime::new(sample.time_numerator, sample.time_denominator) else {
+            unsafe { set_error(error_message, b"invalid timed input rational time\0") };
+            return std::ptr::null_mut();
+        };
+        if previous.is_some_and(|value| value >= time) {
+            unsafe {
+                set_error(
+                    error_message,
+                    b"timed input samples must be strictly ordered\0",
+                )
+            };
+            return std::ptr::null_mut();
+        }
+        previous = Some(time);
+        let source_pointer = unsafe { (*sample.source_acescg).metal_texture as *mut MTLTexture };
+        let signal_pointer = unsafe { (*sample.device_signal).metal_texture as *mut MTLTexture };
+        let source = unsafe { TextureRef::from_ptr(source_pointer) }.to_owned();
+        let signal = unsafe { TextureRef::from_ptr(signal_pointer) }.to_owned();
+        if source.width() != signal.width() || source.height() != signal.height() {
+            unsafe { set_error(error_message, b"timed source/device rasters differ\0") };
+            return std::ptr::null_mut();
+        }
+        owned.push(OwnedTimedInputSample {
+            time,
+            source_acescg: source,
+            device_signal: signal,
+        });
+    }
     unsafe { set_error(error_message, b"\0") };
-    Box::into_raw(Box::new(ScreenPhysicalFrameInput {
-        source_acescg,
-        device_signal,
+    Box::into_raw(Box::new(ScreenPhysicalTimedInputSetV2 {
+        samples: owned,
         raster_placement,
+        sampling_policy,
     }))
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_physical_frame_input_release(input: *mut ScreenPhysicalFrameInput) {
+pub unsafe extern "C" fn screen_physical_timed_input_set_v2_release(
+    input: *mut ScreenPhysicalTimedInputSetV2,
+) {
     if !input.is_null() {
-        // SAFETY: the ABI requires the uniquely owned input returned by create.
         unsafe { drop(Box::from_raw(input)) };
+    }
+}
+
+fn pose_track(knots: &[ScreenPhysicalPoseKnotV2], prefix: &str) -> Option<TransformTrack> {
+    let keyframes = knots
+        .iter()
+        .enumerate()
+        .map(|(index, knot)| {
+            if knot.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION {
+                return None;
+            }
+            let interpolation = match knot.interpolation {
+                0 => KeyframeInterpolation::Hold,
+                1 => KeyframeInterpolation::Linear,
+                2 => KeyframeInterpolation::Smooth,
+                _ => return None,
+            };
+            Some(TransformKeyframe {
+                id: format!("{prefix}-{index}"),
+                time: RationalTime::new(knot.time_numerator, knot.time_denominator).ok()?,
+                translation: Vec3 {
+                    x: knot.position[0],
+                    y: knot.position[1],
+                    z: knot.position[2],
+                },
+                rotation: Quaternion {
+                    x: knot.rotation_xyzw[0],
+                    y: knot.rotation_xyzw[1],
+                    z: knot.rotation_xyzw[2],
+                    w: knot.rotation_xyzw[3],
+                },
+                interpolation,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let track = TransformTrack { keyframes };
+    track.validate().ok()?;
+    Some(track)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_camera_pose_track_v2_create(
+    knots: *const ScreenPhysicalPoseKnotV2,
+    knot_count: usize,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalCameraPoseTrackV2 {
+    if knots.is_null() || knot_count == 0 {
+        unsafe { set_error(error_message, b"invalid camera pose track\0") };
+        return std::ptr::null_mut();
+    }
+    let knots = unsafe { std::slice::from_raw_parts(knots, knot_count) };
+    let Some(track) = pose_track(knots, "camera") else {
+        unsafe { set_error(error_message, b"invalid camera pose knots\0") };
+        return std::ptr::null_mut();
+    };
+    unsafe { set_error(error_message, b"\0") };
+    Box::into_raw(Box::new(ScreenPhysicalCameraPoseTrackV2 { track }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_screen_pose_track_v2_create(
+    knots: *const ScreenPhysicalPoseKnotV2,
+    knot_count: usize,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalScreenPoseTrackV2 {
+    if knots.is_null() || knot_count == 0 {
+        unsafe { set_error(error_message, b"invalid screen pose track\0") };
+        return std::ptr::null_mut();
+    }
+    let knots = unsafe { std::slice::from_raw_parts(knots, knot_count) };
+    let Some(track) = pose_track(knots, "screen") else {
+        unsafe { set_error(error_message, b"invalid screen pose knots\0") };
+        return std::ptr::null_mut();
+    };
+    unsafe { set_error(error_message, b"\0") };
+    Box::into_raw(Box::new(ScreenPhysicalScreenPoseTrackV2 { track }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_camera_pose_track_v2_release(
+    track: *mut ScreenPhysicalCameraPoseTrackV2,
+) {
+    if !track.is_null() {
+        unsafe { drop(Box::from_raw(track)) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_screen_pose_track_v2_release(
+    track: *mut ScreenPhysicalScreenPoseTrackV2,
+) {
+    if !track.is_null() {
+        unsafe { drop(Box::from_raw(track)) };
     }
 }
 
@@ -329,8 +512,7 @@ fn contribution_amounts(
             return None;
         }
     }
-    if contributions[8..9].iter().any(|value| value.amount != 0.0)
-        || contributions[10].amount != 0.0
+    if contributions[10].amount != 0.0
         || contributions[9].discrete_enabled
         || contributions[11].discrete_enabled
     {
@@ -350,27 +532,11 @@ fn diagnostic_snapshot(
     state: u32,
     progress: f32,
     elapsed_nanoseconds: u64,
-    emission_message: String,
-    geometry_message: String,
-    spread_message: String,
-    temporal_message: String,
-    cover_message: String,
-    environment_message: String,
-    scene_message: String,
-    lens_message: String,
+    stage_messages: [String; 9],
 ) -> Box<OwnedDiagnosticSnapshot> {
-    let mut authored_messages = vec![
-        emission_message,
-        geometry_message,
-        spread_message,
-        temporal_message,
-        cover_message,
-        environment_message,
-        scene_message,
-        lens_message,
-    ];
+    let mut authored_messages = Vec::from(stage_messages);
     authored_messages.extend(
-        (8..EXPECTED_STAGE_IDS.len()).map(|_| {
+        (9..EXPECTED_STAGE_IDS.len()).map(|_| {
             "unsupported: snapshot validated, evaluator intentionally disabled".to_owned()
         }),
     );
@@ -385,9 +551,9 @@ fn diagnostic_snapshot(
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             domain_id: if index < 6 { DOMAIN_SCREEN } else { 0x200 },
             stage_id: *stage_id,
-            state: if index < 8 { state } else { 0 },
-            progress: if index < 8 { progress } else { 0.0 },
-            elapsed_nanoseconds: if index < 8 { elapsed_nanoseconds } else { 0 },
+            state: if index < 9 { state } else { 0 },
+            progress: if index < 9 { progress } else { 0.0 },
+            elapsed_nanoseconds: if index < 9 { elapsed_nanoseconds } else { 0 },
             message: ScreenUtf8View {
                 bytes: messages[index].as_ptr(),
                 count: messages[index].len(),
@@ -399,6 +565,60 @@ fn diagnostic_snapshot(
         _messages: messages,
         diagnostics,
     })
+}
+
+fn timed_sample_index(
+    samples: &[OwnedTimedInputSample],
+    requested: RationalTime,
+    policy: u32,
+) -> Option<usize> {
+    let times = samples.iter().map(|sample| sample.time).collect::<Vec<_>>();
+    sample_index_for_times(&times, requested, policy)
+}
+
+fn sample_index_for_times(
+    times: &[RationalTime],
+    requested: RationalTime,
+    policy: u32,
+) -> Option<usize> {
+    if times.len() == 1 {
+        return Some(0);
+    }
+    match times.binary_search(&requested) {
+        Ok(index) => Some(index),
+        Err(_) if policy == 0 => None,
+        Err(index) if policy == 1 => index.checked_sub(1),
+        Err(index) => match (index.checked_sub(1), (index < times.len()).then_some(index)) {
+            (Some(left), Some(right)) => {
+                let left_distance = requested.checked_sub(times[left]).ok()?.as_seconds().abs();
+                let right_distance = times[right].checked_sub(requested).ok()?.as_seconds().abs();
+                Some(if left_distance <= right_distance {
+                    left
+                } else {
+                    right
+                })
+            }
+            (Some(left), None) => Some(left),
+            (None, Some(right)) => Some(right),
+            (None, None) => None,
+        },
+    }
+}
+
+fn track_covers(track: &TransformTrack, open: RationalTime, close: RationalTime) -> bool {
+    track.keyframes.len() == 1
+        || track.keyframes.first().is_some_and(|key| key.time <= open)
+            && track.keyframes.last().is_some_and(|key| key.time >= close)
+}
+
+fn track_is_constant(track: &TransformTrack) -> bool {
+    let Some(first) = track.keyframes.first() else {
+        return false;
+    };
+    track
+        .keyframes
+        .iter()
+        .all(|key| key.translation == first.translation && key.rotation == first.rotation)
 }
 
 #[cfg(target_os = "macos")]
@@ -415,8 +635,11 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     let request = unsafe { &*request };
     if request.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
         || request.frame_index < 0
-        || request.frame_time_denominator == 0
-        || request.input.is_null()
+        || request.timed_inputs.is_null()
+        || request.camera_pose_track.is_null()
+        || request.screen_pose_track.is_null()
+        || request.shutter_open_denominator == 0
+        || request.shutter_close_denominator == 0
         || request.resolved_device.is_null()
         || request.resolved_pipeline.is_null()
         || quality(request.quality).is_none()
@@ -460,11 +683,90 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         return std::ptr::null_mut();
     };
     // SAFETY: validated opaque handles remain borrowed for the job lifetime by ABI contract.
-    let input = unsafe { &*request.input };
+    let input = unsafe { &*request.timed_inputs };
+    let camera_track = unsafe { &*request.camera_pose_track };
+    let screen_track = unsafe { &*request.screen_pose_track };
     let device = unsafe { &*request.resolved_device };
     let pipeline = unsafe { &*request.resolved_pipeline };
     let Some(placement) = placement(input.raster_placement) else {
         unsafe { set_error(error_message, b"invalid physical raster placement\0") };
+        return std::ptr::null_mut();
+    };
+    let shutter_open = match RationalTime::new(
+        request.shutter_open_numerator,
+        request.shutter_open_denominator,
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"invalid shutter-open rational time\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let shutter_close = match RationalTime::new(
+        request.shutter_close_numerator,
+        request.shutter_close_denominator,
+    ) {
+        Ok(value) if value > shutter_open => value,
+        _ => {
+            unsafe { set_error(error_message, b"invalid shutter interval\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let exposure_duration = match shutter_close.checked_sub(shutter_open) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"invalid shutter duration\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let frame_time = match shutter_open.checked_add(
+        exposure_duration
+            .checked_mul_ratio(1, 2)
+            .expect("validated exposure can be halved"),
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"invalid shutter midpoint\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    if !track_covers(&camera_track.track, shutter_open, shutter_close)
+        || !track_covers(&screen_track.track, shutter_open, shutter_close)
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"pose tracks do not cover the shutter interval\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
+    if input.samples.len() > 1
+        && (input
+            .samples
+            .first()
+            .is_none_or(|sample| sample.time > shutter_open)
+            || input
+                .samples
+                .last()
+                .is_none_or(|sample| sample.time < shutter_close))
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"timed input range does not cover the shutter interval\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
+    let Some(source_index) = timed_sample_index(&input.samples, frame_time, input.sampling_policy)
+    else {
+        unsafe {
+            set_error(
+                error_message,
+                b"no source sample at required shutter time\0",
+            )
+        };
         return std::ptr::null_mut();
     };
     let Some(quality) = quality(request.quality) else {
@@ -484,6 +786,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::PanelLightSpread
             | PhysicalIntermediate::CoverEnvironment
             | PhysicalIntermediate::SceneGeometryLens
+            | PhysicalIntermediate::ShutterMotion
             | PhysicalIntermediate::DevelopedAcesCg
     ) {
         unsafe {
@@ -534,19 +837,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         };
         return std::ptr::null_mut();
     }
-    let frame_time =
-        match RationalTime::new(request.frame_time_numerator, request.frame_time_denominator) {
-            Ok(value) => value,
-            Err(_) => {
-                unsafe { set_error(error_message, b"invalid exact physical frame time\0") };
-                return std::ptr::null_mut();
-            }
-        };
-    let half_exposure = match pipeline
-        .shutter_motion
-        .exposure_duration
-        .checked_mul_ratio(1, 2)
-    {
+    let half_exposure = match exposure_duration.checked_mul_ratio(1, 2) {
         Ok(value) => value,
         Err(_) => {
             unsafe { set_error(error_message, b"invalid temporal exposure interval\0") };
@@ -566,6 +857,20 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         unsafe { set_error(error_message, b"invalid panel temporal emission interval\0") };
         return std::ptr::null_mut();
     };
+    let camera_pose = match camera_track.track.sample(frame_time) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"camera pose cannot be sampled\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let screen_pose = match screen_track.track.sample(frame_time) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"screen pose cannot be sampled\0") };
+            return std::ptr::null_mut();
+        }
+    };
     let plan = PhysicalPipelineExecutionPlan {
         panel: device.profile,
         panel_light_spread: device.light_spread,
@@ -581,29 +886,141 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         cover: pipeline.cover,
         environment: pipeline.environment,
         scene_geometry_lens: pipeline.scene_geometry_lens,
+        camera_position: camera_pose.translation,
+        camera_rotation: camera_pose.rotation,
+        screen_translation: screen_pose.translation,
+        screen_rotation: screen_pose.rotation,
         scene_geometry_amount: contributions[6].amount,
         lens_amount: contributions[7].amount,
+        frame_time,
+        shutter_open,
+        shutter_close,
+        shutter_motion: pipeline.shutter_motion,
+        shutter_motion_amount: contributions[8].amount,
         requested_intermediate,
     };
+    let temporally_varying = input.samples.len() > 1
+        || !track_is_constant(&camera_track.track)
+        || !track_is_constant(&screen_track.track);
+    if temporally_varying
+        && matches!(
+            pipeline.shutter_motion.readout,
+            SensorReadout::Rolling { .. }
+        )
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"animated rolling-shutter integration is not yet supported by the Metal batch executor\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
+    let schedule = match physical_shutter_schedule(
+        shutter_open,
+        shutter_close,
+        pipeline.shutter_motion.temporal_samples,
+        pipeline.shutter_motion.readout,
+        request.requested_height as usize,
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"invalid shutter integration schedule\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let mut temporal_inputs = Vec::new();
+    if temporally_varying {
+        for sample in schedule.iter().filter(|sample| sample.row.is_none()) {
+            let Some(index) =
+                timed_sample_index(&input.samples, sample.time, input.sampling_policy)
+            else {
+                unsafe {
+                    set_error(
+                        error_message,
+                        b"source sampling policy cannot resolve a required shutter time\0",
+                    )
+                };
+                return std::ptr::null_mut();
+            };
+            let camera_pose = match camera_track.track.sample(sample.time) {
+                Ok(value) => value,
+                Err(_) => {
+                    unsafe {
+                        set_error(
+                            error_message,
+                            b"camera track cannot resolve shutter sample\0",
+                        )
+                    };
+                    return std::ptr::null_mut();
+                }
+            };
+            let screen_pose = match screen_track.track.sample(sample.time) {
+                Ok(value) => value,
+                Err(_) => {
+                    unsafe {
+                        set_error(
+                            error_message,
+                            b"screen track cannot resolve shutter sample\0",
+                        )
+                    };
+                    return std::ptr::null_mut();
+                }
+            };
+            let temporal_gain = match device
+                .profile
+                .temporal_emission
+                .average_gain(sample.start, sample.end)
+            {
+                Ok(value) => value,
+                Err(_) => {
+                    unsafe {
+                        set_error(
+                            error_message,
+                            b"panel temporal sample cannot be integrated\0",
+                        )
+                    };
+                    return std::ptr::null_mut();
+                }
+            };
+            let mut sample_plan = plan;
+            sample_plan.frame_time = sample.time;
+            sample_plan.camera_position = camera_pose.translation;
+            sample_plan.camera_rotation = camera_pose.rotation;
+            sample_plan.screen_translation = screen_pose.translation;
+            sample_plan.screen_rotation = screen_pose.rotation;
+            sample_plan.temporal_emission_gain = temporal_gain;
+            temporal_inputs.push((
+                input.samples[index].source_acescg.to_owned(),
+                input.samples[index].device_signal.to_owned(),
+                sample_plan,
+                sample.weight_seconds as f32,
+            ));
+        }
+    } else {
+        temporal_inputs.push((
+            input.samples[source_index].source_acescg.to_owned(),
+            input.samples[source_index].device_signal.to_owned(),
+            plan,
+            1.0,
+        ));
+    }
     let shared = Arc::new(PhysicalJobShared {
         outcome: Mutex::new(PhysicalJobOutcome::Rendering),
         progress_bits: AtomicU32::new(0.0_f32.to_bits()),
         cancelled: AtomicBool::new(false),
     });
     let worker_shared = Arc::clone(&shared);
-    let source = input.source_acescg.metal_texture;
-    let signal = input.device_signal.metal_texture;
     let worker = std::thread::spawn(move || {
         let started = Instant::now();
-        // SAFETY: the ABI requires the host to retain both Metal textures through job release.
-        let source = unsafe { TextureRef::from_ptr(source as *mut MTLTexture) };
-        // SAFETY: same lifetime and ownership rule as the source texture above.
-        let signal = unsafe { TextureRef::from_ptr(signal as *mut MTLTexture) };
-        let result = MetalPhysicalPipeline::new(source.device()).and_then(|backend| {
-            backend.evaluate(
-                source,
-                signal,
-                plan,
+        let device = temporal_inputs[0].0.device();
+        let result = MetalPhysicalPipeline::new(device).and_then(|backend| {
+            let borrowed = temporal_inputs
+                .iter()
+                .map(|(source, signal, plan, weight)| (&**source, &**signal, *plan, *weight))
+                .collect::<Vec<_>>();
+            backend.evaluate_temporal(
+                &borrowed,
                 |progress| {
                     worker_shared
                         .progress_bits
@@ -636,6 +1053,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         native_height: native.effective_height,
         parameter_revision: request.parameter_revision,
         parameter_hash: request.parameter_hash,
+        static_input: !temporally_varying,
         worker: Mutex::new(Some(worker)),
         output_views: Mutex::new(Vec::new()),
         snapshots: Mutex::new(Vec::new()),
@@ -811,14 +1229,22 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         state,
         progress,
         elapsed_nanoseconds,
-        emission,
-        geometry,
-        spread,
-        temporal,
-        cover,
-        environment,
-        scene,
-        lens,
+        [
+            emission,
+            geometry,
+            spread,
+            temporal,
+            cover,
+            environment,
+            scene,
+            lens,
+            if job.static_input {
+                "STATIC_INPUT: exact shutter/rolling/banding evaluation; motion blur inactive"
+                    .to_owned()
+            } else {
+                "MOTION_ACTIVE: Rust-scheduled exact-time samples accumulated by Metal".to_owned()
+            },
+        ],
     );
     let mut snapshots = job
         .snapshots
@@ -955,7 +1381,6 @@ pub struct ScreenEnvironmentParametersV2 {
 #[derive(Clone, Copy)]
 pub struct ScreenSceneGeometryLensParametersV2 {
     abi_version: u32,
-    camera_position: [f32; 3],
     focal_length_millimeters: f32,
     sensor_width_millimeters: f32,
     sensor_height_millimeters: f32,
@@ -964,7 +1389,6 @@ pub struct ScreenSceneGeometryLensParametersV2 {
     f_stop: f32,
     near_clip_meters: f32,
     far_clip_meters: f32,
-    camera_rotation_xyzw: [f32; 4],
     lens_radial_distortion: [f32; 3],
     lens_tangential_distortion: [f32; 2],
     lens_longitudinal_chromatic_meters: [f32; 3],
@@ -973,16 +1397,12 @@ pub struct ScreenSceneGeometryLensParametersV2 {
     lens_transmission_rgb: [f32; 3],
     lens_center_softness_micrometers: f32,
     lens_edge_softness_micrometers: f32,
-    screen_translation: [f32; 3],
-    screen_rotation_xyzw: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ScreenShutterMotionParametersV2 {
     abi_version: u32,
-    exposure_duration_numerator: i64,
-    exposure_duration_denominator: u32,
     temporal_samples: u16,
     readout_kind: u16,
     readout_duration_numerator: i64,
@@ -1198,19 +1618,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         pattern,
     };
     let scene = parameters.scene_geometry_lens;
-    let vec3 = |value: [f32; 3]| Vec3 {
-        x: value[0],
-        y: value[1],
-        z: value[2],
-    };
-    let quaternion = |value: [f32; 4]| Quaternion {
-        x: value[0],
-        y: value[1],
-        z: value[2],
-        w: value[3],
-    };
     let scene_geometry_lens = ResolvedSceneGeometryLensSnapshot {
-        camera_position: vec3(scene.camera_position),
         focal_length_millimeters: scene.focal_length_millimeters,
         sensor_width_millimeters: scene.sensor_width_millimeters,
         sensor_height_millimeters: scene.sensor_height_millimeters,
@@ -1222,7 +1630,6 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         f_stop: scene.f_stop,
         near_clip_meters: scene.near_clip_meters,
         far_clip_meters: scene.far_clip_meters,
-        camera_rotation: quaternion(scene.camera_rotation_xyzw),
         lens: LensModel {
             radial_distortion: scene.lens_radial_distortion,
             tangential_distortion: scene.lens_tangential_distortion,
@@ -1233,13 +1640,9 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
             center_softness_micrometers: scene.lens_center_softness_micrometers,
             edge_softness_micrometers: scene.lens_edge_softness_micrometers,
         },
-        screen_translation: vec3(scene.screen_translation),
-        screen_rotation: quaternion(scene.screen_rotation_xyzw),
     };
-    let finite_scene = scene
-        .camera_position
+    let finite_scene = [scene.focal_length_millimeters]
         .into_iter()
-        .chain([scene.focal_length_millimeters])
         .chain([
             scene.sensor_width_millimeters,
             scene.sensor_height_millimeters,
@@ -1247,7 +1650,6 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         .chain(scene.lens_shift)
         .chain([scene.focus_distance_meters, scene.f_stop])
         .chain([scene.near_clip_meters, scene.far_clip_meters])
-        .chain(scene.camera_rotation_xyzw)
         .chain(scene.lens_radial_distortion)
         .chain(scene.lens_tangential_distortion)
         .chain(scene.lens_longitudinal_chromatic_meters)
@@ -1258,8 +1660,6 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
             scene.lens_center_softness_micrometers,
             scene.lens_edge_softness_micrometers,
         ])
-        .chain(scene.screen_translation)
-        .chain(scene.screen_rotation_xyzw)
         .all(f32::is_finite);
     if !finite_scene
         || scene.focal_length_millimeters <= 0.0
@@ -1274,16 +1674,6 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         return std::ptr::null_mut();
     }
     let shutter = parameters.shutter_motion;
-    let exposure_duration = match RationalTime::new(
-        shutter.exposure_duration_numerator,
-        shutter.exposure_duration_denominator,
-    ) {
-        Ok(value) if value.numerator() > 0 => value,
-        _ => {
-            unsafe { set_error(error_message, b"invalid exposure duration\0") };
-            return std::ptr::null_mut();
-        }
-    };
     let readout = match shutter.readout_kind {
         0 => SensorReadout::Global,
         1 => {
@@ -1323,7 +1713,6 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         return std::ptr::null_mut();
     }
     let shutter_motion = ResolvedShutterMotionSnapshot {
-        exposure_duration,
         temporal_samples: shutter.temporal_samples,
         readout,
         neutral_density_stops: shutter.neutral_density_stops,
@@ -1946,7 +2335,6 @@ mod tests {
             },
             scene_geometry_lens: ScreenSceneGeometryLensParametersV2 {
                 abi_version: version,
-                camera_position: [0.0, 0.0, 1.0],
                 focal_length_millimeters: 50.0,
                 sensor_width_millimeters: 36.0,
                 sensor_height_millimeters: 24.0,
@@ -1955,7 +2343,6 @@ mod tests {
                 f_stop: 2.8,
                 near_clip_meters: 0.01,
                 far_clip_meters: 100.0,
-                camera_rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
                 lens_radial_distortion: [0.0; 3],
                 lens_tangential_distortion: [0.0; 2],
                 lens_longitudinal_chromatic_meters: [0.0; 3],
@@ -1964,13 +2351,9 @@ mod tests {
                 lens_transmission_rgb: [1.0; 3],
                 lens_center_softness_micrometers: 0.0,
                 lens_edge_softness_micrometers: 0.0,
-                screen_translation: [0.0, 0.0, 0.0],
-                screen_rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
             },
             shutter_motion: ScreenShutterMotionParametersV2 {
                 abi_version: version,
-                exposure_duration_numerator: 1,
-                exposure_duration_denominator: 48,
                 temporal_samples: 1,
                 readout_kind: 0,
                 readout_duration_numerator: 1,
@@ -2002,58 +2385,97 @@ mod tests {
     }
 
     #[test]
-    fn physical_frame_input_keeps_both_typed_texture_views_and_placement() {
-        let source_storage = 1_u8;
-        let device_storage = 2_u8;
-        let source_pointer = (&source_storage as *const u8).cast::<c_void>();
-        let device_pointer = (&device_storage as *const u8).cast::<c_void>();
-        let mut error = std::ptr::null();
-        let source =
-            unsafe { screen_physical_texture_create_borrowed_metal(source_pointer, &mut error) };
-        let device =
-            unsafe { screen_physical_texture_create_borrowed_metal(device_pointer, &mut error) };
-        assert!(!source.is_null());
-        assert!(!device.is_null());
-        let input = unsafe {
-            screen_physical_frame_input_create(
-                source,
-                device,
-                SCREEN_PHYSICAL_RASTER_FILL_CROP,
-                &mut error,
+    fn pose_tracks_preserve_exact_ordered_rational_knots() {
+        let knots = [
+            ScreenPhysicalPoseKnotV2 {
+                abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+                time_numerator: -1,
+                time_denominator: 48,
+                position: [0.0, 0.0, 1.0],
+                rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+                interpolation: 1,
+            },
+            ScreenPhysicalPoseKnotV2 {
+                abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+                time_numerator: 1,
+                time_denominator: 48,
+                position: [0.25, 0.0, 1.0],
+                rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+                interpolation: 1,
+            },
+        ];
+        let track = unsafe {
+            screen_physical_camera_pose_track_v2_create(
+                knots.as_ptr(),
+                knots.len(),
+                std::ptr::null_mut(),
             )
         };
-        assert!(!input.is_null());
-        unsafe {
-            screen_physical_texture_release(source);
-            screen_physical_texture_release(device);
-        }
-        // SAFETY: the input owns copied non-owning views until release.
-        assert_eq!(
-            unsafe { (*input).source_acescg.metal_texture },
-            source_pointer as usize
-        );
-        // SAFETY: the input owns copied non-owning views until release.
-        assert_eq!(
-            unsafe { (*input).device_signal.metal_texture },
-            device_pointer as usize
-        );
-        // SAFETY: the input remains live until the final release below.
-        assert_eq!(
-            unsafe { (*input).raster_placement },
-            SCREEN_PHYSICAL_RASTER_FILL_CROP
-        );
-        unsafe { screen_physical_frame_input_release(input) };
+        assert!(!track.is_null());
+        let midpoint = unsafe { &*track }
+            .track
+            .sample(RationalTime::new(0, 1).expect("exact midpoint"))
+            .expect("sampled pose");
+        assert!((midpoint.translation.x - 0.125).abs() <= 1.0e-7);
+        unsafe { screen_physical_camera_pose_track_v2_release(track) };
+    }
 
-        let invalid = unsafe {
-            screen_physical_frame_input_create(
-                std::ptr::null(),
-                std::ptr::null(),
-                SCREEN_PHYSICAL_RASTER_ONE_TO_ONE + 1,
-                &mut error,
-            )
+    #[test]
+    fn source_sampling_policies_are_exact_floor_and_nearest_with_earlier_ties() {
+        let times = [
+            RationalTime::new(0, 1).expect("zero"),
+            RationalTime::new(1, 24).expect("one frame"),
+        ];
+        let midpoint = RationalTime::new(1, 48).expect("midpoint");
+        assert_eq!(sample_index_for_times(&times, times[1], 0), Some(1));
+        assert_eq!(sample_index_for_times(&times, midpoint, 0), None);
+        assert_eq!(sample_index_for_times(&times, midpoint, 1), Some(0));
+        assert_eq!(sample_index_for_times(&times, midpoint, 2), Some(0));
+        assert_eq!(
+            sample_index_for_times(&times, RationalTime::new(3, 96).expect("nearer later"), 2,),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn one_pose_knot_is_explicitly_constant_but_multi_knot_trajectory_is_motion() {
+        let constant = TransformTrack {
+            keyframes: vec![TransformKeyframe {
+                id: "constant".to_owned(),
+                time: RationalTime::new(0, 1).expect("zero"),
+                translation: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                rotation: Quaternion::from_yaw_degrees(0.0),
+                interpolation: KeyframeInterpolation::Hold,
+            }],
         };
-        assert!(invalid.is_null());
-        assert!(!error.is_null());
+        let mut animated = constant.clone();
+        animated.keyframes.push(TransformKeyframe {
+            id: "animated".to_owned(),
+            time: RationalTime::new(1, 24).expect("one frame"),
+            translation: Vec3 {
+                x: 0.25,
+                y: 0.0,
+                z: 1.0,
+            },
+            rotation: Quaternion::from_orbit_yaw_pitch_degrees(15.0, -5.0),
+            interpolation: KeyframeInterpolation::Linear,
+        });
+        assert!(track_is_constant(&constant));
+        assert!(!track_is_constant(&animated));
+        assert!(track_covers(
+            &constant,
+            RationalTime::new(-1, 48).expect("open"),
+            RationalTime::new(1, 48).expect("close")
+        ));
+        assert!(!track_covers(
+            &animated,
+            RationalTime::new(-1, 48).expect("open"),
+            RationalTime::new(1, 48).expect("close")
+        ));
     }
 
     #[cfg(target_os = "macos")]
@@ -2075,13 +2497,39 @@ mod tests {
                 std::ptr::null_mut(),
             )
         };
+        let timed_sample = ScreenPhysicalTimedInputSampleV2 {
+            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+            time_numerator: 0,
+            time_denominator: 1,
+            source_acescg: source,
+            device_signal: signal,
+        };
         let input = unsafe {
-            screen_physical_frame_input_create(
-                source,
-                signal,
+            screen_physical_timed_input_set_v2_create(
+                &timed_sample,
+                1,
                 SCREEN_PHYSICAL_RASTER_STRETCH,
+                0,
                 std::ptr::null_mut(),
             )
+        };
+        let camera_knot = ScreenPhysicalPoseKnotV2 {
+            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+            time_numerator: 0,
+            time_denominator: 1,
+            position: [0.0, 0.0, 1.0],
+            rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+            interpolation: 0,
+        };
+        let screen_knot = ScreenPhysicalPoseKnotV2 {
+            position: [0.0, 0.0, 0.0],
+            ..camera_knot
+        };
+        let camera_track = unsafe {
+            screen_physical_camera_pose_track_v2_create(&camera_knot, 1, std::ptr::null_mut())
+        };
+        let screen_track = unsafe {
+            screen_physical_screen_pose_track_v2_create(&screen_knot, 1, std::ptr::null_mut())
         };
         let mut panel = DEVICE_PRESETS[0].profile();
         panel.native_width = 2;
@@ -2107,9 +2555,13 @@ mod tests {
         let request = ScreenPhysicalFrameRequestV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             frame_index: 0,
-            frame_time_numerator: 0,
-            frame_time_denominator: 24,
-            input,
+            timed_inputs: input,
+            camera_pose_track: camera_track,
+            screen_pose_track: screen_track,
+            shutter_open_numerator: -1,
+            shutter_open_denominator: 96,
+            shutter_close_numerator: 1,
+            shutter_close_denominator: 96,
             resolved_device: profile,
             resolved_pipeline: pipeline,
             quality: 1,
@@ -2127,6 +2579,15 @@ mod tests {
         };
         let job = unsafe { screen_physical_frame_submit(&request, std::ptr::null_mut()) };
         assert!(!job.is_null());
+        unsafe {
+            screen_physical_timed_input_set_v2_release(input);
+            screen_physical_camera_pose_track_v2_release(camera_track);
+            screen_physical_screen_pose_track_v2_release(screen_track);
+            screen_physical_texture_release(source);
+            screen_physical_texture_release(signal);
+        }
+        drop(source_texture);
+        drop(signal_texture);
         assert!(!unsafe {
             screen_physical_frame_job_cancel(job, ScreenPhysicalIdentity128 { high: 7, low: 8 })
         });
@@ -2176,23 +2637,10 @@ mod tests {
         assert!(messages[6].contains("position + quaternion"));
         assert!(messages[7].contains("thin lens"));
 
-        let mut unsupported = contributions;
-        unsupported[8].amount = 1.0;
-        let invalid_request = ScreenPhysicalFrameRequestV2 {
-            stage_contributions: unsupported.as_ptr(),
-            ..request
-        };
-        let invalid =
-            unsafe { screen_physical_frame_submit(&invalid_request, std::ptr::null_mut()) };
-        assert!(invalid.is_null());
-
         unsafe {
             screen_physical_frame_job_release(job);
             screen_device_profile_release(profile);
             screen_physical_pipeline_snapshot_release(pipeline);
-            screen_physical_frame_input_release(input);
-            screen_physical_texture_release(source);
-            screen_physical_texture_release(signal);
         }
     }
 
