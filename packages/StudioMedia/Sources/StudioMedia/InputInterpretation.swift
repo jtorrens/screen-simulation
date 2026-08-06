@@ -4,11 +4,10 @@ import Foundation
 import ImageIO
 
 public enum StudioSignalMatrix: String, CaseIterable, Identifiable, Sendable {
-    case auto, bt601, bt709, bt2020
+    case bt601, bt709, bt2020
     public var id: String { rawValue }
     public var label: String {
         switch self {
-        case .auto: "Auto"
         case .bt601: "BT.601"
         case .bt709: "BT.709"
         case .bt2020: "BT.2020 NCL"
@@ -17,11 +16,10 @@ public enum StudioSignalMatrix: String, CaseIterable, Identifiable, Sendable {
 }
 
 public enum StudioSignalRange: String, CaseIterable, Identifiable, Sendable {
-    case auto, video, full
+    case video, full
     public var id: String { rawValue }
     public var label: String {
         switch self {
-        case .auto: "Auto"
         case .video: "Video / limitada"
         case .full: "Completa"
         }
@@ -29,11 +27,10 @@ public enum StudioSignalRange: String, CaseIterable, Identifiable, Sendable {
 }
 
 public enum StudioAlphaMode: String, CaseIterable, Identifiable, Sendable {
-    case auto, straight, premultiplied, ignore
+    case straight, premultiplied, ignore
     public var id: String { rawValue }
     public var label: String {
         switch self {
-        case .auto: "Auto"
         case .straight: "Straight"
         case .premultiplied: "Premultiplied"
         case .ignore: "Ignore / Opaque"
@@ -42,7 +39,7 @@ public enum StudioAlphaMode: String, CaseIterable, Identifiable, Sendable {
 }
 
 public struct StudioMediaDetection: Equatable, Sendable {
-    public var proposedInputColorSpace: String?
+    public var proposedInputTransformID: String?
     public var matrix: StudioSignalMatrix?
     public var range: StudioSignalRange?
     public var hasAlpha: Bool
@@ -50,14 +47,14 @@ public struct StudioMediaDetection: Equatable, Sendable {
     public var note: String?
 
     public init(
-        proposedInputColorSpace: String? = nil,
+        proposedInputTransformID: String? = nil,
         matrix: StudioSignalMatrix? = nil,
         range: StudioSignalRange? = nil,
         hasAlpha: Bool = false,
         alpha: StudioAlphaMode? = nil,
         note: String? = nil
     ) {
-        self.proposedInputColorSpace = proposedInputColorSpace
+        self.proposedInputTransformID = proposedInputTransformID
         self.matrix = matrix
         self.range = range
         self.hasAlpha = hasAlpha
@@ -77,17 +74,17 @@ public enum StudioMediaMetadataDetector {
         }
     }
 
-    public static func proposedInputColorSpace(
+    public static func proposedInputTransformID(
         primaries: String?, transfer: String?, matrix: String?
     ) -> String? {
         let value = [primaries, transfer, matrix]
             .compactMap { $0?.lowercased() }.joined(separator: " ")
         if value.contains("2020") && (value.contains("2084") || value.contains("pq")) {
-            return "Rec.2100 ST2084"
+            return "display-rec2100-pq-aces2-hdr-1000"
         }
-        if value.contains("709") { return "Input - Rec.709" }
+        if value.contains("709") { return "display-rec709-aces2-sdr" }
         if value.contains("srgb") || value.contains("s-rgb") {
-            return "sRGB Encoded Rec.709 (sRGB)"
+            return "display-srgb-aces2-sdr"
         }
         return nil
     }
@@ -124,7 +121,7 @@ public enum StudioMediaMetadataDetector {
         default: nil
         }
         return StudioMediaDetection(
-            proposedInputColorSpace: proposedInputColorSpace(
+            proposedInputTransformID: proposedInputTransformID(
                 primaries: primaries, transfer: transfer, matrix: ycbcr
             ),
             matrix: proposedMatrix(ycbcr),
@@ -144,9 +141,9 @@ public enum StudioMediaMetadataDetector {
         let sourceType = CGImageSourceGetType(source) as String?
         let description = [profile, model].compactMap { $0?.lowercased() }.joined(separator: " ")
         let input = description.contains("srgb")
-            ? "sRGB Encoded Rec.709 (sRGB)" : nil
+            ? "display-srgb-aces2-sdr" : nil
         return StudioMediaDetection(
-            proposedInputColorSpace: input,
+            proposedInputTransformID: input,
             range: .full,
             hasAlpha: hasAlpha,
             alpha: hasAlpha && sourceType == "public.png" ? .straight : (hasAlpha ? nil : .ignore)
