@@ -181,6 +181,7 @@ kernel void evaluate_physical_pipeline(
     float3 native = 0.0f;
     float3 spread_native = 0.0f;
     float3 continuous_native = 0.0f;
+    float3 average_device_code = 0.0f;
     for (uint sy = 0; sy < side; ++sy) {
         for (uint sx = 0; sx < side; ++sx) {
             const float2 minimum_uv = (
@@ -191,6 +192,7 @@ kernel void evaluate_physical_pipeline(
             ) / float2(p.output_tile.xy);
             ideal += area_sample(source_acescg, minimum_uv, maximum_uv, p);
             const float4 code = area_sample(device_signal, minimum_uv, maximum_uv, p);
+            average_device_code += code.rgb;
             const float2 device_minimum = minimum_uv * float2(p.source_panel.zw);
             const float2 device_maximum = maximum_uv * float2(p.source_panel.zw);
             native.x += native_channel(code.x, 0, device_minimum, device_maximum, p);
@@ -211,6 +213,7 @@ kernel void evaluate_physical_pipeline(
     native *= reciprocal;
     spread_native *= reciprocal;
     continuous_native *= reciprocal;
+    average_device_code *= reciprocal;
     const float3 physical = float3(
         dot(p.matrix0.xyz, native),
         dot(p.matrix1.xyz, native),
@@ -230,8 +233,14 @@ kernel void evaluate_physical_pipeline(
         + p.strengths.y * (continuous - ideal.rgb)
         + p.strengths.z * (physical - continuous)
         + (spread - physical);
-    output.write(
-        float4(ideal.rgb + p.strengths.x * (staged - ideal.rgb), ideal.a),
-        position
-    );
+    float3 selected;
+    switch (p.semantics.z) {
+        case 0: selected = ideal.rgb; break;
+        case 1: selected = average_device_code; break;
+        case 2: selected = continuous; break;
+        case 3: selected = physical; break;
+        case 4: selected = spread; break;
+        default: selected = ideal.rgb + p.strengths.x * (staged - ideal.rgb); break;
+    }
+    output.write(float4(selected, ideal.a), position);
 }

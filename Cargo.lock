@@ -4523,10 +4523,13 @@ dependencies = [
  "image",
  "metal",
  "screen-application",
+ "screen-camera",
  "screen-contracts",
  "screen-cover",
+ "screen-geometry",
  "screen-panel",
  "screen-platform",
+ "screen-sensor",
 ]
 
 [[package]]

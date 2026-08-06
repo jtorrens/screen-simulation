@@ -23,9 +23,10 @@ where RawValue == UInt32, ID == UInt32 {}
 enum ScreenPhysicalSection: UInt32, PhysicalSectionID {
     case emission = 0x101
     case subpixelGeometry = 0x102
-    case temporal = 0x103
-    case coverGlass = 0x104
-    case environment = 0x105
+    case panelLightSpread = 0x103
+    case temporal = 0x104
+    case coverGlass = 0x105
+    case environment = 0x106
 
     var id: UInt32 { rawValue }
 }
@@ -165,6 +166,22 @@ enum PhysicalRasterPlacement: UInt32, CaseIterable, Identifiable, Sendable {
     var id: UInt32 { rawValue }
 }
 
+enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
+    case sourceACEScg = 0
+    case deviceSignal = 1
+    case panelEmission = 2
+    case subpixelRadiance = 3
+    case panelLightSpread = 4
+    case coverEnvironment = 5
+    case sceneGeometryLens = 6
+    case shutterMotion = 7
+    case sensorNoise = 8
+    case rawMosaic = 9
+    case developedACEScg = 10
+
+    var id: UInt32 { rawValue }
+}
+
 struct PhysicalACEScgTexture: @unchecked Sendable {
     let reference: ScreenPhysicalTextureRef
 }
@@ -179,17 +196,23 @@ struct PhysicalFrameInput: @unchecked Sendable {
     let rasterPlacement: PhysicalRasterPlacement
 }
 
+struct ResolvedPhysicalPipelineSnapshot: @unchecked Sendable {
+    let reference: ScreenPhysicalPipelineSnapshotRef
+}
+
 struct PhysicalFrameRequest: @unchecked Sendable {
     static let abiVersion = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
 
     let frame: PhysicalFrameSelection
     let input: PhysicalFrameInput
     let resolvedDevice: ResolvedDevice
+    let resolvedPipeline: ResolvedPhysicalPipelineSnapshot
     let quality: PhysicalQuality
     let screenAmount: Double
     let captureAmount: Double
     let stageContributions: [PhysicalStageContribution]
     let requestedDimensions: PhysicalDimensions
+    let requestedIntermediate: PhysicalIntermediate
     let cancellationIdentity: PhysicalFrameIdentity
     let progressIdentity: PhysicalFrameIdentity
     let parameterRevision: UInt64
@@ -199,11 +222,13 @@ struct PhysicalFrameRequest: @unchecked Sendable {
         frame: PhysicalFrameSelection,
         input: PhysicalFrameInput,
         resolvedDevice: ResolvedDevice,
+        resolvedPipeline: ResolvedPhysicalPipelineSnapshot,
         quality: PhysicalQuality,
         screenAmount: Double,
         captureAmount: Double,
         stageContributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
+        requestedIntermediate: PhysicalIntermediate,
         cancellationIdentity: PhysicalFrameIdentity,
         progressIdentity: PhysicalFrameIdentity,
         parameterRevision: UInt64,
@@ -217,11 +242,13 @@ struct PhysicalFrameRequest: @unchecked Sendable {
         self.frame = frame
         self.input = input
         self.resolvedDevice = resolvedDevice
+        self.resolvedPipeline = resolvedPipeline
         self.quality = quality
         self.screenAmount = screenAmount
         self.captureAmount = captureAmount
         self.stageContributions = stageContributions
         self.requestedDimensions = requestedDimensions
+        self.requestedIntermediate = requestedIntermediate
         self.cancellationIdentity = cancellationIdentity
         self.progressIdentity = progressIdentity
         self.parameterRevision = parameterRevision
@@ -257,11 +284,13 @@ struct PhysicalStageDiagnostic: Equatable, Sendable {
     let stage: PhysicalStageID
     let state: PhysicalFrameState
     let progress: Double
+    let elapsedNanoseconds: UInt64
     let message: String
 }
 
 struct PhysicalFrameResult: @unchecked Sendable {
-    let outputACEScg: PhysicalACEScgTexture
+    let outputTexture: ScreenPhysicalTextureRef
+    let returnedIntermediate: PhysicalIntermediate
     let nativeDimensions: PhysicalDimensions
     let effectiveDimensions: PhysicalDimensions
     let computedQuality: PhysicalQuality

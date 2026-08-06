@@ -30,8 +30,8 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
         guard absorptionPerMillimeter.count == 3 else {
             throw CoverGlassDomainError.invalidAbsorption
         }
-        var parameters = ScreenCoverGlassParametersV1()
-        parameters.abi_version = 1
+        var parameters = ScreenCoverGlassParametersV2()
+        parameters.abi_version = 2
         parameters.authority = authority == .genericApproximation ? 0 : 1
         parameters.character_strength = Float(characterStrength)
         parameters.thickness_millimeters = Float(thicknessMillimeters)
@@ -60,9 +60,9 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
 enum RustCoverGlassCatalog {
     static func builtIns() throws -> [CoverGlassDefinition] {
         try (0..<screen_cover_glass_preset_count()).map { index in
-            var parameters = ScreenCoverGlassParametersV1()
+            var parameters = ScreenCoverGlassParametersV2()
             guard screen_cover_glass_preset_parameters(index, &parameters),
-                  parameters.abi_version == 1,
+                  parameters.abi_version == 2,
                   let authority = parameters.authority == 0
                     ? CoverGlassAuthority.genericApproximation
                     : parameters.authority == 1
