@@ -98,7 +98,6 @@ typedef struct {
     float safe_maximum;
     bool discrete_enabled;
     bool exact_identity_at_zero;
-    uint8_t reserved[2];
 } ScreenPhysicalStageContributionV2;
 
 typedef struct {

@@ -83,7 +83,6 @@ pub struct ScreenPhysicalStageContributionV2 {
     safe_maximum: f32,
     discrete_enabled: bool,
     exact_identity_at_zero: bool,
-    reserved: [u8; 2],
 }
 
 #[repr(C)]
@@ -314,7 +313,6 @@ fn contribution_amounts(
             || contribution.domain_id != expected_domain
             || contribution.stage_id != EXPECTED_STAGE_IDS[index]
             || contribution.control_semantics != u32::from(discrete)
-            || contribution.reserved != [0, 0]
             || contribution.visual_minimum != 0.0
             || contribution.visual_maximum != 2.0
             || contribution.safe_maximum != 4.0
@@ -1819,7 +1817,6 @@ mod tests {
                 safe_maximum: 4.0,
                 discrete_enabled: false,
                 exact_identity_at_zero: !discrete,
-                reserved: [0, 0],
             }
         })
     }
