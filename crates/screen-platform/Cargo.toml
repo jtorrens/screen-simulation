@@ -5,8 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["full-platform"]
+full-platform = ["ffmpeg-media"]
+flat-panel-metal = []
+ffmpeg-media = ["dep:ffmpeg-next"]
+
 [dependencies]
-ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+ffmpeg-next = { version = "8.1.0", optional = true, default-features = false, features = ["codec", "format", "software-scaling"] }
 rayon = "1.11"
 screen-color = { path = "../screen-color" }
 screen-camera = { path = "../screen-camera" }

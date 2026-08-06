@@ -14,7 +14,7 @@ screen-application = { path = "../screen-application" }
 screen-contracts = { path = "../screen-contracts" }
 screen-cover = { path = "../screen-cover" }
 screen-panel = { path = "../screen-panel" }
-screen-platform = { path = "../screen-platform" }
+screen-platform = { path = "../screen-platform", default-features = false, features = ["flat-panel-metal"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.33"

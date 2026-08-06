@@ -79,6 +79,14 @@ def main() -> int:
     }
     with (BUNDLE / "Contents" / "Info.plist").open("wb") as output:
         plistlib.dump(info, output)
+    run(
+        [
+            "python3",
+            "scripts/check_native_macos_no_ffmpeg.py",
+            str(macos / "ScreenSimulationNative"),
+            str(BUNDLE),
+        ]
+    )
     run(["codesign", "--force", "--deep", "--sign", "-", str(BUNDLE)])
     run(["codesign", "--verify", "--deep", "--strict", str(BUNDLE)])
     return 0

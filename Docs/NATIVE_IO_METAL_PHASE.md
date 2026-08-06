@@ -17,6 +17,19 @@ There is no FFmpeg path or alternate color backend in the native app. Image
 sequences are ordered with Finder's localized standard ordering and request
 only their selected frame.
 
+The Rust/Slint shell still owns its temporary FFmpeg adapter through
+`screen-platform`'s default `full-platform -> ffmpeg-media` feature. The native
+bridge disables those defaults and enables only `flat-panel-metal`. Its graph is
+therefore `ScreenSimulationNative -> screen-native-bridge -> screen-platform
+(flat-panel-metal)` and contains no `ffmpeg-next` or libav dependency. Before
+this split, selecting `MetalFlatPanel` also selected the crate's default media
+adapter and made the Swift linker inherit libav symbols despite the native app
+never calling that route. `scripts/check_native_macos_no_ffmpeg.py` now rejects
+FFmpeg/libav nodes in the bridge graph and rejects matching dylibs, load
+commands, rpaths, symbols, embedded strings or resource names in the native
+executable and bundle. AVFoundation/VideoToolbox and ImageIO remain the only
+native media I/O adapters.
+
 The ACEScg texture is the complete handoff contract for the later physical
 models. This phase does not port or implement a physical formula.
 
