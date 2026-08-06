@@ -36,6 +36,56 @@ and thin-lens rays, chromatic offsets, resolved or area-integrated panel structu
 Fresnel/transmission/reflection, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
+The native-shell physical-frame ABI has one earlier flat-panel compute slice with no camera,
+lens, sensor, temporal, cover or environment operation. Application prepares one immutable
+`FlatPanelPlan`; `screen-panel` owns its physical derivations and CPU oracle, while
+`screen-platform::MetalFlatPanel` is the mandatory macOS product backend. The backend consumes the
+two borrowed typed Metal textures and placement from the v1 frame input. It never resolves color,
+looks up a device preset or interprets source ACEScg as Device RGB. Active evaluation publishes
+RGBA32Float linear ACEScg so a half-float contract input is not quantized a second time; Screen
+amount zero retains the exact source texture instead of dispatching or copying.
+
+The flat kernel uses safe Metal math with contraction disabled. It integrates the
+piecewise-constant source raster over every placed footprint, evaluates signed panel EOTF, and
+analytically integrates RGB/BGR stripe and black-matrix coverage at exact device-cell phase. Work
+is dispatched in 64-output-row tiles. Progress advances only after a complete tile and cancellation
+is checked before every tile; a cancelled job never exposes its partially written texture. Backend
+creation or dispatch failure is an explicit failed job and never selects the CPU oracle.
+
+Flat-panel CPU/Metal conformance covers all four placements and qualities, RGB and BGR, zero and
+45% black matrix, negative and above-one values, alpha, continuous artistic extension, exact
+identity and both RGBA32Float and RGBA16Float contract inputs. The enforced maximum absolute
+channel tolerance is `2e-3`, matching the existing spatial physical boundary and accommodating
+contract input quantization. On the 2026-08-06 Apple M3 Ultra run the adversarial RGBA32Float matrix
+measured `2.861023e-6` maximum deviation and the separately quantized RGBA16Float input measured
+`1.9073486e-6`; these observations do not relax or redefine the enforced bound.
+
+The reproducible flat-panel benchmark is:
+
+```text
+cargo run --release -p screen-platform --example flat_panel_benchmark
+```
+
+It creates two real 3840x2160 RGBA32Float input textures, measures first completed 64-row tile and
+total Metal time, and reports exact allocated input/output texture bytes. The 2026-08-06 Apple M3
+Ultra run measured `1.553 ms` backend setup and the following values; no row, frame or device
+extrapolation is included:
+
+| Device preset | Quality | Output | First tile ms | Total ms | Peak texture bytes |
+|---|---:|---:|---:|---:|---:|
+| Phone LCD 4.7 Retina | Draft | 360x640 | 16.762 | 21.568 | 269,107,200 |
+| Phone LCD 4.7 Retina | Medium | 960x1708 | 1.190 | 10.807 | 291,655,680 |
+| Phone LCD 4.7 Retina | High | 1920x3415 | 4.345 | 36.113 | 370,329,600 |
+| Phone LCD 4.7 Retina | Native | 2250x4002 | 5.399 | 19.492 | 409,492,800 |
+| MacBook Pro Retina 14 | Draft | 360x234 | 1.535 | 3.938 | 266,768,640 |
+| MacBook Pro Retina 14 | Medium | 960x623 | 0.821 | 4.123 | 274,990,080 |
+| MacBook Pro Retina 14 | High | 1920x1247 | 1.603 | 9.788 | 303,728,640 |
+| MacBook Pro Retina 14 | Native | 9072x5892 | 26.181 | 51.235 | 1,120,656,384 |
+| ASUS ProArt PA329CV | Draft | 360x203 | 3.952 | 6.592 | 266,590,080 |
+| ASUS ProArt PA329CV | Medium | 960x540 | 0.737 | 3.754 | 273,715,200 |
+| ASUS ProArt PA329CV | High | 1920x1080 | 1.502 | 8.202 | 298,598,400 |
+| ASUS ProArt PA329CV | Native | 11520x6480 | 46.449 | 74.334 | 1,459,814,400 |
+
 Raster area integration uses per-row horizontal `f32` prefixes, never a full-frame `f32`
 summed-area table. The latter accumulates with total raster area and loses local differences when
 nearby values are subtracted late in a UHD image, producing non-physical large spatial regions.
