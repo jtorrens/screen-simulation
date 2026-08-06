@@ -16,6 +16,37 @@ pub enum PanelTechnology {
     IpsLcd,
 }
 
+/// Precision policy for the orthographic panel surface. Every level covers the
+/// same complete active area; only the sample lattice changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlatPanelQuality {
+    Draft,
+    Medium,
+    High,
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlatPanelGeometry {
+    pub native_width: u32,
+    pub native_height: u32,
+    pub active_width_meters: f32,
+    pub active_height_meters: f32,
+    pub pitch_x_meters: f32,
+    pub pitch_y_meters: f32,
+    pub pixels_per_inch: f32,
+    pub stripe_layout: StripeLayout,
+    pub black_matrix_fraction: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlatPanelSampling {
+    pub effective_width: u32,
+    pub effective_height: u32,
+    pub samples_per_output_pixel: u32,
+    pub subpixel_geometry_resolved: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Chromaticity {
     pub x: f32,
@@ -339,6 +370,71 @@ impl LcdProfile {
         let width_inches = self.active_width.0 / 0.0254;
         let height_inches = self.active_height.0 / 0.0254;
         diagonal_pixels / width_inches.hypot(height_inches)
+    }
+
+    /// Returns every physical-size diagnostic from the profile's sole
+    /// authoritative raster and active-area values.
+    pub fn flat_panel_geometry(self) -> Result<FlatPanelGeometry, PanelError> {
+        let profile = self.validate()?;
+        Ok(FlatPanelGeometry {
+            native_width: profile.native_width,
+            native_height: profile.native_height,
+            active_width_meters: profile.active_width.0,
+            active_height_meters: profile.active_height.0,
+            pitch_x_meters: profile.active_width.0 / profile.native_width as f32,
+            pitch_y_meters: profile.active_height.0 / profile.native_height as f32,
+            pixels_per_inch: profile.pixels_per_inch(),
+            stripe_layout: profile.stripe_layout,
+            black_matrix_fraction: profile.black_matrix_fraction,
+        })
+    }
+
+    /// Derives a quality lattice without changing the panel domain or framing.
+    /// Native exposes one output sample for each horizontal emitter stripe and
+    /// analytically integrates black-matrix coverage inside that footprint.
+    pub fn flat_panel_sampling(
+        self,
+        quality: FlatPanelQuality,
+        requested_width: u32,
+        requested_height: u32,
+    ) -> Result<FlatPanelSampling, PanelError> {
+        let profile = self.validate()?;
+        if requested_width == 0 || requested_height == 0 {
+            return Err(PanelError::EmptyOutputRaster);
+        }
+        let sampling = match quality {
+            FlatPanelQuality::Draft => FlatPanelSampling {
+                effective_width: requested_width,
+                effective_height: requested_height,
+                samples_per_output_pixel: 1,
+                subpixel_geometry_resolved: requested_width
+                    >= profile.native_width.saturating_mul(3)
+                    && requested_height >= profile.native_height,
+            },
+            FlatPanelQuality::Medium => FlatPanelSampling {
+                effective_width: requested_width,
+                effective_height: requested_height,
+                samples_per_output_pixel: 4,
+                subpixel_geometry_resolved: requested_width
+                    >= profile.native_width.saturating_mul(3)
+                    && requested_height >= profile.native_height,
+            },
+            FlatPanelQuality::High => FlatPanelSampling {
+                effective_width: requested_width,
+                effective_height: requested_height,
+                samples_per_output_pixel: 16,
+                subpixel_geometry_resolved: requested_width
+                    >= profile.native_width.saturating_mul(3)
+                    && requested_height >= profile.native_height,
+            },
+            FlatPanelQuality::Native => FlatPanelSampling {
+                effective_width: requested_width.max(profile.native_width.saturating_mul(3)),
+                effective_height: requested_height.max(profile.native_height),
+                samples_per_output_pixel: 1,
+                subpixel_geometry_resolved: true,
+            },
+        };
+        Ok(sampling)
     }
 
     pub fn evaluator(self) -> Result<ValidatedPanelEvaluator, PanelError> {
@@ -947,6 +1043,7 @@ fn inverse3(matrix: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanelError {
     EmptyNativeRaster,
+    EmptyOutputRaster,
     NonPositiveActiveArea,
     InvalidBlackMatrix,
     InvalidEotf,
@@ -963,6 +1060,7 @@ impl fmt::Display for PanelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::EmptyNativeRaster => "LCD native raster must be non-empty",
+            Self::EmptyOutputRaster => "flat panel output raster must be non-empty",
             Self::NonPositiveActiveArea => "LCD active dimensions must be positive",
             Self::InvalidBlackMatrix => "black matrix fraction must be in [0, 1)",
             Self::InvalidEotf => "LCD EOTF gamma must be positive",
@@ -1183,6 +1281,60 @@ mod tests {
         let emission = profile()
             .emission_at_pixel(DeviceRgb::WHITE, screen_contracts::Vec2 { x: 0.01, y: 0.5 });
         assert_eq!(emission, LinearRgb::new(0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn flat_geometry_derives_pitch_and_ppi_from_one_profile() {
+        let panel = profile();
+        let geometry = panel.flat_panel_geometry().expect("valid flat geometry");
+        assert_eq!(geometry.native_width, panel.native_width);
+        assert_eq!(geometry.native_height, panel.native_height);
+        assert_eq!(
+            geometry.pitch_x_meters,
+            panel.active_width.0 / panel.native_width as f32
+        );
+        assert_eq!(
+            geometry.pitch_y_meters,
+            panel.active_height.0 / panel.native_height as f32
+        );
+        assert_eq!(geometry.pixels_per_inch, panel.pixels_per_inch());
+    }
+
+    #[test]
+    fn quality_lattices_preserve_domain_and_native_resolves_stripes() {
+        let panel = profile();
+        let draft = panel
+            .flat_panel_sampling(FlatPanelQuality::Draft, 320, 180)
+            .expect("draft lattice");
+        let medium = panel
+            .flat_panel_sampling(FlatPanelQuality::Medium, 320, 180)
+            .expect("medium lattice");
+        let high = panel
+            .flat_panel_sampling(FlatPanelQuality::High, 320, 180)
+            .expect("high lattice");
+        let native = panel
+            .flat_panel_sampling(FlatPanelQuality::Native, 320, 180)
+            .expect("native lattice");
+        assert_eq!((draft.effective_width, draft.effective_height), (320, 180));
+        assert_eq!(
+            (medium.effective_width, medium.effective_height),
+            (320, 180)
+        );
+        assert_eq!((high.effective_width, high.effective_height), (320, 180));
+        assert_eq!(
+            (native.effective_width, native.effective_height),
+            (panel.native_width * 3, panel.native_height)
+        );
+        assert_eq!(
+            [
+                draft.samples_per_output_pixel,
+                medium.samples_per_output_pixel,
+                high.samples_per_output_pixel,
+                native.samples_per_output_pixel,
+            ],
+            [1, 4, 16, 1]
+        );
+        assert!(native.subpixel_geometry_resolved);
     }
 
     #[test]
