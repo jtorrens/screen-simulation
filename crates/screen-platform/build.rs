@@ -5,14 +5,14 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=shaders/native_camera.metal");
     println!("cargo:rerun-if-changed=shaders/spatial_optics.metal");
-    println!("cargo:rerun-if-changed=shaders/flat_panel.metal");
+    println!("cargo:rerun-if-changed=shaders/physical_pipeline.metal");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
     let camera_air = output.join("native_camera.air");
     let spatial_air = output.join("spatial_optics.air");
-    let flat_panel_air = output.join("flat_panel.air");
+    let physical_pipeline_air = output.join("physical_pipeline.air");
     let library = output.join("native_camera.metallib");
     let compile = Command::new("xcrun")
         .args(["-sdk", "macosx", "metal", "-c"])
@@ -34,23 +34,23 @@ fn main() {
         spatial_compile.success(),
         "spatial Metal shader compilation failed"
     );
-    let flat_panel_compile = Command::new("xcrun")
+    let physical_pipeline_compile = Command::new("xcrun")
         .args(["-sdk", "macosx", "metal", "-c"])
         .args(["-fmetal-math-mode=safe", "-ffp-contract=off"])
-        .arg("shaders/flat_panel.metal")
+        .arg("shaders/physical_pipeline.metal")
         .arg("-o")
-        .arg(&flat_panel_air)
+        .arg(&physical_pipeline_air)
         .status()
         .expect("xcrun must be available for the supported macOS build");
     assert!(
-        flat_panel_compile.success(),
-        "flat panel Metal shader compilation failed"
+        physical_pipeline_compile.success(),
+        "physical pipeline Metal shader compilation failed"
     );
     let link = Command::new("xcrun")
         .args(["-sdk", "macosx", "metallib"])
         .arg(&camera_air)
         .arg(&spatial_air)
-        .arg(&flat_panel_air)
+        .arg(&physical_pipeline_air)
         .arg("-o")
         .arg(&library)
         .status()

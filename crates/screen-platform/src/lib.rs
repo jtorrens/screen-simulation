@@ -3,9 +3,9 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(target_os = "macos")]
-mod flat_panel_metal;
-#[cfg(target_os = "macos")]
 mod native_metal;
+#[cfg(target_os = "macos")]
+mod physical_pipeline_metal;
 #[cfg(target_os = "macos")]
 mod presentation_cpu;
 #[cfg(target_os = "macos")]
@@ -13,9 +13,11 @@ mod presentation_metal;
 #[cfg(target_os = "macos")]
 mod spatial_metal;
 #[cfg(target_os = "macos")]
-pub use flat_panel_metal::{MetalFlatPanel, MetalFlatPanelError, MetalFlatPanelResult};
-#[cfg(target_os = "macos")]
 pub use native_metal::{MetalNativeError, MetalRawDevelopment};
+#[cfg(target_os = "macos")]
+pub use physical_pipeline_metal::{
+    MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
+};
 #[cfg(target_os = "macos")]
 pub use presentation_cpu::{
     DisplayPublicationBackend, DisplayPublicationError, ExactCpuDisplayPublication,

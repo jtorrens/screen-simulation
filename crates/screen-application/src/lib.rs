@@ -5,9 +5,9 @@
 mod physical_pipeline;
 
 pub use physical_pipeline::{
-    PHYSICAL_STAGE_ORDER, PhysicalIntermediate, PhysicalPipelineInput, PhysicalPipelineRequest,
-    PhysicalPipelineSnapshot, PhysicalStage, PhysicalStageControl,
-    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, SourceAcesCgRaster,
+    PHYSICAL_STAGE_ORDER, PhysicalIntermediate, PhysicalPipelineSnapshot, PhysicalStage,
+    PhysicalStageControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
+    SourceAcesCgRaster,
 };
 
 use core::fmt;
@@ -156,7 +156,7 @@ pub struct PreparedDeviceSignalRaster {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct FlatPanelInput {
+pub struct PhysicalPipelineInput {
     pub width: u32,
     pub height: u32,
     /// Coarse linear ACEScg RGBA entering the physical boundary.
@@ -166,13 +166,13 @@ pub struct FlatPanelInput {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct FlatPanelRequest {
-    pub input: FlatPanelInput,
-    pub plan: FlatPanelPlan,
+pub struct PhysicalPipelineRequest {
+    pub input: PhysicalPipelineInput,
+    pub plan: PhysicalPipelineExecutionPlan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FlatPanelPlan {
+pub struct PhysicalPipelineExecutionPlan {
     pub panel: LcdProfile,
     pub placement: RasterPlacement,
     pub quality: FlatPanelQuality,
@@ -184,17 +184,17 @@ pub struct FlatPanelPlan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FlatPanelDiagnostic {
+pub struct PhysicalPipelineDiagnostic {
     pub geometry: FlatPanelGeometry,
     pub sampling: FlatPanelSampling,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct FlatPanelResult {
+pub struct PhysicalPipelineCpuResult {
     pub width: u32,
     pub height: u32,
     pub acescg: Vec<[f32; 4]>,
-    pub diagnostic: FlatPanelDiagnostic,
+    pub diagnostic: PhysicalPipelineDiagnostic,
 }
 
 impl DeviceSignalRaster {
@@ -242,7 +242,7 @@ impl PreparedDeviceSignalRaster {
     }
 }
 
-impl FlatPanelInput {
+impl PhysicalPipelineInput {
     fn validate(&self) -> Result<(), ApplicationError> {
         if self.width == 0 || self.height == 0 {
             return Err(ApplicationError::EmptyDeviceSignalRaster);
@@ -309,9 +309,9 @@ fn sample_placed_acescg_area(
 /// Deterministic scalar oracle for the flat, orthographic physical panel surface.
 /// Product composition uses the corresponding platform backend; this function
 /// owns the reference numeric result and never applies a camera or output transform.
-pub fn evaluate_flat_panel_cpu_oracle(
-    request: FlatPanelRequest,
-) -> Result<FlatPanelResult, ApplicationError> {
+pub fn evaluate_physical_pipeline_cpu_oracle(
+    request: PhysicalPipelineRequest,
+) -> Result<PhysicalPipelineCpuResult, ApplicationError> {
     request.input.validate()?;
     let plan = request.plan;
     if [
@@ -338,11 +338,11 @@ pub fn evaluate_flat_panel_cpu_oracle(
     // This stage can promise exact identity at zero because it returns the
     // borrowed coarse raster domain without resampling or float arithmetic.
     if plan.screen_amount == 0.0 {
-        return Ok(FlatPanelResult {
+        return Ok(PhysicalPipelineCpuResult {
             width: request.input.width,
             height: request.input.height,
             acescg: request.input.acescg,
-            diagnostic: FlatPanelDiagnostic { geometry, sampling },
+            diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
         });
     }
 
@@ -499,11 +499,11 @@ pub fn evaluate_flat_panel_cpu_oracle(
             ]);
         }
     }
-    Ok(FlatPanelResult {
+    Ok(PhysicalPipelineCpuResult {
         width: sampling.effective_width,
         height: sampling.effective_height,
         acescg: output,
-        diagnostic: FlatPanelDiagnostic { geometry, sampling },
+        diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
     })
 }
 
@@ -5554,14 +5554,14 @@ mod tests {
         placement: RasterPlacement,
         quality: FlatPanelQuality,
         amount: f32,
-    ) -> FlatPanelRequest {
+    ) -> PhysicalPipelineRequest {
         let mut panel = request().optics.panel;
         panel.native_width = 2;
         panel.native_height = 1;
         panel.active_width = Meters(0.002);
         panel.active_height = Meters(0.001);
-        FlatPanelRequest {
-            input: FlatPanelInput {
+        PhysicalPipelineRequest {
+            input: PhysicalPipelineInput {
                 width: 2,
                 height: 1,
                 acescg: vec![[1.5, -0.25, 0.5, 0.25], [0.0, 0.5, 2.0, 0.75]],
@@ -5574,7 +5574,7 @@ mod tests {
                     ],
                 },
             },
-            plan: FlatPanelPlan {
+            plan: PhysicalPipelineExecutionPlan {
                 panel,
                 placement,
                 quality,
@@ -5598,7 +5598,7 @@ mod tests {
             .flatten()
             .map(|value| value.to_bits())
             .collect::<Vec<_>>();
-        let result = evaluate_flat_panel_cpu_oracle(request).expect("identity result");
+        let result = evaluate_physical_pipeline_cpu_oracle(request).expect("identity result");
         assert_eq!((result.width, result.height), (2, 1));
         assert_eq!(
             result
@@ -5619,13 +5619,13 @@ mod tests {
             RasterPlacement::Stretch,
             RasterPlacement::OneToOne,
         ] {
-            let first = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+            let first = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
                 placement,
                 FlatPanelQuality::Medium,
                 1.0,
             ))
             .expect("first result");
-            let second = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+            let second = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
                 placement,
                 FlatPanelQuality::Medium,
                 1.0,
@@ -5653,16 +5653,16 @@ mod tests {
         };
         rgb_request.plan.requested_width = 1;
         rgb_request.plan.requested_height = 1;
-        let rgb = evaluate_flat_panel_cpu_oracle(rgb_request.clone()).expect("RGB native");
+        let rgb = evaluate_physical_pipeline_cpu_oracle(rgb_request.clone()).expect("RGB native");
         rgb_request.plan.panel.stripe_layout = screen_panel::StripeLayout::Bgr;
-        let bgr = evaluate_flat_panel_cpu_oracle(rgb_request.clone()).expect("BGR native");
+        let bgr = evaluate_physical_pipeline_cpu_oracle(rgb_request.clone()).expect("BGR native");
         assert_eq!((rgb.width, rgb.height), (3, 3));
         assert!(rgb.acescg[0][0] > rgb.acescg[2][0]);
         assert!(bgr.acescg[0][2] > bgr.acescg[2][2]);
         assert_ne!(rgb.acescg, bgr.acescg);
 
         rgb_request.plan.panel.black_matrix_fraction = 0.5;
-        let matrix = evaluate_flat_panel_cpu_oracle(rgb_request).expect("matrix result");
+        let matrix = evaluate_physical_pipeline_cpu_oracle(rgb_request).expect("matrix result");
         let rgb_energy = rgb
             .acescg
             .iter()
@@ -5680,19 +5680,19 @@ mod tests {
 
     #[test]
     fn flat_panel_quality_changes_precision_not_requested_domain() {
-        let draft = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+        let draft = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
             RasterPlacement::Stretch,
             FlatPanelQuality::Draft,
             1.0,
         ))
         .expect("draft");
-        let medium = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+        let medium = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
             RasterPlacement::Stretch,
             FlatPanelQuality::Medium,
             1.0,
         ))
         .expect("medium");
-        let high = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+        let high = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
             RasterPlacement::Stretch,
             FlatPanelQuality::High,
             1.0,
@@ -5710,7 +5710,7 @@ mod tests {
             [1, 4, 16]
         );
 
-        let artistic = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+        let artistic = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
             RasterPlacement::Stretch,
             FlatPanelQuality::High,
             2.0,
@@ -5723,7 +5723,7 @@ mod tests {
                 .flatten()
                 .all(|value| value.is_finite())
         );
-        let negative = evaluate_flat_panel_cpu_oracle(flat_panel_request(
+        let negative = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
             RasterPlacement::Stretch,
             FlatPanelQuality::High,
             -0.1,

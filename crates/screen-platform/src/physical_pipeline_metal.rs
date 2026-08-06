@@ -5,7 +5,7 @@ use metal::{
     ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLSize, MTLStorageMode,
     MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
 };
-use screen_application::{FlatPanelPlan, RasterPlacement};
+use screen_application::{PhysicalPipelineExecutionPlan, RasterPlacement};
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
 
 const SHADER_LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native_camera.metallib"));
@@ -13,7 +13,7 @@ const TILE_ROWS: u32 = 64;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct FlatPanelParams {
+struct PhysicalPipelineParams {
     source_panel: [u32; 4],
     output_tile: [u32; 4],
     semantics: [u32; 4],
@@ -25,19 +25,19 @@ struct FlatPanelParams {
     matrix2: [f32; 4],
 }
 
-pub struct MetalFlatPanel {
+pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
     pipeline: ComputePipelineState,
 }
 
-pub struct MetalFlatPanelResult {
+pub struct MetalPhysicalPipelineResult {
     pub texture: Texture,
     pub geometry: FlatPanelGeometry,
     pub sampling: FlatPanelSampling,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MetalFlatPanelError {
+pub enum MetalPhysicalPipelineError {
     InvalidPlan(String),
     TextureMismatch,
     UnsupportedTexture,
@@ -45,35 +45,35 @@ pub enum MetalFlatPanelError {
     Backend(String),
 }
 
-impl fmt::Display for MetalFlatPanelError {
+impl fmt::Display for MetalPhysicalPipelineError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidPlan(message) => write!(formatter, "invalid flat panel plan: {message}"),
+            Self::InvalidPlan(message) => write!(formatter, "invalid physical pipeline plan: {message}"),
             Self::TextureMismatch => formatter.write_str(
                 "source ACEScg and resolved device-signal textures must have the same non-zero raster",
             ),
             Self::UnsupportedTexture => formatter.write_str(
-                "flat panel textures must be two-dimensional RGBA16Float or RGBA32Float",
+                "physical pipeline textures must be two-dimensional RGBA16Float or RGBA32Float",
             ),
-            Self::Cancelled => formatter.write_str("flat panel evaluation was cancelled"),
-            Self::Backend(message) => write!(formatter, "Metal flat panel backend failed: {message}"),
+            Self::Cancelled => formatter.write_str("physical pipeline evaluation was cancelled"),
+            Self::Backend(message) => write!(formatter, "Metal physical pipeline backend failed: {message}"),
         }
     }
 }
 
-impl std::error::Error for MetalFlatPanelError {}
+impl std::error::Error for MetalPhysicalPipelineError {}
 
-impl MetalFlatPanel {
-    pub fn new(device: &DeviceRef) -> Result<Self, MetalFlatPanelError> {
+impl MetalPhysicalPipeline {
+    pub fn new(device: &DeviceRef) -> Result<Self, MetalPhysicalPipelineError> {
         let library = device
             .new_library_with_data(SHADER_LIBRARY)
-            .map_err(|error| MetalFlatPanelError::Backend(error.to_string()))?;
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let function = library
-            .get_function("evaluate_flat_panel", None)
-            .map_err(|error| MetalFlatPanelError::Backend(error.to_string()))?;
+            .get_function("evaluate_physical_pipeline", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let pipeline = device
             .new_compute_pipeline_state_with_function(&function)
-            .map_err(|error| MetalFlatPanelError::Backend(error.to_string()))?;
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         Ok(Self {
             queue: device.new_command_queue(),
             pipeline,
@@ -84,16 +84,16 @@ impl MetalFlatPanel {
         &self,
         source_acescg: &TextureRef,
         device_signal: &TextureRef,
-        plan: FlatPanelPlan,
+        plan: PhysicalPipelineExecutionPlan,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
-    ) -> Result<MetalFlatPanelResult, MetalFlatPanelError> {
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
         if source_acescg.width() == 0
             || source_acescg.height() == 0
             || source_acescg.width() != device_signal.width()
             || source_acescg.height() != device_signal.height()
         {
-            return Err(MetalFlatPanelError::TextureMismatch);
+            return Err(MetalPhysicalPipelineError::TextureMismatch);
         }
         let supported = |texture: &TextureRef| {
             texture.texture_type() == MTLTextureType::D2
@@ -103,16 +103,16 @@ impl MetalFlatPanel {
                 )
         };
         if !supported(source_acescg) || !supported(device_signal) {
-            return Err(MetalFlatPanelError::UnsupportedTexture);
+            return Err(MetalPhysicalPipelineError::UnsupportedTexture);
         }
         let geometry = plan
             .panel
             .flat_panel_geometry()
-            .map_err(|error| MetalFlatPanelError::InvalidPlan(error.to_string()))?;
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let sampling = plan
             .panel
             .flat_panel_sampling(plan.quality, plan.requested_width, plan.requested_height)
-            .map_err(|error| MetalFlatPanelError::InvalidPlan(error.to_string()))?;
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         if [
             plan.screen_amount,
             plan.emission_amount,
@@ -121,16 +121,16 @@ impl MetalFlatPanel {
         .into_iter()
         .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
         {
-            return Err(MetalFlatPanelError::InvalidPlan(
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
                 "amount must be finite and inside 0..=4".to_owned(),
             ));
         }
         if is_cancelled() {
-            return Err(MetalFlatPanelError::Cancelled);
+            return Err(MetalPhysicalPipelineError::Cancelled);
         }
         if plan.screen_amount == 0.0 {
             report_progress(1.0);
-            return Ok(MetalFlatPanelResult {
+            return Ok(MetalPhysicalPipelineResult {
                 texture: source_acescg.to_owned(),
                 geometry,
                 sampling,
@@ -139,7 +139,7 @@ impl MetalFlatPanel {
 
         let device = source_acescg.device();
         if !core::ptr::eq(device, device_signal.device()) {
-            return Err(MetalFlatPanelError::TextureMismatch);
+            return Err(MetalPhysicalPipelineError::TextureMismatch);
         }
         let descriptor = TextureDescriptor::new();
         descriptor.set_texture_type(MTLTextureType::D2);
@@ -154,20 +154,20 @@ impl MetalFlatPanel {
         let values = plan
             .panel
             .evaluator()
-            .map_err(|error| MetalFlatPanelError::InvalidPlan(error.to_string()))?
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?
             .device_stage_parameters();
         let side = match sampling.samples_per_output_pixel {
             1 => 1,
             4 => 2,
             16 => 4,
             count => {
-                return Err(MetalFlatPanelError::InvalidPlan(format!(
+                return Err(MetalPhysicalPipelineError::InvalidPlan(format!(
                     "unsupported sample count {count}"
                 )));
             }
         };
         let pad = |row: [f32; 3]| [row[0], row[1], row[2], 0.0];
-        let mut params = FlatPanelParams {
+        let mut params = PhysicalPipelineParams {
             source_panel: [
                 source_acescg.width() as u32,
                 source_acescg.height() as u32,
@@ -210,7 +210,7 @@ impl MetalFlatPanel {
         let tile_count = sampling.effective_height.div_ceil(TILE_ROWS);
         for tile in 0..tile_count {
             if is_cancelled() {
-                return Err(MetalFlatPanelError::Cancelled);
+                return Err(MetalPhysicalPipelineError::Cancelled);
             }
             let origin_y = tile * TILE_ROWS;
             let height = TILE_ROWS.min(sampling.effective_height - origin_y);
@@ -223,7 +223,7 @@ impl MetalFlatPanel {
             encoder.set_texture(2, Some(&output));
             encoder.set_bytes(
                 0,
-                size_of::<FlatPanelParams>() as u64,
+                size_of::<PhysicalPipelineParams>() as u64,
                 (&raw const params).cast(),
             );
             let thread_width = self.pipeline.thread_execution_width();
@@ -237,13 +237,13 @@ impl MetalFlatPanel {
             command.commit();
             command.wait_until_completed();
             if command.status() != MTLCommandBufferStatus::Completed {
-                return Err(MetalFlatPanelError::Backend(
+                return Err(MetalPhysicalPipelineError::Backend(
                     "compute command did not complete".to_owned(),
                 ));
             }
             report_progress((tile + 1) as f32 / tile_count as f32);
         }
-        Ok(MetalFlatPanelResult {
+        Ok(MetalPhysicalPipelineResult {
             texture: output,
             geometry,
             sampling,
@@ -256,7 +256,8 @@ mod tests {
     use super::*;
     use metal::{MTLPixelFormat, MTLRegion};
     use screen_application::{
-        DeviceSignalRaster, FlatPanelInput, FlatPanelRequest, evaluate_flat_panel_cpu_oracle,
+        DeviceSignalRaster, PhysicalPipelineInput, PhysicalPipelineRequest,
+        evaluate_physical_pipeline_cpu_oracle,
     };
     use screen_contracts::{DeviceRgb, Meters};
     use screen_panel::{DEVICE_PRESETS, FlatPanelQuality};
@@ -318,7 +319,7 @@ mod tests {
         layout: StripeLayout,
         matrix: f32,
         amount: f32,
-    ) -> (FlatPanelInput, FlatPanelPlan) {
+    ) -> (PhysicalPipelineInput, PhysicalPipelineExecutionPlan) {
         let acescg = vec![
             [-0.25, 0.0, 0.5, 0.2],
             [0.1, 0.5, 1.5, 0.4],
@@ -339,7 +340,7 @@ mod tests {
         panel.stripe_layout = layout;
         panel.black_matrix_fraction = matrix;
         (
-            FlatPanelInput {
+            PhysicalPipelineInput {
                 width: 3,
                 height: 2,
                 acescg,
@@ -349,7 +350,7 @@ mod tests {
                     pixels: device_signal,
                 },
             },
-            FlatPanelPlan {
+            PhysicalPipelineExecutionPlan {
                 panel,
                 placement,
                 quality,
@@ -365,7 +366,7 @@ mod tests {
     #[test]
     fn metal_matches_cpu_for_placements_layouts_matrix_extremes_and_qualities() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
-        let backend = MetalFlatPanel::new(&device).expect("flat panel backend");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
         let mut suite_maximum = 0.0_f32;
         for placement in [
             RasterPlacement::Fit,
@@ -390,8 +391,11 @@ mod tests {
                             .map(|value| [value.r, value.g, value.b, 1.0])
                             .collect::<Vec<_>>();
                         let signal = texture(&device, input.width, input.height, &signal_values);
-                        let cpu = evaluate_flat_panel_cpu_oracle(FlatPanelRequest { input, plan })
-                            .expect("CPU oracle");
+                        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                            input,
+                            plan,
+                        })
+                        .expect("CPU oracle");
                         let mut progress = Vec::new();
                         let gpu = backend
                             .evaluate(
@@ -421,13 +425,13 @@ mod tests {
                 }
             }
         }
-        eprintln!("flat panel CPU/Metal suite maximum absolute deviation: {suite_maximum}");
+        eprintln!("physical pipeline CPU/Metal suite maximum absolute deviation: {suite_maximum}");
     }
 
     #[test]
     fn metal_zero_reuses_exact_source_and_cancellation_is_explicit() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
-        let backend = MetalFlatPanel::new(&device).expect("flat panel backend");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
         let (input, plan) = fixture(
             RasterPlacement::Stretch,
             FlatPanelQuality::Native,
@@ -445,14 +449,14 @@ mod tests {
         active.screen_amount = 1.0;
         assert!(matches!(
             backend.evaluate(&source, &signal, active, |_| {}, || true),
-            Err(MetalFlatPanelError::Cancelled)
+            Err(MetalPhysicalPipelineError::Cancelled)
         ));
     }
 
     #[test]
     fn half_float_contract_input_matches_oracle_without_output_requantization() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
-        let backend = MetalFlatPanel::new(&device).expect("flat panel backend");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
         let (mut input, plan) = fixture(
             RasterPlacement::Fit,
             FlatPanelQuality::High,
@@ -478,8 +482,8 @@ mod tests {
             .map(|value| [value.r, value.g, value.b, 1.0])
             .collect::<Vec<_>>();
         let signal = half_texture(&device, input.width, input.height, &signal_values);
-        let cpu =
-            evaluate_flat_panel_cpu_oracle(FlatPanelRequest { input, plan }).expect("CPU oracle");
+        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+            .expect("CPU oracle");
         let gpu = backend
             .evaluate(&source, &signal, plan, |_| {}, || false)
             .expect("Metal result");
@@ -489,7 +493,7 @@ mod tests {
             .zip(&cpu.acescg)
             .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
             .fold(0.0_f32, f32::max);
-        eprintln!("flat panel half-input CPU/Metal maximum absolute deviation: {maximum}");
+        eprintln!("physical pipeline half-input CPU/Metal maximum absolute deviation: {maximum}");
         assert!(
             maximum <= 2.0e-3,
             "half input CPU/Metal deviation {maximum}"

@@ -1,7 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-struct FlatPanelParams {
+struct PhysicalPipelineParams {
     uint4 source_panel; // source width, source height, panel width, panel height
     uint4 output_tile;  // output width, output height, tile origin y, sample side
     uint4 semantics;    // placement, stripe layout, reserved, reserved
@@ -13,7 +13,7 @@ struct FlatPanelParams {
     float4 matrix2;
 };
 
-inline float2 placement_scale(constant FlatPanelParams& p) {
+inline float2 placement_scale(constant PhysicalPipelineParams& p) {
     const float source_aspect = float(p.source_panel.x) / float(p.source_panel.y);
     const float panel_aspect = float(p.source_panel.z) / float(p.source_panel.w);
     const uint placement = p.semantics.x;
@@ -40,7 +40,7 @@ inline float4 area_sample(
     texture2d<float, access::read> texture,
     float2 device_minimum,
     float2 device_maximum,
-    constant FlatPanelParams& p
+    constant PhysicalPipelineParams& p
 ) {
     const float2 scale = placement_scale(p);
     const float2 source_size = float2(p.source_panel.xy);
@@ -80,7 +80,7 @@ inline float native_channel(
     uint channel,
     float2 device_minimum,
     float2 device_maximum,
-    constant FlatPanelParams& p
+    constant PhysicalPipelineParams& p
 ) {
     const float span = p.levels.z - p.levels.y;
     const float linear = p.levels.y + span * sign(code) * pow(abs(code), p.levels.x);
@@ -103,16 +103,16 @@ inline float native_channel(
     return linear * (covered_x * covered_y / area) * 3.0f / (active * active);
 }
 
-inline float continuous_channel(float code, constant FlatPanelParams& p) {
+inline float continuous_channel(float code, constant PhysicalPipelineParams& p) {
     const float span = p.levels.z - p.levels.y;
     return p.levels.y + span * sign(code) * pow(abs(code), p.levels.x);
 }
 
-kernel void evaluate_flat_panel(
+kernel void evaluate_physical_pipeline(
     texture2d<float, access::read> source_acescg [[texture(0)]],
     texture2d<float, access::read> device_signal [[texture(1)]],
     texture2d<float, access::write> output [[texture(2)]],
-    constant FlatPanelParams& p [[buffer(0)]],
+    constant PhysicalPipelineParams& p [[buffer(0)]],
     uint2 local_position [[thread_position_in_grid]]
 ) {
     const uint2 position = uint2(local_position.x, local_position.y + p.output_tile.z);

@@ -7,9 +7,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         MTLPixelFormat, MTLRegion, MTLStorageMode, MTLTextureType, MTLTextureUsage,
         TextureDescriptor,
     };
-    use screen_application::{FlatPanelPlan, RasterPlacement};
+    use screen_application::{PhysicalPipelineExecutionPlan, RasterPlacement};
     use screen_panel::{DEVICE_PRESETS, FlatPanelQuality};
-    use screen_platform::MetalFlatPanel;
+    use screen_platform::MetalPhysicalPipeline;
 
     const SOURCE_WIDTH: u32 = 3_840;
     const SOURCE_HEIGHT: u32 = 2_160;
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(values);
 
     let setup_started = Instant::now();
-    let backend = MetalFlatPanel::new(&device)?;
+    let backend = MetalPhysicalPipeline::new(&device)?;
     let setup = setup_started.elapsed();
     println!(
         "backend=Metal device=\"{}\" source={}x{} format=RGBA32Float setup_ms={:.3}",
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .round() as u32)
                     .max(1)
             };
-            let plan = FlatPanelPlan {
+            let plan = PhysicalPipelineExecutionPlan {
                 panel: preset.profile(),
                 placement: RasterPlacement::Stretch,
                 quality,
@@ -129,6 +129,6 @@ fn milliseconds(duration: std::time::Duration) -> f64 {
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!("flat_panel_benchmark requires the authoritative macOS Metal backend");
+    eprintln!("physical_pipeline_benchmark requires the authoritative macOS Metal backend");
     std::process::exit(1);
 }

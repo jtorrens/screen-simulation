@@ -15,7 +15,7 @@ use metal::foreign_types::{ForeignType, ForeignTypeRef};
 #[cfg(target_os = "macos")]
 use metal::{MTLTexture, TextureRef};
 use screen_application::{
-    FlatPanelPlan, ProceduralTestPattern, RasterPlacement, diagnostic_signal,
+    PhysicalPipelineExecutionPlan, ProceduralTestPattern, RasterPlacement, diagnostic_signal,
 };
 use screen_contracts::{DeviceRgb, LinearRgb, Meters, RationalTime, Vec2};
 use screen_cover::{COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile};
@@ -24,7 +24,9 @@ use screen_panel::{
     PanelTechnology, PanelTemporalEmission, ResidualFlicker, StripeLayout, ValidatedPanelEvaluator,
 };
 #[cfg(target_os = "macos")]
-use screen_platform::{MetalFlatPanel, MetalFlatPanelError, MetalFlatPanelResult};
+use screen_platform::{
+    MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -138,7 +140,7 @@ const EXPECTED_STAGE_IDS: [u32; 11] = [
 #[cfg(target_os = "macos")]
 enum PhysicalJobOutcome {
     Rendering,
-    Complete(MetalFlatPanelResult),
+    Complete(MetalPhysicalPipelineResult),
     Cancelled,
     Failed(String),
 }
@@ -417,7 +419,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             return std::ptr::null_mut();
         }
     };
-    let plan = FlatPanelPlan {
+    let plan = PhysicalPipelineExecutionPlan {
         panel: device.profile,
         placement,
         quality,
@@ -440,7 +442,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         let source = unsafe { TextureRef::from_ptr(source as *mut MTLTexture) };
         // SAFETY: same lifetime and ownership rule as the source texture above.
         let signal = unsafe { TextureRef::from_ptr(signal as *mut MTLTexture) };
-        let result = MetalFlatPanel::new(source.device()).and_then(|backend| {
+        let result = MetalPhysicalPipeline::new(source.device()).and_then(|backend| {
             backend.evaluate(
                 source,
                 signal,
@@ -455,7 +457,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         });
         let outcome = match result {
             Ok(result) => PhysicalJobOutcome::Complete(result),
-            Err(MetalFlatPanelError::Cancelled) => PhysicalJobOutcome::Cancelled,
+            Err(MetalPhysicalPipelineError::Cancelled) => PhysicalJobOutcome::Cancelled,
             Err(error) => PhysicalJobOutcome::Failed(error.to_string()),
         };
         let mut current = worker_shared
@@ -485,7 +487,12 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     _request: *const ScreenPhysicalFrameRequestV1,
     error_message: *mut *const c_char,
 ) -> *mut ScreenPhysicalFrameJob {
-    unsafe { set_error(error_message, b"Metal flat panel backend requires macOS\0") };
+    unsafe {
+        set_error(
+            error_message,
+            b"Metal physical pipeline backend requires macOS\0",
+        )
+    };
     std::ptr::null_mut()
 }
 
@@ -532,7 +539,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
                 0,
                 0,
                 0,
-                "flat panel emission rendering".to_owned(),
+                "physical pipeline emission rendering".to_owned(),
                 "subpixel geometry rendering".to_owned(),
             ),
             PhysicalJobOutcome::Cancelled => (
@@ -540,7 +547,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
                 0,
                 0,
                 0,
-                "flat panel emission cancelled".to_owned(),
+                "physical pipeline emission cancelled".to_owned(),
                 "subpixel geometry cancelled".to_owned(),
             ),
             PhysicalJobOutcome::Failed(message) => (
@@ -548,7 +555,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
                 0,
                 0,
                 0,
-                format!("flat panel backend failed: {message}"),
+                format!("physical pipeline backend failed: {message}"),
                 format!("subpixel geometry failed: {message}"),
             ),
             PhysicalJobOutcome::Complete(value) => {
@@ -625,7 +632,12 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
     _result: *mut ScreenPhysicalFrameResultV1,
     error_message: *mut *const c_char,
 ) -> bool {
-    unsafe { set_error(error_message, b"Metal flat panel backend requires macOS\0") };
+    unsafe {
+        set_error(
+            error_message,
+            b"Metal physical pipeline backend requires macOS\0",
+        )
+    };
     false
 }
 
