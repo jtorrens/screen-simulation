@@ -61,7 +61,7 @@ final class TimelineCanvas: NSView {
 
         let inputX = x(for: inFrame)
         let outputX = x(for: outFrame)
-        NSColor.controlAccentColor.withAlphaComponent(0.20).setFill()
+        NativeTheme.nsAccent.withAlphaComponent(0.20).setFill()
         NSRect(x: inputX, y: track.minY, width: max(1, outputX - inputX), height: track.height).fill()
 
         drawRuler(height: rulerHeight)

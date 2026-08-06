@@ -5,6 +5,13 @@ import StudioMedia
 import StudioVideoOutput
 import SwiftUI
 
+enum NativeTheme {
+    static let accent = Color(red: 0.88, green: 0.57, blue: 0.16)
+    static let nsAccent = NSColor(
+        calibratedRed: 0.88, green: 0.57, blue: 0.16, alpha: 1
+    )
+}
+
 struct ContentView: View {
     enum LibraryDeletion: String {
         case testImage = "imagen de test"
@@ -63,7 +70,7 @@ struct ContentView: View {
                         .frame(minWidth: 64, minHeight: 38)
                     }
                     .buttonStyle(.borderless)
-                    .foregroundStyle(page == destination ? Color.accentColor : .secondary)
+                    .foregroundStyle(page == destination ? NativeTheme.accent : .secondary)
                     .help(destination.rawValue)
                     .accessibilityLabel(destination.rawValue)
                     .accessibilityAddTraits(page == destination ? .isSelected : [])
@@ -74,6 +81,7 @@ struct ContentView: View {
             .frame(height: 46)
             .background(Color(nsColor: .windowBackgroundColor))
         }
+        .tint(NativeTheme.accent)
         .toolbar { workspaceToolbar }
         .onAppear {
             if model.resolvedDevice == nil,
