@@ -473,10 +473,11 @@ struct ModelInspectorView: View {
             )
         case .exposureShutter:
             CaptureShutterMotionDetails(pipeline: workspace.physicalPipelineState)
-        default:
-            Text("Etapa conectada al snapshot físico resuelto.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        case .sensorCFA, .noise, .developDemosaic:
+            CaptureSensorDevelopDetails(
+                section: section,
+                pipeline: workspace.physicalPipelineState
+            )
         }
     }
 
