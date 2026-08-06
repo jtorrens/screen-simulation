@@ -126,8 +126,11 @@ struct ContentView: View {
         .toolbar { workspaceToolbar }
         .onAppear {
             if model.resolvedDevice == nil,
-               let first = library.document.devices.first {
-                model.selectDevice(first.value, amount: 0)
+               let first = library.document.devices.first,
+               let cover = library.document.coverGlasses.first(
+                    where: { $0.id == first.value.defaultCoverGlassPresetID }
+               ) {
+                model.selectDevice(first.value, coverGlass: cover.value, amount: 0)
             }
         }
         .onChange(of: page) { _, destination in

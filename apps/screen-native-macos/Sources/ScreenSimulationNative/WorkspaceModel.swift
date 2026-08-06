@@ -77,6 +77,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var defaultSignalMatrix = StudioSignalMatrix.bt709
     @Published private(set) var defaultSignalRange = StudioSignalRange.full
     @Published private(set) var resolvedDevice: ResolvedDevice?
+    @Published private(set) var requestedPhysicalIntermediate = PhysicalIntermediate.developedACEScg
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
     @Published var sourcePlacement = SourcePlacement.fit
     @Published var modelViewerOneToOne = false
@@ -100,6 +101,7 @@ final class WorkspaceModel: ObservableObject {
     private var physicalIdentityCounter: UInt64 = 0
     private var modelViewport = CGSize(width: 960, height: 540)
     private var isModelPageActive = false
+    private var resolvedPhysicalPipeline: PhysicalPipelineResolvedState?
 
     init() {
         metalDisplay = try! StudioColorMetalDisplay()
@@ -121,22 +123,40 @@ final class WorkspaceModel: ObservableObject {
         "Input → YUV/rango → IDT → ACEScg → Pantalla → Captura → Display/ODT"
     }
 
-    func selectDevice(_ definition: DeviceDefinition, amount _: Double) {
+    func selectDevice(
+        _ definition: DeviceDefinition,
+        coverGlass: CoverGlassDefinition,
+        amount _: Double
+    ) {
         do {
             resolvedDevice = try definition.resolved()
+            resolvedPhysicalPipeline = try .inactiveDownstreamStages(
+                coverGlass: coverGlass
+            )
             rebuildCurrent()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func selectModelDevice(_ definition: DeviceDefinition) {
+    func selectModelDevice(
+        _ definition: DeviceDefinition,
+        coverGlass: CoverGlassDefinition
+    ) {
         do {
             resolvedDevice = try definition.resolved()
+            resolvedPhysicalPipeline = try .inactiveDownstreamStages(
+                coverGlass: coverGlass
+            )
             rebuildPhysicalSelectedFrame()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func selectPhysicalIntermediate(_ intermediate: PhysicalIntermediate) {
+        requestedPhysicalIntermediate = intermediate
+        rebuildPhysicalSelectedFrame()
     }
 
     func setModelPageActive(_ active: Bool) {
@@ -808,6 +828,11 @@ final class WorkspaceModel: ObservableObject {
                 "El modelo físico necesita un snapshot de Device resuelto."
             )
         }
+        guard let resolvedPhysicalPipeline else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "El modelo físico necesita un snapshot completo resuelto."
+            )
+        }
         let deviceSignal = try metalDisplay.transformToMetalFrame(
             sourceACEScgFrame,
             output: deviceSignalTransform
@@ -826,6 +851,7 @@ final class WorkspaceModel: ObservableObject {
                 timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
             ),
             resolvedDevice: resolvedDevice,
+            resolvedPipeline: resolvedPhysicalPipeline,
             quality: quality,
             screenAmount: physicalModel.screenAmount,
             captureAmount: physicalModel.captureAmount,
@@ -841,7 +867,8 @@ final class WorkspaceModel: ObservableObject {
                 quality: quality,
                 device: resolvedDevice.definition
             ),
-            rasterPlacement: sourcePlacement.physicalRasterPlacement
+            rasterPlacement: sourcePlacement.physicalRasterPlacement,
+            requestedIntermediate: requestedPhysicalIntermediate
         )
     }
 

@@ -64,8 +64,10 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         ScreenPhysicalSection.allCases.map(Self.screen)
         + CapturePhysicalSection.allCases.map(Self.capture)
 
-    var isImplementedByPhysicalPanelV1: Bool {
-        self == .screen(.emission) || self == .screen(.subpixelGeometry)
+    var isImplementedByUnifiedPipeline: Bool {
+        self == .screen(.emission)
+            || self == .screen(.subpixelGeometry)
+            || self == .screen(.panelLightSpread)
     }
 }
 

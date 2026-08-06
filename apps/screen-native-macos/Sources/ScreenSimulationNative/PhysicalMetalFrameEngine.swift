@@ -8,6 +8,7 @@ struct PhysicalMetalFrameSnapshot: @unchecked Sendable {
     let nativeDimensions: PhysicalDimensions
     let effectiveDimensions: PhysicalDimensions?
     let computedQuality: PhysicalQuality
+    let returnedIntermediate: PhysicalIntermediate
     let state: PhysicalFrameState
     let progress: Double
     let diagnostics: [PhysicalStageDiagnostic]
@@ -23,6 +24,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     private let sourceTexture: ScreenPhysicalTextureRef
     private let deviceSignalTexture: ScreenPhysicalTextureRef
     private let deviceProfile: ScreenDeviceProfileRef
+    private let pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef
     private let sourceFrame: StudioColorMetalFrame
     private let deviceSignalFrame: StudioColorMetalFrame
 
@@ -32,6 +34,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
         sourceTexture: ScreenPhysicalTextureRef,
         deviceSignalTexture: ScreenPhysicalTextureRef,
         deviceProfile: ScreenDeviceProfileRef,
+        pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef,
         sourceFrame: StudioColorMetalFrame,
         deviceSignalFrame: StudioColorMetalFrame,
         cancellationIdentity: PhysicalFrameIdentity
@@ -41,6 +44,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
         self.sourceTexture = sourceTexture
         self.deviceSignalTexture = deviceSignalTexture
         self.deviceProfile = deviceProfile
+        self.pipelineSnapshot = pipelineSnapshot
         self.sourceFrame = sourceFrame
         self.deviceSignalFrame = deviceSignalFrame
         self.cancellationIdentity = cancellationIdentity
@@ -52,6 +56,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
         screen_physical_texture_release(deviceSignalTexture)
         screen_physical_texture_release(sourceTexture)
         screen_device_profile_release(deviceProfile)
+        screen_physical_pipeline_snapshot_release(pipelineSnapshot)
     }
 
     func cancel() -> Bool {
@@ -65,7 +70,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     }
 
     func snapshot() throws -> PhysicalMetalFrameSnapshot {
-        var raw = ScreenPhysicalFrameResultV1()
+        var raw = ScreenPhysicalFrameResultV2()
         var error: UnsafePointer<CChar>?
         guard screen_physical_frame_job_snapshot(handle, &raw, &error) else {
             throw PhysicalMetalFrameEngineError.bridge(
@@ -74,6 +79,9 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
         }
         guard raw.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION,
               let quality = PhysicalQuality(rawValue: raw.computed_quality),
+              let returnedIntermediate = PhysicalIntermediate(
+                rawValue: raw.returned_intermediate
+              ),
               let state = PhysicalFrameState(rawValue: raw.state)
         else {
             throw PhysicalMetalFrameEngineError.invalidSnapshot
@@ -93,7 +101,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
             try PhysicalParameterHash(bytes: Array($0))
         }
         let frame: StudioColorMetalFrame?
-        if let output = raw.acescg_texture,
+        if let output = raw.output_texture,
            let pointer = screen_physical_texture_borrow_metal(output) {
             let object = Unmanaged<AnyObject>.fromOpaque(
                 UnsafeMutableRawPointer(mutating: pointer)
@@ -110,6 +118,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
             nativeDimensions: native,
             effectiveDimensions: effective,
             computedQuality: quality,
+            returnedIntermediate: returnedIntermediate,
             state: state,
             progress: Double(raw.progress),
             diagnostics: diagnostics,
@@ -119,7 +128,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     }
 
     private func decodeDiagnostics(
-        _ result: ScreenPhysicalFrameResultV1
+        _ result: ScreenPhysicalFrameResultV2
     ) throws -> [PhysicalStageDiagnostic] {
         guard result.stage_diagnostic_count == 0 || result.stage_diagnostics != nil else {
             throw PhysicalMetalFrameEngineError.invalidSnapshot
@@ -146,6 +155,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
                 stage: stage,
                 state: state,
                 progress: Double(raw.progress),
+                elapsedNanoseconds: raw.elapsed_nanoseconds,
                 message: message
             )
         }
@@ -159,6 +169,7 @@ final class PhysicalMetalFrameEngine {
         deviceSignal: StudioColorMetalFrame,
         frame: PhysicalFrameSelection,
         resolvedDevice: ResolvedDevice,
+        resolvedPipeline: PhysicalPipelineResolvedState,
         quality: PhysicalQuality,
         screenAmount: Double,
         captureAmount: Double,
@@ -168,7 +179,8 @@ final class PhysicalMetalFrameEngine {
         progressIdentity: PhysicalFrameIdentity,
         parameterRevision: UInt64,
         parameterHash: PhysicalParameterHash,
-        rasterPlacement: PhysicalRasterPlacement
+        rasterPlacement: PhysicalRasterPlacement,
+        requestedIntermediate: PhysicalIntermediate
     ) throws -> PhysicalMetalFrameJob {
         var error: UnsafePointer<CChar>?
         let sourcePointer = Unmanaged.passUnretained(sourceACEScg.texture as AnyObject).toOpaque()
@@ -179,6 +191,7 @@ final class PhysicalMetalFrameEngine {
         var deviceSignalTexture: ScreenPhysicalTextureRef?
         var input: ScreenPhysicalFrameInputRef?
         var deviceProfile: ScreenDeviceProfileRef?
+        var pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef?
         var job: ScreenPhysicalFrameJobRef?
         defer {
             if job == nil {
@@ -188,6 +201,9 @@ final class PhysicalMetalFrameEngine {
                 }
                 screen_physical_texture_release(sourceTexture)
                 if let deviceProfile { screen_device_profile_release(deviceProfile) }
+                if let pipelineSnapshot {
+                    screen_physical_pipeline_snapshot_release(pipelineSnapshot)
+                }
             }
         }
         let signalPointer = Unmanaged.passUnretained(deviceSignal.texture as AnyObject).toOpaque()
@@ -212,19 +228,29 @@ final class PhysicalMetalFrameEngine {
         guard let deviceProfile else {
             throw bridgeError(error, fallback: "No se ha resuelto el Device físico.")
         }
+        var pipelineParameters = resolvedPipeline.parameters
+        pipelineSnapshot = screen_physical_pipeline_snapshot_create(
+            &pipelineParameters,
+            &error
+        )
+        guard let pipelineSnapshot else {
+            throw bridgeError(error, fallback: "No se ha resuelto el pipeline físico.")
+        }
         let rawContributions = contributions.map(rawContribution)
-        var raw = ScreenPhysicalFrameRequestV1()
+        var raw = ScreenPhysicalFrameRequestV2()
         raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
         raw.frame_index = frame.frameIndex
         raw.frame_time_numerator = frame.timeNumerator
         raw.frame_time_denominator = frame.timeDenominator
         raw.input = input
         raw.resolved_device = deviceProfile
+        raw.resolved_pipeline = pipelineSnapshot
         raw.quality = quality.rawValue
         raw.screen_amount = Float(screenAmount)
         raw.capture_amount = Float(captureAmount)
         raw.requested_width = UInt32(requestedDimensions.width)
         raw.requested_height = UInt32(requestedDimensions.height)
+        raw.requested_intermediate = requestedIntermediate.rawValue
         raw.cancellation_identity = ScreenPhysicalIdentity128(
             high: cancellationIdentity.high,
             low: cancellationIdentity.low
@@ -251,6 +277,7 @@ final class PhysicalMetalFrameEngine {
             sourceTexture: sourceTexture,
             deviceSignalTexture: deviceSignalTexture,
             deviceProfile: deviceProfile,
+            pipelineSnapshot: pipelineSnapshot,
             sourceFrame: sourceACEScg,
             deviceSignalFrame: deviceSignal,
             cancellationIdentity: cancellationIdentity
@@ -259,8 +286,8 @@ final class PhysicalMetalFrameEngine {
 
     private func rawContribution(
         _ contribution: PhysicalStageContribution
-    ) -> ScreenPhysicalStageContributionV1 {
-        var raw = ScreenPhysicalStageContributionV1()
+    ) -> ScreenPhysicalStageContributionV2 {
+        var raw = ScreenPhysicalStageContributionV2()
         raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
         raw.domain_id = contribution.stage.domain.rawValue
         raw.stage_id = contribution.stage.id
@@ -281,7 +308,6 @@ final class PhysicalMetalFrameEngine {
             raw.discrete_enabled = enabled
         }
         raw.exact_identity_at_zero = contribution.exactIdentityAtZero
-        raw.reserved = (0, 0)
         return raw
     }
 

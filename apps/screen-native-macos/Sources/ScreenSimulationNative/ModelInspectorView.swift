@@ -53,8 +53,15 @@ struct ModelInspectorView: View {
                         set: { id in
                             guard let device = library.document.devices.first(
                                 where: { $0.id == id }
+                            ), let cover = library.document.coverGlasses.first(
+                                where: {
+                                    $0.id == device.value.defaultCoverGlassPresetID
+                                }
                             ) else { return }
-                            workspace.selectModelDevice(device.value)
+                            workspace.selectModelDevice(
+                                device.value,
+                                coverGlass: cover.value
+                            )
                         }
                     )
                 ) {
@@ -244,7 +251,7 @@ struct ModelInspectorView: View {
                         )
                     ) {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Pendiente del motor físico ABI v1.")
+                            Text("Pendiente del motor físico ABI v2.")
                                 .foregroundStyle(.secondary)
                             Text("No se aplica ninguna aproximación ni simulación provisional.")
                                 .font(.caption)
@@ -271,7 +278,7 @@ struct ModelInspectorView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(explanation)
                     details()
-                    if !stage.isImplementedByPhysicalPanelV1 {
+                    if !stage.isImplementedByUnifiedPipeline {
                         Label(
                             "Pendiente del motor físico; permanece en bypass y no se simula.",
                             systemImage: "wrench.and.screwdriver"
@@ -288,7 +295,7 @@ struct ModelInspectorView: View {
                         Text(title).fontWeight(.medium)
                         Spacer(minLength: 6)
                         stageControl(stage, value: value)
-                            .disabled(!stage.isImplementedByPhysicalPanelV1)
+                            .disabled(!stage.isImplementedByUnifiedPipeline)
                     }
                     Text(affects)
                         .font(.caption)
@@ -304,11 +311,11 @@ struct ModelInspectorView: View {
             ) {
                 workspace.togglePhysicalIsolation(stage)
             }
-            .disabled(!stage.isImplementedByPhysicalPanelV1)
+            .disabled(!stage.isImplementedByUnifiedPipeline)
             Button("Restablecer a físico") {
                 workspace.resetPhysicalStage(stage)
             }
-            .disabled(!stage.isImplementedByPhysicalPanelV1)
+            .disabled(!stage.isImplementedByUnifiedPipeline)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Etapa \(title). \(affects)")
@@ -417,6 +424,28 @@ struct ModelInspectorView: View {
                 Text("Aporta frecuencias espaciales; moiré y fringe aparecen al combinarla con Captura.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            case .panelLightSpread:
+                LabeledContent(
+                    "Fuerza del perfil",
+                    value: device.panelLightSpread.characterStrength.formatted(
+                        .number.precision(.fractionLength(2))
+                    )
+                )
+                LabeledContent(
+                    "Radio core RGB",
+                    value: device.panelLightSpread.coreRadiusMicrometers
+                        .map { $0.formatted(.number.precision(.fractionLength(1))) }
+                        .joined(separator: " / ") + " µm"
+                )
+                LabeledContent(
+                    "Radio tail RGB",
+                    value: device.panelLightSpread.tailRadiusMicrometers
+                        .map { $0.formatted(.number.precision(.fractionLength(1))) }
+                        .joined(separator: " / ") + " µm"
+                )
+                Text("Contaminación luminosa y bloom entre píxeles/subpíxeles. No es bloom de lente, halation, cristal ni sensor.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             case .temporal:
                 LabeledContent(
                     "Flicker residual",
@@ -473,6 +502,7 @@ private extension ScreenPhysicalSection {
         switch self {
         case .emission: "Emisión"
         case .subpixelGeometry: "Geometría subpíxel"
+        case .panelLightSpread: "Panel Light Spread"
         case .temporal: "Temporal"
         case .coverGlass: "Cristal"
         case .environment: "Entorno"
@@ -483,6 +513,7 @@ private extension ScreenPhysicalSection {
         switch self {
         case .emission: "Afecta a: luminancia · contraste · color · nivel de negro"
         case .subpixelGeometry: "Afecta a: trama RGB · detalle · moiré · fringe"
+        case .panelLightSpread: "Afecta a: contaminación luminosa · bloom entre píxeles · color"
         case .temporal: "Afecta a: flicker · uniformidad temporal · persistencia"
         case .coverGlass: "Afecta a: contraste · reflejos · difusión · negros"
         case .environment: "Afecta a: reflejos · contaminación de color · contraste aparente"
@@ -495,6 +526,8 @@ private extension ScreenPhysicalSection {
             "Convierte la señal del contenido en emisión luminosa según la tecnología."
         case .subpixelGeometry:
             "Define pitch, fill factor, matriz negra y distribución RGB/BGR."
+        case .panelLightSpread:
+            "Difunde físicamente emisión entre píxeles y subpíxeles mediante el perfil resuelto del panel."
         case .temporal:
             "Modela la variación de emisión durante la exposición. El banding creativo permanece separado."
         case .coverGlass:

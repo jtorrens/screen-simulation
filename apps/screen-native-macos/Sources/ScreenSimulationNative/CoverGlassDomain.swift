@@ -30,6 +30,23 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
         guard absorptionPerMillimeter.count == 3 else {
             throw CoverGlassDomainError.invalidAbsorption
         }
+        let parameters = try bridgeParameters()
+        var error: UnsafePointer<CChar>?
+        guard let profile = withUnsafePointer(to: parameters, {
+            screen_cover_glass_profile_create($0, &error)
+        }) else {
+            throw CoverGlassDomainError.invalidPhysicalProfile(
+                error.map(String.init(cString:))
+                    ?? "El motor Rust rechazó el perfil de Cover Glass."
+            )
+        }
+        screen_cover_glass_profile_release(profile)
+    }
+
+    func bridgeParameters() throws -> ScreenCoverGlassParametersV2 {
+        guard absorptionPerMillimeter.count == 3 else {
+            throw CoverGlassDomainError.invalidAbsorption
+        }
         var parameters = ScreenCoverGlassParametersV2()
         parameters.abi_version = 2
         parameters.authority = authority == .genericApproximation ? 0 : 1
@@ -44,16 +61,7 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
         )
         parameters.roughness = Float(roughness)
         parameters.haze = Float(haze)
-        var error: UnsafePointer<CChar>?
-        guard let profile = withUnsafePointer(to: parameters, {
-            screen_cover_glass_profile_create($0, &error)
-        }) else {
-            throw CoverGlassDomainError.invalidPhysicalProfile(
-                error.map(String.init(cString:))
-                    ?? "El motor Rust rechazó el perfil de Cover Glass."
-            )
-        }
-        screen_cover_glass_profile_release(profile)
+        return parameters
     }
 }
 

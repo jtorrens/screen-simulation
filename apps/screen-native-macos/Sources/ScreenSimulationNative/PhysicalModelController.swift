@@ -49,6 +49,7 @@ final class PhysicalModelController: ObservableObject {
                 || stage == .capture(.developDemosaic)
             let implemented = stage == .screen(.emission)
                 || stage == .screen(.subpixelGeometry)
+                || stage == .screen(.panelLightSpread)
             values[stage] = StageValue(
                 stage: stage,
                 exactIdentityAtZero: !discrete,
@@ -102,7 +103,7 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func setContinuousAmount(_ amount: Double, stage: PhysicalStageID) throws {
-        guard stage.isImplementedByPhysicalPanelV1 else {
+        guard stage.isImplementedByUnifiedPipeline else {
             throw PhysicalModelStateError.stagePending
         }
         guard var value = stages[stage],
@@ -116,7 +117,7 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func setDiscreteEnabled(_ enabled: Bool, stage: PhysicalStageID) throws {
-        guard stage.isImplementedByPhysicalPanelV1 else {
+        guard stage.isImplementedByUnifiedPipeline else {
             throw PhysicalModelStateError.stagePending
         }
         guard var value = stages[stage], case .discrete = value.control else {
@@ -141,7 +142,7 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func toggleIsolation(_ stage: PhysicalStageID) throws {
-        guard stage.isImplementedByPhysicalPanelV1 else {
+        guard stage.isImplementedByUnifiedPipeline else {
             throw PhysicalModelStateError.stagePending
         }
         if isolatedStage == stage {
