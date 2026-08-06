@@ -1743,9 +1743,11 @@ final class MetalPreviewContainer: NSView {
         let newZoom = min(16, max(0.1, oldZoom * (1 + event.magnification)))
         let ratio = CGFloat(newZoom / max(0.1, oldZoom))
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        let anchoredPan = CGSize(
-            width: oldPan.width + (origin.x - center.x) * (1 - ratio),
-            height: oldPan.height - (origin.y - center.y) * (1 - ratio)
+        let anchoredPan = PreviewNavigationMath.anchoredPan(
+            previous: oldPan,
+            anchor: origin,
+            viewportCenter: center,
+            scaleRatio: ratio
         )
         presentationZoom = newZoom
         onZoomChange?(newZoom)
@@ -1790,11 +1792,10 @@ final class MetalPreviewContainer: NSView {
             )
             : 1
         let scale = (presentationOneToOne ? oneToOneScale : 1) * presentationZoom
-        let maximumX = max(0, (bounds.width * scale - bounds.width) / 2)
-        let maximumY = max(0, (bounds.height * scale - bounds.height) / 2)
-        return CGSize(
-            width: min(maximumX, max(-maximumX, proposed.width)),
-            height: min(maximumY, max(-maximumY, proposed.height))
+        return PreviewNavigationMath.clampedPan(
+            proposed,
+            viewport: bounds.size,
+            scale: scale
         )
     }
 }
