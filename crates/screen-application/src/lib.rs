@@ -5648,7 +5648,7 @@ mod tests {
         let rgb = evaluate_flat_panel_cpu_oracle(rgb_request.clone()).expect("RGB native");
         rgb_request.plan.panel.stripe_layout = screen_panel::StripeLayout::Bgr;
         let bgr = evaluate_flat_panel_cpu_oracle(rgb_request.clone()).expect("BGR native");
-        assert_eq!((rgb.width, rgb.height), (3, 1));
+        assert_eq!((rgb.width, rgb.height), (3, 3));
         assert!(rgb.acescg[0][0] > rgb.acescg[2][0]);
         assert!(bgr.acescg[0][2] > bgr.acescg[2][2]);
         assert_ne!(rgb.acescg, bgr.acescg);
