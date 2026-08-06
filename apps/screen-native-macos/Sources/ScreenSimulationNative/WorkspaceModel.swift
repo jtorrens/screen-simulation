@@ -19,11 +19,13 @@ final class WorkspaceModel: ObservableObject {
         var detail = "Pendiente"
     }
 
-    @Published var inputTransform = StudioColorInputTransform.catalog[0]
+    @Published var inputTransform = StudioColorInputTransform.catalog.first {
+        $0.id == "input-rec709"
+    }!
     @Published var previewTransform = StudioColorOutputTransform.catalog[0]
-    @Published var alphaMode = StudioAlphaMode.auto
-    @Published var signalMatrix = StudioSignalMatrix.auto
-    @Published var signalRange = StudioSignalRange.auto
+    @Published var alphaMode = StudioAlphaMode.ignore
+    @Published var signalMatrix = StudioSignalMatrix.bt709
+    @Published var signalRange = StudioSignalRange.full
     @Published var detection = StudioMediaDetection()
     @Published var selectedPattern = SyntheticPattern.animatedCheckerboard
     @Published var sourceName = "Checker animado"
@@ -47,6 +49,10 @@ final class WorkspaceModel: ObservableObject {
     @Published var decodeToPreviewMilliseconds = 0.0
     @Published var zoom = 1.0
     @Published var pan = CGSize.zero
+    @Published private(set) var defaultInputTransformID = "input-rec709"
+    @Published private(set) var defaultAlphaMode = StudioAlphaMode.ignore
+    @Published private(set) var defaultSignalMatrix = StudioSignalMatrix.bt709
+    @Published private(set) var defaultSignalRange = StudioSignalRange.full
 
     let metalDisplay: StudioColorMetalDisplay
     private let session = NativeMediaSession()
@@ -80,48 +86,59 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var effectiveAlpha: StudioColorAlphaAssociation {
-        let resolved: StudioAlphaMode
-        if alphaMode == .auto {
-            resolved = detection.alpha ?? .ignore
-        } else {
-            resolved = alphaMode
-        }
-        switch resolved {
+        switch alphaMode {
         case .straight: return StudioColorAlphaAssociation.straight
         case .premultiplied: return StudioColorAlphaAssociation.premultiplied
-        case .auto, .ignore: return StudioColorAlphaAssociation.ignore
+        case .ignore: return StudioColorAlphaAssociation.ignore
         }
     }
 
     var effectiveMatrix: StudioColorSignalMatrix {
-        let resolved: StudioSignalMatrix
-        if signalMatrix == .auto {
-            resolved = detection.matrix ?? .bt709
-        } else {
-            resolved = signalMatrix
-        }
-        switch resolved {
+        switch signalMatrix {
         case .bt601: return StudioColorSignalMatrix.bt601
         case .bt2020: return StudioColorSignalMatrix.bt2020
-        case .auto, .bt709: return StudioColorSignalMatrix.bt709
+        case .bt709: return StudioColorSignalMatrix.bt709
         }
     }
 
     var effectiveRange: StudioColorSignalRange {
-        let resolved: StudioSignalRange
-        if signalRange == .auto {
-            resolved = detection.range ?? .video
-        } else {
-            resolved = signalRange
-        }
-        switch resolved {
+        switch signalRange {
         case .full: return StudioColorSignalRange.full
-        case .auto, .video: return StudioColorSignalRange.video
+        case .video: return StudioColorSignalRange.video
         }
     }
 
     var activeFrameRange: ClosedRange<Int> {
         renderRange == .inOut ? min(inFrame, outFrame) ... max(inFrame, outFrame) : 0 ... max(0, frameCount - 1)
+    }
+
+    func inputAnnotation(_ value: StudioColorInputTransform) -> String? {
+        if value.id == detection.proposedInputTransformID {
+            return sourceIsPattern ? "Propuesta" : "Detectada"
+        }
+        return detection.proposedInputTransformID == nil && value.id == defaultInputTransformID
+            ? "Predeterminada" : nil
+    }
+
+    func alphaAnnotation(_ value: StudioAlphaMode) -> String? {
+        if value == detection.alpha {
+            return sourceIsPattern ? "Propuesto" : "Detectado"
+        }
+        return detection.alpha == nil && value == defaultAlphaMode ? "Predeterminado" : nil
+    }
+
+    func matrixAnnotation(_ value: StudioSignalMatrix) -> String? {
+        if value == detection.matrix {
+            return sourceIsPattern ? "Propuesta" : "Detectada"
+        }
+        return detection.matrix == nil && value == defaultSignalMatrix ? "Predeterminada" : nil
+    }
+
+    func rangeAnnotation(_ value: StudioSignalRange) -> String? {
+        if value == detection.range {
+            return sourceIsPattern ? "Propuesto" : "Detectado"
+        }
+        return detection.range == nil && value == defaultSignalRange ? "Predeterminado" : nil
     }
 
     func choosePattern(_ pattern: SyntheticPattern, undoManager: UndoManager?) {
@@ -135,12 +152,17 @@ final class WorkspaceModel: ObservableObject {
         sourceName = pattern.label
         sourceDetail = "Patrón SCREEN canónico"
         detection = StudioMediaDetection(
-            proposedInputColorSpace: "Input - Rec.709", range: .full,
+            proposedInputTransformID: "input-rec709", range: .full,
             hasAlpha: false, alpha: .ignore
         )
-        inputTransform = StudioColorInputTransform.catalog[0]
-        alphaMode = .auto
-        signalRange = .auto
+        inputTransform = StudioColorInputTransform.catalog.first { $0.id == "input-rec709" }!
+        alphaMode = .ignore
+        signalMatrix = .bt709
+        signalRange = .full
+        defaultInputTransformID = "input-rec709"
+        defaultAlphaMode = .ignore
+        defaultSignalMatrix = .bt709
+        defaultSignalRange = .full
         currentFrame = 0
         frameRate = 24
         frameCount = pattern == .animatedCheckerboard ? 240 : 1
@@ -174,13 +196,20 @@ final class WorkspaceModel: ObservableObject {
         }
         let isVideo = Self.isVideo(first) && expanded.count == 1
         detection = await StudioMediaMetadataDetector.detect(url: first, isVideo: isVideo)
-        if let proposed = detection.proposedInputColorSpace,
-           let transform = StudioColorInputTransform.catalog.first(where: { $0.ocioColorSpace == proposed }) {
-            inputTransform = transform
-        }
-        alphaMode = .auto
-        signalMatrix = .auto
-        signalRange = .auto
+        let defaultInputID = isVideo
+            ? "display-rec709-aces2-sdr"
+            : "display-srgb-aces2-sdr"
+        defaultInputTransformID = defaultInputID
+        defaultAlphaMode = detection.hasAlpha ? .straight : .ignore
+        defaultSignalMatrix = .bt709
+        defaultSignalRange = isVideo ? .video : .full
+        let resolvedInputID = detection.proposedInputTransformID ?? defaultInputID
+        inputTransform = StudioColorInputTransform.catalog.first {
+            $0.id == resolvedInputID
+        }!
+        alphaMode = detection.alpha ?? defaultAlphaMode
+        signalMatrix = detection.matrix ?? defaultSignalMatrix
+        signalRange = detection.range ?? defaultSignalRange
         do {
             let info = isVideo
                 ? try await session.openVideo(first, hasAlpha: detection.hasAlpha)

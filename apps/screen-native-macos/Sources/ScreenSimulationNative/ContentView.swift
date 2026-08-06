@@ -90,36 +90,38 @@ struct ContentView: View {
     private var colorPanel: some View {
         Form {
             Section("Interpretación de entrada") {
-                LabeledContent("IDT propuesta") {
-                    Text(model.detection.proposedInputColorSpace ?? "Sin metadata · Rec.709")
-                        .foregroundStyle(.secondary)
-                }
                 Picker("IDT", selection: Binding(
                     get: { model.inputTransform },
                     set: { model.changeInput($0, undoManager: undoManager) }
                 )) {
-                    ForEach(StudioColorInputTransform.catalog) { Text($0.label).tag($0) }
+                    ForEach(StudioColorInputTransform.catalog) { value in
+                        interpretationLabel(value.label, annotation: model.inputAnnotation(value))
+                            .tag(value)
+                    }
                 }
                 Picker("Alpha", selection: Binding(
                     get: { model.alphaMode },
                     set: { model.changeAlpha($0, undoManager: undoManager) }
                 )) {
                     ForEach(StudioAlphaMode.allCases) { value in
-                        Text(value.label + (value == model.detection.alpha ? " · Detectada" : "")).tag(value)
+                        interpretationLabel(value.label, annotation: model.alphaAnnotation(value))
+                            .tag(value)
                     }
                 }
                 Picker("Matriz YUV", selection: Binding(
                     get: { model.signalMatrix }, set: { model.changeMatrix($0) }
                 )) {
                     ForEach(StudioSignalMatrix.allCases) { value in
-                        Text(value.label + (value == model.detection.matrix ? " · Detectada" : "")).tag(value)
+                        interpretationLabel(value.label, annotation: model.matrixAnnotation(value))
+                            .tag(value)
                     }
                 }
                 Picker("Rango señal", selection: Binding(
                     get: { model.signalRange }, set: { model.changeRange($0) }
                 )) {
                     ForEach(StudioSignalRange.allCases) { value in
-                        Text(value.label + (value == model.detection.range ? " · Detectado" : "")).tag(value)
+                        interpretationLabel(value.label, annotation: model.rangeAnnotation(value))
+                            .tag(value)
                     }
                 }
             }
@@ -130,6 +132,11 @@ struct ContentView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func interpretationLabel(_ label: String, annotation: String?) -> Text {
+        Text(label + (annotation.map { " · \($0)" } ?? ""))
+            .fontWeight(annotation == nil ? .regular : .semibold)
     }
 
     private var outputPanel: some View {
