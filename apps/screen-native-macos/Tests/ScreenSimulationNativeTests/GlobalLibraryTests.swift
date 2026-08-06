@@ -71,11 +71,15 @@ import Testing
         JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any]
     )
     json["schemaVersion"] = 2
+    json["devices"] = (json["devices"] as? [[String: Any]])?.compactMap {
+        $0["value"]
+    }
     let previousBytes = try JSONSerialization.data(withJSONObject: json)
     try previousBytes.write(to: url)
     let migrated = try GlobalLibraryStore(documentURL: url).load()
     #expect(migrated.schemaVersion == GlobalLibraryDocument.currentSchemaVersion)
-    #expect(migrated.renderPresets == StudioRenderPreset.builtIns)
+    #expect(migrated.renderPresets.map(\.value) == StudioRenderPreset.builtIns)
+    #expect(migrated.renderPresets.allSatisfy { $0.isLocked })
     #expect(try Data(contentsOf: url) != previousBytes)
 }
 
@@ -92,6 +96,7 @@ import Testing
     )
     json["schemaVersion"] = 3
     var presets = try #require(json["renderPresets"] as? [[String: Any]])
+        .compactMap { $0["value"] as? [String: Any] }
     presets[0].removeValue(forKey: "pixelEncoding")
     json["renderPresets"] = presets
     let previousBytes = try JSONSerialization.data(withJSONObject: json)
@@ -102,6 +107,34 @@ import Testing
     #expect(migrated.renderPresets.first?.pixelEncoding == .yuv44412)
     #expect(migrated.renderPresets.first?.signalRange == .video)
     #expect(try Data(contentsOf: url) != previousBytes)
+}
+
+@Test func schemaFourAddsLockedCoverGlassAndMigratesExistingSeedsAtomically() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-global-library-v4-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let url = root.appendingPathComponent("library.json")
+    let renderPresets = try JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(StudioRenderPreset.builtIns)
+    )
+    let devices = try JSONSerialization.jsonObject(
+        with: JSONEncoder().encode(try RustDeviceCatalog.builtIns())
+    )
+    let bytes = try JSONSerialization.data(withJSONObject: [
+        "schemaVersion": 4,
+        "testImages": [],
+        "renderPresets": renderPresets,
+        "devices": devices,
+    ])
+    try bytes.write(to: url)
+
+    let migrated = try GlobalLibraryStore(documentURL: url).load()
+    #expect(migrated.schemaVersion == 5)
+    #expect(migrated.renderPresets.allSatisfy { $0.isLocked })
+    #expect(migrated.devices.allSatisfy { $0.isLocked })
+    #expect(migrated.coverGlasses.count == 6)
+    #expect(migrated.coverGlasses.allSatisfy { $0.isLocked })
+    #expect(try Data(contentsOf: url) != bytes)
 }
 
 @Test func failedMigrationLeavesTheOriginalEntityUntouched() throws {
@@ -118,7 +151,7 @@ import Testing
     #expect(try Data(contentsOf: url) == bytes)
 }
 
-@Test @MainActor func deviceLibraryCRUDPersistsNormalEditableSeedEntries() throws {
+@Test @MainActor func deviceSeedCanAlwaysDuplicateAndUnlockIntoANormalItem() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-device-crud-\(UUID().uuidString)")
     let store = try GlobalLibraryStore(
@@ -128,18 +161,29 @@ import Testing
     #expect(controller.document.devices.count == 9)
     let originalID = try #require(controller.document.devices.first?.id)
     controller.selectedDeviceID = originalID
+    #expect(controller.selectedDeviceItem?.isLocked == true)
+    let originalName = controller.selectedDevice?.name
+    controller.updateSelectedDevice { $0.name = "No debe cambiar" }
+    #expect(controller.selectedDevice?.name == originalName)
     controller.duplicateSelectedDevice()
     let duplicateID = try #require(controller.selectedDeviceID)
     #expect(duplicateID != originalID)
     #expect(controller.document.devices.count == 10)
+    #expect(controller.selectedDeviceItem?.isLocked == false)
     controller.updateSelectedDevice { $0.name = "Device usuario" }
     #expect(controller.selectedDevice?.name == "Device usuario")
     controller.removeSelectedDevice()
     #expect(controller.document.devices.count == 9)
     #expect(try store.load().devices.count == 9)
+
+    controller.selectedDeviceID = originalID
+    controller.unlockSelectedDevice()
+    #expect(controller.selectedDeviceItem?.isLocked == false)
+    controller.updateSelectedDevice { $0.name = "Seed desbloqueado" }
+    #expect(controller.selectedDevice?.name == "Seed desbloqueado")
 }
 
-@Test @MainActor func seededRenderPresetsAreNormalEditableDeletableEntries() throws {
+@Test @MainActor func renderSeedCanAlwaysDuplicateAndUnlockIntoANormalItem() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-render-preset-crud-\(UUID().uuidString)")
     let store = try GlobalLibraryStore(
@@ -148,11 +192,69 @@ import Testing
     let controller = GlobalLibraryController(store: store)
     #expect(controller.document.renderPresets.count == 7)
     controller.selectedPresetID = controller.document.renderPresets.first?.id
+    let originalName = controller.selectedPresetItem?.name
+    #expect(controller.selectedPresetItem?.isLocked == true)
+    controller.updateSelectedPreset { $0.name = "No debe cambiar" }
+    #expect(controller.selectedPresetItem?.name == originalName)
+    controller.duplicateSelectedPreset()
+    #expect(controller.document.renderPresets.count == 8)
+    #expect(controller.selectedPresetItem?.isLocked == false)
     controller.updateSelectedPreset { $0.name = "ACES SDR personalizado" }
-    #expect(controller.allRenderPresets.first?.name == "ACES SDR personalizado")
+    #expect(controller.selectedPresetItem?.name == "ACES SDR personalizado")
     controller.removeSelectedPreset()
-    #expect(controller.document.renderPresets.count == 6)
+    #expect(controller.document.renderPresets.count == 7)
+
+    controller.selectedPresetID = controller.document.renderPresets.first?.id
+    controller.unlockSelectedPreset()
+    #expect(controller.selectedPresetItem?.isLocked == false)
+    controller.removeSelectedPreset()
     #expect(try store.load().renderPresets.count == 6)
+}
+
+@Test @MainActor func coverGlassSeedsUseTheRustAuthorityAndGenericLockContract() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-cover-glass-crud-\(UUID().uuidString)")
+    let store = try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("library.json")
+    )
+    let controller = GlobalLibraryController(store: store)
+    #expect(controller.document.coverGlasses.count == 6)
+    #expect(controller.document.coverGlasses.allSatisfy { $0.isLocked })
+    controller.selectedCoverGlassID = controller.document.coverGlasses.first?.id
+    let originalID = try #require(controller.selectedCoverGlassID)
+    controller.duplicateSelectedCoverGlass()
+    #expect(controller.selectedCoverGlassID != originalID)
+    #expect(controller.selectedCoverGlassItem?.isLocked == false)
+    controller.updateSelectedCoverGlass { $0.name = "Cristal usuario" }
+    #expect(controller.selectedCoverGlass?.name == "Cristal usuario")
+    controller.removeSelectedCoverGlass()
+    #expect(controller.document.coverGlasses.count == 6)
+
+    controller.selectedCoverGlassID = originalID
+    controller.unlockSelectedCoverGlass()
+    #expect(controller.selectedCoverGlassItem?.isLocked == false)
+    controller.updateSelectedCoverGlass { $0.roughness = 0.1 }
+    #expect(controller.selectedCoverGlass?.roughness == 0.1)
+}
+
+@Test @MainActor func patternSeedsUseTheSameDuplicateAndUnlockContract() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-pattern-crud-\(UUID().uuidString)")
+    let controller = GlobalLibraryController(
+        store: try GlobalLibraryStore(
+            documentURL: root.appendingPathComponent("library.json")
+        )
+    )
+    #expect(controller.document.patterns.count == 6)
+    #expect(controller.document.patterns.allSatisfy { $0.isLocked })
+    controller.selectedPatternID = controller.document.patterns.first?.id
+    controller.duplicateSelectedPattern()
+    #expect(controller.document.patterns.count == 7)
+    #expect(controller.selectedPatternItem?.isLocked == false)
+    controller.updateSelectedPattern { $0.name = "Patrón usuario" }
+    #expect(controller.selectedPatternItem?.name == "Patrón usuario")
+    controller.removeSelectedPattern()
+    #expect(controller.document.patterns.count == 6)
 }
 
 @Test @MainActor func invalidDeviceEditIsRejectedWithoutMutatingTheResolvedEntry() throws {
@@ -164,6 +266,7 @@ import Testing
         )
     )
     controller.selectedDeviceID = controller.document.devices.first?.id
+    controller.unlockSelectedDevice()
     let original = try #require(controller.selectedDevice)
     controller.updateSelectedDevice { $0.nativeWidth = 0 }
     #expect(controller.selectedDevice == original)

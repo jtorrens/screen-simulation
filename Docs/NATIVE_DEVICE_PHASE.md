@@ -19,11 +19,19 @@ emission.
 
 ## Global persistence
 
-Device presets are normal global user entries in `GlobalLibrary.v1.json` under
-current schema 4. Earlier supported schemas are decoded only by explicit atomic migrations,
-validated completely, seeded once from the Rust catalog and atomically replaced.
-The current schema never reseeds deleted entries or overwrites edits. Unknown or corrupt
-schemas remain untouched and block the library with an explicit error.
+Device, Cover Glass, render and pattern presets use the same generic global
+`LibraryItem` envelope in `GlobalLibrary.v1.json` under current schema 5. Seeds
+are created once from their authoritative catalogs with a persistent lock. A
+locked item can always be duplicated; its copy has a new stable identity and is
+unlocked. Explicit unlock converts the original into a normal editable and
+deletable item. The current schema never silently relocks, reseeds or overwrites
+an item. Earlier supported schemas are decoded only by explicit atomic
+migrations. Unknown or corrupt schemas remain untouched and block the library.
+
+`screen-cover` remains the sole authority for the six initial Cover Glass
+profiles and their validation. `screen-native-bridge` exposes that catalog and
+validation through coarse V1 structures and opaque handles; Swift owns only the
+global-library adapter and native controls, not the optical equations.
 
 Selecting a Device copies an immutable resolved snapshot into the workspace.
 Later edits or deletion of the global entry cannot change that evaluation. No
@@ -60,8 +68,9 @@ transform and Device Metal command completion. The reproducible command is
 
 The bottom native navigation now has Principal, Device and Settings pages.
 Device exposes only preset selection plus the immutable effective summary.
-Settings owns add, edit, duplicate and delete for the global library with native
-lists, forms, pickers, numeric fields, keyboard behavior and explicit validation.
+Settings owns add, unlock, edit, duplicate and delete for the global library with
+native lists, visible lock state, forms, pickers, numeric fields, keyboard
+behavior and explicit Rust-domain validation.
 Definition editing does not appear on the Device page.
 
 Manual visual QA of the packaged application remains pending because the

@@ -78,7 +78,7 @@ enum NativeMediaDecoder {
     }
 }
 
-enum SyntheticPattern: UInt32, CaseIterable, Identifiable {
+enum SyntheticPattern: UInt32, Codable, CaseIterable, Identifiable, Sendable {
     case animatedCheckerboard = 0
     case eyeChart = 1
     case editorialTextReference = 2

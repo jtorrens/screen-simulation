@@ -4,6 +4,20 @@ import StudioColor
 import StudioMedia
 import UniformTypeIdentifiers
 
+@dynamicMemberLookup
+struct LibraryItem<Value>: Codable, Equatable, Identifiable, Sendable
+where Value: Codable & Equatable & Identifiable & Sendable,
+      Value.ID: Codable & Hashable & Sendable {
+    var value: Value
+    var isLocked: Bool
+
+    var id: Value.ID { value.id }
+
+    subscript<Member>(dynamicMember keyPath: KeyPath<Value, Member>) -> Member {
+        value[keyPath: keyPath]
+    }
+}
+
 struct GlobalTestImage: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     var name: String
@@ -26,47 +40,116 @@ struct GlobalTestImage: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+struct GlobalPatternDefinition: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var pattern: SyntheticPattern
+
+    static let builtIns = SyntheticPattern.allCases.map {
+        Self(id: "screen-pattern-\($0.rawValue)", name: $0.label, pattern: $0)
+    }
+
+    func validate() throws {
+        guard !id.isEmpty, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw GlobalLibraryError.invalidEntity("El patrón necesita identidad y nombre.")
+        }
+    }
+}
+
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
     let schemaVersion: Int
-    var testImages: [GlobalTestImage]
-    var renderPresets: [StudioRenderPreset]
-    var devices: [DeviceDefinition]
+    var patterns: [LibraryItem<GlobalPatternDefinition>]
+    var testImages: [LibraryItem<GlobalTestImage>]
+    var renderPresets: [LibraryItem<StudioRenderPreset>]
+    var devices: [LibraryItem<DeviceDefinition>]
+    var coverGlasses: [LibraryItem<CoverGlassDefinition>]
 
     init(
+        patterns: [GlobalPatternDefinition] = GlobalPatternDefinition.builtIns,
         testImages: [GlobalTestImage] = [],
         renderPresets: [StudioRenderPreset] = StudioRenderPreset.builtIns,
-        devices: [DeviceDefinition] = []
+        devices: [DeviceDefinition] = [],
+        coverGlasses: [CoverGlassDefinition] = []
     ) {
         schemaVersion = Self.currentSchemaVersion
-        self.testImages = testImages
-        self.renderPresets = renderPresets
-        self.devices = devices
+        let patternSeedIDs = Set(GlobalPatternDefinition.builtIns.map(\.id))
+        self.patterns = patterns.map {
+            .init(value: $0, isLocked: patternSeedIDs.contains($0.id))
+        }
+        self.testImages = testImages.map { .init(value: $0, isLocked: false) }
+        let renderSeedIDs = Set(StudioRenderPreset.builtIns.map(\.id))
+        self.renderPresets = renderPresets.map {
+            .init(value: $0, isLocked: renderSeedIDs.contains($0.id))
+        }
+        let deviceSeedIDs = Set((try? RustDeviceCatalog.builtIns().map(\.id)) ?? [])
+        self.devices = devices.map {
+            .init(value: $0, isLocked: deviceSeedIDs.contains($0.id))
+        }
+        let coverSeedIDs = Set((try? RustCoverGlassCatalog.builtIns().map(\.id)) ?? [])
+        self.coverGlasses = coverGlasses.map {
+            .init(value: $0, isLocked: coverSeedIDs.contains($0.id))
+        }
+    }
+
+    private init(
+        patternItems: [LibraryItem<GlobalPatternDefinition>],
+        testImageItems: [LibraryItem<GlobalTestImage>],
+        renderPresetItems: [LibraryItem<StudioRenderPreset>],
+        deviceItems: [LibraryItem<DeviceDefinition>],
+        coverGlassItems: [LibraryItem<CoverGlassDefinition>]
+    ) {
+        schemaVersion = Self.currentSchemaVersion
+        patterns = patternItems
+        testImages = testImageItems
+        renderPresets = renderPresetItems
+        devices = deviceItems
+        coverGlasses = coverGlassItems
     }
 
     func validate() throws {
         guard schemaVersion == Self.currentSchemaVersion else {
             throw GlobalLibraryError.unsupportedSchema(schemaVersion)
         }
-        guard Set(testImages.map(\.id)).count == testImages.count,
+        guard Set(patterns.map(\.id)).count == patterns.count,
+              Set(testImages.map(\.id)).count == testImages.count,
               Set(renderPresets.map(\.id)).count == renderPresets.count,
-              Set(devices.map(\.id)).count == devices.count
+              Set(devices.map(\.id)).count == devices.count,
+              Set(coverGlasses.map(\.id)).count == coverGlasses.count
         else { throw GlobalLibraryError.invalidEntity("Hay identificadores globales duplicados.") }
-        try testImages.forEach { try $0.validate() }
-        try devices.forEach { _ = try $0.resolved() }
+        try patterns.forEach { try $0.value.validate() }
+        try testImages.forEach { try $0.value.validate() }
+        try devices.forEach { _ = try $0.value.resolved() }
+        try coverGlasses.forEach { try $0.value.validate() }
+        let coverGlassIDs = Set(coverGlasses.map(\.id))
+        guard devices.allSatisfy({
+            coverGlassIDs.contains($0.defaultCoverGlassPresetID)
+        }) else {
+            throw GlobalLibraryError.invalidEntity(
+                "Un Device referencia un Cover Glass que no existe en la biblioteca."
+            )
+        }
         guard renderPresets.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
             throw GlobalLibraryError.invalidEntity("Todos los presets necesitan nombre.")
         }
-        guard renderPresets.allSatisfy({ preset in
-            preset.format.supportedPixelEncodings.contains(preset.pixelEncoding)
-                && preset.format.supportedSignalRanges(for: preset.pixelEncoding)
-                    .contains(preset.signalRange)
-                && (preset.format.supportsAlpha || preset.alpha == .ignore)
-                && (preset.format.isMovie || !preset.includeAudio)
-                && ((preset.target == .sdr || preset.target == .hdr)
-                    ? preset.display != nil && preset.view != nil
-                    : preset.display == nil && preset.view == nil)
-        }) else {
+        let resolvedRenderPresets = renderPresets.map(\.value)
+        let renderContractsAreValid = resolvedRenderPresets.allSatisfy { preset in
+            let encodingIsValid = preset.format.supportedPixelEncodings
+                .contains(preset.pixelEncoding)
+            let rangeIsValid = preset.format
+                .supportedSignalRanges(for: preset.pixelEncoding)
+                .contains(preset.signalRange)
+            let alphaIsValid = preset.format.supportsAlpha || preset.alpha == .ignore
+            let audioIsValid = preset.format.isMovie || !preset.includeAudio
+            let odtIsValid = if preset.target == .sdr || preset.target == .hdr {
+                preset.display != nil && preset.view != nil
+            } else {
+                preset.display == nil && preset.view == nil
+            }
+            return encodingIsValid && rangeIsValid && alphaIsValid
+                && audioIsValid && odtIsValid
+        }
+        guard renderContractsAreValid else {
             throw GlobalLibraryError.invalidEntity(
                 "Un preset combina formato, rango, alpha, audio u ODT incompatibles."
             )
@@ -110,7 +193,8 @@ struct GlobalLibraryStore: Sendable {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
             let document = GlobalLibraryDocument(
                 renderPresets: StudioRenderPreset.builtIns,
-                devices: try RustDeviceCatalog.builtIns()
+                devices: try RustDeviceCatalog.builtIns(),
+                coverGlasses: try RustCoverGlassCatalog.builtIns()
             )
             try document.validate()
             return document
@@ -128,6 +212,20 @@ struct GlobalLibraryStore: Sendable {
             )
             try document.validate()
             return document
+        case 4:
+            let previous = try JSONDecoder().decode(
+                GlobalLibrarySchemaFour.self,
+                from: data
+            )
+            let migrated = GlobalLibraryDocument(
+                testImages: previous.testImages,
+                renderPresets: previous.renderPresets,
+                devices: previous.devices,
+                coverGlasses: try RustCoverGlassCatalog.builtIns()
+            )
+            try migrated.validate()
+            try save(migrated)
+            return migrated
         case 1:
             let previous = try JSONDecoder().decode(
                 GlobalLibrarySchemaOne.self,
@@ -136,7 +234,8 @@ struct GlobalLibraryStore: Sendable {
             let migrated = GlobalLibraryDocument(
                 testImages: previous.testImages,
                 renderPresets: migratedPresets(previous.renderPresets),
-                devices: try RustDeviceCatalog.builtIns()
+                devices: try RustDeviceCatalog.builtIns(),
+                coverGlasses: try RustCoverGlassCatalog.builtIns()
             )
             try migrated.validate()
             try save(migrated)
@@ -149,7 +248,8 @@ struct GlobalLibraryStore: Sendable {
             let migrated = GlobalLibraryDocument(
                 testImages: previous.testImages,
                 renderPresets: migratedPresets(previous.renderPresets),
-                devices: previous.devices
+                devices: previous.devices,
+                coverGlasses: try RustCoverGlassCatalog.builtIns()
             )
             try migrated.validate()
             try save(migrated)
@@ -162,7 +262,8 @@ struct GlobalLibraryStore: Sendable {
             let migrated = GlobalLibraryDocument(
                 testImages: previous.testImages,
                 renderPresets: previous.renderPresets.map(\.current),
-                devices: previous.devices
+                devices: previous.devices,
+                coverGlasses: try RustCoverGlassCatalog.builtIns()
             )
             try migrated.validate()
             try save(migrated)
@@ -213,6 +314,13 @@ private struct GlobalLibrarySchemaThree: Decodable {
     let schemaVersion: Int
     let testImages: [GlobalTestImage]
     let renderPresets: [GlobalRenderPresetSchemaThree]
+    let devices: [DeviceDefinition]
+}
+
+private struct GlobalLibrarySchemaFour: Decodable {
+    let schemaVersion: Int
+    let testImages: [GlobalTestImage]
+    let renderPresets: [StudioRenderPreset]
     let devices: [DeviceDefinition]
 }
 
@@ -287,10 +395,13 @@ private struct GlobalRenderPresetSchemaThree: Decodable {
 @MainActor
 final class GlobalLibraryController: ObservableObject {
     @Published private(set) var document = GlobalLibraryDocument()
+    @Published var selectedPatternID: String?
     @Published var selectedImageID: UUID?
     @Published var selectedPresetID: UUID?
     @Published var selectedDeviceID: String?
+    @Published var selectedCoverGlassID: String?
     @Published private(set) var deviceValidationMessage: String?
+    @Published private(set) var coverGlassValidationMessage: String?
     @Published private(set) var blockedError: String?
 
     private let store: GlobalLibraryStore?
@@ -303,20 +414,93 @@ final class GlobalLibraryController: ObservableObject {
         }
         do {
             document = try store.load()
+            selectedPatternID = document.patterns.first?.id
             selectedImageID = document.testImages.first?.id
             selectedPresetID = allRenderPresets.first?.id
             selectedDeviceID = document.devices.first?.id
+            selectedCoverGlassID = document.coverGlasses.first?.id
         } catch {
             blockedError = error.localizedDescription
         }
     }
 
     var allRenderPresets: [StudioRenderPreset] {
-        document.renderPresets
+        document.renderPresets.map(\.value)
     }
 
     var selectedDevice: DeviceDefinition? {
+        selectedDeviceItem?.value
+    }
+
+    var selectedCoverGlass: CoverGlassDefinition? {
+        selectedCoverGlassItem?.value
+    }
+
+    var selectedPatternItem: LibraryItem<GlobalPatternDefinition>? {
+        document.patterns.first { $0.id == selectedPatternID }
+    }
+
+    var selectedImageItem: LibraryItem<GlobalTestImage>? {
+        document.testImages.first { $0.id == selectedImageID }
+    }
+
+    var selectedPresetItem: LibraryItem<StudioRenderPreset>? {
+        document.renderPresets.first { $0.id == selectedPresetID }
+    }
+
+    var selectedDeviceItem: LibraryItem<DeviceDefinition>? {
         document.devices.first { $0.id == selectedDeviceID }
+    }
+
+    var selectedCoverGlassItem: LibraryItem<CoverGlassDefinition>? {
+        document.coverGlasses.first { $0.id == selectedCoverGlassID }
+    }
+
+    func addPattern() {
+        guard var pattern = GlobalPatternDefinition.builtIns.first else { return }
+        pattern.id = UUID().uuidString.lowercased()
+        pattern.name = "Patrón personalizado"
+        document.patterns.append(.init(value: pattern, isLocked: false))
+        selectedPatternID = pattern.id
+        persistOrBlock()
+    }
+
+    func duplicateSelectedPattern() {
+        guard var pattern = selectedPatternItem?.value else { return }
+        pattern.id = UUID().uuidString.lowercased()
+        pattern.name += " copia"
+        document.patterns.append(.init(value: pattern, isLocked: false))
+        selectedPatternID = pattern.id
+        persistOrBlock()
+    }
+
+    func updateSelectedPattern(_ mutation: (inout GlobalPatternDefinition) -> Void) {
+        guard let index = document.patterns.firstIndex(where: { $0.id == selectedPatternID }),
+              !document.patterns[index].isLocked else { return }
+        var candidate = document
+        mutation(&candidate.patterns[index].value)
+        do {
+            try candidate.validate()
+            try persist(candidate)
+            document = candidate
+        } catch {
+            blockedError = error.localizedDescription
+        }
+    }
+
+    func unlockSelectedPattern() {
+        guard let index = document.patterns.firstIndex(where: { $0.id == selectedPatternID })
+        else { return }
+        document.patterns[index].isLocked = false
+        persistOrBlock()
+    }
+
+    func removeSelectedPattern() {
+        guard let selectedPatternID,
+              selectedPatternItem?.isLocked == false else { return }
+        document.patterns.removeAll { $0.id == selectedPatternID }
+        self.selectedPatternID = document.patterns.first?.id
+        persistOrBlock()
     }
 
     func addTestImage() {
@@ -338,7 +522,7 @@ final class GlobalLibraryController: ObservableObject {
                 inputTransformID: url.pathExtension.lowercased() == "exr" ? "acescg" : "display-srgb-aces2-sdr",
                 alpha: .straight, matrix: .bt709, range: .full
             )
-            document.testImages.append(entry)
+            document.testImages.append(.init(value: entry, isLocked: false))
             selectedImageID = entry.id
             try persist()
         } catch { blockedError = error.localizedDescription }
@@ -346,14 +530,35 @@ final class GlobalLibraryController: ObservableObject {
 
     func updateSelectedImage(_ mutation: (inout GlobalTestImage) -> Void) {
         guard let selectedImageID,
-              let index = document.testImages.firstIndex(where: { $0.id == selectedImageID })
+              let index = document.testImages.firstIndex(where: { $0.id == selectedImageID }),
+              !document.testImages[index].isLocked
         else { return }
-        mutation(&document.testImages[index])
+        mutation(&document.testImages[index].value)
+        persistOrBlock()
+    }
+
+    func duplicateSelectedImage() {
+        guard var image = selectedImageItem?.value else { return }
+        image = GlobalTestImage(
+            id: UUID(), name: image.name + " copia", bookmark: image.bookmark,
+            inputTransformID: image.inputTransformID, alpha: image.alpha,
+            matrix: image.matrix, range: image.range
+        )
+        document.testImages.append(.init(value: image, isLocked: false))
+        selectedImageID = image.id
+        persistOrBlock()
+    }
+
+    func unlockSelectedImage() {
+        guard let index = document.testImages.firstIndex(where: { $0.id == selectedImageID })
+        else { return }
+        document.testImages[index].isLocked = false
         persistOrBlock()
     }
 
     func removeSelectedImage() {
-        guard let selectedImageID else { return }
+        guard let selectedImageID,
+              selectedImageItem?.isLocked == false else { return }
         document.testImages.removeAll { $0.id == selectedImageID }
         self.selectedImageID = document.testImages.first?.id
         persistOrBlock()
@@ -363,7 +568,7 @@ final class GlobalLibraryController: ObservableObject {
         var preset = StudioRenderPreset.builtIns[0]
         preset.id = UUID()
         preset.name = "Preset personalizado"
-        document.renderPresets.append(preset)
+        document.renderPresets.append(.init(value: preset, isLocked: false))
         selectedPresetID = preset.id
         persistOrBlock()
     }
@@ -374,17 +579,18 @@ final class GlobalLibraryController: ObservableObject {
         else { return }
         preset.id = UUID()
         preset.name += " copia"
-        document.renderPresets.append(preset)
+        document.renderPresets.append(.init(value: preset, isLocked: false))
         self.selectedPresetID = preset.id
         persistOrBlock()
     }
 
     func updateSelectedPreset(_ mutation: (inout StudioRenderPreset) -> Void) {
         guard let selectedPresetID,
-              let index = document.renderPresets.firstIndex(where: { $0.id == selectedPresetID })
+              let index = document.renderPresets.firstIndex(where: { $0.id == selectedPresetID }),
+              !document.renderPresets[index].isLocked
         else { return }
         var candidate = document
-        mutation(&candidate.renderPresets[index])
+        mutation(&candidate.renderPresets[index].value)
         do {
             try candidate.validate()
             try persist(candidate)
@@ -396,9 +602,17 @@ final class GlobalLibraryController: ObservableObject {
     }
 
     func removeSelectedPreset() {
-        guard let selectedPresetID else { return }
+        guard let selectedPresetID,
+              selectedPresetItem?.isLocked == false else { return }
         document.renderPresets.removeAll { $0.id == selectedPresetID }
         self.selectedPresetID = document.renderPresets.first?.id
+        persistOrBlock()
+    }
+
+    func unlockSelectedPreset() {
+        guard let index = document.renderPresets.firstIndex(where: { $0.id == selectedPresetID })
+        else { return }
+        document.renderPresets[index].isLocked = false
         persistOrBlock()
     }
 
@@ -408,7 +622,7 @@ final class GlobalLibraryController: ObservableObject {
         else { return }
         device.id = UUID().uuidString.lowercased()
         device.name = "Device personalizado"
-        document.devices.append(device)
+        document.devices.append(.init(value: device, isLocked: false))
         selectedDeviceID = device.id
         deviceValidationMessage = nil
         persistOrBlock()
@@ -418,7 +632,7 @@ final class GlobalLibraryController: ObservableObject {
         guard var device = selectedDevice else { return }
         device.id = UUID().uuidString.lowercased()
         device.name += " copia"
-        document.devices.append(device)
+        document.devices.append(.init(value: device, isLocked: false))
         selectedDeviceID = device.id
         deviceValidationMessage = nil
         persistOrBlock()
@@ -426,14 +640,16 @@ final class GlobalLibraryController: ObservableObject {
 
     func updateSelectedDevice(_ mutation: (inout DeviceDefinition) -> Void) {
         guard let selectedDeviceID,
-              let index = document.devices.firstIndex(where: { $0.id == selectedDeviceID })
+              let index = document.devices.firstIndex(where: { $0.id == selectedDeviceID }),
+              !document.devices[index].isLocked
         else { return }
-        var candidate = document.devices[index]
-        mutation(&candidate)
+        var candidate = document
+        mutation(&candidate.devices[index].value)
         do {
-            _ = try candidate.resolved()
-            document.devices[index] = candidate
-            try persist()
+            _ = try candidate.devices[index].value.resolved()
+            try candidate.validate()
+            try persist(candidate)
+            document = candidate
             deviceValidationMessage = nil
         } catch {
             deviceValidationMessage = error.localizedDescription
@@ -441,10 +657,80 @@ final class GlobalLibraryController: ObservableObject {
     }
 
     func removeSelectedDevice() {
-        guard let selectedDeviceID else { return }
+        guard let selectedDeviceID,
+              selectedDeviceItem?.isLocked == false else { return }
         document.devices.removeAll { $0.id == selectedDeviceID }
         self.selectedDeviceID = document.devices.first?.id
         deviceValidationMessage = nil
+        persistOrBlock()
+    }
+
+    func unlockSelectedDevice() {
+        guard let index = document.devices.firstIndex(where: { $0.id == selectedDeviceID })
+        else { return }
+        document.devices[index].isLocked = false
+        persistOrBlock()
+    }
+
+    func addCoverGlass() {
+        guard var cover = (try? RustCoverGlassCatalog.builtIns())?.first else { return }
+        cover.id = UUID().uuidString.lowercased()
+        cover.name = "Cover Glass personalizado"
+        document.coverGlasses.append(.init(value: cover, isLocked: false))
+        selectedCoverGlassID = cover.id
+        coverGlassValidationMessage = nil
+        persistOrBlock()
+    }
+
+    func duplicateSelectedCoverGlass() {
+        guard var cover = selectedCoverGlass else { return }
+        cover.id = UUID().uuidString.lowercased()
+        cover.name += " copia"
+        document.coverGlasses.append(.init(value: cover, isLocked: false))
+        selectedCoverGlassID = cover.id
+        coverGlassValidationMessage = nil
+        persistOrBlock()
+    }
+
+    func updateSelectedCoverGlass(
+        _ mutation: (inout CoverGlassDefinition) -> Void
+    ) {
+        guard let index = document.coverGlasses.firstIndex(
+            where: { $0.id == selectedCoverGlassID }
+        ), !document.coverGlasses[index].isLocked else { return }
+        var candidate = document.coverGlasses[index].value
+        mutation(&candidate)
+        do {
+            try candidate.validate()
+            document.coverGlasses[index].value = candidate
+            try persist()
+            coverGlassValidationMessage = nil
+        } catch {
+            coverGlassValidationMessage = error.localizedDescription
+        }
+    }
+
+    func removeSelectedCoverGlass() {
+        guard let selectedCoverGlassID,
+              selectedCoverGlassItem?.isLocked == false else { return }
+        var candidate = document
+        candidate.coverGlasses.removeAll { $0.id == selectedCoverGlassID }
+        do {
+            try candidate.validate()
+            try persist(candidate)
+            document = candidate
+            self.selectedCoverGlassID = document.coverGlasses.first?.id
+            coverGlassValidationMessage = nil
+        } catch {
+            coverGlassValidationMessage = error.localizedDescription
+        }
+    }
+
+    func unlockSelectedCoverGlass() {
+        guard let index = document.coverGlasses.firstIndex(
+            where: { $0.id == selectedCoverGlassID }
+        ) else { return }
+        document.coverGlasses[index].isLocked = false
         persistOrBlock()
     }
 
