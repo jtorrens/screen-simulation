@@ -291,12 +291,16 @@ struct ModelInspectorView: View {
                 .padding(.top, 6)
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(title).fontWeight(.medium)
-                        Spacer(minLength: 6)
-                        stageControl(stage, value: value)
-                            .disabled(!stage.isImplementedByUnifiedPipeline)
+                    Grid(alignment: .leading, horizontalSpacing: 8) {
+                        GridRow {
+                            Text(title)
+                                .fontWeight(.medium)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            stageControl(stage, title: title, value: value)
+                        }
                     }
+                    .frame(maxWidth: .infinity)
+                    .disabled(!stage.isImplementedByUnifiedPipeline)
                     Text(affects)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -324,6 +328,7 @@ struct ModelInspectorView: View {
     @ViewBuilder
     private func stageControl(
         _ stage: PhysicalStageID,
+        title: String,
         value: PhysicalModelController.StageValue
     ) -> some View {
         switch value.control {
@@ -332,7 +337,7 @@ struct ModelInspectorView: View {
                 value: amount,
                 update: { workspace.changePhysicalStageAmount($0, stage: stage) }
             ), range: limits.visualRange, step: 0.05, identityDetent: 1,
-            accessibilityLabel: "Contribución de la etapa")
+            accessibilityLabel: "Contribución de \(title)")
             .frame(width: 116)
             .help("Incrementos de 0,05 · detente en 1 físico")
             TextField("Amount", value: Binding(
@@ -341,14 +346,14 @@ struct ModelInspectorView: View {
             ), format: .number.precision(.fractionLength(2)))
             .frame(width: 52)
             .multilineTextAlignment(.trailing)
-            .accessibilityLabel("Valor de contribución de la etapa")
+            .accessibilityLabel("Valor de contribución de \(title)")
         case let .discrete(enabled):
             Toggle("Activa", isOn: Binding(
                 get: { enabled },
                 set: { workspace.changePhysicalStageEnabled($0, stage: stage) }
             ))
             .toggleStyle(.checkbox)
-            .accessibilityLabel("Activar etapa discreta")
+            .accessibilityLabel("Activar \(title)")
         }
     }
 
