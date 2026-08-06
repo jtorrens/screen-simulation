@@ -41,6 +41,7 @@ final class WorkspaceModel: ObservableObject {
     }!
     @Published var systemDisplayInfo = StudioColorSystemDisplayInfo.unavailable
     @Published var alphaMode = StudioAlphaMode.ignore
+    @Published var signalColorModel = StudioSignalColorModel.rgb
     @Published var signalMatrix = StudioSignalMatrix.bt709
     @Published var signalRange = StudioSignalRange.full
     @Published var detection = StudioMediaDetection()
@@ -60,16 +61,18 @@ final class WorkspaceModel: ObservableObject {
     @Published var renderRange = StudioRenderRange.all
     @Published var loopPlayback = false
     @Published var outputFormat = StudioOutputFormat.proRes4444
+    @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
     @Published var renderPreset = StudioRenderPreset.builtIns[0]
     @Published var peakNits = 100.0
     @Published var includeAudio = true
     @Published var outputAlphaMode = StudioAlphaMode.premultiplied
-    @Published var outputSignalRange = StudioSignalRange.full
+    @Published var outputSignalRange = StudioSignalRange.video
     @Published var decodeToPreviewMilliseconds = 0.0
     @Published var zoom = 1.0
     @Published var pan = CGSize.zero
     @Published private(set) var defaultInputTransformID = "input-rec709"
     @Published private(set) var defaultAlphaMode = StudioAlphaMode.ignore
+    @Published private(set) var defaultSignalColorModel = StudioSignalColorModel.rgb
     @Published private(set) var defaultSignalMatrix = StudioSignalMatrix.bt709
     @Published private(set) var defaultSignalRange = StudioSignalRange.full
     @Published private(set) var resolvedDevice: ResolvedDevice?
@@ -186,6 +189,14 @@ final class WorkspaceModel: ObservableObject {
         return detection.range == nil && value == defaultSignalRange ? "Predeterminado" : nil
     }
 
+    func colorModelAnnotation(_ value: StudioSignalColorModel) -> String? {
+        if value == detection.colorModel {
+            return detection.colorModelProvenance?.masculineLabel ?? "Propuesto"
+        }
+        return detection.colorModel == nil && value == defaultSignalColorModel
+            ? "Predeterminado" : nil
+    }
+
     func choosePattern(_ pattern: SyntheticPattern, undoManager: UndoManager?) {
         let prior = selectedPattern
         undoManager?.registerUndo(withTarget: self) { target in
@@ -203,6 +214,8 @@ final class WorkspaceModel: ObservableObject {
             matrixProvenance: .proposed,
             range: .full,
             rangeProvenance: .proposed,
+            colorModel: .rgb,
+            colorModelProvenance: .proposed,
             hasAlpha: false,
             alpha: .ignore,
             alphaProvenance: .proposed
@@ -211,10 +224,12 @@ final class WorkspaceModel: ObservableObject {
         alphaMode = .ignore
         signalMatrix = .bt709
         signalRange = .full
+        signalColorModel = .rgb
         defaultInputTransformID = "input-rec709"
         defaultAlphaMode = .ignore
         defaultSignalMatrix = .bt709
         defaultSignalRange = .full
+        defaultSignalColorModel = .rgb
         currentFrame = 0
         frameRate = 24
         frameCount = pattern == .animatedCheckerboard ? 240 : 1
@@ -255,6 +270,7 @@ final class WorkspaceModel: ObservableObject {
         defaultAlphaMode = detection.hasAlpha ? .straight : .ignore
         defaultSignalMatrix = .bt709
         defaultSignalRange = isVideo ? .video : .full
+        defaultSignalColorModel = .rgb
         let resolvedInputID = detection.proposedInputTransformID ?? defaultInputID
         inputTransform = StudioColorInputTransform.catalog.first {
             $0.id == resolvedInputID
@@ -262,9 +278,15 @@ final class WorkspaceModel: ObservableObject {
         alphaMode = detection.alpha ?? defaultAlphaMode
         signalMatrix = detection.matrix ?? defaultSignalMatrix
         signalRange = detection.range ?? defaultSignalRange
+        signalColorModel = detection.colorModel ?? defaultSignalColorModel
         do {
             let info = isVideo
-                ? try await session.openVideo(first, hasAlpha: detection.hasAlpha)
+                ? try await session.openVideo(
+                    first,
+                    hasAlpha: detection.hasAlpha,
+                    colorModel: signalColorModel,
+                    decodedRange: signalRange
+                )
                 : try session.openImages(expanded.filter(Self.isImage))
             sourceIsPattern = false
             sourceName = info.name
@@ -384,8 +406,11 @@ final class WorkspaceModel: ObservableObject {
 
     func changeOutputFormat(_ format: StudioOutputFormat) {
         outputFormat = format
-        if !format.supportedSignalRanges.contains(outputSignalRange),
-           let required = format.supportedSignalRanges.first {
+        if !format.supportedPixelEncodings.contains(outputPixelEncoding) {
+            outputPixelEncoding = format.defaultPixelEncoding
+        }
+        if !format.supportedSignalRanges(for: outputPixelEncoding).contains(outputSignalRange),
+           let required = format.supportedSignalRanges(for: outputPixelEncoding).first {
             outputSignalRange = required
         }
         if !format.supportsAlpha { outputAlphaMode = .ignore }
@@ -396,6 +421,7 @@ final class WorkspaceModel: ObservableObject {
         renderPreset = preset
         peakNits = preset.peakNits
         changeOutputFormat(preset.format)
+        outputPixelEncoding = preset.pixelEncoding
         outputSignalRange = preset.signalRange
         outputAlphaMode = preset.alpha
         includeAudio = preset.includeAudio
@@ -427,6 +453,7 @@ final class WorkspaceModel: ObservableObject {
             peakNits: peakNits,
             display: renderPreset.display,
             view: renderPreset.view,
+            pixelEncoding: outputPixelEncoding,
             signalRange: outputSignalRange,
             alpha: outputFormat.supportsAlpha ? outputAlphaMode : .ignore,
             includeAudio: outputFormat.isMovie && includeAudio,

@@ -596,14 +596,19 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
               let command = queue.makeCommandBuffer()
         else { throw StudioColorMetalError.textureCreation }
         let planar = CVPixelBufferIsPlanar(pixelBuffer)
-        let key = "decode:\(planar):\(matrix.rawValue):\(range.rawValue)"
+        let packedYUVA = CVPixelBufferGetPixelFormatType(pixelBuffer)
+            == kCVPixelFormatType_4444AYpCbCr16
+        let sourceKind = planar ? "planar-yuv" : (packedYUVA ? "packed-yuva" : "rgb")
+        let key = "decode:\(sourceKind):\(matrix.rawValue):\(range.rawValue)"
         let pipeline: MTLRenderPipelineState
         if let cached = sourcePipelines[key] {
             pipeline = cached
         } else {
             let library = try device.makeLibrary(source: Self.sourceShaderSource, options: nil)
+            let fragmentName = planar ? "yuvFragment"
+                : (packedYUVA ? "packedYuvaFragment" : "rgbFragment")
             guard let vertex = library.makeFunction(name: "sourceVertex"),
-                  let fragment = library.makeFunction(name: planar ? "yuvFragment" : "rgbFragment")
+                  let fragment = library.makeFunction(name: fragmentName)
             else { throw StudioColorMetalError.missingShaderFunction }
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = vertex
@@ -629,10 +634,29 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
             encoder.setFragmentTexture(chroma, index: 1)
             encoder.setFragmentSamplerState(compositionSampler, index: 0)
             var coefficients = Self.yuvCoefficients(
-                matrix: matrix, range: range, is10Bit: is10Bit
+                matrix: matrix, range: range, bitDepth: is10Bit ? 10 : 8
             )
             encoder.setFragmentBytes(&coefficients.luma, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
             encoder.setFragmentBytes(&coefficients.chroma, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+        } else if packedYUVA {
+            encoder.setFragmentTexture(
+                try cvTexture(pixelBuffer, format: .rgba16Unorm, plane: 0),
+                index: 0
+            )
+            encoder.setFragmentSamplerState(compositionSampler, index: 0)
+            var coefficients = Self.yuvCoefficients(
+                matrix: matrix, range: range, bitDepth: 12
+            )
+            encoder.setFragmentBytes(
+                &coefficients.luma,
+                length: MemoryLayout<SIMD4<Float>>.stride,
+                index: 0
+            )
+            encoder.setFragmentBytes(
+                &coefficients.chroma,
+                length: MemoryLayout<SIMD2<Float>>.stride,
+                index: 1
+            )
         } else {
             let format: MTLPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
                 == kCVPixelFormatType_64RGBAHalf ? .rgba16Float : .bgra8Unorm
@@ -662,7 +686,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     private static func yuvCoefficients(
         matrix: StudioColorSignalMatrix,
         range: StudioColorSignalRange,
-        is10Bit: Bool
+        bitDepth: Int
     ) -> (luma: SIMD4<Float>, chroma: SIMD2<Float>) {
         let kr: Float
         let kb: Float
@@ -671,14 +695,20 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         case .bt709: (kr, kb) = (0.2126, 0.0722)
         case .bt2020: (kr, kb) = (0.2627, 0.0593)
         }
-        let maximum: Float = is10Bit ? 1023 : 255
-        let yOffset: Float = range == .video ? (is10Bit ? 64 : 16) / maximum : 0
-        let yScale: Float = range == .video ? maximum / (is10Bit ? 876 : 219) : 1
+        // CoreVideo stores 10/12-bit integer samples left-aligned in 16-bit
+        // words. An r16/rgba16 UNORM Metal texture therefore normalizes by
+        // 65535, not by the nominal (2^bits)-1 code maximum.
+        let maximum: Float = bitDepth > 8
+            ? 65_535 / Float(1 << (16 - bitDepth))
+            : 255
+        let scale: Float = Float(1 << max(0, bitDepth - 8))
+        let yOffset: Float = range == .video ? 16 * scale / maximum : 0
+        let yScale: Float = range == .video ? maximum / (219 * scale) : 1
         let chromaOffset: Float = range == .video
-            ? (is10Bit ? 512 : 128) / maximum
-            : (is10Bit ? 512 : 128) / maximum
+            ? 128 * scale / maximum
+            : 128 * scale / maximum
         let chromaScale: Float = range == .video
-            ? maximum / (is10Bit ? 896 : 224)
+            ? maximum / (224 * scale)
             : 1
         return (SIMD4(kr, kb, yOffset, yScale), SIMD2(chromaOffset, chromaScale))
     }
@@ -1018,6 +1048,22 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         float b = y + 2.0 * (1.0 - kb) * cbcr.x;
         float g = (y - kr * r - kb * b) / kg;
         return float4(r, g, b, 1.0);
+    }
+    fragment float4 packedYuvaFragment(
+        SourceOutput input [[stage_in]],
+        texture2d<float> source [[texture(0)]], sampler sourceSampler [[sampler(0)]],
+        constant float4 &lumaParameters [[buffer(0)]],
+        constant float2 &chromaParameters [[buffer(1)]]) {
+        const float4 aycbcr = source.sample(sourceSampler, input.uv);
+        const float y = (aycbcr.g - lumaParameters.z) * lumaParameters.w;
+        const float2 cbcr = (aycbcr.ba - chromaParameters.x) * chromaParameters.y;
+        const float kr = lumaParameters.x;
+        const float kb = lumaParameters.y;
+        const float kg = 1.0 - kr - kb;
+        const float r = y + 2.0 * (1.0 - kr) * cbcr.y;
+        const float b = y + 2.0 * (1.0 - kb) * cbcr.x;
+        const float g = (y - kr * r - kb * b) / kg;
+        return float4(r, g, b, aycbcr.r);
     }
     """
 

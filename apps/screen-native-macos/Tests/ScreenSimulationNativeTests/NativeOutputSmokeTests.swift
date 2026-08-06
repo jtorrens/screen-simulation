@@ -99,8 +99,8 @@ import Testing
         #expect(result.detection.alpha == (alpha == .straight ? .straight : .premultiplied))
         #expect(result.frameRate == 24)
         #expect(result.frameCount == 3)
-        #expect(result.maximumError <= 0.018, "ProRes \(alpha.rawValue) max \(result.maximumError)")
-        #expect(result.rootMeanSquareError <= 0.0025, "ProRes \(alpha.rawValue) RMSE \(result.rootMeanSquareError)")
+        #expect(result.maximumError <= 0.026, "ProRes \(alpha.rawValue) max \(result.maximumError)")
+        #expect(result.rootMeanSquareError <= 0.003, "ProRes \(alpha.rawValue) RMSE \(result.rootMeanSquareError)")
         print("PRORES alpha=\(alpha.rawValue) max=\(result.maximumError) rmse=\(result.rootMeanSquareError)")
     }
 }
@@ -205,7 +205,9 @@ private func movieRoundtrip(
         configuration: renderConfiguration(
             format: format, preset: StudioRenderPreset.builtIns[0],
             alpha: alpha,
-            signalRange: signalRange ?? (format == .h264High ? .video : .full),
+            signalRange: signalRange ?? (
+                format == .h264High || format == .proRes4444 ? .video : .full
+            ),
             frameRange: 0 ... 2
         ),
         destination: destination, audioSource: nil,
@@ -319,7 +321,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     let renderedURL = try await NativeOutputRenderer.render(
         configuration: renderConfiguration(
             format: .proRes4444, preset: StudioRenderPreset.builtIns[0],
-            alpha: alpha, signalRange: .full,
+            alpha: alpha, signalRange: .video,
             frameRate: sourceInfo.frameRate,
             frameRange: 0 ... max(0, sourceInfo.frameCount - 1)
         ),
@@ -384,7 +386,13 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     }
     let rmse = sqrt(squared / Double(count))
     let displayRMSE = sqrt(displaySquared / Double(displayCount))
-    print("GOLDEN source=\(sourceURL.lastPathComponent) frames=\(sourceInfo.frameCount) fps=\(sourceInfo.frameRate) linear_max=\(maximum) linear_rmse=\(rmse) display_max_code=\(displayMaximum) display_rmse_code=\(displayRMSE) sequential_decode_aces_preview_p95_ms=\(playbackP95) output=\(renderedURL.path)")
+    let sourceModel = detection.colorModel?.rawValue ?? "unknown"
+    let sourceRange = detection.range?.rawValue ?? "unknown"
+    let sourceMatrix = detection.matrix?.rawValue ?? "unknown"
+    let inputProvenance = detection.inputTransformProvenance?.rawValue ?? "none"
+    let outputModel = outputDetection.colorModel?.rawValue ?? "unknown"
+    let outputRange = outputDetection.range?.rawValue ?? "unknown"
+    print("GOLDEN source=\(sourceURL.lastPathComponent) frames=\(sourceInfo.frameCount) fps=\(sourceInfo.frameRate) source_model=\(sourceModel) source_range=\(sourceRange) source_matrix=\(sourceMatrix) input_provenance=\(inputProvenance) output_model=\(outputModel) output_range=\(outputRange) linear_max=\(maximum) linear_rmse=\(rmse) display_max_code=\(displayMaximum) display_rmse_code=\(displayRMSE) sequential_decode_aces_preview_p95_ms=\(playbackP95) output=\(renderedURL.path)")
     #expect(outputInfo.frameCount == sourceInfo.frameCount)
     #expect(abs(outputInfo.frameRate - sourceInfo.frameRate) < 0.01)
     #expect(outputDetection.proposedInputTransformID == "display-rec709-aces2-sdr")
@@ -412,6 +420,7 @@ private func renderConfiguration(
         peakNits: preset.peakNits,
         display: preset.display,
         view: preset.view,
+        pixelEncoding: format.defaultPixelEncoding,
         signalRange: signalRange,
         alpha: alphaMode,
         includeAudio: false,

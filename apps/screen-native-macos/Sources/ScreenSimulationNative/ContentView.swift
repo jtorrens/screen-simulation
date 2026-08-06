@@ -545,7 +545,10 @@ struct ContentView: View {
                             set: { value in
                                 library.updateSelectedPreset {
                                     $0.format = value
-                                    $0.signalRange = value.supportedSignalRanges[0]
+                                    $0.pixelEncoding = value.defaultPixelEncoding
+                                    $0.signalRange = value.supportedSignalRanges(
+                                        for: value.defaultPixelEncoding
+                                    )[0]
                                     if !value.supportsAlpha { $0.alpha = .ignore }
                                     if !value.isMovie { $0.includeAudio = false }
                                 }
@@ -553,6 +556,7 @@ struct ContentView: View {
                         )) {
                             ForEach(StudioOutputFormat.allCases) { Text($0.displayName).tag($0) }
                         }
+                        LabeledContent("Codificación", value: preset.pixelEncoding.label)
                         Picker("Rango", selection: Binding(
                             get: { preset.signalRange },
                             set: { value in library.updateSelectedPreset { $0.signalRange = value } }
@@ -942,6 +946,12 @@ struct ContentView: View {
                             .tag(value)
                     }
                 }
+                LabeledContent("Modelo de señal") {
+                    interpretationLabel(
+                        model.signalColorModel.label,
+                        annotation: model.colorModelAnnotation(model.signalColorModel)
+                    )
+                }
                 Picker("Matriz YUV", selection: Binding(
                     get: { model.signalMatrix }, set: { model.changeMatrix($0) }
                 )) {
@@ -993,10 +1003,13 @@ struct ContentView: View {
                 )) {
                     ForEach(StudioOutputFormat.allCases) { Text($0.displayName).tag($0) }
                 }
+                LabeledContent("Codificación", value: model.outputPixelEncoding.label)
                 Picker("Rango de señal", selection: $model.outputSignalRange) {
                     ForEach(StudioSignalRange.allCases) { range in
                         Text(range.label).tag(range)
-                            .disabled(!model.outputFormat.supportedSignalRanges.contains(range))
+                            .disabled(!model.outputFormat.supportedSignalRanges(
+                                for: model.outputPixelEncoding
+                            ).contains(range))
                     }
                 }
                 Picker("Rango", selection: $model.renderRange) {
@@ -1028,7 +1041,7 @@ struct ContentView: View {
                         Text(job.state.rawValue.capitalized).foregroundStyle(.secondary)
                     }
                     Text(job.configuration.format.displayName).font(.caption)
-                    Text("\(job.configuration.firstFrame)–\(job.configuration.lastFrame) · \(job.configuration.signalRange.label) · \(job.detail)")
+                    Text("\(job.configuration.firstFrame)–\(job.configuration.lastFrame) · \(job.configuration.pixelEncoding.label) · \(job.configuration.signalRange.label) · \(job.detail)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)

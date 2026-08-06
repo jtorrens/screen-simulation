@@ -5,6 +5,7 @@ import CoreVideo
 import Foundation
 import ImageIO
 import ScreenPhysicalBridge
+import StudioMedia
 
 struct NativeMediaSample: @unchecked Sendable {
     let pixelBuffer: CVPixelBuffer
@@ -40,7 +41,12 @@ final class NativeMediaSession {
         return false
     }
 
-    func openVideo(_ url: URL, hasAlpha: Bool) async throws -> NativeSourceInfo {
+    func openVideo(
+        _ url: URL,
+        hasAlpha: Bool,
+        colorModel: StudioSignalColorModel = .ycbcr,
+        decodedRange: StudioSignalRange = .video
+    ) async throws -> NativeSourceInfo {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw NativeMediaError.unreadable(url.lastPathComponent)
@@ -52,9 +58,16 @@ final class NativeMediaSession {
         let displaySize = naturalSize.applying(preferredTransform)
         let frameRate = nominalRate > 0 ? nominalRate : 24
         let audio = try await !asset.loadTracks(withMediaType: .audio).isEmpty
-        let pixelFormat: OSType = hasAlpha
-            ? kCVPixelFormatType_64RGBAHalf
-            : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        let pixelFormat: OSType
+        if colorModel == .rgb {
+            pixelFormat = kCVPixelFormatType_64RGBAHalf
+        } else if hasAlpha {
+            pixelFormat = kCVPixelFormatType_4444AYpCbCr16
+        } else {
+            pixelFormat = decodedRange == .full
+                ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+                : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        }
         let attributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat),
             kCVPixelBufferMetalCompatibilityKey as String: true,

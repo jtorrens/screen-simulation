@@ -1,5 +1,28 @@
 import Foundation
 
+public enum StudioPixelEncoding: String, Codable, CaseIterable, Identifiable, Sendable {
+    case yuv4208, yuv42010, yuv44412
+    case rgb10, rgb16, rgba16Float
+
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .yuv4208: "Y′CbCr 4:2:0 · 8 bit"
+        case .yuv42010: "Y′CbCr 4:2:0 · 10 bit"
+        case .yuv44412: "Y′CbCr 4:4:4 · 12 bit"
+        case .rgb10: "RGB 4:4:4 · 10 bit"
+        case .rgb16: "RGB 4:4:4 · 16 bit"
+        case .rgba16Float: "RGBA 4:4:4:4 · float16"
+        }
+    }
+    public var isYUV: Bool {
+        switch self {
+        case .yuv4208, .yuv42010, .yuv44412: true
+        case .rgb10, .rgb16, .rgba16Float: false
+        }
+    }
+}
+
 public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sendable {
     case openEXR, dpx10RGB, tiff16
     case proRes4444, proRes4444XQ
@@ -56,14 +79,33 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
         }
     }
 
-    public var supportedSignalRanges: [StudioSignalRange] {
+    public var supportedPixelEncodings: [StudioPixelEncoding] {
         switch self {
         case .h264Low, .h264Medium, .h264High,
              .h265Low, .h265Medium, .h265High:
-            [.video, .full]
-        case .openEXR, .dpx10RGB, .tiff16,
-             .proRes4444, .proRes4444XQ:
-            [.full]
+            switch self {
+            case .h264Low, .h264Medium, .h264High: [.yuv4208]
+            default: [.yuv42010]
+            }
+        case .proRes4444, .proRes4444XQ: [.yuv44412]
+        case .openEXR: [.rgba16Float]
+        case .dpx10RGB: [.rgb10]
+        case .tiff16: [.rgb16]
+        }
+    }
+
+    public var defaultPixelEncoding: StudioPixelEncoding {
+        supportedPixelEncodings[0]
+    }
+
+    public func supportedSignalRanges(
+        for encoding: StudioPixelEncoding
+    ) -> [StudioSignalRange] {
+        guard supportedPixelEncodings.contains(encoding) else { return [] }
+        switch encoding {
+        case .yuv4208, .yuv42010: return [.video, .full]
+        case .yuv44412: return [.video]
+        case .rgb10, .rgb16, .rgba16Float: return [.full]
         }
     }
 }
@@ -86,7 +128,8 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
     public var display: String?
     public var view: String?
     public var format: StudioOutputFormat = .proRes4444
-    public var signalRange: StudioSignalRange = .full
+    public var pixelEncoding: StudioPixelEncoding = .yuv44412
+    public var signalRange: StudioSignalRange = .video
     public var alpha: StudioAlphaMode = .premultiplied
     public var includeAudio: Bool = false
     public var notes: String = ""
@@ -100,7 +143,8 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
         display: String?,
         view: String?,
         format: StudioOutputFormat = .proRes4444,
-        signalRange: StudioSignalRange = .full,
+        pixelEncoding: StudioPixelEncoding = .yuv44412,
+        signalRange: StudioSignalRange = .video,
         alpha: StudioAlphaMode = .premultiplied,
         includeAudio: Bool = false,
         notes: String = ""
@@ -113,6 +157,7 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
         self.display = display
         self.view = view
         self.format = format
+        self.pixelEncoding = pixelEncoding
         self.signalRange = signalRange
         self.alpha = alpha
         self.includeAudio = includeAudio
@@ -144,9 +189,9 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C02")!, name: "ACES · HDR", pipeline: .aces, target: .hdr, peakNits: 1_000, display: "Rec.2100-PQ - Display", view: "ACES 2.0 - HDR 1000 nits (Rec.2020)", notes: "Roundtrip ACES HDR Rec.2100 ST2084 1000 nit."),
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C03")!, name: "DCM · SDR", pipeline: .davinciColorManaged, target: .sdr, peakNits: 100, display: "Rec.1886 Rec.709 - Display", view: "Video (colorimetric)", notes: "Entrega Rec.709 Gamma 2.4 para DaVinci Wide Gamut / Intermediate."),
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C04")!, name: "DCM · HDR", pipeline: .davinciColorManaged, target: .hdr, peakNits: 1_000, display: "Rec.2100-PQ - Display", view: "Video (colorimetric)", notes: "Entrega Rec.2100 ST2084 para DaVinci Wide Gamut / Intermediate."),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C05")!, name: "ACES2065-1 · EXR", pipeline: .aces, target: .aces2065, peakNits: 0, display: nil, view: nil, format: .openEXR, alpha: .straight, notes: "Intercambio scene-linear ACES2065-1."),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C06")!, name: "ACEScg · EXR", pipeline: .aces, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, alpha: .straight, notes: "Intercambio scene-linear ACEScg."),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C07")!, name: "DCM · EXR (ACEScg)", pipeline: .davinciColorManaged, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, alpha: .straight, notes: "Intercambio scene-linear ACEScg para DCM."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C05")!, name: "ACES2065-1 · EXR", pipeline: .aces, target: .aces2065, peakNits: 0, display: nil, view: nil, format: .openEXR, pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight, notes: "Intercambio scene-linear ACES2065-1."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C06")!, name: "ACEScg · EXR", pipeline: .aces, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight, notes: "Intercambio scene-linear ACEScg."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C07")!, name: "DCM · EXR (ACEScg)", pipeline: .davinciColorManaged, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight, notes: "Intercambio scene-linear ACEScg para DCM."),
     ]
 }
 
@@ -159,6 +204,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let peakNits: Double
     public let display: String?
     public let view: String?
+    public let pixelEncoding: StudioPixelEncoding
     public let signalRange: StudioSignalRange
     public let alpha: StudioAlphaMode
     public let includeAudio: Bool
@@ -173,6 +219,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         peakNits: Double,
         display: String?,
         view: String?,
+        pixelEncoding: StudioPixelEncoding,
         signalRange: StudioSignalRange,
         alpha: StudioAlphaMode,
         includeAudio: Bool,
@@ -186,6 +233,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         self.peakNits = peakNits
         self.display = display
         self.view = view
+        self.pixelEncoding = pixelEncoding
         self.signalRange = signalRange
         self.alpha = alpha
         self.includeAudio = includeAudio

@@ -27,7 +27,7 @@ struct GlobalTestImage: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
     let schemaVersion: Int
     var testImages: [GlobalTestImage]
     var renderPresets: [StudioRenderPreset]
@@ -58,7 +58,9 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
             throw GlobalLibraryError.invalidEntity("Todos los presets necesitan nombre.")
         }
         guard renderPresets.allSatisfy({ preset in
-            preset.format.supportedSignalRanges.contains(preset.signalRange)
+            preset.format.supportedPixelEncodings.contains(preset.pixelEncoding)
+                && preset.format.supportedSignalRanges(for: preset.pixelEncoding)
+                    .contains(preset.signalRange)
                 && (preset.format.supportsAlpha || preset.alpha == .ignore)
                 && (preset.format.isMovie || !preset.includeAudio)
                 && ((preset.target == .sdr || preset.target == .hdr)
@@ -152,6 +154,19 @@ struct GlobalLibraryStore: Sendable {
             try migrated.validate()
             try save(migrated)
             return migrated
+        case 3:
+            let previous = try JSONDecoder().decode(
+                GlobalLibrarySchemaThree.self,
+                from: data
+            )
+            let migrated = GlobalLibraryDocument(
+                testImages: previous.testImages,
+                renderPresets: previous.renderPresets.map(\.current),
+                devices: previous.devices
+            )
+            try migrated.validate()
+            try save(migrated)
+            return migrated
         default:
             throw GlobalLibraryError.unsupportedSchema(version)
         }
@@ -194,6 +209,13 @@ private struct GlobalLibrarySchemaTwo: Decodable {
     let devices: [DeviceDefinition]
 }
 
+private struct GlobalLibrarySchemaThree: Decodable {
+    let schemaVersion: Int
+    let testImages: [GlobalTestImage]
+    let renderPresets: [GlobalRenderPresetSchemaThree]
+    let devices: [DeviceDefinition]
+}
+
 private struct GlobalRenderPresetSchemaTwo: Decodable {
     let id: UUID
     let name: String
@@ -217,10 +239,47 @@ private struct GlobalRenderPresetSchemaTwo: Decodable {
             display: display,
             view: view,
             format: isLinear ? .openEXR : .proRes4444,
-            signalRange: .full,
+            pixelEncoding: isLinear ? .rgba16Float : .yuv44412,
+            signalRange: isLinear ? .full : .video,
             alpha: isLinear ? .straight : .premultiplied,
             includeAudio: false,
             notes: ""
+        )
+    }
+}
+
+private struct GlobalRenderPresetSchemaThree: Decodable {
+    let id: UUID
+    let name: String
+    let pipeline: StudioRenderPipeline
+    let target: StudioRenderTarget
+    let peakNits: Double
+    let display: String?
+    let view: String?
+    let format: StudioOutputFormat
+    let signalRange: StudioSignalRange
+    let alpha: StudioAlphaMode
+    let includeAudio: Bool
+    let notes: String
+
+    var current: StudioRenderPreset {
+        let encoding = format.defaultPixelEncoding
+        let supportedRanges = format.supportedSignalRanges(for: encoding)
+        return StudioRenderPreset(
+            id: id,
+            name: name,
+            pipeline: pipeline,
+            target: target,
+            peakNits: peakNits,
+            display: display,
+            view: view,
+            format: format,
+            pixelEncoding: encoding,
+            signalRange: supportedRanges.contains(signalRange)
+                ? signalRange : supportedRanges[0],
+            alpha: alpha,
+            includeAudio: includeAudio,
+            notes: notes
         )
     }
 }

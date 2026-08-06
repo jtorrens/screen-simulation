@@ -163,9 +163,15 @@ enum NativeOutputRenderer {
         format: StudioOutputFormat,
         configuration: StudioResolvedRenderConfiguration
     ) throws {
-        guard format.supportedSignalRanges.contains(configuration.signalRange) else {
+        guard format.supportedPixelEncodings.contains(configuration.pixelEncoding) else {
             throw NativeOutputError.unsupported(
-                "\(format.displayName) no admite rango \(configuration.signalRange.label) en el writer vigente"
+                "\(format.displayName) no admite \(configuration.pixelEncoding.label)"
+            )
+        }
+        guard format.supportedSignalRanges(for: configuration.pixelEncoding)
+            .contains(configuration.signalRange) else {
+            throw NativeOutputError.unsupported(
+                "\(configuration.pixelEncoding.label) no admite rango \(configuration.signalRange.label) en el writer vigente"
             )
         }
         switch format {

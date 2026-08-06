@@ -46,7 +46,7 @@ import Testing
     ).write(to: url)
     let store = try GlobalLibraryStore(documentURL: url)
     var migrated = try store.load()
-    #expect(migrated.schemaVersion == 3)
+    #expect(migrated.schemaVersion == GlobalLibraryDocument.currentSchemaVersion)
     #expect(migrated.devices.count == 9)
     #expect(migrated.renderPresets.count == 7)
 
@@ -74,8 +74,33 @@ import Testing
     let previousBytes = try JSONSerialization.data(withJSONObject: json)
     try previousBytes.write(to: url)
     let migrated = try GlobalLibraryStore(documentURL: url).load()
-    #expect(migrated.schemaVersion == 3)
+    #expect(migrated.schemaVersion == GlobalLibraryDocument.currentSchemaVersion)
     #expect(migrated.renderPresets == StudioRenderPreset.builtIns)
+    #expect(try Data(contentsOf: url) != previousBytes)
+}
+
+@Test func schemaThreeAddsExplicitPixelEncodingAtomically() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-global-library-v3-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let url = root.appendingPathComponent("library.json")
+    let current = GlobalLibraryDocument(
+        renderPresets: [StudioRenderPreset.builtIns[0]], devices: []
+    )
+    var json = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any]
+    )
+    json["schemaVersion"] = 3
+    var presets = try #require(json["renderPresets"] as? [[String: Any]])
+    presets[0].removeValue(forKey: "pixelEncoding")
+    json["renderPresets"] = presets
+    let previousBytes = try JSONSerialization.data(withJSONObject: json)
+    try previousBytes.write(to: url)
+
+    let migrated = try GlobalLibraryStore(documentURL: url).load()
+    #expect(migrated.schemaVersion == GlobalLibraryDocument.currentSchemaVersion)
+    #expect(migrated.renderPresets.first?.pixelEncoding == .yuv44412)
+    #expect(migrated.renderPresets.first?.signalRange == .video)
     #expect(try Data(contentsOf: url) != previousBytes)
 }
 

@@ -26,6 +26,12 @@ public enum StudioSignalRange: String, Codable, CaseIterable, Identifiable, Send
     }
 }
 
+public enum StudioSignalColorModel: String, Codable, CaseIterable, Identifiable, Sendable {
+    case ycbcr, rgb
+    public var id: String { rawValue }
+    public var label: String { self == .ycbcr ? "Y′CbCr" : "RGB" }
+}
+
 public enum StudioAlphaMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case straight, premultiplied, ignore
     public var id: String { rawValue }
@@ -77,6 +83,8 @@ public struct StudioMediaDetection: Equatable, Sendable {
     public var matrixProvenance: StudioMetadataProvenance?
     public var range: StudioSignalRange?
     public var rangeProvenance: StudioMetadataProvenance?
+    public var colorModel: StudioSignalColorModel?
+    public var colorModelProvenance: StudioMetadataProvenance?
     public var hasAlpha: Bool
     public var alpha: StudioAlphaMode?
     public var alphaProvenance: StudioMetadataProvenance?
@@ -92,6 +100,8 @@ public struct StudioMediaDetection: Equatable, Sendable {
         matrixProvenance: StudioMetadataProvenance? = nil,
         range: StudioSignalRange? = nil,
         rangeProvenance: StudioMetadataProvenance? = nil,
+        colorModel: StudioSignalColorModel? = nil,
+        colorModelProvenance: StudioMetadataProvenance? = nil,
         hasAlpha: Bool = false,
         alpha: StudioAlphaMode? = nil,
         alphaProvenance: StudioMetadataProvenance? = nil,
@@ -106,6 +116,8 @@ public struct StudioMediaDetection: Equatable, Sendable {
         self.matrixProvenance = matrixProvenance
         self.range = range
         self.rangeProvenance = rangeProvenance
+        self.colorModel = colorModel
+        self.colorModelProvenance = colorModelProvenance
         self.hasAlpha = hasAlpha
         self.alpha = alpha
         self.alphaProvenance = alphaProvenance
@@ -193,20 +205,41 @@ public enum StudioMediaMetadataDetector {
             else if alphaDescription.contains("premultiplied") { .premultiplied }
             else if alphaDescription.contains("straight") { .straight }
             else { nil }
+        let matrixText = ycbcr?.lowercased() ?? ""
         let subtype = CMFormatDescriptionGetMediaSubType(description)
-        // A track format description reports its encoded codec subtype, not the
-        // decoder's eventual CVPixelBuffer subtype. CoreMedia exposes the AVC/
-        // HEVC VUI full-range flag as FullRangeVideo; false is conventionally
-        // omitted, so a tagged YCbCr AVC/HEVC stream without the true flag is
-        // explicitly video-range rather than unknown.
-        let fullRange = (extensions[kCMFormatDescriptionExtension_FullRangeVideo] as? NSNumber)?.boolValue
-        let range: StudioSignalRange? = if fullRange == true {
-            .full
-        } else if ycbcr != nil,
-                  subtype == kCMVideoCodecType_H264 || subtype == kCMVideoCodecType_HEVC {
-            .video
+        let colorModel: StudioSignalColorModel? = if matrixText.contains("identity") {
+            .rgb
+        } else if proposedMatrix(ycbcr) != nil {
+            .ycbcr
+        } else if subtype == kCMVideoCodecType_H264 || subtype == kCMVideoCodecType_HEVC {
+            .ycbcr
         } else {
             nil
+        }
+        let colorModelProvenance: StudioMetadataProvenance? = if colorModel == nil {
+            nil
+        } else if matrixText.isEmpty {
+            .proposed
+        } else {
+            .detected
+        }
+        // A track format description does not expose the decoder's eventual
+        // CVPixelBuffer subtype. CoreMedia exposes the coded full-range flag as
+        // FullRangeVideo; false is conventionally
+        // omitted. A tagged YCbCr stream without the true flag is explicitly
+        // video-range rather than unknown. RGB codecs without a YCbCr matrix
+        // remain unknown instead of inheriting this rule.
+        let fullRange = (extensions[kCMFormatDescriptionExtension_FullRangeVideo] as? NSNumber)?.boolValue
+        let range: StudioSignalRange?
+        let rangeProvenance: StudioMetadataProvenance?
+        if fullRange == true || matrixText.contains("identity") {
+            (range, rangeProvenance) = (.full, .detected)
+        } else if proposedMatrix(ycbcr) != nil {
+            (range, rangeProvenance) = (.video, .detected)
+        } else if colorModel == .ycbcr {
+            (range, rangeProvenance) = (.video, .proposed)
+        } else {
+            (range, rangeProvenance) = (nil, nil)
         }
         let proposal = inputTransformProposal(
             primaries: primaries, transfer: transfer, matrix: ycbcr
@@ -217,7 +250,9 @@ public enum StudioMediaMetadataDetector {
             matrix: proposedMatrix(ycbcr),
             matrixProvenance: ycbcr == nil ? nil : .detected,
             range: range,
-            rangeProvenance: range == nil ? nil : .detected,
+            rangeProvenance: rangeProvenance,
+            colorModel: colorModel,
+            colorModelProvenance: colorModelProvenance,
             hasAlpha: hasAlpha,
             alpha: alpha,
             alphaProvenance: alpha == nil ? nil : .detected,
@@ -243,6 +278,8 @@ public enum StudioMediaMetadataDetector {
             inputTransformProvenance: input == nil ? nil : .detected,
             range: .full,
             rangeProvenance: .detected,
+            colorModel: .rgb,
+            colorModelProvenance: .detected,
             hasAlpha: hasAlpha,
             alpha: hasAlpha && sourceType == "public.png" ? .straight : (hasAlpha ? nil : .ignore),
             alphaProvenance: hasAlpha && sourceType != "public.png" ? nil : .detected,

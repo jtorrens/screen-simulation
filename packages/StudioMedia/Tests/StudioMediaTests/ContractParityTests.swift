@@ -53,7 +53,8 @@ import Testing
         peakNits: 120,
         display: preset.display,
         view: preset.view,
-        signalRange: .full,
+        pixelEncoding: .yuv44412,
+        signalRange: .video,
         alpha: .straight,
         includeAudio: true,
         frameRate: 24,
@@ -73,7 +74,10 @@ import Testing
 }
 
 @Test func outputRangeSupportIsExplicitPerWriter() {
-    #expect(StudioOutputFormat.h264High.supportedSignalRanges == [.video, .full])
-    #expect(StudioOutputFormat.proRes4444.supportedSignalRanges == [.full])
-    #expect(StudioOutputFormat.openEXR.supportedSignalRanges == [.full])
+    #expect(StudioOutputFormat.h264High.supportedPixelEncodings == [.yuv4208])
+    #expect(StudioOutputFormat.h264High.supportedSignalRanges(for: .yuv4208) == [.video, .full])
+    #expect(StudioOutputFormat.proRes4444.supportedPixelEncodings == [.yuv44412])
+    #expect(StudioOutputFormat.proRes4444.supportedSignalRanges(for: .yuv44412) == [.video])
+    #expect(StudioOutputFormat.openEXR.supportedPixelEncodings == [.rgba16Float])
+    #expect(StudioOutputFormat.openEXR.supportedSignalRanges(for: .rgba16Float) == [.full])
 }
