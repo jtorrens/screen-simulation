@@ -38,6 +38,19 @@ Media sample selection consumes exact project time and one authored policy. Rati
 
 The current macOS-first implementation uses Rust 1.97.1. Native RAW development runs through the required Metal backend on Apple Silicon; the physical core and typed domain boundaries remain platform-independent, but the current version does not require, ship or validate a Windows/D3D12 adapter. Native display publication uses one required Metal backend generated from the pinned OCIO processor and quantizes its result directly to RGBA8; the OCIO CPU processor remains only a numeric oracle with the explicit tolerance in `native_compute.md`. The technical desktop UI uses Slint with one compiled `fluent-dark` style and its WGPU renderer on macOS. Slint remains confined to `screen-desktop`; domain and application packages expose no UI types. The desktop bundle includes the required Slint attribution through the standard `AboutSlint` component. Media decode uses one linked FFmpeg configuration. The Platform adapter owns two small product unsafe bridges: `sws_setColorspaceDetails`, because the safe Rust wrapper does not expose this required libswscale operation, and completed shared Metal-buffer copies described by `native_compute.md`; no unsafe code crosses the adapter boundary. The current local macOS packager copies its complete non-system Mach-O dependency closure and the compiled Native metallib into the application, rewrites every route to the bundle and rejects remaining machine-specific paths. OpenColorIO 2.5.2 is statically built through the `screen-color` dependency boundary; `screen-color` opens the exact upstream built-in `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` configuration and never reads the process environment or a workstation configuration path. OpenEXR remains behind its own format adapter.
 
+An isolated SwiftUI/AppKit replacement candidate exists under
+`apps/screen-native-macos`. It is not a second product composition root and is
+not reachable from `screen-desktop`. Its only color implementation is the
+extractable `packages/StudioColor` boundary copied from the authoritative
+CREDITOS-HDR OCIO/ACES implementation at the pinned source commit and hashes.
+The candidate decodes one explicitly requested frame with Apple frameworks,
+authors an explicit IDT into linear ACEScg, calls the Rust-owned
+`PhysicalPipeline(identity)` once per complete float buffer, and uses the
+StudioColor OCIO-generated Metal display processor for preview and output.
+The existing Slint executable remains the shipped composition root until the
+single cutover defined in `Docs/NATIVE_MACOS_CUTOVER.md`; there is no runtime
+backend selector or fallback between the two shells or color implementations.
+
 The current supported system is Apple Silicon on macOS 14 or later. Windows and D3D12 are outside the current version and impose no parity requirement on Metal work.
 
 ## Physical packages
