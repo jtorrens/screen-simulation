@@ -251,6 +251,51 @@ impl FlatPanelInput {
     }
 }
 
+fn sample_placed_acescg_area(
+    source_width: u32,
+    source_height: u32,
+    acescg: &[[f32; 4]],
+    device_raster: [u32; 2],
+    placement: RasterPlacement,
+    minimum: Vec2,
+    maximum: Vec2,
+) -> [f32; 4] {
+    let source_raster = [source_width, source_height];
+    let Some(first) = source_uv_unbounded(source_raster, device_raster, placement, minimum) else {
+        return [0.0; 4];
+    };
+    let Some(second) = source_uv_unbounded(source_raster, device_raster, placement, maximum) else {
+        return [0.0; 4];
+    };
+    let minimum = Vec2 {
+        x: first.x.min(second.x) * source_width as f32,
+        y: first.y.min(second.y) * source_height as f32,
+    };
+    let maximum = Vec2 {
+        x: first.x.max(second.x) * source_width as f32,
+        y: first.y.max(second.y) * source_height as f32,
+    };
+    let area = ((maximum.x - minimum.x) * (maximum.y - minimum.y)).max(1.0e-12);
+    let mut sum = [0.0_f64; 4];
+    for y in minimum.y.floor() as i64..maximum.y.ceil() as i64 {
+        if y < 0 || y >= i64::from(source_height) {
+            continue;
+        }
+        let weight_y = (maximum.y.min((y + 1) as f32) - minimum.y.max(y as f32)).max(0.0);
+        for x in minimum.x.floor() as i64..maximum.x.ceil() as i64 {
+            if x < 0 || x >= i64::from(source_width) {
+                continue;
+            }
+            let weight_x = (maximum.x.min((x + 1) as f32) - minimum.x.max(x as f32)).max(0.0);
+            let value = acescg[(y as u32 * source_width + x as u32) as usize];
+            for channel in 0..4 {
+                sum[channel] += f64::from(value[channel]) * f64::from(weight_x * weight_y);
+            }
+        }
+    }
+    sum.map(|value| (value / f64::from(area)) as f32)
+}
+
 /// Deterministic scalar oracle for the flat, orthographic physical panel surface.
 /// Product composition uses the corresponding platform backend; this function
 /// owns the reference numeric result and never applies a camera or output transform.
@@ -286,6 +331,9 @@ pub fn evaluate_flat_panel_cpu_oracle(
 
     let evaluator = plan.panel.evaluator().map_err(ApplicationError::Panel)?;
     let parameters = evaluator.device_stage_parameters();
+    let source_width = request.input.width;
+    let source_height = request.input.height;
+    let source_acescg = request.input.acescg;
     let prepared = PreparedDeviceSignalRaster::new(request.input.device_signal)?;
     let emission_integral = DeviceSignalIntegral::new_mapped(&prepared.source, |value| {
         DeviceRgb::new(
@@ -294,7 +342,7 @@ pub fn evaluate_flat_panel_cpu_oracle(
             evaluator.native_channel(value, 2),
         )
     });
-    let source_raster = [request.input.width, request.input.height];
+    let source_raster = [source_width, source_height];
     let device_raster = [plan.panel.native_width, plan.panel.native_height];
     let side = match sampling.samples_per_output_pixel {
         1 => 1,
@@ -358,29 +406,17 @@ pub fn evaluate_flat_panel_cpu_oracle(
                         device_maximum,
                         2,
                     );
-                    let center = Vec2 {
-                        x: (minimum_uv.x + maximum_uv.x) * 0.5,
-                        y: (minimum_uv.y + maximum_uv.y) * 0.5,
-                    };
-                    if let Some(source_uv) = source_uv_for_device_uv(
-                        source_raster,
+                    let value = sample_placed_acescg_area(
+                        source_width,
+                        source_height,
+                        &source_acescg,
                         device_raster,
                         plan.placement,
-                        center,
-                    ) {
-                        let source_x = (source_uv.x * request.input.width as f32)
-                            .floor()
-                            .clamp(0.0, request.input.width.saturating_sub(1) as f32)
-                            as u32;
-                        let source_y = (source_uv.y * request.input.height as f32)
-                            .floor()
-                            .clamp(0.0, request.input.height.saturating_sub(1) as f32)
-                            as u32;
-                        let value = request.input.acescg
-                            [(source_y * request.input.width + source_x) as usize];
-                        for channel in 0..4 {
-                            ideal[channel] += value[channel];
-                        }
+                        minimum_uv,
+                        maximum_uv,
+                    );
+                    for channel in 0..4 {
+                        ideal[channel] += value[channel];
                     }
                 }
             }
