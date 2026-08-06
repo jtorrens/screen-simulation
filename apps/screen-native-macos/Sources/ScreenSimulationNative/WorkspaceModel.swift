@@ -1,62 +1,127 @@
 @preconcurrency import AVFoundation
 import AppKit
 import Combine
-import CoreGraphics
 import Foundation
-import ImageIO
 import StudioColor
+import StudioMedia
 
 @MainActor
 final class WorkspaceModel: ObservableObject {
     struct RenderJob: Identifiable {
-        enum State: String { case queued, rendering, complete, failed }
+        enum State: String { case pending, rendering, completed, failed, cancelled }
         let id = UUID()
         let destination: URL
-        let output: StudioColorOutputTransform
-        var state: State = .queued
-        var detail: String = "En cola"
+        let format: StudioOutputFormat
+        let preset: StudioRenderPreset
+        let range: ClosedRange<Int>
+        var state: State = .pending
+        var progress = 0.0
+        var detail = "Pendiente"
     }
 
-    @Published var inputTransform = StudioColorInputTransform.catalog[2]
-    @Published var outputTransform = StudioColorOutputTransform.catalog[0]
-    @Published var alphaAssociation = StudioColorAlphaAssociation.straight
+    @Published var inputTransform = StudioColorInputTransform.catalog[0]
+    @Published var previewTransform = StudioColorOutputTransform.catalog[0]
+    @Published var alphaMode = StudioAlphaMode.auto
+    @Published var signalMatrix = StudioSignalMatrix.auto
+    @Published var signalRange = StudioSignalRange.auto
+    @Published var detection = StudioMediaDetection()
     @Published var selectedPattern = SyntheticPattern.animatedCheckerboard
-    @Published var requestedSeconds = 0.0
-    @Published var sourceName = "Patrón sintético"
-    @Published var sourceDetail = "ACEScg lineal · 960 × 540"
+    @Published var sourceName = "Checker animado"
+    @Published var sourceDetail = "Patrón SCREEN canónico · 960 × 540"
     @Published var status = "Preparado"
-    @Published var isIDTConfirmed = true
-    @Published var linearFrame: StudioColorLinearFrame?
+    @Published var metalFrame: StudioColorMetalFrame?
     @Published var jobs: [RenderJob] = []
     @Published var errorMessage: String?
+    @Published var currentFrame = 0
+    @Published var frameCount = 1
+    @Published var frameRate = 24.0
+    @Published var isPlaying = false
+    @Published var inFrame = 0
+    @Published var outFrame = 0
+    @Published var renderRange = StudioRenderRange.all
+    @Published var outputFormat = StudioOutputFormat.proRes4444
+    @Published var renderPreset = StudioRenderPreset.builtIns[0]
+    @Published var peakNits = 100.0
+    @Published var includeAudio = true
+    @Published var outputAlpha = true
+    @Published var decodeToPreviewMilliseconds = 0.0
+    @Published var zoom = 1.0
+    @Published var pan = CGSize.zero
 
-    let colorPipeline: StudioColorPipeline
     let metalDisplay: StudioColorMetalDisplay
-    private let physicalPipeline = PhysicalPipeline()
-    private var decoded: DecodedNativeFrame
+    private let session = NativeMediaSession()
+    private var sourceIsPattern = true
+    private var tickSubscription: AnyCancellable?
+    private var renderTask: Task<Void, Never>?
 
     init() {
-        let pipeline = StudioColorPipeline()
-        colorPipeline = pipeline
         metalDisplay = try! StudioColorMetalDisplay()
-        decoded = try! SyntheticPattern.animatedCheckerboard.frame()
-        do {
-            linearFrame = try physicalPipeline.process(
-                pipeline.prepareInput(
-                    width: decoded.width,
-                    height: decoded.height,
-                    encodedRGBA: decoded.rgba,
-                    input: inputTransform,
-                    alpha: alphaAssociation
-                )
-            )
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        renderPattern()
+        tickSubscription = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common)
+            .autoconnect().sink { [weak self] _ in self?.tickPlayback() }
     }
 
     var pipelineSummary: String {
-        "Input → IDT → ACEScg → Physical(identity) → \(outputTransform.label)"
+        "Input → YUV/rango → IDT → ACEScg → Display/ODT"
+    }
+
+    var requestedSeconds: Double {
+        get { Double(currentFrame) / frameRate }
+        set { seek(toFrame: Int((newValue * frameRate).rounded())) }
+    }
+
+    var timecode: String {
+        let rate = max(1, Int(frameRate.rounded()))
+        let frames = max(0, currentFrame)
+        let hours = frames / (rate * 3_600)
+        let minutes = (frames / (rate * 60)) % 60
+        let seconds = (frames / rate) % 60
+        return String(format: "%02d:%02d:%02d:%02d", hours, minutes, seconds, frames % rate)
+    }
+
+    var effectiveAlpha: StudioColorAlphaAssociation {
+        let resolved: StudioAlphaMode
+        if alphaMode == .auto {
+            resolved = detection.alpha ?? .ignore
+        } else {
+            resolved = alphaMode
+        }
+        switch resolved {
+        case .straight: return StudioColorAlphaAssociation.straight
+        case .premultiplied: return StudioColorAlphaAssociation.premultiplied
+        case .auto, .ignore: return StudioColorAlphaAssociation.ignore
+        }
+    }
+
+    var effectiveMatrix: StudioColorSignalMatrix {
+        let resolved: StudioSignalMatrix
+        if signalMatrix == .auto {
+            resolved = detection.matrix ?? .bt709
+        } else {
+            resolved = signalMatrix
+        }
+        switch resolved {
+        case .bt601: return StudioColorSignalMatrix.bt601
+        case .bt2020: return StudioColorSignalMatrix.bt2020
+        case .auto, .bt709: return StudioColorSignalMatrix.bt709
+        }
+    }
+
+    var effectiveRange: StudioColorSignalRange {
+        let resolved: StudioSignalRange
+        if signalRange == .auto {
+            resolved = detection.range ?? .video
+        } else {
+            resolved = signalRange
+        }
+        switch resolved {
+        case .full: return StudioColorSignalRange.full
+        case .auto, .video: return StudioColorSignalRange.video
+        }
+    }
+
+    var activeFrameRange: ClosedRange<Int> {
+        renderRange == .inOut ? min(inFrame, outFrame) ... max(inFrame, outFrame) : 0 ... max(0, frameCount - 1)
     }
 
     func choosePattern(_ pattern: SyntheticPattern, undoManager: UndoManager?) {
@@ -64,50 +129,79 @@ final class WorkspaceModel: ObservableObject {
         undoManager?.registerUndo(withTarget: self) { target in
             Task { @MainActor in target.choosePattern(prior, undoManager: nil) }
         }
+        pause()
         selectedPattern = pattern
-        do {
-            decoded = try pattern.frame(time: requestedSeconds)
-        } catch {
-            errorMessage = error.localizedDescription
-            return
-        }
+        sourceIsPattern = true
         sourceName = pattern.label
-        sourceDetail = "ACEScg lineal · \(decoded.width) × \(decoded.height)"
-        inputTransform = StudioColorInputTransform.catalog[2]
-        alphaAssociation = .straight
-        isIDTConfirmed = true
-        rebuild()
+        sourceDetail = "Patrón SCREEN canónico"
+        detection = StudioMediaDetection(
+            proposedInputColorSpace: "Input - Rec.709", range: .full,
+            hasAlpha: false, alpha: .ignore
+        )
+        inputTransform = StudioColorInputTransform.catalog[0]
+        alphaMode = .auto
+        signalRange = .auto
+        currentFrame = 0
+        frameRate = 24
+        frameCount = pattern == .animatedCheckerboard ? 240 : 1
+        outFrame = frameCount - 1
+        renderPattern()
     }
 
     func openMedia() {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.movie, .image]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        status = "Decodificando el tiempo solicitado…"
-        Task {
-            do {
-                decoded = try await NativeMediaDecoder.decode(
-                    url: url,
-                    time: CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
-                )
-                sourceName = url.lastPathComponent
-                sourceDetail = "\(decoded.width) × \(decoded.height) · \(decoded.sourceDescription)"
-                alphaAssociation = .premultiplied
-                isIDTConfirmed = false
-                linearFrame = nil
-                status = "Selecciona y confirma un IDT explícito"
-            } catch {
-                errorMessage = error.localizedDescription
-                status = "Error de decodificación"
-            }
-        }
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.movie, .image, .folder]
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        Task { await load(panel.urls) }
     }
 
-    func confirmIDT() {
-        isIDTConfirmed = true
-        rebuild()
+    func load(_ urls: [URL]) async {
+        pause()
+        status = "Leyendo medio y metadata…"
+        let expanded: [URL]
+        if urls.count == 1, urls[0].hasDirectoryPath {
+            expanded = (try? FileManager.default.contentsOfDirectory(
+                at: urls[0], includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            ).filter(Self.isImage)) ?? []
+        } else {
+            expanded = urls
+        }
+        guard let first = expanded.first else {
+            errorMessage = "La selección no contiene imágenes o películas compatibles."
+            return
+        }
+        let isVideo = Self.isVideo(first) && expanded.count == 1
+        detection = await StudioMediaMetadataDetector.detect(url: first, isVideo: isVideo)
+        if let proposed = detection.proposedInputColorSpace,
+           let transform = StudioColorInputTransform.catalog.first(where: { $0.ocioColorSpace == proposed }) {
+            inputTransform = transform
+        }
+        alphaMode = .auto
+        signalMatrix = .auto
+        signalRange = .auto
+        do {
+            let info = isVideo
+                ? try await session.openVideo(first, hasAlpha: detection.hasAlpha)
+                : try session.openImages(expanded.filter(Self.isImage))
+            sourceIsPattern = false
+            sourceName = info.name
+            sourceDetail = info.detail + (detection.note.map { " · Metadata: \($0)" } ?? "")
+            frameRate = info.frameRate
+            frameCount = info.frameCount
+            currentFrame = 0
+            inFrame = 0
+            outFrame = max(0, info.frameCount - 1)
+            includeAudio = info.hasAudio
+            session.play()
+            try await Task.sleep(for: .milliseconds(20))
+            session.pause()
+            try present(try await session.exactSample(at: .zero))
+        } catch {
+            errorMessage = error.localizedDescription
+            status = "No se pudo abrir el medio"
+        }
     }
 
     func changeInput(_ value: StudioColorInputTransform, undoManager: UndoManager?) {
@@ -116,109 +210,249 @@ final class WorkspaceModel: ObservableObject {
             Task { @MainActor in target.changeInput(prior, undoManager: nil) }
         }
         inputTransform = value
-        isIDTConfirmed = false
-        linearFrame = nil
-        status = "Confirma el IDT seleccionado"
+        rebuildCurrent()
     }
 
-    func changeOutput(_ value: StudioColorOutputTransform, undoManager: UndoManager?) {
-        let prior = outputTransform
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in target.changeOutput(prior, undoManager: nil) }
-        }
-        outputTransform = value
-        status = linearFrame == nil ? "Confirma el IDT seleccionado" : "Preview OCIO actualizado"
-        objectWillChange.send()
-    }
-
-    func changeAlpha(_ value: StudioColorAlphaAssociation, undoManager: UndoManager?) {
-        let prior = alphaAssociation
+    func changeAlpha(_ value: StudioAlphaMode, undoManager: UndoManager?) {
+        let prior = alphaMode
         undoManager?.registerUndo(withTarget: self) { target in
             Task { @MainActor in target.changeAlpha(prior, undoManager: nil) }
         }
-        alphaAssociation = value
-        isIDTConfirmed = false
-        linearFrame = nil
-        status = "Confirma la asociación alpha"
+        alphaMode = value
+        rebuildCurrent()
     }
 
-    func enqueueExport() {
-        guard linearFrame != nil else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = "ScreenSimulation-\(outputTransform.id).png"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        jobs.append(RenderJob(destination: url, output: outputTransform))
+    func changeMatrix(_ value: StudioSignalMatrix) {
+        signalMatrix = value
+        rebuildCurrent()
     }
 
-    func runQueue() {
-        guard let frame = linearFrame else { return }
-        for index in jobs.indices where jobs[index].state == .queued {
-            jobs[index].state = .rendering
-            jobs[index].detail = "Metal + ODT"
-            do {
-                let bytes = try metalDisplay.renderRGBA8(frame, output: jobs[index].output)
-                try Self.writePNG(
-                    bytes: bytes,
-                    width: frame.width,
-                    height: frame.height,
-                    to: jobs[index].destination
-                )
-                jobs[index].state = .complete
-                jobs[index].detail = jobs[index].destination.lastPathComponent
-            } catch {
-                jobs[index].state = .failed
-                jobs[index].detail = error.localizedDescription
+    func changeRange(_ value: StudioSignalRange) {
+        signalRange = value
+        rebuildCurrent()
+    }
+
+    func changePreview(_ value: StudioColorOutputTransform, undoManager: UndoManager?) {
+        let prior = previewTransform
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in target.changePreview(prior, undoManager: nil) }
+        }
+        previewTransform = value
+        objectWillChange.send()
+    }
+
+    func togglePlayback() {
+        isPlaying ? pause() : play()
+    }
+
+    func play() {
+        guard frameCount > 1 else { return }
+        isPlaying = true
+        if sourceIsPattern { return }
+        session.play()
+    }
+
+    func pause() {
+        isPlaying = false
+        session.pause()
+    }
+
+    func seek(toFrame frame: Int) {
+        pause()
+        currentFrame = min(max(0, frame), max(0, frameCount - 1))
+        if sourceIsPattern {
+            renderPattern()
+        } else {
+            Task {
+                do {
+                    let time = session.time(forFrame: currentFrame)
+                    try await session.seek(to: time)
+                    try present(try await session.exactSample(at: time))
+                } catch { errorMessage = error.localizedDescription }
             }
         }
     }
 
-    private func rebuild() {
-        guard isIDTConfirmed else { return }
-        status = "IDT → ACEScg → Physical(identity)…"
-        do {
-            let aces = try colorPipeline.prepareInput(
-                width: decoded.width,
-                height: decoded.height,
-                encodedRGBA: decoded.rgba,
-                input: inputTransform,
-                alpha: alphaAssociation
-            )
-            linearFrame = try physicalPipeline.process(aces)
-            status = "ACEScg lineal preparado · Preview OCIO Metal"
-        } catch {
-            linearFrame = nil
-            errorMessage = error.localizedDescription
-            status = "Pipeline detenido"
+    func step(_ delta: Int) { seek(toFrame: currentFrame + delta) }
+    func jump(_ seconds: Double) { seek(toFrame: currentFrame + Int(seconds * frameRate)) }
+    func markIn() { inFrame = currentFrame; if outFrame < inFrame { outFrame = inFrame } }
+    func markOut() { outFrame = currentFrame; if inFrame > outFrame { inFrame = outFrame } }
+
+    func resetView() { zoom = 1; pan = .zero }
+    func zoomBy(_ factor: Double) { zoom = min(16, max(0.1, zoom * factor)) }
+
+    func enqueueExport() {
+        guard metalFrame != nil else { return }
+        let url: URL?
+        if outputFormat.isMovie {
+            let panel = NSSavePanel()
+            panel.canCreateDirectories = true
+            panel.nameFieldStringValue = sourceName.replacingOccurrences(of: ".", with: "-")
+            panel.allowedContentTypes = [.movie]
+            url = panel.runModal() == .OK ? panel.url : nil
+        } else {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.canCreateDirectories = true
+            panel.allowsMultipleSelection = false
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return }
+        jobs.append(RenderJob(
+            destination: url, format: outputFormat, preset: renderPreset, range: activeFrameRange
+        ))
+    }
+
+    func runQueue() {
+        guard renderTask == nil,
+              let index = jobs.firstIndex(where: { $0.state == .pending })
+        else { return }
+        pause()
+        jobs[index].state = .rendering
+        jobs[index].detail = "Preparando grafo Metal"
+        let job = jobs[index]
+        renderTask = Task {
+            do {
+                let url = try await NativeOutputRenderer.render(
+                    format: job.format, preset: job.preset, peakNits: peakNits,
+                    frameRate: frameRate, frameRange: job.range,
+                    destination: job.destination,
+                    includeAlpha: outputAlpha,
+                    includeAudio: includeAudio,
+                    audioSource: session.sourceURL,
+                    display: metalDisplay,
+                    frameProvider: { [weak self] frame in
+                        guard let self else { throw CancellationError() }
+                        return try await self.renderFrame(frame)
+                    },
+                    progress: { [weak self] completed, total in
+                        guard let self,
+                              let live = self.jobs.firstIndex(where: { $0.id == job.id })
+                        else { return }
+                        self.jobs[live].progress = Double(completed) / Double(total)
+                        self.jobs[live].detail = "\(completed) / \(total)"
+                    }
+                )
+                if let live = jobs.firstIndex(where: { $0.id == job.id }) {
+                    jobs[live].state = .completed
+                    jobs[live].progress = 1
+                    jobs[live].detail = url.lastPathComponent
+                }
+            } catch is CancellationError {
+                if let live = jobs.firstIndex(where: { $0.id == job.id }) {
+                    jobs[live].state = .cancelled
+                    jobs[live].detail = "Cancelado"
+                }
+            } catch {
+                if let live = jobs.firstIndex(where: { $0.id == job.id }) {
+                    jobs[live].state = .failed
+                    jobs[live].detail = error.localizedDescription
+                }
+                errorMessage = error.localizedDescription
+            }
+            renderTask = nil
+            runQueue()
         }
     }
 
-    private static func writePNG(
-        bytes: [UInt8],
-        width: Int,
-        height: Int,
-        to url: URL
-    ) throws {
-        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
-              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let image = CGImage(
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bitsPerPixel: 32,
-                bytesPerRow: width * 4,
-                space: colorSpace,
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider,
-                decode: nil,
-                shouldInterpolate: false,
-                intent: .defaultIntent
-              ),
-              let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil)
-        else { throw NativeMediaError.invalidRaster }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            throw NativeMediaError.unreadable(url.lastPathComponent)
+    func cancelRender() {
+        renderTask?.cancel()
+    }
+
+    func renderCurrentFrame() {
+        guard let metalFrame else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.tiff]
+        panel.nameFieldStringValue = String(format: "ScreenSimulation-%08d.tiff", currentFrame)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try NativeOutputRenderer.renderCurrentFrame(
+                frame: metalFrame, displayTransform: previewTransform,
+                destination: url, display: metalDisplay
+            )
+            status = "Frame actual renderizado · \(url.lastPathComponent)"
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func tickPlayback() {
+        guard isPlaying else { return }
+        if sourceIsPattern {
+            let next = currentFrame + 1
+            if next >= frameCount { pause(); return }
+            currentFrame = next
+            renderPattern()
+            return
         }
+        renderCurrentMediaFrame()
+    }
+
+    private func rebuildCurrent() {
+        sourceIsPattern ? renderPattern() : renderCurrentMediaFrame(at: session.time(forFrame: currentFrame))
+    }
+
+    private func renderPattern() {
+        let started = CACurrentMediaTime()
+        do {
+            let decoded = try selectedPattern.frame(time: requestedSeconds)
+            metalFrame = try metalDisplay.makeACEScgFrame(
+                width: decoded.width, height: decoded.height, encodedRGBA: decoded.rgba,
+                input: inputTransform, alpha: effectiveAlpha
+            )
+            sourceDetail = "Patrón SCREEN canónico · \(decoded.width) × \(decoded.height)"
+            decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
+            status = "Textura ACEScg Metal · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
+        } catch {
+            metalFrame = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func renderCurrentMediaFrame(at time: CMTime? = nil) {
+        let started = CACurrentMediaTime()
+        do {
+            guard let sample = try session.currentSample(at: time) else { return }
+            try present(sample, started: started)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func present(_ sample: NativeMediaSample?, started: CFTimeInterval = CACurrentMediaTime()) throws {
+        guard let sample else { return }
+        metalFrame = try metalDisplay.makeACEScgFrame(
+            pixelBuffer: sample.pixelBuffer, input: inputTransform,
+            alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
+        )
+        currentFrame = min(frameCount - 1, max(0, Int((sample.time.seconds * frameRate).rounded())))
+        decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
+        status = "CVPixelBuffer → ACEScg → Preview · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
+    }
+
+    private func renderFrame(_ index: Int) async throws -> StudioColorMetalFrame {
+        if sourceIsPattern {
+            let decoded = try selectedPattern.frame(time: Double(index) / frameRate)
+            return try metalDisplay.makeACEScgFrame(
+                width: decoded.width, height: decoded.height,
+                encodedRGBA: decoded.rgba, input: inputTransform, alpha: effectiveAlpha
+            )
+        }
+        let time = session.time(forFrame: index)
+        try Task.checkCancellation()
+        guard let sample = try await session.exactSample(at: time) else {
+            throw NativeMediaError.unreadable("frame \(index)")
+        }
+        return try metalDisplay.makeACEScgFrame(
+            pixelBuffer: sample.pixelBuffer, input: inputTransform,
+            alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
+        )
+    }
+
+    private static func isVideo(_ url: URL) -> Bool {
+        ["mov", "mp4", "m4v"].contains(url.pathExtension.lowercased())
+    }
+
+    private static func isImage(_ url: URL) -> Bool {
+        ["png", "jpg", "jpeg", "tif", "tiff", "heic", "exr", "dpx"].contains(url.pathExtension.lowercased())
     }
 }

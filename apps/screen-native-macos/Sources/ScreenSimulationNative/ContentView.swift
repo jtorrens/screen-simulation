@@ -1,6 +1,7 @@
 import AppKit
 import MetalKit
 import StudioColor
+import StudioMedia
 import SwiftUI
 
 struct ContentView: View {
@@ -39,10 +40,13 @@ struct ContentView: View {
                 Button(action: model.openMedia) { Label("Abrir", systemImage: "folder") }
                     .help("Abrir un vídeo o una imagen")
                 Button(action: model.enqueueExport) { Label("Añadir render", systemImage: "plus.rectangle.on.rectangle") }
-                    .disabled(model.linearFrame == nil)
-                    .help("Añadir el frame actual a Render Queue")
+                    .disabled(model.metalFrame == nil)
+                    .help("Añadir la película o el rango completo a Render Queue")
+                Button(action: model.renderCurrentFrame) { Label("Frame actual", systemImage: "photo") }
+                    .disabled(model.metalFrame == nil)
+                    .help("Renderizar el frame actual horneando la transformación del visor")
                 Button(action: model.runQueue) { Label("Render", systemImage: "play.fill") }
-                    .disabled(!model.jobs.contains { $0.state == .queued })
+                    .disabled(!model.jobs.contains { $0.state == .pending })
                     .help("Procesar los trabajos en cola")
             }
         }
@@ -62,7 +66,10 @@ struct ContentView: View {
                 LabeledContent("Archivo") { Text(model.sourceName).lineLimit(1) }
                 LabeledContent("Detalle") { Text(model.sourceDetail).lineLimit(2) }
                 LabeledContent("Tiempo (s)") {
-                    TextField("0", value: $model.requestedSeconds, format: .number)
+                    TextField("0", value: Binding(
+                        get: { model.requestedSeconds },
+                        set: { model.requestedSeconds = $0 }
+                    ), format: .number)
                         .frame(width: 72)
                         .accessibilityLabel("Tiempo solicitado en segundos")
                 }
@@ -83,6 +90,10 @@ struct ContentView: View {
     private var colorPanel: some View {
         Form {
             Section("Interpretación de entrada") {
+                LabeledContent("IDT propuesta") {
+                    Text(model.detection.proposedInputColorSpace ?? "Sin metadata · Rec.709")
+                        .foregroundStyle(.secondary)
+                }
                 Picker("IDT", selection: Binding(
                     get: { model.inputTransform },
                     set: { model.changeInput($0, undoManager: undoManager) }
@@ -90,17 +101,27 @@ struct ContentView: View {
                     ForEach(StudioColorInputTransform.catalog) { Text($0.label).tag($0) }
                 }
                 Picker("Alpha", selection: Binding(
-                    get: { model.alphaAssociation },
+                    get: { model.alphaMode },
                     set: { model.changeAlpha($0, undoManager: undoManager) }
                 )) {
-                    Text("Straight").tag(StudioColorAlphaAssociation.straight)
-                    Text("Premultiplied").tag(StudioColorAlphaAssociation.premultiplied)
-                    Text("Ignore").tag(StudioColorAlphaAssociation.ignore)
+                    ForEach(StudioAlphaMode.allCases) { value in
+                        Text(value.label + (value == model.detection.alpha ? " · Detectada" : "")).tag(value)
+                    }
                 }
-                Button(model.isIDTConfirmed ? "IDT confirmado" : "Confirmar IDT") {
-                    model.confirmIDT()
+                Picker("Matriz YUV", selection: Binding(
+                    get: { model.signalMatrix }, set: { model.changeMatrix($0) }
+                )) {
+                    ForEach(StudioSignalMatrix.allCases) { value in
+                        Text(value.label + (value == model.detection.matrix ? " · Detectada" : "")).tag(value)
+                    }
                 }
-                .disabled(model.isIDTConfirmed)
+                Picker("Rango señal", selection: Binding(
+                    get: { model.signalRange }, set: { model.changeRange($0) }
+                )) {
+                    ForEach(StudioSignalRange.allCases) { value in
+                        Text(value.label + (value == model.detection.range ? " · Detectado" : "")).tag(value)
+                    }
+                }
             }
             Section("Working space") {
                 LabeledContent("Espacio") { Text("ACEScg lineal") }
@@ -113,18 +134,28 @@ struct ContentView: View {
 
     private var outputPanel: some View {
         Form {
-            Section("Display / View OCIO") {
-                Picker("ODT", selection: Binding(
-                    get: { model.outputTransform },
-                    set: { model.changeOutput($0, undoManager: undoManager) }
-                )) {
-                    ForEach(StudioColorOutputTransform.catalog) { Text($0.label).tag($0) }
+            Section("Preset / ODT") {
+                Picker("Preset", selection: $model.renderPreset) {
+                    ForEach(StudioRenderPreset.builtIns) { Text($0.name).tag($0) }
                 }
-                LabeledContent("Motor") { Text("StudioColor · Metal") }
+                LabeledContent("Peak nits") {
+                    TextField("nits", value: $model.peakNits, format: .number).frame(width: 90)
+                }
+                Picker("Formato", selection: $model.outputFormat) {
+                    ForEach(StudioOutputFormat.allCases) { Text($0.displayName).tag($0) }
+                }
+                Picker("Rango", selection: $model.renderRange) {
+                    Text("Todo").tag(StudioRenderRange.all)
+                    Text("IN / OUT").tag(StudioRenderRange.inOut)
+                }
+                Toggle("Alpha", isOn: $model.outputAlpha)
+                    .disabled(!model.outputFormat.supportsAlpha)
+                Toggle("Audio", isOn: $model.includeAudio)
+                    .disabled(!model.outputFormat.isMovie)
             }
             Section("Exportación") {
-                Button("Añadir PNG a Render Queue", action: model.enqueueExport)
-                    .disabled(model.linearFrame == nil)
+                Button("Añadir a Render Queue", action: model.enqueueExport)
+                    .disabled(model.metalFrame == nil)
             }
         }
         .formStyle(.grouped)
@@ -139,15 +170,19 @@ struct ContentView: View {
                         Spacer()
                         Text(job.state.rawValue.capitalized).foregroundStyle(.secondary)
                     }
-                    Text(job.output.label).font(.caption)
-                    Text(job.detail).font(.caption).foregroundStyle(.secondary)
+                        Text(job.format.displayName).font(.caption)
+                    Text("\(job.range.lowerBound)–\(job.range.upperBound) · \(job.detail)")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
             }
             HStack {
+                if model.jobs.contains(where: { $0.state == .rendering }) {
+                    Button("Cancelar", action: model.cancelRender)
+                }
                 Spacer()
                 Button("Render Queue", action: model.runQueue)
-                    .disabled(!model.jobs.contains { $0.state == .queued })
+                    .disabled(!model.jobs.contains { $0.state == .pending })
             }
             .padding(8)
         }
@@ -159,7 +194,10 @@ struct ContentView: View {
                 LabeledContent("Estado") { Text(model.status).lineLimit(2) }
                 LabeledContent("OCIO") { Text(StudioColorBuildIdentity.ocioVersion) }
                 LabeledContent("ACES") { Text(StudioColorBuildIdentity.acesConfigVersion) }
-                LabeledContent("Physical") { Text("identity · Rust ABI") }
+                LabeledContent("Frame") { Text("\(model.currentFrame + 1) / \(model.frameCount)") }
+                LabeledContent("Rendimiento") {
+                    Text("\(model.decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms")
+                }
             }
         }
         .formStyle(.grouped)
@@ -168,26 +206,57 @@ struct ContentView: View {
 
     private var preview: some View {
         VStack(spacing: 0) {
+            HStack {
+                Picker("Pantalla", selection: Binding(
+                    get: { model.previewTransform },
+                    set: { model.changePreview($0, undoManager: undoManager) }
+                )) {
+                    ForEach(StudioColorOutputTransform.catalog) { Text($0.label).tag($0) }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 330)
+                Spacer()
+                Button { model.zoomBy(0.8) } label: { Image(systemName: "minus.magnifyingglass") }
+                Button("100%", action: model.resetView)
+                Button { model.zoomBy(1.25) } label: { Image(systemName: "plus.magnifyingglass") }
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 10)
+            .frame(height: 36)
+            .background(Color(nsColor: .windowBackgroundColor))
+            Divider()
             ZStack {
                 Color(nsColor: .black)
-                if let frame = model.linearFrame {
+                if let frame = model.metalFrame {
                     MetalPreview(
                         display: model.metalDisplay,
                         frame: frame,
-                        output: model.outputTransform
+                        output: model.previewTransform
+                    )
+                    .scaleEffect(model.zoom)
+                    .offset(model.pan)
+                    .gesture(
+                        DragGesture().onChanged { value in model.pan = value.translation }
+                    )
+                    .gesture(
+                        MagnifyGesture().onChanged { value in
+                            model.zoom = min(16, max(0.1, value.magnification))
+                        }
                     )
                     .accessibilityLabel("Preview OCIO del resultado")
                 } else {
                     ContentUnavailableView(
-                        "IDT pendiente",
+                        "Sin frame",
                         systemImage: "exclamationmark.triangle",
-                        description: Text("Selecciona y confirma la interpretación de entrada.")
+                        description: Text("Abre un medio o selecciona un patrón.")
                     )
                 }
             }
             Divider()
+            transport
+            Divider()
             HStack(spacing: 8) {
-                Image(systemName: model.linearFrame == nil ? "exclamationmark.circle" : "checkmark.circle")
+                Image(systemName: model.metalFrame == nil ? "exclamationmark.circle" : "checkmark.circle")
                 Text(model.pipelineSummary).lineLimit(1)
                 Spacer()
                 Text(model.status).foregroundStyle(.secondary).lineLimit(1)
@@ -198,11 +267,42 @@ struct ContentView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
     }
+
+    private var transport: some View {
+        VStack(spacing: 5) {
+            Slider(
+                value: Binding(
+                    get: { Double(model.currentFrame) },
+                    set: { model.seek(toFrame: Int($0.rounded())) }
+                ),
+                in: 0 ... Double(max(1, model.frameCount - 1))
+            )
+            HStack(spacing: 12) {
+                Button("IN", action: model.markIn).help("Marcar IN (I)")
+                Button { model.jump(-5) } label: { Image(systemName: "backward.end.fill") }
+                Button { model.step(-1) } label: { Image(systemName: "backward.frame.fill") }
+                Button(action: model.togglePlayback) {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                }
+                .keyboardShortcut(.space, modifiers: [])
+                Button { model.step(1) } label: { Image(systemName: "forward.frame.fill") }
+                Button { model.jump(5) } label: { Image(systemName: "forward.end.fill") }
+                Button("OUT", action: model.markOut).help("Marcar OUT (O)")
+                Spacer()
+                Text(model.timecode).monospacedDigit()
+                Text("F \(model.currentFrame)").monospacedDigit().foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
 }
 
 struct MetalPreview: NSViewRepresentable {
     let display: StudioColorMetalDisplay
-    let frame: StudioColorLinearFrame
+    let frame: StudioColorMetalFrame
     let output: StudioColorOutputTransform
 
     func makeNSView(context _: Context) -> MTKView {

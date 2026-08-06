@@ -15,7 +15,22 @@ struct ScreenSimulationNativeApp: App {
                 Button("Abrir medio…", action: model.openMedia)
                     .keyboardShortcut("o")
             }
+            CommandMenu("Transporte") {
+                Button(model.isPlaying ? "Pausa" : "Reproducir", action: model.togglePlayback)
+                    .keyboardShortcut(.space, modifiers: [])
+                Button("Frame anterior") { model.step(-1) }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                Button("Frame siguiente") { model.step(1) }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                Divider()
+                Button("Marcar IN", action: model.markIn).keyboardShortcut("i", modifiers: [])
+                Button("Marcar OUT", action: model.markOut).keyboardShortcut("o", modifiers: [])
+            }
+            CommandMenu("Visor") {
+                Button("Aumentar zoom") { model.zoomBy(1.25) }.keyboardShortcut("+")
+                Button("Reducir zoom") { model.zoomBy(0.8) }.keyboardShortcut("-")
+                Button("Ajustar visor", action: model.resetView).keyboardShortcut("0")
+            }
         }
     }
 }
-
