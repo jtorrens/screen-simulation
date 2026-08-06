@@ -27,6 +27,7 @@ struct ContentView: View {
 
     @Environment(\.undoManager) private var undoManager
     @ObservedObject var model: WorkspaceModel
+    @StateObject private var library = GlobalLibraryController()
     @State private var tab = SidebarTab.source
     @State private var page = WorkspacePage.main
 
@@ -102,11 +103,7 @@ struct ContentView: View {
             .formStyle(.grouped)
             .tabItem { Label("Aplicación", systemImage: "info.circle") }
 
-            ContentUnavailableView(
-                "Colecciones globales",
-                systemImage: "square.stack.3d.up",
-                description: Text("Patrones, imágenes de prueba y presets de render.")
-            )
+            globalCollections
             .tabItem { Label("Colecciones", systemImage: "square.stack.3d.up") }
 
             Form {
@@ -118,6 +115,166 @@ struct ContentView: View {
             .formStyle(.grouped)
             .tabItem { Label("Monitor", systemImage: "rectangle.connected.to.line.below") }
         }
+    }
+
+    private var globalCollections: some View {
+        VStack(spacing: 0) {
+            if let error = library.blockedError {
+                ContentUnavailableView(
+                    "Biblioteca bloqueada",
+                    systemImage: "exclamationmark.lock",
+                    description: Text(error)
+                )
+            } else {
+                TabView {
+                    List(SyntheticPattern.allCases) { pattern in
+                        Label(pattern.label, systemImage: "camera.filters")
+                    }
+                    .tabItem { Label("Patrones", systemImage: "camera.filters") }
+
+                    testImageLibrary
+                        .tabItem { Label("Imágenes", systemImage: "photo.stack") }
+
+                    renderPresetLibrary
+                        .tabItem { Label("Presets", systemImage: "slider.horizontal.3") }
+                }
+            }
+        }
+    }
+
+    private var testImageLibrary: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedImageID) {
+                    ForEach(library.document.testImages) { image in
+                        Text(image.name).tag(image.id)
+                    }
+                }
+                HStack {
+                    Button(action: library.addTestImage) { Image(systemName: "plus") }
+                        .help("Añadir imagen PNG o EXR")
+                    Button(action: library.removeSelectedImage) { Image(systemName: "minus") }
+                        .disabled(library.selectedImageID == nil)
+                        .help("Eliminar imagen seleccionada")
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(8)
+            }
+            .frame(minWidth: 220, idealWidth: 280)
+
+            if let image = selectedTestImage {
+                Form {
+                    Section("Interpretación explícita") {
+                        TextField("Nombre", text: Binding(
+                            get: { image.name },
+                            set: { value in library.updateSelectedImage { $0.name = value } }
+                        ))
+                        Picker("IDT", selection: Binding(
+                            get: { image.inputTransformID },
+                            set: { value in library.updateSelectedImage { $0.inputTransformID = value } }
+                        )) {
+                            ForEach(StudioColorInputTransform.catalog) { transform in
+                                Text(transform.label).tag(transform.id)
+                            }
+                        }
+                        Picker("Alpha", selection: Binding(
+                            get: { image.alpha },
+                            set: { value in library.updateSelectedImage { $0.alpha = value } }
+                        )) {
+                            ForEach(StudioAlphaMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("Matriz", selection: Binding(
+                            get: { image.matrix },
+                            set: { value in library.updateSelectedImage { $0.matrix = value } }
+                        )) {
+                            ForEach(StudioSignalMatrix.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("Rango", selection: Binding(
+                            get: { image.range },
+                            set: { value in library.updateSelectedImage { $0.range = value } }
+                        )) {
+                            ForEach(StudioSignalRange.allCases) { Text($0.label).tag($0) }
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+            } else {
+                ContentUnavailableView("Sin imagen", systemImage: "photo.badge.plus")
+            }
+        }
+    }
+
+    private var renderPresetLibrary: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedPresetID) {
+                    Section("Incluidos") {
+                        ForEach(StudioRenderPreset.builtIns) { preset in
+                            Text(preset.name).tag(preset.id)
+                        }
+                    }
+                    Section("Usuario") {
+                        ForEach(library.document.renderPresets) { preset in
+                            Text(preset.name).tag(preset.id)
+                        }
+                    }
+                }
+                HStack {
+                    Button(action: library.addRenderPreset) { Image(systemName: "plus") }
+                        .help("Crear preset global")
+                    Button(action: library.duplicateSelectedPreset) {
+                        Image(systemName: "plus.square.on.square")
+                    }
+                    .disabled(library.selectedPresetID == nil)
+                    .help("Duplicar preset")
+                    Button(action: library.removeSelectedPreset) { Image(systemName: "minus") }
+                        .disabled(!selectedPresetIsEditable)
+                        .help("Eliminar preset de usuario")
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(8)
+            }
+            .frame(minWidth: 220, idealWidth: 280)
+
+            if let preset = selectedGlobalPreset {
+                Form {
+                    Section("Configuración efectiva") {
+                        TextField("Nombre", text: Binding(
+                            get: { preset.name },
+                            set: { value in library.updateSelectedPreset { $0.name = value } }
+                        ))
+                        .disabled(!selectedPresetIsEditable)
+                        LabeledContent("Pipeline", value: preset.pipeline.rawValue)
+                        LabeledContent("Destino", value: preset.target.rawValue)
+                        TextField("Peak nits", value: Binding(
+                            get: { preset.peakNits },
+                            set: { value in library.updateSelectedPreset { $0.peakNits = value } }
+                        ), format: .number)
+                        .disabled(!selectedPresetIsEditable)
+                        Text("El preset rellena opciones; los trabajos conservan sus valores resueltos.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .formStyle(.grouped)
+            } else {
+                ContentUnavailableView("Sin preset", systemImage: "slider.horizontal.3")
+            }
+        }
+    }
+
+    private var selectedTestImage: GlobalTestImage? {
+        library.document.testImages.first { $0.id == library.selectedImageID }
+    }
+
+    private var selectedGlobalPreset: StudioRenderPreset? {
+        library.allRenderPresets.first { $0.id == library.selectedPresetID }
+    }
+
+    private var selectedPresetIsEditable: Bool {
+        library.document.renderPresets.contains { $0.id == library.selectedPresetID }
     }
 
     @ToolbarContentBuilder
@@ -221,7 +378,7 @@ struct ContentView: View {
         Form {
             Section("Preset / ODT") {
                 Picker("Preset", selection: $model.renderPreset) {
-                    ForEach(StudioRenderPreset.builtIns) { Text($0.name).tag($0) }
+                    ForEach(library.allRenderPresets) { Text($0.name).tag($0) }
                 }
                 LabeledContent("Peak nits") {
                     TextField("nits", value: $model.peakNits, format: .number).frame(width: 90)

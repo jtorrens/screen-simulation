@@ -67,13 +67,13 @@ public enum StudioRenderPipeline: String, Codable, Sendable {
 }
 
 public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Sendable {
-    public let id: UUID
-    public let name: String
-    public let pipeline: StudioRenderPipeline
-    public let target: StudioRenderTarget
+    public var id: UUID
+    public var name: String
+    public var pipeline: StudioRenderPipeline
+    public var target: StudioRenderTarget
     public var peakNits: Double
-    public let display: String?
-    public let view: String?
+    public var display: String?
+    public var view: String?
 
     public static let builtIns: [Self] = [
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C01")!, name: "ACES · SDR", pipeline: .aces, target: .sdr, peakNits: 100, display: "Rec.1886 Rec.709 - Display", view: "ACES 2.0 - SDR 100 nits (Rec.709)"),

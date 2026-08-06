@@ -3,7 +3,7 @@ import CoreMedia
 import Foundation
 import ImageIO
 
-public enum StudioSignalMatrix: String, CaseIterable, Identifiable, Sendable {
+public enum StudioSignalMatrix: String, Codable, CaseIterable, Identifiable, Sendable {
     case bt601, bt709, bt2020
     public var id: String { rawValue }
     public var label: String {
@@ -15,7 +15,7 @@ public enum StudioSignalMatrix: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-public enum StudioSignalRange: String, CaseIterable, Identifiable, Sendable {
+public enum StudioSignalRange: String, Codable, CaseIterable, Identifiable, Sendable {
     case video, full
     public var id: String { rawValue }
     public var label: String {
@@ -26,7 +26,7 @@ public enum StudioSignalRange: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-public enum StudioAlphaMode: String, CaseIterable, Identifiable, Sendable {
+public enum StudioAlphaMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case straight, premultiplied, ignore
     public var id: String { rawValue }
     public var label: String {
