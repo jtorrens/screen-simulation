@@ -390,8 +390,8 @@ impl LcdProfile {
     }
 
     /// Derives a quality lattice without changing the panel domain or framing.
-    /// Native exposes one output sample for each horizontal emitter stripe and
-    /// analytically integrates black-matrix coverage inside that footprint.
+    /// Native exposes a three-by-three lattice per device pixel: three emitter
+    /// stripes horizontally and explicit black-matrix phase vertically.
     pub fn flat_panel_sampling(
         self,
         quality: FlatPanelQuality,
@@ -409,7 +409,7 @@ impl LcdProfile {
                 samples_per_output_pixel: 1,
                 subpixel_geometry_resolved: requested_width
                     >= profile.native_width.saturating_mul(3)
-                    && requested_height >= profile.native_height,
+                    && requested_height >= profile.native_height.saturating_mul(3),
             },
             FlatPanelQuality::Medium => FlatPanelSampling {
                 effective_width: requested_width,
@@ -417,7 +417,7 @@ impl LcdProfile {
                 samples_per_output_pixel: 4,
                 subpixel_geometry_resolved: requested_width
                     >= profile.native_width.saturating_mul(3)
-                    && requested_height >= profile.native_height,
+                    && requested_height >= profile.native_height.saturating_mul(3),
             },
             FlatPanelQuality::High => FlatPanelSampling {
                 effective_width: requested_width,
@@ -425,11 +425,11 @@ impl LcdProfile {
                 samples_per_output_pixel: 16,
                 subpixel_geometry_resolved: requested_width
                     >= profile.native_width.saturating_mul(3)
-                    && requested_height >= profile.native_height,
+                    && requested_height >= profile.native_height.saturating_mul(3),
             },
             FlatPanelQuality::Native => FlatPanelSampling {
                 effective_width: requested_width.max(profile.native_width.saturating_mul(3)),
-                effective_height: requested_height.max(profile.native_height),
+                effective_height: requested_height.max(profile.native_height.saturating_mul(3)),
                 samples_per_output_pixel: 1,
                 subpixel_geometry_resolved: true,
             },
@@ -1323,7 +1323,7 @@ mod tests {
         assert_eq!((high.effective_width, high.effective_height), (320, 180));
         assert_eq!(
             (native.effective_width, native.effective_height),
-            (panel.native_width * 3, panel.native_height)
+            (panel.native_width * 3, panel.native_height * 3)
         );
         assert_eq!(
             [
