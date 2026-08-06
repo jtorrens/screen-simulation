@@ -60,6 +60,7 @@ enum NativeOutputRenderer {
                 url: writerURL, width: first.width, height: first.height,
                 frameRate: frameRate, format: format,
                 peakNits: configuration.peakNits,
+                signalRange: configuration.signalRange,
                 alpha: format.supportsAlpha ? alpha : .ignore, output: output
             )
             for (position, index) in frames.enumerated() {
@@ -341,16 +342,26 @@ private final class MovieWriter {
     private let frameRate: Double
     private let format: StudioOutputFormat
     private let alpha: StudioColorAlphaAssociation
+    private let signalRange: StudioSignalRange
+    private let usesYUV: Bool
+    private let usesTenBitYUV: Bool
 
     init(
         url: URL, width: Int, height: Int, frameRate: Double,
         format: StudioOutputFormat, peakNits: Double,
+        signalRange: StudioSignalRange,
         alpha: StudioColorAlphaAssociation,
         output: StudioColorOutputTransform
     ) throws {
         self.frameRate = frameRate
         self.format = format
         self.alpha = alpha
+        self.signalRange = signalRange
+        usesYUV = format != .proRes4444 && format != .proRes4444XQ
+        usesTenBitYUV = switch format {
+        case .h265Low, .h265Medium, .h265High: true
+        default: false
+        }
         writer = try AVAssetWriter(outputURL: url, fileType: format == .h264Low || format == .h264Medium || format == .h264High ? .mp4 : .mov)
         let codec: AVVideoCodecType
         switch format {
@@ -389,8 +400,18 @@ private final class MovieWriter {
         }
         input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         input.expectsMediaDataInRealTime = false
-        let pixelFormat: OSType = (format == .proRes4444 || format == .proRes4444XQ)
-            ? kCVPixelFormatType_64RGBAHalf : kCVPixelFormatType_32BGRA
+        let pixelFormat: OSType
+        if format == .proRes4444 || format == .proRes4444XQ {
+            pixelFormat = kCVPixelFormatType_64RGBAHalf
+        } else if usesTenBitYUV {
+            pixelFormat = signalRange == .full
+                ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+                : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        } else {
+            pixelFormat = signalRange == .full
+                ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+                : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        }
         adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: input,
             sourcePixelBufferAttributes: [
@@ -420,7 +441,20 @@ private final class MovieWriter {
         var buffer: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess,
               let buffer else { throw NativeOutputError.cannotCreateWriter }
-        try display.render(frame, output: output, into: buffer, alpha: alpha)
+        if usesYUV {
+            let matrix: StudioColorSignalMatrix = output.encoding == .rec2100PQ
+                ? .bt2020 : .bt709
+            try display.renderYUV420(
+                frame,
+                output: output,
+                into: buffer,
+                matrix: matrix,
+                range: signalRange == .full ? .full : .video,
+                tenBit: usesTenBitYUV
+            )
+        } else {
+            try display.render(frame, output: output, into: buffer, alpha: alpha)
+        }
         let time = CMTime(seconds: Double(presentationFrame) / frameRate, preferredTimescale: 60_000)
         guard adaptor.append(buffer, withPresentationTime: time) else {
             throw NativeOutputError.cannotAppend(presentationFrame)

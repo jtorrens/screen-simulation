@@ -106,17 +106,61 @@ import Testing
 }
 
 @Test @MainActor func h264RoundtripSeparatesCodecLossFromColorContract() async throws {
-    let result = try await movieRoundtrip(format: .h264High, alpha: .ignore)
-    #expect(result.detection.proposedInputTransformID == "display-rec709-aces2-sdr")
-    #expect(!result.detection.hasAlpha)
-    #expect(result.detection.matrix == .bt709)
-    #expect(result.frameRate == 24)
-    #expect(result.frameCount == 3)
-    #expect(result.maximumError <= 0.20, "H.264 max \(result.maximumError)")
-    #expect(result.rootMeanSquareError <= 0.055, "H.264 RMSE \(result.rootMeanSquareError)")
-    #expect(result.neutralRootMeanSquareError <= 0.012,
-            "H.264 neutral/color-path RMSE \(result.neutralRootMeanSquareError)")
-    print("H264 max=\(result.maximumError) rmse=\(result.rootMeanSquareError) neutral_rmse=\(result.neutralRootMeanSquareError)")
+    for range in [StudioSignalRange.video, .full] {
+        let result = try await movieRoundtrip(
+            format: .h264High, alpha: .ignore, signalRange: range
+        )
+        #expect(result.detection.proposedInputTransformID == "display-rec709-aces2-sdr")
+        #expect(!result.detection.hasAlpha)
+        #expect(result.detection.matrix == .bt709)
+        #expect(result.detection.range == range)
+        #expect(result.frameRate == 24)
+        #expect(result.frameCount == 3)
+        #expect(result.maximumError <= 0.20, "H.264 \(range.rawValue) max \(result.maximumError)")
+        #expect(result.rootMeanSquareError <= 0.055,
+                "H.264 \(range.rawValue) RMSE \(result.rootMeanSquareError)")
+        let neutralTolerance: Float = range == .video ? 0.012 : 0.015
+        #expect(result.neutralRootMeanSquareError <= neutralTolerance,
+                "H.264 \(range.rawValue) neutral/color-path RMSE \(result.neutralRootMeanSquareError)")
+        print("H264 range=\(range.rawValue) max=\(result.maximumError) rmse=\(result.rootMeanSquareError) neutral_rmse=\(result.neutralRootMeanSquareError)")
+    }
+}
+
+@Test @MainActor func h265HDRWritesExplicitPQMatrixAndRange() async throws {
+    let display = try StudioColorMetalDisplay()
+    let width = 96
+    let height = 54
+    let frame = try display.makeACEScgFrame(
+        width: width,
+        height: height,
+        encodedRGBA: moviePattern(
+            width: width, height: height, frameIndex: 0,
+            includeAlpha: false, premultipliedInput: false
+        ),
+        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
+        alpha: .ignore
+    )
+    for range in [StudioSignalRange.video, .full] {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("screen-native-h265-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = try await NativeOutputRenderer.render(
+            configuration: renderConfiguration(
+                format: .h265High, preset: StudioRenderPreset.builtIns[1],
+                alpha: .ignore, signalRange: range, frameRange: 0 ... 0
+            ),
+            destination: root.appendingPathComponent("pq.mov"),
+            audioSource: nil,
+            display: display,
+            frameProvider: { _ in frame },
+            progress: { _, _ in }
+        )
+        let detection = await StudioMediaMetadataDetector.detect(url: url, isVideo: true)
+        #expect(detection.proposedInputTransformID == "display-rec2100-pq-aces2-hdr-1000")
+        #expect(detection.inputTransformProvenance == .detected)
+        #expect(detection.matrix == .bt2020)
+        #expect(detection.range == range)
+    }
 }
 
 private struct MovieRoundtripResult {
@@ -131,7 +175,8 @@ private struct MovieRoundtripResult {
 @MainActor
 private func movieRoundtrip(
     format: StudioOutputFormat,
-    alpha: StudioColorAlphaAssociation
+    alpha: StudioColorAlphaAssociation,
+    signalRange: StudioSignalRange? = nil
 ) async throws -> MovieRoundtripResult {
     let display = try StudioColorMetalDisplay()
     let width = 96
@@ -160,7 +205,7 @@ private func movieRoundtrip(
         configuration: renderConfiguration(
             format: format, preset: StudioRenderPreset.builtIns[0],
             alpha: alpha,
-            signalRange: format == .h264High ? .video : .full,
+            signalRange: signalRange ?? (format == .h264High ? .video : .full),
             frameRange: 0 ... 2
         ),
         destination: destination, audioSource: nil,

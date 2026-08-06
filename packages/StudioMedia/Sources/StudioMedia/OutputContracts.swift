@@ -60,7 +60,7 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
         switch self {
         case .h264Low, .h264Medium, .h264High,
              .h265Low, .h265Medium, .h265High:
-            [.video]
+            [.video, .full]
         case .openEXR, .dpx10RGB, .tiff16,
              .proRes4444, .proRes4444XQ:
             [.full]

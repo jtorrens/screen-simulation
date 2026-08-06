@@ -73,7 +73,7 @@ import Testing
 }
 
 @Test func outputRangeSupportIsExplicitPerWriter() {
-    #expect(StudioOutputFormat.h264High.supportedSignalRanges == [.video])
+    #expect(StudioOutputFormat.h264High.supportedSignalRanges == [.video, .full])
     #expect(StudioOutputFormat.proRes4444.supportedSignalRanges == [.full])
     #expect(StudioOutputFormat.openEXR.supportedSignalRanges == [.full])
 }

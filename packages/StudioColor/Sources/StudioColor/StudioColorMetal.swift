@@ -69,6 +69,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     private let queue: MTLCommandQueue
     private let engine: StudioColorEngine
     private let compositionSampler: MTLSamplerState
+    private let yuv420Pipeline: MTLComputePipelineState
     private let textureCache: CVMetalTextureCache
     private var resources: [String: Resources] = [:]
     private var sourcePipelines: [String: MTLRenderPipelineState] = [:]
@@ -103,6 +104,11 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         self.engine = engine
         self.compositionSampler = sampler
         self.textureCache = cache
+        let yuvLibrary = try device.makeLibrary(source: Self.yuvShaderSource, options: nil)
+        guard let yuvFunction = yuvLibrary.makeFunction(name: "rgbaToYUV420") else {
+            throw StudioColorMetalError.missingShaderFunction
+        }
+        yuv420Pipeline = try device.makeComputePipelineState(function: yuvFunction)
         super.init()
     }
 
@@ -321,6 +327,81 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
             transform: output, command: command, fitInputAspect: false,
             outputAlpha: alpha
         )
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
+    }
+
+    /// Encodes the authoritative ODT directly into a range-specific bi-planar
+    /// YUV IOSurface for VideoToolbox. No monitor ICC participates here.
+    public func renderYUV420(
+        _ frame: StudioColorMetalFrame,
+        output: StudioColorOutputTransform,
+        into pixelBuffer: CVPixelBuffer,
+        matrix: StudioColorSignalMatrix,
+        range: StudioColorSignalRange,
+        tenBit: Bool
+    ) throws {
+        guard CVPixelBufferGetWidth(pixelBuffer) == frame.width,
+              CVPixelBufferGetHeight(pixelBuffer) == frame.height,
+              CVPixelBufferGetPlaneCount(pixelBuffer) == 2,
+              frame.width.isMultiple(of: 2), frame.height.isMultiple(of: 2)
+        else { throw StudioColorMetalError.textureCreation }
+        let rgbaDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float,
+            width: frame.width,
+            height: frame.height,
+            mipmapped: false
+        )
+        rgbaDescriptor.usage = [.renderTarget, .shaderRead]
+        rgbaDescriptor.storageMode = .private
+        guard let rgba = device.makeTexture(descriptor: rgbaDescriptor),
+              let command = queue.makeCommandBuffer()
+        else { throw StudioColorMetalError.textureCreation }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = rgba
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        try encode(
+            input: frame.texture,
+            output: rgba,
+            pass: pass,
+            transform: output,
+            command: command,
+            fitInputAspect: false,
+            outputAlpha: .ignore
+        )
+        let y = try cvTexture(
+            pixelBuffer,
+            format: tenBit ? .r16Unorm : .r8Unorm,
+            plane: 0
+        )
+        let uv = try cvTexture(
+            pixelBuffer,
+            format: tenBit ? .rg16Unorm : .rg8Unorm,
+            plane: 1
+        )
+        guard let compute = command.makeComputeCommandEncoder() else {
+            throw StudioColorMetalError.commandFailure
+        }
+        compute.setComputePipelineState(yuv420Pipeline)
+        compute.setTexture(rgba, index: 0)
+        compute.setTexture(y, index: 1)
+        compute.setTexture(uv, index: 2)
+        var options = SIMD4<UInt32>(
+            matrix == .bt2020 ? 1 : 0,
+            range == .video ? 1 : 0,
+            tenBit ? 1 : 0,
+            0
+        )
+        compute.setBytes(&options, length: MemoryLayout.size(ofValue: options), index: 0)
+        let threadWidth = yuv420Pipeline.threadExecutionWidth
+        let threadHeight = max(1, yuv420Pipeline.maxTotalThreadsPerThreadgroup / threadWidth)
+        compute.dispatchThreads(
+            MTLSize(width: frame.width / 2, height: frame.height / 2, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: threadWidth, height: threadHeight, depth: 1)
+        )
+        compute.endEncoding()
         command.commit()
         command.waitUntilCompleted()
         guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
@@ -854,6 +935,54 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         }
         """
     }
+
+    private static let yuvShaderSource = """
+    #include <metal_stdlib>
+    using namespace metal;
+
+    kernel void rgbaToYUV420(
+        texture2d<half, access::read> rgba [[texture(0)]],
+        texture2d<float, access::write> yPlane [[texture(1)]],
+        texture2d<float, access::write> uvPlane [[texture(2)]],
+        constant uint4 &options [[buffer(0)]],
+        uint2 chromaPosition [[thread_position_in_grid]]
+    ) {
+        if (chromaPosition.x >= uvPlane.get_width()
+            || chromaPosition.y >= uvPlane.get_height()) {
+            return;
+        }
+        const float kr = options.x == 1 ? 0.2627 : 0.2126;
+        const float kb = options.x == 1 ? 0.0593 : 0.0722;
+        const float kg = 1.0 - kr - kb;
+        const bool videoRange = options.y == 1;
+        const bool tenBit = options.z == 1;
+        const float maxCode = tenBit ? 1023.0 : 255.0;
+        const float yOffset = videoRange ? (tenBit ? 64.0 : 16.0) : 0.0;
+        const float yScale = videoRange ? (tenBit ? 876.0 : 219.0) : maxCode;
+        const float cOffset = tenBit ? 512.0 : 128.0;
+        const float cScale = videoRange
+            ? (tenBit ? 896.0 : 224.0)
+            : maxCode;
+        float cbSum = 0.0;
+        float crSum = 0.0;
+        for (uint offsetY = 0; offsetY < 2; ++offsetY) {
+            for (uint offsetX = 0; offsetX < 2; ++offsetX) {
+                const uint2 position = chromaPosition * 2 + uint2(offsetX, offsetY);
+                const float3 rgb = clamp(float3(rgba.read(position).rgb), 0.0, 1.0);
+                const float luma = kr * rgb.r + kg * rgb.g + kb * rgb.b;
+                const float cb = (rgb.b - luma) / (2.0 * (1.0 - kb));
+                const float cr = (rgb.r - luma) / (2.0 * (1.0 - kr));
+                const float yCode = clamp(yOffset + yScale * luma, 0.0, maxCode);
+                yPlane.write(float4(yCode / maxCode), position);
+                cbSum += cb;
+                crSum += cr;
+            }
+        }
+        const float cbCode = clamp(cOffset + cScale * cbSum * 0.25, 0.0, maxCode);
+        const float crCode = clamp(cOffset + cScale * crSum * 0.25, 0.0, maxCode);
+        uvPlane.write(float4(cbCode / maxCode, crCode / maxCode, 0.0, 1.0), chromaPosition);
+    }
+    """
 
     private static let sourceShaderSource = """
     #include <metal_stdlib>

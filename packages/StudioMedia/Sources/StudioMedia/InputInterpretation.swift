@@ -194,12 +194,19 @@ public enum StudioMediaMetadataDetector {
             else if alphaDescription.contains("straight") { .straight }
             else { nil }
         let subtype = CMFormatDescriptionGetMediaSubType(description)
-        let range: StudioSignalRange? = switch subtype {
-        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange: .full
-        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange: .video
-        default: nil
+        // A track format description reports its encoded codec subtype, not the
+        // decoder's eventual CVPixelBuffer subtype. CoreMedia exposes the AVC/
+        // HEVC VUI full-range flag as FullRangeVideo; false is conventionally
+        // omitted, so a tagged YCbCr AVC/HEVC stream without the true flag is
+        // explicitly video-range rather than unknown.
+        let fullRange = (extensions[kCMFormatDescriptionExtension_FullRangeVideo] as? NSNumber)?.boolValue
+        let range: StudioSignalRange? = if fullRange == true {
+            .full
+        } else if ycbcr != nil,
+                  subtype == kCMVideoCodecType_H264 || subtype == kCMVideoCodecType_HEVC {
+            .video
+        } else {
+            nil
         }
         let proposal = inputTransformProposal(
             primaries: primaries, transfer: transfer, matrix: ycbcr
