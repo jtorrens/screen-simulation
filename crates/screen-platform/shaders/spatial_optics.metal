@@ -303,18 +303,17 @@ inline float3 point_signal(float2 uv, device const float4* signal, constant Spat
     return signal[y * p.signal_meta.x + x].xyz;
 }
 
-inline float4 integral_at(device const float4* integral, float x, float y, constant SpatialParams& p) {
+inline float4 row_prefix_at(device const float4* prefix, float x, uint row,
+                            constant SpatialParams& p) {
     x = clamp(x, 0.0f, float(p.signal_meta.x));
-    y = clamp(y, 0.0f, float(p.signal_meta.y));
-    uint x0 = uint(floor(x)); uint y0 = uint(floor(y));
-    uint x1 = min(x0 + 1, p.signal_meta.x); uint y1 = min(y0 + 1, p.signal_meta.y);
-    float fx = x - float(x0); float fy = y - float(y0);
+    uint x0 = uint(floor(x));
+    uint x1 = min(x0 + 1, p.signal_meta.x);
+    float fx = x - float(x0);
     uint stride = p.signal_meta.x + 1;
-    return mix(mix(integral[y0 * stride + x0], integral[y0 * stride + x1], fx),
-               mix(integral[y1 * stride + x0], integral[y1 * stride + x1], fx), fy);
+    return mix(prefix[row * stride + x0], prefix[row * stride + x1], fx);
 }
 
-inline float3 raster_area(float2 minimum, float2 maximum, device const float4* integral,
+inline float3 raster_area(float2 minimum, float2 maximum, device const float4* prefix,
                           constant SpatialParams& p) {
     float2 first, second;
     source_uv(minimum, p, first); source_uv(maximum, p, second);
@@ -323,8 +322,17 @@ inline float3 raster_area(float2 minimum, float2 maximum, device const float4* i
     float y0 = min(first.y, second.y) * float(p.signal_meta.y);
     float y1 = max(first.y, second.y) * float(p.signal_meta.y);
     float area = max(1.0e-8f, x1 - x0) * max(1.0e-8f, y1 - y0);
-    float4 sum = integral_at(integral, x1, y1, p) - integral_at(integral, x1, y0, p)
-        - integral_at(integral, x0, y1, p) + integral_at(integral, x0, y0, p);
+    float clipped_y0 = clamp(y0, 0.0f, float(p.signal_meta.y));
+    float clipped_y1 = clamp(y1, 0.0f, float(p.signal_meta.y));
+    uint first_row = min(uint(floor(clipped_y0)), p.signal_meta.y);
+    uint final_row = min(uint(ceil(clipped_y1)), p.signal_meta.y);
+    float4 sum = 0.0f;
+    for (uint row = first_row; row < final_row; ++row) {
+        float overlap = max(0.0f, min(clipped_y1, float(row + 1))
+            - max(clipped_y0, float(row)));
+        sum += (row_prefix_at(prefix, x1, row, p) - row_prefix_at(prefix, x0, row, p))
+            * overlap;
+    }
     return sum.xyz / area;
 }
 

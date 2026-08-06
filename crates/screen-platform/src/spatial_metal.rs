@@ -230,21 +230,43 @@ impl SpatialParams {
     }
 }
 
-fn prefix_integral(values: &[[f32; 4]], width: u32, height: u32) -> Vec<[f32; 4]> {
+/// Horizontal row prefixes keep every accumulator bounded by the source width. A full 2D `f32`
+/// summed-area table grows with the complete raster area; subtracting nearby samples late in a
+/// UHD raster then loses the local signal and creates large spatial discontinuities. The shader
+/// integrates the small number of source rows crossed by an unresolved sensor footprint.
+fn row_prefix(values: &[[f32; 4]], width: u32, height: u32) -> Vec<[f32; 4]> {
     let stride = width as usize + 1;
-    let mut result = vec![[0.0; 4]; stride * (height as usize + 1)];
+    let mut result = vec![[0.0; 4]; stride * height as usize];
     for y in 0..height as usize {
+        let mut sum = [0.0_f32; 4];
         for x in 0..width as usize {
             let pixel = values[y * width as usize + x];
-            for channel in 0..3 {
-                result[(y + 1) * stride + x + 1][channel] = pixel[channel]
-                    + result[(y + 1) * stride + x][channel]
-                    + result[y * stride + x + 1][channel]
-                    - result[y * stride + x][channel];
-            }
+            sum[0] += pixel[0];
+            sum[1] += pixel[1];
+            sum[2] += pixel[2];
+            result[y * stride + x + 1] = sum;
         }
     }
     result
+}
+
+#[cfg(test)]
+fn row_prefix_interval(
+    prefix: &[[f32; 4]],
+    width: u32,
+    row: u32,
+    start: u32,
+    end: u32,
+) -> [f32; 4] {
+    let stride = width as usize + 1;
+    let first = prefix[row as usize * stride + start as usize];
+    let last = prefix[row as usize * stride + end as usize];
+    [
+        last[0] - first[0],
+        last[1] - first[1],
+        last[2] - first[2],
+        last[3] - first[3],
+    ]
 }
 
 impl SpatialOpticalBackend for MetalRawDevelopment {
@@ -276,8 +298,8 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
                     .collect::<Vec<_>>();
                 (
                     signal.clone(),
-                    prefix_integral(&signal, *width, *height),
-                    prefix_integral(&emission, *width, *height),
+                    row_prefix(&signal, *width, *height),
+                    row_prefix(&emission, *width, *height),
                 )
             }
         };
@@ -418,8 +440,8 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
                         .collect::<Vec<_>>();
                     (
                         signal.clone(),
-                        prefix_integral(&signal, *width, *height),
-                        prefix_integral(&emission, *width, *height),
+                        row_prefix(&signal, *width, *height),
+                        row_prefix(&emission, *width, *height),
                     )
                 }
             };
@@ -527,8 +549,8 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
                         .collect::<Vec<_>>();
                     (
                         signal.clone(),
-                        prefix_integral(&signal, *width, *height),
-                        prefix_integral(&emission, *width, *height),
+                        row_prefix(&signal, *width, *height),
+                        row_prefix(&emission, *width, *height),
                     )
                 }
             };
@@ -643,6 +665,26 @@ mod tests {
     };
     use screen_sensor::{SensorProfile, SensorRegion};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn row_prefix_preserves_local_energy_late_in_a_large_bright_raster() {
+        let width = 3_840;
+        let height = 2_160;
+        let value = [350.0_f32, 175.0, 87.5, 0.0];
+        let source = vec![value; width as usize * height as usize];
+        let prefix = row_prefix(&source, width, height);
+        for row in [0, height / 2, height - 1] {
+            let interval = row_prefix_interval(&prefix, width, row, width - 1, width);
+            for channel in 0..3 {
+                assert!(
+                    (interval[channel] - value[channel]).abs() <= value[channel] * 5.0e-4,
+                    "row {row} channel {channel} lost local energy: expected {}, got {}",
+                    value[channel],
+                    interval[channel]
+                );
+            }
+        }
+    }
 
     fn request() -> OpticalRequest {
         let time = RationalTime::new(17, 24).expect("valid time");

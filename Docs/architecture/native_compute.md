@@ -36,6 +36,13 @@ and thin-lens rays, chromatic offsets, resolved or area-integrated panel structu
 Fresnel/transmission/reflection, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
+Raster area integration uses per-row horizontal `f32` prefixes, never a full-frame `f32`
+summed-area table. The latter accumulates with total raster area and loses local differences when
+nearby values are subtracted late in a UHD image, producing non-physical large spatial regions.
+Row prefixes bound accumulation by source width; the kernel then integrates exactly the source
+rows crossed by the optical footprint. The CPU oracle retains its higher-precision area integral,
+and conformance compares both implementations at the spatial boundary.
+
 The scalar implementation remains available only through explicitly named CPU-oracle functions.
 Optical conformance currently covers procedural and raster signals, RGB/BGR layouts, resolved and
 unresolved integration, high black-matrix coverage, strong lens distortion and active cover
