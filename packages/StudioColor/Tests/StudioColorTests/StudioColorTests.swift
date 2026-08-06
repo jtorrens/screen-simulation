@@ -1,9 +1,27 @@
 import StudioColor
 import Testing
+import AppKit
 
 @Test func buildIdentityIsPinned() {
     #expect(StudioColorBuildIdentity.ocioVersion == "2.5.2")
     #expect(StudioColorBuildIdentity.configurationSHA256.count == 64)
+}
+
+@Test func rawPreviewDeclaresLinearACEScgForColorSync() throws {
+    let raw = try #require(StudioColorOutputTransform.catalog.first {
+        $0.id == "acescg-raw"
+    })
+    #expect(raw.declaredSignalDescription == "ACEScg lineal")
+    #expect(raw.colorSpace?.name == CGColorSpace.acescgLinear)
+}
+
+@Test @MainActor func activeDisplayReportsScreenAndColorSyncProfile() throws {
+    let screen = try #require(NSScreen.main)
+    let info = StudioColorSystemDisplayInfo.current(screen: screen)
+    #expect(info.displayID != nil)
+    #expect(!info.displayName.isEmpty)
+    #expect(!info.profileName.isEmpty)
+    #expect(!info.systemColorSpaceName.isEmpty)
 }
 
 @Test func cpuPipelinePreservesAlphaAndExtendedRangeUntilOutput() throws {

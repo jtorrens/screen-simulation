@@ -23,7 +23,10 @@ final class WorkspaceModel: ObservableObject {
     @Published var inputTransform = StudioColorInputTransform.catalog.first {
         $0.id == "input-rec709"
     }!
-    @Published var previewTransform = StudioColorOutputTransform.catalog[0]
+    @Published var previewTransform = StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-srgb-sdr-100"
+    }!
+    @Published var systemDisplayInfo = StudioColorSystemDisplayInfo.unavailable
     @Published var alphaMode = StudioAlphaMode.ignore
     @Published var signalMatrix = StudioSignalMatrix.bt709
     @Published var signalRange = StudioSignalRange.full

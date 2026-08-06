@@ -70,7 +70,9 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
 }
 
 public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
-    public enum Encoding: Equatable, Sendable { case sRGB, rec709, displayP3, displayP3EDR, rec2100PQ }
+    public enum Encoding: Equatable, Sendable {
+        case acescgRaw, sRGB, rec709, displayP3, displayP3EDR, rec2100PQ
+    }
     public enum Processor: Hashable, Sendable {
         case displayView(display: String, view: String)
         case colorSpace(String)
@@ -155,15 +157,33 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
             view: "ACES 2.0 - HDR 1000 nits (Rec.2020)",
             encoding: .rec2100PQ
         ),
+        .init(
+            id: "acescg-raw",
+            label: "ACEScg Raw · sin ODT",
+            colorSpace: "ACEScg",
+            encoding: .acescgRaw
+        ),
     ]
 
     public var colorSpace: CGColorSpace? {
         switch encoding {
+        case .acescgRaw: CGColorSpace(name: CGColorSpace.acescgLinear)
         case .sRGB: CGColorSpace(name: CGColorSpace.sRGB)
         case .rec709: CGColorSpace(name: CGColorSpace.itur_709)
         case .displayP3: CGColorSpace(name: CGColorSpace.displayP3)
         case .displayP3EDR: CGColorSpace(name: CGColorSpace.displayP3)
         case .rec2100PQ: CGColorSpace(name: CGColorSpace.itur_2100_PQ)
+        }
+    }
+
+    public var declaredSignalDescription: String {
+        switch encoding {
+        case .acescgRaw: "ACEScg lineal"
+        case .sRGB: "sRGB · IEC 61966-2-1"
+        case .rec709: "Rec.709 · SDR"
+        case .displayP3: "Display P3 · SDR"
+        case .displayP3EDR: "Display P3 · EDR"
+        case .rec2100PQ: "Rec.2100 · PQ"
         }
     }
 }

@@ -904,6 +904,13 @@ struct ContentView: View {
                     Text("\(model.decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms")
                 }
             }
+            Section("Presentación del visor") {
+                LabeledContent("Interpretación", value: model.inputTransform.label)
+                LabeledContent("ODT preview", value: model.previewTransform.label)
+                LabeledContent("Señal CAMetalLayer", value: model.previewTransform.declaredSignalDescription)
+                LabeledContent("Pantalla", value: model.systemDisplayInfo.displayName)
+                LabeledContent("Perfil ColorSync", value: model.systemDisplayInfo.profileName)
+            }
         }
         .formStyle(.grouped)
         .frame(minHeight: 180, idealHeight: 220)
@@ -936,7 +943,8 @@ struct ContentView: View {
                     MetalPreview(
                         display: model.metalDisplay,
                         frame: frame,
-                        output: model.previewTransform
+                        output: model.previewTransform,
+                        onDisplayChange: { model.systemDisplayInfo = $0 }
                     )
                     .scaleEffect(model.zoom)
                     .offset(model.pan)
@@ -1042,14 +1050,17 @@ struct MetalPreview: NSViewRepresentable {
     let display: StudioColorMetalDisplay
     let frame: StudioColorMetalFrame
     let output: StudioColorOutputTransform
+    let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
 
     func makeNSView(context _: Context) -> MTKView {
-        let view = MTKView()
+        let view = StudioColorScreenAwareMetalView()
+        view.screenDidChange = onDisplayChange
         display.configure(view)
         return view
     }
 
     func updateNSView(_ view: MTKView, context _: Context) {
+        (view as? StudioColorScreenAwareMetalView)?.screenDidChange = onDisplayChange
         display.present(frame, output: output, in: view)
     }
 }

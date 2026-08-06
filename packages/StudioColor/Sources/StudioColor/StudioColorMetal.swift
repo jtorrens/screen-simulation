@@ -138,6 +138,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         self.output = output
         if let layer = view.layer as? CAMetalLayer {
             layer.colorspace = output.colorSpace
+            layer.wantsExtendedDynamicRangeContent = output.encoding == .rec2100PQ
+                || output.encoding == .displayP3EDR
         }
         view.setNeedsDisplay(view.bounds)
     }
