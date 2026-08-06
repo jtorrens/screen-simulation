@@ -20,7 +20,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var inputTransform = StudioColorInputTransform.catalog[2]
     @Published var outputTransform = StudioColorOutputTransform.catalog[0]
     @Published var alphaAssociation = StudioColorAlphaAssociation.straight
-    @Published var selectedPattern = SyntheticPattern.colorAndRange
+    @Published var selectedPattern = SyntheticPattern.animatedCheckerboard
     @Published var requestedSeconds = 0.0
     @Published var sourceName = "Patrón sintético"
     @Published var sourceDetail = "ACEScg lineal · 960 × 540"
@@ -39,7 +39,7 @@ final class WorkspaceModel: ObservableObject {
         let pipeline = StudioColorPipeline()
         colorPipeline = pipeline
         metalDisplay = try! StudioColorMetalDisplay()
-        decoded = SyntheticPattern.colorAndRange.frame()
+        decoded = try! SyntheticPattern.animatedCheckerboard.frame()
         do {
             linearFrame = try physicalPipeline.process(
                 pipeline.prepareInput(
@@ -65,7 +65,12 @@ final class WorkspaceModel: ObservableObject {
             Task { @MainActor in target.choosePattern(prior, undoManager: nil) }
         }
         selectedPattern = pattern
-        decoded = pattern.frame()
+        do {
+            decoded = try pattern.frame(time: requestedSeconds)
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         sourceName = pattern.label
         sourceDetail = "ACEScg lineal · \(decoded.width) × \(decoded.height)"
         inputTransform = StudioColorInputTransform.catalog[2]

@@ -2,6 +2,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import ScreenPhysicalBridge
 
 struct DecodedNativeFrame: Sendable {
     let width: Int
@@ -77,54 +78,54 @@ enum NativeMediaDecoder {
     }
 }
 
-enum SyntheticPattern: String, CaseIterable, Identifiable {
-    case colorAndRange
-    case checkerboard
-    case frequency
+enum SyntheticPattern: UInt32, CaseIterable, Identifiable {
+    case animatedCheckerboard = 0
+    case eyeChart = 1
+    case editorialTextReference = 2
+    case cameraColorReference = 3
+    case frequencyMoireReference = 4
+    case photometricDeviceScale = 5
 
-    var id: String { rawValue }
+    var id: UInt32 { rawValue }
 
     var label: String {
         switch self {
-        case .colorAndRange: "Color / negativos / >1"
-        case .checkerboard: "Checker animado"
-        case .frequency: "Frecuencia RGB"
+        case .animatedCheckerboard: "Checker animado"
+        case .eyeChart: "Carta E"
+        case .editorialTextReference: "Referencia editorial 4K"
+        case .cameraColorReference: "Referencia color cámara 4K"
+        case .frequencyMoireReference: "Frecuencia / moiré 4K"
+        case .photometricDeviceScale: "Escala fotométrica"
         }
     }
 
-    func frame(width: Int = 960, height: Int = 540, phase: Int = 0) -> DecodedNativeFrame {
-        var rgba = [Float](repeating: 0, count: width * height * 4)
-        for y in 0 ..< height {
-            for x in 0 ..< width {
-                let offset = (y * width + x) * 4
-                let u = Float(x) / Float(max(width - 1, 1))
-                let v = Float(y) / Float(max(height - 1, 1))
-                let rgb: SIMD3<Float>
-                switch self {
-                case .colorAndRange:
-                    rgb = SIMD3(u * 2.5 - 0.25, v * 1.5 - 0.1, (1 - u) * 4)
-                case .checkerboard:
-                    let code: Float = ((x / 48 + y / 48 + phase) % 2 == 0) ? 0.08 : 1.25
-                    rgb = SIMD3(code, code * (0.5 + 0.5 * u), code * (0.5 + 0.5 * v))
-                case .frequency:
-                    rgb = SIMD3(
-                        (x / max(1, 2 + y / 24)).isMultiple(of: 2) ? 1 : 0,
-                        (x / max(1, 4 + y / 16)).isMultiple(of: 2) ? 1 : 0,
-                        (x / max(1, 8 + y / 8)).isMultiple(of: 2) ? 1 : 0
-                    )
-                }
-                rgba[offset] = rgb.x
-                rgba[offset + 1] = rgb.y
-                rgba[offset + 2] = rgb.z
-                rgba[offset + 3] = 1
-            }
+    func frame(time: Double = 0) throws -> DecodedNativeFrame {
+        var width: UInt32 = 0
+        var height: UInt32 = 0
+        guard screen_test_pattern_dimensions(rawValue, &width, &height) else {
+            throw NativeMediaError.invalidRaster
+        }
+        var rgba = [Float](repeating: 0, count: Int(width * height) * 4)
+        var message: UnsafePointer<CChar>?
+        let succeeded = rgba.withUnsafeMutableBufferPointer {
+            screen_test_pattern_render_rgba32f(
+                rawValue,
+                time,
+                $0.baseAddress,
+                Int(width * height),
+                &message
+            )
+        }
+        guard succeeded else {
+            throw NativeMediaError.unreadable(
+                message.map(String.init(cString:)) ?? label
+            )
         }
         return DecodedNativeFrame(
-            width: width,
-            height: height,
+            width: Int(width),
+            height: Int(height),
             rgba: rgba,
             sourceDescription: label
         )
     }
 }
-

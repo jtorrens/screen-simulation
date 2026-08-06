@@ -91,7 +91,10 @@
       "name": "screen-native-bridge",
       "path": "crates/screen-native-bridge",
       "owner": "native-macos-composition",
-      "allowed_local_dependencies": []
+      "allowed_local_dependencies": [
+        "screen-application",
+        "screen-contracts"
+      ]
     },
     {
       "name": "screen-desktop",

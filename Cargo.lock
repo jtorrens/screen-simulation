@@ -4519,6 +4519,11 @@ dependencies = [
 [[package]]
 name = "screen-native-bridge"
 version = "0.1.0"
+dependencies = [
+ "image",
+ "screen-application",
+ "screen-contracts",
+]
 
 [[package]]
 name = "screen-panel"

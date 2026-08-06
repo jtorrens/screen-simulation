@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 typedef struct ScreenPhysicalPipeline *ScreenPhysicalPipelineRef;
 
@@ -15,5 +16,17 @@ bool screen_physical_pipeline_process_rgba32f(
     const char **error_message
 );
 
-#endif
+bool screen_test_pattern_dimensions(
+    uint32_t pattern,
+    uint32_t *width,
+    uint32_t *height
+);
+bool screen_test_pattern_render_rgba32f(
+    uint32_t pattern,
+    double time_seconds,
+    float *pixels,
+    size_t pixel_count,
+    const char **error_message
+);
 
+#endif
