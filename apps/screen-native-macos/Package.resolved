@@ -1,13 +1,13 @@
 {
-  "originHash" : "cc9384d2ab06f5604e531cad10b86925bcad1e28a04ff313f17be8d3b616490a",
+  "originHash" : "783a3954c9dfc8807a8485b96ed081aa6712efe7c2173c578a7db23eeecdf219",
   "pins" : [
     {
       "identity" : "studiovideooutput",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jtorrens/StudioVideoOutput.git",
       "state" : {
-        "revision" : "6605aa8790303617cc14cd62bb7d560ceae7a7dc",
-        "version" : "0.1.0"
+        "revision" : "5b82e0a5505fc86dcbeda53bc767602b602de44f",
+        "version" : "0.2.0"
       }
     }
   ],

@@ -16,7 +16,7 @@ let package = Package(
         .package(path: "../../packages/StudioMedia"),
         .package(
             url: "https://github.com/jtorrens/StudioVideoOutput.git",
-            exact: "0.1.0"
+            exact: "0.2.0"
         ),
     ],
     targets: [

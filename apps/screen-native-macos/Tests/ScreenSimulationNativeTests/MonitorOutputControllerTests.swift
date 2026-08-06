@@ -33,6 +33,32 @@ import Testing
     #expect(transform.colorTransform.id == "aces2-rec2100-pq-1000")
 }
 
+@Test func monitorRawUsesACEScgProcessorAndExplicitRGBTransport() throws {
+    let mode = try VideoOutputMode(
+        identifier: "6D6F6465",
+        name: "HD 1080p25 RGB",
+        width: 1_920,
+        height: 1_080,
+        framesPerSecond: 25,
+        supportedSignals: [.acescgRaw],
+        supportedRanges: [.video],
+        supportedPixelFormats: [.rgb10Bit444]
+    )
+    let device = VideoOutputDevice(id: "decklink-rgb", name: "DeckLink RGB", modes: [mode])
+    let transform = MonitorOutputTransform.acescgRaw
+    let configuration = try VideoOutputConfiguration(
+        outputTransformID: transform.id,
+        device: device,
+        mode: mode,
+        signal: transform.signal,
+        range: .video,
+        pixelFormat: .rgb10Bit444
+    )
+    #expect(transform.colorTransform.id == "acescg-raw")
+    #expect(configuration.signal == .acescgRaw)
+    #expect(configuration.pixelFormat == .rgb10Bit444)
+}
+
 @Test @MainActor func missingDeckLinkHardwareIsReportedWithoutSimulatedSuccess() {
     let controller = MonitorOutputController()
     if controller.report.devices.isEmpty {

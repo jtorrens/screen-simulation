@@ -3,6 +3,7 @@ import StudioColor
 import StudioVideoOutput
 
 enum MonitorOutputTransform: String, CaseIterable, Identifiable {
+    case acescgRaw = "monitor.acescg.raw"
     case acesRec709SDR100 = "monitor.aces2.rec709-sdr-100"
     case acesRec2100PQ1000 = "monitor.aces2.rec2100-pq-1000"
 
@@ -10,6 +11,7 @@ enum MonitorOutputTransform: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
+        case .acescgRaw: "ACEScg Raw · sin ODT"
         case .acesRec709SDR100: "ACES 2.0 · Rec.709 SDR · 100 nits"
         case .acesRec2100PQ1000: "ACES 2.0 · Rec.2100 PQ · 1.000 nits"
         }
@@ -17,6 +19,7 @@ enum MonitorOutputTransform: String, CaseIterable, Identifiable {
 
     var signal: VideoOutputSignal {
         switch self {
+        case .acescgRaw: .acescgRaw
         case .acesRec709SDR100: .rec709SDR
         case .acesRec2100PQ1000: .rec2100PQ
         }
@@ -24,6 +27,8 @@ enum MonitorOutputTransform: String, CaseIterable, Identifiable {
 
     var colorTransform: StudioColorOutputTransform {
         switch self {
+        case .acescgRaw:
+            StudioColorOutputTransform.catalog.first { $0.id == "acescg-raw" }!
         case .acesRec709SDR100:
             StudioColorOutputTransform.catalog.first {
                 $0.id == "aces2-rec709-sdr-100"
@@ -180,13 +185,21 @@ final class MonitorOutputController: ObservableObject {
     private func resolveTransport() {
         guard let selectedMode else { return }
         if !selectedMode.supportedSignals.contains(selectedTransform.signal) {
-            selectedTransform = selectedMode.supportedSignals.contains(.rec709SDR)
-                ? .acesRec709SDR100 : .acesRec2100PQ1000
+            if selectedMode.supportedSignals.contains(.rec709SDR) {
+                selectedTransform = .acesRec709SDR100
+            } else if selectedMode.supportedSignals.contains(.rec2100PQ) {
+                selectedTransform = .acesRec2100PQ1000
+            } else {
+                selectedTransform = .acescgRaw
+            }
         }
         selectedRange = selectedMode.supportedRanges.contains(.video)
             ? .video : selectedMode.supportedRanges.first ?? .video
-        let required: VideoOutputPixelFormat =
-            selectedTransform.signal == .rec2100PQ ? .yuv10Bit422 : .yuv8Bit422
+        let required: VideoOutputPixelFormat = switch selectedTransform.signal {
+        case .rec709SDR: .yuv8Bit422
+        case .rec2100PQ: .yuv10Bit422
+        case .acescgRaw: .rgb10Bit444
+        }
         selectedPixelFormat = selectedMode.supportedPixelFormats.contains(required)
             ? required : selectedMode.supportedPixelFormats.first ?? required
     }
