@@ -77,26 +77,36 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var defaultSignalRange = StudioSignalRange.full
     @Published private(set) var resolvedDevice: ResolvedDevice?
     @Published private(set) var deviceStageAmount = 0.0
+    @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
     @Published var sourcePlacement = SourcePlacement.fit
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
     let deviceMetalStage: DeviceMetalStage
+    let physicalModel = PhysicalModelController()
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
     private var tickSubscription: AnyCancellable?
     private var renderTask: Task<Void, Never>?
+    private var physicalNativeTask: Task<Void, Never>?
+    private var isModelPageActive = false
 
     init() {
         metalDisplay = try! StudioColorMetalDisplay()
         deviceMetalStage = try! DeviceMetalStage()
+        physicalModel.interactiveInvalidation = { [weak self] in
+            self?.rebuildPhysicalSelectedFrame()
+        }
+        physicalModel.cancelNativeWork = { [weak self] in
+            self?.physicalNativeTask?.cancel()
+        }
         renderPattern()
         tickSubscription = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common)
             .autoconnect().sink { [weak self] _ in self?.tickPlayback() }
     }
 
     var pipelineSummary: String {
-        "Input → YUV/rango → IDT → ACEScg → Device(\(deviceStageAmount == 0 ? "identity" : "physical")) → Display/ODT"
+        "Input → YUV/rango → IDT → ACEScg → Pantalla → Captura → Display/ODT"
     }
 
     func selectDevice(_ definition: DeviceDefinition, amount: Double) {
@@ -112,6 +122,90 @@ final class WorkspaceModel: ObservableObject {
     func setDeviceStageAmount(_ amount: Double) {
         deviceStageAmount = min(1, max(0, amount))
         rebuildCurrent()
+    }
+
+    func setModelPageActive(_ active: Bool) {
+        isModelPageActive = active
+        if active { pause() }
+        rebuildPhysicalSelectedFrame()
+    }
+
+    func changePhysicalQuality(_ quality: PhysicalQuality) {
+        physicalModel.setQuality(quality)
+    }
+
+    func changePhysicalDomainAmount(_ amount: Double, domain: PhysicalDomainID) {
+        do {
+            try physicalModel.setDomainAmount(amount, domain: domain)
+        } catch {
+            errorMessage = "Amount físico fuera de los límites seguros 0–4."
+        }
+    }
+
+    func changePhysicalStageAmount(_ amount: Double, stage: PhysicalStageID) {
+        do {
+            try physicalModel.setContinuousAmount(amount, stage: stage)
+        } catch {
+            errorMessage = "La contribución no admite ese valor."
+        }
+    }
+
+    func changePhysicalStageEnabled(_ enabled: Bool, stage: PhysicalStageID) {
+        do {
+            try physicalModel.setDiscreteEnabled(enabled, stage: stage)
+        } catch {
+            errorMessage = "La etapa no es discreta."
+        }
+    }
+
+    func togglePhysicalIsolation(_ stage: PhysicalStageID) {
+        do { try physicalModel.toggleIsolation(stage) }
+        catch { errorMessage = "No se ha podido aislar la etapa." }
+    }
+
+    func resetPhysicalStage(_ stage: PhysicalStageID) {
+        do { try physicalModel.resetToPhysical(stage) }
+        catch { errorMessage = "No se ha podido restablecer la etapa." }
+    }
+
+    func renderSelectedPhysicalFrameNative() {
+        guard physicalNativeTask == nil else { return }
+        pause()
+        do { try physicalModel.beginNative() }
+        catch { return }
+        physicalNativeTask = Task { [weak self] in
+            guard let self else { return }
+            await Task.yield()
+            guard !Task.isCancelled else {
+                physicalNativeTask = nil
+                return
+            }
+            do {
+                try evaluateExistingPhysicalStage()
+                guard !Task.isCancelled, let frame = metalFrame else {
+                    physicalNativeTask = nil
+                    return
+                }
+                let dimensions = try PhysicalDimensions(
+                    width: frame.width,
+                    height: frame.height
+                )
+                physicalModel.updateNativeProgress(1)
+                physicalModel.completeNative(
+                    nativeDimensions: dimensions,
+                    effectiveDimensions: dimensions
+                )
+            } catch {
+                physicalModel.failNative()
+                errorMessage = error.localizedDescription
+            }
+            physicalNativeTask = nil
+        }
+    }
+
+    func cancelSelectedPhysicalFrameNative() {
+        physicalModel.cancelNative()
+        physicalNativeTask = nil
     }
 
     func changeSourcePlacement(_ placement: SourcePlacement) {
@@ -587,6 +681,7 @@ final class WorkspaceModel: ObservableObject {
                 width: decoded.width, height: decoded.height, encodedRGBA: decoded.rgba,
                 input: inputTransform, alpha: effectiveAlpha
             )
+            sourceACEScgFrame = base
             metalFrame = try applyDeviceStage(base)
             if let metalFrame {
                 monitorOutput.update(frame: metalFrame, display: metalDisplay)
@@ -616,6 +711,7 @@ final class WorkspaceModel: ObservableObject {
             pixelBuffer: sample.pixelBuffer, input: inputTransform,
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
         )
+        sourceACEScgFrame = base
         metalFrame = try applyDeviceStage(base)
         if let metalFrame {
             monitorOutput.update(frame: metalFrame, display: metalDisplay)
@@ -664,12 +760,73 @@ final class WorkspaceModel: ObservableObject {
         )
     }
 
+    private func rebuildPhysicalSelectedFrame() {
+        guard isModelPageActive else {
+            deviceStageAmount = 0
+            if let sourceACEScgFrame { metalFrame = sourceACEScgFrame }
+            return
+        }
+        guard physicalModel.quality != .native else { return }
+        do {
+            try evaluateExistingPhysicalStage()
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    private func evaluateExistingPhysicalStage() throws {
+        guard let sourceACEScgFrame else {
+            throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
+        }
+        guard physicalModel.captureAmount == 0 else {
+            throw PhysicalEvaluationAvailabilityError.capturePending
+        }
+        guard physicalModel.screenAmount <= 1 else {
+            throw PhysicalEvaluationAvailabilityError.artisticScreenPending
+        }
+        let changedSection = physicalModel.orderedContributions.first { contribution in
+            switch contribution.control {
+            case let .continuous(amount, _): amount != 1
+            case let .discrete(enabled): !enabled
+            }
+        }
+        guard changedSection == nil else {
+            throw PhysicalEvaluationAvailabilityError.sectionPending(changedSection!.stage)
+        }
+        deviceStageAmount = physicalModel.screenAmount
+        metalFrame = try applyDeviceStage(sourceACEScgFrame)
+        if let metalFrame { monitorOutput.update(frame: metalFrame, display: metalDisplay) }
+        status = deviceStageAmount == 0
+            ? "Modelo · identidad exacta ACEScg"
+            : "Modelo · etapa Pantalla existente · ACEScg"
+    }
+
     private static func isVideo(_ url: URL) -> Bool {
         ["mov", "mp4", "m4v"].contains(url.pathExtension.lowercased())
     }
 
     private static func isImage(_ url: URL) -> Bool {
         ["png", "jpg", "jpeg", "tif", "tiff", "heic", "exr", "dpx"].contains(url.pathExtension.lowercased())
+    }
+}
+
+enum PhysicalEvaluationAvailabilityError: Error, LocalizedError {
+    case missingSelectedFrame
+    case capturePending
+    case artisticScreenPending
+    case sectionPending(PhysicalStageID)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingSelectedFrame:
+            "No hay un fotograma ACEScg seleccionado."
+        case .capturePending:
+            "Captura está pendiente del motor físico ABI v1; no se ha simulado."
+        case .artisticScreenPending:
+            "Pantalla >1 está pendiente del motor físico ABI v1; se conserva el último resultado."
+        case let .sectionPending(stage):
+            "La contribución 0x\(String(stage.id, radix: 16)) está pendiente del motor ABI v1."
+        }
     }
 }
 
