@@ -4551,6 +4551,7 @@ name = "screen-platform"
 version = "0.1.0"
 dependencies = [
  "ffmpeg-next",
+ "half",
  "metal",
  "rayon",
  "screen-application",

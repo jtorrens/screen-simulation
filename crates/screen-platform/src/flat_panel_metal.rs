@@ -143,7 +143,9 @@ impl MetalFlatPanel {
         }
         let descriptor = TextureDescriptor::new();
         descriptor.set_texture_type(MTLTextureType::D2);
-        descriptor.set_pixel_format(source_acescg.pixel_format());
+        // Active physical evaluation publishes float32 ACEScg so half-float input
+        // quantization is not compounded at the authoritative output boundary.
+        descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
         descriptor.set_width(u64::from(sampling.effective_width));
         descriptor.set_height(u64::from(sampling.effective_height));
         descriptor.set_storage_mode(MTLStorageMode::Shared);
@@ -277,6 +279,28 @@ mod tests {
         texture
     }
 
+    fn half_texture(device: &DeviceRef, width: u32, height: u32, values: &[[f32; 4]]) -> Texture {
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(MTLPixelFormat::RGBA16Float);
+        descriptor.set_width(u64::from(width));
+        descriptor.set_height(u64::from(height));
+        descriptor.set_storage_mode(MTLStorageMode::Shared);
+        descriptor.set_usage(MTLTextureUsage::ShaderRead);
+        let texture = device.new_texture(&descriptor);
+        let storage = values
+            .iter()
+            .flat_map(|pixel| pixel.map(|value| half::f16::from_f32(value).to_bits()))
+            .collect::<Vec<_>>();
+        texture.replace_region(
+            MTLRegion::new_2d(0, 0, u64::from(width), u64::from(height)),
+            0,
+            storage.as_ptr().cast(),
+            u64::from(width) * size_of::<[u16; 4]>() as u64,
+        );
+        texture
+    }
+
     fn read(texture: &TextureRef) -> Vec<[f32; 4]> {
         let mut values = vec![[0.0_f32; 4]; (texture.width() * texture.height()) as usize];
         texture.get_bytes(
@@ -342,6 +366,7 @@ mod tests {
     fn metal_matches_cpu_for_placements_layouts_matrix_extremes_and_qualities() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalFlatPanel::new(&device).expect("flat panel backend");
+        let mut suite_maximum = 0.0_f32;
         for placement in [
             RasterPlacement::Fit,
             RasterPlacement::FillCrop,
@@ -390,11 +415,13 @@ mod tests {
                                 gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs())
                             })
                             .fold(0.0_f32, f32::max);
+                        suite_maximum = suite_maximum.max(maximum);
                         assert!(maximum <= 2.0e-3, "maximum CPU/Metal deviation {maximum}");
                     }
                 }
             }
         }
+        eprintln!("flat panel CPU/Metal suite maximum absolute deviation: {suite_maximum}");
     }
 
     #[test]
@@ -420,5 +447,52 @@ mod tests {
             backend.evaluate(&source, &signal, active, |_| {}, || true),
             Err(MetalFlatPanelError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn half_float_contract_input_matches_oracle_without_output_requantization() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalFlatPanel::new(&device).expect("flat panel backend");
+        let (mut input, plan) = fixture(
+            RasterPlacement::Fit,
+            FlatPanelQuality::High,
+            StripeLayout::Bgr,
+            0.45,
+            1.0,
+        );
+        for pixel in &mut input.acescg {
+            for value in pixel {
+                *value = half::f16::from_f32(*value).to_f32();
+            }
+        }
+        for pixel in &mut input.device_signal.pixels {
+            pixel.r = half::f16::from_f32(pixel.r).to_f32();
+            pixel.g = half::f16::from_f32(pixel.g).to_f32();
+            pixel.b = half::f16::from_f32(pixel.b).to_f32();
+        }
+        let source = half_texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = half_texture(&device, input.width, input.height, &signal_values);
+        let cpu =
+            evaluate_flat_panel_cpu_oracle(FlatPanelRequest { input, plan }).expect("CPU oracle");
+        let gpu = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("Metal result");
+        assert_eq!(gpu.texture.pixel_format(), MTLPixelFormat::RGBA32Float);
+        let maximum = read(&gpu.texture)
+            .iter()
+            .zip(&cpu.acescg)
+            .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+            .fold(0.0_f32, f32::max);
+        eprintln!("flat panel half-input CPU/Metal maximum absolute deviation: {maximum}");
+        assert!(
+            maximum <= 2.0e-3,
+            "half input CPU/Metal deviation {maximum}"
+        );
     }
 }
