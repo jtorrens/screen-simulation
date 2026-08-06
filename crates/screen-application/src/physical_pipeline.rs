@@ -3,12 +3,12 @@
 //! The structs in this module are Rust's semantic authority. The coarse C ABI
 //! materializes these values once per job; Metal never defines stage ordering.
 
-use crate::{DeviceSignalRaster, RasterPlacement, RollingDirection, SensorReadout};
+use crate::{RollingDirection, SensorReadout};
 use screen_camera::CameraDevelopment;
 use screen_contracts::{RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
 use screen_geometry::{LensModel, Quaternion};
-use screen_panel::{FlatPanelQuality, LcdProfile, PanelLightSpreadProfile};
+use screen_panel::{LcdProfile, PanelLightSpreadProfile};
 use screen_sensor::SensorProfile;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,13 +73,6 @@ pub struct SourceAcesCgRaster {
     pub rgba: Vec<[f32; 4]>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct PhysicalPipelineInput {
-    pub source_acescg: SourceAcesCgRaster,
-    pub device_signal: DeviceSignalRaster,
-    pub placement: RasterPlacement,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedSceneGeometryLensSnapshot {
     pub camera_position: Vec3,
@@ -141,29 +134,4 @@ pub struct PhysicalPipelineSnapshot {
     pub shutter_motion: ResolvedShutterMotionSnapshot,
     pub sensor: SensorProfile,
     pub development: CameraDevelopment,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct PhysicalPipelineRequest {
-    pub frame_index: i64,
-    pub frame_time: RationalTime,
-    pub input: PhysicalPipelineInput,
-    pub snapshot: PhysicalPipelineSnapshot,
-    pub quality: FlatPanelQuality,
-    pub requested_width: u32,
-    pub requested_height: u32,
-    pub screen_amount: f32,
-    pub capture_amount: f32,
-    pub stages: [PhysicalStageControl; PHYSICAL_STAGE_ORDER.len()],
-    pub requested_intermediate: PhysicalIntermediate,
-}
-
-impl PhysicalPipelineRequest {
-    pub fn stage(&self, stage: PhysicalStage) -> PhysicalStageControl {
-        let index = PHYSICAL_STAGE_ORDER
-            .iter()
-            .position(|candidate| *candidate == stage)
-            .expect("every typed physical stage belongs to the fixed order");
-        self.stages[index]
-    }
 }
