@@ -551,7 +551,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minHeight: 160, idealHeight: 240)
+            .frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
 
             if let image = selectedTestImage {
                 Form {
@@ -632,7 +632,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minHeight: 160, idealHeight: 240)
+            .frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
 
             if let item = library.selectedPatternItem {
                 Form {
@@ -706,7 +706,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minHeight: 160, idealHeight: 240)
+            .frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
 
             if let preset = selectedGlobalPreset {
                 Form {
@@ -832,7 +832,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minHeight: 160, idealHeight: 240)
+            .frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
 
             if let device = library.selectedDevice {
                 deviceEditor(device)
@@ -884,7 +884,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minHeight: 160, idealHeight: 240)
+            .frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
 
             if let cover = library.selectedCoverGlass {
                 coverGlassEditor(cover)
