@@ -90,6 +90,11 @@
       "checks": ["architecture", "studio-color"]
     },
     {
+      "id": "studio-media",
+      "paths": ["packages/StudioMedia/**"],
+      "checks": ["architecture", "studio-media"]
+    },
+    {
       "id": "native-macos-composition",
       "paths": ["apps/screen-native-macos/**", "crates/screen-native-bridge/**", "Docs/NATIVE_MACOS_CUTOVER.md"],
       "checks": ["architecture", "workspace", "native-macos"]

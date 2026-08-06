@@ -11,7 +11,10 @@ let rustReleaseLibraryDirectory = repositoryRoot.appendingPathComponent("target/
 let package = Package(
     name: "ScreenSimulationNative",
     platforms: [.macOS(.v14)],
-    dependencies: [.package(path: "../../packages/StudioColor")],
+    dependencies: [
+        .package(path: "../../packages/StudioColor"),
+        .package(path: "../../packages/StudioMedia"),
+    ],
     targets: [
         .target(
             name: "ScreenPhysicalBridge",
@@ -26,6 +29,7 @@ let package = Package(
             name: "ScreenSimulationNative",
             dependencies: [
                 .product(name: "StudioColor", package: "StudioColor"),
+                .product(name: "StudioMedia", package: "StudioMedia"),
                 "ScreenPhysicalBridge",
             ]
         ),
