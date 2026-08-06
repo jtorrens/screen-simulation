@@ -68,9 +68,19 @@ struct ContentView: View {
                             Text(destination.rawValue).font(.caption2)
                         }
                         .frame(minWidth: 64, minHeight: 38)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(page == destination
+                                    ? NativeTheme.accent.opacity(0.22) : .clear)
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(page == destination
+                                    ? NativeTheme.accent.opacity(0.9) : .clear)
+                        }
                     }
                     .buttonStyle(.borderless)
-                    .foregroundStyle(page == destination ? NativeTheme.accent : .secondary)
+                    .foregroundStyle(page == destination ? .primary : .secondary)
                     .help(destination.rawValue)
                     .accessibilityLabel(destination.rawValue)
                     .accessibilityAddTraits(page == destination ? .isSelected : [])
@@ -81,7 +91,6 @@ struct ContentView: View {
             .frame(height: 46)
             .background(Color(nsColor: .windowBackgroundColor))
         }
-        .tint(NativeTheme.accent)
         .toolbar { workspaceToolbar }
         .onAppear {
             if model.resolvedDevice == nil,
