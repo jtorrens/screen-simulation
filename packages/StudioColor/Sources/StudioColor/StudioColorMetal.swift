@@ -49,7 +49,7 @@ public final class StudioColorMetalFrame: @unchecked Sendable {
     public var width: Int { texture.width }
     public var height: Int { texture.height }
 
-    fileprivate init(texture: MTLTexture, submittedAt: CFTimeInterval = CACurrentMediaTime()) {
+    public init(texture: MTLTexture, submittedAt: CFTimeInterval = CACurrentMediaTime()) {
         self.texture = texture
         self.submittedAt = submittedAt
     }
@@ -386,6 +386,46 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
             )
         }
         return half.map(Float.init)
+    }
+
+    /// Keeps an ACEScg-to-output processor on GPU and returns its private
+    /// texture for a downstream authoritative Metal stage.
+    public func transformToMetalFrame(
+        _ frame: StudioColorMetalFrame,
+        output: StudioColorOutputTransform
+    ) throws -> StudioColorMetalFrame {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float,
+            width: frame.width,
+            height: frame.height,
+            mipmapped: false
+        )
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .private
+        guard let target = device.makeTexture(descriptor: descriptor),
+              let command = queue.makeCommandBuffer()
+        else { throw StudioColorMetalError.textureCreation }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        try encode(
+            input: frame.texture,
+            output: target,
+            pass: pass,
+            transform: output,
+            command: command,
+            fitInputAspect: false
+        )
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else {
+            throw StudioColorMetalError.commandFailure
+        }
+        return StudioColorMetalFrame(
+            texture: target,
+            submittedAt: frame.submittedAt
+        )
     }
 
     private func applyInputTransform(

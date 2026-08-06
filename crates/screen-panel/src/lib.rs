@@ -283,6 +283,14 @@ pub struct ValidatedPanelEvaluator {
     native_to_acescg: [[f32; 3]; 3],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeviceStageParameters {
+    pub native_to_acescg: [[f32; 3]; 3],
+    pub eotf_gamma: f32,
+    pub black_level_nits: f32,
+    pub white_level_nits: f32,
+}
+
 impl LcdProfile {
     pub fn validate(self) -> Result<Self, PanelError> {
         if self.native_width == 0 || self.native_height == 0 {
@@ -425,6 +433,24 @@ impl LcdProfile {
 }
 
 impl ValidatedPanelEvaluator {
+    pub fn device_stage_parameters(self) -> DeviceStageParameters {
+        DeviceStageParameters {
+            native_to_acescg: self.native_to_acescg,
+            eotf_gamma: self.profile.eotf_gamma,
+            black_level_nits: self.profile.black_level_nits,
+            white_level_nits: self.profile.white_level_nits,
+        }
+    }
+
+    pub fn normalized_device_emission(self, signal: DeviceRgb) -> LinearRgb {
+        let value = self.profile.emitted_radiance(signal);
+        LinearRgb::new(
+            value.r / self.profile.white_level_nits,
+            value.g / self.profile.white_level_nits,
+            value.b / self.profile.white_level_nits,
+        )
+    }
+
     pub fn native_channel(self, signal: DeviceRgb, channel: usize) -> f32 {
         let value = [signal.r, signal.g, signal.b][channel];
         let span = self.profile.white_level_nits - self.profile.black_level_nits;

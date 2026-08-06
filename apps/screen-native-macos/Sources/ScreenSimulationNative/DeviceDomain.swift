@@ -170,6 +170,85 @@ struct ResolvedDevice: @unchecked Sendable {
     fileprivate let parameters: ScreenDeviceParametersV1
 
     var id: String { definition.id }
+
+    func metalEvaluationParameters() throws -> DeviceMetalEvaluationParameters {
+        var error: UnsafePointer<CChar>?
+        guard let profile = withUnsafePointer(to: parameters, {
+            screen_device_profile_create($0, &error)
+        }) else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                error.map(String.init(cString:))
+                    ?? "No se ha podido resolver el evaluator Rust."
+            )
+        }
+        defer { screen_device_profile_release(profile) }
+        var values = ScreenDeviceEvaluationParametersV1()
+        guard screen_device_profile_evaluation_parameters(profile, &values),
+              values.abi_version == 1
+        else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "El evaluator Rust no ofrece parámetros Metal ABI v1."
+            )
+        }
+        return DeviceMetalEvaluationParameters(
+            nativeToACEScg: [
+                values.native_to_acescg.0,
+                values.native_to_acescg.1,
+                values.native_to_acescg.2,
+                values.native_to_acescg.3,
+                values.native_to_acescg.4,
+                values.native_to_acescg.5,
+                values.native_to_acescg.6,
+                values.native_to_acescg.7,
+                values.native_to_acescg.8,
+            ],
+            eotfGamma: values.eotf_gamma,
+            blackLevelNits: values.black_level_nits,
+            whiteLevelNits: values.white_level_nits
+        )
+    }
+
+    func cpuOracle(deviceCode: [Float]) throws -> [Float] {
+        guard deviceCode.count.isMultiple(of: 4) else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "El oracle Device necesita RGBA completo."
+            )
+        }
+        var error: UnsafePointer<CChar>?
+        guard let profile = withUnsafePointer(to: parameters, {
+            screen_device_profile_create($0, &error)
+        }) else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                error.map(String.init(cString:))
+                    ?? "No se ha podido crear el oracle Rust."
+            )
+        }
+        defer { screen_device_profile_release(profile) }
+        var output = [Float](repeating: 0, count: deviceCode.count)
+        let succeeded = deviceCode.withUnsafeBufferPointer { source in
+            output.withUnsafeMutableBufferPointer { destination in
+                screen_device_profile_evaluate_rgba32f(
+                    profile,
+                    source.baseAddress,
+                    destination.baseAddress,
+                    deviceCode.count / 4
+                )
+            }
+        }
+        guard succeeded else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "El oracle Rust no ha evaluado el buffer completo."
+            )
+        }
+        return output
+    }
+}
+
+struct DeviceMetalEvaluationParameters: Equatable, Sendable {
+    let nativeToACEScg: [Float]
+    let eotfGamma: Float
+    let blackLevelNits: Float
+    let whiteLevelNits: Float
 }
 
 enum RustDeviceCatalog {

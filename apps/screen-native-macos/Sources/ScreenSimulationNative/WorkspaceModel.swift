@@ -60,6 +60,7 @@ final class WorkspaceModel: ObservableObject {
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
+    let deviceMetalStage: DeviceMetalStage
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
     private var tickSubscription: AnyCancellable?
@@ -67,16 +68,17 @@ final class WorkspaceModel: ObservableObject {
 
     init() {
         metalDisplay = try! StudioColorMetalDisplay()
+        deviceMetalStage = try! DeviceMetalStage()
         renderPattern()
         tickSubscription = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common)
             .autoconnect().sink { [weak self] _ in self?.tickPlayback() }
     }
 
     var pipelineSummary: String {
-        "Input → YUV/rango → IDT → ACEScg → Device → Display/ODT"
+        "Input → YUV/rango → IDT → ACEScg → Device(\(deviceStageAmount == 0 ? "identity" : "physical")) → Display/ODT"
     }
 
-    func selectDevice(_ definition: DeviceDefinition, amount: Double = 1) {
+    func selectDevice(_ definition: DeviceDefinition, amount: Double) {
         do {
             resolvedDevice = try definition.resolved()
             deviceStageAmount = min(1, max(0, amount))
@@ -84,6 +86,11 @@ final class WorkspaceModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func setDeviceStageAmount(_ amount: Double) {
+        deviceStageAmount = min(1, max(0, amount))
+        rebuildCurrent()
     }
 
     var requestedSeconds: Double {
@@ -488,10 +495,11 @@ final class WorkspaceModel: ObservableObject {
         let started = CACurrentMediaTime()
         do {
             let decoded = try selectedPattern.frame(time: requestedSeconds)
-            metalFrame = try metalDisplay.makeACEScgFrame(
+            let base = try metalDisplay.makeACEScgFrame(
                 width: decoded.width, height: decoded.height, encodedRGBA: decoded.rgba,
                 input: inputTransform, alpha: effectiveAlpha
             )
+            metalFrame = try applyDeviceStage(base)
             if let metalFrame {
                 monitorOutput.update(frame: metalFrame, display: metalDisplay)
             }
@@ -516,10 +524,11 @@ final class WorkspaceModel: ObservableObject {
 
     private func present(_ sample: NativeMediaSample?, started: CFTimeInterval = CACurrentMediaTime()) throws {
         guard let sample else { return }
-        metalFrame = try metalDisplay.makeACEScgFrame(
+        let base = try metalDisplay.makeACEScgFrame(
             pixelBuffer: sample.pixelBuffer, input: inputTransform,
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
         )
+        metalFrame = try applyDeviceStage(base)
         if let metalFrame {
             monitorOutput.update(frame: metalFrame, display: metalDisplay)
         }
@@ -531,19 +540,38 @@ final class WorkspaceModel: ObservableObject {
     private func renderFrame(_ index: Int) async throws -> StudioColorMetalFrame {
         if sourceIsPattern {
             let decoded = try selectedPattern.frame(time: Double(index) / frameRate)
-            return try metalDisplay.makeACEScgFrame(
+            let base = try metalDisplay.makeACEScgFrame(
                 width: decoded.width, height: decoded.height,
                 encodedRGBA: decoded.rgba, input: inputTransform, alpha: effectiveAlpha
             )
+            return try applyDeviceStage(base)
         }
         let time = session.time(forFrame: index)
         try Task.checkCancellation()
         guard let sample = try await session.exactSample(at: time) else {
             throw NativeMediaError.unreadable("frame \(index)")
         }
-        return try metalDisplay.makeACEScgFrame(
+        let base = try metalDisplay.makeACEScgFrame(
             pixelBuffer: sample.pixelBuffer, input: inputTransform,
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
+        )
+        return try applyDeviceStage(base)
+    }
+
+    private func applyDeviceStage(
+        _ frame: StudioColorMetalFrame
+    ) throws -> StudioColorMetalFrame {
+        guard deviceStageAmount > 0 else { return frame }
+        guard let resolvedDevice else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "La etapa Device física necesita un snapshot resuelto."
+            )
+        }
+        return try deviceMetalStage.process(
+            frame,
+            device: resolvedDevice,
+            amount: deviceStageAmount,
+            color: metalDisplay
         )
     }
 

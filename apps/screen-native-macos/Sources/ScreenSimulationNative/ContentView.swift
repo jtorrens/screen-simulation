@@ -68,8 +68,11 @@ struct ContentView: View {
         .onAppear {
             if model.resolvedDevice == nil,
                let first = library.document.devices.first {
-                model.selectDevice(first)
+                model.selectDevice(first, amount: page == .device ? 1 : 0)
             }
+        }
+        .onChange(of: page) { _, destination in
+            model.setDeviceStageAmount(destination == .device ? 1 : 0)
         }
         .alert(
             "SCREEN-SIMULATION",
@@ -133,7 +136,7 @@ struct ContentView: View {
                                 guard let device = library.document.devices.first(
                                     where: { $0.id == id }
                                 ) else { return }
-                                model.selectDevice(device)
+                                model.selectDevice(device, amount: 1)
                             }
                         )
                     ) {

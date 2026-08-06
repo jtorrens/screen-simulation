@@ -42,6 +42,14 @@ typedef struct {
     float banding_amount;
 } ScreenDeviceParametersV1;
 
+typedef struct {
+    uint32_t abi_version;
+    float native_to_acescg[9];
+    float eotf_gamma;
+    float black_level_nits;
+    float white_level_nits;
+} ScreenDeviceEvaluationParametersV1;
+
 size_t screen_device_preset_count(void);
 ScreenUTF8View screen_device_preset_id(size_t index);
 ScreenUTF8View screen_device_preset_label(size_t index);
@@ -57,6 +65,16 @@ ScreenDeviceProfileRef screen_device_profile_create(
     const char **error_message
 );
 void screen_device_profile_release(ScreenDeviceProfileRef profile);
+bool screen_device_profile_evaluation_parameters(
+    ScreenDeviceProfileRef profile,
+    ScreenDeviceEvaluationParametersV1 *parameters
+);
+bool screen_device_profile_evaluate_rgba32f(
+    ScreenDeviceProfileRef profile,
+    const float *device_code,
+    float *acescg,
+    size_t pixel_count
+);
 
 ScreenPhysicalPipelineRef screen_physical_pipeline_create(void);
 void screen_physical_pipeline_release(ScreenPhysicalPipelineRef pipeline);

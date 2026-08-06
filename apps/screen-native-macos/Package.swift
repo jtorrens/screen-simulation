@@ -39,6 +39,9 @@ let package = Package(
                     package: "StudioVideoOutput"
                 ),
                 "ScreenPhysicalBridge",
+            ],
+            resources: [
+                .copy("Resources/DeviceStage.metal"),
             ]
         ),
         .testTarget(
