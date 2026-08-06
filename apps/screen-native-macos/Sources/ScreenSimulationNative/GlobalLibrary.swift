@@ -27,15 +27,21 @@ struct GlobalTestImage: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
     let schemaVersion: Int
     var testImages: [GlobalTestImage]
     var renderPresets: [StudioRenderPreset]
+    var devices: [DeviceDefinition]
 
-    init(testImages: [GlobalTestImage] = [], renderPresets: [StudioRenderPreset] = []) {
+    init(
+        testImages: [GlobalTestImage] = [],
+        renderPresets: [StudioRenderPreset] = [],
+        devices: [DeviceDefinition] = []
+    ) {
         schemaVersion = Self.currentSchemaVersion
         self.testImages = testImages
         self.renderPresets = renderPresets
+        self.devices = devices
     }
 
     func validate() throws {
@@ -43,9 +49,11 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
             throw GlobalLibraryError.unsupportedSchema(schemaVersion)
         }
         guard Set(testImages.map(\.id)).count == testImages.count,
-              Set(renderPresets.map(\.id)).count == renderPresets.count
+              Set(renderPresets.map(\.id)).count == renderPresets.count,
+              Set(devices.map(\.id)).count == devices.count
         else { throw GlobalLibraryError.invalidEntity("Hay identificadores globales duplicados.") }
         try testImages.forEach { try $0.validate() }
+        try devices.forEach { _ = try $0.resolved() }
         guard renderPresets.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
             throw GlobalLibraryError.invalidEntity("Todos los presets necesitan nombre.")
         }
@@ -60,7 +68,7 @@ enum GlobalLibraryError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .unsupportedSchema(version):
-            "La biblioteca global usa el esquema \(version); esta versión exige el esquema 1. La entidad queda bloqueada."
+            "La biblioteca global usa el esquema \(version); esta versión exige el esquema 2. La entidad queda bloqueada."
         case let .invalidEntity(message), let .inaccessible(message): message
         }
     }
@@ -86,14 +94,41 @@ struct GlobalLibraryStore: Sendable {
 
     func load() throws -> GlobalLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            return GlobalLibraryDocument()
+            let document = GlobalLibraryDocument(
+                devices: try RustDeviceCatalog.builtIns()
+            )
+            try document.validate()
+            return document
         }
-        let document = try JSONDecoder().decode(
-            GlobalLibraryDocument.self,
-            from: Data(contentsOf: documentURL)
-        )
-        try document.validate()
-        return document
+        let data = try Data(contentsOf: documentURL)
+        let version = try JSONDecoder().decode(
+            GlobalLibrarySchemaHeader.self,
+            from: data
+        ).schemaVersion
+        switch version {
+        case GlobalLibraryDocument.currentSchemaVersion:
+            let document = try JSONDecoder().decode(
+                GlobalLibraryDocument.self,
+                from: data
+            )
+            try document.validate()
+            return document
+        case 1:
+            let previous = try JSONDecoder().decode(
+                GlobalLibrarySchemaOne.self,
+                from: data
+            )
+            let migrated = GlobalLibraryDocument(
+                testImages: previous.testImages,
+                renderPresets: previous.renderPresets,
+                devices: try RustDeviceCatalog.builtIns()
+            )
+            try migrated.validate()
+            try save(migrated)
+            return migrated
+        default:
+            throw GlobalLibraryError.unsupportedSchema(version)
+        }
     }
 
     func save(_ document: GlobalLibraryDocument) throws {
@@ -106,6 +141,16 @@ struct GlobalLibraryStore: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(document).write(to: documentURL, options: .atomic)
     }
+}
+
+private struct GlobalLibrarySchemaHeader: Decodable {
+    let schemaVersion: Int
+}
+
+private struct GlobalLibrarySchemaOne: Decodable {
+    let schemaVersion: Int
+    let testImages: [GlobalTestImage]
+    let renderPresets: [StudioRenderPreset]
 }
 
 @MainActor
