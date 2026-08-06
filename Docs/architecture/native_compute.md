@@ -97,6 +97,15 @@ configuration differs in 86 sRGB channels, 78 Rec.709 channels and 3 Rec.2100 PQ
 difference is exactly one 8-bit code value. The enforced limit is one code value and 0.5% differing
 channels. Expanding that tolerance requires an explicit architecture change, not an adapter choice.
 
+Spatial optics are also compiled with safe Metal math and floating-point contraction disabled.
+Resolved panel emission is phase-sensitive at native panel resolution: a numerically small ray
+coordinate error can cross a physical RGB-stripe boundary and become a coherent diagonal pattern
+over a full-resolution capture. Conformance therefore includes a non-origin 24×24 region of the
+8064×6048 iPhone sensor viewing the 3840×2160 ASUS panel with the integrated wide lens. The test
+compares the mandatory Metal product backend with the CPU oracle before sensor integration, RAW
+development, OCIO publication and viewer scaling. Fast spatial math is not an available product
+mode or fallback.
+
 The reproducible benchmark is:
 
 ```text
@@ -167,4 +176,12 @@ Remaining performance work is precisely bounded:
 3. Extend proof of static intervals beyond single-key tracks only where exact keyframe-segment
    identity can be established without heuristic tolerances.
 4. Reduce exact CPU row-plan construction for moving spatial tracks without weakening
-   authored motion detection, source sampling or temporal integration.
+authored motion detection, source sampling or temporal integration.
+
+After enabling phase-stable spatial compilation, the representative 2026-08-06 Apple M3 Ultra
+measurement reported 0.043 s for either an animated one-motion-sample or static eight-sample
+8064×128 product stripe, including Metal spatial optics, sensor integration, RAW development, Metal
+OCIO publication and staging. Forty-eight stripes project to about 2.1 s for 8064×6048. The first
+complete 128×128 tile remained available in 0.012–0.013 s. These measured projections preserve the
+CPU-oracle spatial tolerance at full sensor coordinate phase; they do not reintroduce a faster
+phase-unstable route.
