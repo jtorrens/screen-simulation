@@ -90,3 +90,9 @@ DeckLink monitoring, icon-based main/settings pages, global preset/test-image
 libraries and atomic schema migration are explicitly deferred. DeckLink will
 retain an independent monitoring ODT. Global presets will only populate UI;
 configured jobs will persist resolved options rather than a preset reference.
+
+The native UX pass will also replace the provisional navigation slider with a
+specialized timeline view: adaptive timecode ruler, draggable playhead,
+shaded IN/OUT range, blue `[` and yellow `]` handles, numeric entry/playhead/
+exit fields, CREDITOS-HDR shortcuts, loop/all-range controls and complete
+keyboard/accessibility semantics. It will not introduce an Escena concept.
