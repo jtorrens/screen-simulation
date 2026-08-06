@@ -1449,15 +1449,9 @@ struct ContentView: View {
                         zoom: model.zoom,
                         pan: model.pan,
                         oneToOne: modelMode && model.modelViewerOneToOne,
-                        onDisplayChange: { model.systemDisplayInfo = $0 }
-                    )
-                    .gesture(
-                        DragGesture().onChanged { value in model.pan = value.translation }
-                    )
-                    .gesture(
-                        MagnifyGesture().onChanged { value in
-                            model.zoom = min(16, max(0.1, value.magnification))
-                        }
+                        onDisplayChange: { model.systemDisplayInfo = $0 },
+                        onPanChange: { model.pan = $0 },
+                        onZoomChange: { model.zoom = $0 }
                     )
                     .accessibilityLabel("Preview OCIO del resultado")
                     if let deviceAspect {
@@ -1631,6 +1625,8 @@ struct MetalPreview: NSViewRepresentable {
     let pan: CGSize
     let oneToOne: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
+    let onPanChange: (CGSize) -> Void
+    let onZoomChange: (Double) -> Void
 
     func makeNSView(context _: Context) -> MetalPreviewContainer {
         let container = MetalPreviewContainer()
@@ -1650,6 +1646,8 @@ struct MetalPreview: NSViewRepresentable {
             textureWidth: frame.width,
             textureHeight: frame.height
         )
+        container.onPanChange = onPanChange
+        container.onZoomChange = onZoomChange
         display.present(frame, output: output, in: container.metalView)
     }
 }
@@ -1661,6 +1659,11 @@ final class MetalPreviewContainer: NSView {
     private var presentationOneToOne = false
     private var textureWidth = 1
     private var textureHeight = 1
+    var onPanChange: ((CGSize) -> Void)?
+    var onZoomChange: ((Double) -> Void)?
+    private var dragStartLocation: CGPoint?
+    private var dragStartPan = CGSize.zero
+    private var magnifyAnchor: CGPoint?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1669,6 +1672,12 @@ final class MetalPreviewContainer: NSView {
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: dragStartLocation == nil ? .openHand : .closedHand)
+    }
 
     func install(_ view: StudioColorScreenAwareMetalView) {
         metalView.removeFromSuperview()
@@ -1698,6 +1707,58 @@ final class MetalPreviewContainer: NSView {
         applyPresentation()
     }
 
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        dragStartLocation = convert(event.locationInWindow, from: nil)
+        dragStartPan = presentationPan
+        NSCursor.closedHand.push()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = dragStartLocation else { return }
+        let location = convert(event.locationInWindow, from: nil)
+        let proposed = CGSize(
+            width: dragStartPan.width + location.x - start.x,
+            height: dragStartPan.height - location.y + start.y
+        )
+        publishPan(clampedPan(proposed))
+    }
+
+    override func mouseUp(with _: NSEvent) {
+        if dragStartLocation != nil {
+            publishPan(clampedPan(presentationPan))
+            dragStartLocation = nil
+            NSCursor.pop()
+        }
+    }
+
+    override func magnify(with event: NSEvent) {
+        let anchor = convert(event.locationInWindow, from: nil)
+        if event.phase == .began || magnifyAnchor == nil {
+            magnifyAnchor = anchor
+        }
+        guard let origin = magnifyAnchor else { return }
+        let oldZoom = presentationZoom
+        let oldPan = presentationPan
+        let newZoom = min(16, max(0.1, oldZoom * (1 + event.magnification)))
+        let ratio = CGFloat(newZoom / max(0.1, oldZoom))
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let anchoredPan = CGSize(
+            width: oldPan.width + (origin.x - center.x) * (1 - ratio),
+            height: oldPan.height - (origin.y - center.y) * (1 - ratio)
+        )
+        presentationZoom = newZoom
+        onZoomChange?(newZoom)
+        publishPan(clampedPan(anchoredPan))
+        if event.phase == .ended || event.phase == .cancelled {
+            magnifyAnchor = nil
+        }
+    }
+
+    override func cursorUpdate(with _: NSEvent) {
+        (dragStartLocation == nil ? NSCursor.openHand : NSCursor.closedHand).set()
+    }
+
     private func applyPresentation() {
         let oneToOneScale = bounds.width > 0 && bounds.height > 0
             ? max(
@@ -1705,13 +1766,35 @@ final class MetalPreviewContainer: NSView {
                 CGFloat(textureHeight) / bounds.height
             )
             : 1
-        let scale = presentationOneToOne ? oneToOneScale : presentationZoom
+        let scale = (presentationOneToOne ? oneToOneScale : 1) * presentationZoom
         metalView.layer?.setAffineTransform(
             CGAffineTransform(
                 translationX: presentationPan.width,
                 y: -presentationPan.height
             )
             .scaledBy(x: scale, y: scale)
+        )
+    }
+
+    private func publishPan(_ value: CGSize) {
+        presentationPan = value
+        onPanChange?(value)
+        applyPresentation()
+    }
+
+    private func clampedPan(_ proposed: CGSize) -> CGSize {
+        let oneToOneScale = bounds.width > 0 && bounds.height > 0
+            ? max(
+                CGFloat(textureWidth) / bounds.width,
+                CGFloat(textureHeight) / bounds.height
+            )
+            : 1
+        let scale = (presentationOneToOne ? oneToOneScale : 1) * presentationZoom
+        let maximumX = max(0, (bounds.width * scale - bounds.width) / 2)
+        let maximumY = max(0, (bounds.height * scale - bounds.height) / 2)
+        return CGSize(
+            width: min(maximumX, max(-maximumX, proposed.width)),
+            height: min(maximumY, max(-maximumY, proposed.height))
         )
     }
 }
