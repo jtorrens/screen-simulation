@@ -28,12 +28,12 @@ develop exposure. Raw sensor codes and clipping masks are still produced by the 
 owner and are bit-identical because Metal begins strictly after the authoritative RAW boundary.
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
-plan contains the validated camera and screen samples, sensor window, panel geometry and
-colorimetry, cover and complete rotated synthetic-HDR environment, globally selected 16–128 aperture sample count, and either the
+plan contains the validated camera and screen samples, sensor window, panel geometry,
+colorimetry and physical panel-light-spread profile, cover and complete rotated synthetic-HDR environment, globally selected 16–128 aperture sample count, and either the
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
 represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
-and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
-Fresnel/transmission/reflection, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
+and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, panel
+light spread, cover Fresnel/transmission/reflection, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. The post-EOTF native emission uses the same normalized nine-sample per-channel panel-plane PSF as the CPU oracle before cover and lens operations. Strength zero branches directly to the prior scalar sample so identity is exact. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
 Raster area integration uses per-row horizontal `f32` prefixes, never a full-frame `f32`
@@ -192,3 +192,10 @@ OCIO publication and staging. Forty-eight stripes project to about 2.1 s for 806
 complete 128×128 tile remained available in 0.012–0.013 s. These measured projections preserve the
 CPU-oracle spatial tolerance at full sensor coordinate phase; they do not reintroduce a faster
 phase-unstable route.
+
+With calibrated LCD panel light spread enabled, the representative 2026-08-06 Apple M3 Ultra run
+measured 0.044 s for both product-stripe cases and the same 2.1 s 8064×6048 projection. Spatial
+Metal accounted for 0.026–0.027 s per stripe; the first complete 128×128 product tile arrived in
+0.011 s. A 1536×1152 ROI measured 0.094 s for default/one-sample and 0.363 s for static/eight,
+projecting 2.6 s and 10.0 s respectively at 48 MP. These figures include the normalized nine-tap
+per-channel spread kernel and preserve the same CPU/Metal oracle tolerance.

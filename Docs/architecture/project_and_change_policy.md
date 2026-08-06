@@ -2,7 +2,7 @@
 
 Status: normative.
 
-The current schema version is 7. The current device document carries the complete materialized optical-cover profile and temporal-emission profile in addition to the LCD profile. The current shot document carries the complete authored synthetic-HDR environment profile, including its required spherical-pattern identity, rotation and ACEScg radiance values. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs. Version 6 is obsolete and rejected; there is no normal-reader compatibility route.
+The current schema version is 8. The current device document carries the complete materialized panel-light-spread, optical-cover and temporal-emission profiles in addition to the LCD profile. The current shot document carries the complete authored synthetic-HDR environment profile, including its required spherical-pattern identity, rotation and ACEScg radiance values. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs. Version 7 is obsolete and rejected; there is no normal-reader compatibility route.
 
 The portable project is a `.screensim` package directory with one strict root manifest and separate owner documents for sources, device profiles, camera/screen tracks and simulation shots. SQLite is not a project format.
 
