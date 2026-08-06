@@ -36,7 +36,7 @@ import Testing
     #expect(try Data(contentsOf: url) == bytes)
 }
 
-@Test func schemaOneMigratesAtomicallyAndSeedsRustDevicesOnce() throws {
+@Test func schemaOneMigratesAtomicallyAndSeedsCurrentLibrariesOnce() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-global-library-migration-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -46,14 +46,37 @@ import Testing
     ).write(to: url)
     let store = try GlobalLibraryStore(documentURL: url)
     var migrated = try store.load()
-    #expect(migrated.schemaVersion == 2)
+    #expect(migrated.schemaVersion == 3)
     #expect(migrated.devices.count == 9)
+    #expect(migrated.renderPresets.count == 7)
 
     migrated.devices.removeFirst()
+    migrated.renderPresets.removeFirst()
     try store.save(migrated)
     let reopened = try store.load()
     #expect(reopened.devices.count == 8)
+    #expect(reopened.renderPresets.count == 6)
     #expect(reopened == migrated)
+}
+
+@Test func schemaTwoPresetMigrationIsExplicitAndAtomic() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-global-library-v2-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let url = root.appendingPathComponent("library.json")
+    let current = GlobalLibraryDocument(
+        renderPresets: [], devices: try RustDeviceCatalog.builtIns()
+    )
+    var json = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any]
+    )
+    json["schemaVersion"] = 2
+    let previousBytes = try JSONSerialization.data(withJSONObject: json)
+    try previousBytes.write(to: url)
+    let migrated = try GlobalLibraryStore(documentURL: url).load()
+    #expect(migrated.schemaVersion == 3)
+    #expect(migrated.renderPresets == StudioRenderPreset.builtIns)
+    #expect(try Data(contentsOf: url) != previousBytes)
 }
 
 @Test func failedMigrationLeavesTheOriginalEntityUntouched() throws {
@@ -89,6 +112,22 @@ import Testing
     controller.removeSelectedDevice()
     #expect(controller.document.devices.count == 9)
     #expect(try store.load().devices.count == 9)
+}
+
+@Test @MainActor func seededRenderPresetsAreNormalEditableDeletableEntries() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-render-preset-crud-\(UUID().uuidString)")
+    let store = try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("library.json")
+    )
+    let controller = GlobalLibraryController(store: store)
+    #expect(controller.document.renderPresets.count == 7)
+    controller.selectedPresetID = controller.document.renderPresets.first?.id
+    controller.updateSelectedPreset { $0.name = "ACES SDR personalizado" }
+    #expect(controller.allRenderPresets.first?.name == "ACES SDR personalizado")
+    controller.removeSelectedPreset()
+    #expect(controller.document.renderPresets.count == 6)
+    #expect(try store.load().renderPresets.count == 6)
 }
 
 @Test @MainActor func invalidDeviceEditIsRejectedWithoutMutatingTheResolvedEntry() throws {

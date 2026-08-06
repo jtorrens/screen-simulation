@@ -85,6 +85,39 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
     public var peakNits: Double
     public var display: String?
     public var view: String?
+    public var format: StudioOutputFormat = .proRes4444
+    public var signalRange: StudioSignalRange = .full
+    public var alpha: StudioAlphaMode = .premultiplied
+    public var includeAudio: Bool = false
+    public var notes: String = ""
+
+    public init(
+        id: UUID,
+        name: String,
+        pipeline: StudioRenderPipeline,
+        target: StudioRenderTarget,
+        peakNits: Double,
+        display: String?,
+        view: String?,
+        format: StudioOutputFormat = .proRes4444,
+        signalRange: StudioSignalRange = .full,
+        alpha: StudioAlphaMode = .premultiplied,
+        includeAudio: Bool = false,
+        notes: String = ""
+    ) {
+        self.id = id
+        self.name = name
+        self.pipeline = pipeline
+        self.target = target
+        self.peakNits = peakNits
+        self.display = display
+        self.view = view
+        self.format = format
+        self.signalRange = signalRange
+        self.alpha = alpha
+        self.includeAudio = includeAudio
+        self.notes = notes
+    }
     public var authoritativeRoundtripNotes: String {
         switch (pipeline, target) {
         case (.aces, .sdr):
@@ -107,13 +140,13 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
     }
 
     public static let builtIns: [Self] = [
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C01")!, name: "ACES · SDR", pipeline: .aces, target: .sdr, peakNits: 100, display: "Rec.1886 Rec.709 - Display", view: "ACES 2.0 - SDR 100 nits (Rec.709)"),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C02")!, name: "ACES · HDR", pipeline: .aces, target: .hdr, peakNits: 1_000, display: "Rec.2100-PQ - Display", view: "ACES 2.0 - HDR 1000 nits (Rec.2020)"),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C03")!, name: "DCM · SDR", pipeline: .davinciColorManaged, target: .sdr, peakNits: 100, display: "Rec.1886 Rec.709 - Display", view: "Video (colorimetric)"),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C04")!, name: "DCM · HDR", pipeline: .davinciColorManaged, target: .hdr, peakNits: 1_000, display: "Rec.2100-PQ - Display", view: "Video (colorimetric)"),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C05")!, name: "ACES2065-1 · EXR", pipeline: .aces, target: .aces2065, peakNits: 0, display: nil, view: nil),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C06")!, name: "ACEScg · EXR", pipeline: .aces, target: .acescg, peakNits: 0, display: nil, view: nil),
-        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C07")!, name: "DCM · EXR (ACEScg)", pipeline: .davinciColorManaged, target: .acescg, peakNits: 0, display: nil, view: nil),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C01")!, name: "ACES · SDR", pipeline: .aces, target: .sdr, peakNits: 100, display: "Rec.1886 Rec.709 - Display", view: "ACES 2.0 - SDR 100 nits (Rec.709)", notes: "Roundtrip ACES SDR Rec.709 BT.1886."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C02")!, name: "ACES · HDR", pipeline: .aces, target: .hdr, peakNits: 1_000, display: "Rec.2100-PQ - Display", view: "ACES 2.0 - HDR 1000 nits (Rec.2020)", notes: "Roundtrip ACES HDR Rec.2100 ST2084 1000 nit."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C03")!, name: "DCM · SDR", pipeline: .davinciColorManaged, target: .sdr, peakNits: 100, display: "Rec.1886 Rec.709 - Display", view: "Video (colorimetric)", notes: "Entrega Rec.709 Gamma 2.4 para DaVinci Wide Gamut / Intermediate."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C04")!, name: "DCM · HDR", pipeline: .davinciColorManaged, target: .hdr, peakNits: 1_000, display: "Rec.2100-PQ - Display", view: "Video (colorimetric)", notes: "Entrega Rec.2100 ST2084 para DaVinci Wide Gamut / Intermediate."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C05")!, name: "ACES2065-1 · EXR", pipeline: .aces, target: .aces2065, peakNits: 0, display: nil, view: nil, format: .openEXR, alpha: .straight, notes: "Intercambio scene-linear ACES2065-1."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C06")!, name: "ACEScg · EXR", pipeline: .aces, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, alpha: .straight, notes: "Intercambio scene-linear ACEScg."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C07")!, name: "DCM · EXR (ACEScg)", pipeline: .davinciColorManaged, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, alpha: .straight, notes: "Intercambio scene-linear ACEScg para DCM."),
     ]
 }
 

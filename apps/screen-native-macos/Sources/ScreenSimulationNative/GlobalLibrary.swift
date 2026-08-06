@@ -27,7 +27,7 @@ struct GlobalTestImage: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
     let schemaVersion: Int
     var testImages: [GlobalTestImage]
     var renderPresets: [StudioRenderPreset]
@@ -35,7 +35,7 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
 
     init(
         testImages: [GlobalTestImage] = [],
-        renderPresets: [StudioRenderPreset] = [],
+        renderPresets: [StudioRenderPreset] = StudioRenderPreset.builtIns,
         devices: [DeviceDefinition] = []
     ) {
         schemaVersion = Self.currentSchemaVersion
@@ -57,6 +57,18 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         guard renderPresets.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
             throw GlobalLibraryError.invalidEntity("Todos los presets necesitan nombre.")
         }
+        guard renderPresets.allSatisfy({ preset in
+            preset.format.supportedSignalRanges.contains(preset.signalRange)
+                && (preset.format.supportsAlpha || preset.alpha == .ignore)
+                && (preset.format.isMovie || !preset.includeAudio)
+                && ((preset.target == .sdr || preset.target == .hdr)
+                    ? preset.display != nil && preset.view != nil
+                    : preset.display == nil && preset.view == nil)
+        }) else {
+            throw GlobalLibraryError.invalidEntity(
+                "Un preset combina formato, rango, alpha, audio u ODT incompatibles."
+            )
+        }
     }
 }
 
@@ -68,7 +80,7 @@ enum GlobalLibraryError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .unsupportedSchema(version):
-            "La biblioteca global usa el esquema \(version); esta versión exige el esquema 2. La entidad queda bloqueada."
+            "La biblioteca global usa el esquema \(version); esta versión exige el esquema \(GlobalLibraryDocument.currentSchemaVersion). La entidad queda bloqueada."
         case let .invalidEntity(message), let .inaccessible(message): message
         }
     }
@@ -95,6 +107,7 @@ struct GlobalLibraryStore: Sendable {
     func load() throws -> GlobalLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
             let document = GlobalLibraryDocument(
+                renderPresets: StudioRenderPreset.builtIns,
                 devices: try RustDeviceCatalog.builtIns()
             )
             try document.validate()
@@ -120,8 +133,21 @@ struct GlobalLibraryStore: Sendable {
             )
             let migrated = GlobalLibraryDocument(
                 testImages: previous.testImages,
-                renderPresets: previous.renderPresets,
+                renderPresets: migratedPresets(previous.renderPresets),
                 devices: try RustDeviceCatalog.builtIns()
+            )
+            try migrated.validate()
+            try save(migrated)
+            return migrated
+        case 2:
+            let previous = try JSONDecoder().decode(
+                GlobalLibrarySchemaTwo.self,
+                from: data
+            )
+            let migrated = GlobalLibraryDocument(
+                testImages: previous.testImages,
+                renderPresets: migratedPresets(previous.renderPresets),
+                devices: previous.devices
             )
             try migrated.validate()
             try save(migrated)
@@ -141,6 +167,14 @@ struct GlobalLibraryStore: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(document).write(to: documentURL, options: .atomic)
     }
+
+    private func migratedPresets(
+        _ previous: [GlobalRenderPresetSchemaTwo]
+    ) -> [StudioRenderPreset] {
+        let existingIDs = Set(previous.map(\.id))
+        let seeded = StudioRenderPreset.builtIns.filter { !existingIDs.contains($0.id) }
+        return seeded + previous.map { $0.current }
+    }
 }
 
 private struct GlobalLibrarySchemaHeader: Decodable {
@@ -150,7 +184,45 @@ private struct GlobalLibrarySchemaHeader: Decodable {
 private struct GlobalLibrarySchemaOne: Decodable {
     let schemaVersion: Int
     let testImages: [GlobalTestImage]
-    let renderPresets: [StudioRenderPreset]
+    let renderPresets: [GlobalRenderPresetSchemaTwo]
+}
+
+private struct GlobalLibrarySchemaTwo: Decodable {
+    let schemaVersion: Int
+    let testImages: [GlobalTestImage]
+    let renderPresets: [GlobalRenderPresetSchemaTwo]
+    let devices: [DeviceDefinition]
+}
+
+private struct GlobalRenderPresetSchemaTwo: Decodable {
+    let id: UUID
+    let name: String
+    let pipeline: StudioRenderPipeline
+    let target: StudioRenderTarget
+    let peakNits: Double
+    let display: String?
+    let view: String?
+
+    var current: StudioRenderPreset {
+        if let builtIn = StudioRenderPreset.builtIns.first(where: { $0.id == id }) {
+            return builtIn
+        }
+        let isLinear = target == .acescg || target == .aces2065
+        return StudioRenderPreset(
+            id: id,
+            name: name,
+            pipeline: pipeline,
+            target: target,
+            peakNits: peakNits,
+            display: display,
+            view: view,
+            format: isLinear ? .openEXR : .proRes4444,
+            signalRange: .full,
+            alpha: isLinear ? .straight : .premultiplied,
+            includeAudio: false,
+            notes: ""
+        )
+    }
 }
 
 @MainActor
@@ -181,7 +253,7 @@ final class GlobalLibraryController: ObservableObject {
     }
 
     var allRenderPresets: [StudioRenderPreset] {
-        StudioRenderPreset.builtIns + document.renderPresets
+        document.renderPresets
     }
 
     var selectedDevice: DeviceDefinition? {
@@ -252,14 +324,22 @@ final class GlobalLibraryController: ObservableObject {
         guard let selectedPresetID,
               let index = document.renderPresets.firstIndex(where: { $0.id == selectedPresetID })
         else { return }
-        mutation(&document.renderPresets[index])
-        persistOrBlock()
+        var candidate = document
+        mutation(&candidate.renderPresets[index])
+        do {
+            try candidate.validate()
+            try persist(candidate)
+            document = candidate
+            blockedError = nil
+        } catch {
+            blockedError = error.localizedDescription
+        }
     }
 
     func removeSelectedPreset() {
         guard let selectedPresetID else { return }
         document.renderPresets.removeAll { $0.id == selectedPresetID }
-        self.selectedPresetID = allRenderPresets.first?.id
+        self.selectedPresetID = document.renderPresets.first?.id
         persistOrBlock()
     }
 
@@ -314,6 +394,10 @@ final class GlobalLibraryController: ObservableObject {
     }
 
     private func persist() throws {
+        try persist(document)
+    }
+
+    private func persist(_ document: GlobalLibraryDocument) throws {
         guard let store else { throw GlobalLibraryError.inaccessible("La biblioteca global no tiene destino.") }
         try store.save(document)
     }
