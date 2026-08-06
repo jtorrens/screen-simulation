@@ -6,6 +6,11 @@ import StudioVideoOutput
 import SwiftUI
 
 struct ContentView: View {
+    enum LibraryDeletion: String {
+        case testImage = "imagen de test"
+        case renderPreset = "preset de render"
+        case device = "device preset"
+    }
     enum WorkspacePage: String, CaseIterable, Identifiable {
         case main = "Principal"
         case device = "Device"
@@ -33,6 +38,7 @@ struct ContentView: View {
     @StateObject private var library = GlobalLibraryController()
     @State private var tab = SidebarTab.source
     @State private var page = WorkspacePage.main
+    @State private var pendingLibraryDeletion: LibraryDeletion?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,6 +92,25 @@ struct ContentView: View {
             )
         ) { Button("Aceptar") { model.errorMessage = nil } }
         message: { Text(model.errorMessage ?? "") }
+        .confirmationDialog(
+            "¿Eliminar \(pendingLibraryDeletion?.rawValue ?? "elemento")?",
+            isPresented: Binding(
+                get: { pendingLibraryDeletion != nil },
+                set: { if !$0 { pendingLibraryDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Eliminar", role: .destructive) {
+                switch pendingLibraryDeletion {
+                case .testImage: library.removeSelectedImage()
+                case .renderPreset: library.removeSelectedPreset()
+                case .device: library.removeSelectedDevice()
+                case nil: break
+                }
+                pendingLibraryDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) { pendingLibraryDeletion = nil }
+        }
     }
 
     private var mainWorkspace: some View {
@@ -120,8 +145,8 @@ struct ContentView: View {
             .formStyle(.grouped)
             .tabItem { Label("Aplicación", systemImage: "info.circle") }
 
-            globalCollections
-            .tabItem { Label("Colecciones", systemImage: "square.stack.3d.up") }
+            globalLibrary
+            .tabItem { Label("Biblioteca", systemImage: "books.vertical") }
 
             monitorSettings
             .tabItem { Label("Monitor", systemImage: "rectangle.connected.to.line.below") }
@@ -348,7 +373,7 @@ struct ContentView: View {
         .formStyle(.grouped)
     }
 
-    private var globalCollections: some View {
+    private var globalLibrary: some View {
         VStack(spacing: 0) {
             if let error = library.blockedError {
                 ContentUnavailableView(
@@ -387,7 +412,7 @@ struct ContentView: View {
                 HStack {
                     Button(action: library.addTestImage) { Image(systemName: "plus") }
                         .help("Añadir imagen PNG o EXR")
-                    Button(action: library.removeSelectedImage) { Image(systemName: "minus") }
+                    Button { pendingLibraryDeletion = .testImage } label: { Image(systemName: "trash") }
                         .disabled(library.selectedImageID == nil)
                         .help("Eliminar imagen seleccionada")
                     Spacer()
@@ -443,15 +468,14 @@ struct ContentView: View {
         HSplitView {
             VStack(spacing: 0) {
                 List(selection: $library.selectedPresetID) {
-                    Section("Incluidos") {
-                        ForEach(StudioRenderPreset.builtIns) { preset in
-                            Text(preset.name).tag(preset.id)
+                    ForEach(library.document.renderPresets) { preset in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(preset.name)
+                            Text("\(preset.pipeline.rawValue) · \(preset.target.rawValue)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                    }
-                    Section("Usuario") {
-                        ForEach(library.document.renderPresets) { preset in
-                            Text(preset.name).tag(preset.id)
-                        }
+                        .tag(preset.id)
                     }
                 }
                 HStack {
@@ -462,9 +486,11 @@ struct ContentView: View {
                     }
                     .disabled(library.selectedPresetID == nil)
                     .help("Duplicar preset")
-                    Button(action: library.removeSelectedPreset) { Image(systemName: "minus") }
-                        .disabled(!selectedPresetIsEditable)
-                        .help("Eliminar preset de usuario")
+                    Button { pendingLibraryDeletion = .renderPreset } label: {
+                        Image(systemName: "trash")
+                    }
+                    .disabled(library.selectedPresetID == nil)
+                    .help("Eliminar preset")
                     Spacer()
                 }
                 .buttonStyle(.borderless)
@@ -479,14 +505,65 @@ struct ContentView: View {
                             get: { preset.name },
                             set: { value in library.updateSelectedPreset { $0.name = value } }
                         ))
-                        .disabled(!selectedPresetIsEditable)
-                        LabeledContent("Pipeline", value: preset.pipeline.rawValue)
-                        LabeledContent("Destino", value: preset.target.rawValue)
+                        Picker("Pipeline", selection: Binding(
+                            get: { preset.pipeline },
+                            set: { value in updatePresetPipeline(value) }
+                        )) {
+                            Text("ACES").tag(StudioRenderPipeline.aces)
+                            Text("DaVinci Color Managed").tag(StudioRenderPipeline.davinciColorManaged)
+                        }
+                        Picker("Destino", selection: Binding(
+                            get: { preset.target },
+                            set: { value in updatePresetTarget(value) }
+                        )) {
+                            Text("SDR").tag(StudioRenderTarget.sdr)
+                            Text("HDR").tag(StudioRenderTarget.hdr)
+                            Text("ACES2065-1").tag(StudioRenderTarget.aces2065)
+                            Text("ACEScg").tag(StudioRenderTarget.acescg)
+                        }
                         TextField("Peak nits", value: Binding(
                             get: { preset.peakNits },
                             set: { value in library.updateSelectedPreset { $0.peakNits = value } }
                         ), format: .number)
-                        .disabled(!selectedPresetIsEditable)
+                        Picker("Formato / codec", selection: Binding(
+                            get: { preset.format },
+                            set: { value in
+                                library.updateSelectedPreset {
+                                    $0.format = value
+                                    $0.signalRange = value.supportedSignalRanges[0]
+                                    if !value.supportsAlpha { $0.alpha = .ignore }
+                                    if !value.isMovie { $0.includeAudio = false }
+                                }
+                            }
+                        )) {
+                            ForEach(StudioOutputFormat.allCases) { Text($0.displayName).tag($0) }
+                        }
+                        Picker("Rango", selection: Binding(
+                            get: { preset.signalRange },
+                            set: { value in library.updateSelectedPreset { $0.signalRange = value } }
+                        )) {
+                            ForEach(StudioSignalRange.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("Alpha", selection: Binding(
+                            get: { preset.alpha },
+                            set: { value in library.updateSelectedPreset { $0.alpha = value } }
+                        )) {
+                            ForEach(StudioAlphaMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        Toggle("Audio", isOn: Binding(
+                            get: { preset.includeAudio },
+                            set: { value in library.updateSelectedPreset { $0.includeAudio = value } }
+                        ))
+                        LabeledContent("ODT", value: preset.view ?? "Scene-linear · sin ODT")
+                        LabeledContent("Contenedor", value: preset.format.fileExtension.uppercased())
+                        Text(preset.authoritativeRoundtripNotes)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                        TextEditor(text: Binding(
+                            get: { preset.notes },
+                            set: { value in library.updateSelectedPreset { $0.notes = value } }
+                        ))
+                        .frame(minHeight: 70)
                         Text("El preset rellena opciones; los trabajos conservan sus valores resueltos.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -521,8 +598,8 @@ struct ContentView: View {
                     }
                     .disabled(library.selectedDeviceID == nil)
                     .help("Duplicar device")
-                    Button(action: library.removeSelectedDevice) {
-                        Image(systemName: "minus")
+                    Button { pendingLibraryDeletion = .device } label: {
+                        Image(systemName: "trash")
                     }
                     .disabled(library.selectedDeviceID == nil)
                     .help("Eliminar device")
@@ -537,6 +614,52 @@ struct ContentView: View {
                 deviceEditor(device)
             } else {
                 ContentUnavailableView("Sin device", systemImage: "display.slash")
+            }
+        }
+    }
+
+    private func updatePresetPipeline(_ pipeline: StudioRenderPipeline) {
+        library.updateSelectedPreset { preset in
+            preset.pipeline = pipeline
+            guard preset.target == .sdr || preset.target == .hdr else { return }
+            if preset.target == .sdr {
+                preset.display = "Rec.1886 Rec.709 - Display"
+                preset.view = pipeline == .aces
+                    ? "ACES 2.0 - SDR 100 nits (Rec.709)" : "Video (colorimetric)"
+            } else {
+                preset.display = "Rec.2100-PQ - Display"
+                preset.view = pipeline == .aces
+                    ? "ACES 2.0 - HDR 1000 nits (Rec.2020)" : "Video (colorimetric)"
+            }
+        }
+    }
+
+    private func updatePresetTarget(_ target: StudioRenderTarget) {
+        library.updateSelectedPreset { preset in
+            preset.target = target
+            switch target {
+            case .sdr:
+                preset.peakNits = 100
+                preset.display = "Rec.1886 Rec.709 - Display"
+                preset.view = preset.pipeline == .aces
+                    ? "ACES 2.0 - SDR 100 nits (Rec.709)" : "Video (colorimetric)"
+                preset.format = .proRes4444
+                preset.signalRange = .full
+            case .hdr:
+                preset.peakNits = 1_000
+                preset.display = "Rec.2100-PQ - Display"
+                preset.view = preset.pipeline == .aces
+                    ? "ACES 2.0 - HDR 1000 nits (Rec.2020)" : "Video (colorimetric)"
+                preset.format = .proRes4444
+                preset.signalRange = .full
+            case .aces2065, .acescg:
+                preset.peakNits = 0
+                preset.display = nil
+                preset.view = nil
+                preset.format = .openEXR
+                preset.signalRange = .full
+                preset.alpha = .straight
+                preset.includeAudio = false
             }
         }
     }
@@ -736,10 +859,6 @@ struct ContentView: View {
 
     private var selectedGlobalPreset: StudioRenderPreset? {
         library.allRenderPresets.first { $0.id == library.selectedPresetID }
-    }
-
-    private var selectedPresetIsEditable: Bool {
-        library.document.renderPresets.contains { $0.id == library.selectedPresetID }
     }
 
     @ToolbarContentBuilder

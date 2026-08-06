@@ -373,6 +373,10 @@ final class WorkspaceModel: ObservableObject {
     func applyRenderPreset(_ preset: StudioRenderPreset) {
         renderPreset = preset
         peakNits = preset.peakNits
+        changeOutputFormat(preset.format)
+        outputSignalRange = preset.signalRange
+        outputAlphaMode = preset.alpha
+        includeAudio = preset.includeAudio
     }
 
     func enqueueExport() {
