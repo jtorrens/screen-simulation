@@ -22,6 +22,7 @@ fn main() {
     assert!(compile.success(), "Metal shader compilation failed");
     let spatial_compile = Command::new("xcrun")
         .args(["-sdk", "macosx", "metal", "-c"])
+        .args(["-fmetal-math-mode=safe", "-ffp-contract=off"])
         .arg("shaders/spatial_optics.metal")
         .arg("-o")
         .arg(&spatial_air)

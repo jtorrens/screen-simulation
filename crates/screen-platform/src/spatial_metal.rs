@@ -613,9 +613,10 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
 mod tests {
     use super::*;
     use screen_application::{
-        DeviceSignalRaster, FrameCaptureRequest, OpticalRequest, PanelTemporalEvaluation,
-        PreparedDeviceSignalRaster, ProceduralTestPattern, RasterPlacement, RollingDirection,
-        SensorReadout, capture_and_develop_procedural_region_with_backend,
+        CAPTURE_DEVICE_PRESETS, DeviceSignalRaster, FrameCaptureRequest, OpticalRequest,
+        PanelTemporalEvaluation, PreparedDeviceSignalRaster, ProceduralTestPattern,
+        RasterPlacement, RollingDirection, SensorReadout,
+        capture_and_develop_procedural_region_with_backend,
         capture_and_develop_procedural_region_with_compute_backends,
         evaluate_device_signal_spatial_cpu_oracle, evaluate_procedural_spatial_cpu_oracle,
         prepare_device_signal_spatial_plan, prepare_procedural_spatial_plan,
@@ -627,10 +628,11 @@ mod tests {
     };
     use screen_geometry::{
         CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation,
-        LensModel, Quaternion, TransformKeyframe, TransformTrack,
+        LensModel, Quaternion, TransformKeyframe, TransformTrack, lens_preset,
     };
     use screen_panel::{
         AnalyticBanding, LcdProfile, PanelColorimetry, PanelTemporalEmission, StripeLayout,
+        device_preset,
     };
     use screen_sensor::{SensorProfile, SensorRegion};
     use std::collections::BTreeMap;
@@ -779,6 +781,93 @@ mod tests {
             let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
             assert_spatial_parity(&cpu, &gpu);
         }
+    }
+
+    #[test]
+    fn metal_matches_cpu_at_full_iphone_sensor_phase_with_resolved_uhd_panel() {
+        let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
+        let iphone = CAPTURE_DEVICE_PRESETS
+            .iter()
+            .find(|preset| preset.id == "iphone-16e-main-48mp")
+            .expect("current iPhone capture preset");
+        let device = device_preset("lcd-asus-proart-pa329cv").expect("current ASUS panel preset");
+        let time = RationalTime::new(0, 24).expect("valid time");
+        let distance = 0.15_f32;
+        let yaw_degrees = -5.0_f32;
+        let yaw = yaw_degrees.to_radians();
+        let mut request = request();
+        request.time = time;
+        request.viewport_aspect =
+            f32::from(iphone.sensor.native_width) / f32::from(iphone.sensor.native_height);
+        request.panel.native_width = device.native_width;
+        request.panel.native_height = device.native_height;
+        request.panel.active_width = device.active_width;
+        request.panel.active_height = device.active_height;
+        request.panel.white_level_nits = device.reference_white_nits;
+        request.cover = CoverGlassProfile::NEUTRAL;
+        request.environment = ProceduralEnvironment::NONE;
+        request.camera = CameraRig {
+            transform: TransformTrack {
+                keyframes: vec![TransformKeyframe {
+                    id: "full-sensor-camera".to_owned(),
+                    time,
+                    translation: Vec3 {
+                        x: distance * yaw.sin(),
+                        y: 0.0,
+                        z: distance * yaw.cos(),
+                    },
+                    rotation: Quaternion::from_orbit_yaw_pitch_degrees(yaw_degrees, 0.0),
+                    interpolation: KeyframeInterpolation::Hold,
+                }],
+            },
+            intrinsics: CameraIntrinsicsTrack {
+                keyframes: vec![CameraIntrinsicsKeyframe {
+                    id: "full-sensor-lens".to_owned(),
+                    time,
+                    focal_length: iphone.focal_length,
+                    sensor_width: iphone.gate_width,
+                    sensor_height: iphone.gate_height,
+                    lens_shift: Vec2 { x: 0.0, y: 0.0 },
+                    focus_distance: Meters(distance),
+                    f_stop: 1.6,
+                    near_clip: Meters(0.01),
+                    far_clip: Meters(100.0),
+                    lens: lens_preset(iphone.default_lens_preset_id)
+                        .expect("current iPhone integrated lens")
+                        .lens,
+                    interpolation: KeyframeInterpolation::Hold,
+                }],
+            },
+        };
+        request.screen = TransformTrack {
+            keyframes: vec![TransformKeyframe {
+                id: "full-sensor-screen".to_owned(),
+                time,
+                translation: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                rotation: Quaternion::from_yaw_degrees(0.0),
+                interpolation: KeyframeInterpolation::Hold,
+            }],
+        };
+        request.procedural_pattern = ProceduralTestPattern::EyeChart;
+        let region = SensorRegion {
+            origin_x: 5_600,
+            origin_y: 3_700,
+            width: 24,
+            height: 24,
+        };
+        let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), iphone.sensor, region)
+            .expect("CPU full-sensor-phase oracle");
+        let plan = prepare_procedural_spatial_plan(request, iphone.sensor, region)
+            .expect("full-sensor-phase spatial plan");
+        assert_eq!(plan.aperture_sample_count, 128);
+        let gpu = metal
+            .evaluate_spatial(&plan)
+            .expect("Metal full-sensor-phase result");
+        assert_spatial_parity(&cpu, &gpu);
     }
 
     #[test]

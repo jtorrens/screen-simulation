@@ -165,7 +165,10 @@ def bundle_native_shaders() -> None:
     air_files = []
     for source in METAL_SOURCES:
         air = RESOURCES / f"{source.stem}.air"
-        run(["xcrun", "-sdk", "macosx", "metal", "-c", str(source), "-o", str(air)])
+        compile_arguments = ["xcrun", "-sdk", "macosx", "metal", "-c"]
+        if source.name == "spatial_optics.metal":
+            compile_arguments.extend(["-fmetal-math-mode=safe", "-ffp-contract=off"])
+        run([*compile_arguments, str(source), "-o", str(air)])
         air_files.append(air)
     run(
         [
