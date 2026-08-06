@@ -5,9 +5,9 @@ struct PhysicalPipelineParams {
     uint4 source_panel; // source width, source height, panel width, panel height
     uint4 output_tile;  // output width, output height, tile origin y, sample side
     uint4 semantics;    // placement, stripe layout, reserved, reserved
-    float4 levels;      // gamma, black nits, white nits, amount
+    float4 levels;      // gamma, black nits, white nits, temporal calibrated gain
     float4 geometry;    // black matrix fraction, reserved...
-    float4 strengths;   // screen, emission, subpixel geometry, reserved
+    float4 strengths;   // screen, emission, subpixel geometry, temporal emission
     float4 matrix0;
     float4 matrix1;
     float4 matrix2;
@@ -233,6 +233,8 @@ kernel void evaluate_physical_pipeline(
         + p.strengths.y * (continuous - ideal.rgb)
         + p.strengths.z * (physical - continuous)
         + (spread - physical);
+    const float temporal_gain = 1.0f + p.strengths.w * (p.levels.w - 1.0f);
+    const float3 temporally_integrated = staged * temporal_gain;
     float3 selected;
     switch (p.semantics.z) {
         case 0: selected = ideal.rgb; break;
@@ -240,7 +242,7 @@ kernel void evaluate_physical_pipeline(
         case 2: selected = continuous; break;
         case 3: selected = physical; break;
         case 4: selected = spread; break;
-        default: selected = ideal.rgb + p.strengths.x * (staged - ideal.rgb); break;
+        default: selected = ideal.rgb + p.strengths.x * (temporally_integrated - ideal.rgb); break;
     }
     output.write(float4(selected, ideal.a), position);
 }

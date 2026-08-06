@@ -122,6 +122,7 @@ impl MetalPhysicalPipeline {
             plan.screen_amount,
             plan.emission_amount,
             plan.subpixel_geometry_amount,
+            plan.temporal_emission_amount,
         ]
         .into_iter()
         .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
@@ -226,7 +227,7 @@ impl MetalPhysicalPipeline {
                 plan.screen_amount,
                 plan.emission_amount,
                 plan.subpixel_geometry_amount,
-                0.0,
+                plan.temporal_emission_amount,
             ],
             matrix0: pad(values.native_to_acescg[0]),
             matrix1: pad(values.native_to_acescg[1]),
@@ -262,6 +263,7 @@ impl MetalPhysicalPipeline {
                 0.0,
             ],
         };
+        params.levels[3] = plan.temporal_emission_gain;
 
         let tile_count = sampling.effective_height.div_ceil(TILE_ROWS);
         for tile in 0..tile_count {
@@ -416,6 +418,8 @@ mod tests {
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                temporal_emission_amount: 0.0,
+                temporal_emission_gain: 1.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         )
@@ -515,6 +519,43 @@ mod tests {
             backend.evaluate(&source, &signal, active, |_| {}, || true),
             Err(MetalPhysicalPipelineError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn temporal_emission_matches_cpu_for_identity_calibrated_and_artistic_amounts() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for amount in [0.0, 1.0, 2.5] {
+            let (input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Rgb,
+                0.12,
+                1.0,
+            );
+            plan.temporal_emission_amount = amount;
+            plan.temporal_emission_gain = 0.91;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .map(|value| [value.r, value.g, value.b, 1.0])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let cpu =
+                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+                    .expect("CPU oracle");
+            let gpu = backend
+                .evaluate(&source, &signal, plan, |_| {}, || false)
+                .expect("Metal temporal result");
+            let maximum = read(&gpu.texture)
+                .iter()
+                .zip(&cpu.acescg)
+                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(maximum <= 2.0e-3, "temporal CPU/Metal deviation {maximum}");
+        }
     }
 
     #[test]

@@ -84,6 +84,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 screen_amount: 1.0,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                temporal_emission_amount: 1.0,
+                temporal_emission_gain: 1.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             };
             let mut first_tile = None;
