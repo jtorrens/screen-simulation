@@ -1,65 +1,113 @@
 # Unified native physical pipeline v2
 
-Status: implemented first functional cut; authoritative Rust/Metal handoff.
+Status: complete Rust/Metal migration cut for adoption by the native macOS shell.
 
-## Delivered contract
+Evidence date: 2026-08-06. Branch: `feature/physical-panel-spatial-v1`.
 
-The sole live C contract is ABI version 2. Version 1 types, symbols and runtime
-readers do not coexist with it. One coarse request owns the complete immutable
-meaning of a frame:
+## One contract and one product route
 
-1. source linear ACEScg and nonlinear Device Signal texture views;
-2. explicit Fit, FillCrop, Stretch or OneToOne placement;
-3. a resolved Device snapshot including emission, subpixel topology, temporal
-   data and the complete panel-light-spread profile;
-4. a resolved pipeline snapshot including cover, environment, scene/camera,
-   lens, shutter/readout/motion, sensor/noise and RAW development;
-5. ordered stage controls, requested quality and one typed intermediate;
-6. cancellation/progress identities and parameter revision/hash.
+ABI v2 is the only live physical-frame ABI. One coarse request carries ordered,
+immutable Source ACEScg and nonlinear Device Signal samples at exact rational
+times, explicit raster placement, retained Metal texture handles, camera and
+screen pose tracks, the exact shutter interval, an explicit source-sampling
+policy, resolved Device and pipeline snapshots, ordered contributions and one
+requested intermediate. Rust owns validation, temporal scheduling and the fixed
+stage order. Metal is the macOS product backend. CPU implementations are test
+oracles only and are never selected as a product fallback.
 
-Rust owns the fixed 12-stage order. Metal is the mandatory product backend;
-the scalar CPU evaluator remains an oracle for tests. Swift crosses the ABI
-once per job and never owns physical equations or Metal resources produced by
-an intermediate.
+The timed input set retains every borrowed Metal texture handle until the job
+completes or is cancelled, and releases it deterministically with the job-owned
+snapshot. Swift receives borrowed opaque result and diagnostic views; no Metal
+intermediate ownership crosses the ABI. There are no render-time callbacks,
+preset lookups, implicit defaults, compatibility readers or backend selectors.
 
-## Functional and unsupported stages
+`capture_amount` was removed from the layout: CFA and Develop are discrete
+stage enables, while Shutter and Noise have their own continuous amounts. A
+continuous capture-domain blend would have been physically false because RAW
+topology and sensor dimensions can change. `camera_target`, stored yaw and
+`screen_scale` are likewise absent. Position plus quaternion are the sole pose
+authority and Device active dimensions are the sole physical size authority.
 
-The first cut evaluates, in order:
+## Fixed executed pipeline
 
-1. Panel Emission;
-2. Subpixel Geometry;
-3. Panel Light Spread.
+```text
+Source ACEScg + Device Signal + placement
+  -> panel EOTF / black / luminance / native primaries
+  -> RGB or BGR subpixel geometry / fill / black matrix
+  -> physical panel light spread
+  -> rational temporal emission integral
+  -> cover glass transmission + synthetic HDR environment reflection
+  -> camera/screen geometry + generalized lens
+  -> exact global/rolling shutter integration and motion scheduling
+  -> sensor exposure + Bayer CFA + full well / clipping / ADC
+  -> deterministic shot / dark / read noise
+  -> RAW mosaic or edge-directed demosaic + WB + sensor-to-ACEScg develop
+  -> linear ACEScg result
+```
 
-Light spread is extracted from `b58525cec55d006879b5fb5e9f47399148378130`:
-the same 9 deterministic energy-normalized taps per channel, physical core and
-tail radii in micrometers, per-channel weights and contained LCD/OLED/micro-LED
-profiles. Amount 0 takes the exact unspread path, 1 is calibrated and values up
-to 4 scale physical radii safely. RGB/BGR remains a discrete topology.
+All stages above are implemented in the unified executor. ODT/view, media
+decode and StudioColor Source-to-Device remain deliberately outside physics.
+The request can return Source ACEScg, Device Signal, Panel Emission, Subpixel
+Radiance, Panel Light Spread, Cover/Environment, Scene/Geometry/Lens,
+Shutter/Motion, Sensor/Noise, RAW Mosaic or Developed ACEScg. Invalid domain or
+enable combinations fail explicitly.
 
-Temporal, Cover, Environment and every Capture stage require complete valid
-snapshots but reject nonzero/enabled controls. Their ordered diagnostics say
-`unsupported`; no shader, identity stub or CPU fallback pretends to process
-them.
+Panel light spread is extracted from `b58525cec55d006879b5fb5e9f47399148378130`:
+the historical energy-normalized nine taps per channel, physical core/tail
+radii in micrometers and resolved LCD/OLED/micro-LED profile. Temporal emission
+reuses the exact rational residual-flicker and optional analytic-banding model;
+bands are disabled by default. Cover/environment, geometry/lens, shutter,
+sensor/noise and camera development reuse the previously audited Rust/Metal
+authorities rather than parallel rewrites.
 
-Supported intermediate requests are Source ACEScg, Device Signal, Panel
-Emission, Subpixel Radiance, Panel Light Spread and the current Developed
-ACEScg endpoint. Requests for later intermediates fail explicitly. Each result
-reports the returned domain, dimensions, quality, progress, parameter identity
-and 12 ordered stage diagnostics. Current supported stages share one fused
-Metal dispatch, so their diagnostic time is the measured fused job duration,
-labelled as such rather than misreported as isolated stage timings.
+Static requests still provide one explicit Source/Device sample and constant
+pose tracks. Diagnostics report `STATIC_INPUT`; motion blur is claimed only
+when the supplied sample/pose history supports it. Multi-sample requests must
+cover the required shutter plus rolling-readout interval. Missing coverage is
+an error with required and available ranges—never frozen input or 2D blur.
 
-## Numeric validation
+## Contribution and quality semantics
 
-- Frozen 64-bit domain goldens cover all six supported intermediates.
-- CPU/Metal parity covers amounts 0, 1 and 2.5, negative and above-one RGB,
-  alpha, four placements, RGB/BGR, black-matrix extremes and all qualities.
-- Maximum accepted absolute CPU/Metal error remains `2e-3`; the shader uses
-  safe Metal math and float32 authoritative output.
-- Amount 0 returns the exact source texture for the final endpoint, including
-  float bits and alpha.
-- The light-spread kernel sums to one per channel; loss occurs only when energy
-  exits the finite panel boundary.
+- Continuous stages accept 0 through 4: zero is the exact stage bypass where
+  the domain permits it, one is calibrated, and values above one extrapolate
+  the historical model within validated limits.
+- RGB/BGR and Bayer/CFA are discrete. Develop is a discrete domain transition.
+  They are never interpolated as colors.
+- Draft, Medium, High and Native preserve placement, physical frame, exposure,
+  time domain and color meaning. Only the lattice/sample precision changes.
+- Native resolves the authoritative 3x3 panel subpixel lattice. Native remains
+  explicit/user-requested; progress, matching cancellation and parameter hash
+  permit stale-result handling by the host.
+
+## Diagnostics and timing
+
+Results contain twelve ordered stage diagnostics, progress/state, returned
+intermediate, effective result dimensions and parameter revision/hash. Stages
+0–8 are a single fused physical Metal kernel, so each reports the same measured
+group elapsed time; no fictional split is invented. Sensor/Noise/Develop are a
+second fused command group and report that measured group time. Failed and
+cancelled jobs publish no partial authoritative result.
+
+## Numeric evidence
+
+Workspace tests cover exact amount-zero identity, amounts 1 and greater than 1,
+negative and above-one RGB, alpha, all placements, RGB/BGR, black matrix, all
+four qualities, exact rational scheduling, constant and animated poses/sources,
+global and per-row rolling shutter, motion sample counts 1 and greater than 1,
+insufficient temporal coverage, retained-handle lifetime, cancellation and
+determinism. CPU/Metal coverage includes every physical cut. Spatial tolerance
+is absolute `2e-3` or relative `2e-4`; raw noise parity is one ADC code at noise
+zero and four codes with deterministic noise; developed ACEScg is `3e-4`.
+Frozen intermediate goldens include the distinct RAW and Developed domains.
+
+Latest complete gate on this branch:
+
+- `cargo fmt --all -- --check`: pass.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo test --workspace`: pass (57 application, 8 conformance, 30 platform,
+  9 sensor, 7 bridge, plus all other workspace suites).
+- `python3 scripts/check_architecture.py`: pass.
+- `git diff --check`: pass.
 
 ## Reproducible Metal benchmark
 
@@ -69,96 +117,99 @@ Command:
 cargo run --release -p screen-platform --example physical_pipeline_benchmark
 ```
 
-Measured 2026-08-06 on Apple M3 Ultra with one UHD RGBA32Float source and
-calibrated LCD light spread. Memory is exact allocated texture storage. Every
-time below is measured by that run; none is extrapolated.
+Measured 2026-08-06 on Apple M3 Ultra using two UHD 3840x2160 RGBA32Float input
+textures and the calibrated physical screen path. Setup was 1.736 ms. Times and
+allocated texture bytes are direct measurements from this run, not projections.
+The benchmark disables the later sensor command so these figures isolate the
+quality-dependent screen lattice; the capture stages have independent parity
+tests and stage-group timing diagnostics.
 
-| Device | Quality | Output | Samples/px | First tile | Total | Peak texture memory |
-|---|---:|---:|---:|---:|---:|---:|
-| Phone 4.7 Retina | Draft | 360×640 | 1 | 17.955 ms | 51.674 ms | 269,107,200 B |
-| Phone 4.7 Retina | Medium | 960×1708 | 4 | 2.024 ms | 33.225 ms | 291,655,680 B |
-| Phone 4.7 Retina | High | 1920×3415 | 16 | 5.448 ms | 125.456 ms | 370,329,600 B |
-| Phone 4.7 Retina | Native | 2250×4002 | 1 | 4.883 ms | 29.306 ms | 409,492,800 B |
-| MacBook Pro Retina 14 | Draft | 360×234 | 1 | 8.078 ms | 30.930 ms | 266,768,640 B |
-| MacBook Pro Retina 14 | Medium | 960×623 | 4 | 2.974 ms | 23.753 ms | 274,990,080 B |
-| MacBook Pro Retina 14 | High | 1920×1247 | 16 | 3.811 ms | 56.930 ms | 303,728,640 B |
-| MacBook Pro Retina 14 | Native | 9072×5892 | 1 | 27.588 ms | 100.149 ms | 1,120,656,384 B |
-| ASUS ProArt PA329CV | Draft | 360×203 | 1 | 11.922 ms | 34.452 ms | 266,590,080 B |
-| ASUS ProArt PA329CV | Medium | 960×540 | 4 | 2.876 ms | 21.875 ms | 273,715,200 B |
-| ASUS ProArt PA329CV | High | 1920×1080 | 16 | 4.276 ms | 54.327 ms | 298,598,400 B |
-| ASUS ProArt PA329CV | Native | 11520×6480 | 1 | 37.028 ms | 123.384 ms | 1,459,814,400 B |
+| Device | Quality | Output | Samples/px | Resolved | First tile | Total | Peak texture bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Phone 4.7 Retina | Draft | 360x640 | 1 | no | 16.877 ms | 45.622 ms | 269,107,200 |
+| Phone 4.7 Retina | Medium | 960x1708 | 4 | no | 2.205 ms | 36.650 ms | 291,655,680 |
+| Phone 4.7 Retina | High | 1920x3415 | 16 | no | 7.103 ms | 183.201 ms | 370,329,600 |
+| Phone 4.7 Retina | Native | 2250x4002 | 1 | yes | 5.183 ms | 39.203 ms | 409,492,800 |
+| MacBook Pro Retina 14 | Draft | 360x234 | 1 | no | 9.225 ms | 33.750 ms | 266,768,640 |
+| MacBook Pro Retina 14 | Medium | 960x623 | 4 | no | 3.046 ms | 26.640 ms | 274,990,080 |
+| MacBook Pro Retina 14 | High | 1920x1247 | 16 | no | 4.975 ms | 77.384 ms | 303,728,640 |
+| MacBook Pro Retina 14 | Native | 9072x5892 | 1 | yes | 28.062 ms | 124.870 ms | 1,120,656,384 |
+| ASUS ProArt PA329CV | Draft | 360x203 | 1 | no | 12.663 ms | 36.604 ms | 266,590,080 |
+| ASUS ProArt PA329CV | Medium | 960x540 | 4 | no | 3.198 ms | 25.015 ms | 273,715,200 |
+| ASUS ProArt PA329CV | High | 1920x1080 | 16 | no | 5.181 ms | 73.604 ms | 298,598,400 |
+| ASUS ProArt PA329CV | Native | 11520x6480 | 1 | yes | 37.060 ms | 153.506 ms | 1,459,814,400 |
 
-Quality preserves the full panel domain and placement. Draft, Medium and High
-change only output lattice and integration precision; Native resolves the
-authoritative 3×3 subpixel lattice.
+First-tile time includes the first completed 64-row work unit and can exceed
+total/throughput intuition because Metal warm-up and quality work differ. Native
+uses one resolved sample at each 3x3 subpixel lattice point; High uses sixteen
+integration samples at a smaller publication lattice.
 
-## Swift adoption QA
+## Legacy-to-unified disposition
 
-1. Build the native package against the v2 header and current static library;
-   any old-version type must fail at compile time.
-2. Materialize every snapshot field explicitly; never resolve a preset ID in
-   the frame worker or fill missing data with a default.
-3. Verify Fit letterbox, FillCrop crop, Stretch and centered OneToOne with the
-   same framing at all four qualities.
-4. Verify RGB and BGR impulse charts, black-matrix borders and per-channel
-   light-spread radii at 0, 1 and greater than 1.
-5. Verify negatives, values above 1 and alpha survive Source and final outputs;
-   Device Signal remains explicitly nonlinear.
-6. Request each supported intermediate and confirm `returned_intermediate`;
-   later intermediates must fail instead of returning the final texture.
-7. Exercise progress, matching and nonmatching cancellation identities,
-   failed jobs, Native stale publication and parameter revision/hash changes.
-8. Confirm all 12 diagnostics retain order; the first four process and
-   later stages remain explicitly unsupported.
+| Historical model | Current disposition | Material change / limitation |
+|---|---|---|
+| Source placement and Device Signal | Reused and migrated | StudioColor remains sole Device Signal authority. |
+| Emission/EOTF/color/angular response | Reused and migrated | Angular response now consumes quaternion scene geometry. |
+| Subpixels/RGB-BGR/fill/black matrix | Reused and migrated | Native 3x3 lattice is authoritative. |
+| Pixel bloom / Panel Light Spread | Extracted from `b58525c` and migrated | No blur fallback; finite-panel edge loss retained. |
+| Flicker and creative analytic banding | Reused and migrated | No panel scanout/persistence model is claimed. |
+| Cover glass and synthetic HDR environment | Reused and migrated | External HDR texture ingestion was not an implemented historical model. |
+| Camera/screen geometry and lens | Reused and migrated | Pose is position+quaternion only; no stored target/yaw/scale. |
+| Global/rolling shutter and motion | Reused and migrated | Requires explicit timed samples/tracks; no freeze fallback. |
+| Sensor, CFA, well, clipping, ADC and noise | Reused and migrated | Counter-based deterministic noise retained. |
+| RAW, demosaic, WB and ACEScg develop | Reused and migrated | RAW and Developed remain distinct typed domains. |
+| ODT/view | Outside physical engine | StudioColor authority retained. |
+| Keyframe evaluation | Contract/executor migrated | Timeline editor/import UI is a later host feature. |
+| Refresh mismatch, persistence, panel scanout | Future, never historically implemented | Must not be approximated by analytic banding. |
+| External camera import | Future product work | Timed pose tracks are ready; no importer is claimed. |
+| Stabilization/corner pin/baked device | Future, no historical implementation | Requires a separate domain decision. |
+| Sensor bloom/crosstalk | Future, documented only | No substitute blur is present. |
 
-## Temporal-emission migration
+No previously implemented physical model remains silently missing. Items in the
+last five rows are explicitly future or outside the physical engine.
 
-Panel temporal emission now reuses `PanelTemporalEmission::average_gain` as the
-exact rational CPU authority. The executor integrates the resolved residual
-flicker and optional analytic duty-cycle model over the explicit shutter
-interval before launching Metal. The shader receives only that materialized
-gain and applies it to panel emission after light spread; source alpha and
-environment light are not modulated. Stage amount zero is exact identity, one
-is calibrated, and values through four extrapolate the continuous deviation
-from unity. Residual flicker remains frame-uniform. The existing rolling-row
-phase is reserved for the shutter/motion cut, so no physical banding appears by
-default and no PWM subdivision has been reintroduced.
+## Swift adoption boundary and QA
 
-## Cover-glass and environment migration
+This physical branch contains the old full-platform Swift package graph. Its
+final executable/test link is not a valid gate here because that graph expects
+the historical FFmpeg/libav linkage. This migration deliberately does not add,
+restore or expose FFmpeg/libav to make it link. Header/C target and minimum Swift
+type compilation are the only local bridge gates. Final adoption must apply the
+physical commit range onto `feature/native-macos-shell`, preserving its
+`flat-panel-metal` feature isolation and approved no-FFmpeg gate; it must not
+enable Rust default/full-platform features.
 
-The unified executor now consumes the complete `CoverGlassProfile` and
-`ProceduralEnvironment` snapshots. The implementation is extracted from the
-existing `screen-cover` evaluator and `spatial_optics.metal`: Beer-Lambert
-absorption, Fresnel/AR reflection, thickness, roughness, haze, synthetic HDR
-patterns, rotation and calibrated radiance retain their original units. In the
-flat pre-camera domain the view cosine and reflection ray are orthographic;
-perspective-dependent refraction is applied by the following geometry/lens
-cut. Cover strength zero is exact transmission identity and environment
-strength zero contributes exactly no radiance. Temporal gain multiplies only
-panel emission, never the reflected environment.
+Local evidence: C header syntax, `swift build --target ScreenPhysicalBridge`
+and `swift build --target ScreenSimulationNative` pass. `swift test` reaches the
+final link and fails on unresolved historical `av*`/`sws*` symbols from this
+branch's old static-library graph. That failure is recorded, not repaired here.
 
-## Scene geometry and generalized lens migration
+Unified visual/functional QA for adoption:
 
-The geometry/lens cut reuses the historical quaternion camera basis, thin-lens
-aperture rays, certified inverse distortion, longitudinal and lateral
-chromatic aberration, cos-fourth/vignette response, RGB transmission and the
-sensor-space diffraction/softness footprint. Draft, Medium and High use nested
-1/4/16 ray samples through the existing physical quality lattice; Native keeps
-the fully resolved panel lattice. Amount zero preserves the exact flat result,
-one evaluates the resolved model and values above one use the existing
-`LensModel::with_character_strength` extrapolation with validation.
+1. Compare Source, Device Signal and every intermediate on negative, above-one
+   and alpha charts; ODT only after Developed ACEScg.
+2. Check Fit, FillCrop, Stretch and centered OneToOne at all qualities without
+   framing/domain drift.
+3. Check RGB/BGR impulses, fill factor, black matrix and per-channel light
+   spread at amounts 0, 1 and greater than 1.
+4. Check flicker uniformity, optional banding, environment isolation, cover
+   Fresnel/AR/roughness and rotated synthetic HDR patterns.
+5. Check identity quaternion, known yaw/pitch quaternion, device physical size,
+   focus plane, f-stop, distortion, CA, vignette and PSF.
+6. Check static, animated source, camera and screen tracks; global/rolling both
+   directions; missing temporal coverage must fail explicitly.
+7. Check four Bayer phases, clipping/full-well/ADC, deterministic seeds, noise
+   0/1/>1, RAW mosaic and Developed ACEScg.
+8. Exercise progress, matching/nonmatching cancellation, retained input lifetime,
+   stale Native publication and intermediate dimensions.
+9. Confirm twelve ordered diagnostics and honest fused-group timing labels.
+10. Prove with the native feature graph that no ABI v1, orphan shader/evaluator,
+    CPU fallback, FFmpeg/libav or default/full-platform dependency is reachable.
 
-The coordinated v2 binary layout no longer contains `camera_target`,
-`camera_yaw_degrees` or `screen_scale`. Position plus unit quaternion are the
-only camera-pose authority; target, yaw and pitch are derived diagnostics.
-Device `active_width`/`active_height` are the only physical screen-size
-authority. No adapter or alternative derivation path exists.
+## Commit range for native adoption
 
-## Honest limitations
-
-- Shutter/motion, sensor/noise and
-  RAW development are transported but not evaluated by this cut.
-- Supported-stage timing is fused job time, not isolated GPU counter timing.
-- Native memory is dominated by UHD input plus the 3×3 physical output lattice.
-- UI controls for the new snapshots and intermediate selector belong to the
-  coordinated Swift adoption and are intentionally not implemented here.
+Apply `c852ca8^..HEAD` from `feature/physical-panel-spatial-v1`. The range begins
+with the typed unified contract and includes migration, tests, diagnostics and
+documentation. The native-shell coordinator should resolve only Swift host-side
+UI/orchestration conflicts; Rust/Metal semantics and the ABI header are the
+authority from this range.

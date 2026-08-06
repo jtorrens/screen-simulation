@@ -12,19 +12,22 @@ contains immutable resolved Device and complete physical-pipeline snapshots;
 it never contains a dynamic preset reference or an implicit default.
 
 The ABI is coarse: one complete frame request creates one opaque job. Textures,
-frame inputs, jobs, Device profiles and results cross as opaque handles or
-immutable structs. There is no per-pixel call. One opaque frame-input handle
-carries two explicitly typed texture views and one placement value:
+timed input sets, jobs, Device profiles and results cross as opaque handles or
+immutable structs. There is no per-pixel call. One opaque timed-input-set
+handle carries ordered exact-time samples, each with two explicitly typed
+texture views, plus one placement and one explicit sampling policy:
 
 1. source linear ACEScg RGBA, after the authored IDT;
 2. nonlinear Device RGB signal, after StudioColor has resolved and applied the
    authored Source-to-Device transform;
-3. `Fit`, `FillCrop`, `Stretch` or `OneToOne` raster placement.
+3. `Fit`, `FillCrop`, `Stretch` or `OneToOne` raster placement;
+4. `Exact`, bounded `Floor` or bounded `Nearest` source sampling.
 
-The host retains the underlying Metal textures through the complete job
-lifetime. The bridge texture handles are non-owning views; creating an input
-does not duplicate either texture. The job owns its output and its borrowed
-result view remains valid until job release.
+The timed input set retains the underlying Metal texture handles through the
+complete job lifetime without copying pixels. The host may release its input
+wrappers after submit. Retained handles are released deterministically with the
+job-owned input snapshot after completion or cancellation. The job owns its
+output and its borrowed result view remains valid until job release.
 
 Swift orchestrates both input views. StudioColor alone resolves
 Source-to-Device. Screen emission and subpixel evaluation consume Device RGB;
@@ -63,15 +66,17 @@ The host never implements a generic RGB blend. Discrete stages carry an enabled
 state instead of a continuous amount. CFA/topology and other operations without
 a coherent interpolation remain discrete.
 
-Screen and Capture master amounts are the domain values themselves. They are
-not copied into another multiplier by the UI. Per-stage diagnostics report the
-same stable identifiers.
+The Screen master amount is not copied into another multiplier by the UI.
+Capture has no continuous master because CFA and Developed RAW are discrete
+domain transitions; Shutter and Noise expose their own continuous controls.
+Per-stage diagnostics report the same stable identifiers.
 
 ## Request, result and lifecycle
 
-`ScreenPhysicalFrameRequestV2` names one selected rational frame, opaque typed
-frame input, resolved Device handle, complete `ScreenPhysicalPipelineSnapshot`,
-quality, master and ordered stage contributions, requested dimensions, one
+`ScreenPhysicalFrameRequestV2` names one selected rational frame, an immutable
+ordered timed input set, exact camera/screen pose tracks and shutter interval,
+resolved Device handle, complete `ScreenPhysicalPipelineSnapshot`, quality,
+Screen master and ordered stage contributions, requested dimensions, one
 typed intermediate selector, cancellation/progress identities and the exact
 parameter revision/hash. The snapshot materializes cover, procedural
 environment, resolved scene/camera/lens, shutter/readout/motion, sensor/noise
@@ -85,11 +90,11 @@ same parameter revision/hash. Final and radiance intermediates are linear
 ACEScg; `DeviceSignal` retains its explicitly named nonlinear device domain.
 Result texture and diagnostic views are borrowed for the owning job lifetime.
 
-The currently functional cut evaluates Emission, Subpixel Geometry and Panel
-Light Spread. Their CPU implementation is an oracle only and Metal is the
-mandatory product backend. Temporal, Cover, Environment and all Capture stages
-must carry valid complete snapshots but are rejected if enabled; diagnostics
-report them as explicitly unsupported. No identity stub simulates their work.
+The functional cut evaluates every ordered Screen and Capture stage through the
+single Rust/Metal executor. Their CPU implementations remain oracles only and
+Metal is the mandatory product backend. Unsupported intermediate/enable
+combinations fail explicitly; no identity stub simulates work and no CPU route
+becomes a fallback.
 
 The states are `idle`, `stale`, `rendering`, `cancelled`, `failed` and
 `complete`. A completed Native result becomes stale when authored parameters
