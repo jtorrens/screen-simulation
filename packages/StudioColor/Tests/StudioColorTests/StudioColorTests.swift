@@ -1,0 +1,49 @@
+import StudioColor
+import Testing
+
+@Test func buildIdentityIsPinned() {
+    #expect(StudioColorBuildIdentity.ocioVersion == "2.5.2")
+    #expect(StudioColorBuildIdentity.configurationSHA256.count == 64)
+}
+
+@Test func cpuPipelinePreservesAlphaAndExtendedRangeUntilOutput() throws {
+    let pipeline = StudioColorPipeline()
+    let frame = try pipeline.prepareInput(
+        width: 2,
+        height: 1,
+        encodedRGBA: [-0.25, 0.18, 4.0, 0.5, 1.5, 0.0, 0.25, 1.0],
+        input: StudioColorInputTransform.catalog[2],
+        alpha: .straight
+    )
+    #expect(frame.premultipliedRGBA[0] < 0)
+    #expect(frame.premultipliedRGBA[2] > 1)
+    #expect(frame.premultipliedRGBA[3] == 0.5)
+}
+
+@Test @MainActor func metalMatchesCreditsCPUOracleForEveryOutput() throws {
+    let pipeline = StudioColorPipeline()
+    let display = try StudioColorMetalDisplay()
+    var rgba: [Float] = [
+        -0.25, 0.18, 4.0, 1,
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+        0, 0, 1, 1,
+    ]
+    for index in 0 ..< 4096 {
+        let value = Float(index) / 1024 - 1
+        rgba.append(contentsOf: [value, value * 0.37, value * 1.91, 1])
+    }
+    let frame = try StudioColorLinearFrame(
+        width: rgba.count / 4,
+        height: 1,
+        premultipliedRGBA: rgba
+    )
+    for output in StudioColorOutputTransform.catalog {
+        let gpu = try display.renderRGBA8(frame, output: output)
+        let cpu = try pipeline.cpuOracleRGBA8(frame, output: output)
+        let deltas = zip(gpu, cpu).map { abs(Int($0) - Int($1)) }
+        #expect(deltas.max() ?? 0 <= 1, Comment(rawValue: output.label))
+        let changed = deltas.filter { $0 != 0 }.count
+        #expect(Double(changed) / Double(deltas.count) <= 0.005, Comment(rawValue: output.label))
+    }
+}

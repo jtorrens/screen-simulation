@@ -2,9 +2,9 @@
 .idea/
 .vscode/
 build/
+**/.build/
 dist/
 out/
 target/
 *.user
 *.swp
-

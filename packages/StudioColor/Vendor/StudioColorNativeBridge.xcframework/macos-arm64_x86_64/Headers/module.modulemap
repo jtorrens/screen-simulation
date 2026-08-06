@@ -1,0 +1,9 @@
+module CreditsOCIOBridge {
+    header "CreditsOCIOBridge.h"
+    export *
+}
+
+module CreditsOpenEXRBridge {
+    header "CreditsOpenEXRBridge.h"
+    export *
+}
