@@ -23,6 +23,11 @@ struct PhysicalPipelineParams {
     matrix0: [f32; 4],
     matrix1: [f32; 4],
     matrix2: [f32; 4],
+    panel_size_meters: [f32; 4],
+    spread_core_radius: [f32; 4],
+    spread_core_weight: [f32; 4],
+    spread_tail_radius: [f32; 4],
+    spread_tail_weight: [f32; 4],
 }
 
 pub struct MetalPhysicalPipeline {
@@ -125,6 +130,9 @@ impl MetalPhysicalPipeline {
                 "amount must be finite and inside 0..=4".to_owned(),
             ));
         }
+        plan.panel_light_spread
+            .validate()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         if is_cancelled() {
             return Err(MetalPhysicalPipelineError::Cancelled);
         }
@@ -205,6 +213,36 @@ impl MetalPhysicalPipeline {
             matrix0: pad(values.native_to_acescg[0]),
             matrix1: pad(values.native_to_acescg[1]),
             matrix2: pad(values.native_to_acescg[2]),
+            panel_size_meters: [
+                plan.panel.active_width.0,
+                plan.panel.active_height.0,
+                0.0,
+                0.0,
+            ],
+            spread_core_radius: [
+                plan.panel_light_spread.core_radius_micrometers.r,
+                plan.panel_light_spread.core_radius_micrometers.g,
+                plan.panel_light_spread.core_radius_micrometers.b,
+                plan.panel_light_spread.character_strength,
+            ],
+            spread_core_weight: [
+                plan.panel_light_spread.core_weight.r,
+                plan.panel_light_spread.core_weight.g,
+                plan.panel_light_spread.core_weight.b,
+                0.0,
+            ],
+            spread_tail_radius: [
+                plan.panel_light_spread.tail_radius_micrometers.r,
+                plan.panel_light_spread.tail_radius_micrometers.g,
+                plan.panel_light_spread.tail_radius_micrometers.b,
+                0.0,
+            ],
+            spread_tail_weight: [
+                plan.panel_light_spread.tail_weight.r,
+                plan.panel_light_spread.tail_weight.g,
+                plan.panel_light_spread.tail_weight.b,
+                0.0,
+            ],
         };
 
         let tile_count = sampling.effective_height.div_ceil(TILE_ROWS);
@@ -260,7 +298,7 @@ mod tests {
         evaluate_physical_pipeline_cpu_oracle,
     };
     use screen_contracts::{DeviceRgb, Meters};
-    use screen_panel::{DEVICE_PRESETS, FlatPanelQuality};
+    use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile};
 
     fn texture(device: &DeviceRef, width: u32, height: u32, values: &[[f32; 4]]) -> Texture {
         let descriptor = TextureDescriptor::new();
@@ -352,6 +390,7 @@ mod tests {
             },
             PhysicalPipelineExecutionPlan {
                 panel,
+                panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
                 placement,
                 quality,
                 requested_width: 12,
@@ -382,45 +421,51 @@ mod tests {
             ] {
                 for layout in [StripeLayout::Rgb, StripeLayout::Bgr] {
                     for matrix in [0.0, 0.45] {
-                        let (input, plan) = fixture(placement, quality, layout, matrix, 1.5);
-                        let source = texture(&device, input.width, input.height, &input.acescg);
-                        let signal_values = input
-                            .device_signal
-                            .pixels
-                            .iter()
-                            .map(|value| [value.r, value.g, value.b, 1.0])
-                            .collect::<Vec<_>>();
-                        let signal = texture(&device, input.width, input.height, &signal_values);
-                        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
-                            input,
-                            plan,
-                        })
-                        .expect("CPU oracle");
-                        let mut progress = Vec::new();
-                        let gpu = backend
-                            .evaluate(
-                                &source,
-                                &signal,
-                                plan,
-                                |value| progress.push(value),
-                                || false,
-                            )
-                            .expect("Metal result");
-                        assert_eq!(
-                            (gpu.texture.width(), gpu.texture.height()),
-                            (u64::from(cpu.width), u64::from(cpu.height))
-                        );
-                        assert_eq!(progress.last().copied(), Some(1.0));
-                        let actual = read(&gpu.texture);
-                        let maximum = actual
-                            .iter()
-                            .zip(&cpu.acescg)
-                            .flat_map(|(gpu, cpu)| {
-                                gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs())
-                            })
-                            .fold(0.0_f32, f32::max);
-                        suite_maximum = suite_maximum.max(maximum);
-                        assert!(maximum <= 2.0e-3, "maximum CPU/Metal deviation {maximum}");
+                        for spread_amount in [0.0, 1.0, 2.5] {
+                            let (input, mut plan) =
+                                fixture(placement, quality, layout, matrix, 1.5);
+                            plan.panel_light_spread.character_strength = spread_amount;
+                            let source = texture(&device, input.width, input.height, &input.acescg);
+                            let signal_values = input
+                                .device_signal
+                                .pixels
+                                .iter()
+                                .map(|value| [value.r, value.g, value.b, 1.0])
+                                .collect::<Vec<_>>();
+                            let signal =
+                                texture(&device, input.width, input.height, &signal_values);
+                            let cpu =
+                                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                                    input,
+                                    plan,
+                                })
+                                .expect("CPU oracle");
+                            let mut progress = Vec::new();
+                            let gpu = backend
+                                .evaluate(
+                                    &source,
+                                    &signal,
+                                    plan,
+                                    |value| progress.push(value),
+                                    || false,
+                                )
+                                .expect("Metal result");
+                            assert_eq!(
+                                (gpu.texture.width(), gpu.texture.height()),
+                                (u64::from(cpu.width), u64::from(cpu.height))
+                            );
+                            assert_eq!(progress.last().copied(), Some(1.0));
+                            let actual = read(&gpu.texture);
+                            let maximum = actual
+                                .iter()
+                                .zip(&cpu.acescg)
+                                .flat_map(|(gpu, cpu)| {
+                                    gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs())
+                                })
+                                .fold(0.0_f32, f32::max);
+                            suite_maximum = suite_maximum.max(maximum);
+                            assert!(maximum <= 2.0e-3, "maximum CPU/Metal deviation {maximum}");
+                        }
                     }
                 }
             }

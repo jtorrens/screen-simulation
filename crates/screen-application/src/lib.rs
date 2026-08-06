@@ -34,7 +34,7 @@ use screen_geometry::{
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{
     FlatPanelGeometry, FlatPanelQuality, FlatPanelSampling, LcdProfile, PanelError,
-    ValidatedPanelEvaluator,
+    PanelLightSpreadProfile, ValidatedPanelEvaluator,
 };
 use screen_sensor::{
     BayerPattern, CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
@@ -174,6 +174,7 @@ pub struct PhysicalPipelineRequest {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalPipelineExecutionPlan {
     pub panel: LcdProfile,
+    pub panel_light_spread: PanelLightSpreadProfile,
     pub placement: RasterPlacement,
     pub quality: FlatPanelQuality,
     pub requested_width: u32,
@@ -324,6 +325,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     {
         return Err(ApplicationError::InvalidCharacterStrength);
     }
+    plan.panel_light_spread
+        .validate()
+        .map_err(ApplicationError::Panel)?;
     let geometry = request
         .plan
         .panel
@@ -375,6 +379,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     for y in 0..sampling.effective_height {
         for x in 0..sampling.effective_width {
             let mut physical_native = LinearRgb::new(0.0, 0.0, 0.0);
+            let mut spread_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut continuous_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut ideal = [0.0_f32; 4];
             for sy in 0..side {
@@ -406,24 +411,71 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         x: maximum_uv.x * plan.panel.native_width as f32,
                         y: maximum_uv.y * plan.panel.native_height as f32,
                     };
-                    physical_native.r += evaluator.native_channel_over_device_rect(
-                        area.device_code,
-                        device_minimum,
-                        device_maximum,
-                        0,
-                    );
-                    physical_native.g += evaluator.native_channel_over_device_rect(
-                        area.device_code,
-                        device_minimum,
-                        device_maximum,
-                        1,
-                    );
-                    physical_native.b += evaluator.native_channel_over_device_rect(
-                        area.device_code,
-                        device_minimum,
-                        device_maximum,
-                        2,
-                    );
+                    for channel in 0..3 {
+                        let base = evaluator.native_channel_over_device_rect(
+                            area.device_code,
+                            device_minimum,
+                            device_maximum,
+                            channel,
+                        );
+                        let value = if plan.panel_light_spread.character_strength == 0.0 {
+                            base
+                        } else {
+                            plan.panel_light_spread
+                                .samples_for_channel(channel)
+                                .into_iter()
+                                .map(|sample| {
+                                    let offset = Vec2 {
+                                        x: sample.offset_meters.x / plan.panel.active_width.0,
+                                        y: sample.offset_meters.y / plan.panel.active_height.0,
+                                    };
+                                    let shifted_minimum = Vec2 {
+                                        x: minimum_uv.x + offset.x,
+                                        y: minimum_uv.y + offset.y,
+                                    };
+                                    let shifted_maximum = Vec2 {
+                                        x: maximum_uv.x + offset.x,
+                                        y: maximum_uv.y + offset.y,
+                                    };
+                                    let shifted = sample_placed_area(
+                                        &prepared.integral,
+                                        &emission_integral,
+                                        source_raster,
+                                        device_raster,
+                                        plan.placement,
+                                        shifted_minimum,
+                                        shifted_maximum,
+                                    );
+                                    evaluator.native_channel_over_device_rect(
+                                        shifted.device_code,
+                                        Vec2 {
+                                            x: shifted_minimum.x * plan.panel.native_width as f32,
+                                            y: shifted_minimum.y * plan.panel.native_height as f32,
+                                        },
+                                        Vec2 {
+                                            x: shifted_maximum.x * plan.panel.native_width as f32,
+                                            y: shifted_maximum.y * plan.panel.native_height as f32,
+                                        },
+                                        channel,
+                                    ) * sample.weight
+                                })
+                                .sum::<f32>()
+                        };
+                        match channel {
+                            0 => {
+                                physical_native.r += base;
+                                spread_native.r += value;
+                            }
+                            1 => {
+                                physical_native.g += base;
+                                spread_native.g += value;
+                            }
+                            _ => {
+                                physical_native.b += base;
+                                spread_native.b += value;
+                            }
+                        }
+                    }
                     continuous_native.r += area.linear_native_emission.r;
                     continuous_native.g += area.linear_native_emission.g;
                     continuous_native.b += area.linear_native_emission.b;
@@ -445,6 +497,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             physical_native.r *= reciprocal;
             physical_native.g *= reciprocal;
             physical_native.b *= reciprocal;
+            spread_native.r *= reciprocal;
+            spread_native.g *= reciprocal;
+            spread_native.b *= reciprocal;
             continuous_native.r *= reciprocal;
             continuous_native.g *= reciprocal;
             continuous_native.b *= reciprocal;
@@ -480,16 +535,33 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * continuous_native.b)
                     / parameters.white_level_nits,
             ];
+            let spread = [
+                (matrix[0][0] * spread_native.r
+                    + matrix[0][1] * spread_native.g
+                    + matrix[0][2] * spread_native.b)
+                    / parameters.white_level_nits,
+                (matrix[1][0] * spread_native.r
+                    + matrix[1][1] * spread_native.g
+                    + matrix[1][2] * spread_native.b)
+                    / parameters.white_level_nits,
+                (matrix[2][0] * spread_native.r
+                    + matrix[2][1] * spread_native.g
+                    + matrix[2][2] * spread_native.b)
+                    / parameters.white_level_nits,
+            ];
             let staged = [
                 ideal[0]
                     + plan.emission_amount * (continuous[0] - ideal[0])
-                    + plan.subpixel_geometry_amount * (physical[0] - continuous[0]),
+                    + plan.subpixel_geometry_amount * (physical[0] - continuous[0])
+                    + (spread[0] - physical[0]),
                 ideal[1]
                     + plan.emission_amount * (continuous[1] - ideal[1])
-                    + plan.subpixel_geometry_amount * (physical[1] - continuous[1]),
+                    + plan.subpixel_geometry_amount * (physical[1] - continuous[1])
+                    + (spread[1] - physical[1]),
                 ideal[2]
                     + plan.emission_amount * (continuous[2] - ideal[2])
-                    + plan.subpixel_geometry_amount * (physical[2] - continuous[2]),
+                    + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
+                    + (spread[2] - physical[2]),
             ];
             output.push([
                 ideal[0] + plan.screen_amount * (staged[0] - ideal[0]),
@@ -5576,6 +5648,10 @@ mod tests {
             },
             plan: PhysicalPipelineExecutionPlan {
                 panel,
+                panel_light_spread: PanelLightSpreadProfile {
+                    character_strength: 0.0,
+                    ..PanelLightSpreadProfile::LCD_DESKTOP
+                },
                 placement,
                 quality,
                 requested_width: 4,

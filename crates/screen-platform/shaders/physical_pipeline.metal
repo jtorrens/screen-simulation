@@ -11,6 +11,11 @@ struct PhysicalPipelineParams {
     float4 matrix0;
     float4 matrix1;
     float4 matrix2;
+    float4 panel_size_meters;
+    float4 spread_core_radius;
+    float4 spread_core_weight;
+    float4 spread_tail_radius;
+    float4 spread_tail_weight;
 };
 
 inline float2 placement_scale(constant PhysicalPipelineParams& p) {
@@ -108,6 +113,60 @@ inline float continuous_channel(float code, constant PhysicalPipelineParams& p) 
     return p.levels.y + span * sign(code) * pow(abs(code), p.levels.x);
 }
 
+inline float native_channel_at_offset(
+    texture2d<float, access::read> device_signal,
+    uint channel,
+    float2 device_minimum,
+    float2 device_maximum,
+    float2 offset_uv,
+    constant PhysicalPipelineParams& p
+) {
+    const float2 shifted_minimum = device_minimum + offset_uv;
+    const float2 shifted_maximum = device_maximum + offset_uv;
+    const float4 code = area_sample(device_signal, shifted_minimum, shifted_maximum, p);
+    return native_channel(
+        code[channel],
+        channel,
+        shifted_minimum * float2(p.source_panel.zw),
+        shifted_maximum * float2(p.source_panel.zw),
+        p
+    );
+}
+
+inline float spread_native_channel(
+    texture2d<float, access::read> device_signal,
+    uint channel,
+    float2 device_minimum,
+    float2 device_maximum,
+    constant PhysicalPipelineParams& p
+) {
+    const float strength = p.spread_core_radius.w;
+    if (strength == 0.0f) {
+        return native_channel_at_offset(
+            device_signal, channel, device_minimum, device_maximum, float2(0.0f), p
+        );
+    }
+    const float core_weight = p.spread_core_weight[channel];
+    const float tail_weight = p.spread_tail_weight[channel];
+    const float2 inverse_panel = 1.0f / p.panel_size_meters.xy;
+    const float core = p.spread_core_radius[channel] * strength * 1.0e-6f;
+    const float tail = p.spread_tail_radius[channel] * strength * 0.7071067811865475f * 1.0e-6f;
+    float value = native_channel_at_offset(
+        device_signal, channel, device_minimum, device_maximum, float2(0.0f), p
+    ) * (1.0f - core_weight - tail_weight);
+    const float core_sample = core_weight * 0.25f;
+    const float tail_sample = tail_weight * 0.25f;
+    value += native_channel_at_offset(device_signal, channel, device_minimum, device_maximum, float2(core, 0.0f) * inverse_panel, p) * core_sample;
+    value += native_channel_at_offset(device_signal, channel, device_minimum, device_maximum, float2(-core, 0.0f) * inverse_panel, p) * core_sample;
+    value += native_channel_at_offset(device_signal, channel, device_minimum, device_maximum, float2(0.0f, core) * inverse_panel, p) * core_sample;
+    value += native_channel_at_offset(device_signal, channel, device_minimum, device_maximum, float2(0.0f, -core) * inverse_panel, p) * core_sample;
+    value += native_channel_at_offset(device_signal, channel, device_minimum, device_maximum, float2(tail, tail) * inverse_panel, p) * tail_sample;
+    value += native_channel_at_offset(device_signal, channel, device_minimum, device_maximum, float2(-tail, tail) * inverse_panel, p) * tail_sample;
+    value += native_channel_at_offset(device_signal, channel, device_minimum, device_maximum, float2(tail, -tail) * inverse_panel, p) * tail_sample;
+    value += native_channel_at_offset(device_signal, channel, device_minimum, device_maximum, float2(-tail, -tail) * inverse_panel, p) * tail_sample;
+    return value;
+}
+
 kernel void evaluate_physical_pipeline(
     texture2d<float, access::read> source_acescg [[texture(0)]],
     texture2d<float, access::read> device_signal [[texture(1)]],
@@ -120,6 +179,7 @@ kernel void evaluate_physical_pipeline(
     const uint side = p.output_tile.w;
     float4 ideal = 0.0f;
     float3 native = 0.0f;
+    float3 spread_native = 0.0f;
     float3 continuous_native = 0.0f;
     for (uint sy = 0; sy < side; ++sy) {
         for (uint sx = 0; sx < side; ++sx) {
@@ -136,6 +196,9 @@ kernel void evaluate_physical_pipeline(
             native.x += native_channel(code.x, 0, device_minimum, device_maximum, p);
             native.y += native_channel(code.y, 1, device_minimum, device_maximum, p);
             native.z += native_channel(code.z, 2, device_minimum, device_maximum, p);
+            spread_native.x += spread_native_channel(device_signal, 0, minimum_uv, maximum_uv, p);
+            spread_native.y += spread_native_channel(device_signal, 1, minimum_uv, maximum_uv, p);
+            spread_native.z += spread_native_channel(device_signal, 2, minimum_uv, maximum_uv, p);
             continuous_native += float3(
                 continuous_channel(code.x, p),
                 continuous_channel(code.y, p),
@@ -146,6 +209,7 @@ kernel void evaluate_physical_pipeline(
     const float reciprocal = 1.0f / float(side * side);
     ideal *= reciprocal;
     native *= reciprocal;
+    spread_native *= reciprocal;
     continuous_native *= reciprocal;
     const float3 physical = float3(
         dot(p.matrix0.xyz, native),
@@ -157,9 +221,15 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix1.xyz, continuous_native),
         dot(p.matrix2.xyz, continuous_native)
     ) / p.levels.z;
+    const float3 spread = float3(
+        dot(p.matrix0.xyz, spread_native),
+        dot(p.matrix1.xyz, spread_native),
+        dot(p.matrix2.xyz, spread_native)
+    ) / p.levels.z;
     const float3 staged = ideal.rgb
         + p.strengths.y * (continuous - ideal.rgb)
-        + p.strengths.z * (physical - continuous);
+        + p.strengths.z * (physical - continuous)
+        + (spread - physical);
     output.write(
         float4(ideal.rgb + p.strengths.x * (staged - ideal.rgb), ideal.a),
         position

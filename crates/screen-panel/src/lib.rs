@@ -1483,6 +1483,39 @@ mod tests {
     }
 
     #[test]
+    fn light_spread_kernels_conserve_energy_and_scale_physical_radius() {
+        for profile in [
+            PanelLightSpreadProfile::LCD_MOBILE,
+            PanelLightSpreadProfile::LCD_DESKTOP,
+            PanelLightSpreadProfile::LCD_TV,
+            PanelLightSpreadProfile::OLED_CONTAINED,
+            PanelLightSpreadProfile::MICRO_LED_CONTAINED,
+        ] {
+            profile.validate().expect("valid spread profile");
+            for channel in 0..3 {
+                let samples = profile.samples_for_channel(channel);
+                let sum = samples.iter().map(|sample| sample.weight).sum::<f32>();
+                assert!((sum - 1.0).abs() <= 2.0e-7);
+            }
+        }
+        let mut identity = PanelLightSpreadProfile::LCD_DESKTOP;
+        identity.character_strength = 0.0;
+        assert!(
+            identity.samples_for_channel(0).iter().all(|sample| {
+                sample.offset_meters == screen_contracts::Vec2 { x: 0.0, y: 0.0 }
+            })
+        );
+        let calibrated = PanelLightSpreadProfile::LCD_DESKTOP.samples_for_channel(0);
+        let mut artistic = PanelLightSpreadProfile::LCD_DESKTOP;
+        artistic.character_strength = 2.5;
+        let artistic = artistic.samples_for_channel(0);
+        assert_eq!(
+            artistic[1].offset_meters.x,
+            calibrated[1].offset_meters.x * 2.5
+        );
+    }
+
+    #[test]
     fn rear_face_never_emits_even_with_lambertian_zero_power() {
         let mut panel = profile();
         panel.angular_emission_power = LinearRgb::new(0.0, 0.0, 0.0);
