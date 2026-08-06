@@ -471,6 +471,8 @@ struct ModelInspectorView: View {
                 section: section,
                 pipeline: workspace.physicalPipelineState
             )
+        case .exposureShutter:
+            CaptureShutterMotionDetails(pipeline: workspace.physicalPipelineState)
         default:
             Text("Etapa conectada al snapshot físico resuelto.")
                 .font(.caption)
