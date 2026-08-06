@@ -9,6 +9,7 @@ typedef struct ScreenPhysicalPipeline *ScreenPhysicalPipelineRef;
 typedef struct ScreenDeviceProfile *ScreenDeviceProfileRef;
 typedef struct ScreenCoverGlassProfile *ScreenCoverGlassProfileRef;
 typedef struct ScreenPhysicalTexture *ScreenPhysicalTextureRef;
+typedef struct ScreenPhysicalFrameInput *ScreenPhysicalFrameInputRef;
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 
 #define SCREEN_PHYSICAL_FRAME_ABI_VERSION 1u
@@ -59,6 +60,13 @@ typedef enum {
     SCREEN_PHYSICAL_STATE_COMPLETE = 5,
 } ScreenPhysicalFrameState;
 
+typedef enum {
+    SCREEN_PHYSICAL_RASTER_FIT = 0,
+    SCREEN_PHYSICAL_RASTER_FILL_CROP = 1,
+    SCREEN_PHYSICAL_RASTER_STRETCH = 2,
+    SCREEN_PHYSICAL_RASTER_ONE_TO_ONE = 3,
+} ScreenPhysicalRasterPlacement;
+
 typedef struct {
     uint64_t high;
     uint64_t low;
@@ -83,7 +91,7 @@ typedef struct {
     int64_t frame_index;
     int64_t frame_time_numerator;
     uint32_t frame_time_denominator;
-    ScreenPhysicalTextureRef acescg_texture;
+    ScreenPhysicalFrameInputRef input;
     ScreenDeviceProfileRef resolved_device;
     uint32_t quality;
     float screen_amount;
@@ -222,16 +230,26 @@ bool screen_physical_pipeline_process_rgba32f(
 
 /*
  * Physical-frame ABI v1. These declarations are the single UI/engine contract.
- * Input and result textures contain linear ACEScg RGBA. The engine never applies
- * a preview, DeckLink or render ODT. Texture/result views are borrowed for the
- * documented lifetime of their owning opaque handle; no per-pixel ABI exists.
+ * The opaque input carries both the source linear ACEScg RGBA texture and the
+ * nonlinear device-signal RGB texture resolved by StudioColor, plus explicit
+ * raster placement. Result textures contain linear ACEScg RGBA. The engine
+ * never applies a preview, DeckLink or render ODT. Texture/result views are
+ * borrowed for the documented lifetime of their owning opaque handle; no
+ * per-pixel ABI exists.
  */
-ScreenPhysicalTextureRef screen_physical_texture_create_from_metal(
+ScreenPhysicalTextureRef screen_physical_texture_create_borrowed_metal(
     const void *metal_texture,
     const char **error_message
 );
 const void *screen_physical_texture_borrow_metal(ScreenPhysicalTextureRef texture);
 void screen_physical_texture_release(ScreenPhysicalTextureRef texture);
+ScreenPhysicalFrameInputRef screen_physical_frame_input_create(
+    ScreenPhysicalTextureRef source_acescg,
+    ScreenPhysicalTextureRef device_signal,
+    uint32_t raster_placement,
+    const char **error_message
+);
+void screen_physical_frame_input_release(ScreenPhysicalFrameInputRef input);
 ScreenPhysicalFrameJobRef screen_physical_frame_submit(
     const ScreenPhysicalFrameRequestV1 *request,
     const char **error_message

@@ -53,10 +53,13 @@ backend selector or fallback between the two shells or color implementations.
 
 The candidate's one physical-frame boundary is the versioned coarse ABI in
 `ScreenPhysicalBridge.h`, specified by `Docs/NATIVE_PHYSICAL_FRAME_CONTRACT.md`.
-It carries one selected frame from an opaque linear-ACEScg input texture and an
-immutable resolved Device snapshot through ordered Screen and Capture domains
-to one opaque linear-ACEScg result texture. Rust/Metal owns physical stage
-semantics; Swift owns only request orchestration and presentation state.
+It carries one selected frame through an opaque input containing the source
+linear-ACEScg texture, the nonlinear Device RGB texture resolved by StudioColor
+and one explicit raster-placement policy. An immutable resolved Device snapshot
+then crosses ordered Screen and Capture domains to one opaque linear-ACEScg
+result texture. Screen consumes Device RGB and placement; Capture consumes the
+physical Screen result. Rust/Metal owns physical stage semantics; Swift owns
+only request orchestration and presentation state.
 Preview, ColorSync, DeckLink and render output transforms remain downstream of
 this boundary and cannot appear as physical contributions.
 

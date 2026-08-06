@@ -12,6 +12,14 @@ import Testing
         SCREEN_PHYSICAL_STAGE_SCREEN_EMISSION.rawValue)
     #expect(CapturePhysicalSection.developDemosaic.rawValue ==
         SCREEN_PHYSICAL_STAGE_CAPTURE_DEVELOP_DEMOSAIC.rawValue)
+    #expect(PhysicalRasterPlacement.allCases.map(\.rawValue) == [0, 1, 2, 3])
+    #expect(PhysicalRasterPlacement.fit.rawValue == SCREEN_PHYSICAL_RASTER_FIT.rawValue)
+    #expect(PhysicalRasterPlacement.fillCrop.rawValue ==
+        SCREEN_PHYSICAL_RASTER_FILL_CROP.rawValue)
+    #expect(PhysicalRasterPlacement.stretch.rawValue ==
+        SCREEN_PHYSICAL_RASTER_STRETCH.rawValue)
+    #expect(PhysicalRasterPlacement.oneToOne.rawValue ==
+        SCREEN_PHYSICAL_RASTER_ONE_TO_ONE.rawValue)
     #expect(PhysicalQuality.allCases.map(\.rawValue) == [0, 1, 2, 3])
     #expect(PhysicalDomainID.allCases.map(\.rawValue) == [0x100, 0x200])
     #expect(PhysicalStageID.ordered.map(\.id) == [

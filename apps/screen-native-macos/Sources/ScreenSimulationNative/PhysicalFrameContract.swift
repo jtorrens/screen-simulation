@@ -152,15 +152,34 @@ struct PhysicalParameterHash: Equatable, Sendable {
     }
 }
 
+enum PhysicalRasterPlacement: UInt32, CaseIterable, Identifiable, Sendable {
+    case fit = 0
+    case fillCrop = 1
+    case stretch = 2
+    case oneToOne = 3
+
+    var id: UInt32 { rawValue }
+}
+
 struct PhysicalACEScgTexture: @unchecked Sendable {
     let reference: ScreenPhysicalTextureRef
+}
+
+struct PhysicalDeviceSignalTexture: @unchecked Sendable {
+    let reference: ScreenPhysicalTextureRef
+}
+
+struct PhysicalFrameInput: @unchecked Sendable {
+    let sourceACEScg: PhysicalACEScgTexture
+    let deviceSignal: PhysicalDeviceSignalTexture
+    let rasterPlacement: PhysicalRasterPlacement
 }
 
 struct PhysicalFrameRequest: @unchecked Sendable {
     static let abiVersion = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
 
     let frame: PhysicalFrameSelection
-    let inputACEScg: PhysicalACEScgTexture
+    let input: PhysicalFrameInput
     let resolvedDevice: ResolvedDevice
     let quality: PhysicalQuality
     let screenAmount: Double
@@ -174,7 +193,7 @@ struct PhysicalFrameRequest: @unchecked Sendable {
 
     init(
         frame: PhysicalFrameSelection,
-        inputACEScg: PhysicalACEScgTexture,
+        input: PhysicalFrameInput,
         resolvedDevice: ResolvedDevice,
         quality: PhysicalQuality,
         screenAmount: Double,
@@ -192,7 +211,7 @@ struct PhysicalFrameRequest: @unchecked Sendable {
             throw PhysicalContractError.invalidStageOrder
         }
         self.frame = frame
-        self.inputACEScg = inputACEScg
+        self.input = input
         self.resolvedDevice = resolvedDevice
         self.quality = quality
         self.screenAmount = screenAmount

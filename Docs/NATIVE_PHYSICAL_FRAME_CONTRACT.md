@@ -12,10 +12,27 @@ contains an immutable resolved Device snapshot and never a dynamic preset
 reference.
 
 The ABI is coarse: one complete frame request creates one opaque job. Textures,
-jobs, Device profiles and results cross as opaque handles or immutable structs.
-There is no per-pixel call. The input and output texture meanings are linear
-ACEScg RGBA. Preview transforms, ColorSync, DeckLink and render ODTs are outside
-the physical engine and run only after its result.
+frame inputs, jobs, Device profiles and results cross as opaque handles or
+immutable structs. There is no per-pixel call. One opaque frame-input handle
+carries two explicitly typed texture views and one placement value:
+
+1. source linear ACEScg RGBA, after the authored IDT;
+2. nonlinear Device RGB signal, after StudioColor has resolved and applied the
+   authored Source-to-Device transform;
+3. `Fit`, `FillCrop`, `Stretch` or `OneToOne` raster placement.
+
+The host retains the underlying Metal textures through the complete job
+lifetime. The bridge texture handles are non-owning views; creating an input
+does not duplicate either texture. The job owns its output and its borrowed
+result view remains valid until job release.
+
+Swift orchestrates both input views. StudioColor alone resolves
+Source-to-Device. Screen emission and subpixel evaluation consume Device RGB;
+raster sampling consumes the explicit placement; the source ACEScg view is the
+identity/bypass signal and is not reinterpreted as Device RGB. Capture consumes
+the physical Screen result, never either source encoding directly. The final
+physical output is linear ACEScg. Preview transforms, ColorSync, DeckLink and
+render ODTs are outside the physical engine and run only after its result.
 
 Version 1 has two ordered domains:
 
@@ -51,8 +68,8 @@ same stable identifiers.
 
 ## Request, result and lifecycle
 
-`ScreenPhysicalFrameRequestV1` names one selected rational frame, input ACEScg
-texture, resolved Device handle, quality, master and ordered stage
+`ScreenPhysicalFrameRequestV1` names one selected rational frame, opaque typed
+frame input, resolved Device handle, quality, master and ordered stage
 contributions, requested dimensions, cancellation/progress identities and the
 exact parameter revision/hash.
 
@@ -71,4 +88,3 @@ partial authoritative frame.
 Draft, Medium, High and Native preserve scene parameters, framing, geometry,
 exposure and output color meaning. Quality changes precision only. Native is
 explicit; the other qualities may be automatically scheduled by the host.
-

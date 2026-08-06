@@ -2,7 +2,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::ffi::{c_char, c_float};
+use std::ffi::{c_char, c_float, c_void};
 
 use screen_application::{ProceduralTestPattern, diagnostic_signal};
 use screen_contracts::{DeviceRgb, LinearRgb, Meters, RationalTime, Vec2};
@@ -13,9 +13,167 @@ use screen_panel::{
 };
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ScreenUtf8View {
     bytes: *const u8,
     count: usize,
+}
+
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 1;
+pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
+pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
+pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;
+pub const SCREEN_PHYSICAL_RASTER_STRETCH: u32 = 2;
+pub const SCREEN_PHYSICAL_RASTER_ONE_TO_ONE: u32 = 3;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalTexture {
+    metal_texture: *const c_void,
+}
+
+pub struct ScreenPhysicalFrameInput {
+    source_acescg: ScreenPhysicalTexture,
+    device_signal: ScreenPhysicalTexture,
+    raster_placement: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalIdentity128 {
+    high: u64,
+    low: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalStageContributionV1 {
+    abi_version: u32,
+    domain_id: u32,
+    stage_id: u32,
+    control_semantics: u32,
+    amount: f32,
+    visual_minimum: f32,
+    visual_maximum: f32,
+    safe_maximum: f32,
+    discrete_enabled: bool,
+    exact_identity_at_zero: bool,
+    reserved: [u8; 2],
+}
+
+#[repr(C)]
+pub struct ScreenPhysicalFrameRequestV1 {
+    abi_version: u32,
+    frame_index: i64,
+    frame_time_numerator: i64,
+    frame_time_denominator: u32,
+    input: *const ScreenPhysicalFrameInput,
+    resolved_device: *const ScreenDeviceProfile,
+    quality: u32,
+    screen_amount: f32,
+    capture_amount: f32,
+    stage_contributions: *const ScreenPhysicalStageContributionV1,
+    stage_contribution_count: usize,
+    requested_width: u32,
+    requested_height: u32,
+    cancellation_identity: ScreenPhysicalIdentity128,
+    progress_identity: ScreenPhysicalIdentity128,
+    parameter_revision: u64,
+    parameter_hash: [u8; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalStageDiagnosticV1 {
+    abi_version: u32,
+    domain_id: u32,
+    stage_id: u32,
+    state: u32,
+    progress: f32,
+    message: ScreenUtf8View,
+}
+
+#[repr(C)]
+pub struct ScreenPhysicalFrameResultV1 {
+    abi_version: u32,
+    acescg_texture: *const ScreenPhysicalTexture,
+    native_width: u32,
+    native_height: u32,
+    effective_width: u32,
+    effective_height: u32,
+    computed_quality: u32,
+    state: u32,
+    progress: f32,
+    stage_diagnostics: *const ScreenPhysicalStageDiagnosticV1,
+    stage_diagnostic_count: usize,
+    parameter_revision: u64,
+    parameter_hash: [u8; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_texture_create_borrowed_metal(
+    metal_texture: *const c_void,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalTexture {
+    if metal_texture.is_null() {
+        unsafe { set_error(error_message, b"missing borrowed Metal texture\0") };
+        return std::ptr::null_mut();
+    }
+    unsafe { set_error(error_message, b"\0") };
+    Box::into_raw(Box::new(ScreenPhysicalTexture { metal_texture }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_texture_borrow_metal(
+    texture: *const ScreenPhysicalTexture,
+) -> *const c_void {
+    if texture.is_null() {
+        return std::ptr::null();
+    }
+    // SAFETY: the non-null wrapper is borrowed for this call.
+    unsafe { (*texture).metal_texture }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_texture_release(texture: *mut ScreenPhysicalTexture) {
+    if !texture.is_null() {
+        // SAFETY: the ABI requires the uniquely owned wrapper returned by create.
+        unsafe { drop(Box::from_raw(texture)) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_frame_input_create(
+    source_acescg: *const ScreenPhysicalTexture,
+    device_signal: *const ScreenPhysicalTexture,
+    raster_placement: u32,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalFrameInput {
+    if source_acescg.is_null()
+        || device_signal.is_null()
+        || raster_placement > SCREEN_PHYSICAL_RASTER_ONE_TO_ONE
+    {
+        unsafe { set_error(error_message, b"invalid physical frame input\0") };
+        return std::ptr::null_mut();
+    }
+    // SAFETY: both non-null texture wrappers are borrowed for this call. The
+    // copied views do not duplicate the underlying Metal textures.
+    let source_acescg = unsafe { *source_acescg };
+    let device_signal = unsafe { *device_signal };
+    unsafe { set_error(error_message, b"\0") };
+    Box::into_raw(Box::new(ScreenPhysicalFrameInput {
+        source_acescg,
+        device_signal,
+        raster_placement,
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_frame_input_release(input: *mut ScreenPhysicalFrameInput) {
+    if !input.is_null() {
+        // SAFETY: the ABI requires the uniquely owned input returned by create.
+        unsafe { drop(Box::from_raw(input)) };
+    }
 }
 
 #[repr(C)]
@@ -681,6 +839,61 @@ mod tests {
         });
         assert_eq!(values.map(f32::to_bits), expected);
         unsafe { screen_physical_pipeline_release(pipeline) };
+    }
+
+    #[test]
+    fn physical_frame_input_keeps_both_typed_texture_views_and_placement() {
+        let source_storage = 1_u8;
+        let device_storage = 2_u8;
+        let source_pointer = (&source_storage as *const u8).cast::<c_void>();
+        let device_pointer = (&device_storage as *const u8).cast::<c_void>();
+        let mut error = std::ptr::null();
+        let source =
+            unsafe { screen_physical_texture_create_borrowed_metal(source_pointer, &mut error) };
+        let device =
+            unsafe { screen_physical_texture_create_borrowed_metal(device_pointer, &mut error) };
+        assert!(!source.is_null());
+        assert!(!device.is_null());
+        let input = unsafe {
+            screen_physical_frame_input_create(
+                source,
+                device,
+                SCREEN_PHYSICAL_RASTER_FILL_CROP,
+                &mut error,
+            )
+        };
+        assert!(!input.is_null());
+        unsafe {
+            screen_physical_texture_release(source);
+            screen_physical_texture_release(device);
+        }
+        // SAFETY: the input owns copied non-owning views until release.
+        assert_eq!(
+            unsafe { (*input).source_acescg.metal_texture },
+            source_pointer
+        );
+        // SAFETY: the input owns copied non-owning views until release.
+        assert_eq!(
+            unsafe { (*input).device_signal.metal_texture },
+            device_pointer
+        );
+        // SAFETY: the input remains live until the final release below.
+        assert_eq!(
+            unsafe { (*input).raster_placement },
+            SCREEN_PHYSICAL_RASTER_FILL_CROP
+        );
+        unsafe { screen_physical_frame_input_release(input) };
+
+        let invalid = unsafe {
+            screen_physical_frame_input_create(
+                std::ptr::null(),
+                std::ptr::null(),
+                SCREEN_PHYSICAL_RASTER_ONE_TO_ONE + 1,
+                &mut error,
+            )
+        };
+        assert!(invalid.is_null());
+        assert!(!error.is_null());
     }
 
     #[test]

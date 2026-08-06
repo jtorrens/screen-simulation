@@ -23,6 +23,15 @@ The current incident environment is one complete synthetic linear-HDR profile ow
 
 The source transform and panel EOTF must never linearize the same signal twice. `screen-color` resolves named transformations and reference processing. `screen-panel` alone converts the final device signal into physical emission.
 
+The native macOS physical-frame input therefore carries two distinct typed
+texture views in one opaque handle: the source linear ACEScg texture used for
+identity/bypass, and the nonlinear Device RGB texture produced by StudioColor
+after the explicit Source-to-Device transform. It also carries the authored
+`Fit`, `FillCrop`, `Stretch` or `OneToOne` placement. Screen sampling consumes
+placement and Device RGB; it never derives Device RGB from ACEScg internally.
+Capture consumes the physical Screen result. Neither domain may reinterpret
+one texture as the other or infer placement from raster dimensions.
+
 Media transports declared primaries, transfer characteristic, matrix coefficients and range as typed metadata without interpreting them. `screen-color` may return one proposal only for a complete exact metadata pattern that it owns. A proposal is visible UI information and never becomes an authored selection. The persisted authored selection is authoritative. Missing, conflicting, unsupported or unknown required interpretation blocks evaluation. `Identity` is a valid explicit Source-to-Device selection; it is never an implicit fallback. Named transforms are stable application identifiers resolved only by `screen-color` against the one bundled OCIO configuration. The desktop receives the catalog labels and proposal from `screen-color`; it does not reproduce OCIO names or color rules.
 
 Alpha association is an independent authored decision. `Auto` accepts only unambiguous association metadata; otherwise evaluation blocks. `Straight` and `Premultiplied` are explicit overrides for absent or incorrect metadata. `Ignore` is a third explicit interpretation: it discards the alpha channel and treats the decoded RGB as fully opaque; it is never selected automatically. Before the source color processor, straight RGB remains unassociated and premultiplied RGB is unassociated explicitly; zero-alpha premultiplied samples resolve to zero unassociated RGB. After the color processor, associated modes use their unchanged alpha over the current explicit opaque-black target, while `Ignore` remains opaque. Alpha interpretation never selects an IDT.
