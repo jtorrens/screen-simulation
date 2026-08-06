@@ -122,6 +122,12 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         }
     }
 
+    /// Resolves and compiles the one authoritative OCIO/Metal display graph
+    /// before application state adopts a new viewer transform.
+    public func prepare(_ output: StudioColorOutputTransform) throws {
+        _ = try displayResources(output, pixelFormat: .rgba16Float)
+    }
+
     public func present(
         _ frame: StudioColorLinearFrame,
         output: StudioColorOutputTransform,
@@ -183,9 +189,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
                 ))
             }
             command.commit()
-        } catch {
-            assertionFailure(error.localizedDescription)
-        }
+        } catch {}
     }
 
     private nonisolated static func completionHandler(

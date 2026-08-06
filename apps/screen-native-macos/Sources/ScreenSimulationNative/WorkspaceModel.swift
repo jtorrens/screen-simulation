@@ -263,6 +263,12 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func changePreview(_ value: StudioColorOutputTransform, undoManager: UndoManager?) {
+        do {
+            try metalDisplay.prepare(value)
+        } catch {
+            errorMessage = "No se puede activar \(value.label): \(error.localizedDescription)"
+            return
+        }
         let prior = previewTransform
         undoManager?.registerUndo(withTarget: self) { target in
             Task { @MainActor in target.changePreview(prior, undoManager: nil) }
