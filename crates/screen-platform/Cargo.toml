@@ -20,3 +20,6 @@ screen-sensor = { path = "../screen-sensor" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.33"
+
+[dev-dependencies]
+half = "2.7.1"
