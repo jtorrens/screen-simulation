@@ -38,27 +38,80 @@ public enum StudioAlphaMode: String, Codable, CaseIterable, Identifiable, Sendab
     }
 }
 
+public enum StudioMetadataProvenance: String, Codable, Sendable {
+    case detected
+    case proposed
+    case defaulted
+
+    public var feminineLabel: String {
+        switch self {
+        case .detected: "Detectada"
+        case .proposed: "Propuesta"
+        case .defaulted: "Predeterminada"
+        }
+    }
+
+    public var masculineLabel: String {
+        switch self {
+        case .detected: "Detectado"
+        case .proposed: "Propuesto"
+        case .defaulted: "Predeterminado"
+        }
+    }
+}
+
+public struct StudioInputTransformProposal: Equatable, Sendable {
+    public let id: String
+    public let provenance: StudioMetadataProvenance
+
+    public init(id: String, provenance: StudioMetadataProvenance) {
+        self.id = id
+        self.provenance = provenance
+    }
+}
+
 public struct StudioMediaDetection: Equatable, Sendable {
     public var proposedInputTransformID: String?
+    public var inputTransformProvenance: StudioMetadataProvenance?
     public var matrix: StudioSignalMatrix?
+    public var matrixProvenance: StudioMetadataProvenance?
     public var range: StudioSignalRange?
+    public var rangeProvenance: StudioMetadataProvenance?
     public var hasAlpha: Bool
     public var alpha: StudioAlphaMode?
+    public var alphaProvenance: StudioMetadataProvenance?
+    public var declaredPrimaries: String?
+    public var declaredTransfer: String?
+    public var declaredMatrix: String?
     public var note: String?
 
     public init(
         proposedInputTransformID: String? = nil,
+        inputTransformProvenance: StudioMetadataProvenance? = nil,
         matrix: StudioSignalMatrix? = nil,
+        matrixProvenance: StudioMetadataProvenance? = nil,
         range: StudioSignalRange? = nil,
+        rangeProvenance: StudioMetadataProvenance? = nil,
         hasAlpha: Bool = false,
         alpha: StudioAlphaMode? = nil,
+        alphaProvenance: StudioMetadataProvenance? = nil,
+        declaredPrimaries: String? = nil,
+        declaredTransfer: String? = nil,
+        declaredMatrix: String? = nil,
         note: String? = nil
     ) {
         self.proposedInputTransformID = proposedInputTransformID
+        self.inputTransformProvenance = inputTransformProvenance
         self.matrix = matrix
+        self.matrixProvenance = matrixProvenance
         self.range = range
+        self.rangeProvenance = rangeProvenance
         self.hasAlpha = hasAlpha
         self.alpha = alpha
+        self.alphaProvenance = alphaProvenance
+        self.declaredPrimaries = declaredPrimaries
+        self.declaredTransfer = declaredTransfer
+        self.declaredMatrix = declaredMatrix
         self.note = note
     }
 }
@@ -77,14 +130,42 @@ public enum StudioMediaMetadataDetector {
     public static func proposedInputTransformID(
         primaries: String?, transfer: String?, matrix: String?
     ) -> String? {
-        let value = [primaries, transfer, matrix]
-            .compactMap { $0?.lowercased() }.joined(separator: " ")
-        if value.contains("2020") && (value.contains("2084") || value.contains("pq")) {
-            return "display-rec2100-pq-aces2-hdr-1000"
+        inputTransformProposal(
+            primaries: primaries, transfer: transfer, matrix: matrix
+        )?.id
+    }
+
+    public static func inputTransformProposal(
+        primaries: String?, transfer: String?, matrix: String?
+    ) -> StudioInputTransformProposal? {
+        let primaries = primaries?.lowercased() ?? ""
+        let transfer = transfer?.lowercased() ?? ""
+        let matrix = matrix?.lowercased() ?? ""
+        let has2020Primaries = primaries.contains("2020")
+        let has2020Matrix = matrix.contains("2020")
+        let hasPQ = transfer.contains("2084") || transfer.contains("pq")
+        if has2020Primaries, has2020Matrix, hasPQ {
+            return .init(
+                id: "display-rec2100-pq-aces2-hdr-1000",
+                provenance: .detected
+            )
         }
-        if value.contains("709") { return "display-rec709-aces2-sdr" }
-        if value.contains("srgb") || value.contains("s-rgb") {
-            return "display-srgb-aces2-sdr"
+        let has709Primaries = primaries.contains("709")
+        let has709Matrix = matrix.contains("709")
+        let has709Transfer = transfer.contains("709")
+            || transfer.contains("1886") || transfer.contains("gamma 2.4")
+        if has709Primaries, has709Matrix {
+            return .init(
+                id: "display-rec709-aces2-sdr",
+                provenance: has709Transfer ? .detected : .proposed
+            )
+        }
+        if primaries.contains("srgb") || primaries.contains("s-rgb")
+            || transfer.contains("srgb") || transfer.contains("s-rgb") {
+            return .init(
+                id: "display-srgb-aces2-sdr",
+                provenance: .detected
+            )
         }
         return nil
     }
@@ -120,14 +201,22 @@ public enum StudioMediaMetadataDetector {
              kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange: .video
         default: nil
         }
+        let proposal = inputTransformProposal(
+            primaries: primaries, transfer: transfer, matrix: ycbcr
+        )
         return StudioMediaDetection(
-            proposedInputTransformID: proposedInputTransformID(
-                primaries: primaries, transfer: transfer, matrix: ycbcr
-            ),
+            proposedInputTransformID: proposal?.id,
+            inputTransformProvenance: proposal?.provenance,
             matrix: proposedMatrix(ycbcr),
+            matrixProvenance: ycbcr == nil ? nil : .detected,
             range: range,
+            rangeProvenance: range == nil ? nil : .detected,
             hasAlpha: hasAlpha,
-            alpha: alpha
+            alpha: alpha,
+            alphaProvenance: alpha == nil ? nil : .detected,
+            declaredPrimaries: primaries,
+            declaredTransfer: transfer,
+            declaredMatrix: ycbcr
         )
     }
 
@@ -144,9 +233,13 @@ public enum StudioMediaMetadataDetector {
             ? "display-srgb-aces2-sdr" : nil
         return StudioMediaDetection(
             proposedInputTransformID: input,
+            inputTransformProvenance: input == nil ? nil : .detected,
             range: .full,
+            rangeProvenance: .detected,
             hasAlpha: hasAlpha,
-            alpha: hasAlpha && sourceType == "public.png" ? .straight : (hasAlpha ? nil : .ignore)
+            alpha: hasAlpha && sourceType == "public.png" ? .straight : (hasAlpha ? nil : .ignore),
+            alphaProvenance: hasAlpha && sourceType != "public.png" ? nil : .detected,
+            declaredPrimaries: profile
         )
     }
 

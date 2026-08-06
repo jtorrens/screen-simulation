@@ -136,7 +136,7 @@ final class WorkspaceModel: ObservableObject {
 
     func inputAnnotation(_ value: StudioColorInputTransform) -> String? {
         if value.id == detection.proposedInputTransformID {
-            return sourceIsPattern ? "Propuesta" : "Detectada"
+            return detection.inputTransformProvenance?.feminineLabel ?? "Propuesta"
         }
         return detection.proposedInputTransformID == nil && value.id == defaultInputTransformID
             ? "Predeterminada" : nil
@@ -144,21 +144,21 @@ final class WorkspaceModel: ObservableObject {
 
     func alphaAnnotation(_ value: StudioAlphaMode) -> String? {
         if value == detection.alpha {
-            return sourceIsPattern ? "Propuesto" : "Detectado"
+            return detection.alphaProvenance?.masculineLabel ?? "Propuesto"
         }
         return detection.alpha == nil && value == defaultAlphaMode ? "Predeterminado" : nil
     }
 
     func matrixAnnotation(_ value: StudioSignalMatrix) -> String? {
         if value == detection.matrix {
-            return sourceIsPattern ? "Propuesta" : "Detectada"
+            return detection.matrixProvenance?.feminineLabel ?? "Propuesta"
         }
         return detection.matrix == nil && value == defaultSignalMatrix ? "Predeterminada" : nil
     }
 
     func rangeAnnotation(_ value: StudioSignalRange) -> String? {
         if value == detection.range {
-            return sourceIsPattern ? "Propuesto" : "Detectado"
+            return detection.rangeProvenance?.masculineLabel ?? "Propuesto"
         }
         return detection.range == nil && value == defaultSignalRange ? "Predeterminado" : nil
     }
@@ -174,8 +174,15 @@ final class WorkspaceModel: ObservableObject {
         sourceName = pattern.label
         sourceDetail = "Patrón SCREEN canónico"
         detection = StudioMediaDetection(
-            proposedInputTransformID: "input-rec709", range: .full,
-            hasAlpha: false, alpha: .ignore
+            proposedInputTransformID: "input-rec709",
+            inputTransformProvenance: .proposed,
+            matrix: .bt709,
+            matrixProvenance: .proposed,
+            range: .full,
+            rangeProvenance: .proposed,
+            hasAlpha: false,
+            alpha: .ignore,
+            alphaProvenance: .proposed
         )
         inputTransform = StudioColorInputTransform.catalog.first { $0.id == "input-rec709" }!
         alphaMode = .ignore
