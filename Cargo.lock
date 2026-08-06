@@ -4523,6 +4523,7 @@ dependencies = [
  "image",
  "screen-application",
  "screen-contracts",
+ "screen-cover",
  "screen-panel",
 ]
 

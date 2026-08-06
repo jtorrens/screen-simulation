@@ -6,6 +6,7 @@ use std::ffi::{c_char, c_float};
 
 use screen_application::{ProceduralTestPattern, diagnostic_signal};
 use screen_contracts::{DeviceRgb, LinearRgb, Meters, RationalTime, Vec2};
+use screen_cover::{COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile};
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, LcdProfile, PanelColorimetry, PanelTechnology,
     PanelTemporalEmission, ResidualFlicker, StripeLayout, ValidatedPanelEvaluator,
@@ -53,6 +54,24 @@ pub struct ScreenDeviceProfile {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenCoverGlassParametersV1 {
+    abi_version: u32,
+    authority: u32,
+    character_strength: f32,
+    thickness_millimeters: f32,
+    refractive_index: f32,
+    anti_reflective_efficiency: f32,
+    absorption_per_millimeter: [f32; 3],
+    roughness: f32,
+    haze: f32,
+}
+
+pub struct ScreenCoverGlassProfile {
+    _profile: CoverGlassProfile,
+}
+
+#[repr(C)]
 pub struct ScreenDeviceEvaluationParametersV1 {
     abi_version: u32,
     native_to_acescg: [f32; 9],
@@ -70,6 +89,109 @@ fn utf8_view(value: &'static str) -> ScreenUtf8View {
 
 fn preset_at(index: usize) -> Option<screen_panel::DevicePreset> {
     DEVICE_PRESETS.get(index).copied()
+}
+
+fn cover_preset_at(index: usize) -> Option<screen_cover::CoverGlassPreset> {
+    COVER_GLASS_PRESETS.get(index).copied()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_cover_glass_preset_count() -> usize {
+    COVER_GLASS_PRESETS.len()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_cover_glass_preset_id(index: usize) -> ScreenUtf8View {
+    cover_preset_at(index).map_or(utf8_view(""), |preset| utf8_view(preset.id))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_cover_glass_preset_label(index: usize) -> ScreenUtf8View {
+    cover_preset_at(index).map_or(utf8_view(""), |preset| utf8_view(preset.label))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_cover_glass_preset_parameters(
+    index: usize,
+    parameters: *mut ScreenCoverGlassParametersV1,
+) -> bool {
+    let Some(preset) = cover_preset_at(index) else {
+        return false;
+    };
+    if parameters.is_null() {
+        return false;
+    }
+    // SAFETY: the caller provided writable V1 parameter storage.
+    unsafe { *parameters = cover_parameters(preset.authority, preset.profile) };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_cover_glass_profile_create(
+    parameters: *const ScreenCoverGlassParametersV1,
+    error_message: *mut *const c_char,
+) -> *mut ScreenCoverGlassProfile {
+    if parameters.is_null() {
+        unsafe { set_error(error_message, b"missing cover glass parameters\0") };
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the non-null parameters pointer is valid for this call.
+    let parameters = unsafe { *parameters };
+    if parameters.abi_version != 1 || parameters.authority > 1 {
+        unsafe { set_error(error_message, b"unsupported cover glass parameter ABI\0") };
+        return std::ptr::null_mut();
+    }
+    let profile = CoverGlassProfile {
+        character_strength: parameters.character_strength,
+        thickness_millimeters: parameters.thickness_millimeters,
+        refractive_index: parameters.refractive_index,
+        anti_reflective_efficiency: parameters.anti_reflective_efficiency,
+        absorption_per_millimeter: LinearRgb::new(
+            parameters.absorption_per_millimeter[0],
+            parameters.absorption_per_millimeter[1],
+            parameters.absorption_per_millimeter[2],
+        ),
+        roughness: parameters.roughness,
+        haze: parameters.haze,
+    };
+    let Ok(profile) = profile.validate() else {
+        unsafe { set_error(error_message, b"invalid physical cover glass profile\0") };
+        return std::ptr::null_mut();
+    };
+    unsafe { set_error(error_message, b"\0") };
+    Box::into_raw(Box::new(ScreenCoverGlassProfile { _profile: profile }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_cover_glass_profile_release(profile: *mut ScreenCoverGlassProfile) {
+    if !profile.is_null() {
+        // SAFETY: the ABI requires the uniquely owned handle returned by create.
+        unsafe { drop(Box::from_raw(profile)) };
+    }
+}
+
+fn cover_parameters(
+    authority: CoverGlassPresetAuthority,
+    profile: CoverGlassProfile,
+) -> ScreenCoverGlassParametersV1 {
+    ScreenCoverGlassParametersV1 {
+        abi_version: 1,
+        authority: match authority {
+            CoverGlassPresetAuthority::GenericApproximation => 0,
+            CoverGlassPresetAuthority::PublishedCategoryApproximation => 1,
+        },
+        character_strength: profile.character_strength,
+        thickness_millimeters: profile.thickness_millimeters,
+        refractive_index: profile.refractive_index,
+        anti_reflective_efficiency: profile.anti_reflective_efficiency,
+        absorption_per_millimeter: [
+            profile.absorption_per_millimeter.r,
+            profile.absorption_per_millimeter.g,
+            profile.absorption_per_millimeter.b,
+        ],
+        roughness: profile.roughness,
+        haze: profile.haze,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -630,6 +752,30 @@ mod tests {
                 unsafe { screen_device_profile_create(&parameters, std::ptr::null_mut()) };
             assert!(!profile.is_null());
             unsafe { screen_device_profile_release(profile) };
+        }
+    }
+
+    #[test]
+    fn cover_glass_catalog_exposes_valid_profiles_through_opaque_handles() {
+        assert_eq!(screen_cover_glass_preset_count(), COVER_GLASS_PRESETS.len());
+        for index in 0..screen_cover_glass_preset_count() {
+            let mut parameters = ScreenCoverGlassParametersV1 {
+                abi_version: 0,
+                authority: 0,
+                character_strength: 0.0,
+                thickness_millimeters: 0.0,
+                refractive_index: 0.0,
+                anti_reflective_efficiency: 0.0,
+                absorption_per_millimeter: [0.0; 3],
+                roughness: 0.0,
+                haze: 0.0,
+            };
+            assert!(unsafe { screen_cover_glass_preset_parameters(index, &mut parameters) });
+            assert_eq!(parameters.abi_version, 1);
+            let profile =
+                unsafe { screen_cover_glass_profile_create(&parameters, std::ptr::null_mut()) };
+            assert!(!profile.is_null());
+            unsafe { screen_cover_glass_profile_release(profile) };
         }
     }
 }

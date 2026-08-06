@@ -94,6 +94,7 @@
       "allowed_local_dependencies": [
         "screen-application",
         "screen-contracts",
+        "screen-cover",
         "screen-panel"
       ]
     },

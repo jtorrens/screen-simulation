@@ -1,0 +1,118 @@
+import Foundation
+import ScreenPhysicalBridge
+
+enum CoverGlassAuthority: String, Codable, CaseIterable, Identifiable, Sendable {
+    case genericApproximation = "Aproximación genérica"
+    case publishedCategoryApproximation = "Aproximación de categoría publicada"
+
+    var id: String { rawValue }
+}
+
+struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var authority: CoverGlassAuthority
+    var characterStrength: Double
+    var thicknessMillimeters: Double
+    var refractiveIndex: Double
+    var antiReflectiveEfficiency: Double
+    var absorptionPerMillimeter: [Double]
+    var roughness: Double
+    var haze: Double
+
+    func validate() throws {
+        guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CoverGlassDomainError.invalidIdentity
+        }
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CoverGlassDomainError.invalidName
+        }
+        guard absorptionPerMillimeter.count == 3 else {
+            throw CoverGlassDomainError.invalidAbsorption
+        }
+        var parameters = ScreenCoverGlassParametersV1()
+        parameters.abi_version = 1
+        parameters.authority = authority == .genericApproximation ? 0 : 1
+        parameters.character_strength = Float(characterStrength)
+        parameters.thickness_millimeters = Float(thicknessMillimeters)
+        parameters.refractive_index = Float(refractiveIndex)
+        parameters.anti_reflective_efficiency = Float(antiReflectiveEfficiency)
+        parameters.absorption_per_millimeter = (
+            Float(absorptionPerMillimeter[0]),
+            Float(absorptionPerMillimeter[1]),
+            Float(absorptionPerMillimeter[2])
+        )
+        parameters.roughness = Float(roughness)
+        parameters.haze = Float(haze)
+        var error: UnsafePointer<CChar>?
+        guard let profile = withUnsafePointer(to: parameters, {
+            screen_cover_glass_profile_create($0, &error)
+        }) else {
+            throw CoverGlassDomainError.invalidPhysicalProfile(
+                error.map(String.init(cString:))
+                    ?? "El motor Rust rechazó el perfil de Cover Glass."
+            )
+        }
+        screen_cover_glass_profile_release(profile)
+    }
+}
+
+enum RustCoverGlassCatalog {
+    static func builtIns() throws -> [CoverGlassDefinition] {
+        try (0..<screen_cover_glass_preset_count()).map { index in
+            var parameters = ScreenCoverGlassParametersV1()
+            guard screen_cover_glass_preset_parameters(index, &parameters),
+                  parameters.abi_version == 1,
+                  let authority = parameters.authority == 0
+                    ? CoverGlassAuthority.genericApproximation
+                    : parameters.authority == 1
+                        ? .publishedCategoryApproximation : nil
+            else { throw CoverGlassDomainError.invalidCatalog(index) }
+            let definition = CoverGlassDefinition(
+                id: string(screen_cover_glass_preset_id(index)),
+                name: string(screen_cover_glass_preset_label(index)),
+                authority: authority,
+                characterStrength: Double(parameters.character_strength),
+                thicknessMillimeters: Double(parameters.thickness_millimeters),
+                refractiveIndex: Double(parameters.refractive_index),
+                antiReflectiveEfficiency: Double(parameters.anti_reflective_efficiency),
+                absorptionPerMillimeter: [
+                    Double(parameters.absorption_per_millimeter.0),
+                    Double(parameters.absorption_per_millimeter.1),
+                    Double(parameters.absorption_per_millimeter.2),
+                ],
+                roughness: Double(parameters.roughness),
+                haze: Double(parameters.haze)
+            )
+            try definition.validate()
+            return definition
+        }
+    }
+
+    private static func string(_ view: ScreenUTF8View) -> String {
+        guard let bytes = view.bytes, view.count > 0 else { return "" }
+        return String(
+            decoding: UnsafeBufferPointer(start: bytes, count: view.count),
+            as: UTF8.self
+        )
+    }
+}
+
+enum CoverGlassDomainError: Error, LocalizedError {
+    case invalidIdentity
+    case invalidName
+    case invalidAbsorption
+    case invalidPhysicalProfile(String)
+    case invalidCatalog(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidIdentity: "Cover Glass necesita una identidad estable."
+        case .invalidName: "Cover Glass necesita nombre."
+        case .invalidAbsorption: "La absorción de Cover Glass debe declarar RGB."
+        case let .invalidPhysicalProfile(message): message
+        case let .invalidCatalog(index):
+            "El preset Rust de Cover Glass en el índice \(index) no cumple el contrato."
+        }
+    }
+}

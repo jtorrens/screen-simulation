@@ -7,6 +7,7 @@
 
 typedef struct ScreenPhysicalPipeline *ScreenPhysicalPipelineRef;
 typedef struct ScreenDeviceProfile *ScreenDeviceProfileRef;
+typedef struct ScreenCoverGlassProfile *ScreenCoverGlassProfileRef;
 
 typedef struct {
     const uint8_t *bytes;
@@ -49,6 +50,31 @@ typedef struct {
     float black_level_nits;
     float white_level_nits;
 } ScreenDeviceEvaluationParametersV1;
+
+typedef struct {
+    uint32_t abi_version;
+    uint32_t authority;
+    float character_strength;
+    float thickness_millimeters;
+    float refractive_index;
+    float anti_reflective_efficiency;
+    float absorption_per_millimeter[3];
+    float roughness;
+    float haze;
+} ScreenCoverGlassParametersV1;
+
+size_t screen_cover_glass_preset_count(void);
+ScreenUTF8View screen_cover_glass_preset_id(size_t index);
+ScreenUTF8View screen_cover_glass_preset_label(size_t index);
+bool screen_cover_glass_preset_parameters(
+    size_t index,
+    ScreenCoverGlassParametersV1 *parameters
+);
+ScreenCoverGlassProfileRef screen_cover_glass_profile_create(
+    const ScreenCoverGlassParametersV1 *parameters,
+    const char **error_message
+);
+void screen_cover_glass_profile_release(ScreenCoverGlassProfileRef profile);
 
 size_t screen_device_preset_count(void);
 ScreenUTF8View screen_device_preset_id(size_t index);
