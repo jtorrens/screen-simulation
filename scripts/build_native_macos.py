@@ -87,6 +87,13 @@ def main() -> int:
             str(BUNDLE),
         ]
     )
+    run(
+        [
+            "python3",
+            "scripts/check_native_physical_abi.py",
+            str(macos / "ScreenSimulationNative"),
+        ]
+    )
     run(["codesign", "--force", "--deep", "--sign", "-", str(BUNDLE)])
     run(["codesign", "--verify", "--deep", "--strict", str(BUNDLE)])
     return 0

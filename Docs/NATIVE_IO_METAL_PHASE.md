@@ -19,9 +19,9 @@ only their selected frame.
 
 The Rust/Slint shell still owns its temporary FFmpeg adapter through
 `screen-platform`'s default `full-platform -> ffmpeg-media` feature. The native
-bridge disables those defaults and enables only `flat-panel-metal`. Its graph is
+bridge disables those defaults and enables only `physical-pipeline-metal`. Its graph is
 therefore `ScreenSimulationNative -> screen-native-bridge -> screen-platform
-(flat-panel-metal)` and contains no `ffmpeg-next` or libav dependency. Before
+(physical-pipeline-metal)` and contains no `ffmpeg-next` or libav dependency. Before
 this split, selecting `MetalFlatPanel` also selected the crate's default media
 adapter and made the Swift linker inherit libav symbols despite the native app
 never calling that route. `scripts/check_native_macos_no_ffmpeg.py` now rejects

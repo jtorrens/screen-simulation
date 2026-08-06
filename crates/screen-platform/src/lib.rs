@@ -2,28 +2,28 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-#[cfg(all(
-    target_os = "macos",
-    any(feature = "flat-panel-metal", feature = "full-platform")
-))]
-mod physical_pipeline_metal;
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 mod native_metal;
+#[cfg(all(
+    target_os = "macos",
+    any(feature = "physical-pipeline-metal", feature = "full-platform")
+))]
+mod physical_pipeline_metal;
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 mod presentation_cpu;
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 mod presentation_metal;
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 mod spatial_metal;
+#[cfg(all(target_os = "macos", feature = "full-platform"))]
+pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 #[cfg(all(
     target_os = "macos",
-    any(feature = "flat-panel-metal", feature = "full-platform")
+    any(feature = "physical-pipeline-metal", feature = "full-platform")
 ))]
 pub use physical_pipeline_metal::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
 };
-#[cfg(all(target_os = "macos", feature = "full-platform"))]
-pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 pub use presentation_cpu::{
     DisplayPublicationBackend, DisplayPublicationError, ExactCpuDisplayPublication,

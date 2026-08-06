@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["full-platform"]
 full-platform = ["ffmpeg-media"]
-flat-panel-metal = []
+physical-pipeline-metal = []
 ffmpeg-media = ["dep:ffmpeg-next"]
 
 [dependencies]
