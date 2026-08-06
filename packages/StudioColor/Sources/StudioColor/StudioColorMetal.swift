@@ -4,6 +4,27 @@ import Metal
 import MetalKit
 import QuartzCore
 
+private final class StudioColorCompletionTiming: @unchecked Sendable {
+    private let lock = NSLock()
+    private var milliseconds = 0.0
+    private var lastSubmittedAt: CFTimeInterval = 0
+
+    func store(_ value: Double, submittedAt: CFTimeInterval) {
+        lock.lock()
+        if submittedAt > lastSubmittedAt {
+            milliseconds = value
+            lastSubmittedAt = submittedAt
+        }
+        lock.unlock()
+    }
+
+    func load() -> Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return milliseconds
+    }
+}
+
 public enum StudioColorMetalError: Error, LocalizedError {
     case unavailableDevice
     case unavailableQueue
@@ -54,7 +75,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     private var frame: StudioColorLinearFrame?
     private var metalFrame: StudioColorMetalFrame?
     private var output = StudioColorOutputTransform.catalog[0]
-    public private(set) var lastCompletedEndToEndMilliseconds = 0.0
+    private let completionTiming = StudioColorCompletionTiming()
+    public var lastCompletedEndToEndMilliseconds: Double { completionTiming.load() }
 
     public init(engine: StudioColorEngine = try! .bundled()) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -156,17 +178,25 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
             )
             command.present(drawable)
             if let metalFrame {
-                let submittedAt = metalFrame.submittedAt
-                command.addCompletedHandler { [weak self] _ in
-                    Task { @MainActor in
-                        self?.lastCompletedEndToEndMilliseconds =
-                            (CACurrentMediaTime() - submittedAt) * 1_000
-                    }
-                }
+                command.addCompletedHandler(Self.completionHandler(
+                    timing: completionTiming, submittedAt: metalFrame.submittedAt
+                ))
             }
             command.commit()
         } catch {
             assertionFailure(error.localizedDescription)
+        }
+    }
+
+    private nonisolated static func completionHandler(
+        timing: StudioColorCompletionTiming,
+        submittedAt: CFTimeInterval
+    ) -> MTLCommandBufferHandler {
+        { _ in
+            timing.store(
+                (CACurrentMediaTime() - submittedAt) * 1_000,
+                submittedAt: submittedAt
+            )
         }
     }
 
