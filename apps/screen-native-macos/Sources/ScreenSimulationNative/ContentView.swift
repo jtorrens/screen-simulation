@@ -232,8 +232,9 @@ struct ContentView: View {
                 }
                 .padding(14)
             }
-            .frame(width: 240)
+            .frame(minWidth: 200, idealWidth: 240, maxWidth: 360)
             .background(Color(nsColor: .windowBackgroundColor))
+            .layoutPriority(0)
 
             Group {
                 switch settingsSection {
@@ -245,9 +246,9 @@ struct ContentView: View {
                     monitorSettings
                 }
             }
-            .frame(minWidth: 640)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
         }
-        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Settings"))
     }
 
     private var applicationSettings: some View {
