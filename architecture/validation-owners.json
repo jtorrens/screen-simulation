@@ -96,7 +96,7 @@
     },
     {
       "id": "native-macos-composition",
-      "paths": ["apps/screen-native-macos/**", "crates/screen-native-bridge/**", "Docs/NATIVE_MACOS_CUTOVER.md", "Docs/NATIVE_IO_METAL_PHASE.md", "Docs/NATIVE_COLOR_IDENTITY_REPORT.md", "Docs/NATIVE_DEVICE_PHASE.md", "Docs/NATIVE_PHYSICAL_FRAME_CONTRACT.md"],
+      "paths": ["apps/screen-native-macos/**", "crates/screen-native-bridge/**", "Docs/NATIVE_MACOS_CUTOVER.md", "Docs/NATIVE_IO_METAL_PHASE.md", "Docs/NATIVE_COLOR_IDENTITY_REPORT.md", "Docs/NATIVE_DEVICE_PHASE.md", "Docs/NATIVE_PHYSICAL_FRAME_CONTRACT.md", "Docs/NATIVE_PHYSICAL_PARITY_AUDIT.md", "Docs/NATIVE_PHYSICAL_PIPELINE_V2.md"],
       "checks": ["architecture", "workspace", "native-macos"]
     },
     {

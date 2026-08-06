@@ -57,27 +57,16 @@ resolves the native panel footprint. Emission and subpixel geometry are the
 only active sections; Temporal, Cover Glass, Environment and every Capture
 section remain explicit zero/bypass pending implementation.
 
-The same input also carries `Fit`, `FillCrop`, `Stretch` or `OneToOne`; raster
-placement is never inferred from dimensions. `amount = 0` returns the exact
-original ACEScg texture without encoding a command.
-`amount = 1` evaluates the calibrated Device stage. Metal/CPU-oracle tests cover
-negative values, values above one and alpha, while the existing I/O page keeps
-Device at exact identity. Preview calls the single
-`screen_physical_frame_submit` job boundary. The former Swift
-`DeviceMetalStage` and its shader have been removed; no second physical route
-exists. Draft, Medium and High use the same framing at increasing requested
-resolution/sampling. Native evaluates the panel's authored raster on the
-authoritative 3×3 subpixel lattice and exposes progress, cancellation,
-parameter revision and diagnostics through stable snapshots.
+This section records the superseded Device-only cut. Its Swift evaluator and
+shader were removed when the unified Rust/Metal frame job became authoritative.
+The current `amount = 0` exact identity, calibrated evaluation, negative/>1 and
+alpha guarantees are owned by `NATIVE_PHYSICAL_PIPELINE_V2.md`; no Device-only
+runtime route remains.
 
-The reproducible integration timing command is
-`SCREEN_PHYSICAL_BENCHMARK=1 swift test --filter physicalPanelTimingWhenRequested`.
-On the development Apple-silicon host, the bridge harness measured the UHD TV
-at 12.91 ms Draft and 89.11 ms Native (11520×6480), and the 14-inch Retina
-panel at 12.37 ms Draft and 77.63 ms Native (9072×5892). The packaged Release
-UI measured the first Phone Retina frequency preview at 17–24 ms and its
-2250×4002 Native result at 46.6 ms. These figures include job submission and
-snapshot publication; the source texture was already selected.
+Historically, on the development Apple-silicon host, 30 completed 960×540 Device evaluations
+measured 0.974 ms median and 1.917 ms p95, including the pinned OCIO device-signal
+transform and Device Metal command completion. The reproducible command is
+`SCREEN_DEVICE_BENCHMARK=1 swift test --filter deviceStagePlaybackBenchmarkWhenRequested`.
 
 ## Native UX
 
