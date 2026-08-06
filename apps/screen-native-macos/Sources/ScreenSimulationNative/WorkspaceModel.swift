@@ -894,6 +894,7 @@ final class WorkspaceModel: ObservableObject {
                 )
             case .complete:
                 guard snapshot.parameterRevision == physicalModel.parameterRevision,
+                      snapshot.returnedIntermediate == requestedPhysicalIntermediate,
                       let frame = snapshot.frame,
                       let effective = snapshot.effectiveDimensions
                 else { throw CancellationError() }

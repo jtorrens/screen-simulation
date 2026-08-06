@@ -182,6 +182,31 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case developedACEScg = 10
 
     var id: UInt32 { rawValue }
+
+    static let supportedDiagnostics: [Self] = [
+        .sourceACEScg,
+        .deviceSignal,
+        .panelEmission,
+        .subpixelRadiance,
+        .panelLightSpread,
+        .developedACEScg,
+    ]
+
+    var uiLabel: String {
+        switch self {
+        case .sourceACEScg: "Source"
+        case .deviceSignal: "Device"
+        case .panelEmission: "Emission"
+        case .subpixelRadiance: "Subpixel"
+        case .panelLightSpread: "Spread"
+        case .developedACEScg: "Developed"
+        case .coverEnvironment: "Cover / Environment"
+        case .sceneGeometryLens: "Geometry / Lens"
+        case .shutterMotion: "Shutter / Motion"
+        case .sensorNoise: "Sensor / Noise"
+        case .rawMosaic: "RAW Mosaic"
+        }
+    }
 }
 
 struct PhysicalACEScgTexture: @unchecked Sendable {
