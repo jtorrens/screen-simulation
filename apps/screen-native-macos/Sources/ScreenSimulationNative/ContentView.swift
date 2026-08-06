@@ -65,22 +65,16 @@ struct ContentView: View {
                     } label: {
                         VStack(spacing: 2) {
                             Image(systemName: destination.systemImage)
-                            Text(destination.rawValue).font(.caption2)
+                                .foregroundStyle(page == destination
+                                    ? NativeTheme.accent : .secondary)
+                            Text(destination.rawValue)
+                                .font(.caption2)
+                                .foregroundStyle(page == destination
+                                    ? NativeTheme.accent : .secondary)
                         }
                         .frame(minWidth: 64, minHeight: 38)
-                        .background {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(page == destination
-                                    ? NativeTheme.accent.opacity(0.22) : .clear)
-                        }
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(page == destination
-                                    ? NativeTheme.accent.opacity(0.9) : .clear)
-                        }
                     }
                     .buttonStyle(.borderless)
-                    .foregroundStyle(page == destination ? .primary : .secondary)
                     .help(destination.rawValue)
                     .accessibilityLabel(destination.rawValue)
                     .accessibilityAddTraits(page == destination ? .isSelected : [])
