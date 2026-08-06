@@ -147,6 +147,10 @@ struct ModelInspectorView: View {
                     }
                 }
             }
+
+            Section("Diagnóstico físico") {
+                PhysicalDiagnosticsView(diagnostics: physical.diagnostics)
+            }
         }
         .formStyle(.grouped)
     }
