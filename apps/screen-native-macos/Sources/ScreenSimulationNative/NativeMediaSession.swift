@@ -53,7 +53,7 @@ final class NativeMediaSession {
         let frameRate = nominalRate > 0 ? nominalRate : 24
         let audio = try await !asset.loadTracks(withMediaType: .audio).isEmpty
         let pixelFormat: OSType = hasAlpha
-            ? kCVPixelFormatType_32BGRA
+            ? kCVPixelFormatType_64RGBAHalf
             : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
         let attributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat),
