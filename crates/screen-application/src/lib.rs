@@ -1897,6 +1897,7 @@ where
             if duration.numerator() <= 0 {
                 return Err(ApplicationError::InvalidSensorReadout);
             }
+            let frame_uniform_gains = frame_uniform_residual_gains(&request)?;
             let mut row_template: Option<SpatialOpticalPlan> = None;
             for local_row in 0..usize::from(region.height) {
                 let row_plan_start = plans.len();
@@ -1909,15 +1910,17 @@ where
                     usize::from(sensor.native_height),
                     direction,
                 )?;
-                for sample in
+                for (sample_index, sample) in
                     shutter_quadrature(row_center, request.duration, request.temporal_samples)?
+                        .into_iter()
+                        .enumerate()
                 {
-                    let temporal_gain = request
-                        .optics
-                        .panel
-                        .temporal_emission
-                        .average_gain(sample.start, sample.end)
-                        .map_err(ApplicationError::Panel)?;
+                    let temporal_gain = rolling_temporal_gain(
+                        &request,
+                        frame_uniform_gains.as_deref(),
+                        sample_index,
+                        sample,
+                    )?;
                     let mut optics = request.optics.clone();
                     optics.time = sample.time;
                     optics.panel_temporal_evaluation =
@@ -2089,6 +2092,7 @@ fn integrate_rolling_region(
     }
     let mut accumulated =
         vec![[0.0_f64; 3]; usize::from(region.width) * usize::from(region.height)];
+    let frame_uniform_gains = frame_uniform_residual_gains(&request)?;
     for local_row in 0..usize::from(region.height) {
         let global_row = usize::from(region.origin_y) + local_row;
         let row_center = rolling_row_center_time(
@@ -2099,16 +2103,16 @@ fn integrate_rolling_region(
             direction,
         )?;
         let samples = shutter_quadrature(row_center, request.duration, request.temporal_samples)?;
-        for sample in samples {
+        for (sample_index, sample) in samples.into_iter().enumerate() {
             let mut optics = request.optics.clone();
             optics.time = sample.time;
-            optics.panel_temporal_evaluation = PanelTemporalEvaluation::ExposureAverage(
-                optics
-                    .panel
-                    .temporal_emission
-                    .average_gain(sample.start, sample.end)
-                    .map_err(ApplicationError::Panel)?,
-            );
+            optics.panel_temporal_evaluation =
+                PanelTemporalEvaluation::ExposureAverage(rolling_temporal_gain(
+                    &request,
+                    frame_uniform_gains.as_deref(),
+                    sample_index,
+                    sample,
+                )?);
             let row = optical_row_at_time(optics, global_row as u16)?;
             if row.len() != usize::from(region.width) {
                 return Err(ApplicationError::OpticalSampleRasterMismatch);
@@ -2198,6 +2202,7 @@ where
     if width == 0 || height == 0 || readout_duration.numerator() <= 0 {
         return Err(ApplicationError::InvalidSensorReadout);
     }
+    let frame_uniform_gains = frame_uniform_residual_gains(&request)?;
     let row_schedules = (0..usize::from(height))
         .map(|row| {
             let row_center = rolling_row_center_time(
@@ -2216,16 +2221,16 @@ where
     let pixel_count = usize::from(width) * usize::from(height);
     let mut accumulated = vec![[0.0_f64; 3]; pixel_count];
     for (row, samples) in row_schedules {
-        for sample in samples {
+        for (sample_index, sample) in samples.into_iter().enumerate() {
             let mut optics = request.optics.clone();
             optics.time = sample.time;
-            optics.panel_temporal_evaluation = PanelTemporalEvaluation::ExposureAverage(
-                optics
-                    .panel
-                    .temporal_emission
-                    .average_gain(sample.start, sample.end)
-                    .map_err(ApplicationError::Panel)?,
-            );
+            optics.panel_temporal_evaluation =
+                PanelTemporalEvaluation::ExposureAverage(rolling_temporal_gain(
+                    &request,
+                    frame_uniform_gains.as_deref(),
+                    sample_index,
+                    sample,
+                )?);
             let optical_row = optical_row_at_time(optics, row)?;
             if optical_row.len() != usize::from(width) {
                 return Err(ApplicationError::OpticalSampleRasterMismatch);
@@ -2280,6 +2285,59 @@ struct TemporalSample {
     time: RationalTime,
     end: RationalTime,
     weight_seconds: f64,
+}
+
+/// Residual LCD flicker is a frame-global emission modulation. It must not become a spatial
+/// rolling-shutter band unless the explicit analytic-banding layer is enabled.
+fn frame_uniform_residual_gains(
+    request: &ShutterRequest,
+) -> Result<Option<Vec<f32>>, ApplicationError> {
+    if request
+        .optics
+        .panel
+        .temporal_emission
+        .analytic_banding
+        .amount
+        != 0.0
+    {
+        return Ok(None);
+    }
+    shutter_quadrature(
+        request.optics.time,
+        request.duration,
+        request.temporal_samples,
+    )?
+    .into_iter()
+    .map(|sample| {
+        request
+            .optics
+            .panel
+            .temporal_emission
+            .average_gain(sample.start, sample.end)
+            .map_err(ApplicationError::Panel)
+    })
+    .collect::<Result<Vec<_>, _>>()
+    .map(Some)
+}
+
+fn rolling_temporal_gain(
+    request: &ShutterRequest,
+    frame_uniform_gains: Option<&[f32]>,
+    sample_index: usize,
+    sample: TemporalSample,
+) -> Result<f32, ApplicationError> {
+    if let Some(gains) = frame_uniform_gains {
+        return gains
+            .get(sample_index)
+            .copied()
+            .ok_or(ApplicationError::InvalidShutter);
+    }
+    request
+        .optics
+        .panel
+        .temporal_emission
+        .average_gain(sample.start, sample.end)
+        .map_err(ApplicationError::Panel)
 }
 
 fn shutter_quadrature(
@@ -4147,6 +4205,59 @@ mod tests {
                 assert!((pixel.g - expected).abs() <= 2.0e-7);
                 assert!((pixel.b - expected).abs() <= 2.0e-7);
             }
+        }
+    }
+
+    #[test]
+    fn residual_flicker_stays_frame_uniform_without_explicit_banding() {
+        let mut optics = request().optics;
+        optics.procedural_pattern = ProceduralTestPattern::EyeChart;
+        optics.panel.temporal_emission = PanelTemporalEmission::clean_lcd();
+        assert_eq!(optics.panel.temporal_emission.analytic_banding.amount, 0.0);
+        let duration = RationalTime::new(1, 1_000).unwrap();
+        let sensor = SensorProfile {
+            native_width: 16,
+            native_height: 9,
+            ..SensorProfile::REFERENCE
+        };
+        let region = SensorRegion {
+            origin_x: 2,
+            origin_y: 2,
+            width: 3,
+            height: 3,
+        };
+        let backend = UnitSpatialBackend {
+            last_batch_size: AtomicUsize::new(0),
+        };
+        let exposure = integrate_spatial_region_with_backend(
+            ShutterRequest {
+                optics: optics.clone(),
+                duration,
+                temporal_samples: 1,
+                readout: SensorReadout::Rolling {
+                    duration: RationalTime::new(1, 80).unwrap(),
+                    direction: RollingDirection::TopToBottom,
+                },
+                neutral_density_stops: 0.0,
+            },
+            sensor,
+            region,
+            true,
+            &backend,
+            |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
+        )
+        .unwrap();
+        let nominal = shutter_quadrature(optics.time, duration, 1).unwrap()[0];
+        let expected = optics
+            .panel
+            .temporal_emission
+            .average_gain(nominal.start, nominal.end)
+            .unwrap()
+            * duration.as_seconds() as f32;
+        for pixel in exposure.acescg_illuminance_seconds {
+            assert!((pixel.r - expected).abs() <= 2.0e-7);
+            assert!((pixel.g - expected).abs() <= 2.0e-7);
+            assert!((pixel.b - expected).abs() <= 2.0e-7);
         }
     }
 
