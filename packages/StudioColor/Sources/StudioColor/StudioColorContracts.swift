@@ -28,7 +28,7 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
 }
 
 public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
-    public enum Encoding: Sendable { case sRGB, rec709, rec2100PQ }
+    public enum Encoding: Sendable { case sRGB, rec709, displayP3, rec2100PQ }
 
     public let id: String
     public let label: String
@@ -66,6 +66,27 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
             encoding: .rec709
         ),
         .init(
+            id: "aces2-display-p3-sdr-100",
+            label: "Display P3 · SDR 100 nit",
+            display: "Display P3 - Display",
+            view: "ACES 2.0 - SDR 100 nits (P3 D65)",
+            encoding: .displayP3
+        ),
+        .init(
+            id: "aces2-dci-p3-sdr-100",
+            label: "DCI-P3 · SDR 100 nit",
+            display: "P3-D65 - Display",
+            view: "ACES 2.0 - SDR 100 nits (P3 D65)",
+            encoding: .displayP3
+        ),
+        .init(
+            id: "aces2-display-p3-edr-1000",
+            label: "Display P3 · EDR 1000 nit",
+            display: "Display P3 HDR - Display",
+            view: "ACES 2.0 - HDR 1000 nits (P3 D65)",
+            encoding: .rec2100PQ
+        ),
+        .init(
             id: "aces2-rec2100-pq-1000",
             label: "ACES 2.0 · Rec.2100 PQ 1000 nit",
             display: "Rec.2100-PQ - Display",
@@ -78,6 +99,7 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         switch encoding {
         case .sRGB: CGColorSpace(name: CGColorSpace.sRGB)
         case .rec709: CGColorSpace(name: CGColorSpace.itur_709)
+        case .displayP3: CGColorSpace(name: CGColorSpace.displayP3)
         case .rec2100PQ: CGColorSpace(name: CGColorSpace.itur_2100_PQ)
         }
     }
@@ -89,6 +111,14 @@ public enum StudioColorAlphaAssociation: String, CaseIterable, Identifiable, Sen
     case ignore
 
     public var id: String { rawValue }
+}
+
+public enum StudioColorSignalMatrix: String, Sendable {
+    case bt601, bt709, bt2020
+}
+
+public enum StudioColorSignalRange: String, Sendable {
+    case video, full
 }
 
 public struct StudioColorLinearFrame: Sendable {
@@ -105,4 +135,3 @@ public struct StudioColorLinearFrame: Sendable {
         self.premultipliedRGBA = premultipliedRGBA
     }
 }
-

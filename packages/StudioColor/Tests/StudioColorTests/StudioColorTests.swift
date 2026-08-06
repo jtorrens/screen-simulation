@@ -47,3 +47,25 @@ import Testing
         #expect(Double(changed) / Double(deltas.count) <= 0.005, Comment(rawValue: output.label))
     }
 }
+
+@Test @MainActor func continuousMetalInputGraphMatchesCPUOracle() throws {
+    let pipeline = StudioColorPipeline()
+    let display = try StudioColorMetalDisplay()
+    let encoded: [Float] = [
+        -0.25, 0.18, 4.0, 1,
+        0.25, 0.5, 0.75, 0.5,
+        1.5, 0.05, 0.001, 1,
+    ]
+    let input = StudioColorInputTransform.catalog[2]
+    let cpuFrame = try pipeline.prepareInput(
+        width: 3, height: 1, encodedRGBA: encoded, input: input, alpha: .straight
+    )
+    let metalFrame = try display.makeACEScgFrame(
+        width: 3, height: 1, encodedRGBA: encoded, input: input, alpha: .straight
+    )
+    for output in StudioColorOutputTransform.catalog {
+        let gpu = try display.renderRGBA8(metalFrame, output: output)
+        let cpu = try pipeline.cpuOracleRGBA8(cpuFrame, output: output)
+        #expect(zip(gpu, cpu).map { abs(Int($0) - Int($1)) }.max() ?? 0 <= 1)
+    }
+}
