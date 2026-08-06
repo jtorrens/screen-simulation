@@ -261,7 +261,6 @@ struct PhysicalFrameRequest: @unchecked Sendable {
     let resolvedPipeline: ResolvedPhysicalPipelineSnapshot
     let quality: PhysicalQuality
     let screenAmount: Double
-    let captureAmount: Double
     let stageContributions: [PhysicalStageContribution]
     let requestedDimensions: PhysicalDimensions
     let requestedIntermediate: PhysicalIntermediate
@@ -280,7 +279,6 @@ struct PhysicalFrameRequest: @unchecked Sendable {
         resolvedPipeline: ResolvedPhysicalPipelineSnapshot,
         quality: PhysicalQuality,
         screenAmount: Double,
-        captureAmount: Double,
         stageContributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
         requestedIntermediate: PhysicalIntermediate,
@@ -290,7 +288,6 @@ struct PhysicalFrameRequest: @unchecked Sendable {
         parameterHash: PhysicalParameterHash
     ) throws {
         try PhysicalContributionLimits.standard.validate(screenAmount)
-        try PhysicalContributionLimits.standard.validate(captureAmount)
         guard stageContributions.map(\.stage) == PhysicalStageID.ordered else {
             throw PhysicalContractError.invalidStageOrder
         }
@@ -303,7 +300,6 @@ struct PhysicalFrameRequest: @unchecked Sendable {
         self.resolvedPipeline = resolvedPipeline
         self.quality = quality
         self.screenAmount = screenAmount
-        self.captureAmount = captureAmount
         self.stageContributions = stageContributions
         self.requestedDimensions = requestedDimensions
         self.requestedIntermediate = requestedIntermediate

@@ -146,7 +146,6 @@ pub struct ScreenPhysicalFrameRequestV2 {
     resolved_pipeline: *const ScreenPhysicalPipelineSnapshot,
     quality: u32,
     screen_amount: f32,
-    capture_amount: f32,
     stage_contributions: *const ScreenPhysicalStageContributionV2,
     stage_contribution_count: usize,
     requested_width: u32,
@@ -643,7 +642,6 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         || request.requested_height == 0
         || !request.screen_amount.is_finite()
         || !(0.0..=4.0).contains(&request.screen_amount)
-        || request.capture_amount != 0.0
         || request.stage_contributions.is_null()
     {
         unsafe {
@@ -2637,7 +2635,6 @@ mod tests {
             resolved_pipeline: pipeline,
             quality: 1,
             screen_amount: 1.0,
-            capture_amount: 0.0,
             stage_contributions: contributions.as_ptr(),
             stage_contribution_count: contributions.len(),
             requested_width: 4,
