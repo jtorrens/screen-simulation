@@ -170,7 +170,9 @@ pub struct FlatPanelPlan {
     pub quality: FlatPanelQuality,
     pub requested_width: u32,
     pub requested_height: u32,
-    pub amount: f32,
+    pub screen_amount: f32,
+    pub emission_amount: f32,
+    pub subpixel_geometry_amount: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -304,7 +306,14 @@ pub fn evaluate_flat_panel_cpu_oracle(
 ) -> Result<FlatPanelResult, ApplicationError> {
     request.input.validate()?;
     let plan = request.plan;
-    if !plan.amount.is_finite() || !(0.0..=4.0).contains(&plan.amount) {
+    if [
+        plan.screen_amount,
+        plan.emission_amount,
+        plan.subpixel_geometry_amount,
+    ]
+    .into_iter()
+    .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
+    {
         return Err(ApplicationError::InvalidCharacterStrength);
     }
     let geometry = request
@@ -320,7 +329,7 @@ pub fn evaluate_flat_panel_cpu_oracle(
 
     // This stage can promise exact identity at zero because it returns the
     // borrowed coarse raster domain without resampling or float arithmetic.
-    if plan.amount == 0.0 {
+    if plan.screen_amount == 0.0 {
         return Ok(FlatPanelResult {
             width: request.input.width,
             height: request.input.height,
@@ -358,6 +367,7 @@ pub fn evaluate_flat_panel_cpu_oracle(
     for y in 0..sampling.effective_height {
         for x in 0..sampling.effective_width {
             let mut physical_native = LinearRgb::new(0.0, 0.0, 0.0);
+            let mut continuous_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut ideal = [0.0_f32; 4];
             for sy in 0..side {
                 for sx in 0..side {
@@ -406,6 +416,9 @@ pub fn evaluate_flat_panel_cpu_oracle(
                         device_maximum,
                         2,
                     );
+                    continuous_native.r += area.linear_native_emission.r;
+                    continuous_native.g += area.linear_native_emission.g;
+                    continuous_native.b += area.linear_native_emission.b;
                     let value = sample_placed_acescg_area(
                         source_width,
                         source_height,
@@ -424,6 +437,9 @@ pub fn evaluate_flat_panel_cpu_oracle(
             physical_native.r *= reciprocal;
             physical_native.g *= reciprocal;
             physical_native.b *= reciprocal;
+            continuous_native.r *= reciprocal;
+            continuous_native.g *= reciprocal;
+            continuous_native.b *= reciprocal;
             for value in &mut ideal {
                 *value *= reciprocal;
             }
@@ -442,10 +458,35 @@ pub fn evaluate_flat_panel_cpu_oracle(
                     + matrix[2][2] * physical_native.b)
                     / parameters.white_level_nits,
             ];
+            let continuous = [
+                (matrix[0][0] * continuous_native.r
+                    + matrix[0][1] * continuous_native.g
+                    + matrix[0][2] * continuous_native.b)
+                    / parameters.white_level_nits,
+                (matrix[1][0] * continuous_native.r
+                    + matrix[1][1] * continuous_native.g
+                    + matrix[1][2] * continuous_native.b)
+                    / parameters.white_level_nits,
+                (matrix[2][0] * continuous_native.r
+                    + matrix[2][1] * continuous_native.g
+                    + matrix[2][2] * continuous_native.b)
+                    / parameters.white_level_nits,
+            ];
+            let staged = [
+                ideal[0]
+                    + plan.emission_amount * (continuous[0] - ideal[0])
+                    + plan.subpixel_geometry_amount * (physical[0] - continuous[0]),
+                ideal[1]
+                    + plan.emission_amount * (continuous[1] - ideal[1])
+                    + plan.subpixel_geometry_amount * (physical[1] - continuous[1]),
+                ideal[2]
+                    + plan.emission_amount * (continuous[2] - ideal[2])
+                    + plan.subpixel_geometry_amount * (physical[2] - continuous[2]),
+            ];
             output.push([
-                ideal[0] + plan.amount * (physical[0] - ideal[0]),
-                ideal[1] + plan.amount * (physical[1] - ideal[1]),
-                ideal[2] + plan.amount * (physical[2] - ideal[2]),
+                ideal[0] + plan.screen_amount * (staged[0] - ideal[0]),
+                ideal[1] + plan.screen_amount * (staged[1] - ideal[1]),
+                ideal[2] + plan.screen_amount * (staged[2] - ideal[2]),
                 ideal[3],
             ]);
         }
@@ -5531,7 +5572,9 @@ mod tests {
                 quality,
                 requested_width: 4,
                 requested_height: 2,
-                amount,
+                screen_amount: amount,
+                emission_amount: 1.0,
+                subpixel_geometry_amount: 1.0,
             },
         }
     }

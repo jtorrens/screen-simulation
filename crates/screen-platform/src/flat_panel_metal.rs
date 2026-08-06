@@ -19,6 +19,7 @@ struct FlatPanelParams {
     semantics: [u32; 4],
     levels: [f32; 4],
     geometry: [f32; 4],
+    strengths: [f32; 4],
     matrix0: [f32; 4],
     matrix1: [f32; 4],
     matrix2: [f32; 4],
@@ -112,7 +113,14 @@ impl MetalFlatPanel {
             .panel
             .flat_panel_sampling(plan.quality, plan.requested_width, plan.requested_height)
             .map_err(|error| MetalFlatPanelError::InvalidPlan(error.to_string()))?;
-        if !plan.amount.is_finite() || !(0.0..=4.0).contains(&plan.amount) {
+        if [
+            plan.screen_amount,
+            plan.emission_amount,
+            plan.subpixel_geometry_amount,
+        ]
+        .into_iter()
+        .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
+        {
             return Err(MetalFlatPanelError::InvalidPlan(
                 "amount must be finite and inside 0..=4".to_owned(),
             ));
@@ -120,7 +128,7 @@ impl MetalFlatPanel {
         if is_cancelled() {
             return Err(MetalFlatPanelError::Cancelled);
         }
-        if plan.amount == 0.0 {
+        if plan.screen_amount == 0.0 {
             report_progress(1.0);
             return Ok(MetalFlatPanelResult {
                 texture: source_acescg.to_owned(),
@@ -183,9 +191,15 @@ impl MetalFlatPanel {
                 plan.panel.eotf_gamma,
                 plan.panel.black_level_nits,
                 plan.panel.white_level_nits,
-                plan.amount,
+                0.0,
             ],
             geometry: [plan.panel.black_matrix_fraction, 0.0, 0.0, 0.0],
+            strengths: [
+                plan.screen_amount,
+                plan.emission_amount,
+                plan.subpixel_geometry_amount,
+                0.0,
+            ],
             matrix0: pad(values.native_to_acescg[0]),
             matrix1: pad(values.native_to_acescg[1]),
             matrix2: pad(values.native_to_acescg[2]),
@@ -317,7 +331,9 @@ mod tests {
                 quality,
                 requested_width: 12,
                 requested_height: 8,
-                amount,
+                screen_amount: amount,
+                emission_amount: 1.0,
+                subpixel_geometry_amount: 1.0,
             },
         )
     }
@@ -399,7 +415,7 @@ mod tests {
             .expect("identity result");
         assert!(core::ptr::eq(&*source, &*result.texture));
         let mut active = plan;
-        active.amount = 1.0;
+        active.screen_amount = 1.0;
         assert!(matches!(
             backend.evaluate(&source, &signal, active, |_| {}, || true),
             Err(MetalFlatPanelError::Cancelled)
