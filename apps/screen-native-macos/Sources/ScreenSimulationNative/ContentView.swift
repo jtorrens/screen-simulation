@@ -22,13 +22,13 @@ struct ContentView: View {
     }
     enum WorkspacePage: String, CaseIterable, Identifiable {
         case main = "Principal"
-        case device = "Device"
+        case model = "Modelo"
         case settings = "Settings"
         var id: String { rawValue }
         var systemImage: String {
             switch self {
             case .main: "rectangle.on.rectangle"
-            case .device: "display"
+            case .model: "square.3.layers.3d"
             case .settings: "gearshape"
             }
         }
@@ -90,7 +90,7 @@ struct ContentView: View {
             Group {
                 switch page {
                 case .main: mainWorkspace
-                case .device: deviceWorkspace
+                case .model: modelWorkspace
                 case .settings: settingsWorkspace
                 }
             }
@@ -127,11 +127,11 @@ struct ContentView: View {
         .onAppear {
             if model.resolvedDevice == nil,
                let first = library.document.devices.first {
-                model.selectDevice(first.value, amount: page == .device ? 1 : 0)
+                model.selectDevice(first.value, amount: 0)
             }
         }
         .onChange(of: page) { _, destination in
-            model.setDeviceStageAmount(destination == .device ? 1 : 0)
+            model.setModelPageActive(destination == .model)
         }
         .alert(
             "SCREEN-SIMULATION",
@@ -262,110 +262,17 @@ struct ContentView: View {
         .formStyle(.grouped)
     }
 
-    private var deviceWorkspace: some View {
+    private var modelWorkspace: some View {
         HSplitView {
-            Form {
-                Section("Device preset") {
-                    Picker(
-                        "Device",
-                        selection: Binding(
-                            get: { model.resolvedDevice?.id ?? "" },
-                            set: { id in
-                                guard let device = library.document.devices.first(
-                                    where: { $0.id == id }
-                                ) else { return }
-                                model.selectDevice(device.value, amount: 1)
-                            }
-                        )
-                    ) {
-                        ForEach(library.document.devices) { device in
-                            Text(device.name).tag(device.id)
-                        }
-                    }
-                    .accessibilityLabel("Seleccionar device preset")
-                }
-
-                if let device = model.resolvedDevice?.definition {
-                    Section("Placement de fuente") {
-                        Picker("Placement", selection: Binding(
-                            get: { model.sourcePlacement },
-                            set: { model.changeSourcePlacement($0) }
-                        )) {
-                            ForEach(WorkspaceModel.SourcePlacement.allCases) {
-                                Text($0.rawValue).tag($0)
-                            }
-                        }
-                        Text("Pertenece al estado de escena/render; no modifica el preset global.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Section("Propiedades efectivas resueltas") {
-                        LabeledContent("Categoría", value: device.category.rawValue)
-                        LabeledContent(
-                            "Resolución",
-                            value: "\(device.nativeWidth) × \(device.nativeHeight)"
-                        )
-                        LabeledContent(
-                            "Área activa",
-                            value: "\((device.activeWidthMeters * 1_000).formatted(.number.precision(.fractionLength(1)))) × "
-                                + "\((device.activeHeightMeters * 1_000).formatted(.number.precision(.fractionLength(1)))) mm"
-                        )
-                        LabeledContent(
-                            "Densidad",
-                            value: "\(device.pixelsPerInch.formatted(.number.precision(.fractionLength(1)))) PPI"
-                        )
-                        LabeledContent(
-                            "Pixel pitch",
-                            value: "\(device.pixelPitchMicrometers.formatted(.number.precision(.fractionLength(1)))) µm"
-                        )
-                        LabeledContent("Panel", value: device.panelTechnology.rawValue)
-                        LabeledContent(
-                            "EOTF",
-                            value: "γ \(device.eotfGamma.formatted(.number.precision(.fractionLength(2))))"
-                        )
-                        LabeledContent(
-                            "Luminancia",
-                            value: "\(device.blackLevelNits.formatted())–\(device.whiteLevelNits.formatted()) nits"
-                        )
-                        LabeledContent("Subpíxeles", value: device.stripeLayout.rawValue)
-                        LabeledContent(
-                            "Black matrix",
-                            value: device.blackMatrixFraction.formatted(.percent)
-                        )
-                        LabeledContent(
-                            "Cover glass",
-                            value: device.defaultCoverGlassPresetID
-                        )
-                        LabeledContent(
-                            "Physical stage",
-                            value: model.deviceStageAmount == 1
-                                ? "1 · Físico calibrado" : "0 · Identidad exacta"
-                        )
-                    }
-                    Section {
-                        Text(
-                            "La selección crea un snapshot inmutable. Editar o borrar "
-                                + "el preset global no cambia esta evaluación."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                } else {
-                    ContentUnavailableView(
-                        "Sin device seleccionado",
-                        systemImage: "display.slash"
-                    )
-                }
-            }
-            .formStyle(.grouped)
-            .frame(minWidth: 360, idealWidth: 400, maxWidth: 560)
+            ModelInspectorView(workspace: model, library: library)
+                .frame(minWidth: 380, idealWidth: 430, maxWidth: 620)
 
             preview(deviceAspect: model.resolvedDevice.map {
                 Double($0.definition.nativeWidth) / Double($0.definition.nativeHeight)
-            })
+            }, modelMode: true)
                 .frame(minWidth: 640, minHeight: 480)
         }
-        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Device"))
+        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Model"))
     }
 
     private var monitorSettings: some View {
@@ -1438,7 +1345,10 @@ struct ContentView: View {
         .frame(minHeight: 180, idealHeight: 220)
     }
 
-    private func preview(deviceAspect: Double? = nil) -> some View {
+    private func preview(
+        deviceAspect: Double? = nil,
+        modelMode: Bool = false
+    ) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Picker("Pantalla", selection: Binding(
@@ -1450,6 +1360,24 @@ struct ContentView: View {
                 .labelsHidden()
                 .frame(maxWidth: 330)
                 Spacer()
+                if modelMode {
+                    Picker("Calidad física", selection: Binding(
+                        get: { model.physicalModel.quality },
+                        set: { model.changePhysicalQuality($0) }
+                    )) {
+                        ForEach(PhysicalQuality.allCases) { quality in
+                            Text(qualityLabel(quality)).tag(quality)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 250)
+                    .help("Calidad de evaluación física")
+                    .accessibilityLabel("Calidad de evaluación física")
+                    if model.physicalModel.quality == .native {
+                        nativeFrameControl
+                    }
+                }
                 Button {
                     model.monitorOutput.toggle(
                         frame: model.metalFrame,
@@ -1467,19 +1395,30 @@ struct ContentView: View {
                 .accessibilityLabel(model.monitorOutput.isActive
                     ? "Detener monitorización DeckLink"
                     : "Iniciar monitorización DeckLink")
-                Button { model.zoomBy(0.8) } label: { Image(systemName: "minus.magnifyingglass") }
-                    .help("Reducir zoom")
-                    .accessibilityLabel("Reducir zoom")
-                TextField("Zoom", value: Binding(
-                    get: { model.zoomPercentage },
-                    set: { model.zoomPercentage = $0 }
-                ), format: .number.precision(.fractionLength(0)))
-                    .frame(width: 52)
-                    .multilineTextAlignment(.trailing)
-                    .accessibilityLabel("Escala del visor en porcentaje")
-                Text("%").foregroundStyle(.secondary)
-                Button("Fit", action: model.resetView)
+                Button { model.zoomBy(0.8) } label: {
+                    Image(systemName: "minus.magnifyingglass")
+                }
+                .help("Reducir zoom")
+                .accessibilityLabel("Reducir zoom")
+                if !modelMode {
+                    TextField("Zoom", value: Binding(
+                        get: { model.zoomPercentage },
+                        set: { model.zoomPercentage = $0 }
+                    ), format: .number.precision(.fractionLength(0)))
+                        .frame(width: 52)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityLabel("Escala del visor en porcentaje")
+                    Text("%").foregroundStyle(.secondary)
+                }
+                Button("Fit") {
+                    modelMode ? model.fitModelPreview() : model.resetView()
+                }
                     .help("Ajustar imagen al visor")
+                if modelMode {
+                    Button("1:1", action: model.showModelPreviewOneToOne)
+                        .help("Un píxel nativo por píxel lógico del visor")
+                        .accessibilityLabel("Mostrar resultado físico uno a uno")
+                }
                 Button { model.zoomBy(1.25) } label: { Image(systemName: "plus.magnifyingglass") }
                     .help("Aumentar zoom")
                     .accessibilityLabel("Aumentar zoom")
@@ -1502,6 +1441,7 @@ struct ContentView: View {
                         output: model.previewTransform,
                         zoom: model.zoom,
                         pan: model.pan,
+                        oneToOne: modelMode && model.modelViewerOneToOne,
                         onDisplayChange: { model.systemDisplayInfo = $0 }
                     )
                     .gesture(
@@ -1528,10 +1468,27 @@ struct ContentView: View {
                         description: Text("Abre un medio o selecciona un patrón.")
                     )
                 }
+                if modelMode, model.physicalModel.frameState == .stale {
+                    VStack {
+                        HStack {
+                            Label("Desactualizado", systemImage: "clock.arrow.circlepath")
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(.regularMaterial, in: Capsule())
+                                .foregroundStyle(NativeTheme.accent)
+                            Spacer()
+                        }
+                        Spacer()
+                    }
+                    .padding(12)
+                    .allowsHitTesting(false)
+                }
             }
             .clipped()
-            Divider()
-            transport
+            if !modelMode {
+                Divider()
+                transport
+            }
             Divider()
             HStack(spacing: 8) {
                 Image(systemName: model.metalFrame == nil ? "exclamationmark.circle" : "checkmark.circle")
@@ -1543,6 +1500,37 @@ struct ContentView: View {
             .padding(.horizontal, 10)
             .frame(height: 30)
             .background(Color(nsColor: .windowBackgroundColor))
+        }
+    }
+
+    @ViewBuilder
+    private var nativeFrameControl: some View {
+        if model.physicalModel.frameState == .rendering {
+            ProgressView(value: model.physicalModel.progress)
+                .frame(width: 70)
+                .tint(.blue)
+                .accessibilityLabel("Progreso del fotograma Native")
+            Button("Cancelar", action: model.cancelSelectedPhysicalFrameNative)
+                .foregroundStyle(.blue)
+                .help("Cancelar cálculo Native")
+        } else {
+            Button("Renderizar fotograma", action: model.renderSelectedPhysicalFrameNative)
+                .help("Evaluar explícitamente el fotograma seleccionado a resolución nativa")
+                .accessibilityLabel("Renderizar fotograma físico Native")
+            if let device = model.resolvedDevice?.definition {
+                Text("Nativa · Panel \(device.nativeWidth)×\(device.nativeHeight)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func qualityLabel(_ quality: PhysicalQuality) -> String {
+        switch quality {
+        case .draft: "Draft"
+        case .medium: "Media"
+        case .high: "Alta"
+        case .native: "Nativa"
         }
     }
 
@@ -1623,6 +1611,7 @@ struct MetalPreview: NSViewRepresentable {
     let output: StudioColorOutputTransform
     let zoom: Double
     let pan: CGSize
+    let oneToOne: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
 
     func makeNSView(context _: Context) -> MetalPreviewContainer {
@@ -1636,13 +1625,24 @@ struct MetalPreview: NSViewRepresentable {
 
     func updateNSView(_ container: MetalPreviewContainer, context _: Context) {
         container.metalView.screenDidChange = onDisplayChange
-        container.updatePresentation(zoom: zoom, pan: pan)
+        container.updatePresentation(
+            zoom: zoom,
+            pan: pan,
+            oneToOne: oneToOne,
+            textureWidth: frame.width,
+            textureHeight: frame.height
+        )
         display.present(frame, output: output, in: container.metalView)
     }
 }
 
 final class MetalPreviewContainer: NSView {
     private(set) var metalView = StudioColorScreenAwareMetalView()
+    private var presentationZoom = 1.0
+    private var presentationPan = CGSize.zero
+    private var presentationOneToOne = false
+    private var textureWidth = 1
+    private var textureHeight = 1
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1662,12 +1662,38 @@ final class MetalPreviewContainer: NSView {
     override func layout() {
         super.layout()
         metalView.frame = bounds
+        applyPresentation()
     }
 
-    func updatePresentation(zoom: Double, pan: CGSize) {
+    func updatePresentation(
+        zoom: Double,
+        pan: CGSize,
+        oneToOne: Bool,
+        textureWidth: Int,
+        textureHeight: Int
+    ) {
+        presentationZoom = zoom
+        presentationPan = pan
+        presentationOneToOne = oneToOne
+        self.textureWidth = textureWidth
+        self.textureHeight = textureHeight
+        applyPresentation()
+    }
+
+    private func applyPresentation() {
+        let oneToOneScale = bounds.width > 0 && bounds.height > 0
+            ? max(
+                CGFloat(textureWidth) / bounds.width,
+                CGFloat(textureHeight) / bounds.height
+            )
+            : 1
+        let scale = presentationOneToOne ? oneToOneScale : presentationZoom
         metalView.layer?.setAffineTransform(
-            CGAffineTransform(translationX: pan.width, y: -pan.height)
-                .scaledBy(x: zoom, y: zoom)
+            CGAffineTransform(
+                translationX: presentationPan.width,
+                y: -presentationPan.height
+            )
+            .scaledBy(x: scale, y: scale)
         )
     }
 }
