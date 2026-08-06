@@ -1177,11 +1177,6 @@ struct ContentView: View {
                         image
                             .aspectRatio(deviceAspect, contentMode: .fit)
                             .background(.black)
-                            .overlay {
-                                Rectangle()
-                                    .stroke(.white.opacity(0.22), lineWidth: 1)
-                            }
-                            .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
                             .padding(28)
                     } else {
                         image
