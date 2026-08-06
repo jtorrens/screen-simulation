@@ -8,11 +8,13 @@ import SwiftUI
 struct ContentView: View {
     enum WorkspacePage: String, CaseIterable, Identifiable {
         case main = "Principal"
+        case device = "Device"
         case settings = "Settings"
         var id: String { rawValue }
         var systemImage: String {
             switch self {
             case .main: "rectangle.on.rectangle"
+            case .device: "display"
             case .settings: "gearshape"
             }
         }
@@ -37,6 +39,7 @@ struct ContentView: View {
             Group {
                 switch page {
                 case .main: mainWorkspace
+                case .device: deviceWorkspace
                 case .settings: settingsWorkspace
                 }
             }
@@ -62,6 +65,12 @@ struct ContentView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .toolbar { workspaceToolbar }
+        .onAppear {
+            if model.resolvedDevice == nil,
+               let first = library.document.devices.first {
+                model.selectDevice(first)
+            }
+        }
         .alert(
             "SCREEN-SIMULATION",
             isPresented: Binding(
@@ -110,6 +119,97 @@ struct ContentView: View {
             monitorSettings
             .tabItem { Label("Monitor", systemImage: "rectangle.connected.to.line.below") }
         }
+    }
+
+    private var deviceWorkspace: some View {
+        HSplitView {
+            Form {
+                Section("Device preset") {
+                    Picker(
+                        "Device",
+                        selection: Binding(
+                            get: { model.resolvedDevice?.id ?? "" },
+                            set: { id in
+                                guard let device = library.document.devices.first(
+                                    where: { $0.id == id }
+                                ) else { return }
+                                model.selectDevice(device)
+                            }
+                        )
+                    ) {
+                        ForEach(library.document.devices) { device in
+                            Text(device.name).tag(device.id)
+                        }
+                    }
+                    .accessibilityLabel("Seleccionar device preset")
+                }
+
+                if let device = model.resolvedDevice?.definition {
+                    Section("Propiedades efectivas resueltas") {
+                        LabeledContent("Categoría", value: device.category.rawValue)
+                        LabeledContent(
+                            "Resolución",
+                            value: "\(device.nativeWidth) × \(device.nativeHeight)"
+                        )
+                        LabeledContent(
+                            "Área activa",
+                            value: "\((device.activeWidthMeters * 1_000).formatted(.number.precision(.fractionLength(1)))) × "
+                                + "\((device.activeHeightMeters * 1_000).formatted(.number.precision(.fractionLength(1)))) mm"
+                        )
+                        LabeledContent(
+                            "Densidad",
+                            value: "\(device.pixelsPerInch.formatted(.number.precision(.fractionLength(1)))) PPI"
+                        )
+                        LabeledContent(
+                            "Pixel pitch",
+                            value: "\(device.pixelPitchMicrometers.formatted(.number.precision(.fractionLength(1)))) µm"
+                        )
+                        LabeledContent("Panel", value: device.panelTechnology.rawValue)
+                        LabeledContent(
+                            "EOTF",
+                            value: "γ \(device.eotfGamma.formatted(.number.precision(.fractionLength(2))))"
+                        )
+                        LabeledContent(
+                            "Luminancia",
+                            value: "\(device.blackLevelNits.formatted())–\(device.whiteLevelNits.formatted()) nits"
+                        )
+                        LabeledContent("Subpíxeles", value: device.stripeLayout.rawValue)
+                        LabeledContent(
+                            "Black matrix",
+                            value: device.blackMatrixFraction.formatted(.percent)
+                        )
+                        LabeledContent(
+                            "Cover glass",
+                            value: device.defaultCoverGlassPresetID
+                        )
+                        LabeledContent(
+                            "Physical stage",
+                            value: model.deviceStageAmount == 1
+                                ? "1 · Físico calibrado" : "0 · Identidad exacta"
+                        )
+                    }
+                    Section {
+                        Text(
+                            "La selección crea un snapshot inmutable. Editar o borrar "
+                                + "el preset global no cambia esta evaluación."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "Sin device seleccionado",
+                        systemImage: "display.slash"
+                    )
+                }
+            }
+            .formStyle(.grouped)
+            .frame(minWidth: 360, idealWidth: 400, maxWidth: 560)
+
+            preview
+                .frame(minWidth: 640, minHeight: 480)
+        }
+        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Device"))
     }
 
     private var monitorSettings: some View {

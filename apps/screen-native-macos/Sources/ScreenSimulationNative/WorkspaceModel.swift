@@ -55,6 +55,8 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var defaultAlphaMode = StudioAlphaMode.ignore
     @Published private(set) var defaultSignalMatrix = StudioSignalMatrix.bt709
     @Published private(set) var defaultSignalRange = StudioSignalRange.full
+    @Published private(set) var resolvedDevice: ResolvedDevice?
+    @Published private(set) var deviceStageAmount = 0.0
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -71,7 +73,17 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var pipelineSummary: String {
-        "Input → YUV/rango → IDT → ACEScg → Display/ODT"
+        "Input → YUV/rango → IDT → ACEScg → Device → Display/ODT"
+    }
+
+    func selectDevice(_ definition: DeviceDefinition, amount: Double = 1) {
+        do {
+            resolvedDevice = try definition.resolved()
+            deviceStageAmount = min(1, max(0, amount))
+            rebuildCurrent()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     var requestedSeconds: Double {
