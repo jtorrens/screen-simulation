@@ -5,6 +5,18 @@ import StudioMedia
 import SwiftUI
 
 struct ContentView: View {
+    enum WorkspacePage: String, CaseIterable, Identifiable {
+        case main = "Principal"
+        case settings = "Settings"
+        var id: String { rawValue }
+        var systemImage: String {
+            switch self {
+            case .main: "rectangle.on.rectangle"
+            case .settings: "gearshape"
+            }
+        }
+    }
+
     enum SidebarTab: String, CaseIterable, Identifiable {
         case source = "Source"
         case color = "Color"
@@ -16,8 +28,49 @@ struct ContentView: View {
     @Environment(\.undoManager) private var undoManager
     @ObservedObject var model: WorkspaceModel
     @State private var tab = SidebarTab.source
+    @State private var page = WorkspacePage.main
 
     var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                switch page {
+                case .main: mainWorkspace
+                case .settings: settingsWorkspace
+                }
+            }
+            Divider()
+            HStack(spacing: 8) {
+                ForEach(WorkspacePage.allCases) { destination in
+                    Button {
+                        page = destination
+                    } label: {
+                        Image(systemName: destination.systemImage)
+                            .frame(width: 28, height: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(page == destination ? Color.accentColor : .secondary)
+                    .help(destination.rawValue)
+                    .accessibilityLabel(destination.rawValue)
+                    .accessibilityAddTraits(page == destination ? .isSelected : [])
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(Color(nsColor: .windowBackgroundColor))
+        }
+        .toolbar { workspaceToolbar }
+        .alert(
+            "SCREEN-SIMULATION",
+            isPresented: Binding(
+                get: { model.errorMessage != nil },
+                set: { if !$0 { model.errorMessage = nil } }
+            )
+        ) { Button("Aceptar") { model.errorMessage = nil } }
+        message: { Text(model.errorMessage ?? "") }
+    }
+
+    private var mainWorkspace: some View {
         HSplitView {
             VStack(spacing: 0) {
                 TabView(selection: $tab) {
@@ -35,29 +88,54 @@ struct ContentView: View {
                 .frame(minWidth: 640, minHeight: 480)
         }
         .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Workspace"))
-        .toolbar {
-            ToolbarItemGroup {
-                Button(action: model.openMedia) { Label("Abrir", systemImage: "folder") }
-                    .help("Abrir un vídeo o una imagen")
-                Button(action: model.enqueueExport) { Label("Añadir render", systemImage: "plus.rectangle.on.rectangle") }
-                    .disabled(model.metalFrame == nil)
-                    .help("Añadir la película o el rango completo a Render Queue")
-                Button(action: model.renderCurrentFrame) { Label("Frame actual", systemImage: "photo") }
-                    .disabled(model.metalFrame == nil)
-                    .help("Renderizar el frame actual horneando la transformación del visor")
-                Button(action: model.runQueue) { Label("Render", systemImage: "play.fill") }
-                    .disabled(!model.jobs.contains { $0.state == .pending })
-                    .help("Procesar los trabajos en cola")
+    }
+
+    private var settingsWorkspace: some View {
+        TabView {
+            Form {
+                Section("Aplicación") {
+                    LabeledContent("Renderer", value: "Metal · RGBA16Float")
+                    LabeledContent("OCIO", value: StudioColorBuildIdentity.ocioVersion)
+                    LabeledContent("ACES", value: StudioColorBuildIdentity.acesConfigVersion)
+                }
             }
-        }
-        .alert(
-            "SCREEN-SIMULATION",
-            isPresented: Binding(
-                get: { model.errorMessage != nil },
-                set: { if !$0 { model.errorMessage = nil } }
+            .formStyle(.grouped)
+            .tabItem { Label("Aplicación", systemImage: "info.circle") }
+
+            ContentUnavailableView(
+                "Colecciones globales",
+                systemImage: "square.stack.3d.up",
+                description: Text("Patrones, imágenes de prueba y presets de render.")
             )
-        ) { Button("Aceptar") { model.errorMessage = nil } }
-        message: { Text(model.errorMessage ?? "") }
+            .tabItem { Label("Colecciones", systemImage: "square.stack.3d.up") }
+
+            Form {
+                Section("Monitor externo") {
+                    Text("La salida DeckLink usa una ODT de monitorización independiente.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("Monitor", systemImage: "rectangle.connected.to.line.below") }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var workspaceToolbar: some ToolbarContent {
+        ToolbarItemGroup {
+            Button(action: model.openMedia) { Label("Abrir", systemImage: "folder") }
+                .disabled(page != .main)
+                .help("Abrir un vídeo o una imagen")
+            Button(action: model.enqueueExport) { Label("Añadir render", systemImage: "plus.rectangle.on.rectangle") }
+                .disabled(page != .main || model.metalFrame == nil)
+                .help("Añadir la película o el rango completo a Render Queue")
+            Button(action: model.renderCurrentFrame) { Label("Frame actual", systemImage: "photo") }
+                .disabled(page != .main || model.metalFrame == nil)
+                .help("Renderizar el frame actual horneando la transformación del visor")
+            Button(action: model.runQueue) { Label("Render", systemImage: "play.fill") }
+                .disabled(page != .main || !model.jobs.contains { $0.state == .pending })
+                .help("Procesar los trabajos en cola")
+        }
     }
 
     private var sourcePanel: some View {
