@@ -42,6 +42,19 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
                 view: "ACES 2.0 - HDR 1000 nits (Rec.2020)"
             )
         ),
+        .init(
+            id: "display-rec709-gamma24-dcm",
+            label: "Display · Rec.709 Gamma 2.4 (DCM)",
+            processor: .colorSpace("Gamma 2.4 Encoded Rec.709")
+        ),
+        .init(
+            id: "display-rec2100-pq-dcm",
+            label: "Display · Rec.2100 ST2084 (DCM)",
+            processor: .inverseDisplay(
+                display: "Rec.2100-PQ - Display",
+                view: "Video (colorimetric)"
+            )
+        ),
         .init(id: "input-rec709", label: "Camera · Rec.709", processor: .colorSpace("Input - Rec.709")),
         .init(id: "srgb-encoded-rec709", label: "sRGB encoded Rec.709", processor: .colorSpace("sRGB Encoded Rec.709 (sRGB)")),
         .init(id: "acescg", label: "ACEScg (identity)", processor: .colorSpace("ACEScg")),
@@ -58,12 +71,17 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
 
 public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
     public enum Encoding: Sendable { case sRGB, rec709, displayP3, displayP3EDR, rec2100PQ }
+    public enum Processor: Hashable, Sendable {
+        case displayView(display: String, view: String)
+        case colorSpace(String)
+    }
 
     public let id: String
     public let label: String
     public let display: String
     public let view: String
     public let encoding: Encoding
+    public let processor: Processor
 
     public init(
         id: String,
@@ -77,6 +95,21 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         self.display = display
         self.view = view
         self.encoding = encoding
+        processor = .displayView(display: display, view: view)
+    }
+
+    public init(
+        id: String,
+        label: String,
+        colorSpace: String,
+        encoding: Encoding
+    ) {
+        self.id = id
+        self.label = label
+        display = ""
+        view = ""
+        self.encoding = encoding
+        processor = .colorSpace(colorSpace)
     }
 
     public static let catalog: [Self] = [

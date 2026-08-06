@@ -669,11 +669,16 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     ) throws -> Resources {
         let key = "\(transform.id):\(pixelFormat.rawValue)"
         if let cached = resources[key] { return cached }
-        let processor = try engine.cachedDisplayProcessor(
-            source: "ACEScg",
-            display: transform.display,
-            view: transform.view
-        )
+        let processor: StudioColorProcessor = switch transform.processor {
+        case let .displayView(display, view):
+            try engine.cachedDisplayProcessor(
+                source: "ACEScg", display: display, view: view
+            )
+        case let .colorSpace(destination):
+            try engine.cachedColorSpaceProcessor(
+                source: "ACEScg", destination: destination
+            )
+        }
         let shader = try processor.makeMetalShader()
         let library = try device.makeLibrary(
             source: Self.displayShaderSource(shader),

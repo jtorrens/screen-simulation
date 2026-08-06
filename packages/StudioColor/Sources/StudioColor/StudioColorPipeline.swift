@@ -84,11 +84,7 @@ public final class StudioColorPipeline: @unchecked Sendable {
                 values[offset + 2] /= a
             }
         }
-        let processor = try engine.cachedDisplayProcessor(
-            source: Self.workingSpace,
-            display: output.display,
-            view: output.view
-        )
+        let processor = try outputProcessor(output)
         try processor.apply(toRGBA: &values)
         return values.enumerated().map { index, value in
             if index.isMultiple(of: 4) || index % 4 == 1 || index % 4 == 2 {
@@ -96,6 +92,21 @@ public final class StudioColorPipeline: @unchecked Sendable {
                 return UInt8((value * a).clamped(to: 0 ... 1) * 255 + 0.5)
             }
             return UInt8(value.clamped(to: 0 ... 1) * 255 + 0.5)
+        }
+    }
+
+    private func outputProcessor(
+        _ output: StudioColorOutputTransform
+    ) throws -> StudioColorProcessor {
+        switch output.processor {
+        case let .displayView(display, view):
+            try engine.cachedDisplayProcessor(
+                source: Self.workingSpace, display: display, view: view
+            )
+        case let .colorSpace(destination):
+            try engine.cachedColorSpaceProcessor(
+                source: Self.workingSpace, destination: destination
+            )
         }
     }
 }

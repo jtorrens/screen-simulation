@@ -138,6 +138,12 @@ enum NativeOutputRenderer {
     }
 
     private static func outputTransform(for preset: StudioRenderPreset) -> StudioColorOutputTransform? {
+        if preset.pipeline == .davinciColorManaged, preset.target == .sdr {
+            return StudioColorOutputTransform(
+                id: "render-\(preset.id.uuidString)", label: preset.name,
+                colorSpace: "Gamma 2.4 Encoded Rec.709", encoding: .rec709
+            )
+        }
         guard let display = preset.display, let view = preset.view else { return nil }
         let encoding: StudioColorOutputTransform.Encoding = preset.target == .hdr ? .rec2100PQ : .rec709
         return StudioColorOutputTransform(

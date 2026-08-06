@@ -48,6 +48,44 @@ import Testing
     #expect(zip(result, expected).map { abs(Int($0) - Int($1)) }.max() ?? 0 <= 1)
 }
 
+@Test func acesHDRInverseRoundTripsThroughMatchingACESOutput() throws {
+    try assertDisplayRoundtrip(
+        inputID: "display-rec2100-pq-aces2-hdr-1000",
+        display: "Rec.2100-PQ - Display",
+        view: "ACES 2.0 - HDR 1000 nits (Rec.2020)",
+        tolerance: 2e-4,
+        samples: hdrRoundtripSamples
+    )
+}
+
+@Test func dcmSDRUsesItsColorimetricContractAndRoundTrips() throws {
+    let samples = roundtripSamples
+    let pipeline = StudioColorPipeline()
+    let input = StudioColorInputTransform.catalog.first {
+        $0.id == "display-rec709-gamma24-dcm"
+    }!
+    let frame = try pipeline.prepareInput(
+        width: samples.count / 4, height: 1, encodedRGBA: samples,
+        input: input, alpha: .straight
+    )
+    var result = frame.premultipliedRGBA
+    unpremultiply(&result)
+    let processor = try StudioColorEngine.bundled().cachedColorSpaceProcessor(
+        source: "ACEScg", destination: "Gamma 2.4 Encoded Rec.709"
+    )
+    try processor.apply(toRGBA: &result)
+    #expect(zip(result, samples).map { abs($0 - $1) }.max() ?? 0 <= 3e-5)
+}
+
+@Test func dcmHDRUsesItsColorimetricContractAndRoundTrips() throws {
+    try assertDisplayRoundtrip(
+        inputID: "display-rec2100-pq-dcm",
+        display: "Rec.2100-PQ - Display",
+        view: "Video (colorimetric)",
+        tolerance: 1e-3
+    )
+}
+
 @Test @MainActor func metalMatchesCreditsCPUOracleForEveryOutput() throws {
     let pipeline = StudioColorPipeline()
     let display = try StudioColorMetalDisplay()
@@ -97,3 +135,57 @@ import Testing
         #expect(zip(gpu, cpu).map { abs(Int($0) - Int($1)) }.max() ?? 0 <= 1)
     }
 }
+
+private func assertDisplayRoundtrip(
+    inputID: String,
+    display: String,
+    view: String,
+    tolerance: Float,
+    samples: [Float] = roundtripSamples
+) throws {
+    let input = StudioColorInputTransform.catalog.first { $0.id == inputID }!
+    let pipeline = StudioColorPipeline()
+    let frame = try pipeline.prepareInput(
+        width: samples.count / 4,
+        height: 1,
+        encodedRGBA: samples,
+        input: input,
+        alpha: .straight
+    )
+    var result = frame.premultipliedRGBA
+    unpremultiply(&result)
+    let processor = try StudioColorEngine.bundled().cachedDisplayProcessor(
+        source: "ACEScg", display: display, view: view
+    )
+    try processor.apply(toRGBA: &result)
+    let maximum = zip(result, samples).map { abs($0 - $1) }.max() ?? 0
+    #expect(maximum <= tolerance, "maximum error \(maximum)")
+}
+
+private func unpremultiply(_ values: inout [Float]) {
+    for offset in stride(from: 0, to: values.count, by: 4) {
+        let alpha = values[offset + 3]
+        if alpha > 0 {
+            values[offset] /= alpha
+            values[offset + 1] /= alpha
+            values[offset + 2] /= alpha
+        }
+    }
+}
+
+private let roundtripSamples: [Float] = [
+    0, 0, 0, 1,
+    1, 1, 1, 1,
+    0.03125, 0.03125, 0.03125, 1,
+    0.18, 0.18, 0.18, 1,
+    0.5, 0.5, 0.5, 1,
+    0.73, 0.42, 0.09, 0.25,
+]
+
+private let hdrRoundtripSamples: [Float] = [
+    0, 0, 0, 1,
+    0.03125, 0.03125, 0.03125, 1,
+    0.18, 0.18, 0.18, 1,
+    0.5, 0.5, 0.5, 1,
+    0.75, 0.75, 0.75, 1,
+]
