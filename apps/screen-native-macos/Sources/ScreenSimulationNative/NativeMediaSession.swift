@@ -4,6 +4,7 @@ import CoreMedia
 import CoreVideo
 import Foundation
 import ImageIO
+import ScreenPhysicalBridge
 
 struct NativeMediaSample: @unchecked Sendable {
     let pixelBuffer: CVPixelBuffer
@@ -187,6 +188,9 @@ final class NativeMediaSession {
     }
 
     private static func imagePixelBuffer(_ url: URL) throws -> CVPixelBuffer {
+        if url.pathExtension.lowercased() == "exr" {
+            return try openEXRPixelBuffer(url)
+        }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { throw NativeMediaError.unreadable(url.lastPathComponent) }
@@ -209,6 +213,56 @@ final class NativeMediaSession {
                 | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { throw NativeMediaError.invalidRaster }
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return buffer
+    }
+
+    private static func openEXRPixelBuffer(_ url: URL) throws -> CVPixelBuffer {
+        var pixels: UnsafeMutablePointer<Float>?
+        var width: UInt32 = 0
+        var height: UInt32 = 0
+        var declaredColorSpace: UnsafeMutablePointer<CChar>?
+        var message: UnsafeMutablePointer<CChar>?
+        let succeeded = url.withUnsafeFileSystemRepresentation { path in
+            screen_openexr_decode_rgba_float(
+                path, &pixels, &width, &height, &declaredColorSpace, &message
+            )
+        }
+        defer {
+            if let pixels { screen_openexr_free(pixels) }
+            if let declaredColorSpace { screen_openexr_free(declaredColorSpace) }
+            if let message { screen_openexr_free(message) }
+        }
+        guard succeeded, let pixels, width > 0, height > 0 else {
+            throw NativeMediaError.unreadable(
+                message.map { String(cString: $0) } ?? url.lastPathComponent
+            )
+        }
+        let count = Int(width * height) * 4
+        guard UnsafeBufferPointer(start: pixels, count: count).allSatisfy(\.isFinite) else {
+            throw NativeMediaError.unreadable("\(url.lastPathComponent) contiene muestras no finitas")
+        }
+        var buffer: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferMetalCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+        ]
+        guard CVPixelBufferCreate(
+            nil, Int(width), Int(height), kCVPixelFormatType_64RGBAHalf,
+            attributes as CFDictionary, &buffer
+        ) == kCVReturnSuccess, let buffer else { throw NativeMediaError.invalidRaster }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+            throw NativeMediaError.invalidRaster
+        }
+        let source = UnsafeBufferPointer(start: pixels, count: count)
+        let rowStride = CVPixelBufferGetBytesPerRow(buffer) / MemoryLayout<Float16>.stride
+        let destination = base.assumingMemoryBound(to: Float16.self)
+        for row in 0 ..< Int(height) {
+            for column in 0 ..< Int(width) * 4 {
+                destination[row * rowStride + column] = Float16(source[row * Int(width) * 4 + column])
+            }
+        }
         return buffer
     }
 }

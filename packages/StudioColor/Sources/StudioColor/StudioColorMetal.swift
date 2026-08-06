@@ -294,7 +294,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     public func render(
         _ frame: StudioColorMetalFrame,
         output: StudioColorOutputTransform,
-        into pixelBuffer: CVPixelBuffer
+        into pixelBuffer: CVPixelBuffer,
+        alpha: StudioColorAlphaAssociation = .premultiplied
     ) throws {
         guard CVPixelBufferGetWidth(pixelBuffer) == frame.width,
               CVPixelBufferGetHeight(pixelBuffer) == frame.height
@@ -315,7 +316,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         pass.colorAttachments[0].storeAction = .store
         try encode(
             input: frame.texture, output: target, pass: pass,
-            transform: output, command: command, fitInputAspect: false
+            transform: output, command: command, fitInputAspect: false,
+            outputAlpha: alpha
         )
         command.commit()
         command.waitUntilCompleted()
@@ -509,7 +511,9 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
             encoder.setFragmentBytes(&coefficients.luma, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
             encoder.setFragmentBytes(&coefficients.chroma, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
         } else {
-            encoder.setFragmentTexture(try cvTexture(pixelBuffer, format: .bgra8Unorm, plane: 0), index: 0)
+            let format: MTLPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+                == kCVPixelFormatType_64RGBAHalf ? .rgba16Float : .bgra8Unorm
+            encoder.setFragmentTexture(try cvTexture(pixelBuffer, format: format, plane: 0), index: 0)
             encoder.setFragmentSamplerState(compositionSampler, index: 0)
         }
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
@@ -631,9 +635,12 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         pass: MTLRenderPassDescriptor,
         transform: StudioColorOutputTransform,
         command: MTLCommandBuffer,
-        fitInputAspect: Bool
+        fitInputAspect: Bool,
+        outputAlpha: StudioColorAlphaAssociation = .premultiplied
     ) throws {
-        let resources = try displayResources(transform, pixelFormat: output.pixelFormat)
+        let resources = try displayResources(
+            transform, pixelFormat: output.pixelFormat, alpha: outputAlpha
+        )
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else {
             throw StudioColorMetalError.commandFailure
         }
@@ -665,9 +672,10 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
 
     private func displayResources(
         _ transform: StudioColorOutputTransform,
-        pixelFormat: MTLPixelFormat
+        pixelFormat: MTLPixelFormat,
+        alpha: StudioColorAlphaAssociation = .premultiplied
     ) throws -> Resources {
-        let key = "\(transform.id):\(pixelFormat.rawValue)"
+        let key = "\(transform.id):\(pixelFormat.rawValue):\(alpha.rawValue)"
         if let cached = resources[key] { return cached }
         let processor: StudioColorProcessor = switch transform.processor {
         case let .displayView(display, view):
@@ -681,7 +689,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         }
         let shader = try processor.makeMetalShader()
         let library = try device.makeLibrary(
-            source: Self.displayShaderSource(shader),
+            source: Self.displayShaderSource(shader, alpha: alpha),
             options: nil
         )
         guard let vertex = library.makeFunction(name: "fullscreenVertex"),
@@ -701,7 +709,10 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         return result
     }
 
-    private static func displayShaderSource(_ shader: StudioColorMetalShader) -> String {
+    private static func displayShaderSource(
+        _ shader: StudioColorMetalShader,
+        alpha: StudioColorAlphaAssociation
+    ) -> String {
         let declarations = shader.textures.indices.map { index in
             let type = switch shader.textures[index].dimension {
             case .one: "texture1d<float>"
@@ -713,6 +724,14 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         let suffix = declarations.isEmpty ? "" : ",\n" + declarations.joined(separator: ",\n")
         let arguments = shader.textures.indices.flatMap { ["ocioTexture\($0)", "ocioSampler\($0)"] }
         let prefix = arguments.isEmpty ? "" : arguments.joined(separator: ", ") + ", "
+        let alphaOutput: String = switch alpha {
+        case .premultiplied:
+            "color.rgb *= alpha; color.a = alpha;"
+        case .straight:
+            "color.a = alpha;"
+        case .ignore:
+            "color.a = 1.0;"
+        }
         return """
         #include <metal_stdlib>
         using namespace metal;
@@ -737,8 +756,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
             float alpha = color.a;
             if (alpha > 0.0) { color.rgb /= alpha; }
             color = \(shader.functionName)(\(prefix)color);
-            color.rgb *= alpha;
-            color.a = alpha;
+            \(alphaOutput)
             return color;
         }
         """

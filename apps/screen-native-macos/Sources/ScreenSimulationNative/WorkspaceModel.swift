@@ -14,6 +14,7 @@ final class WorkspaceModel: ObservableObject {
         let format: StudioOutputFormat
         let preset: StudioRenderPreset
         let range: ClosedRange<Int>
+        let alpha: StudioAlphaMode
         var state: State = .pending
         var progress = 0.0
         var detail = "Pendiente"
@@ -46,7 +47,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var renderPreset = StudioRenderPreset.builtIns[0]
     @Published var peakNits = 100.0
     @Published var includeAudio = true
-    @Published var outputAlpha = true
+    @Published var outputAlphaMode = StudioAlphaMode.premultiplied
     @Published var decodeToPreviewMilliseconds = 0.0
     @Published var zoom = 1.0
     @Published var pan = CGSize.zero
@@ -346,7 +347,9 @@ final class WorkspaceModel: ObservableObject {
         }
         guard let url else { return }
         jobs.append(RenderJob(
-            destination: url, format: outputFormat, preset: renderPreset, range: activeFrameRange
+            destination: url, format: outputFormat, preset: renderPreset,
+            range: activeFrameRange,
+            alpha: outputFormat.supportsAlpha ? outputAlphaMode : .ignore
         ))
     }
 
@@ -364,7 +367,7 @@ final class WorkspaceModel: ObservableObject {
                     format: job.format, preset: job.preset, peakNits: peakNits,
                     frameRate: frameRate, frameRange: job.range,
                     destination: job.destination,
-                    includeAlpha: outputAlpha,
+                    alpha: job.alpha.colorAssociation,
                     includeAudio: includeAudio,
                     audioSource: session.sourceURL,
                     display: metalDisplay,
@@ -531,5 +534,15 @@ final class WorkspaceModel: ObservableObject {
 
     private static func isImage(_ url: URL) -> Bool {
         ["png", "jpg", "jpeg", "tif", "tiff", "heic", "exr", "dpx"].contains(url.pathExtension.lowercased())
+    }
+}
+
+private extension StudioAlphaMode {
+    var colorAssociation: StudioColorAlphaAssociation {
+        switch self {
+        case .straight: .straight
+        case .premultiplied: .premultiplied
+        case .ignore: .ignore
+        }
     }
 }

@@ -3,6 +3,9 @@
 extern bool CHOpenEXREncodeRGBAHalf(
     const float *, uint32_t, uint32_t, uint8_t **, size_t *, char **
 );
+extern bool CHOpenEXRDecodeRGBAFloat(
+    const char *, float **, uint32_t *, uint32_t *, char **, char **
+);
 extern void CHOpenEXRFree(void *);
 
 bool screen_openexr_encode_rgba_half(
@@ -15,6 +18,19 @@ bool screen_openexr_encode_rgba_half(
 ) {
     return CHOpenEXREncodeRGBAHalf(
         pixels, width, height, encoded_bytes, encoded_byte_count, error_message
+    );
+}
+
+bool screen_openexr_decode_rgba_float(
+    const char *file_path,
+    float **pixels,
+    uint32_t *width,
+    uint32_t *height,
+    char **declared_color_space,
+    char **error_message
+) {
+    return CHOpenEXRDecodeRGBAFloat(
+        file_path, pixels, width, height, declared_color_space, error_message
     );
 }
 

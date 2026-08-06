@@ -37,6 +37,14 @@ bool screen_openexr_encode_rgba_half(
     size_t *encoded_byte_count,
     char **error_message
 );
+bool screen_openexr_decode_rgba_float(
+    const char *file_path,
+    float **pixels,
+    uint32_t *width,
+    uint32_t *height,
+    char **declared_color_space,
+    char **error_message
+);
 void screen_openexr_free(void *pointer);
 
 #endif

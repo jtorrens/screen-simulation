@@ -34,7 +34,7 @@ enum NativeOutputRenderer {
         frameRate: Double,
         frameRange: ClosedRange<Int>,
         destination: URL,
-        includeAlpha: Bool,
+        alpha: StudioColorAlphaAssociation,
         includeAudio: Bool,
         audioSource: URL?,
         display: StudioColorMetalDisplay,
@@ -61,7 +61,7 @@ enum NativeOutputRenderer {
             let writer = try MovieWriter(
                 url: writerURL, width: first.width, height: first.height,
                 frameRate: frameRate, format: format, peakNits: peakNits,
-                includeAlpha: includeAlpha
+                alpha: format.supportsAlpha ? alpha : .ignore, output: output
             )
             for (position, index) in frames.enumerated() {
                 try Task.checkCancellation()
@@ -95,6 +95,7 @@ enum NativeOutputRenderer {
             switch format {
             case .openEXR:
                 var values = try display.readLinearRGBA(frame)
+                applyOutputAlpha(alpha, to: &values)
                 if preset.target == .aces2065 {
                     let processor = try StudioColorEngine.bundled().cachedColorSpaceProcessor(
                         source: "ACEScg", destination: "ACES2065-1"
@@ -177,6 +178,26 @@ enum NativeOutputRenderer {
             guard preset.target == .sdr || preset.target == .hdr else {
                 throw NativeOutputError.unsupported("la secuencia display-referred requiere ODT")
             }
+        }
+    }
+
+    private static func applyOutputAlpha(
+        _ alpha: StudioColorAlphaAssociation,
+        to values: inout [Float]
+    ) {
+        guard alpha != .premultiplied else { return }
+        for offset in stride(from: 0, to: values.count, by: 4) {
+            let value = values[offset + 3]
+            if value > 0 {
+                values[offset] /= value
+                values[offset + 1] /= value
+                values[offset + 2] /= value
+            } else {
+                values[offset] = 0
+                values[offset + 1] = 0
+                values[offset + 2] = 0
+            }
+            if alpha == .ignore { values[offset + 3] = 1 }
         }
     }
 
@@ -309,13 +330,17 @@ private final class MovieWriter {
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor
     private let frameRate: Double
     private let format: StudioOutputFormat
+    private let alpha: StudioColorAlphaAssociation
 
     init(
         url: URL, width: Int, height: Int, frameRate: Double,
-        format: StudioOutputFormat, peakNits: Double, includeAlpha: Bool
+        format: StudioOutputFormat, peakNits: Double,
+        alpha: StudioColorAlphaAssociation,
+        output: StudioColorOutputTransform
     ) throws {
         self.frameRate = frameRate
         self.format = format
+        self.alpha = alpha
         writer = try AVAssetWriter(outputURL: url, fileType: format == .h264Low || format == .h264Medium || format == .h264High ? .mp4 : .mov)
         let codec: AVVideoCodecType
         switch format {
@@ -330,7 +355,7 @@ private final class MovieWriter {
             compression[AVVideoAverageBitRateKey] = Int(Double(width * height) * frameRate * bpp)
         }
         if format == .proRes4444 || format == .proRes4444XQ {
-            compression[kVTCompressionPropertyKey_AlphaChannelMode as String] = includeAlpha
+            compression[kVTCompressionPropertyKey_AlphaChannelMode as String] = alpha == .premultiplied
                 ? kVTAlphaChannelMode_PremultipliedAlpha : kVTAlphaChannelMode_StraightAlpha
         }
         var settings: [String: Any] = [
@@ -339,11 +364,17 @@ private final class MovieWriter {
             AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: compression,
         ]
-        if format == .h265Low || format == .h265Medium || format == .h265High {
+        if output.encoding == .rec2100PQ {
             settings[AVVideoColorPropertiesKey] = [
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_SMPTE_ST_2084_PQ,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
+            ]
+        } else {
+            settings[AVVideoColorPropertiesKey] = [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
             ]
         }
         input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
@@ -379,7 +410,7 @@ private final class MovieWriter {
         var buffer: CVPixelBuffer?
         guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess,
               let buffer else { throw NativeOutputError.cannotCreateWriter }
-        try display.render(frame, output: output, into: buffer)
+        try display.render(frame, output: output, into: buffer, alpha: alpha)
         let time = CMTime(seconds: Double(presentationFrame) / frameRate, preferredTimescale: 60_000)
         guard adaptor.append(buffer, withPresentationTime: time) else {
             throw NativeOutputError.cannotAppend(presentationFrame)

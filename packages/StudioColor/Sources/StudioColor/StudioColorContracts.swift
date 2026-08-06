@@ -70,7 +70,7 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
 }
 
 public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
-    public enum Encoding: Sendable { case sRGB, rec709, displayP3, displayP3EDR, rec2100PQ }
+    public enum Encoding: Equatable, Sendable { case sRGB, rec709, displayP3, displayP3EDR, rec2100PQ }
     public enum Processor: Hashable, Sendable {
         case displayView(display: String, view: String)
         case colorSpace(String)

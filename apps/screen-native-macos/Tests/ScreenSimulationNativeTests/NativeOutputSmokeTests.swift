@@ -1,4 +1,5 @@
 import Foundation
+import CoreMedia
 import StudioColor
 import StudioMedia
 import Testing
@@ -22,7 +23,7 @@ import Testing
         format: .h264High, preset: StudioRenderPreset.builtIns[0], peakNits: 100,
         frameRate: 24, frameRange: 0 ... 2,
         destination: root.appendingPathComponent("smoke.mp4"),
-        includeAlpha: false, includeAudio: false, audioSource: nil,
+        alpha: .ignore, includeAudio: false, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
     #expect(FileManager.default.fileExists(atPath: movie.path))
@@ -31,7 +32,7 @@ import Testing
     _ = try await NativeOutputRenderer.render(
         format: .openEXR, preset: StudioRenderPreset.builtIns[5], peakNits: 0,
         frameRate: 24, frameRange: 7 ... 8, destination: exrDirectory,
-        includeAlpha: true, includeAudio: false, audioSource: nil,
+        alpha: .premultiplied, includeAudio: false, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
     #expect(FileManager.default.fileExists(
@@ -47,4 +48,50 @@ import Testing
         destination: tiff, display: display
     )
     #expect(FileManager.default.fileExists(atPath: tiff.path))
+}
+
+@Test @MainActor func acescgEXRStraightAlphaRoundtripPreservesHalfFloatContract() async throws {
+    let display = try StudioColorMetalDisplay()
+    let width = 8
+    let height = 2
+    let source = identityPattern(width: width, height: height)
+    let frame = try display.makeACEScgFrame(
+        width: width, height: height, encodedRGBA: source,
+        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
+        alpha: .straight
+    )
+    let expected = try display.readLinearRGBA(frame)
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-native-exr-\(UUID().uuidString)")
+    _ = try await NativeOutputRenderer.render(
+        format: .openEXR, preset: StudioRenderPreset.builtIns[5], peakNits: 0,
+        frameRate: 24, frameRange: 12 ... 12, destination: root,
+        alpha: .straight, includeAudio: false, audioSource: nil,
+        display: display, frameProvider: { _ in frame }, progress: { _, _ in }
+    )
+    let url = root.appendingPathComponent("ScreenSimulation-00000012.exr")
+    let session = NativeMediaSession()
+    _ = try session.openImages([url])
+    let sample = try #require(try await session.exactSample(at: .zero))
+    let decoded = try display.makeACEScgFrame(
+        pixelBuffer: sample.pixelBuffer,
+        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
+        alpha: .straight, matrix: .bt709, range: .full
+    )
+    let actual = try display.readLinearRGBA(decoded)
+    #expect(actual.count == expected.count)
+    #expect(zip(actual, expected).map { abs($0 - $1) }.max() ?? 0 <= 0.001)
+}
+
+private func identityPattern(width: Int, height: Int) -> [Float] {
+    (0 ..< width * height).flatMap { index -> [Float] in
+        let position = Float(index) / Float(max(1, width * height - 1))
+        let alpha: Float = index % 5 == 0 ? 0 : position
+        return [
+            -0.25 + position * 2.5,
+            position * 0.5,
+            4 - position * 3,
+            alpha,
+        ]
+    }
 }

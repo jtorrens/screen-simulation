@@ -155,7 +155,9 @@ struct ContentView: View {
                     Text("Todo").tag(StudioRenderRange.all)
                     Text("IN / OUT").tag(StudioRenderRange.inOut)
                 }
-                Toggle("Alpha", isOn: $model.outputAlpha)
+                Picker("Alpha", selection: $model.outputAlphaMode) {
+                    ForEach(StudioAlphaMode.allCases) { Text($0.label).tag($0) }
+                }
                     .disabled(!model.outputFormat.supportsAlpha)
                 Toggle("Audio", isOn: $model.includeAudio)
                     .disabled(!model.outputFormat.isMovie)
