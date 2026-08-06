@@ -354,6 +354,9 @@ pub fn decoded_frame_to_device_signal(
     let mut transformed = Vec::with_capacity(capacity);
     for pixel in &frame.pixels {
         let [r, g, b, alpha] = match (alpha_presence, alpha_interpretation) {
+            (AlphaPresence::Present, AlphaInterpretation::Ignore) => {
+                [pixel.r, pixel.g, pixel.b, 1.0]
+            }
             (AlphaPresence::Absent, _)
             | (AlphaPresence::Present, AlphaInterpretation::Straight) => {
                 [pixel.r, pixel.g, pixel.b, pixel.a]
@@ -5351,8 +5354,47 @@ mod tests {
             &processor,
         )
         .expect("explicit premultiplied alpha");
+        let ignored = decoded_frame_to_device_signal(
+            &frame,
+            AlphaPresence::Present,
+            AlphaInterpretation::Ignore,
+            &processor,
+        )
+        .expect("explicit ignored alpha");
         assert_eq!(straight.pixels[0], DeviceRgb::new(0.4, 0.2, 0.1));
         assert_eq!(premultiplied.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
+        assert_eq!(ignored.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
+    }
+
+    #[test]
+    fn ignored_alpha_treats_zero_alpha_rgb_as_opaque_content() {
+        use screen_media::{DecodedRgba, RasterSize};
+
+        let frame = DecodedFrame {
+            raster: RasterSize::new(1, 1).expect("valid raster"),
+            timestamp: RationalTime::new(0, 24).expect("valid time"),
+            pixels: vec![DecodedRgba {
+                r: 0.7,
+                g: 0.3,
+                b: 0.1,
+                a: 0.0,
+            }],
+        };
+        let processor = ColorEngine::bundled()
+            .expect("bundled color engine")
+            .source_to_device_processor(
+                SourceColorInterpretation::IdentityDeviceSignal,
+                DeviceColorTarget::SrgbDisplay,
+            )
+            .expect("identity processor");
+        let ignored = decoded_frame_to_device_signal(
+            &frame,
+            AlphaPresence::Present,
+            AlphaInterpretation::Ignore,
+            &processor,
+        )
+        .expect("ignored alpha signal");
+        assert_eq!(ignored.pixels[0], DeviceRgb::new(0.7, 0.3, 0.1));
     }
 
     #[test]

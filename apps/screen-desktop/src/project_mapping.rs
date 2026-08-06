@@ -81,6 +81,7 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             AlphaSelection::Auto => AlphaInterpretation::Auto,
             AlphaSelection::Straight => AlphaInterpretation::Straight,
             AlphaSelection::Premultiplied => AlphaInterpretation::Premultiplied,
+            AlphaSelection::Ignore => AlphaInterpretation::Ignore,
         },
         placement: match package.source.placement {
             PlacementSelection::Fit => RasterPlacement::Fit,

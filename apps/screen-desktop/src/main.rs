@@ -1269,11 +1269,11 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 return;
             };
             if source.descriptor.alpha == AlphaPresence::Present
-                && !matches!(window.get_alpha_index(), 1 | 2)
+                && !matches!(window.get_alpha_index(), 1..=3)
             {
                 block_preview(
                     window,
-                    "Alpha metadata cannot resolve association; choose Straight or Premultiplied",
+                    "Alpha metadata cannot resolve association; choose Straight, Premultiplied, or Ignore",
                 );
                 return;
             }
@@ -1282,6 +1282,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                     AlphaInterpretation::Straight
                 }
                 (AlphaPresence::Present, 2) => AlphaInterpretation::Premultiplied,
+                (AlphaPresence::Present, 3) => AlphaInterpretation::Ignore,
                 _ => unreachable!("alpha association was validated before sample refresh"),
             };
             let sample_policy = frame_selection_policy(window);
@@ -1657,7 +1658,8 @@ fn present_loaded_source_interpretation(
     let alpha = match source.descriptor.alpha {
         AlphaPresence::Absent => "opaque",
         AlphaPresence::Present if window.get_alpha_index() == 1 => "straight → opaque black",
-        AlphaPresence::Present => "premultiplied → opaque black",
+        AlphaPresence::Present if window.get_alpha_index() == 2 => "premultiplied → opaque black",
+        AlphaPresence::Present => "alpha ignored → opaque",
     };
     let decoded_timestamp = source
         .decoded_timestamp

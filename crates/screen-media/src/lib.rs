@@ -35,6 +35,7 @@ pub enum AlphaInterpretation {
     Auto,
     Straight,
     Premultiplied,
+    Ignore,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

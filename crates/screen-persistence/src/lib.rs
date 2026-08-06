@@ -130,6 +130,7 @@ pub enum AlphaSelection {
     Auto,
     Straight,
     Premultiplied,
+    Ignore,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
