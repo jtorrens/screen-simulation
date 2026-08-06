@@ -503,6 +503,12 @@ pub const PHOTOMETRIC_DEVICE_CODES: [f32; 9] = [0.0, 0.05, 0.10, 0.18, 0.25, 0.5
 pub struct OpticalRequest {
     pub time: RationalTime,
     pub panel_temporal_evaluation: PanelTemporalEvaluation,
+    /// Continuous-display identity to authored physical-panel interpolation. Values above one
+    /// intentionally extrapolate panel structure for diagnosis and creative use.
+    pub panel_character_strength: f32,
+    /// Ideal-lens identity to the authored lens, including the complete PSF. Values above one
+    /// intentionally extrapolate lens character for diagnosis and creative use.
+    pub lens_character_strength: f32,
     pub viewport_aspect: f32,
     pub panel: LcdProfile,
     pub cover: CoverGlassProfile,
@@ -697,6 +703,8 @@ pub struct SpatialOpticalPlan {
     pub raster: SpatialRasterWindow,
     pub panel: SpatialPanelPlan,
     pub panel_native_to_acescg: [[f32; 3]; 3],
+    pub panel_character_strength: f32,
+    pub lens_character_strength: f32,
     pub cover: CoverGlassProfile,
     pub environment: ProceduralEnvironment,
     pub aperture_sample_count: u16,
@@ -710,6 +718,8 @@ impl SpatialOpticalPlan {
             && self.frame.screen == other.frame.screen
             && self.panel == other.panel
             && self.panel_native_to_acescg == other.panel_native_to_acescg
+            && self.panel_character_strength == other.panel_character_strength
+            && self.lens_character_strength == other.lens_character_strength
             && self.cover == other.cover
             && self.environment == other.environment
             && self.aperture_sample_count == other.aperture_sample_count
@@ -951,6 +961,8 @@ fn prepare_spatial_plan(
     if raster.width == 0 || raster.height == 0 {
         return Err(ApplicationError::EmptyPreviewRaster);
     }
+    validate_character_strength(request.panel_character_strength)?;
+    validate_character_strength(request.lens_character_strength)?;
     let frame = prepare_frame(request.clone())?;
     if !raster_represents_viewport(raster.full_width, raster.full_height, frame.viewport_aspect) {
         return Err(ApplicationError::RasterViewportAspectMismatch {
@@ -988,6 +1000,8 @@ fn prepare_spatial_plan(
             [basis[0].g, basis[1].g, basis[2].g],
             [basis[0].b, basis[1].b, basis[2].b],
         ],
+        panel_character_strength: request.panel_character_strength,
+        lens_character_strength: request.lens_character_strength,
         cover: request.cover,
         environment: request.environment,
         aperture_sample_count: aperture_sample_count(
@@ -1000,19 +1014,33 @@ fn prepare_spatial_plan(
     })
 }
 
+fn validate_character_strength(strength: f32) -> Result<(), ApplicationError> {
+    if strength.is_finite() && (0.0..=4.0).contains(&strength) {
+        Ok(())
+    } else {
+        Err(ApplicationError::InvalidCharacterStrength)
+    }
+}
+
 pub fn prepare_frame(request: OpticalRequest) -> Result<PreparedFrame, ApplicationError> {
     if !request.viewport_aspect.is_finite() || request.viewport_aspect <= 0.0 {
         return Err(ApplicationError::InvalidViewportAspect);
     }
+    validate_character_strength(request.panel_character_strength)?;
+    validate_character_strength(request.lens_character_strength)?;
     let panel = request.panel.validate().map_err(ApplicationError::Panel)?;
     request
         .cover
         .evaluator(request.environment)
         .map_err(ApplicationError::Cover)?;
-    request
-        .camera
-        .validate()
-        .map_err(ApplicationError::Geometry)?;
+    let mut camera_rig = request.camera.clone();
+    for keyframe in &mut camera_rig.intrinsics.keyframes {
+        keyframe.lens = keyframe
+            .lens
+            .with_character_strength(request.lens_character_strength)
+            .ok_or(ApplicationError::InvalidCharacterStrength)?;
+    }
+    camera_rig.validate().map_err(ApplicationError::Geometry)?;
     request
         .screen
         .validate()
@@ -1022,8 +1050,7 @@ pub fn prepare_frame(request: OpticalRequest) -> Result<PreparedFrame, Applicati
         .sample(request.time)
         .map_err(ApplicationError::Geometry)?;
     let camera = if let Some(region) = request.inspection {
-        request
-            .camera
+        camera_rig
             .fit_panel_region(
                 request.time,
                 region,
@@ -1034,8 +1061,7 @@ pub fn prepare_frame(request: OpticalRequest) -> Result<PreparedFrame, Applicati
             )
             .map_err(ApplicationError::Geometry)?
     } else {
-        request
-            .camera
+        camera_rig
             .sample(request.time)
             .map_err(ApplicationError::Geometry)?
     };
@@ -3137,7 +3163,8 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
         x: (column as f32 + 0.5) / f32::from(width) * 2.0 - 1.0,
         y: (row as f32 + 0.5) / f32::from(height) * 2.0 - 1.0,
     };
-    let psf_radius = approximate_psf_radius_pixels(frame.camera, width, pixel_center_ndc);
+    let psf_radius = approximate_psf_radius_pixels(frame.camera, width, pixel_center_ndc)
+        * request.lens_character_strength;
     let minimum = 0.001 - psf_radius;
     let maximum = 0.999 + psf_radius;
     let footprint = [
@@ -3164,6 +3191,7 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
             &footprint,
             view,
             request.panel,
+            request.panel_character_strength,
             panel_evaluator,
             panel_temporal_gain,
             signal_at,
@@ -3179,6 +3207,7 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
         &aperture_samples,
         view,
         request.panel,
+        request.panel_character_strength,
         panel_evaluator,
         panel_temporal_gain,
         signal_at,
@@ -3237,6 +3266,7 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
     spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
     view: DiagnosticView,
     panel: LcdProfile,
+    panel_character_strength: f32,
     evaluator: ValidatedPanelEvaluator,
     panel_temporal_gain: f32,
     signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
@@ -3292,7 +3322,12 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                         signal.device_code.b,
                     ][channel]
                 } else {
-                    evaluator.linear_native_channel_over_device_rect(
+                    let ideal = [
+                        signal.linear_native_emission.r,
+                        signal.linear_native_emission.g,
+                        signal.linear_native_emission.b,
+                    ][channel];
+                    let physical = evaluator.linear_native_channel_over_device_rect(
                         [
                             signal.linear_native_emission.r,
                             signal.linear_native_emission.g,
@@ -3307,7 +3342,8 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                             y: maximum.y * panel.native_height as f32,
                         },
                         channel,
-                    )
+                    );
+                    (ideal + panel_character_strength * (physical - ideal)).max(0.0)
                 };
                 let contribution = value * weight_sum / spatial_samples.len() as f32;
                 match channel {
@@ -3353,7 +3389,9 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                         x: (uv.x * panel.native_width as f32).fract(),
                         y: (uv.y * panel.native_height as f32).fract(),
                     };
-                    evaluator.native_channel_at_pixel(signal, pixel_uv, channel)
+                    let ideal = evaluator.native_channel(signal, channel);
+                    let physical = evaluator.native_channel_at_pixel(signal, pixel_uv, channel);
+                    (ideal + panel_character_strength * (physical - ideal)).max(0.0)
                 }
                 DiagnosticView::Composite
                 | DiagnosticView::EmittedRadiance
@@ -3742,6 +3780,7 @@ fn diagnostic_area_signal(
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApplicationError {
     InvalidViewportAspect,
+    InvalidCharacterStrength,
     InvalidPreviewExposure,
     InvalidShutter,
     InvalidSensorReadout,
@@ -3785,6 +3824,9 @@ impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidViewportAspect => formatter.write_str("viewport aspect must be positive"),
+            Self::InvalidCharacterStrength => formatter.write_str(
+                "physical pipeline amounts must be finite and remain in the supported [0, 4] range",
+            ),
             Self::InvalidPreviewExposure => {
                 formatter.write_str("preview exposure EV must be finite")
             }
@@ -3907,6 +3949,8 @@ mod tests {
             optics: OpticalRequest {
                 time: RationalTime::new(24, 24).expect("valid time"),
                 panel_temporal_evaluation: PanelTemporalEvaluation::Instantaneous,
+                panel_character_strength: 1.0,
+                lens_character_strength: 1.0,
                 viewport_aspect: 16.0 / 9.0,
                 panel: LcdProfile {
                     native_width: 1920,
@@ -5116,6 +5160,7 @@ mod tests {
             &resolved_spatial,
             DiagnosticView::Composite,
             request.optics.panel,
+            1.0,
             request.optics.panel.evaluator().expect("valid panel"),
             1.0,
             &|_| DeviceRgb::WHITE,
@@ -5132,6 +5177,7 @@ mod tests {
             &unresolved_spatial,
             DiagnosticView::Composite,
             request.optics.panel,
+            1.0,
             request.optics.panel.evaluator().expect("valid panel"),
             1.0,
             &|_| DeviceRgb::WHITE,

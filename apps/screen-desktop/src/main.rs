@@ -99,6 +99,8 @@ struct RenderControls {
     lens_preset_index: i32,
     cover_preset_index: i32,
     cover_strength: f32,
+    panel_character_strength: f32,
+    lens_character_strength: f32,
     environment_preset_index: i32,
     environment_strength: f32,
     environment_rotation_degrees: f32,
@@ -156,6 +158,8 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         lens_preset_index: window.get_lens_preset_index(),
         cover_preset_index: window.get_cover_preset_index(),
         cover_strength: window.get_cover_strength(),
+        panel_character_strength: window.get_panel_character_strength(),
+        lens_character_strength: window.get_lens_character_strength(),
         environment_preset_index: window.get_environment_preset_index(),
         environment_strength: window.get_environment_strength(),
         environment_rotation_degrees: window.get_environment_rotation_degrees(),
@@ -708,6 +712,10 @@ fn simulation_request(
         return Err("capture gate must have finite positive dimensions".to_owned());
     }
     let mut camera = camera.clone();
+    let lens_character_strength = window.get_lens_character_strength();
+    if !lens_character_strength.is_finite() || !(0.0..=4.0).contains(&lens_character_strength) {
+        return Err("lens amount must be finite and within 0–4".to_owned());
+    }
     for keyframe in &mut camera.intrinsics.keyframes {
         keyframe.sensor_width = Millimeters(gate_width);
         keyframe.sensor_height = Millimeters(gate_height);
@@ -751,6 +759,8 @@ fn simulation_request(
                 .time_at_frame(i64::from(window.get_frame_number()))
                 .map_err(|error| error.to_string())?,
             panel_temporal_evaluation: PanelTemporalEvaluation::Instantaneous,
+            panel_character_strength: window.get_panel_character_strength(),
+            lens_character_strength,
             viewport_aspect,
             panel: LcdProfile {
                 native_width,

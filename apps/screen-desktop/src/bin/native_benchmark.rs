@@ -144,6 +144,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let optics = OpticalRequest {
         time: at_zero,
         panel_temporal_evaluation: PanelTemporalEvaluation::Instantaneous,
+        panel_character_strength: 1.0,
+        lens_character_strength: 1.0,
         viewport_aspect: f32::from(SENSOR_WIDTH) / f32::from(SENSOR_HEIGHT),
         panel: LcdProfile {
             native_width: DEVICE_PRESETS[0].native_width,

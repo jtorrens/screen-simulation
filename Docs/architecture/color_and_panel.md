@@ -37,6 +37,12 @@ Bundled device presets currently describe LCD geometry, a reference operating wh
 
 The current environment is an explicit ACEScg linear-radiance profile with ambient illumination and either one finite angular source or the structured `Reflection chart` diagnostic. The chart is an incident-radiance pattern, not a second reflection algorithm, and exists to make cover response, focus and roughness directly testable. A future HDR adapter replaces only that authored incident-radiance source and must enter the same `screen-cover` evaluator. It cannot introduce another reflection operator. Cover and environment character amounts are multiplicative authoring controls: zero cover is an exact identity, zero environment contributes no reflection and values above one deliberately exaggerate the current material response.
 
+Panel character uses the same diagnostic convention inside the authoritative spatial evaluator. At
+zero, continuous native emission is sampled without black-matrix or subpixel structure; at one, the
+authored physical pixel layout is evaluated; values through the certified diagnostic range
+extrapolate the difference. CPU and Metal implement the same interpolation after panel EOTF, so
+changing the amount cannot create a second panel route.
+
 Illumination of external scene geometry by the panel is a later scene-renderer responsibility. It must consume the already-evaluated panel as a physical rectangular area emitter, including its spatial signal and angular response. A presentation-space halo or edge glow is not an acceptable substitute. Cover-internal edge losses and reflections remain part of `screen-cover`; emitted light falling on surrounding objects belongs outside it.
 
 Internal emission and composition use linear float values. Negative and above-one values remain valid until an explicit display or output transform permits clipping or quantization.

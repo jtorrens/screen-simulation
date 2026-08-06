@@ -44,6 +44,7 @@ struct SpatialParams {
     environment_key_radius: [f32; 4],
     environment_direction: [f32; 4],
     procedural_time: [f32; 4],
+    pipeline_strengths: [f32; 4],
 }
 
 impl SpatialParams {
@@ -219,6 +220,12 @@ impl SpatialParams {
                 plan.environment.rotation_degrees.to_radians(),
             ),
             procedural_time: [time_seconds, 0.0, 0.0, 0.0],
+            pipeline_strengths: [
+                plan.panel_character_strength,
+                plan.lens_character_strength,
+                0.0,
+                0.0,
+            ],
         }
     }
 }
@@ -642,6 +649,8 @@ mod tests {
         OpticalRequest {
             time,
             panel_temporal_evaluation: PanelTemporalEvaluation::Instantaneous,
+            panel_character_strength: 1.0,
+            lens_character_strength: 1.0,
             viewport_aspect: 16.0 / 9.0,
             panel: LcdProfile {
                 native_width: 1920,
@@ -754,14 +763,18 @@ mod tests {
             ProceduralTestPattern::EyeChart,
             ProceduralTestPattern::PhotometricDeviceScale,
         ] {
-            let mut request = request();
-            request.procedural_pattern = pattern;
-            let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), sensor, region)
-                .expect("CPU oracle");
-            let plan =
-                prepare_procedural_spatial_plan(request, sensor, region).expect("spatial plan");
-            let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
-            assert_spatial_parity(&cpu, &gpu);
+            for strength in [0.0, 1.0, 2.0] {
+                let mut request = request();
+                request.procedural_pattern = pattern;
+                request.panel_character_strength = strength;
+                request.lens_character_strength = strength;
+                let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), sensor, region)
+                    .expect("CPU oracle");
+                let plan =
+                    prepare_procedural_spatial_plan(request, sensor, region).expect("spatial plan");
+                let gpu = metal.evaluate_spatial(&plan).expect("Metal spatial result");
+                assert_spatial_parity(&cpu, &gpu);
+            }
         }
     }
 

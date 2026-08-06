@@ -36,6 +36,7 @@ struct SpatialParams {
     float4 environment_key_radius; // key rgb, angular radius radians
     float4 environment_direction; // key direction xyz, environment rotation radians
     float4 procedural_time;
+    float4 pipeline_strengths; // panel, lens, reserved sensor, reserved
 };
 
 struct RayHit {
@@ -418,7 +419,8 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
     float pitch_mm = p.camera_right_sensor_width.w / float(p.raster.x);
     float field = clamp(dot(center_ndc, center_ndc) * 0.5f, 0.0f, 1.0f);
     float softness_mm = mix(p.lens_softness.x, p.lens_softness.y, field) * 0.001f;
-    float psf = (softness_mm + 1.22f * 0.000550f * p.camera_limits.x) / pitch_mm;
+    float psf = ((softness_mm + 1.22f * 0.000550f * p.camera_limits.x) / pitch_mm)
+        * p.pipeline_strengths.y;
     float minimum_offset = 0.001f - psf; float maximum_offset = 0.999f + psf;
     float2 corners[4] = {float2(minimum_offset, minimum_offset), float2(maximum_offset, minimum_offset),
                          float2(minimum_offset, maximum_offset), float2(maximum_offset, maximum_offset)};
@@ -465,9 +467,10 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
             }
             if (count == 0) continue;
             on_panel = true;
-            float value = area_signal(uv_min, uv_max, emission_integral, p, true)[channel];
-            value = linear_channel_over_rect(value, uv_min * float2(p.panel_meta.xy),
-                                             uv_max * float2(p.panel_meta.xy), channel, p);
+            float ideal = area_signal(uv_min, uv_max, emission_integral, p, true)[channel];
+            float physical = linear_channel_over_rect(ideal, uv_min * float2(p.panel_meta.xy),
+                                                      uv_max * float2(p.panel_meta.xy), channel, p);
+            float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
             native[channel] += value * weight_sum / 4.0f;
         }
         native /= float(p.window.z);
@@ -487,7 +490,11 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
                 if (!all(uv >= 0.0f) || !all(uv <= 1.0f)) continue;
                 on_panel = true;
                 float3 code = point_signal(uv, signal, p);
-                float value = resolved_native_channel(code, uv, channel, p);
+                float span = p.panel_levels_angular_r.y - p.panel_levels_angular_r.x;
+                float ideal = p.panel_levels_angular_r.x
+                    + span * sign(code[channel]) * pow(abs(code[channel]), p.panel_geometry.w);
+                float physical = resolved_native_channel(code, uv, channel, p);
+                float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
                 native[channel] += value * channel_weight(weights, hit, channel, p)
                     * cover_transmission(hit.cosine, p)[channel];
             }

@@ -45,6 +45,46 @@ impl LensModel {
         center_softness_micrometers: 1.8,
         edge_softness_micrometers: 2.2,
     };
+
+    /// Interpolates the authored lens from an ideal thin lens. One preserves the calibrated
+    /// approximation, zero is exact optical identity and values above one intentionally
+    /// extrapolate its character for diagnostic or creative use.
+    pub fn with_character_strength(self, strength: f32) -> Option<Self> {
+        if !strength.is_finite() || strength < 0.0 {
+            return None;
+        }
+        let scale_deviation = |value: f32| 1.0 + (value - 1.0) * strength;
+        let scaled = Self {
+            radial_distortion: self.radial_distortion.map(|value| value * strength),
+            tangential_distortion: self.tangential_distortion.map(|value| value * strength),
+            longitudinal_chromatic_meters: self
+                .longitudinal_chromatic_meters
+                .map(|value| value * strength),
+            lateral_chromatic_scale: self.lateral_chromatic_scale.map(scale_deviation),
+            vignetting_strength: self.vignetting_strength * strength,
+            transmission_rgb: self.transmission_rgb.map(scale_deviation),
+            // The complete PSF, including diffraction, is scaled by the optical pipeline.
+            // Keep the authored softness here to avoid applying the diagnostic amount twice.
+            center_softness_micrometers: self.center_softness_micrometers,
+            edge_softness_micrometers: self.edge_softness_micrometers,
+        };
+        lens_values_are_finite(scaled).then_some(scaled)
+    }
+}
+
+fn lens_values_are_finite(lens: LensModel) -> bool {
+    lens.radial_distortion
+        .into_iter()
+        .chain(lens.tangential_distortion)
+        .chain(lens.longitudinal_chromatic_meters)
+        .chain(lens.lateral_chromatic_scale)
+        .chain([lens.vignetting_strength])
+        .chain(lens.transmission_rgb)
+        .chain([
+            lens.center_softness_micrometers,
+            lens.edge_softness_micrometers,
+        ])
+        .all(f32::is_finite)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -770,7 +810,7 @@ fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
             lens.edge_softness_micrometers,
         ])
         .all(f32::is_finite)
-        && (0.0..=1.0).contains(&lens.vignetting_strength)
+        && (0.0..=4.0).contains(&lens.vignetting_strength)
         && lens
             .lateral_chromatic_scale
             .into_iter()
@@ -786,13 +826,13 @@ fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
 }
 
 fn distortion_is_certified_family(lens: LensModel) -> bool {
-    (-0.25..=0.08).contains(&lens.radial_distortion[0])
-        && (-0.1..=0.15).contains(&lens.radial_distortion[1])
-        && (-0.05..=0.05).contains(&lens.radial_distortion[2])
+    (-0.75..=0.32).contains(&lens.radial_distortion[0])
+        && (-0.4..=0.6).contains(&lens.radial_distortion[1])
+        && (-0.2..=0.2).contains(&lens.radial_distortion[2])
         && lens
             .tangential_distortion
             .into_iter()
-            .all(|coefficient| (-0.01..=0.01).contains(&coefficient))
+            .all(|coefficient| (-0.04..=0.04).contains(&coefficient))
 }
 
 fn interpolate_lens(
