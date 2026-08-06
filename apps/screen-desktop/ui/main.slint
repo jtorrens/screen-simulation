@@ -773,7 +773,7 @@ export component MainWindow inherits Window {
                             height: 34px;
                             Text { text: "Sampling"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
                             ComboBox {
-                                model: ["Exact", "Floor", "Nearest"];
+                                model: ["Exact", "Floor · hold edges", "Nearest · hold edges"];
                                 current-index <=> root.sample-policy-index;
                             }
                         }

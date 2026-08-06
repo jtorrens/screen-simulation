@@ -99,8 +99,12 @@ pub enum FrameCadence {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameSelectionPolicy {
+    /// Require a source sample at the requested rational time. Source edges are not extended.
     Exact,
+    /// Select the latest sample at or before the requested time and hold the first/last sample
+    /// when shutter evaluation crosses a bounded source edge.
     Floor,
+    /// Select the nearest sample, breaking ties toward the earlier sample, and hold bounded edges.
     Nearest,
 }
 

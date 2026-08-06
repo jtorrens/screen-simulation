@@ -163,11 +163,11 @@ pub fn decode_frame_at_time(
     interpretation: ResolvedSourceDecode,
 ) -> Result<(MediaDescriptor, DecodedFrame), PlatformMediaError> {
     let descriptor = probe_media(path)?;
-    if requested_time.numerator() < 0 {
+    if requested_time.numerator() < 0 && policy == FrameSelectionPolicy::Exact {
         return Err(PlatformMediaError::NegativeRequestedTime);
     }
     match descriptor.duration {
-        Some(duration) if requested_time >= duration => {
+        Some(duration) if requested_time >= duration && policy == FrameSelectionPolicy::Exact => {
             return Err(PlatformMediaError::RequestedTimeOutsideSource);
         }
         None if requested_time.numerator() != 0 => {
@@ -201,7 +201,11 @@ pub fn decode_frame_at_time(
     .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
     ffmpeg_bridge::configure_scaler(&mut scaler, descriptor.pixel_encoding, interpretation)?;
 
-    let seek_timestamp = time_in_ffmpeg_base(requested_time)?;
+    let seek_timestamp = time_in_ffmpeg_base(media_seek_anchor(
+        requested_time,
+        descriptor.duration,
+        policy,
+    )?)?;
     if seek_timestamp > 0 {
         context
             .seek(seek_timestamp, ..seek_timestamp)
@@ -250,7 +254,9 @@ fn resolve_sample(
 ) -> Result<(MediaDescriptor, DecodedFrame), PlatformMediaError> {
     let selected = match policy {
         FrameSelectionPolicy::Exact => None,
-        FrameSelectionPolicy::Floor => earlier,
+        FrameSelectionPolicy::Floor => {
+            earlier.or_else(|| (requested_time.numerator() < 0).then_some(later).flatten())
+        }
         FrameSelectionPolicy::Nearest => match (earlier, later) {
             (Some(earlier), Some(later)) => Some(
                 if earlier_is_nearer_or_tied(requested_time, earlier.timestamp, later.timestamp) {
@@ -267,6 +273,35 @@ fn resolve_sample(
     selected
         .map(|frame| (descriptor, frame))
         .ok_or(PlatformMediaError::NoSampleAtRequestedTime)
+}
+
+fn media_seek_anchor(
+    requested_time: RationalTime,
+    duration: Option<RationalTime>,
+    policy: FrameSelectionPolicy,
+) -> Result<RationalTime, PlatformMediaError> {
+    if policy == FrameSelectionPolicy::Exact {
+        return Ok(requested_time);
+    }
+    let zero = RationalTime::new(0, 1).map_err(|_| PlatformMediaError::TimestampOverflow)?;
+    if requested_time < zero {
+        return Ok(zero);
+    }
+    let Some(duration) = duration else {
+        return Ok(requested_time);
+    };
+    if requested_time < duration {
+        return Ok(requested_time);
+    }
+    let ffmpeg_time_base = u32::try_from(ffmpeg::ffi::AV_TIME_BASE)
+        .map_err(|_| PlatformMediaError::TimestampOverflow)?;
+    duration
+        .checked_sub(
+            RationalTime::new(1, ffmpeg_time_base)
+                .map_err(|_| PlatformMediaError::TimestampOverflow)?,
+        )
+        .map(|time| time.max(zero))
+        .map_err(|_| PlatformMediaError::TimestampOverflow)
 }
 
 fn earlier_is_nearer_or_tied(
@@ -594,6 +629,56 @@ mod tests {
             .expect("nearest sample")
             .1,
             earlier
+        );
+    }
+
+    #[test]
+    fn floor_and_nearest_hold_bounded_source_edges_explicitly() {
+        let first = frame(time(0, 25));
+        let last = frame(time(24, 25));
+        assert_eq!(
+            resolve_sample(
+                descriptor(),
+                None,
+                Some(first.clone()),
+                time(-1, 1_000),
+                FrameSelectionPolicy::Floor,
+            )
+            .expect("floor holds first sample")
+            .1,
+            first
+        );
+        assert_eq!(
+            resolve_sample(
+                descriptor(),
+                Some(last.clone()),
+                None,
+                time(1_001, 1_000),
+                FrameSelectionPolicy::Nearest,
+            )
+            .expect("nearest holds last sample")
+            .1,
+            last
+        );
+    }
+
+    #[test]
+    fn bounded_edge_hold_seeks_inside_the_source_without_changing_selection_time() {
+        let duration = time(1, 1);
+        assert_eq!(
+            media_seek_anchor(time(-1, 1_000), Some(duration), FrameSelectionPolicy::Floor,)
+                .expect("leading anchor"),
+            time(0, 1)
+        );
+        assert_eq!(
+            media_seek_anchor(time(2, 1), Some(duration), FrameSelectionPolicy::Floor,)
+                .expect("trailing anchor"),
+            time(999_999, 1_000_000)
+        );
+        assert_eq!(
+            media_seek_anchor(time(1, 24), Some(duration), FrameSelectionPolicy::Floor,)
+                .expect("interior anchor"),
+            time(1, 24)
         );
     }
 
