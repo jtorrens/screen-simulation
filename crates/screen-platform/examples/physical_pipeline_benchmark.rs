@@ -88,6 +88,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 temporal_emission_gain: 1.0,
                 cover: screen_cover::CoverGlassProfile::NEUTRAL,
                 environment: screen_cover::ProceduralEnvironment::NONE,
+                scene_geometry_lens:
+                    screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
+                scene_geometry_amount: 0.0,
+                lens_amount: 0.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             };
             let mut first_tile = None;

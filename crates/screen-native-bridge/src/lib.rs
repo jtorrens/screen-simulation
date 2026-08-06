@@ -329,7 +329,7 @@ fn contribution_amounts(
             return None;
         }
     }
-    if contributions[6..9].iter().any(|value| value.amount != 0.0)
+    if contributions[8..9].iter().any(|value| value.amount != 0.0)
         || contributions[10].amount != 0.0
         || contributions[9].discrete_enabled
         || contributions[11].discrete_enabled
@@ -356,6 +356,8 @@ fn diagnostic_snapshot(
     temporal_message: String,
     cover_message: String,
     environment_message: String,
+    scene_message: String,
+    lens_message: String,
 ) -> Box<OwnedDiagnosticSnapshot> {
     let mut authored_messages = vec![
         emission_message,
@@ -364,9 +366,11 @@ fn diagnostic_snapshot(
         temporal_message,
         cover_message,
         environment_message,
+        scene_message,
+        lens_message,
     ];
     authored_messages.extend(
-        (6..EXPECTED_STAGE_IDS.len()).map(|_| {
+        (8..EXPECTED_STAGE_IDS.len()).map(|_| {
             "unsupported: snapshot validated, evaluator intentionally disabled".to_owned()
         }),
     );
@@ -381,9 +385,9 @@ fn diagnostic_snapshot(
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             domain_id: if index < 6 { DOMAIN_SCREEN } else { 0x200 },
             stage_id: *stage_id,
-            state: if index < 6 { state } else { 0 },
-            progress: if index < 6 { progress } else { 0.0 },
-            elapsed_nanoseconds: if index < 6 { elapsed_nanoseconds } else { 0 },
+            state: if index < 8 { state } else { 0 },
+            progress: if index < 8 { progress } else { 0.0 },
+            elapsed_nanoseconds: if index < 8 { elapsed_nanoseconds } else { 0 },
             message: ScreenUtf8View {
                 bytes: messages[index].as_ptr(),
                 count: messages[index].len(),
@@ -479,6 +483,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::SubpixelRadiance
             | PhysicalIntermediate::PanelLightSpread
             | PhysicalIntermediate::CoverEnvironment
+            | PhysicalIntermediate::SceneGeometryLens
             | PhysicalIntermediate::DevelopedAcesCg
     ) {
         unsafe {
@@ -575,6 +580,9 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         temporal_emission_gain: temporal_gain,
         cover: pipeline.cover,
         environment: pipeline.environment,
+        scene_geometry_lens: pipeline.scene_geometry_lens,
+        scene_geometry_amount: contributions[6].amount,
+        lens_amount: contributions[7].amount,
         requested_intermediate,
     };
     let shared = Arc::new(PhysicalJobShared {
@@ -697,6 +705,8 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         temporal,
         cover,
         environment,
+        scene,
+        lens,
     ) = match &*outcome {
         PhysicalJobOutcome::Rendering => (
             STATE_RENDERING,
@@ -710,6 +720,8 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             "panel temporal emission rendering".to_owned(),
             "cover glass rendering".to_owned(),
             "environment reflection rendering".to_owned(),
+            "scene geometry rendering".to_owned(),
+            "generalized lens rendering".to_owned(),
         ),
         PhysicalJobOutcome::Cancelled => (
             STATE_CANCELLED,
@@ -723,6 +735,8 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             "panel temporal emission cancelled".to_owned(),
             "cover glass cancelled".to_owned(),
             "environment reflection cancelled".to_owned(),
+            "scene geometry cancelled".to_owned(),
+            "generalized lens cancelled".to_owned(),
         ),
         PhysicalJobOutcome::Failed(message) => (
             STATE_FAILED,
@@ -736,6 +750,8 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             format!("panel temporal emission failed: {message}"),
             format!("cover glass failed: {message}"),
             format!("environment reflection failed: {message}"),
+            format!("scene geometry failed: {message}"),
+            format!("generalized lens failed: {message}"),
         ),
         PhysicalJobOutcome::Complete {
             result: value,
@@ -772,6 +788,10 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
                     .to_owned(),
                 "synthetic HDR environment sampled independently from panel temporal emission"
                     .to_owned(),
+                "position + quaternion pose; device active dimensions are the sole screen scale"
+                    .to_owned(),
+                "thin lens + distortion/CA/vignette/transmission/PSF; focal-length generalized"
+                    .to_owned(),
             )
         }
     };
@@ -797,6 +817,8 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         temporal,
         cover,
         environment,
+        scene,
+        lens,
     );
     let mut snapshots = job
         .snapshots
@@ -934,8 +956,6 @@ pub struct ScreenEnvironmentParametersV2 {
 pub struct ScreenSceneGeometryLensParametersV2 {
     abi_version: u32,
     camera_position: [f32; 3],
-    camera_target: [f32; 3],
-    camera_yaw_degrees: f32,
     focal_length_millimeters: f32,
     sensor_width_millimeters: f32,
     sensor_height_millimeters: f32,
@@ -955,7 +975,6 @@ pub struct ScreenSceneGeometryLensParametersV2 {
     lens_edge_softness_micrometers: f32,
     screen_translation: [f32; 3],
     screen_rotation_xyzw: [f32; 4],
-    screen_scale: [f32; 2],
 }
 
 #[repr(C)]
@@ -1192,8 +1211,6 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
     };
     let scene_geometry_lens = ResolvedSceneGeometryLensSnapshot {
         camera_position: vec3(scene.camera_position),
-        camera_target: vec3(scene.camera_target),
-        camera_yaw_degrees: scene.camera_yaw_degrees,
         focal_length_millimeters: scene.focal_length_millimeters,
         sensor_width_millimeters: scene.sensor_width_millimeters,
         sensor_height_millimeters: scene.sensor_height_millimeters,
@@ -1218,16 +1235,11 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         },
         screen_translation: vec3(scene.screen_translation),
         screen_rotation: quaternion(scene.screen_rotation_xyzw),
-        screen_scale: Vec2 {
-            x: scene.screen_scale[0],
-            y: scene.screen_scale[1],
-        },
     };
     let finite_scene = scene
         .camera_position
         .into_iter()
-        .chain(scene.camera_target)
-        .chain([scene.camera_yaw_degrees, scene.focal_length_millimeters])
+        .chain([scene.focal_length_millimeters])
         .chain([
             scene.sensor_width_millimeters,
             scene.sensor_height_millimeters,
@@ -1248,7 +1260,6 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         ])
         .chain(scene.screen_translation)
         .chain(scene.screen_rotation_xyzw)
-        .chain(scene.screen_scale)
         .all(f32::is_finite);
     if !finite_scene
         || scene.focal_length_millimeters <= 0.0
@@ -1258,7 +1269,6 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         || scene.f_stop <= 0.0
         || scene.near_clip_meters <= 0.0
         || scene.far_clip_meters <= scene.near_clip_meters
-        || scene.screen_scale.into_iter().any(|value| value <= 0.0)
     {
         unsafe { set_error(error_message, b"invalid scene/geometry/lens snapshot\0") };
         return std::ptr::null_mut();
@@ -1936,9 +1946,7 @@ mod tests {
             },
             scene_geometry_lens: ScreenSceneGeometryLensParametersV2 {
                 abi_version: version,
-                camera_position: [0.0, 0.0, -1.0],
-                camera_target: [0.0, 0.0, 0.0],
-                camera_yaw_degrees: 0.0,
+                camera_position: [0.0, 0.0, 1.0],
                 focal_length_millimeters: 50.0,
                 sensor_width_millimeters: 36.0,
                 sensor_height_millimeters: 24.0,
@@ -1958,7 +1966,6 @@ mod tests {
                 lens_edge_softness_micrometers: 0.0,
                 screen_translation: [0.0, 0.0, 0.0],
                 screen_rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
-                screen_scale: [1.0; 2],
             },
             shutter_motion: ScreenShutterMotionParametersV2 {
                 abi_version: version,
@@ -2094,6 +2101,8 @@ mod tests {
         assert!(!pipeline.is_null());
         let mut contributions = contributions();
         contributions[3].amount = 1.0;
+        contributions[6].amount = 1.0;
+        contributions[7].amount = 1.0;
         let identity = ScreenPhysicalIdentity128 { high: 7, low: 9 };
         let request = ScreenPhysicalFrameRequestV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
@@ -2164,9 +2173,11 @@ mod tests {
         assert!(messages[3].contains("exact rational shutter integral"));
         assert!(messages[4].contains("Beer-Lambert"));
         assert!(messages[5].contains("synthetic HDR"));
+        assert!(messages[6].contains("position + quaternion"));
+        assert!(messages[7].contains("thin lens"));
 
         let mut unsupported = contributions;
-        unsupported[6].amount = 1.0;
+        unsupported[8].amount = 1.0;
         let invalid_request = ScreenPhysicalFrameRequestV2 {
             stage_contributions: unsupported.as_ptr(),
             ..request

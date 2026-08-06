@@ -35,6 +35,20 @@ struct PhysicalPipelineParams {
     environment_ambient_strength: [f32; 4],
     environment_key_radius: [f32; 4],
     environment_direction_rotation: [f32; 4],
+    camera_position_focal: [f32; 4],
+    camera_right_sensor_width: [f32; 4],
+    camera_up_sensor_height: [f32; 4],
+    camera_forward_focus: [f32; 4],
+    camera_limits: [f32; 4],
+    lens_shift_radial01: [f32; 4],
+    lens_radial2_tangential: [f32; 4],
+    lens_longitudinal: [f32; 4],
+    lens_lateral: [f32; 4],
+    lens_transmission_vignette: [f32; 4],
+    lens_softness: [f32; 4],
+    screen_translation: [f32; 4],
+    screen_quaternion: [f32; 4],
+    panel_angular_scene: [f32; 4],
 }
 
 pub struct MetalPhysicalPipeline {
@@ -130,6 +144,8 @@ impl MetalPhysicalPipeline {
             plan.emission_amount,
             plan.subpixel_geometry_amount,
             plan.temporal_emission_amount,
+            plan.scene_geometry_amount,
+            plan.lens_amount,
         ]
         .into_iter()
         .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
@@ -140,6 +156,10 @@ impl MetalPhysicalPipeline {
         }
         plan.panel_light_spread
             .validate()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        let (camera, screen) = plan
+            .scene_geometry_lens
+            .resolve(plan.lens_amount)
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         if is_cancelled() {
             return Err(MetalPhysicalPipelineError::Cancelled);
@@ -152,6 +172,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::SubpixelRadiance
                 | PhysicalIntermediate::PanelLightSpread
                 | PhysicalIntermediate::CoverEnvironment
+                | PhysicalIntermediate::SceneGeometryLens
                 | PhysicalIntermediate::DevelopedAcesCg
         ) {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
@@ -304,6 +325,85 @@ impl MetalPhysicalPipeline {
                 plan.environment.key_direction_local[1],
                 plan.environment.key_direction_local[2],
                 plan.environment.rotation_degrees.to_radians(),
+            ],
+            camera_position_focal: [
+                camera.position.x,
+                camera.position.y,
+                camera.position.z,
+                camera.focal_length.0,
+            ],
+            camera_right_sensor_width: [
+                camera.world_to_view[0],
+                camera.world_to_view[1],
+                camera.world_to_view[2],
+                camera.sensor_width.0,
+            ],
+            camera_up_sensor_height: [
+                camera.world_to_view[4],
+                camera.world_to_view[5],
+                camera.world_to_view[6],
+                camera.sensor_height.0,
+            ],
+            camera_forward_focus: [
+                camera.world_to_view[8],
+                camera.world_to_view[9],
+                camera.world_to_view[10],
+                camera.focus_distance.0,
+            ],
+            camera_limits: [camera.f_stop, camera.near_clip.0, camera.far_clip.0, 0.0],
+            lens_shift_radial01: [
+                camera.lens_shift.x,
+                camera.lens_shift.y,
+                camera.lens.radial_distortion[0],
+                camera.lens.radial_distortion[1],
+            ],
+            lens_radial2_tangential: [
+                camera.lens.radial_distortion[2],
+                camera.lens.tangential_distortion[0],
+                camera.lens.tangential_distortion[1],
+                0.0,
+            ],
+            lens_longitudinal: [
+                camera.lens.longitudinal_chromatic_meters[0],
+                camera.lens.longitudinal_chromatic_meters[1],
+                camera.lens.longitudinal_chromatic_meters[2],
+                0.0,
+            ],
+            lens_lateral: [
+                camera.lens.lateral_chromatic_scale[0],
+                camera.lens.lateral_chromatic_scale[1],
+                camera.lens.lateral_chromatic_scale[2],
+                0.0,
+            ],
+            lens_transmission_vignette: [
+                camera.lens.transmission_rgb[0],
+                camera.lens.transmission_rgb[1],
+                camera.lens.transmission_rgb[2],
+                camera.lens.vignetting_strength,
+            ],
+            lens_softness: [
+                camera.lens.center_softness_micrometers,
+                camera.lens.edge_softness_micrometers,
+                plan.lens_amount,
+                0.0,
+            ],
+            screen_translation: [
+                screen.translation.x,
+                screen.translation.y,
+                screen.translation.z,
+                0.0,
+            ],
+            screen_quaternion: [
+                screen.rotation.x,
+                screen.rotation.y,
+                screen.rotation.z,
+                screen.rotation.w,
+            ],
+            panel_angular_scene: [
+                plan.panel.angular_emission_power.r,
+                plan.panel.angular_emission_power.g,
+                plan.panel.angular_emission_power.b,
+                plan.scene_geometry_amount,
             ],
         };
         params.levels[3] = plan.temporal_emission_gain;
@@ -465,6 +565,10 @@ mod tests {
                 temporal_emission_gain: 1.0,
                 cover: screen_cover::CoverGlassProfile::NEUTRAL,
                 environment: screen_cover::ProceduralEnvironment::NONE,
+                scene_geometry_lens:
+                    screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
+                scene_geometry_amount: 0.0,
+                lens_amount: 0.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         )
@@ -649,6 +753,56 @@ mod tests {
                     .fold(0.0_f32, f32::max);
                 assert!(maximum <= 2.0e-3, "cover CPU/Metal deviation {maximum}");
             }
+        }
+    }
+
+    #[test]
+    fn scene_geometry_and_generalized_lens_match_cpu_for_zero_one_and_artistic_amounts() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for lens_amount in [0.0, 1.0, 2.0] {
+            let (input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Rgb,
+                0.12,
+                1.0,
+            );
+            plan.scene_geometry_amount = 1.0;
+            plan.lens_amount = lens_amount;
+            plan.scene_geometry_lens.camera_position = screen_contracts::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.01,
+            };
+            plan.scene_geometry_lens.focus_distance_meters = 0.01;
+            plan.scene_geometry_lens.focal_length_millimeters = 10.0;
+            plan.scene_geometry_lens.sensor_width_millimeters = 4.0;
+            plan.scene_geometry_lens.sensor_height_millimeters = 2.0;
+            plan.requested_intermediate = PhysicalIntermediate::SceneGeometryLens;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .map(|value| [value.r, value.g, value.b, 1.0])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let cpu =
+                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+                    .expect("CPU scene oracle");
+            let gpu = backend
+                .evaluate(&source, &signal, plan, |_| {}, || false)
+                .expect("Metal scene result");
+            let maximum = read(&gpu.texture)
+                .iter()
+                .zip(&cpu.acescg)
+                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(
+                maximum <= 3.0e-3,
+                "scene/lens CPU/Metal deviation {maximum}"
+            );
         }
     }
 

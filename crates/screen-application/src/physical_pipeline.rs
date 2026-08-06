@@ -5,9 +5,12 @@
 
 use crate::{RollingDirection, SensorReadout};
 use screen_camera::CameraDevelopment;
-use screen_contracts::{RationalTime, Vec2, Vec3};
+use screen_contracts::{Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
-use screen_geometry::{LensModel, Quaternion};
+use screen_geometry::{
+    CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, CameraSample, GeometryError,
+    KeyframeInterpolation, LensModel, Quaternion, ScreenSample, TransformKeyframe, TransformTrack,
+};
 use screen_panel::{LcdProfile, PanelLightSpreadProfile};
 use screen_sensor::SensorProfile;
 
@@ -76,8 +79,6 @@ pub struct SourceAcesCgRaster {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedSceneGeometryLensSnapshot {
     pub camera_position: Vec3,
-    pub camera_target: Vec3,
-    pub camera_yaw_degrees: f32,
     pub focal_length_millimeters: f32,
     pub sensor_width_millimeters: f32,
     pub sensor_height_millimeters: f32,
@@ -90,7 +91,93 @@ pub struct ResolvedSceneGeometryLensSnapshot {
     pub lens: LensModel,
     pub screen_translation: Vec3,
     pub screen_rotation: Quaternion,
-    pub screen_scale: Vec2,
+}
+
+impl ResolvedSceneGeometryLensSnapshot {
+    pub const REFERENCE: Self = Self {
+        camera_position: Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+        focal_length_millimeters: 50.0,
+        sensor_width_millimeters: 36.0,
+        sensor_height_millimeters: 24.0,
+        lens_shift: Vec2 { x: 0.0, y: 0.0 },
+        focus_distance_meters: 1.0,
+        f_stop: 2.8,
+        near_clip_meters: 0.01,
+        far_clip_meters: 100.0,
+        camera_rotation: Quaternion {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+        lens: LensModel::REFERENCE_PHOTOGRAPHIC,
+        screen_translation: Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        screen_rotation: Quaternion {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+    };
+
+    /// Materializes the historical camera/screen domain without preset lookups.
+    /// Position + quaternion are the sole pose authority; target/yaw are derived
+    /// diagnostics in `CameraSample`, never competing request inputs.
+    pub fn resolve(
+        self,
+        lens_character_strength: f32,
+    ) -> Result<(CameraSample, ScreenSample), GeometryError> {
+        let time = RationalTime::new(0, 1).expect("constant track time is valid");
+        let lens = self
+            .lens
+            .with_character_strength(lens_character_strength)
+            .ok_or(GeometryError::InvalidResolvedLens)?;
+        let camera = CameraRig {
+            transform: TransformTrack {
+                keyframes: vec![TransformKeyframe {
+                    id: "resolved-camera".to_owned(),
+                    time,
+                    translation: self.camera_position,
+                    rotation: self.camera_rotation,
+                    interpolation: KeyframeInterpolation::Hold,
+                }],
+            },
+            intrinsics: CameraIntrinsicsTrack {
+                keyframes: vec![CameraIntrinsicsKeyframe {
+                    id: "resolved-intrinsics".to_owned(),
+                    time,
+                    focal_length: Millimeters(self.focal_length_millimeters),
+                    sensor_width: Millimeters(self.sensor_width_millimeters),
+                    sensor_height: Millimeters(self.sensor_height_millimeters),
+                    lens_shift: self.lens_shift,
+                    focus_distance: Meters(self.focus_distance_meters),
+                    f_stop: self.f_stop,
+                    near_clip: Meters(self.near_clip_meters),
+                    far_clip: Meters(self.far_clip_meters),
+                    lens,
+                    interpolation: KeyframeInterpolation::Hold,
+                }],
+            },
+        };
+        let screen = TransformTrack {
+            keyframes: vec![TransformKeyframe {
+                id: "resolved-screen".to_owned(),
+                time,
+                translation: self.screen_translation,
+                rotation: self.screen_rotation,
+                interpolation: KeyframeInterpolation::Hold,
+            }],
+        };
+        Ok((camera.sample(time)?, screen.sample(time)?))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -134,4 +221,67 @@ pub struct PhysicalPipelineSnapshot {
     pub shutter_motion: ResolvedShutterMotionSnapshot,
     pub sensor: SensorProfile,
     pub development: CameraDevelopment,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolved(rotation: Quaternion) -> ResolvedSceneGeometryLensSnapshot {
+        ResolvedSceneGeometryLensSnapshot {
+            camera_position: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            },
+            focal_length_millimeters: 50.0,
+            sensor_width_millimeters: 36.0,
+            sensor_height_millimeters: 24.0,
+            lens_shift: Vec2 { x: 0.0, y: 0.0 },
+            focus_distance_meters: 1.0,
+            f_stop: 2.8,
+            near_clip_meters: 0.01,
+            far_clip_meters: 100.0,
+            camera_rotation: rotation,
+            lens: LensModel::REFERENCE_PHOTOGRAPHIC,
+            screen_translation: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            screen_rotation: Quaternion::from_yaw_degrees(0.0),
+        }
+    }
+
+    #[test]
+    fn identity_orientation_derives_one_consistent_implicit_target() {
+        let (camera, screen) = resolved(Quaternion::from_yaw_degrees(0.0))
+            .resolve(0.0)
+            .expect("resolved identity camera");
+        assert_eq!(camera.yaw_degrees.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(camera.target.x.to_bits(), camera.position.x.to_bits());
+        assert_eq!(camera.target.y.to_bits(), camera.position.y.to_bits());
+        assert!((camera.target.z - (camera.position.z - 1.0)).abs() <= 1.0e-7);
+        assert_eq!(screen.translation.z.to_bits(), 0.0_f32.to_bits());
+    }
+
+    #[test]
+    fn yaw_and_pitch_are_derived_only_from_the_quaternion() {
+        let rotation = Quaternion::from_orbit_yaw_pitch_degrees(30.0, -12.0);
+        let (camera, _) = resolved(rotation)
+            .resolve(1.0)
+            .expect("resolved yaw/pitch camera");
+        let forward = Vec3 {
+            x: camera.target.x - camera.position.x,
+            y: camera.target.y - camera.position.y,
+            z: camera.target.z - camera.position.z,
+        };
+        assert!((camera.yaw_degrees - 30.0).abs() <= 1.0e-4);
+        let derived_pitch = -forward.y.asin().to_degrees();
+        assert!((derived_pitch - (-12.0)).abs() <= 1.0e-4);
+        assert!(
+            (forward.x * forward.x + forward.y * forward.y + forward.z * forward.z - 1.0).abs()
+                <= 1.0e-4
+        );
+    }
 }

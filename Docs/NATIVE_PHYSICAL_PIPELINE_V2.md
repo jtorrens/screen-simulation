@@ -137,9 +137,26 @@ cut. Cover strength zero is exact transmission identity and environment
 strength zero contributes exactly no radiance. Temporal gain multiplies only
 panel emission, never the reflected environment.
 
+## Scene geometry and generalized lens migration
+
+The geometry/lens cut reuses the historical quaternion camera basis, thin-lens
+aperture rays, certified inverse distortion, longitudinal and lateral
+chromatic aberration, cos-fourth/vignette response, RGB transmission and the
+sensor-space diffraction/softness footprint. Draft, Medium and High use nested
+1/4/16 ray samples through the existing physical quality lattice; Native keeps
+the fully resolved panel lattice. Amount zero preserves the exact flat result,
+one evaluates the resolved model and values above one use the existing
+`LensModel::with_character_strength` extrapolation with validation.
+
+The coordinated v2 binary layout no longer contains `camera_target`,
+`camera_yaw_degrees` or `screen_scale`. Position plus unit quaternion are the
+only camera-pose authority; target, yaw and pitch are derived diagnostics.
+Device `active_width`/`active_height` are the only physical screen-size
+authority. No adapter or alternative derivation path exists.
+
 ## Honest limitations
 
-- Camera, lens, shutter/motion, sensor/noise and
+- Shutter/motion, sensor/noise and
   RAW development are transported but not evaluated by this cut.
 - Supported-stage timing is fused job time, not isolated GPU counter timing.
 - Native memory is dominated by UHD input plus the 3×3 physical output lattice.

@@ -190,6 +190,9 @@ pub struct PhysicalPipelineExecutionPlan {
     pub temporal_emission_gain: f32,
     pub cover: CoverGlassProfile,
     pub environment: ProceduralEnvironment,
+    pub scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
+    pub scene_geometry_amount: f32,
+    pub lens_amount: f32,
     pub requested_intermediate: PhysicalIntermediate,
 }
 
@@ -329,6 +332,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         plan.emission_amount,
         plan.subpixel_geometry_amount,
         plan.temporal_emission_amount,
+        plan.scene_geometry_amount,
+        plan.lens_amount,
     ]
     .into_iter()
     .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
@@ -343,6 +348,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         .cover
         .evaluator(plan.environment)
         .map_err(ApplicationError::Cover)?;
+    let resolved_scene = plan
+        .scene_geometry_lens
+        .resolve(plan.lens_amount)
+        .map_err(ApplicationError::Geometry)?;
     let geometry = request
         .plan
         .panel
@@ -415,24 +424,88 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         y: (y as f32 + (sy + 1) as f32 / side as f32)
                             / sampling.effective_height as f32,
                     };
-                    let area = sample_placed_area(
-                        &prepared.integral,
-                        &emission_integral,
-                        source_raster,
-                        device_raster,
-                        plan.placement,
-                        minimum_uv,
-                        maximum_uv,
-                    );
-                    let device_minimum = Vec2 {
-                        x: minimum_uv.x * plan.panel.native_width as f32,
-                        y: minimum_uv.y * plan.panel.native_height as f32,
+                    let flat_center = Vec2 {
+                        x: (minimum_uv.x + maximum_uv.x) * 0.5,
+                        y: (minimum_uv.y + maximum_uv.y) * 0.5,
                     };
-                    let device_maximum = Vec2 {
-                        x: maximum_uv.x * plan.panel.native_width as f32,
-                        y: maximum_uv.y * plan.panel.native_height as f32,
+                    let viewport_ndc = Vec2 {
+                        x: flat_center.x * 2.0 - 1.0,
+                        y: flat_center.y * 2.0 - 1.0,
+                    };
+                    let optical = panel_uv_aperture_samples(
+                        resolved_scene.0,
+                        resolved_scene.1,
+                        plan.panel.active_width,
+                        plan.panel.active_height,
+                        viewport_ndc,
+                    )[(sy * side + sx) as usize % screen_geometry::APERTURE_SAMPLE_COUNT];
+                    let field = (viewport_ndc.x * viewport_ndc.x + viewport_ndc.y * viewport_ndc.y)
+                        .mul_add(0.5, 0.0)
+                        .clamp(0.0, 1.0);
+                    let softness_micrometers = resolved_scene.0.lens.center_softness_micrometers
+                        + (resolved_scene.0.lens.edge_softness_micrometers
+                            - resolved_scene.0.lens.center_softness_micrometers)
+                            * field;
+                    let sensor_pitch_millimeters =
+                        resolved_scene.0.sensor_width.0 / sampling.effective_width as f32;
+                    let psf_pixels = ((softness_micrometers * 0.001
+                        + 1.22 * 0.000_550 * resolved_scene.0.f_stop)
+                        / sensor_pitch_millimeters)
+                        * plan.lens_amount;
+                    let half_extent = Vec2 {
+                        x: (maximum_uv.x - minimum_uv.x) * 0.5 * (1.0 + psf_pixels),
+                        y: (maximum_uv.y - minimum_uv.y) * 0.5 * (1.0 + psf_pixels),
+                    };
+                    let mapped_bounds = |channel: usize| {
+                        if plan.scene_geometry_amount == 0.0 && plan.lens_amount == 0.0 {
+                            return (minimum_uv, maximum_uv, 1.0);
+                        }
+                        let hit = optical.panel_uv[channel];
+                        let target = hit.unwrap_or(Vec2 { x: -2.0, y: -2.0 });
+                        let center = Vec2 {
+                            x: flat_center.x
+                                + plan.scene_geometry_amount * (target.x - flat_center.x),
+                            y: flat_center.y
+                                + plan.scene_geometry_amount * (target.y - flat_center.y),
+                        };
+                        let angular = if hit.is_some() {
+                            evaluator.angular_channel(optical.emission_cosine[channel], channel)
+                                * optical.irradiance_weight[channel]
+                        } else {
+                            0.0
+                        };
+                        (
+                            Vec2 {
+                                x: center.x - half_extent.x,
+                                y: center.y - half_extent.y,
+                            },
+                            Vec2 {
+                                x: center.x + half_extent.x,
+                                y: center.y + half_extent.y,
+                            },
+                            1.0 + plan.scene_geometry_amount * (angular - 1.0),
+                        )
                     };
                     for channel in 0..3 {
+                        let (channel_minimum, channel_maximum, optical_weight) =
+                            mapped_bounds(channel);
+                        let area = sample_placed_area(
+                            &prepared.integral,
+                            &emission_integral,
+                            source_raster,
+                            device_raster,
+                            plan.placement,
+                            channel_minimum,
+                            channel_maximum,
+                        );
+                        let device_minimum = Vec2 {
+                            x: channel_minimum.x * plan.panel.native_width as f32,
+                            y: channel_minimum.y * plan.panel.native_height as f32,
+                        };
+                        let device_maximum = Vec2 {
+                            x: channel_maximum.x * plan.panel.native_width as f32,
+                            y: channel_maximum.y * plan.panel.native_height as f32,
+                        };
                         let base = evaluator.native_channel_over_device_rect(
                             area.device_code,
                             device_minimum,
@@ -451,12 +524,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         y: sample.offset_meters.y / plan.panel.active_height.0,
                                     };
                                     let shifted_minimum = Vec2 {
-                                        x: minimum_uv.x + offset.x,
-                                        y: minimum_uv.y + offset.y,
+                                        x: channel_minimum.x + offset.x,
+                                        y: channel_minimum.y + offset.y,
                                     };
                                     let shifted_maximum = Vec2 {
-                                        x: maximum_uv.x + offset.x,
-                                        y: maximum_uv.y + offset.y,
+                                        x: channel_maximum.x + offset.x,
+                                        y: channel_maximum.y + offset.y,
                                     };
                                     let shifted = sample_placed_area(
                                         &prepared.integral,
@@ -481,36 +554,41 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     ) * sample.weight
                                 })
                                 .sum::<f32>()
-                        };
+                        } * optical_weight;
+                        let base = base * optical_weight;
                         match channel {
                             0 => {
                                 physical_native.r += base;
                                 spread_native.r += value;
+                                continuous_native.r +=
+                                    area.linear_native_emission.r * optical_weight;
+                                average_device_code.r += area.device_code.r;
                             }
                             1 => {
                                 physical_native.g += base;
                                 spread_native.g += value;
+                                continuous_native.g +=
+                                    area.linear_native_emission.g * optical_weight;
+                                average_device_code.g += area.device_code.g;
                             }
                             _ => {
                                 physical_native.b += base;
                                 spread_native.b += value;
+                                continuous_native.b +=
+                                    area.linear_native_emission.b * optical_weight;
+                                average_device_code.b += area.device_code.b;
                             }
                         }
                     }
-                    continuous_native.r += area.linear_native_emission.r;
-                    continuous_native.g += area.linear_native_emission.g;
-                    continuous_native.b += area.linear_native_emission.b;
-                    average_device_code.r += area.device_code.r;
-                    average_device_code.g += area.device_code.g;
-                    average_device_code.b += area.device_code.b;
+                    let (ideal_minimum, ideal_maximum, _) = mapped_bounds(1);
                     let value = sample_placed_acescg_area(
                         source_width,
                         source_height,
                         &source_acescg,
                         device_raster,
                         plan.placement,
-                        minimum_uv,
-                        maximum_uv,
+                        ideal_minimum,
+                        ideal_maximum,
                     );
                     for channel in 0..4 {
                         ideal[channel] += value[channel];
@@ -620,6 +698,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::SubpixelRadiance => physical,
                 PhysicalIntermediate::PanelLightSpread => spread,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
+                PhysicalIntermediate::SceneGeometryLens => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::DevelopedAcesCg => [
                     ideal[0] + plan.screen_amount * (covered.r - ideal[0]),
                     ideal[1] + plan.screen_amount * (covered.g - ideal[1]),
@@ -5725,6 +5804,9 @@ mod tests {
                 temporal_emission_gain: 1.0,
                 cover: CoverGlassProfile::NEUTRAL,
                 environment: ProceduralEnvironment::NONE,
+                scene_geometry_lens: ResolvedSceneGeometryLensSnapshot::REFERENCE,
+                scene_geometry_amount: 0.0,
+                lens_amount: 0.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         }
@@ -5969,6 +6051,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn scene_pose_uses_quaternion_and_device_dimensions_are_the_only_scale() {
+        let mut first = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        first.plan.scene_geometry_amount = 1.0;
+        first.plan.lens_amount = 1.0;
+        first.plan.scene_geometry_lens.camera_position = Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.01,
+        };
+        first.plan.scene_geometry_lens.focus_distance_meters = 0.01;
+        first.plan.scene_geometry_lens.focal_length_millimeters = 10.0;
+        first.plan.scene_geometry_lens.sensor_width_millimeters = 4.0;
+        first.plan.scene_geometry_lens.sensor_height_millimeters = 2.0;
+        let narrow =
+            evaluate_physical_pipeline_cpu_oracle(first.clone()).expect("resolved scene geometry");
+        first.plan.panel.active_width = Meters(0.004);
+        let wide = evaluate_physical_pipeline_cpu_oracle(first)
+            .expect("same pose with wider physical device");
+        assert_ne!(narrow.acescg, wide.acescg);
+        assert!(wide.acescg.iter().flatten().all(|value| value.is_finite()));
     }
 
     #[test]

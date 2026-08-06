@@ -22,9 +22,142 @@ struct PhysicalPipelineParams {
     float4 environment_ambient_strength;
     float4 environment_key_radius;
     float4 environment_direction_rotation;
+    float4 camera_position_focal;
+    float4 camera_right_sensor_width;
+    float4 camera_up_sensor_height;
+    float4 camera_forward_focus;
+    float4 camera_limits;
+    float4 lens_shift_radial01;
+    float4 lens_radial2_tangential;
+    float4 lens_longitudinal;
+    float4 lens_lateral;
+    float4 lens_transmission_vignette;
+    float4 lens_softness;
+    float4 screen_translation;
+    float4 screen_quaternion;
+    float4 panel_angular_scene;
 };
 
 constant float PI = 3.14159265358979323846f;
+constant float GOLDEN_ANGLE = 2.3999631f;
+
+struct PhysicalRayHit {
+    float2 uv;
+    float cosine;
+    float3 reflection_direction;
+    bool valid;
+};
+
+inline float3 physical_quaternion_rotate(float4 quaternion, float3 value) {
+    const float3 t = 2.0f * cross(quaternion.xyz, value);
+    return value + quaternion.w * t + cross(quaternion.xyz, t);
+}
+
+inline float2 physical_distort(float2 point, constant PhysicalPipelineParams& p) {
+    const float radius2 = dot(point, point);
+    const float radial = 1.0f + p.lens_shift_radial01.z * radius2
+        + p.lens_shift_radial01.w * radius2 * radius2
+        + p.lens_radial2_tangential.x * radius2 * radius2 * radius2;
+    const float p1 = p.lens_radial2_tangential.y;
+    const float p2 = p.lens_radial2_tangential.z;
+    return float2(point.x * radial + 2.0f * p1 * point.x * point.y
+            + p2 * (radius2 + 2.0f * point.x * point.x),
+        point.y * radial + p1 * (radius2 + 2.0f * point.y * point.y)
+            + 2.0f * p2 * point.x * point.y);
+}
+
+inline bool physical_inverse_distortion(float2 observed, constant PhysicalPipelineParams& p,
+                                        thread float2& ideal) {
+    ideal = observed;
+    constexpr float epsilon = 1.0e-4f;
+    for (uint iteration = 0; iteration < 12; ++iteration) {
+        const float2 projected = physical_distort(ideal, p);
+        const float2 residual = observed - projected;
+        if (max(abs(residual.x), abs(residual.y)) < 1.0e-6f) return true;
+        const float2 dx = physical_distort(ideal + float2(epsilon, 0.0f), p);
+        const float2 dy = physical_distort(ideal + float2(0.0f, epsilon), p);
+        const float j00 = (dx.x - projected.x) / epsilon;
+        const float j10 = (dx.y - projected.y) / epsilon;
+        const float j01 = (dy.x - projected.x) / epsilon;
+        const float j11 = (dy.y - projected.y) / epsilon;
+        const float determinant = j00 * j11 - j01 * j10;
+        if (!isfinite(determinant) || determinant <= 1.0e-8f) return false;
+        ideal += float2(j11 * residual.x - j01 * residual.y,
+            -j10 * residual.x + j00 * residual.y) / determinant;
+        if (!all(isfinite(ideal))) return false;
+    }
+    const float2 residual = physical_distort(ideal, p) - observed;
+    return max(abs(residual.x), abs(residual.y)) < 1.0e-5f;
+}
+
+inline float physical_radical_inverse(uint value) {
+    return float(reverse_bits(value)) * (1.0f / 4294967296.0f);
+}
+
+inline float2 physical_aperture_sample(uint index) {
+    const float radius = sqrt(physical_radical_inverse(index + 1));
+    const float angle = float(index) * GOLDEN_ANGLE;
+    return radius * float2(cos(angle), sin(angle));
+}
+
+inline PhysicalRayHit physical_trace_ray(float2 observed, float2 lens_sample, uint channel,
+                                         constant PhysicalPipelineParams& p) {
+    PhysicalRayHit miss;
+    miss.uv = 0.0f; miss.cosine = 0.0f; miss.reflection_direction = 0.0f; miss.valid = false;
+    float2 ideal;
+    if (!physical_inverse_distortion(float2(observed.x + 2.0f * p.lens_shift_radial01.x,
+        -observed.y - 2.0f * p.lens_shift_radial01.y), p, ideal)) return miss;
+    ideal *= p.lens_lateral[channel];
+    const float3 pinhole = normalize(p.camera_forward_focus.xyz
+        + p.camera_right_sensor_width.xyz * (ideal.x * p.camera_right_sensor_width.w
+            / (2.0f * p.camera_position_focal.w))
+        + p.camera_up_sensor_height.xyz * (ideal.y * p.camera_up_sensor_height.w
+            / (2.0f * p.camera_position_focal.w)));
+    const float channel_focus = p.camera_forward_focus.w + p.lens_longitudinal[channel];
+    const float3 focus_point = p.camera_position_focal.xyz
+        + pinhole * (channel_focus / dot(pinhole, p.camera_forward_focus.xyz));
+    const float aperture_radius = p.camera_position_focal.w * 0.001f / (2.0f * p.camera_limits.x);
+    const float3 lens_origin = p.camera_position_focal.xyz
+        + p.camera_right_sensor_width.xyz * (lens_sample.x * aperture_radius)
+        + p.camera_up_sensor_height.xyz * (lens_sample.y * aperture_radius);
+    const float3 ray = normalize(focus_point - lens_origin);
+    const float4 inverse = float4(-p.screen_quaternion.xyz, p.screen_quaternion.w);
+    const float3 local_origin = physical_quaternion_rotate(inverse,
+        lens_origin - p.screen_translation.xyz);
+    const float3 local_ray = physical_quaternion_rotate(inverse, ray);
+    if (abs(local_ray.z) < 1.0e-8f) return miss;
+    const float distance = -local_origin.z / local_ray.z;
+    if (distance <= 0.0f) return miss;
+    const float3 local_point = local_origin + local_ray * distance;
+    const float3 world_point = p.screen_translation.xyz
+        + physical_quaternion_rotate(p.screen_quaternion, local_point);
+    const float depth = dot(world_point - p.camera_position_focal.xyz, p.camera_forward_focus.xyz);
+    if (depth < p.camera_limits.y || depth > p.camera_limits.z) return miss;
+    PhysicalRayHit hit;
+    hit.uv = float2(local_point.x / p.panel_size_meters.x + 0.5f,
+        0.5f - local_point.y / p.panel_size_meters.y);
+    hit.cosine = clamp(-local_ray.z, 0.0f, 1.0f);
+    hit.reflection_direction = float3(local_ray.x, local_ray.y, -local_ray.z);
+    hit.valid = true;
+    return hit;
+}
+
+inline float physical_irradiance_weight(float2 observed, uint channel,
+                                        constant PhysicalPipelineParams& p) {
+    float2 ideal;
+    if (!physical_inverse_distortion(float2(observed.x + 2.0f * p.lens_shift_radial01.x,
+        -observed.y - 2.0f * p.lens_shift_radial01.y), p, ideal)) return 0.0f;
+    const float scale = p.lens_lateral[channel];
+    const float tangent_x = ideal.x * scale * p.camera_right_sensor_width.w
+        / (2.0f * p.camera_position_focal.w);
+    const float tangent_y = ideal.y * scale * p.camera_up_sensor_height.w
+        / (2.0f * p.camera_position_focal.w);
+    const float cosine = rsqrt(1.0f + tangent_x * tangent_x + tangent_y * tangent_y);
+    const float natural = cosine * cosine * cosine * cosine;
+    const float vignette = 1.0f + (natural - 1.0f) * p.lens_transmission_vignette.w;
+    return (PI * 0.25f) / (p.camera_limits.x * p.camera_limits.x)
+        * vignette * p.lens_transmission_vignette[channel];
+}
 
 inline float cover_interface(float cosine_i, constant PhysicalPipelineParams& p) {
     const float eta = p.cover_geometry.z;
@@ -252,22 +385,44 @@ kernel void evaluate_physical_pipeline(
             const float2 maximum_uv = (
                 float2(position) + float2(sx + 1, sy + 1) / float(side)
             ) / float2(p.output_tile.xy);
-            ideal += area_sample(source_acescg, minimum_uv, maximum_uv, p);
-            const float4 code = area_sample(device_signal, minimum_uv, maximum_uv, p);
-            average_device_code += code.rgb;
-            const float2 device_minimum = minimum_uv * float2(p.source_panel.zw);
-            const float2 device_maximum = maximum_uv * float2(p.source_panel.zw);
-            native.x += native_channel(code.x, 0, device_minimum, device_maximum, p);
-            native.y += native_channel(code.y, 1, device_minimum, device_maximum, p);
-            native.z += native_channel(code.z, 2, device_minimum, device_maximum, p);
-            spread_native.x += spread_native_channel(device_signal, 0, minimum_uv, maximum_uv, p);
-            spread_native.y += spread_native_channel(device_signal, 1, minimum_uv, maximum_uv, p);
-            spread_native.z += spread_native_channel(device_signal, 2, minimum_uv, maximum_uv, p);
-            continuous_native += float3(
-                continuous_channel(code.x, p),
-                continuous_channel(code.y, p),
-                continuous_channel(code.z, p)
-            );
+            const float2 flat_center = (minimum_uv + maximum_uv) * 0.5f;
+            const float2 observed = flat_center * 2.0f - 1.0f;
+            const float field = clamp(dot(observed, observed) * 0.5f, 0.0f, 1.0f);
+            const float softness_mm = mix(p.lens_softness.x, p.lens_softness.y, field) * 0.001f;
+            const float sensor_pitch_mm = p.camera_right_sensor_width.w / float(p.output_tile.x);
+            const float psf_pixels = ((softness_mm + 1.22f * 0.000550f * p.camera_limits.x)
+                / sensor_pitch_mm) * p.lens_softness.z;
+            const float2 half_extent = (maximum_uv - minimum_uv) * 0.5f * (1.0f + psf_pixels);
+            const float2 lens_sample = physical_aperture_sample((sy * side + sx) % 16);
+            for (uint channel = 0; channel < 3; ++channel) {
+                const PhysicalRayHit hit = physical_trace_ray(observed, lens_sample, channel, p);
+                const float2 target = hit.valid ? hit.uv : float2(-2.0f);
+                const float2 center = mix(flat_center, target, p.panel_angular_scene.w);
+                const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
+                const float2 channel_minimum = exact_flat ? minimum_uv : center - half_extent;
+                const float2 channel_maximum = exact_flat ? maximum_uv : center + half_extent;
+                const float angular = hit.valid && hit.cosine != 0.0f
+                    ? pow(clamp(hit.cosine, 0.0f, 1.0f), p.panel_angular_scene[channel])
+                        * physical_irradiance_weight(observed, channel, p)
+                    : 0.0f;
+                const float optical_weight = mix(1.0f, angular, p.panel_angular_scene.w);
+                const float4 code = area_sample(device_signal, channel_minimum, channel_maximum, p);
+                average_device_code[channel] += code[channel];
+                const float2 device_minimum = channel_minimum * float2(p.source_panel.zw);
+                const float2 device_maximum = channel_maximum * float2(p.source_panel.zw);
+                native[channel] += native_channel(code[channel], channel, device_minimum,
+                    device_maximum, p) * optical_weight;
+                spread_native[channel] += spread_native_channel(device_signal, channel,
+                    channel_minimum, channel_maximum, p) * optical_weight;
+                continuous_native[channel] += continuous_channel(code[channel], p) * optical_weight;
+            }
+            const PhysicalRayHit green_hit = physical_trace_ray(observed, lens_sample, 1, p);
+            const float2 green_target = green_hit.valid ? green_hit.uv : float2(-2.0f);
+            const float2 green_center = mix(flat_center, green_target, p.panel_angular_scene.w);
+            const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
+            ideal += area_sample(source_acescg,
+                exact_flat ? minimum_uv : green_center - half_extent,
+                exact_flat ? maximum_uv : green_center + half_extent, p);
         }
     }
     const float reciprocal = 1.0f / float(side * side);
@@ -306,6 +461,7 @@ kernel void evaluate_physical_pipeline(
         case 3: selected = physical; break;
         case 4: selected = spread; break;
         case 5: selected = covered; break;
+        case 6: selected = covered; break;
         default: selected = ideal.rgb + p.strengths.x * (covered - ideal.rgb); break;
     }
     output.write(float4(selected, ideal.a), position);
