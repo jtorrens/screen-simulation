@@ -5,7 +5,7 @@ use metal::{
     ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLSize, MTLStorageMode,
     MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
 };
-use screen_application::{PhysicalPipelineExecutionPlan, RasterPlacement};
+use screen_application::{PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement};
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
 
 const SHADER_LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native_camera.metallib"));
@@ -136,7 +136,25 @@ impl MetalPhysicalPipeline {
         if is_cancelled() {
             return Err(MetalPhysicalPipelineError::Cancelled);
         }
-        if plan.screen_amount == 0.0 {
+        if !matches!(
+            plan.requested_intermediate,
+            PhysicalIntermediate::SourceAcesCg
+                | PhysicalIntermediate::DeviceSignal
+                | PhysicalIntermediate::PanelEmission
+                | PhysicalIntermediate::SubpixelRadiance
+                | PhysicalIntermediate::PanelLightSpread
+                | PhysicalIntermediate::DevelopedAcesCg
+        ) {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "requested intermediate belongs to an unsupported stage".to_owned(),
+            ));
+        }
+        if plan.screen_amount == 0.0
+            && matches!(
+                plan.requested_intermediate,
+                PhysicalIntermediate::SourceAcesCg | PhysicalIntermediate::DevelopedAcesCg
+            )
+        {
             report_progress(1.0);
             return Ok(MetalPhysicalPipelineResult {
                 texture: source_acescg.to_owned(),
@@ -194,7 +212,7 @@ impl MetalPhysicalPipeline {
                     StripeLayout::Rgb => 0,
                     StripeLayout::Bgr => 1,
                 },
-                0,
+                plan.requested_intermediate as u32,
                 0,
             ],
             levels: [
@@ -398,6 +416,7 @@ mod tests {
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         )
     }

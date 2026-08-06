@@ -9,16 +9,24 @@ use std::ffi::{c_char, c_float, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 #[cfg(target_os = "macos")]
 use metal::foreign_types::{ForeignType, ForeignTypeRef};
 #[cfg(target_os = "macos")]
 use metal::{MTLTexture, TextureRef};
 use screen_application::{
-    PhysicalPipelineExecutionPlan, ProceduralTestPattern, RasterPlacement, diagnostic_signal,
+    PhysicalIntermediate, PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot,
+    ProceduralTestPattern, RasterPlacement, ResolvedSceneGeometryLensSnapshot,
+    ResolvedShutterMotionSnapshot, RollingDirection, SensorReadout, diagnostic_signal,
 };
-use screen_contracts::{DeviceRgb, LinearRgb, Meters, RationalTime, Vec2};
-use screen_cover::{COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile};
+use screen_camera::CameraDevelopment;
+use screen_contracts::{DeviceRgb, LinearRgb, Meters, RationalTime, Vec2, Vec3};
+use screen_cover::{
+    AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
+    EnvironmentPattern, ProceduralEnvironment,
+};
+use screen_geometry::{LensModel, Quaternion};
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, FlatPanelQuality, LcdProfile, PanelColorimetry,
     PanelLightSpreadProfile, PanelTechnology, PanelTemporalEmission, ResidualFlicker, StripeLayout,
@@ -28,6 +36,7 @@ use screen_panel::{
 use screen_platform::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
 };
+use screen_sensor::{BayerPattern, SensorProfile};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -36,7 +45,7 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 1;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 2;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
 pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;
@@ -64,7 +73,7 @@ pub struct ScreenPhysicalIdentity128 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenPhysicalStageContributionV1 {
+pub struct ScreenPhysicalStageContributionV2 {
     abi_version: u32,
     domain_id: u32,
     stage_id: u32,
@@ -79,20 +88,22 @@ pub struct ScreenPhysicalStageContributionV1 {
 }
 
 #[repr(C)]
-pub struct ScreenPhysicalFrameRequestV1 {
+pub struct ScreenPhysicalFrameRequestV2 {
     abi_version: u32,
     frame_index: i64,
     frame_time_numerator: i64,
     frame_time_denominator: u32,
     input: *const ScreenPhysicalFrameInput,
     resolved_device: *const ScreenDeviceProfile,
+    resolved_pipeline: *const ScreenPhysicalPipelineSnapshot,
     quality: u32,
     screen_amount: f32,
     capture_amount: f32,
-    stage_contributions: *const ScreenPhysicalStageContributionV1,
+    stage_contributions: *const ScreenPhysicalStageContributionV2,
     stage_contribution_count: usize,
     requested_width: u32,
     requested_height: u32,
+    requested_intermediate: u32,
     cancellation_identity: ScreenPhysicalIdentity128,
     progress_identity: ScreenPhysicalIdentity128,
     parameter_revision: u64,
@@ -101,27 +112,29 @@ pub struct ScreenPhysicalFrameRequestV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenPhysicalStageDiagnosticV1 {
+pub struct ScreenPhysicalStageDiagnosticV2 {
     abi_version: u32,
     domain_id: u32,
     stage_id: u32,
     state: u32,
     progress: f32,
+    elapsed_nanoseconds: u64,
     message: ScreenUtf8View,
 }
 
 #[repr(C)]
-pub struct ScreenPhysicalFrameResultV1 {
+pub struct ScreenPhysicalFrameResultV2 {
     abi_version: u32,
-    acescg_texture: *const ScreenPhysicalTexture,
+    output_texture: *const ScreenPhysicalTexture,
     native_width: u32,
     native_height: u32,
     effective_width: u32,
     effective_height: u32,
     computed_quality: u32,
+    returned_intermediate: u32,
     state: u32,
     progress: f32,
-    stage_diagnostics: *const ScreenPhysicalStageDiagnosticV1,
+    stage_diagnostics: *const ScreenPhysicalStageDiagnosticV2,
     stage_diagnostic_count: usize,
     parameter_revision: u64,
     parameter_hash: [u8; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
@@ -132,16 +145,17 @@ const STATE_CANCELLED: u32 = 3;
 const STATE_FAILED: u32 = 4;
 const STATE_COMPLETE: u32 = 5;
 const DOMAIN_SCREEN: u32 = 0x100;
-const STAGE_SCREEN_EMISSION: u32 = 0x101;
-const STAGE_SCREEN_SUBPIXEL_GEOMETRY: u32 = 0x102;
-const EXPECTED_STAGE_IDS: [u32; 11] = [
-    0x101, 0x102, 0x103, 0x104, 0x105, 0x201, 0x202, 0x203, 0x204, 0x205, 0x206,
+const EXPECTED_STAGE_IDS: [u32; 12] = [
+    0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x201, 0x202, 0x203, 0x204, 0x205, 0x206,
 ];
 
 #[cfg(target_os = "macos")]
 enum PhysicalJobOutcome {
     Rendering,
-    Complete(MetalPhysicalPipelineResult),
+    Complete {
+        result: MetalPhysicalPipelineResult,
+        elapsed_nanoseconds: u64,
+    },
     Cancelled,
     Failed(String),
 }
@@ -159,13 +173,14 @@ struct PhysicalJobShared {
 
 struct OwnedDiagnosticSnapshot {
     _messages: Vec<Box<[u8]>>,
-    diagnostics: Box<[ScreenPhysicalStageDiagnosticV1]>,
+    diagnostics: Box<[ScreenPhysicalStageDiagnosticV2]>,
 }
 
 pub struct ScreenPhysicalFrameJob {
     shared: Arc<PhysicalJobShared>,
     cancellation_identity: ScreenPhysicalIdentity128,
     quality: u32,
+    requested_intermediate: u32,
     native_width: u32,
     native_height: u32,
     parameter_revision: u64,
@@ -270,16 +285,32 @@ fn placement(value: u32) -> Option<RasterPlacement> {
     }
 }
 
+fn intermediate(value: u32) -> Option<PhysicalIntermediate> {
+    Some(match value {
+        0 => PhysicalIntermediate::SourceAcesCg,
+        1 => PhysicalIntermediate::DeviceSignal,
+        2 => PhysicalIntermediate::PanelEmission,
+        3 => PhysicalIntermediate::SubpixelRadiance,
+        4 => PhysicalIntermediate::PanelLightSpread,
+        5 => PhysicalIntermediate::CoverEnvironment,
+        6 => PhysicalIntermediate::SceneGeometryLens,
+        7 => PhysicalIntermediate::ShutterMotion,
+        8 => PhysicalIntermediate::SensorNoise,
+        9 => PhysicalIntermediate::RawMosaic,
+        10 => PhysicalIntermediate::DevelopedAcesCg,
+        _ => return None,
+    })
+}
+
 fn contribution_amounts(
-    contributions: &[ScreenPhysicalStageContributionV1],
-    screen_amount: f32,
-) -> Option<(f32, f32)> {
+    contributions: &[ScreenPhysicalStageContributionV2],
+) -> Option<(f32, f32, f32)> {
     if contributions.len() != EXPECTED_STAGE_IDS.len() {
         return None;
     }
     for (index, contribution) in contributions.iter().enumerate() {
-        let expected_domain = if index < 5 { 0x100 } else { 0x200 };
-        let discrete = matches!(index, 8 | 10);
+        let expected_domain = if index < 6 { 0x100 } else { 0x200 };
+        let discrete = matches!(index, 9 | 11);
         if contribution.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
             || contribution.domain_id != expected_domain
             || contribution.stage_id != EXPECTED_STAGE_IDS[index]
@@ -301,47 +332,55 @@ fn contribution_amounts(
             return None;
         }
     }
-    if screen_amount > 0.0 && contributions[2..5].iter().any(|value| value.amount != 0.0) {
+    if contributions[3..9].iter().any(|value| value.amount != 0.0)
+        || contributions[10].amount != 0.0
+        || contributions[9].discrete_enabled
+        || contributions[11].discrete_enabled
+    {
         return None;
     }
-    Some((contributions[0].amount, contributions[1].amount))
+    Some((
+        contributions[0].amount,
+        contributions[1].amount,
+        contributions[2].amount,
+    ))
 }
 
 fn diagnostic_snapshot(
     state: u32,
     progress: f32,
+    elapsed_nanoseconds: u64,
     emission_message: String,
     geometry_message: String,
+    spread_message: String,
 ) -> Box<OwnedDiagnosticSnapshot> {
-    let messages = vec![
-        emission_message.into_bytes().into_boxed_slice(),
-        geometry_message.into_bytes().into_boxed_slice(),
-    ];
-    let diagnostics = vec![
-        ScreenPhysicalStageDiagnosticV1 {
+    let mut authored_messages = vec![emission_message, geometry_message, spread_message];
+    authored_messages.extend(
+        (3..EXPECTED_STAGE_IDS.len()).map(|_| {
+            "unsupported: snapshot validated, evaluator intentionally disabled".to_owned()
+        }),
+    );
+    let messages = authored_messages
+        .into_iter()
+        .map(|message| message.into_bytes().into_boxed_slice())
+        .collect::<Vec<_>>();
+    let diagnostics = EXPECTED_STAGE_IDS
+        .iter()
+        .enumerate()
+        .map(|(index, stage_id)| ScreenPhysicalStageDiagnosticV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-            domain_id: DOMAIN_SCREEN,
-            stage_id: STAGE_SCREEN_EMISSION,
-            state,
-            progress,
+            domain_id: if index < 6 { DOMAIN_SCREEN } else { 0x200 },
+            stage_id: *stage_id,
+            state: if index < 3 { state } else { 0 },
+            progress: if index < 3 { progress } else { 0.0 },
+            elapsed_nanoseconds: if index < 3 { elapsed_nanoseconds } else { 0 },
             message: ScreenUtf8View {
-                bytes: messages[0].as_ptr(),
-                count: messages[0].len(),
+                bytes: messages[index].as_ptr(),
+                count: messages[index].len(),
             },
-        },
-        ScreenPhysicalStageDiagnosticV1 {
-            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-            domain_id: DOMAIN_SCREEN,
-            stage_id: STAGE_SCREEN_SUBPIXEL_GEOMETRY,
-            state,
-            progress,
-            message: ScreenUtf8View {
-                bytes: messages[1].as_ptr(),
-                count: messages[1].len(),
-            },
-        },
-    ]
-    .into_boxed_slice();
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
     Box::new(OwnedDiagnosticSnapshot {
         _messages: messages,
         diagnostics,
@@ -351,7 +390,7 @@ fn diagnostic_snapshot(
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_physical_frame_submit(
-    request: *const ScreenPhysicalFrameRequestV1,
+    request: *const ScreenPhysicalFrameRequestV2,
     error_message: *mut *const c_char,
 ) -> *mut ScreenPhysicalFrameJob {
     if request.is_null() {
@@ -365,6 +404,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         || request.frame_time_denominator == 0
         || request.input.is_null()
         || request.resolved_device.is_null()
+        || request.resolved_pipeline.is_null()
         || quality(request.quality).is_none()
         || request.requested_width == 0
         || request.requested_height == 0
@@ -388,8 +428,8 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             request.stage_contribution_count,
         )
     };
-    let Some((emission_amount, subpixel_geometry_amount)) =
-        contribution_amounts(contributions, request.screen_amount)
+    let Some((emission_amount, subpixel_geometry_amount, light_spread_amount)) =
+        contribution_amounts(contributions)
     else {
         unsafe {
             set_error(
@@ -402,6 +442,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     // SAFETY: validated opaque handles remain borrowed for the job lifetime by ABI contract.
     let input = unsafe { &*request.input };
     let device = unsafe { &*request.resolved_device };
+    let pipeline = unsafe { &*request.resolved_pipeline };
     let Some(placement) = placement(input.raster_placement) else {
         unsafe { set_error(error_message, b"invalid physical raster placement\0") };
         return std::ptr::null_mut();
@@ -410,6 +451,27 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         unsafe { set_error(error_message, b"invalid physical quality\0") };
         return std::ptr::null_mut();
     };
+    let Some(requested_intermediate) = intermediate(request.requested_intermediate) else {
+        unsafe { set_error(error_message, b"invalid physical intermediate selector\0") };
+        return std::ptr::null_mut();
+    };
+    if !matches!(
+        requested_intermediate,
+        PhysicalIntermediate::SourceAcesCg
+            | PhysicalIntermediate::DeviceSignal
+            | PhysicalIntermediate::PanelEmission
+            | PhysicalIntermediate::SubpixelRadiance
+            | PhysicalIntermediate::PanelLightSpread
+            | PhysicalIntermediate::DevelopedAcesCg
+    ) {
+        unsafe {
+            set_error(
+                error_message,
+                b"requested physical intermediate is unsupported\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
     let native = match device
         .profile
         .flat_panel_sampling(FlatPanelQuality::Native, 1, 1)
@@ -420,9 +482,28 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             return std::ptr::null_mut();
         }
     };
+    let _typed_snapshot = PhysicalPipelineSnapshot {
+        panel: device.profile,
+        panel_light_spread: device.light_spread,
+        cover: pipeline.cover,
+        environment: pipeline.environment,
+        scene_geometry_lens: pipeline.scene_geometry_lens,
+        shutter_motion: pipeline.shutter_motion,
+        sensor: pipeline.sensor,
+        development: pipeline.development,
+    };
+    if device.light_spread.character_strength != light_spread_amount {
+        unsafe {
+            set_error(
+                error_message,
+                b"light spread contribution does not match the resolved snapshot\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
     let plan = PhysicalPipelineExecutionPlan {
         panel: device.profile,
-        panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
+        panel_light_spread: device.light_spread,
         placement,
         quality,
         requested_width: request.requested_width,
@@ -430,6 +511,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         screen_amount: request.screen_amount,
         emission_amount,
         subpixel_geometry_amount,
+        requested_intermediate,
     };
     let shared = Arc::new(PhysicalJobShared {
         outcome: Mutex::new(PhysicalJobOutcome::Rendering),
@@ -440,6 +522,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     let source = input.source_acescg.metal_texture;
     let signal = input.device_signal.metal_texture;
     let worker = std::thread::spawn(move || {
+        let started = Instant::now();
         // SAFETY: the ABI requires the host to retain both Metal textures through job release.
         let source = unsafe { TextureRef::from_ptr(source as *mut MTLTexture) };
         // SAFETY: same lifetime and ownership rule as the source texture above.
@@ -458,7 +541,10 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             )
         });
         let outcome = match result {
-            Ok(result) => PhysicalJobOutcome::Complete(result),
+            Ok(result) => PhysicalJobOutcome::Complete {
+                result,
+                elapsed_nanoseconds: started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            },
             Err(MetalPhysicalPipelineError::Cancelled) => PhysicalJobOutcome::Cancelled,
             Err(error) => PhysicalJobOutcome::Failed(error.to_string()),
         };
@@ -473,6 +559,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         shared,
         cancellation_identity: request.cancellation_identity,
         quality: request.quality,
+        requested_intermediate: request.requested_intermediate,
         native_width: native.effective_width,
         native_height: native.effective_height,
         parameter_revision: request.parameter_revision,
@@ -486,7 +573,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
 #[cfg(not(target_os = "macos"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_physical_frame_submit(
-    _request: *const ScreenPhysicalFrameRequestV1,
+    _request: *const ScreenPhysicalFrameRequestV2,
     error_message: *mut *const c_char,
 ) -> *mut ScreenPhysicalFrameJob {
     unsafe {
@@ -519,7 +606,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_cancel(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
     job: *mut ScreenPhysicalFrameJob,
-    result: *mut ScreenPhysicalFrameResultV1,
+    result: *mut ScreenPhysicalFrameResultV2,
     error_message: *mut *const c_char,
 ) -> bool {
     if job.is_null() || result.is_null() {
@@ -534,58 +621,78 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         .outcome
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (state, effective_width, effective_height, texture_pointer, emission, geometry) =
-        match &*outcome {
-            PhysicalJobOutcome::Rendering => (
-                STATE_RENDERING,
-                0,
-                0,
-                0,
-                "physical pipeline emission rendering".to_owned(),
-                "subpixel geometry rendering".to_owned(),
-            ),
-            PhysicalJobOutcome::Cancelled => (
-                STATE_CANCELLED,
-                0,
-                0,
-                0,
-                "physical pipeline emission cancelled".to_owned(),
-                "subpixel geometry cancelled".to_owned(),
-            ),
-            PhysicalJobOutcome::Failed(message) => (
-                STATE_FAILED,
-                0,
-                0,
-                0,
-                format!("physical pipeline backend failed: {message}"),
-                format!("subpixel geometry failed: {message}"),
-            ),
-            PhysicalJobOutcome::Complete(value) => {
-                let resolved = if value.sampling.subpixel_geometry_resolved {
-                    "resolved"
-                } else {
-                    "unresolved"
-                };
-                (
-                    STATE_COMPLETE,
-                    value.sampling.effective_width,
-                    value.sampling.effective_height,
-                    value.texture.as_ptr() as usize,
-                    format!(
-                        "active {:.6} x {:.6} m; PPI {:.3}; pitch {:.3} x {:.3} um",
-                        value.geometry.active_width_meters,
-                        value.geometry.active_height_meters,
-                        value.geometry.pixels_per_inch,
-                        value.geometry.pitch_x_meters * 1_000_000.0,
-                        value.geometry.pitch_y_meters * 1_000_000.0,
-                    ),
-                    format!(
-                        "{} samples/pixel; geometry {resolved}; RGB/BGR topology is discrete",
-                        value.sampling.samples_per_output_pixel,
-                    ),
-                )
-            }
-        };
+    let (
+        state,
+        effective_width,
+        effective_height,
+        texture_pointer,
+        elapsed_nanoseconds,
+        emission,
+        geometry,
+        spread,
+    ) = match &*outcome {
+        PhysicalJobOutcome::Rendering => (
+            STATE_RENDERING,
+            0,
+            0,
+            0,
+            0,
+            "physical pipeline emission rendering".to_owned(),
+            "subpixel geometry rendering".to_owned(),
+            "panel light spread rendering".to_owned(),
+        ),
+        PhysicalJobOutcome::Cancelled => (
+            STATE_CANCELLED,
+            0,
+            0,
+            0,
+            0,
+            "physical pipeline emission cancelled".to_owned(),
+            "subpixel geometry cancelled".to_owned(),
+            "panel light spread cancelled".to_owned(),
+        ),
+        PhysicalJobOutcome::Failed(message) => (
+            STATE_FAILED,
+            0,
+            0,
+            0,
+            0,
+            format!("physical pipeline backend failed: {message}"),
+            format!("subpixel geometry failed: {message}"),
+            format!("panel light spread failed: {message}"),
+        ),
+        PhysicalJobOutcome::Complete {
+            result: value,
+            elapsed_nanoseconds,
+        } => {
+            let resolved = if value.sampling.subpixel_geometry_resolved {
+                "resolved"
+            } else {
+                "unresolved"
+            };
+            (
+                STATE_COMPLETE,
+                value.sampling.effective_width,
+                value.sampling.effective_height,
+                value.texture.as_ptr() as usize,
+                *elapsed_nanoseconds,
+                format!(
+                    "active {:.6} x {:.6} m; PPI {:.3}; pitch {:.3} x {:.3} um",
+                    value.geometry.active_width_meters,
+                    value.geometry.active_height_meters,
+                    value.geometry.pixels_per_inch,
+                    value.geometry.pitch_x_meters * 1_000_000.0,
+                    value.geometry.pitch_y_meters * 1_000_000.0,
+                ),
+                format!(
+                    "{} samples/pixel; geometry {resolved}; RGB/BGR topology is discrete",
+                    value.sampling.samples_per_output_pixel,
+                ),
+                "9 taps/channel; physical radii in micrometers; fused Metal elapsed time reported"
+                    .to_owned(),
+            )
+        }
+    };
     let output_texture = if texture_pointer == 0 {
         std::ptr::null()
     } else {
@@ -598,7 +705,14 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         }));
         &**views.last().expect("just pushed output view") as *const ScreenPhysicalTexture
     };
-    let snapshot = diagnostic_snapshot(state, progress, emission, geometry);
+    let snapshot = diagnostic_snapshot(
+        state,
+        progress,
+        elapsed_nanoseconds,
+        emission,
+        geometry,
+        spread,
+    );
     let mut snapshots = job
         .snapshots
         .lock()
@@ -607,14 +721,15 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
     let snapshot = snapshots.last().expect("just pushed diagnostic snapshot");
     // SAFETY: result is writable and all borrowed views remain job-owned until release.
     unsafe {
-        *result = ScreenPhysicalFrameResultV1 {
+        *result = ScreenPhysicalFrameResultV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-            acescg_texture: output_texture,
+            output_texture,
             native_width: job.native_width,
             native_height: job.native_height,
             effective_width,
             effective_height,
             computed_quality: job.quality,
+            returned_intermediate: job.requested_intermediate,
             state,
             progress,
             stage_diagnostics: snapshot.diagnostics.as_ptr(),
@@ -631,7 +746,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
     _job: *mut ScreenPhysicalFrameJob,
-    _result: *mut ScreenPhysicalFrameResultV1,
+    _result: *mut ScreenPhysicalFrameResultV2,
     error_message: *mut *const c_char,
 ) -> bool {
     unsafe {
@@ -663,7 +778,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_release(job: *mut ScreenPhysi
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenDeviceParametersV1 {
+pub struct ScreenDeviceParametersV2 {
     abi_version: u32,
     native_width: u32,
     native_height: u32,
@@ -678,6 +793,11 @@ pub struct ScreenDeviceParametersV1 {
     primary_xy: [f32; 6],
     white_xy: [f32; 2],
     angular_emission_power: [f32; 3],
+    light_spread_character_strength: f32,
+    light_spread_core_radius_micrometers: [f32; 3],
+    light_spread_core_weight: [f32; 3],
+    light_spread_tail_radius_micrometers: [f32; 3],
+    light_spread_tail_weight: [f32; 3],
     residual_period_numerator: i64,
     residual_period_denominator: u32,
     residual_amplitude: f32,
@@ -694,12 +814,13 @@ pub struct ScreenDeviceParametersV1 {
 
 pub struct ScreenDeviceProfile {
     profile: LcdProfile,
+    light_spread: PanelLightSpreadProfile,
     evaluator: ValidatedPanelEvaluator,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenCoverGlassParametersV1 {
+pub struct ScreenCoverGlassParametersV2 {
     abi_version: u32,
     authority: u32,
     character_strength: f32,
@@ -711,12 +832,115 @@ pub struct ScreenCoverGlassParametersV1 {
     haze: f32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenEnvironmentParametersV2 {
+    abi_version: u32,
+    character_strength: f32,
+    ambient_radiance_acescg: [f32; 3],
+    key_radiance_acescg: [f32; 3],
+    key_direction_local: [f32; 3],
+    key_angular_radius_degrees: f32,
+    rotation_degrees: f32,
+    pattern: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenSceneGeometryLensParametersV2 {
+    abi_version: u32,
+    camera_position: [f32; 3],
+    camera_target: [f32; 3],
+    camera_yaw_degrees: f32,
+    focal_length_millimeters: f32,
+    sensor_width_millimeters: f32,
+    sensor_height_millimeters: f32,
+    lens_shift: [f32; 2],
+    focus_distance_meters: f32,
+    f_stop: f32,
+    near_clip_meters: f32,
+    far_clip_meters: f32,
+    camera_rotation_xyzw: [f32; 4],
+    lens_radial_distortion: [f32; 3],
+    lens_tangential_distortion: [f32; 2],
+    lens_longitudinal_chromatic_meters: [f32; 3],
+    lens_lateral_chromatic_scale: [f32; 3],
+    lens_vignetting_strength: f32,
+    lens_transmission_rgb: [f32; 3],
+    lens_center_softness_micrometers: f32,
+    lens_edge_softness_micrometers: f32,
+    screen_translation: [f32; 3],
+    screen_rotation_xyzw: [f32; 4],
+    screen_scale: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenShutterMotionParametersV2 {
+    abi_version: u32,
+    exposure_duration_numerator: i64,
+    exposure_duration_denominator: u32,
+    temporal_samples: u16,
+    readout_kind: u16,
+    readout_duration_numerator: i64,
+    readout_duration_denominator: u32,
+    readout_direction: u32,
+    neutral_density_stops: f32,
+    noise_seed: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenSensorNoiseParametersV2 {
+    abi_version: u32,
+    native_width: u32,
+    native_height: u32,
+    bayer_pattern: u32,
+    acescg_to_sensor: [f32; 9],
+    saturation_illuminance_seconds: [f32; 3],
+    full_well_electrons: f32,
+    dark_current_electrons_per_second: f32,
+    read_noise_electrons_rms: f32,
+    analog_gain: f32,
+    adc_bits: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenRawDevelopParametersV2 {
+    abi_version: u32,
+    white_balance: [f32; 3],
+    middle_gray_illuminance_seconds: f32,
+    develop_exposure_ev: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalPipelineParametersV2 {
+    abi_version: u32,
+    cover: ScreenCoverGlassParametersV2,
+    environment: ScreenEnvironmentParametersV2,
+    scene_geometry_lens: ScreenSceneGeometryLensParametersV2,
+    shutter_motion: ScreenShutterMotionParametersV2,
+    sensor_noise: ScreenSensorNoiseParametersV2,
+    raw_develop: ScreenRawDevelopParametersV2,
+}
+
+pub struct ScreenPhysicalPipelineSnapshot {
+    cover: CoverGlassProfile,
+    environment: ProceduralEnvironment,
+    scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
+    shutter_motion: ResolvedShutterMotionSnapshot,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+}
+
 pub struct ScreenCoverGlassProfile {
     _profile: CoverGlassProfile,
 }
 
 #[repr(C)]
-pub struct ScreenDeviceEvaluationParametersV1 {
+pub struct ScreenDeviceEvaluationParametersV2 {
     abi_version: u32,
     native_to_acescg: [f32; 9],
     eotf_gamma: f32,
@@ -757,7 +981,7 @@ pub extern "C" fn screen_cover_glass_preset_label(index: usize) -> ScreenUtf8Vie
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_cover_glass_preset_parameters(
     index: usize,
-    parameters: *mut ScreenCoverGlassParametersV1,
+    parameters: *mut ScreenCoverGlassParametersV2,
 ) -> bool {
     let Some(preset) = cover_preset_at(index) else {
         return false;
@@ -765,14 +989,14 @@ pub unsafe extern "C" fn screen_cover_glass_preset_parameters(
     if parameters.is_null() {
         return false;
     }
-    // SAFETY: the caller provided writable V1 parameter storage.
+    // SAFETY: the caller provided writable current-version parameter storage.
     unsafe { *parameters = cover_parameters(preset.authority, preset.profile) };
     true
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_cover_glass_profile_create(
-    parameters: *const ScreenCoverGlassParametersV1,
+    parameters: *const ScreenCoverGlassParametersV2,
     error_message: *mut *const c_char,
 ) -> *mut ScreenCoverGlassProfile {
     if parameters.is_null() {
@@ -781,7 +1005,7 @@ pub unsafe extern "C" fn screen_cover_glass_profile_create(
     }
     // SAFETY: the non-null parameters pointer is valid for this call.
     let parameters = unsafe { *parameters };
-    if parameters.abi_version != 1 || parameters.authority > 1 {
+    if parameters.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION || parameters.authority > 1 {
         unsafe { set_error(error_message, b"unsupported cover glass parameter ABI\0") };
         return std::ptr::null_mut();
     }
@@ -814,12 +1038,315 @@ pub unsafe extern "C" fn screen_cover_glass_profile_release(profile: *mut Screen
     }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
+    parameters: *const ScreenPhysicalPipelineParametersV2,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalPipelineSnapshot {
+    if parameters.is_null() {
+        unsafe { set_error(error_message, b"missing physical pipeline parameters\0") };
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the non-null parameter block is immutable for this call.
+    let parameters = unsafe { *parameters };
+    if [
+        parameters.abi_version,
+        parameters.cover.abi_version,
+        parameters.environment.abi_version,
+        parameters.scene_geometry_lens.abi_version,
+        parameters.shutter_motion.abi_version,
+        parameters.sensor_noise.abi_version,
+        parameters.raw_develop.abi_version,
+    ]
+    .into_iter()
+    .any(|version| version != SCREEN_PHYSICAL_FRAME_ABI_VERSION)
+    {
+        unsafe { set_error(error_message, b"unsupported physical snapshot ABI\0") };
+        return std::ptr::null_mut();
+    }
+    let cover = CoverGlassProfile {
+        character_strength: parameters.cover.character_strength,
+        thickness_millimeters: parameters.cover.thickness_millimeters,
+        refractive_index: parameters.cover.refractive_index,
+        anti_reflective_efficiency: parameters.cover.anti_reflective_efficiency,
+        absorption_per_millimeter: LinearRgb::new(
+            parameters.cover.absorption_per_millimeter[0],
+            parameters.cover.absorption_per_millimeter[1],
+            parameters.cover.absorption_per_millimeter[2],
+        ),
+        roughness: parameters.cover.roughness,
+        haze: parameters.cover.haze,
+    };
+    let pattern = match parameters.environment.pattern {
+        0 => EnvironmentPattern::UniformNeutral,
+        1 => EnvironmentPattern::StudioSoftboxes,
+        2 => EnvironmentPattern::CalibrationGrid,
+        _ => {
+            unsafe { set_error(error_message, b"unsupported environment pattern\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let environment = ProceduralEnvironment {
+        character_strength: parameters.environment.character_strength,
+        ambient_radiance: AcesCgRadiance(LinearRgb::new(
+            parameters.environment.ambient_radiance_acescg[0],
+            parameters.environment.ambient_radiance_acescg[1],
+            parameters.environment.ambient_radiance_acescg[2],
+        )),
+        key_radiance: AcesCgRadiance(LinearRgb::new(
+            parameters.environment.key_radiance_acescg[0],
+            parameters.environment.key_radiance_acescg[1],
+            parameters.environment.key_radiance_acescg[2],
+        )),
+        key_direction_local: parameters.environment.key_direction_local,
+        key_angular_radius_degrees: parameters.environment.key_angular_radius_degrees,
+        rotation_degrees: parameters.environment.rotation_degrees,
+        pattern,
+    };
+    let scene = parameters.scene_geometry_lens;
+    let vec3 = |value: [f32; 3]| Vec3 {
+        x: value[0],
+        y: value[1],
+        z: value[2],
+    };
+    let quaternion = |value: [f32; 4]| Quaternion {
+        x: value[0],
+        y: value[1],
+        z: value[2],
+        w: value[3],
+    };
+    let scene_geometry_lens = ResolvedSceneGeometryLensSnapshot {
+        camera_position: vec3(scene.camera_position),
+        camera_target: vec3(scene.camera_target),
+        camera_yaw_degrees: scene.camera_yaw_degrees,
+        focal_length_millimeters: scene.focal_length_millimeters,
+        sensor_width_millimeters: scene.sensor_width_millimeters,
+        sensor_height_millimeters: scene.sensor_height_millimeters,
+        lens_shift: Vec2 {
+            x: scene.lens_shift[0],
+            y: scene.lens_shift[1],
+        },
+        focus_distance_meters: scene.focus_distance_meters,
+        f_stop: scene.f_stop,
+        near_clip_meters: scene.near_clip_meters,
+        far_clip_meters: scene.far_clip_meters,
+        camera_rotation: quaternion(scene.camera_rotation_xyzw),
+        lens: LensModel {
+            radial_distortion: scene.lens_radial_distortion,
+            tangential_distortion: scene.lens_tangential_distortion,
+            longitudinal_chromatic_meters: scene.lens_longitudinal_chromatic_meters,
+            lateral_chromatic_scale: scene.lens_lateral_chromatic_scale,
+            vignetting_strength: scene.lens_vignetting_strength,
+            transmission_rgb: scene.lens_transmission_rgb,
+            center_softness_micrometers: scene.lens_center_softness_micrometers,
+            edge_softness_micrometers: scene.lens_edge_softness_micrometers,
+        },
+        screen_translation: vec3(scene.screen_translation),
+        screen_rotation: quaternion(scene.screen_rotation_xyzw),
+        screen_scale: Vec2 {
+            x: scene.screen_scale[0],
+            y: scene.screen_scale[1],
+        },
+    };
+    let finite_scene = scene
+        .camera_position
+        .into_iter()
+        .chain(scene.camera_target)
+        .chain([scene.camera_yaw_degrees, scene.focal_length_millimeters])
+        .chain([
+            scene.sensor_width_millimeters,
+            scene.sensor_height_millimeters,
+        ])
+        .chain(scene.lens_shift)
+        .chain([scene.focus_distance_meters, scene.f_stop])
+        .chain([scene.near_clip_meters, scene.far_clip_meters])
+        .chain(scene.camera_rotation_xyzw)
+        .chain(scene.lens_radial_distortion)
+        .chain(scene.lens_tangential_distortion)
+        .chain(scene.lens_longitudinal_chromatic_meters)
+        .chain(scene.lens_lateral_chromatic_scale)
+        .chain([scene.lens_vignetting_strength])
+        .chain(scene.lens_transmission_rgb)
+        .chain([
+            scene.lens_center_softness_micrometers,
+            scene.lens_edge_softness_micrometers,
+        ])
+        .chain(scene.screen_translation)
+        .chain(scene.screen_rotation_xyzw)
+        .chain(scene.screen_scale)
+        .all(f32::is_finite);
+    if !finite_scene
+        || scene.focal_length_millimeters <= 0.0
+        || scene.sensor_width_millimeters <= 0.0
+        || scene.sensor_height_millimeters <= 0.0
+        || scene.focus_distance_meters <= 0.0
+        || scene.f_stop <= 0.0
+        || scene.near_clip_meters <= 0.0
+        || scene.far_clip_meters <= scene.near_clip_meters
+        || scene.screen_scale.into_iter().any(|value| value <= 0.0)
+    {
+        unsafe { set_error(error_message, b"invalid scene/geometry/lens snapshot\0") };
+        return std::ptr::null_mut();
+    }
+    let shutter = parameters.shutter_motion;
+    let exposure_duration = match RationalTime::new(
+        shutter.exposure_duration_numerator,
+        shutter.exposure_duration_denominator,
+    ) {
+        Ok(value) if value.numerator() > 0 => value,
+        _ => {
+            unsafe { set_error(error_message, b"invalid exposure duration\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let readout = match shutter.readout_kind {
+        0 => SensorReadout::Global,
+        1 => {
+            let duration = match RationalTime::new(
+                shutter.readout_duration_numerator,
+                shutter.readout_duration_denominator,
+            ) {
+                Ok(value) if value.numerator() > 0 => value,
+                _ => {
+                    unsafe { set_error(error_message, b"invalid rolling readout duration\0") };
+                    return std::ptr::null_mut();
+                }
+            };
+            let direction = match shutter.readout_direction {
+                0 => RollingDirection::TopToBottom,
+                1 => RollingDirection::BottomToTop,
+                _ => {
+                    unsafe { set_error(error_message, b"unsupported rolling direction\0") };
+                    return std::ptr::null_mut();
+                }
+            };
+            SensorReadout::Rolling {
+                duration,
+                direction,
+            }
+        }
+        _ => {
+            unsafe { set_error(error_message, b"unsupported shutter readout\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    if shutter.temporal_samples == 0
+        || !shutter.neutral_density_stops.is_finite()
+        || !(0.0..=16.0).contains(&shutter.neutral_density_stops)
+    {
+        unsafe { set_error(error_message, b"invalid shutter/motion snapshot\0") };
+        return std::ptr::null_mut();
+    }
+    let shutter_motion = ResolvedShutterMotionSnapshot {
+        exposure_duration,
+        temporal_samples: shutter.temporal_samples,
+        readout,
+        neutral_density_stops: shutter.neutral_density_stops,
+        noise_seed: shutter.noise_seed,
+    };
+    let sensor = parameters.sensor_noise;
+    let bayer_pattern = match sensor.bayer_pattern {
+        0 => BayerPattern::Rggb,
+        1 => BayerPattern::Bggr,
+        2 => BayerPattern::Grbg,
+        3 => BayerPattern::Gbrg,
+        _ => {
+            unsafe { set_error(error_message, b"unsupported Bayer pattern\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    let Ok(native_width) = u16::try_from(sensor.native_width) else {
+        unsafe { set_error(error_message, b"sensor width exceeds physical domain\0") };
+        return std::ptr::null_mut();
+    };
+    let Ok(native_height) = u16::try_from(sensor.native_height) else {
+        unsafe { set_error(error_message, b"sensor height exceeds physical domain\0") };
+        return std::ptr::null_mut();
+    };
+    let sensor = SensorProfile {
+        native_width,
+        native_height,
+        bayer_pattern,
+        acescg_to_sensor: [
+            sensor.acescg_to_sensor[0..3]
+                .try_into()
+                .expect("fixed matrix row"),
+            sensor.acescg_to_sensor[3..6]
+                .try_into()
+                .expect("fixed matrix row"),
+            sensor.acescg_to_sensor[6..9]
+                .try_into()
+                .expect("fixed matrix row"),
+        ],
+        saturation_illuminance_seconds: LinearRgb::new(
+            sensor.saturation_illuminance_seconds[0],
+            sensor.saturation_illuminance_seconds[1],
+            sensor.saturation_illuminance_seconds[2],
+        ),
+        full_well_electrons: sensor.full_well_electrons,
+        dark_current_electrons_per_second: sensor.dark_current_electrons_per_second,
+        read_noise_electrons_rms: sensor.read_noise_electrons_rms,
+        analog_gain: sensor.analog_gain,
+        adc_bits: match u8::try_from(sensor.adc_bits) {
+            Ok(value) => value,
+            Err(_) => {
+                unsafe { set_error(error_message, b"ADC precision exceeds physical domain\0") };
+                return std::ptr::null_mut();
+            }
+        },
+    };
+    if sensor.validate().is_err() {
+        unsafe { set_error(error_message, b"invalid sensor/noise snapshot\0") };
+        return std::ptr::null_mut();
+    }
+    let development = CameraDevelopment {
+        white_balance: LinearRgb::new(
+            parameters.raw_develop.white_balance[0],
+            parameters.raw_develop.white_balance[1],
+            parameters.raw_develop.white_balance[2],
+        ),
+        middle_gray_illuminance_seconds: parameters.raw_develop.middle_gray_illuminance_seconds,
+        develop_exposure_ev: parameters.raw_develop.develop_exposure_ev,
+    };
+    if cover.validate().is_err()
+        || environment.validate().is_err()
+        || development.validate().is_err()
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"invalid cover/environment/development snapshot\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
+    unsafe { set_error(error_message, b"\0") };
+    Box::into_raw(Box::new(ScreenPhysicalPipelineSnapshot {
+        cover,
+        environment,
+        scene_geometry_lens,
+        shutter_motion,
+        sensor,
+        development,
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_pipeline_snapshot_release(
+    snapshot: *mut ScreenPhysicalPipelineSnapshot,
+) {
+    if !snapshot.is_null() {
+        // SAFETY: the ABI requires the uniquely owned snapshot returned by create.
+        unsafe { drop(Box::from_raw(snapshot)) };
+    }
+}
+
 fn cover_parameters(
     authority: CoverGlassPresetAuthority,
     profile: CoverGlassProfile,
-) -> ScreenCoverGlassParametersV1 {
-    ScreenCoverGlassParametersV1 {
-        abi_version: 1,
+) -> ScreenCoverGlassParametersV2 {
+    ScreenCoverGlassParametersV2 {
+        abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
         authority: match authority {
             CoverGlassPresetAuthority::GenericApproximation => 0,
             CoverGlassPresetAuthority::PublishedCategoryApproximation => 1,
@@ -873,7 +1400,7 @@ pub extern "C" fn screen_device_preset_default_cover_id(index: usize) -> ScreenU
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_device_preset_parameters(
     index: usize,
-    parameters: *mut ScreenDeviceParametersV1,
+    parameters: *mut ScreenDeviceParametersV2,
 ) -> bool {
     let Some(preset) = preset_at(index) else {
         return false;
@@ -881,14 +1408,22 @@ pub unsafe extern "C" fn screen_device_preset_parameters(
     if parameters.is_null() {
         return false;
     }
-    // SAFETY: the caller provided a writable V1 parameter structure.
-    unsafe { *parameters = parameters_from_profile(preset.profile(), preset.panel_technology) };
+    // SAFETY: the caller provided a writable current-version parameter structure.
+    let light_spread = match preset.category {
+        "Phone" => PanelLightSpreadProfile::LCD_MOBILE,
+        "Television" => PanelLightSpreadProfile::LCD_TV,
+        _ => PanelLightSpreadProfile::LCD_DESKTOP,
+    };
+    unsafe {
+        *parameters =
+            parameters_from_profile(preset.profile(), preset.panel_technology, light_spread)
+    };
     true
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_device_profile_create(
-    parameters: *const ScreenDeviceParametersV1,
+    parameters: *const ScreenDeviceParametersV2,
     error_message: *mut *const c_char,
 ) -> *mut ScreenDeviceProfile {
     if parameters.is_null() {
@@ -897,7 +1432,7 @@ pub unsafe extern "C" fn screen_device_profile_create(
     }
     // SAFETY: the non-null parameters pointer is valid for this call.
     let parameters = unsafe { *parameters };
-    let profile = match profile_from_parameters(parameters) {
+    let (profile, light_spread) = match profile_from_parameters(parameters) {
         Ok(profile) => profile,
         Err(message) => {
             unsafe { set_error(error_message, message) };
@@ -912,7 +1447,11 @@ pub unsafe extern "C" fn screen_device_profile_create(
         }
     };
     unsafe { set_error(error_message, b"\0") };
-    Box::into_raw(Box::new(ScreenDeviceProfile { profile, evaluator }))
+    Box::into_raw(Box::new(ScreenDeviceProfile {
+        profile,
+        light_spread,
+        evaluator,
+    }))
 }
 
 #[unsafe(no_mangle)]
@@ -926,17 +1465,17 @@ pub unsafe extern "C" fn screen_device_profile_release(profile: *mut ScreenDevic
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_device_profile_evaluation_parameters(
     profile: *const ScreenDeviceProfile,
-    parameters: *mut ScreenDeviceEvaluationParametersV1,
+    parameters: *mut ScreenDeviceEvaluationParametersV2,
 ) -> bool {
     if profile.is_null() || parameters.is_null() {
         return false;
     }
     // SAFETY: both pointers were validated for the duration of this call.
     let values = unsafe { (*profile).evaluator }.device_stage_parameters();
-    // SAFETY: the caller provided a writable V1 parameter structure.
+    // SAFETY: the caller provided a writable current-version parameter structure.
     unsafe {
-        *parameters = ScreenDeviceEvaluationParametersV1 {
-            abi_version: 1,
+        *parameters = ScreenDeviceEvaluationParametersV2 {
+            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             native_to_acescg: [
                 values.native_to_acescg[0][0],
                 values.native_to_acescg[0][1],
@@ -986,9 +1525,10 @@ pub unsafe extern "C" fn screen_device_profile_evaluate_rgba32f(
 fn parameters_from_profile(
     profile: LcdProfile,
     technology: PanelTechnology,
-) -> ScreenDeviceParametersV1 {
-    ScreenDeviceParametersV1 {
-        abi_version: 1,
+    light_spread: PanelLightSpreadProfile,
+) -> ScreenDeviceParametersV2 {
+    ScreenDeviceParametersV2 {
+        abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
         native_width: profile.native_width,
         native_height: profile.native_height,
         panel_technology: match technology {
@@ -1017,6 +1557,27 @@ fn parameters_from_profile(
             profile.angular_emission_power.r,
             profile.angular_emission_power.g,
             profile.angular_emission_power.b,
+        ],
+        light_spread_character_strength: light_spread.character_strength,
+        light_spread_core_radius_micrometers: [
+            light_spread.core_radius_micrometers.r,
+            light_spread.core_radius_micrometers.g,
+            light_spread.core_radius_micrometers.b,
+        ],
+        light_spread_core_weight: [
+            light_spread.core_weight.r,
+            light_spread.core_weight.g,
+            light_spread.core_weight.b,
+        ],
+        light_spread_tail_radius_micrometers: [
+            light_spread.tail_radius_micrometers.r,
+            light_spread.tail_radius_micrometers.g,
+            light_spread.tail_radius_micrometers.b,
+        ],
+        light_spread_tail_weight: [
+            light_spread.tail_weight.r,
+            light_spread.tail_weight.g,
+            light_spread.tail_weight.b,
         ],
         residual_period_numerator: profile
             .temporal_emission
@@ -1066,9 +1627,9 @@ fn parameters_from_profile(
 }
 
 fn profile_from_parameters(
-    parameters: ScreenDeviceParametersV1,
-) -> Result<LcdProfile, &'static [u8]> {
-    if parameters.abi_version != 1 {
+    parameters: ScreenDeviceParametersV2,
+) -> Result<(LcdProfile, PanelLightSpreadProfile), &'static [u8]> {
+    if parameters.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION {
         return Err(b"unsupported device parameter ABI\0");
     }
     if parameters.panel_technology != 0 {
@@ -1144,47 +1705,35 @@ fn profile_from_parameters(
             },
         },
     };
-    profile
+    let light_spread = PanelLightSpreadProfile {
+        character_strength: parameters.light_spread_character_strength,
+        core_radius_micrometers: LinearRgb::new(
+            parameters.light_spread_core_radius_micrometers[0],
+            parameters.light_spread_core_radius_micrometers[1],
+            parameters.light_spread_core_radius_micrometers[2],
+        ),
+        core_weight: LinearRgb::new(
+            parameters.light_spread_core_weight[0],
+            parameters.light_spread_core_weight[1],
+            parameters.light_spread_core_weight[2],
+        ),
+        tail_radius_micrometers: LinearRgb::new(
+            parameters.light_spread_tail_radius_micrometers[0],
+            parameters.light_spread_tail_radius_micrometers[1],
+            parameters.light_spread_tail_radius_micrometers[2],
+        ),
+        tail_weight: LinearRgb::new(
+            parameters.light_spread_tail_weight[0],
+            parameters.light_spread_tail_weight[1],
+            parameters.light_spread_tail_weight[2],
+        ),
+    }
+    .validate()
+    .map_err(|_| b"invalid panel light spread profile\0" as &'static [u8])?;
+    let profile = profile
         .validate()
-        .map_err(|_| b"invalid physical device profile\0" as &'static [u8])
-}
-
-pub struct ScreenPhysicalPipeline;
-
-#[unsafe(no_mangle)]
-pub extern "C" fn screen_physical_pipeline_create() -> *mut ScreenPhysicalPipeline {
-    Box::into_raw(Box::new(ScreenPhysicalPipeline))
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_physical_pipeline_release(pipeline: *mut ScreenPhysicalPipeline) {
-    if !pipeline.is_null() {
-        // SAFETY: the ABI requires the uniquely owned handle returned by create.
-        unsafe { drop(Box::from_raw(pipeline)) };
-    }
-}
-
-/// Exact in-place identity over one complete linear ACEScg image.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_physical_pipeline_process_rgba32f(
-    pipeline: *const ScreenPhysicalPipeline,
-    pixels: *mut c_float,
-    pixel_count: usize,
-    error_message: *mut *const c_char,
-) -> bool {
-    if pipeline.is_null() || (pixels.is_null() && pixel_count != 0) {
-        static ERROR: &[u8] = b"invalid PhysicalPipeline identity buffer\0";
-        if !error_message.is_null() {
-            // SAFETY: the optional out parameter is writable for the call.
-            unsafe { *error_message = ERROR.as_ptr().cast() };
-        }
-        return false;
-    }
-    if !error_message.is_null() {
-        // SAFETY: the optional out parameter is writable for the call.
-        unsafe { *error_message = std::ptr::null() };
-    }
-    true
+        .map_err(|_| b"invalid physical device profile\0" as &'static [u8])?;
+    Ok((profile, light_spread))
 }
 
 const PROCEDURAL_WIDTH: u32 = 960;
@@ -1331,40 +1880,108 @@ mod tests {
         texture
     }
 
-    fn contributions() -> [ScreenPhysicalStageContributionV1; 11] {
+    fn contributions() -> [ScreenPhysicalStageContributionV2; 12] {
         core::array::from_fn(|index| {
-            let discrete = matches!(index, 8 | 10);
-            ScreenPhysicalStageContributionV1 {
+            let discrete = matches!(index, 9 | 11);
+            ScreenPhysicalStageContributionV2 {
                 abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-                domain_id: if index < 5 { 0x100 } else { 0x200 },
+                domain_id: if index < 6 { 0x100 } else { 0x200 },
                 stage_id: EXPECTED_STAGE_IDS[index],
                 control_semantics: u32::from(discrete),
-                amount: if index < 2 { 1.0 } else { 0.0 },
+                amount: if index < 3 { 1.0 } else { 0.0 },
                 visual_minimum: 0.0,
                 visual_maximum: 2.0,
                 safe_maximum: 4.0,
-                discrete_enabled: discrete,
+                discrete_enabled: false,
                 exact_identity_at_zero: !discrete,
                 reserved: [0, 0],
             }
         })
     }
 
-    #[test]
-    fn identity_preserves_every_float_bit() {
-        let pipeline = screen_physical_pipeline_create();
-        let mut values = [-0.5, 0.0, 1.0, 0.25, 4.0, f32::NAN, f32::INFINITY, 1.0];
-        let expected = values.map(f32::to_bits);
-        assert!(unsafe {
-            screen_physical_pipeline_process_rgba32f(
-                pipeline,
-                values.as_mut_ptr(),
-                values.len() / 4,
-                std::ptr::null_mut(),
-            )
-        });
-        assert_eq!(values.map(f32::to_bits), expected);
-        unsafe { screen_physical_pipeline_release(pipeline) };
+    fn pipeline_parameters() -> ScreenPhysicalPipelineParametersV2 {
+        let version = SCREEN_PHYSICAL_FRAME_ABI_VERSION;
+        ScreenPhysicalPipelineParametersV2 {
+            abi_version: version,
+            cover: ScreenCoverGlassParametersV2 {
+                abi_version: version,
+                authority: 0,
+                character_strength: 0.0,
+                thickness_millimeters: 1.0,
+                refractive_index: 1.5,
+                anti_reflective_efficiency: 0.0,
+                absorption_per_millimeter: [0.0; 3],
+                roughness: 0.0,
+                haze: 0.0,
+            },
+            environment: ScreenEnvironmentParametersV2 {
+                abi_version: version,
+                character_strength: 0.0,
+                ambient_radiance_acescg: [0.0; 3],
+                key_radiance_acescg: [0.0; 3],
+                key_direction_local: [0.0, 0.0, 1.0],
+                key_angular_radius_degrees: 20.0,
+                rotation_degrees: 0.0,
+                pattern: 0,
+            },
+            scene_geometry_lens: ScreenSceneGeometryLensParametersV2 {
+                abi_version: version,
+                camera_position: [0.0, 0.0, -1.0],
+                camera_target: [0.0, 0.0, 0.0],
+                camera_yaw_degrees: 0.0,
+                focal_length_millimeters: 50.0,
+                sensor_width_millimeters: 36.0,
+                sensor_height_millimeters: 24.0,
+                lens_shift: [0.0; 2],
+                focus_distance_meters: 1.0,
+                f_stop: 2.8,
+                near_clip_meters: 0.01,
+                far_clip_meters: 100.0,
+                camera_rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+                lens_radial_distortion: [0.0; 3],
+                lens_tangential_distortion: [0.0; 2],
+                lens_longitudinal_chromatic_meters: [0.0; 3],
+                lens_lateral_chromatic_scale: [1.0; 3],
+                lens_vignetting_strength: 0.0,
+                lens_transmission_rgb: [1.0; 3],
+                lens_center_softness_micrometers: 0.0,
+                lens_edge_softness_micrometers: 0.0,
+                screen_translation: [0.0, 0.0, 0.0],
+                screen_rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+                screen_scale: [1.0; 2],
+            },
+            shutter_motion: ScreenShutterMotionParametersV2 {
+                abi_version: version,
+                exposure_duration_numerator: 1,
+                exposure_duration_denominator: 48,
+                temporal_samples: 1,
+                readout_kind: 0,
+                readout_duration_numerator: 1,
+                readout_duration_denominator: 48,
+                readout_direction: 0,
+                neutral_density_stops: 0.0,
+                noise_seed: 7,
+            },
+            sensor_noise: ScreenSensorNoiseParametersV2 {
+                abi_version: version,
+                native_width: 3_840,
+                native_height: 2_160,
+                bayer_pattern: 0,
+                acescg_to_sensor: [0.72, 0.21, 0.07, 0.10, 0.82, 0.08, 0.03, 0.16, 0.81],
+                saturation_illuminance_seconds: [2.4; 3],
+                full_well_electrons: 45_000.0,
+                dark_current_electrons_per_second: 0.1,
+                read_noise_electrons_rms: 2.0,
+                analog_gain: 1.0,
+                adc_bits: 14,
+            },
+            raw_develop: ScreenRawDevelopParametersV2 {
+                abi_version: version,
+                white_balance: [1.0; 3],
+                middle_gray_illuminance_seconds: 0.18,
+                develop_exposure_ev: 0.0,
+            },
+        }
     }
 
     #[test]
@@ -1454,17 +2071,27 @@ mod tests {
         panel.native_height = 1;
         panel.active_width = Meters(0.002);
         panel.active_height = Meters(0.001);
-        let parameters = parameters_from_profile(panel, PanelTechnology::IpsLcd);
+        let parameters = parameters_from_profile(
+            panel,
+            PanelTechnology::IpsLcd,
+            PanelLightSpreadProfile::LCD_DESKTOP,
+        );
         let profile = unsafe { screen_device_profile_create(&parameters, std::ptr::null_mut()) };
+        let pipeline_parameters = pipeline_parameters();
+        let pipeline = unsafe {
+            screen_physical_pipeline_snapshot_create(&pipeline_parameters, std::ptr::null_mut())
+        };
+        assert!(!pipeline.is_null());
         let contributions = contributions();
         let identity = ScreenPhysicalIdentity128 { high: 7, low: 9 };
-        let request = ScreenPhysicalFrameRequestV1 {
+        let request = ScreenPhysicalFrameRequestV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             frame_index: 0,
             frame_time_numerator: 0,
             frame_time_denominator: 24,
             input,
             resolved_device: profile,
+            resolved_pipeline: pipeline,
             quality: 1,
             screen_amount: 1.0,
             capture_amount: 0.0,
@@ -1472,6 +2099,7 @@ mod tests {
             stage_contribution_count: contributions.len(),
             requested_width: 4,
             requested_height: 2,
+            requested_intermediate: PhysicalIntermediate::DevelopedAcesCg as u32,
             cancellation_identity: identity,
             progress_identity: ScreenPhysicalIdentity128 { high: 1, low: 2 },
             parameter_revision: 42,
@@ -1482,7 +2110,7 @@ mod tests {
         assert!(!unsafe {
             screen_physical_frame_job_cancel(job, ScreenPhysicalIdentity128 { high: 7, low: 8 })
         });
-        let mut result = unsafe { core::mem::zeroed::<ScreenPhysicalFrameResultV1>() };
+        let mut result = unsafe { core::mem::zeroed::<ScreenPhysicalFrameResultV2>() };
         for _ in 0..2_000 {
             assert!(unsafe {
                 screen_physical_frame_job_snapshot(job, &mut result, std::ptr::null_mut())
@@ -1501,8 +2129,12 @@ mod tests {
             result.parameter_hash,
             [0x5a; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE]
         );
-        assert!(!result.acescg_texture.is_null());
-        assert_eq!(result.stage_diagnostic_count, 2);
+        assert!(!result.output_texture.is_null());
+        assert_eq!(result.stage_diagnostic_count, 12);
+        assert_eq!(
+            result.returned_intermediate,
+            PhysicalIntermediate::DevelopedAcesCg as u32
+        );
         let diagnostics = unsafe {
             std::slice::from_raw_parts(result.stage_diagnostics, result.stage_diagnostic_count)
         };
@@ -1517,10 +2149,12 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(messages[0].contains("PPI") && messages[0].contains("pitch"));
         assert!(messages[1].contains("samples/pixel"));
+        assert!(messages[2].contains("9 taps/channel"));
+        assert!(messages[3].contains("unsupported"));
 
         let mut unsupported = contributions;
-        unsupported[2].amount = 1.0;
-        let invalid_request = ScreenPhysicalFrameRequestV1 {
+        unsupported[3].amount = 1.0;
+        let invalid_request = ScreenPhysicalFrameRequestV2 {
             stage_contributions: unsupported.as_ptr(),
             ..request
         };
@@ -1531,6 +2165,7 @@ mod tests {
         unsafe {
             screen_physical_frame_job_release(job);
             screen_device_profile_release(profile);
+            screen_physical_pipeline_snapshot_release(pipeline);
             screen_physical_frame_input_release(input);
             screen_physical_texture_release(source);
             screen_physical_texture_release(signal);
@@ -1572,7 +2207,7 @@ mod tests {
     fn device_catalog_exposes_complete_profiles_through_opaque_handles() {
         assert_eq!(screen_device_preset_count(), 9);
         for index in 0..screen_device_preset_count() {
-            let mut parameters = ScreenDeviceParametersV1 {
+            let mut parameters = ScreenDeviceParametersV2 {
                 abi_version: 0,
                 native_width: 0,
                 native_height: 0,
@@ -1587,6 +2222,11 @@ mod tests {
                 primary_xy: [0.0; 6],
                 white_xy: [0.0; 2],
                 angular_emission_power: [0.0; 3],
+                light_spread_character_strength: 0.0,
+                light_spread_core_radius_micrometers: [0.0; 3],
+                light_spread_core_weight: [0.0; 3],
+                light_spread_tail_radius_micrometers: [0.0; 3],
+                light_spread_tail_weight: [0.0; 3],
                 residual_period_numerator: 0,
                 residual_period_denominator: 0,
                 residual_amplitude: 0.0,
@@ -1601,7 +2241,7 @@ mod tests {
                 banding_amount: 0.0,
             };
             assert!(unsafe { screen_device_preset_parameters(index, &mut parameters) });
-            assert_eq!(parameters.abi_version, 1);
+            assert_eq!(parameters.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);
             let profile =
                 unsafe { screen_device_profile_create(&parameters, std::ptr::null_mut()) };
             assert!(!profile.is_null());
@@ -1613,7 +2253,7 @@ mod tests {
     fn cover_glass_catalog_exposes_valid_profiles_through_opaque_handles() {
         assert_eq!(screen_cover_glass_preset_count(), COVER_GLASS_PRESETS.len());
         for index in 0..screen_cover_glass_preset_count() {
-            let mut parameters = ScreenCoverGlassParametersV1 {
+            let mut parameters = ScreenCoverGlassParametersV2 {
                 abi_version: 0,
                 authority: 0,
                 character_strength: 0.0,
@@ -1625,7 +2265,7 @@ mod tests {
                 haze: 0.0,
             };
             assert!(unsafe { screen_cover_glass_preset_parameters(index, &mut parameters) });
-            assert_eq!(parameters.abi_version, 1);
+            assert_eq!(parameters.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);
             let profile =
                 unsafe { screen_cover_glass_profile_create(&parameters, std::ptr::null_mut()) };
             assert!(!profile.is_null());

@@ -182,6 +182,7 @@ pub struct PhysicalPipelineExecutionPlan {
     pub screen_amount: f32,
     pub emission_amount: f32,
     pub subpixel_geometry_amount: f32,
+    pub requested_intermediate: PhysicalIntermediate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -341,7 +342,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
 
     // This stage can promise exact identity at zero because it returns the
     // borrowed coarse raster domain without resampling or float arithmetic.
-    if plan.screen_amount == 0.0 {
+    if plan.screen_amount == 0.0
+        && matches!(
+            plan.requested_intermediate,
+            PhysicalIntermediate::SourceAcesCg | PhysicalIntermediate::DevelopedAcesCg
+        )
+    {
         return Ok(PhysicalPipelineCpuResult {
             width: request.input.width,
             height: request.input.height,
@@ -381,6 +387,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             let mut physical_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut spread_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut continuous_native = LinearRgb::new(0.0, 0.0, 0.0);
+            let mut average_device_code = DeviceRgb::BLACK;
             let mut ideal = [0.0_f32; 4];
             for sy in 0..side {
                 for sx in 0..side {
@@ -479,6 +486,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     continuous_native.r += area.linear_native_emission.r;
                     continuous_native.g += area.linear_native_emission.g;
                     continuous_native.b += area.linear_native_emission.b;
+                    average_device_code.r += area.device_code.r;
+                    average_device_code.g += area.device_code.g;
+                    average_device_code.b += area.device_code.b;
                     let value = sample_placed_acescg_area(
                         source_width,
                         source_height,
@@ -503,6 +513,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             continuous_native.r *= reciprocal;
             continuous_native.g *= reciprocal;
             continuous_native.b *= reciprocal;
+            average_device_code.r *= reciprocal;
+            average_device_code.g *= reciprocal;
+            average_device_code.b *= reciprocal;
             for value in &mut ideal {
                 *value *= reciprocal;
             }
@@ -563,12 +576,24 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
                     + (spread[2] - physical[2]),
             ];
-            output.push([
-                ideal[0] + plan.screen_amount * (staged[0] - ideal[0]),
-                ideal[1] + plan.screen_amount * (staged[1] - ideal[1]),
-                ideal[2] + plan.screen_amount * (staged[2] - ideal[2]),
-                ideal[3],
-            ]);
+            let selected = match plan.requested_intermediate {
+                PhysicalIntermediate::SourceAcesCg => ideal[0..3].try_into().expect("RGB"),
+                PhysicalIntermediate::DeviceSignal => [
+                    average_device_code.r,
+                    average_device_code.g,
+                    average_device_code.b,
+                ],
+                PhysicalIntermediate::PanelEmission => continuous,
+                PhysicalIntermediate::SubpixelRadiance => physical,
+                PhysicalIntermediate::PanelLightSpread => spread,
+                PhysicalIntermediate::DevelopedAcesCg => [
+                    ideal[0] + plan.screen_amount * (staged[0] - ideal[0]),
+                    ideal[1] + plan.screen_amount * (staged[1] - ideal[1]),
+                    ideal[2] + plan.screen_amount * (staged[2] - ideal[2]),
+                ],
+                _ => return Err(ApplicationError::UnsupportedPhysicalIntermediate),
+            };
+            output.push([selected[0], selected[1], selected[2], ideal[3]]);
         }
     }
     Ok(PhysicalPipelineCpuResult {
@@ -4174,6 +4199,7 @@ fn diagnostic_area_signal(
 pub enum ApplicationError {
     InvalidViewportAspect,
     InvalidCharacterStrength,
+    UnsupportedPhysicalIntermediate,
     InvalidPreviewExposure,
     InvalidShutter,
     InvalidSensorReadout,
@@ -4220,6 +4246,8 @@ impl fmt::Display for ApplicationError {
             Self::InvalidCharacterStrength => formatter.write_str(
                 "physical pipeline amounts must be finite and remain in the supported [0, 4] range",
             ),
+            Self::UnsupportedPhysicalIntermediate => formatter
+                .write_str("requested physical intermediate belongs to an unsupported stage"),
             Self::InvalidPreviewExposure => {
                 formatter.write_str("preview exposure EV must be finite")
             }
@@ -5659,6 +5687,7 @@ mod tests {
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         }
     }

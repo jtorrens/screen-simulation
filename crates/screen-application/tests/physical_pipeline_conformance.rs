@@ -1,5 +1,5 @@
 use screen_application::{
-    DeviceSignalRaster, PhysicalPipelineExecutionPlan, PhysicalPipelineInput,
+    DeviceSignalRaster, PhysicalIntermediate, PhysicalPipelineExecutionPlan, PhysicalPipelineInput,
     PhysicalPipelineRequest, RasterPlacement, evaluate_physical_pipeline_cpu_oracle,
 };
 use screen_contracts::{DeviceRgb, Meters};
@@ -44,6 +44,7 @@ fn request(
             screen_amount,
             emission_amount,
             subpixel_geometry_amount: geometry_amount,
+            requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
         },
     }
 }

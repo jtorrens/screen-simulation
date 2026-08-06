@@ -43,6 +43,14 @@ struct DeviceExactTime: Codable, Equatable, Sendable {
     }
 }
 
+struct DevicePanelLightSpread: Codable, Equatable, Sendable {
+    var characterStrength: Double
+    var coreRadiusMicrometers: [Double]
+    var coreWeight: [Double]
+    var tailRadiusMicrometers: [Double]
+    var tailWeight: [Double]
+}
+
 struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var name: String
@@ -64,6 +72,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
     var blue: DeviceChromaticity
     var white: DeviceChromaticity
     var angularEmissionPower: [Double]
+    var panelLightSpread: DevicePanelLightSpread
     var residualFlickerPeriod: DeviceExactTime
     var residualFlickerAmplitude: Double
     var residualFlickerPhase: DeviceExactTime
@@ -114,20 +123,25 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
         guard !defaultCoverGlassPresetID.isEmpty else {
             throw DeviceDomainError.invalidCoverAssociation
         }
-        guard angularEmissionPower.count == 3 else {
+        guard angularEmissionPower.count == 3,
+              panelLightSpread.coreRadiusMicrometers.count == 3,
+              panelLightSpread.coreWeight.count == 3,
+              panelLightSpread.tailRadiusMicrometers.count == 3,
+              panelLightSpread.tailWeight.count == 3
+        else {
             throw DeviceDomainError.invalidAngularResponse
         }
     }
 
-    fileprivate func bridgeParameters() throws -> ScreenDeviceParametersV1 {
+    fileprivate func bridgeParameters() throws -> ScreenDeviceParametersV2 {
         guard nativeWidth <= Int(UInt32.max), nativeHeight <= Int(UInt32.max) else {
             throw DeviceDomainError.invalidPhysicalProfile("La resolución nativa excede el ABI.")
         }
         guard angularEmissionPower.count == 3 else {
             throw DeviceDomainError.invalidAngularResponse
         }
-        var value = ScreenDeviceParametersV1()
-        value.abi_version = 1
+        var value = ScreenDeviceParametersV2()
+        value.abi_version = 2
         value.native_width = UInt32(clamping: nativeWidth)
         value.native_height = UInt32(clamping: nativeHeight)
         value.panel_technology = 0
@@ -149,6 +163,27 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
             Float(angularEmissionPower[1]),
             Float(angularEmissionPower[2])
         )
+        value.light_spread_character_strength = Float(panelLightSpread.characterStrength)
+        value.light_spread_core_radius_micrometers = (
+            Float(panelLightSpread.coreRadiusMicrometers[0]),
+            Float(panelLightSpread.coreRadiusMicrometers[1]),
+            Float(panelLightSpread.coreRadiusMicrometers[2])
+        )
+        value.light_spread_core_weight = (
+            Float(panelLightSpread.coreWeight[0]),
+            Float(panelLightSpread.coreWeight[1]),
+            Float(panelLightSpread.coreWeight[2])
+        )
+        value.light_spread_tail_radius_micrometers = (
+            Float(panelLightSpread.tailRadiusMicrometers[0]),
+            Float(panelLightSpread.tailRadiusMicrometers[1]),
+            Float(panelLightSpread.tailRadiusMicrometers[2])
+        )
+        value.light_spread_tail_weight = (
+            Float(panelLightSpread.tailWeight[0]),
+            Float(panelLightSpread.tailWeight[1]),
+            Float(panelLightSpread.tailWeight[2])
+        )
         value.residual_period_numerator = residualFlickerPeriod.numerator
         value.residual_period_denominator = residualFlickerPeriod.denominator
         value.residual_amplitude = Float(residualFlickerAmplitude)
@@ -167,7 +202,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
 
 struct ResolvedDevice: @unchecked Sendable {
     let definition: DeviceDefinition
-    fileprivate let parameters: ScreenDeviceParametersV1
+    fileprivate let parameters: ScreenDeviceParametersV2
 
     var id: String { definition.id }
 
@@ -182,12 +217,12 @@ struct ResolvedDevice: @unchecked Sendable {
             )
         }
         defer { screen_device_profile_release(profile) }
-        var values = ScreenDeviceEvaluationParametersV1()
+        var values = ScreenDeviceEvaluationParametersV2()
         guard screen_device_profile_evaluation_parameters(profile, &values),
-              values.abi_version == 1
+              values.abi_version == 2
         else {
             throw DeviceDomainError.invalidPhysicalProfile(
-                "El evaluator Rust no ofrece parámetros Metal ABI v1."
+                "El evaluator Rust no ofrece parámetros Metal ABI v2."
             )
         }
         return DeviceMetalEvaluationParameters(
@@ -254,7 +289,7 @@ struct DeviceMetalEvaluationParameters: Equatable, Sendable {
 enum RustDeviceCatalog {
     static func builtIns() throws -> [DeviceDefinition] {
         try (0..<screen_device_preset_count()).map { index in
-            var parameters = ScreenDeviceParametersV1()
+            var parameters = ScreenDeviceParametersV2()
             guard screen_device_preset_parameters(index, &parameters) else {
                 throw DeviceDomainError.invalidCatalog(index)
             }
@@ -299,6 +334,29 @@ enum RustDeviceCatalog {
                     Double(parameters.angular_emission_power.1),
                     Double(parameters.angular_emission_power.2),
                 ],
+                panelLightSpread: .init(
+                    characterStrength: Double(parameters.light_spread_character_strength),
+                    coreRadiusMicrometers: [
+                        Double(parameters.light_spread_core_radius_micrometers.0),
+                        Double(parameters.light_spread_core_radius_micrometers.1),
+                        Double(parameters.light_spread_core_radius_micrometers.2),
+                    ],
+                    coreWeight: [
+                        Double(parameters.light_spread_core_weight.0),
+                        Double(parameters.light_spread_core_weight.1),
+                        Double(parameters.light_spread_core_weight.2),
+                    ],
+                    tailRadiusMicrometers: [
+                        Double(parameters.light_spread_tail_radius_micrometers.0),
+                        Double(parameters.light_spread_tail_radius_micrometers.1),
+                        Double(parameters.light_spread_tail_radius_micrometers.2),
+                    ],
+                    tailWeight: [
+                        Double(parameters.light_spread_tail_weight.0),
+                        Double(parameters.light_spread_tail_weight.1),
+                        Double(parameters.light_spread_tail_weight.2),
+                    ]
+                ),
                 residualFlickerPeriod: .init(
                     numerator: parameters.residual_period_numerator,
                     denominator: parameters.residual_period_denominator

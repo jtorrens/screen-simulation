@@ -93,10 +93,13 @@
       "owner": "native-macos-composition",
       "allowed_local_dependencies": [
         "screen-application",
+        "screen-camera",
         "screen-contracts",
         "screen-cover",
+        "screen-geometry",
         "screen-panel",
-        "screen-platform"
+        "screen-platform",
+        "screen-sensor"
       ]
     },
     {

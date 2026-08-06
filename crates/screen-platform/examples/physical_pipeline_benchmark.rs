@@ -7,7 +7,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         MTLPixelFormat, MTLRegion, MTLStorageMode, MTLTextureType, MTLTextureUsage,
         TextureDescriptor,
     };
-    use screen_application::{PhysicalPipelineExecutionPlan, RasterPlacement};
+    use screen_application::{
+        PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
+    };
     use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile};
     use screen_platform::MetalPhysicalPipeline;
 
@@ -82,6 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 screen_amount: 1.0,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             };
             let mut first_tile = None;
             let started = Instant::now();

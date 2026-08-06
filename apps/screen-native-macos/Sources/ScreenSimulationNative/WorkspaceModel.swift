@@ -821,11 +821,11 @@ enum PhysicalEvaluationAvailabilityError: Error, LocalizedError {
         case .missingSelectedFrame:
             "No hay un fotograma ACEScg seleccionado."
         case .capturePending:
-            "Captura está pendiente del motor físico ABI v1; no se ha simulado."
+            "Captura está pendiente del motor físico ABI v2; no se ha simulado."
         case .artisticScreenPending:
-            "Pantalla >1 está pendiente del motor físico ABI v1; se conserva el último resultado."
+            "Pantalla >1 está pendiente del motor físico ABI v2; se conserva el último resultado."
         case let .sectionPending(stage):
-            "La contribución 0x\(String(stage.id, radix: 16)) está pendiente del motor ABI v1."
+            "La contribución 0x\(String(stage.id, radix: 16)) está pendiente del motor ABI v2."
         }
     }
 }
