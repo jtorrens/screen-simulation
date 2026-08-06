@@ -2,6 +2,14 @@
 
 #![forbid(unsafe_code)]
 
+mod physical_pipeline;
+
+pub use physical_pipeline::{
+    PHYSICAL_STAGE_ORDER, PhysicalIntermediate, PhysicalPipelineInput, PhysicalPipelineRequest,
+    PhysicalPipelineSnapshot, PhysicalStage, PhysicalStageControl,
+    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, SourceAcesCgRaster,
+};
+
 use core::fmt;
 use rayon::prelude::*;
 use screen_camera::{
