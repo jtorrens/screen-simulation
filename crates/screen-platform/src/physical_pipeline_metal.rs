@@ -6,6 +6,7 @@ use metal::{
     MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
 };
 use screen_application::{PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement};
+use screen_cover::EnvironmentPattern;
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
 
 const SHADER_LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native_camera.metallib"));
@@ -28,6 +29,12 @@ struct PhysicalPipelineParams {
     spread_core_weight: [f32; 4],
     spread_tail_radius: [f32; 4],
     spread_tail_weight: [f32; 4],
+    cover_geometry: [f32; 4],
+    cover_absorption_roughness: [f32; 4],
+    cover_haze: [f32; 4],
+    environment_ambient_strength: [f32; 4],
+    environment_key_radius: [f32; 4],
+    environment_direction_rotation: [f32; 4],
 }
 
 pub struct MetalPhysicalPipeline {
@@ -144,6 +151,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::PanelEmission
                 | PhysicalIntermediate::SubpixelRadiance
                 | PhysicalIntermediate::PanelLightSpread
+                | PhysicalIntermediate::CoverEnvironment
                 | PhysicalIntermediate::DevelopedAcesCg
         ) {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
@@ -214,7 +222,11 @@ impl MetalPhysicalPipeline {
                     StripeLayout::Bgr => 1,
                 },
                 plan.requested_intermediate as u32,
-                0,
+                match plan.environment.pattern {
+                    EnvironmentPattern::UniformNeutral => 0,
+                    EnvironmentPattern::StudioSoftboxes => 1,
+                    EnvironmentPattern::CalibrationGrid => 2,
+                },
             ],
             levels: [
                 plan.panel.eotf_gamma,
@@ -261,6 +273,37 @@ impl MetalPhysicalPipeline {
                 plan.panel_light_spread.tail_weight.g,
                 plan.panel_light_spread.tail_weight.b,
                 0.0,
+            ],
+            cover_geometry: [
+                plan.cover.character_strength,
+                plan.cover.thickness_millimeters,
+                plan.cover.refractive_index,
+                plan.cover.anti_reflective_efficiency,
+            ],
+            cover_absorption_roughness: [
+                plan.cover.absorption_per_millimeter.r,
+                plan.cover.absorption_per_millimeter.g,
+                plan.cover.absorption_per_millimeter.b,
+                plan.cover.roughness,
+            ],
+            cover_haze: [plan.cover.haze, 0.0, 0.0, 0.0],
+            environment_ambient_strength: [
+                plan.environment.ambient_radiance.0.r,
+                plan.environment.ambient_radiance.0.g,
+                plan.environment.ambient_radiance.0.b,
+                plan.environment.character_strength,
+            ],
+            environment_key_radius: [
+                plan.environment.key_radiance.0.r,
+                plan.environment.key_radiance.0.g,
+                plan.environment.key_radiance.0.b,
+                plan.environment.key_angular_radius_degrees.to_radians(),
+            ],
+            environment_direction_rotation: [
+                plan.environment.key_direction_local[0],
+                plan.environment.key_direction_local[1],
+                plan.environment.key_direction_local[2],
+                plan.environment.rotation_degrees.to_radians(),
             ],
         };
         params.levels[3] = plan.temporal_emission_gain;
@@ -420,6 +463,8 @@ mod tests {
                 subpixel_geometry_amount: 1.0,
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
+                cover: screen_cover::CoverGlassProfile::NEUTRAL,
+                environment: screen_cover::ProceduralEnvironment::NONE,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         )
@@ -555,6 +600,55 @@ mod tests {
                 .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                 .fold(0.0_f32, f32::max);
             assert!(maximum <= 2.0e-3, "temporal CPU/Metal deviation {maximum}");
+        }
+    }
+
+    #[test]
+    fn cover_and_hdr_environment_match_the_existing_cpu_authority() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for cover in [
+            screen_cover::CoverGlassProfile::NEUTRAL,
+            screen_cover::COVER_GLASS_PRESETS[1].profile,
+            screen_cover::COVER_GLASS_PRESETS[4].profile,
+        ] {
+            for environment in [
+                screen_cover::ProceduralEnvironment::NONE,
+                screen_cover::ENVIRONMENT_PRESETS[0].environment,
+                screen_cover::ENVIRONMENT_PRESETS[1].environment,
+                screen_cover::ENVIRONMENT_PRESETS[2].environment,
+            ] {
+                let (input, mut plan) = fixture(
+                    RasterPlacement::Stretch,
+                    FlatPanelQuality::High,
+                    StripeLayout::Bgr,
+                    0.2,
+                    1.0,
+                );
+                plan.cover = cover;
+                plan.environment = environment;
+                plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
+                let source = texture(&device, input.width, input.height, &input.acescg);
+                let signal_values = input
+                    .device_signal
+                    .pixels
+                    .iter()
+                    .map(|value| [value.r, value.g, value.b, 1.0])
+                    .collect::<Vec<_>>();
+                let signal = texture(&device, input.width, input.height, &signal_values);
+                let cpu =
+                    evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+                        .expect("CPU cover oracle");
+                let gpu = backend
+                    .evaluate(&source, &signal, plan, |_| {}, || false)
+                    .expect("Metal cover result");
+                let maximum = read(&gpu.texture)
+                    .iter()
+                    .zip(&cpu.acescg)
+                    .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                    .fold(0.0_f32, f32::max);
+                assert!(maximum <= 2.0e-3, "cover CPU/Metal deviation {maximum}");
+            }
         }
     }
 
