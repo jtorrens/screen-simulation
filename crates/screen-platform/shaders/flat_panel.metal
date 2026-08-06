@@ -7,6 +7,7 @@ struct FlatPanelParams {
     uint4 semantics;    // placement, stripe layout, reserved, reserved
     float4 levels;      // gamma, black nits, white nits, amount
     float4 geometry;    // black matrix fraction, reserved...
+    float4 strengths;   // screen, emission, subpixel geometry, reserved
     float4 matrix0;
     float4 matrix1;
     float4 matrix2;
@@ -102,6 +103,11 @@ inline float native_channel(
     return linear * (covered_x * covered_y / area) * 3.0f / (active * active);
 }
 
+inline float continuous_channel(float code, constant FlatPanelParams& p) {
+    const float span = p.levels.z - p.levels.y;
+    return p.levels.y + span * sign(code) * pow(abs(code), p.levels.x);
+}
+
 kernel void evaluate_flat_panel(
     texture2d<float, access::read> source_acescg [[texture(0)]],
     texture2d<float, access::read> device_signal [[texture(1)]],
@@ -114,6 +120,7 @@ kernel void evaluate_flat_panel(
     const uint side = p.output_tile.w;
     float4 ideal = 0.0f;
     float3 native = 0.0f;
+    float3 continuous_native = 0.0f;
     for (uint sy = 0; sy < side; ++sy) {
         for (uint sx = 0; sx < side; ++sx) {
             const float2 minimum_uv = (
@@ -129,15 +136,32 @@ kernel void evaluate_flat_panel(
             native.x += native_channel(code.x, 0, device_minimum, device_maximum, p);
             native.y += native_channel(code.y, 1, device_minimum, device_maximum, p);
             native.z += native_channel(code.z, 2, device_minimum, device_maximum, p);
+            continuous_native += float3(
+                continuous_channel(code.x, p),
+                continuous_channel(code.y, p),
+                continuous_channel(code.z, p)
+            );
         }
     }
     const float reciprocal = 1.0f / float(side * side);
     ideal *= reciprocal;
     native *= reciprocal;
+    continuous_native *= reciprocal;
     const float3 physical = float3(
         dot(p.matrix0.xyz, native),
         dot(p.matrix1.xyz, native),
         dot(p.matrix2.xyz, native)
     ) / p.levels.z;
-    output.write(float4(ideal.rgb + p.levels.w * (physical - ideal.rgb), ideal.a), position);
+    const float3 continuous = float3(
+        dot(p.matrix0.xyz, continuous_native),
+        dot(p.matrix1.xyz, continuous_native),
+        dot(p.matrix2.xyz, continuous_native)
+    ) / p.levels.z;
+    const float3 staged = ideal.rgb
+        + p.strengths.y * (continuous - ideal.rgb)
+        + p.strengths.z * (physical - continuous);
+    output.write(
+        float4(ideal.rgb + p.strengths.x * (staged - ideal.rgb), ideal.a),
+        position
+    );
 }
