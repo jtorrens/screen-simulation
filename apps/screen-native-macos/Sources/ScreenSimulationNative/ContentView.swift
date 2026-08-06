@@ -259,6 +259,7 @@ struct ContentView: View {
                     )
                 }
             }
+            .clipped()
             Divider()
             transport
             Divider()
@@ -277,15 +278,21 @@ struct ContentView: View {
 
     private var transport: some View {
         VStack(spacing: 5) {
-            Slider(
-                value: Binding(
-                    get: { Double(model.currentFrame) },
-                    set: { model.seek(toFrame: Int($0.rounded())) }
-                ),
-                in: 0 ... Double(max(1, model.frameCount - 1))
+            NativeTimelineView(
+                frameCount: model.frameCount,
+                frameRate: model.frameRate,
+                currentFrame: model.currentFrame,
+                inFrame: model.inFrame,
+                outFrame: model.outFrame,
+                onSeek: { model.seek(toFrame: $0) },
+                onSetIn: { model.setInFrame($0) },
+                onSetOut: { model.setOutFrame($0) }
             )
+            .frame(height: 58)
             HStack(spacing: 12) {
-                Button("IN", action: model.markIn).help("Marcar IN (I)")
+                Button("[", action: model.markIn)
+                    .help("Marcar entrada (I)")
+                    .accessibilityLabel("Marcar entrada")
                 Button { model.jump(-5) } label: { Image(systemName: "backward.end.fill") }
                 Button { model.step(-1) } label: { Image(systemName: "backward.frame.fill") }
                 Button(action: model.togglePlayback) {
@@ -294,16 +301,42 @@ struct ContentView: View {
                 .keyboardShortcut(.space, modifiers: [])
                 Button { model.step(1) } label: { Image(systemName: "forward.frame.fill") }
                 Button { model.jump(5) } label: { Image(systemName: "forward.end.fill") }
-                Button("OUT", action: model.markOut).help("Marcar OUT (O)")
+                Button("]", action: model.markOut)
+                    .help("Marcar salida (O)")
+                    .accessibilityLabel("Marcar salida")
                 Spacer()
+                Picker("Reproducción", selection: $model.renderRange) {
+                    Text("Todo").tag(StudioRenderRange.all)
+                    Text("Rango").tag(StudioRenderRange.inOut)
+                }
+                .labelsHidden()
+                .frame(width: 82)
+                Toggle("Loop", isOn: $model.loopPlayback)
+                    .toggleStyle(.checkbox)
+                frameField("Entrada", value: Binding(
+                    get: { model.inFrame }, set: { model.setInFrame($0) }
+                ))
+                frameField("Posición", value: Binding(
+                    get: { model.currentFrame }, set: { model.seek(toFrame: $0) }
+                ))
+                frameField("Salida", value: Binding(
+                    get: { model.outFrame }, set: { model.setOutFrame($0) }
+                ))
                 Text(model.timecode).monospacedDigit()
-                Text("F \(model.currentFrame)").monospacedDigit().foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func frameField(_ label: String, value: Binding<Int>) -> some View {
+        TextField(label, value: value, format: .number)
+            .labelsHidden()
+            .frame(width: 54)
+            .monospacedDigit()
+            .accessibilityLabel(label)
     }
 }
 

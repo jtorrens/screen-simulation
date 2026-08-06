@@ -41,6 +41,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var inFrame = 0
     @Published var outFrame = 0
     @Published var renderRange = StudioRenderRange.all
+    @Published var loopPlayback = false
     @Published var outputFormat = StudioOutputFormat.proRes4444
     @Published var renderPreset = StudioRenderPreset.builtIns[0]
     @Published var peakNits = 100.0
@@ -276,6 +277,10 @@ final class WorkspaceModel: ObservableObject {
 
     func play() {
         guard frameCount > 1 else { return }
+        if !activeFrameRange.contains(currentFrame) || currentFrame >= activeFrameRange.upperBound {
+            restartPlayback(at: activeFrameRange.lowerBound)
+            return
+        }
         isPlaying = true
         if sourceIsPattern { return }
         session.play()
@@ -304,8 +309,14 @@ final class WorkspaceModel: ObservableObject {
 
     func step(_ delta: Int) { seek(toFrame: currentFrame + delta) }
     func jump(_ seconds: Double) { seek(toFrame: currentFrame + Int(seconds * frameRate)) }
-    func markIn() { inFrame = currentFrame; if outFrame < inFrame { outFrame = inFrame } }
-    func markOut() { outFrame = currentFrame; if inFrame > outFrame { inFrame = outFrame } }
+    func markIn() { setInFrame(currentFrame) }
+    func markOut() { setOutFrame(currentFrame) }
+    func setInFrame(_ frame: Int) {
+        inFrame = min(max(0, frame), outFrame)
+    }
+    func setOutFrame(_ frame: Int) {
+        outFrame = max(inFrame, min(max(0, frame), max(0, frameCount - 1)))
+    }
 
     func resetView() { zoom = 1; pan = .zero }
     func zoomBy(_ factor: Double) { zoom = min(16, max(0.1, zoom * factor)) }
@@ -409,14 +420,42 @@ final class WorkspaceModel: ObservableObject {
             decodeToPreviewMilliseconds = metalDisplay.lastCompletedEndToEndMilliseconds
         }
         guard isPlaying else { return }
+        if currentFrame >= activeFrameRange.upperBound {
+            if loopPlayback {
+                restartPlayback(at: activeFrameRange.lowerBound)
+            } else {
+                pause()
+            }
+            return
+        }
         if sourceIsPattern {
             let next = currentFrame + 1
-            if next >= frameCount { pause(); return }
             currentFrame = next
             renderPattern()
             return
         }
         renderCurrentMediaFrame()
+    }
+
+    private func restartPlayback(at frame: Int) {
+        currentFrame = frame
+        if sourceIsPattern {
+            isPlaying = true
+            renderPattern()
+            return
+        }
+        Task {
+            do {
+                let time = session.time(forFrame: frame)
+                try await session.seek(to: time)
+                try present(try await session.exactSample(at: time))
+                session.play()
+                isPlaying = true
+            } catch {
+                pause()
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func rebuildCurrent() {
