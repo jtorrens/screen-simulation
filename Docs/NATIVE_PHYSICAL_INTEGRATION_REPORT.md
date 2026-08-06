@@ -4,85 +4,120 @@ Date: 2026-08-06. Host: Apple M3 Ultra, macOS 15.6.
 
 ## Adopted authority
 
-The native shell applies the complete owner range
-`73a5c72d937bb88b443e7ca90d29716fbc6f6557..3c78b6731f6ecb3dd0f817dcc206bd824a7156ed`
-in order. The only live product entry point is
-`screen_physical_frame_submit` with `SCREEN_PHYSICAL_FRAME_ABI_VERSION 2`.
-The Swift consumer materializes and retains one complete immutable Device and
-pipeline snapshot per job, then releases every opaque handle with the job.
+The native shell contains the complete authorized physical range
+`c852ca86573b73a7b72c75e457e6f2b5d1b09950^..de2e04d7de0a7db6bc9bef74431be107756e036d`.
+The sole product entry point is `screen_physical_frame_submit` with
+`SCREEN_PHYSICAL_FRAME_ABI_VERSION 2`. There is no ABI v1 adapter, Swift
+physics, CPU product fallback or alternate shader path.
 
-StudioColor produces both Source ACEScg and the nonlinear Device Signal. The
-physical result remains outside preview, DeckLink and render color policy. When
-the Device Signal intermediate is inspected, its exact matching inverse display
-processor runs in StudioColor before the normal preview ODT/ColorSync path; it
-is never treated as linear ACEScg.
+Swift creates and retains an immutable v2 snapshot for each resolved state and
+releases its opaque handles with the job. StudioColor supplies typed Source
+ACEScg and nonlinear Device Signal textures plus explicit RasterPlacement.
+The selected-frame host creates an explicit timed sample and constant
+position/quaternion pose tracks; diagnostics report `STATIC_INPUT`. This is not
+presented as animated motion, while the same contract is ready for future
+timeline samples and tracks.
 
-Implemented product stages are Emission, Subpixel Geometry and Panel Light
-Spread. Temporal, Cover, Environment and all Capture stages remain visible but
-disabled. A nonzero API request for any unsupported stage is rejected at the
-coarse submission boundary.
+The authoritative stage order is:
+
+`Emission/Subpixel/Panel Light Spread -> Temporal -> Glass/Environment -> Geometry/Lens -> Global or Rolling Shutter/Motion -> Sensor/CFA/Noise -> RAW/Demosaic/WB/Develop -> ACEScg`.
+
+Preview ODT/ColorSync, DeckLink and render output remain outside the physical
+engine. Capture has no continuous master. CFA and Develop are discrete enables;
+Shutter and Noise retain their continuous amounts.
+
+## Connected control and model matrix
+
+| UI card | Physical model | Control semantics |
+|---|---|---|
+| Emission | EOTF, luminance, black, color/angular response | Continuous amount 0-4 |
+| Subpixel geometry | RGB/BGR, pitch, fill and black matrix | Continuous amount 0-4 |
+| Panel Light Spread | Inter-pixel/subpixel optical contamination | Continuous amount 0-4; not lens bloom, halation, glass or sensor |
+| Temporal | Flicker and analytic creative banding | Continuous amount 0-4 |
+| Glass | Transmission, Fresnel, roughness and AR | Continuous amount 0-2, matching the authoritative safe limit |
+| Environment | Reflected synthetic HDR environment | Continuous amount 0-4 |
+| Camera-screen geometry | Physical poses and panel/camera geometry | Continuous amount 0-4 |
+| Lens | Focus, aperture, distortion, CA, vignette and PSF | Continuous amount 0-4 |
+| Shutter/Motion | Timed global or rolling shutter integration | Continuous shutter amount 0-4; static timed input in this phase |
+| Sensor/CFA | Bayer sampling, well, clipping and ADC | CFA discrete enable |
+| Noise | Deterministic sensor noise | Continuous amount 0-4 |
+| RAW/Develop | Mosaic, demosaic, WB and ACEScg development | Develop discrete enable |
+
+Continuous UI controls have a clean track, internal step 0.05, an exact detent
+at physical 1, numeric entry, and 0/1/>1 bypass/physical/artistic semantics.
+Each model owns its interpolation rather than a generic RGB mix.
 
 ## Automated validation
 
-- Swift: 37 tests passed, including six supported intermediates, exact amount-0
-  texture identity, RGB/BGR, four placements, black matrix, spread 0/1/2.5,
-  matching cancellation and rejection of unsupported active stages.
-- Rust workspace: 181 tests passed, including five physical conformance tests.
+- Swift: **40 tests passed**. Coverage includes all eleven intermediates,
+  `STATIC_INPUT`, twelve ordered diagnostics, honest fused timings, exact source
+  values at amount 0, RGB/BGR, four placements, alpha, spread 0/1/2.5, every
+  continuous stage at 0/1/>1, discrete CFA/Develop, Native cancellation and
+  anchored pan/zoom mathematics.
+- Rust workspace: **199 tests passed**.
 - `cargo fmt --all -- --check` passed.
 - `cargo clippy --workspace --all-targets -- -D warnings` passed. Cargo reports
   only the upstream future-incompatibility notice for `block 0.1.6`.
 - Architecture ownership, diff check, ABI-v2 source/header/symbol gate and
-  native no-FFmpeg graph/Mach-O/rpath/resource gate passed.
-- The native dependency edge is
-  `screen-native-bridge -> screen-platform(flat-panel-metal)` with
-  default features disabled. AVFoundation, VideoToolbox and ImageIO remain the
-  sole native I/O route.
-- Release bundle passed strict deep codesign verification with an ad-hoc
-  signature. Executable SHA-256:
-  `cbb2df0073efa9d1682a3569798c0e6cb2e18db99f30161ed1799851a6c3f500`.
+  native no-FFmpeg graph/Mach-O/rpath/symbol/resource gates passed.
+- The native edge is
+  `screen-native-bridge -> screen-platform(flat-panel-metal)` with default
+  features disabled. AVFoundation, VideoToolbox and ImageIO remain the only
+  native I/O route.
+- Release packaging and strict deep ad-hoc codesign verification passed.
+  Executable SHA-256:
+  `37ac34126e5fcd5fd6eaf7cc0ad8a5d0fe84496606b8b5b349f4db4cfc1c9149`.
 
 ## Measured Release performance and memory
 
 Command: `cargo run --release -p screen-platform --example physical_pipeline_benchmark`.
-Input is one 3840×2160 RGBA32Float source. Memory is exact allocated texture
-storage, not RSS and not an extrapolation.
+Input is one 3840x2160 RGBA32Float source. Memory is accounted input plus final
+output texture storage, not process RSS. Setup took 1.819 ms.
 
-| Device | Quality | Output | First tile | Total | Peak texture bytes |
+| Device | Quality | Output | First preview/tile | Total | Accounted texture bytes |
 |---|---:|---:|---:|---:|---:|
-| Phone 4.7 Retina | Draft | 360×640 | 18.540 ms | 49.796 ms | 269,107,200 |
-| Phone 4.7 Retina | Medium | 960×1708 | 1.915 ms | 30.659 ms | 291,655,680 |
-| Phone 4.7 Retina | High | 1920×3415 | 5.906 ms | 124.925 ms | 370,329,600 |
-| Phone 4.7 Retina | Native | 2250×4002 | 5.465 ms | 30.122 ms | 409,492,800 |
-| MacBook Pro Retina 14 | Draft | 360×234 | 8.160 ms | 30.679 ms | 266,768,640 |
-| MacBook Pro Retina 14 | Medium | 960×623 | 2.738 ms | 23.595 ms | 274,990,080 |
-| MacBook Pro Retina 14 | High | 1920×1247 | 3.771 ms | 57.357 ms | 303,728,640 |
-| MacBook Pro Retina 14 | Native | 9072×5892 | 26.961 ms | 99.926 ms | 1,120,656,384 |
-| ASUS ProArt PA329CV | Draft | 360×203 | 12.108 ms | 34.685 ms | 266,590,080 |
-| ASUS ProArt PA329CV | Medium | 960×540 | 2.899 ms | 21.937 ms | 273,715,200 |
-| ASUS ProArt PA329CV | High | 1920×1080 | 4.323 ms | 54.385 ms | 298,598,400 |
-| ASUS ProArt PA329CV | Native | 11520×6480 | 36.647 ms | 122.794 ms | 1,459,814,400 |
+| Phone 4.7 Retina | Draft | 360x640 | 16.937 ms | 45.795 ms | 269,107,200 |
+| Phone 4.7 Retina | Medium | 960x1708 | 2.090 ms | 36.901 ms | 291,655,680 |
+| Phone 4.7 Retina | High | 1920x3415 | 7.322 ms | 183.106 ms | 370,329,600 |
+| Phone 4.7 Retina | Native | 2250x4002 | 6.152 ms | 39.650 ms | 409,492,800 |
+| MacBook Pro Retina 14 | Draft | 360x234 | 9.125 ms | 34.006 ms | 266,768,640 |
+| MacBook Pro Retina 14 | Medium | 960x623 | 3.036 ms | 26.631 ms | 274,990,080 |
+| MacBook Pro Retina 14 | High | 1920x1247 | 4.739 ms | 77.532 ms | 303,728,640 |
+| MacBook Pro Retina 14 | Native | 9072x5892 | 26.810 ms | 124.882 ms | 1,120,656,384 |
+| ASUS ProArt PA329CV | Draft | 360x203 | 12.611 ms | 36.668 ms | 266,590,080 |
+| ASUS ProArt PA329CV | Medium | 960x540 | 3.269 ms | 25.399 ms | 273,715,200 |
+| ASUS ProArt PA329CV | High | 1920x1080 | 4.980 ms | 75.181 ms | 298,598,400 |
+| ASUS ProArt PA329CV | Native | 11520x6480 | 37.431 ms | 153.964 ms | 1,459,814,400 |
+
+This owner benchmark intentionally isolates the screen lattice with capture
+disabled. Capture stages are covered by exact conformance tests and fused-group
+timing diagnostics, but a separate full-capture UHD benchmark is not claimed.
 
 ## Display and visual QA status
 
-The active display reported by AppKit/ColorSync is ASUS PA329CV, 3840×2160,
-scale 1, EDR 1.0, with profile
+The active display previously reported by AppKit/ColorSync is ASUS PA329CV,
+3840x2160, scale 1, EDR 1.0, profile
 `/Library/ColorSync/Profiles/Displays/ASUS PA329CV-F3C58FD7-6A52-4D86-B8A3-255A0F791CB0.icc`.
 
-Manual visual QA is not closed. The desktop capture returned a fully black
-frame and the locked/inaccessible window server exposed no application window,
-so no visual claim is inferred from automated launch, tests or signatures.
-Review the signed bundle manually with this checklist:
+Automated launch leaves the process alive, but the current WindowServer session
+returns no application window and desktop capture is entirely black. Therefore
+manual visual QA is explicitly **pending**, and no invalid black screenshot is
+published as evidence.
 
-1. Frequency/moire and editorial patterns in Fit, Fill/Crop, Stretch and 1:1.
-2. RGB and BGR presets, black-matrix/fill changes and alpha edges.
-3. Emission, Subpixel and Spread at 0, 1 and greater than 1; sliders have no
-   ticks, step by 0.05 and detent exactly at 1.
-4. Source, Device, Emission, Subpixel, Spread and Developed diagnostics in
-   order; Device must retain the expected appearance through its inverse.
-5. Draft, Medium, High and Native retain framing; Native keeps the prior result
-   while stale, reports progress and cancels.
-6. Neutral viewport outside the device surface, no preview border/elevation,
-   resizable inspector, aligned label/slider/numeric columns and accessibility.
+Single human checklist for the next review:
+
+1. Editorial, frequency/moire and color patterns in Fit, Fill/Crop, Stretch and
+   1:1 at Draft, Medium, High and Native; framing must remain identical.
+2. RGB and BGR, fill/black matrix, alpha and Panel Light Spread at 0, 1 and >1.
+3. Every continuous amount at 0, 1 and >1; CFA and Develop disabled/enabled.
+4. All intermediates in order plus twelve diagnostics, fused group timings and
+   the `STATIC_INPUT` marker.
+5. Native progress, cancel and stale state while retaining the prior result.
+6. In 1:1, drag from the original point beyond the viewport and release; verify
+   final clamp, closed-hand cursor and zoom anchored under the cursor.
+7. Neutral device background without preview border/elevation, resizable
+   inspector, aligned label/slider/numeric columns, clean slider tracks,
+   tooltips, keyboard navigation and accessibility labels.
 
 No hardware DeckLink result is claimed. Enumeration/error behavior and build
 contract are tested without simulating success.

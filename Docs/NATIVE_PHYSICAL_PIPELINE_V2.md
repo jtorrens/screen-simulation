@@ -170,19 +170,17 @@ last five rows are explicitly future or outside the physical engine.
 
 ## Swift adoption boundary and QA
 
-This physical branch contains the old full-platform Swift package graph. Its
-final executable/test link is not a valid gate here because that graph expects
-the historical FFmpeg/libav linkage. This migration deliberately does not add,
-restore or expose FFmpeg/libav to make it link. Header/C target and minimum Swift
-type compilation are the only local bridge gates. Final adoption must apply the
-physical commit range onto `feature/native-macos-shell`, preserving its
-`flat-panel-metal` feature isolation and approved no-FFmpeg gate; it must not
-enable Rust default/full-platform features.
+The complete range is adopted by `feature/native-macos-shell`. Its isolated
+native graph uses `screen-platform(flat-panel-metal)` with defaults disabled;
+FFmpeg/libav is neither linked nor restored. The native executable, all Swift
+tests, ABI-v2 gate and graph/Mach-O/rpath/symbol/resource no-FFmpeg gate pass.
+AVFoundation, VideoToolbox and ImageIO remain the only native I/O route.
 
-Local evidence: C header syntax, `swift build --target ScreenPhysicalBridge`
-and `swift build --target ScreenSimulationNative` pass. `swift test` reaches the
-final link and fails on unresolved historical `av*`/`sws*` symbols from this
-branch's old static-library graph. That failure is recorded, not repaired here.
+The Swift host constructs explicit timed input and constant position/quaternion
+tracks for the selected static frame, owns resolved immutable snapshots and
+opaque-handle lifetimes, and does not own or reproduce physical calculations.
+Full adoption evidence and the outstanding manual visual review are recorded in
+`Docs/NATIVE_PHYSICAL_INTEGRATION_REPORT.md`.
 
 Unified visual/functional QA for adoption:
 

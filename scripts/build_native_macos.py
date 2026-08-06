@@ -17,7 +17,6 @@ BUILD = PACKAGE / ".build" / "arm64-apple-macosx" / "release"
 BUNDLE = ROOT / "dist" / "Screen Simulation Native.app"
 EXECUTABLE = BUILD / "ScreenSimulationNative"
 RESOURCE_BUNDLE = BUILD / "StudioColor_StudioColor.bundle"
-APP_RESOURCE_BUNDLE = BUILD / "ScreenSimulationNative_ScreenSimulationNative.bundle"
 CONFIG = (
     ROOT
     / "packages/StudioColor/Sources/StudioColor/Resources"
@@ -62,7 +61,6 @@ def main() -> int:
     resources.mkdir(parents=True)
     shutil.copy2(EXECUTABLE, macos / "ScreenSimulationNative")
     shutil.copytree(RESOURCE_BUNDLE, resources / RESOURCE_BUNDLE.name)
-    shutil.copytree(APP_RESOURCE_BUNDLE, resources / APP_RESOURCE_BUNDLE.name)
     info = {
         "CFBundleDevelopmentRegion": "en",
         "CFBundleDisplayName": "SCREEN-SIMULATION",
