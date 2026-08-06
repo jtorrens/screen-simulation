@@ -14,9 +14,11 @@ enum NativeTheme {
 
 struct ContentView: View {
     enum LibraryDeletion: String {
+        case pattern = "patrón"
         case testImage = "imagen de test"
         case renderPreset = "preset de render"
         case device = "device preset"
+        case coverGlass = "preset de Cover Glass"
     }
     enum WorkspacePage: String, CaseIterable, Identifiable {
         case main = "Principal"
@@ -89,7 +91,7 @@ struct ContentView: View {
         .onAppear {
             if model.resolvedDevice == nil,
                let first = library.document.devices.first {
-                model.selectDevice(first, amount: page == .device ? 1 : 0)
+                model.selectDevice(first.value, amount: page == .device ? 1 : 0)
             }
         }
         .onChange(of: page) { _, destination in
@@ -113,9 +115,11 @@ struct ContentView: View {
         ) {
             Button("Eliminar", role: .destructive) {
                 switch pendingLibraryDeletion {
+                case .pattern: library.removeSelectedPattern()
                 case .testImage: library.removeSelectedImage()
                 case .renderPreset: library.removeSelectedPreset()
                 case .device: library.removeSelectedDevice()
+                case .coverGlass: library.removeSelectedCoverGlass()
                 case nil: break
                 }
                 pendingLibraryDeletion = nil
@@ -176,7 +180,7 @@ struct ContentView: View {
                                 guard let device = library.document.devices.first(
                                     where: { $0.id == id }
                                 ) else { return }
-                                model.selectDevice(device, amount: 1)
+                                model.selectDevice(device.value, amount: 1)
                             }
                         )
                     ) {
@@ -409,9 +413,7 @@ struct ContentView: View {
                 )
             } else {
                 TabView {
-                    List(SyntheticPattern.allCases) { pattern in
-                        Label(pattern.label, systemImage: "camera.filters")
-                    }
+                    patternLibrary
                     .tabItem { Label("Patrones", systemImage: "camera.filters") }
 
                     testImageLibrary
@@ -422,6 +424,9 @@ struct ContentView: View {
 
                     deviceLibrary
                         .tabItem { Label("Devices", systemImage: "display") }
+
+                    coverGlassLibrary
+                        .tabItem { Label("Cover Glass", systemImage: "square.3.layers.3d") }
                 }
             }
         }
@@ -432,14 +437,29 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 List(selection: $library.selectedImageID) {
                     ForEach(library.document.testImages) { image in
-                        Text(image.name).tag(image.id)
+                        HStack {
+                            Text(image.name)
+                            Spacer()
+                            if image.isLocked { Image(systemName: "lock.fill") }
+                        }
+                        .tag(image.id)
                     }
                 }
                 HStack {
                     Button(action: library.addTestImage) { Image(systemName: "plus") }
                         .help("Añadir imagen PNG o EXR")
+                    Button(action: library.duplicateSelectedImage) {
+                        Image(systemName: "plus.square.on.square")
+                    }
+                    .disabled(library.selectedImageID == nil)
+                    .help("Duplicar imagen")
+                    Button(action: library.unlockSelectedImage) {
+                        Image(systemName: "lock.open")
+                    }
+                    .disabled(library.selectedImageItem?.isLocked != true)
+                    .help("Desbloquear imagen")
                     Button { pendingLibraryDeletion = .testImage } label: { Image(systemName: "trash") }
-                        .disabled(library.selectedImageID == nil)
+                        .disabled(library.selectedImageItem?.isLocked != false)
                         .help("Eliminar imagen seleccionada")
                     Spacer()
                 }
@@ -484,8 +504,78 @@ struct ContentView: View {
                     }
                 }
                 .formStyle(.grouped)
+                .disabled(library.selectedImageItem?.isLocked == true)
             } else {
                 ContentUnavailableView("Sin imagen", systemImage: "photo.badge.plus")
+            }
+        }
+    }
+
+    private var patternLibrary: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedPatternID) {
+                    ForEach(library.document.patterns) { pattern in
+                        HStack {
+                            Text(pattern.name)
+                            Spacer()
+                            if pattern.isLocked { Image(systemName: "lock.fill") }
+                        }
+                        .tag(pattern.id)
+                    }
+                }
+                HStack {
+                    Button(action: library.addPattern) { Image(systemName: "plus") }
+                        .help("Crear patrón global")
+                    Button(action: library.duplicateSelectedPattern) {
+                        Image(systemName: "plus.square.on.square")
+                    }
+                    .disabled(library.selectedPatternID == nil)
+                    .help("Duplicar patrón")
+                    Button(action: library.unlockSelectedPattern) {
+                        Image(systemName: "lock.open")
+                    }
+                    .disabled(library.selectedPatternItem?.isLocked != true)
+                    .help("Desbloquear patrón")
+                    Button { pendingLibraryDeletion = .pattern } label: {
+                        Image(systemName: "trash")
+                    }
+                    .disabled(library.selectedPatternItem?.isLocked != false)
+                    .help("Eliminar patrón")
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(8)
+            }
+            .frame(minWidth: 220, idealWidth: 280)
+
+            if let item = library.selectedPatternItem {
+                Form {
+                    Section("Patrón") {
+                        TextField("Nombre", text: Binding(
+                            get: { item.name },
+                            set: { value in
+                                library.updateSelectedPattern { $0.name = value }
+                            }
+                        ))
+                        Picker("Fuente canónica", selection: Binding(
+                            get: { item.pattern },
+                            set: { value in
+                                library.updateSelectedPattern { $0.pattern = value }
+                            }
+                        )) {
+                            ForEach(SyntheticPattern.allCases) {
+                                Text($0.label).tag($0)
+                            }
+                        }
+                        LabeledContent("ID estable", value: item.id)
+                            .textSelection(.enabled)
+                    }
+                }
+                .formStyle(.grouped)
+                .disabled(item.isLocked)
+            } else {
+                ContentUnavailableView("Sin patrón", systemImage: "camera.filters")
             }
         }
     }
@@ -496,7 +586,11 @@ struct ContentView: View {
                 List(selection: $library.selectedPresetID) {
                     ForEach(library.document.renderPresets) { preset in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(preset.name)
+                            HStack {
+                                Text(preset.name)
+                                Spacer()
+                                if preset.isLocked { Image(systemName: "lock.fill") }
+                            }
                             Text("\(preset.pipeline.rawValue) · \(preset.target.rawValue)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -512,10 +606,15 @@ struct ContentView: View {
                     }
                     .disabled(library.selectedPresetID == nil)
                     .help("Duplicar preset")
+                    Button(action: library.unlockSelectedPreset) {
+                        Image(systemName: "lock.open")
+                    }
+                    .disabled(library.selectedPresetItem?.isLocked != true)
+                    .help("Desbloquear preset")
                     Button { pendingLibraryDeletion = .renderPreset } label: {
                         Image(systemName: "trash")
                     }
-                    .disabled(library.selectedPresetID == nil)
+                    .disabled(library.selectedPresetItem?.isLocked != false)
                     .help("Eliminar preset")
                     Spacer()
                 }
@@ -600,6 +699,7 @@ struct ContentView: View {
                     }
                 }
                 .formStyle(.grouped)
+                .disabled(library.selectedPresetItem?.isLocked == true)
             } else {
                 ContentUnavailableView("Sin preset", systemImage: "slider.horizontal.3")
             }
@@ -612,7 +712,11 @@ struct ContentView: View {
                 List(selection: $library.selectedDeviceID) {
                     ForEach(library.document.devices) { device in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(device.name)
+                            HStack {
+                                Text(device.name)
+                                Spacer()
+                                if device.isLocked { Image(systemName: "lock.fill") }
+                            }
                             Text(device.category.rawValue)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -628,10 +732,15 @@ struct ContentView: View {
                     }
                     .disabled(library.selectedDeviceID == nil)
                     .help("Duplicar device")
+                    Button(action: library.unlockSelectedDevice) {
+                        Image(systemName: "lock.open")
+                    }
+                    .disabled(library.selectedDeviceItem?.isLocked != true)
+                    .help("Desbloquear device")
                     Button { pendingLibraryDeletion = .device } label: {
                         Image(systemName: "trash")
                     }
-                    .disabled(library.selectedDeviceID == nil)
+                    .disabled(library.selectedDeviceItem?.isLocked != false)
                     .help("Eliminar device")
                     Spacer()
                 }
@@ -642,10 +751,142 @@ struct ContentView: View {
 
             if let device = library.selectedDevice {
                 deviceEditor(device)
+                    .disabled(library.selectedDeviceItem?.isLocked == true)
             } else {
                 ContentUnavailableView("Sin device", systemImage: "display.slash")
             }
         }
+    }
+
+    private var coverGlassLibrary: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedCoverGlassID) {
+                    ForEach(library.document.coverGlasses) { cover in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(cover.name)
+                                Spacer()
+                                if cover.isLocked { Image(systemName: "lock.fill") }
+                            }
+                            Text(cover.authority.rawValue)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(cover.id)
+                    }
+                }
+                HStack {
+                    Button(action: library.addCoverGlass) { Image(systemName: "plus") }
+                        .help("Crear Cover Glass global")
+                    Button(action: library.duplicateSelectedCoverGlass) {
+                        Image(systemName: "plus.square.on.square")
+                    }
+                    .disabled(library.selectedCoverGlassID == nil)
+                    .help("Duplicar Cover Glass")
+                    Button(action: library.unlockSelectedCoverGlass) {
+                        Image(systemName: "lock.open")
+                    }
+                    .disabled(library.selectedCoverGlassItem?.isLocked != true)
+                    .help("Desbloquear Cover Glass")
+                    Button { pendingLibraryDeletion = .coverGlass } label: {
+                        Image(systemName: "trash")
+                    }
+                    .disabled(library.selectedCoverGlassItem?.isLocked != false)
+                    .help("Eliminar Cover Glass")
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(8)
+            }
+            .frame(minWidth: 220, idealWidth: 280)
+
+            if let cover = library.selectedCoverGlass {
+                coverGlassEditor(cover)
+                    .disabled(library.selectedCoverGlassItem?.isLocked == true)
+            } else {
+                ContentUnavailableView(
+                    "Sin Cover Glass",
+                    systemImage: "square.3.layers.3d"
+                )
+            }
+        }
+    }
+
+    private func coverGlassEditor(_ cover: CoverGlassDefinition) -> some View {
+        Form {
+            Section("Identidad") {
+                TextField("Nombre", text: Binding(
+                    get: { cover.name },
+                    set: { value in
+                        library.updateSelectedCoverGlass { $0.name = value }
+                    }
+                ))
+                Picker("Autoridad", selection: Binding(
+                    get: { cover.authority },
+                    set: { value in
+                        library.updateSelectedCoverGlass { $0.authority = value }
+                    }
+                )) {
+                    ForEach(CoverGlassAuthority.allCases) {
+                        Text($0.rawValue).tag($0)
+                    }
+                }
+                LabeledContent("ID estable", value: cover.id)
+                    .textSelection(.enabled)
+            }
+            Section("Óptica") {
+                coverGlassField("Cantidad", value: cover.characterStrength) {
+                    $0.characterStrength = $1
+                }
+                coverGlassField("Espesor (mm)", value: cover.thicknessMillimeters) {
+                    $0.thicknessMillimeters = $1
+                }
+                coverGlassField("Índice de refracción", value: cover.refractiveIndex) {
+                    $0.refractiveIndex = $1
+                }
+                coverGlassField("Eficiencia antirreflejo", value: cover.antiReflectiveEfficiency) {
+                    $0.antiReflectiveEfficiency = $1
+                }
+                coverGlassField("Rugosidad", value: cover.roughness) {
+                    $0.roughness = $1
+                }
+                coverGlassField("Haze", value: cover.haze) {
+                    $0.haze = $1
+                }
+            }
+            Section("Absorción por milímetro") {
+                ForEach(Array(["R", "G", "B"].enumerated()), id: \.offset) { channel in
+                    TextField(channel.element, value: Binding(
+                        get: { cover.absorptionPerMillimeter[channel.offset] },
+                        set: { value in
+                            library.updateSelectedCoverGlass {
+                                $0.absorptionPerMillimeter[channel.offset] = value
+                            }
+                        }
+                    ), format: .number)
+                }
+            }
+            if let validation = library.coverGlassValidationMessage {
+                Section("Validación") {
+                    Text(validation).foregroundStyle(.red)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func coverGlassField(
+        _ label: String,
+        value: Double,
+        update: @escaping (inout CoverGlassDefinition, Double) -> Void
+    ) -> some View {
+        TextField(label, value: Binding(
+            get: { value },
+            set: { newValue in
+                library.updateSelectedCoverGlass { update(&$0, newValue) }
+            }
+        ), format: .number)
     }
 
     private func updatePresetPipeline(_ pipeline: StudioRenderPipeline) {
@@ -844,14 +1085,18 @@ struct ContentView: View {
             }
 
             Section("Asociación") {
-                TextField("Cover glass predeterminado", text: Binding(
+                Picker("Cover Glass predeterminado", selection: Binding(
                     get: { device.defaultCoverGlassPresetID },
                     set: { value in
                         library.updateSelectedDevice {
                             $0.defaultCoverGlassPresetID = value
                         }
                     }
-                ))
+                )) {
+                    ForEach(library.document.coverGlasses) { cover in
+                        Text(cover.name).tag(cover.id)
+                    }
+                }
             }
 
             if let validation = library.deviceValidationMessage {
@@ -884,7 +1129,7 @@ struct ContentView: View {
     }
 
     private var selectedTestImage: GlobalTestImage? {
-        library.document.testImages.first { $0.id == library.selectedImageID }
+        library.selectedImageItem?.value
     }
 
     private var selectedGlobalPreset: StudioRenderPreset? {
@@ -926,10 +1171,26 @@ struct ContentView: View {
             }
             Section("Patrones sintéticos") {
                 Picker("Patrón", selection: Binding(
-                    get: { model.selectedPattern },
-                    set: { model.choosePattern($0, undoManager: undoManager) }
+                    get: {
+                        if let selected = library.selectedPatternItem,
+                           selected.pattern == model.selectedPattern {
+                            return selected.id
+                        }
+                        return library.document.patterns.first {
+                            $0.pattern == model.selectedPattern
+                        }?.id ?? ""
+                    },
+                    set: { id in
+                        guard let item = library.document.patterns.first(
+                            where: { $0.id == id }
+                        ) else { return }
+                        library.selectedPatternID = id
+                        model.choosePattern(item.pattern, undoManager: undoManager)
+                    }
                 )) {
-                    ForEach(SyntheticPattern.allCases) { Text($0.label).tag($0) }
+                    ForEach(library.document.patterns) {
+                        Text($0.name).tag($0.id)
+                    }
                 }
             }
         }
