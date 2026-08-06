@@ -35,3 +35,73 @@ import Testing
     #expect(throws: GlobalLibraryError.self) { try store.load() }
     #expect(try Data(contentsOf: url) == bytes)
 }
+
+@Test func schemaOneMigratesAtomicallyAndSeedsRustDevicesOnce() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-global-library-migration-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let url = root.appendingPathComponent("library.json")
+    try Data(
+        "{\"schemaVersion\":1,\"testImages\":[],\"renderPresets\":[]}".utf8
+    ).write(to: url)
+    let store = try GlobalLibraryStore(documentURL: url)
+    var migrated = try store.load()
+    #expect(migrated.schemaVersion == 2)
+    #expect(migrated.devices.count == 9)
+
+    migrated.devices.removeFirst()
+    try store.save(migrated)
+    let reopened = try store.load()
+    #expect(reopened.devices.count == 8)
+    #expect(reopened == migrated)
+}
+
+@Test func failedMigrationLeavesTheOriginalEntityUntouched() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-global-library-bad-migration-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let url = root.appendingPathComponent("library.json")
+    let bytes = Data(
+        "{\"schemaVersion\":1,\"testImages\":[],\"renderPresets\":[{}]}".utf8
+    )
+    try bytes.write(to: url)
+    let store = try GlobalLibraryStore(documentURL: url)
+    #expect(throws: Error.self) { try store.load() }
+    #expect(try Data(contentsOf: url) == bytes)
+}
+
+@Test @MainActor func deviceLibraryCRUDPersistsNormalEditableSeedEntries() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-device-crud-\(UUID().uuidString)")
+    let store = try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("library.json")
+    )
+    let controller = GlobalLibraryController(store: store)
+    #expect(controller.document.devices.count == 9)
+    let originalID = try #require(controller.document.devices.first?.id)
+    controller.selectedDeviceID = originalID
+    controller.duplicateSelectedDevice()
+    let duplicateID = try #require(controller.selectedDeviceID)
+    #expect(duplicateID != originalID)
+    #expect(controller.document.devices.count == 10)
+    controller.updateSelectedDevice { $0.name = "Device usuario" }
+    #expect(controller.selectedDevice?.name == "Device usuario")
+    controller.removeSelectedDevice()
+    #expect(controller.document.devices.count == 9)
+    #expect(try store.load().devices.count == 9)
+}
+
+@Test @MainActor func invalidDeviceEditIsRejectedWithoutMutatingTheResolvedEntry() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-device-invalid-edit-\(UUID().uuidString)")
+    let controller = GlobalLibraryController(
+        store: try GlobalLibraryStore(
+            documentURL: root.appendingPathComponent("library.json")
+        )
+    )
+    controller.selectedDeviceID = controller.document.devices.first?.id
+    let original = try #require(controller.selectedDevice)
+    controller.updateSelectedDevice { $0.nativeWidth = 0 }
+    #expect(controller.selectedDevice == original)
+    #expect(controller.deviceValidationMessage != nil)
+}
