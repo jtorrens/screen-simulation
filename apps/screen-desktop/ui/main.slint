@@ -801,15 +801,53 @@ export component MainWindow inherits Window {
                             font-size: 10px;
                         }
 
-                        Text { text: "1 · PANEL EMISSION"; color: #8fc6ff; font-size: 10px; }
-                        ValueRow {
-                            label: "Panel amount";
-                            minimum: 0;
-                            maximum: 4;
-                            step: 0.01;
-                            value <=> root.panel-character-strength;
-                            numeric-value: round(root.panel-character-strength * 100) / 100;
+                        Rectangle {
+                            height: 166px;
+                            background: #171c24;
+                            border-width: 1px;
+                            border-color: #303744;
+                            border-radius: 5px;
+
+                            VerticalLayout {
+                                padding: 6px;
+                                spacing: 0px;
+
+                                ValueRow {
+                                    label: "Panel";
+                                    minimum: 0;
+                                    maximum: 4;
+                                    step: 0.01;
+                                    value <=> root.panel-character-strength;
+                                    numeric-value: round(root.panel-character-strength * 100) / 100;
+                                }
+                                ValueRow {
+                                    label: "Glass";
+                                    minimum: 0;
+                                    maximum: 2;
+                                    step: 0.01;
+                                    value <=> root.cover-strength;
+                                    numeric-value: round(root.cover-strength * 100) / 100;
+                                }
+                                ValueRow {
+                                    label: "Environment";
+                                    minimum: 0;
+                                    maximum: 4;
+                                    step: 0.01;
+                                    value <=> root.environment-strength;
+                                    numeric-value: round(root.environment-strength * 100) / 100;
+                                }
+                                ValueRow {
+                                    label: "Lens";
+                                    minimum: 0;
+                                    maximum: 4;
+                                    step: 0.01;
+                                    value <=> root.lens-character-strength;
+                                    numeric-value: round(root.lens-character-strength * 100) / 100;
+                                }
+                            }
                         }
+
+                        Text { text: "1 · PANEL EMISSION"; color: #8fc6ff; font-size: 10px; }
 
                         ValueRow {
                             label: "Flicker";
@@ -875,14 +913,6 @@ export component MainWindow inherits Window {
                             }
                         }
                         Text { text: root.cover-summary; color: #8794a9; font-size: 10px; overflow: elide; }
-                        ValueRow {
-                            label: "Glass amount";
-                            minimum: 0;
-                            maximum: 2;
-                            step: 0.01;
-                            value <=> root.cover-strength;
-                            numeric-value: round(root.cover-strength * 100) / 100;
-                        }
 
                         HorizontalLayout {
                             height: 34px;
@@ -896,14 +926,6 @@ export component MainWindow inherits Window {
                             }
                         }
                         Text { text: root.environment-summary; color: #8794a9; font-size: 10px; overflow: elide; }
-                        ValueRow {
-                            label: "Env amount";
-                            minimum: 0;
-                            maximum: 4;
-                            step: 0.01;
-                            value <=> root.environment-strength;
-                            numeric-value: round(root.environment-strength * 100) / 100;
-                        }
                         ValueRow {
                             label: "Env rotation";
                             minimum: -180;
@@ -928,14 +950,6 @@ export component MainWindow inherits Window {
                             }
                         }
                         Text { text: root.lens-summary; color: #8794a9; font-size: 10px; overflow: elide; }
-                        ValueRow {
-                            label: "Lens amount";
-                            minimum: 0;
-                            maximum: 4;
-                            step: 0.01;
-                            value <=> root.lens-character-strength;
-                            numeric-value: round(root.lens-character-strength * 100) / 100;
-                        }
 
                         Text { text: "4 · SENSOR CFA + DEMOSAIC"; color: #8fc6ff; font-size: 10px; }
                         Text {
