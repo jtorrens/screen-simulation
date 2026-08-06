@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 import CoreMedia
 import QuartzCore
@@ -94,6 +95,7 @@ import Testing
         #expect(result.frameCount == 3)
         #expect(result.maximumError <= 0.018, "ProRes \(alpha.rawValue) max \(result.maximumError)")
         #expect(result.rootMeanSquareError <= 0.0025, "ProRes \(alpha.rawValue) RMSE \(result.rootMeanSquareError)")
+        print("PRORES alpha=\(alpha.rawValue) max=\(result.maximumError) rmse=\(result.rootMeanSquareError)")
     }
 }
 
@@ -108,6 +110,7 @@ import Testing
     #expect(result.rootMeanSquareError <= 0.055, "H.264 RMSE \(result.rootMeanSquareError)")
     #expect(result.neutralRootMeanSquareError <= 0.012,
             "H.264 neutral/color-path RMSE \(result.neutralRootMeanSquareError)")
+    print("H264 max=\(result.maximumError) rmse=\(result.rootMeanSquareError) neutral_rmse=\(result.neutralRootMeanSquareError)")
 }
 
 private struct MovieRoundtripResult {
@@ -254,7 +257,10 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     let range: StudioColorSignalRange = detection.range == .video ? .video : .full
     let outputURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("golden-\(UUID().uuidString).mov")
-    var decodeMilliseconds: [Double] = []
+    let playbackP95 = try await sequentialPlaybackP95(
+        sourceURL: sourceURL, display: display, input: input,
+        alpha: alpha, matrix: matrix, range: range
+    )
     let renderedURL = try await NativeOutputRenderer.render(
         format: .proRes4444, preset: StudioRenderPreset.builtIns[0], peakNits: 100,
         frameRate: sourceInfo.frameRate,
@@ -262,7 +268,6 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
         destination: outputURL, alpha: alpha,
         includeAudio: false, audioSource: nil, display: display,
         frameProvider: { frameIndex in
-            let started = CACurrentMediaTime()
             let time = CMTime(
                 value: CMTimeValue(frameIndex),
                 timescale: CMTimeScale(sourceInfo.frameRate.rounded())
@@ -272,11 +277,6 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
                 pixelBuffer: sample.pixelBuffer, input: input, alpha: alpha,
                 matrix: matrix, range: range
             )
-            _ = try display.renderRGBA8(
-                frame,
-                output: StudioColorOutputTransform.catalog.first { $0.id == "aces2-rec709-sdr-100" }!
-            )
-            decodeMilliseconds.append((CACurrentMediaTime() - started) * 1_000)
             return frame
         },
         progress: { _, _ in }
@@ -327,12 +327,53 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     }
     let rmse = sqrt(squared / Double(count))
     let displayRMSE = sqrt(displaySquared / Double(displayCount))
-    let sortedTiming = decodeMilliseconds.sorted()
-    let p95 = sortedTiming[min(sortedTiming.count - 1, Int(Double(sortedTiming.count) * 0.95))]
-    print("GOLDEN source=\(sourceURL.lastPathComponent) frames=\(sourceInfo.frameCount) fps=\(sourceInfo.frameRate) linear_max=\(maximum) linear_rmse=\(rmse) display_max_code=\(displayMaximum) display_rmse_code=\(displayRMSE) decode_aces_preview_p95_ms=\(p95) output=\(renderedURL.path)")
+    print("GOLDEN source=\(sourceURL.lastPathComponent) frames=\(sourceInfo.frameCount) fps=\(sourceInfo.frameRate) linear_max=\(maximum) linear_rmse=\(rmse) display_max_code=\(displayMaximum) display_rmse_code=\(displayRMSE) sequential_decode_aces_preview_p95_ms=\(playbackP95) output=\(renderedURL.path)")
     #expect(outputInfo.frameCount == sourceInfo.frameCount)
     #expect(abs(outputInfo.frameRate - sourceInfo.frameRate) < 0.01)
     #expect(outputDetection.proposedInputTransformID == "display-rec709-aces2-sdr")
     #expect(displayMaximum <= 5)
     #expect(displayRMSE <= 1)
+}
+
+@MainActor
+private func sequentialPlaybackP95(
+    sourceURL: URL,
+    display: StudioColorMetalDisplay,
+    input: StudioColorInputTransform,
+    alpha: StudioColorAlphaAssociation,
+    matrix: StudioColorSignalMatrix,
+    range: StudioColorSignalRange
+) async throws -> Double {
+    let asset = AVURLAsset(url: sourceURL)
+    let track = try #require(try await asset.loadTracks(withMediaType: .video).first)
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(
+        track: track,
+        outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: kCVPixelFormatType_64RGBAHalf),
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+        ]
+    )
+    output.alwaysCopiesSampleData = false
+    reader.add(output)
+    #expect(reader.startReading())
+    let preview = StudioColorOutputTransform.catalog.first { $0.id == "aces2-rec709-sdr-100" }!
+    var timings: [Double] = []
+    while let sample = output.copyNextSampleBuffer(),
+          let pixelBuffer = CMSampleBufferGetImageBuffer(sample) {
+        let started = CACurrentMediaTime()
+        let frame = try display.makeACEScgFrame(
+            pixelBuffer: pixelBuffer, input: input, alpha: alpha,
+            matrix: matrix, range: range
+        )
+        _ = try display.renderRGBA8(frame, output: preview)
+        if !timings.isEmpty {
+            timings.append((CACurrentMediaTime() - started) * 1_000)
+        } else {
+            timings = [0]
+        }
+    }
+    let measured = timings.dropFirst().sorted()
+    return measured[min(measured.count - 1, Int(Double(measured.count) * 0.95))]
 }
