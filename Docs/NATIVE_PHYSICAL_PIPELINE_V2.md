@@ -124,9 +124,22 @@ from unity. Residual flicker remains frame-uniform. The existing rolling-row
 phase is reserved for the shutter/motion cut, so no physical banding appears by
 default and no PWM subdivision has been reintroduced.
 
+## Cover-glass and environment migration
+
+The unified executor now consumes the complete `CoverGlassProfile` and
+`ProceduralEnvironment` snapshots. The implementation is extracted from the
+existing `screen-cover` evaluator and `spatial_optics.metal`: Beer-Lambert
+absorption, Fresnel/AR reflection, thickness, roughness, haze, synthetic HDR
+patterns, rotation and calibrated radiance retain their original units. In the
+flat pre-camera domain the view cosine and reflection ray are orthographic;
+perspective-dependent refraction is applied by the following geometry/lens
+cut. Cover strength zero is exact transmission identity and environment
+strength zero contributes exactly no radiance. Temporal gain multiplies only
+panel emission, never the reflected environment.
+
 ## Honest limitations
 
-- Camera, lens, cover/environment, shutter/motion, sensor/noise and
+- Camera, lens, shutter/motion, sensor/noise and
   RAW development are transported but not evaluated by this cut.
 - Supported-stage timing is fused job time, not isolated GPU counter timing.
 - Native memory is dominated by UHD input plus the 3×3 physical output lattice.

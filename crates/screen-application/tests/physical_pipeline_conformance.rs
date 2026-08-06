@@ -46,6 +46,8 @@ fn request(
             subpixel_geometry_amount: geometry_amount,
             temporal_emission_amount: 0.0,
             temporal_emission_gain: 1.0,
+            cover: screen_cover::CoverGlassProfile::NEUTRAL,
+            environment: screen_cover::ProceduralEnvironment::NONE,
             requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
         },
     }

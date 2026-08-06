@@ -86,6 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 subpixel_geometry_amount: 1.0,
                 temporal_emission_amount: 1.0,
                 temporal_emission_gain: 1.0,
+                cover: screen_cover::CoverGlassProfile::NEUTRAL,
+                environment: screen_cover::ProceduralEnvironment::NONE,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             };
             let mut first_tile = None;

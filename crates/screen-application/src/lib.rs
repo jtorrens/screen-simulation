@@ -188,6 +188,8 @@ pub struct PhysicalPipelineExecutionPlan {
     /// Calibrated exposure-average emission gain resolved with exact rational
     /// timing by the Rust executor. Metal only evaluates this materialized value.
     pub temporal_emission_gain: f32,
+    pub cover: CoverGlassProfile,
+    pub environment: ProceduralEnvironment,
     pub requested_intermediate: PhysicalIntermediate,
 }
 
@@ -337,6 +339,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     plan.panel_light_spread
         .validate()
         .map_err(ApplicationError::Panel)?;
+    let cover = plan
+        .cover
+        .evaluator(plan.environment)
+        .map_err(ApplicationError::Cover)?;
     let geometry = request
         .plan
         .panel
@@ -587,6 +593,22 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             let temporal_gain =
                 1.0 + plan.temporal_emission_amount * (plan.temporal_emission_gain - 1.0);
             let temporally_integrated = staged.map(|value| value * temporal_gain);
+            let covered = cover.evaluate(
+                LinearRgb::new(
+                    temporally_integrated[0],
+                    temporally_integrated[1],
+                    temporally_integrated[2],
+                ),
+                CoverSurfaceSample {
+                    view_cosine: 1.0,
+                    reflection_direction_local: [0.0, 0.0, 1.0],
+                    lens_irradiance_weight: LinearRgb::new(
+                        1.0 / parameters.white_level_nits,
+                        1.0 / parameters.white_level_nits,
+                        1.0 / parameters.white_level_nits,
+                    ),
+                },
+            );
             let selected = match plan.requested_intermediate {
                 PhysicalIntermediate::SourceAcesCg => ideal[0..3].try_into().expect("RGB"),
                 PhysicalIntermediate::DeviceSignal => [
@@ -597,10 +619,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::PanelEmission => continuous,
                 PhysicalIntermediate::SubpixelRadiance => physical,
                 PhysicalIntermediate::PanelLightSpread => spread,
+                PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::DevelopedAcesCg => [
-                    ideal[0] + plan.screen_amount * (temporally_integrated[0] - ideal[0]),
-                    ideal[1] + plan.screen_amount * (temporally_integrated[1] - ideal[1]),
-                    ideal[2] + plan.screen_amount * (temporally_integrated[2] - ideal[2]),
+                    ideal[0] + plan.screen_amount * (covered.r - ideal[0]),
+                    ideal[1] + plan.screen_amount * (covered.g - ideal[1]),
+                    ideal[2] + plan.screen_amount * (covered.b - ideal[2]),
                 ],
                 _ => return Err(ApplicationError::UnsupportedPhysicalIntermediate),
             };
@@ -5700,6 +5723,8 @@ mod tests {
                 subpixel_geometry_amount: 1.0,
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
+                cover: CoverGlassProfile::NEUTRAL,
+                environment: ProceduralEnvironment::NONE,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         }
@@ -5899,6 +5924,51 @@ mod tests {
                 .map(|pixel| pixel[3])
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn cover_and_environment_are_separate_and_zero_is_exact() {
+        let baseline = evaluate_physical_pipeline_cpu_oracle(flat_panel_request(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            1.0,
+        ))
+        .expect("neutral cover/environment");
+        let mut covered_request =
+            flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        covered_request.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
+        let covered = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
+            .expect("cover transmission");
+        assert_ne!(covered.acescg, baseline.acescg);
+
+        covered_request.plan.environment = screen_cover::ENVIRONMENT_PRESETS[1].environment;
+        let composite = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
+            .expect("cover plus environment");
+        assert_ne!(composite.acescg, covered.acescg);
+        covered_request.plan.temporal_emission_amount = 1.0;
+        covered_request.plan.temporal_emission_gain = 0.8;
+        let temporal_composite = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
+            .expect("temporal emission with stable reflection");
+        covered_request.plan.environment = screen_cover::ProceduralEnvironment::NONE;
+        let temporal_covered = evaluate_physical_pipeline_cpu_oracle(covered_request)
+            .expect("temporal cover without environment");
+        for (((composite, covered), temporal_composite), temporal_covered) in composite
+            .acescg
+            .iter()
+            .zip(&covered.acescg)
+            .zip(&temporal_composite.acescg)
+            .zip(&temporal_covered.acescg)
+        {
+            assert_eq!(composite[3].to_bits(), temporal_composite[3].to_bits());
+            for channel in 0..3 {
+                assert!(
+                    ((composite[channel] - covered[channel])
+                        - (temporal_composite[channel] - temporal_covered[channel]))
+                        .abs()
+                        <= 1.0e-6
+                );
+            }
+        }
     }
 
     #[test]

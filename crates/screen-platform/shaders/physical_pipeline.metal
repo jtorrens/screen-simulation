@@ -16,7 +16,69 @@ struct PhysicalPipelineParams {
     float4 spread_core_weight;
     float4 spread_tail_radius;
     float4 spread_tail_weight;
+    float4 cover_geometry;
+    float4 cover_absorption_roughness;
+    float4 cover_haze;
+    float4 environment_ambient_strength;
+    float4 environment_key_radius;
+    float4 environment_direction_rotation;
 };
+
+constant float PI = 3.14159265358979323846f;
+
+inline float cover_interface(float cosine_i, constant PhysicalPipelineParams& p) {
+    const float eta = p.cover_geometry.z;
+    const float sine_t2 = (1.0f - cosine_i * cosine_i) / (eta * eta);
+    const float cosine_t = sqrt(max(0.0f, 1.0f - sine_t2));
+    if (eta == 1.0f || p.cover_geometry.w == 1.0f) return 0.0f;
+    const float rs = (cosine_i - eta * cosine_t) / max(1.0e-8f, cosine_i + eta * cosine_t);
+    const float rp = (eta * cosine_i - cosine_t) / max(1.0e-8f, eta * cosine_i + cosine_t);
+    return clamp(0.5f * (rs * rs + rp * rp) * (1.0f - p.cover_geometry.w)
+        * p.cover_geometry.x, 0.0f, 0.98f);
+}
+
+inline float3 flat_environment_radiance(constant PhysicalPipelineParams& p) {
+    float3 direction = float3(0.0f, 0.0f, 1.0f);
+    const float sine = sin(p.environment_direction_rotation.w);
+    const float cosine = cos(p.environment_direction_rotation.w);
+    direction = float3(direction.x * cosine + direction.z * sine, direction.y,
+        -direction.x * sine + direction.z * cosine);
+    const float alignment = clamp(dot(direction, p.environment_direction_rotation.xyz), -1.0f, 1.0f);
+    const float edge = cos(p.environment_key_radius.w);
+    const float softness = 0.005f + p.cover_absorption_roughness.w * 0.35f;
+    const float key_amount = smoothstep(edge - softness, edge + softness, alignment);
+    float pattern_amount = 0.0f;
+    if (p.semantics.w == 1) {
+        const float large = (1.0f - smoothstep(0.30f - softness, 0.30f + softness, abs(direction.x + 0.48f)))
+            * (1.0f - smoothstep(0.42f - softness, 0.42f + softness, abs(direction.y - 0.02f)))
+            * smoothstep(0.0f, 0.12f, direction.z);
+        const float top = (1.0f - smoothstep(0.46f - softness, 0.46f + softness, abs(direction.x - 0.18f)))
+            * (1.0f - smoothstep(0.16f - softness, 0.16f + softness, abs(direction.y - 0.68f)))
+            * smoothstep(0.0f, 0.12f, direction.z);
+        pattern_amount = min(1.0f, large + top * 0.55f + key_amount * 0.08f);
+    } else if (p.semantics.w == 2) {
+        const float u = atan2(direction.x, direction.z) / (2.0f * PI) + 0.5f;
+        const float v = asin(direction.y) / PI + 0.5f;
+        const float longitude = abs(fract(u * 24.0f) - 0.5f);
+        const float latitude = abs(fract(v * 12.0f) - 0.5f);
+        const float lines = longitude > 0.46f || latitude > 0.43f ? 1.0f : 0.0f;
+        pattern_amount = max(lines, pow(2.0f, clamp(floor(u * 8.0f), 0.0f, 7.0f) - 7.0f));
+    }
+    const float redistribution = clamp(p.cover_absorption_roughness.w * 0.75f
+        + p.cover_haze.x * 0.25f, 0.0f, 1.0f);
+    pattern_amount = mix(pattern_amount, 0.5f, redistribution);
+    return (p.environment_ambient_strength.xyz + p.environment_key_radius.xyz * pattern_amount)
+        * p.environment_ambient_strength.w;
+}
+
+inline float3 apply_flat_cover(float3 emitted, constant PhysicalPipelineParams& p) {
+    const float reflection = cover_interface(1.0f, p);
+    const float absorption_scale = p.cover_geometry.y * p.cover_geometry.x;
+    const float haze_loss = clamp(p.cover_haze.x * p.cover_geometry.x, 0.0f, 0.95f);
+    const float3 transmission = (1.0f - reflection)
+        * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
+    return emitted * transmission + flat_environment_radiance(p) * reflection / p.levels.z;
+}
 
 inline float2 placement_scale(constant PhysicalPipelineParams& p) {
     const float source_aspect = float(p.source_panel.x) / float(p.source_panel.y);
@@ -235,6 +297,7 @@ kernel void evaluate_physical_pipeline(
         + (spread - physical);
     const float temporal_gain = 1.0f + p.strengths.w * (p.levels.w - 1.0f);
     const float3 temporally_integrated = staged * temporal_gain;
+    const float3 covered = apply_flat_cover(temporally_integrated, p);
     float3 selected;
     switch (p.semantics.z) {
         case 0: selected = ideal.rgb; break;
@@ -242,7 +305,8 @@ kernel void evaluate_physical_pipeline(
         case 2: selected = continuous; break;
         case 3: selected = physical; break;
         case 4: selected = spread; break;
-        default: selected = ideal.rgb + p.strengths.x * (temporally_integrated - ideal.rgb); break;
+        case 5: selected = covered; break;
+        default: selected = ideal.rgb + p.strengths.x * (covered - ideal.rgb); break;
     }
     output.write(float4(selected, ideal.a), position);
 }
