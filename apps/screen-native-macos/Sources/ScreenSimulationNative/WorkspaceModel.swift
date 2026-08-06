@@ -355,6 +355,10 @@ final class WorkspaceModel: ObservableObject {
 
     func resetView() { zoom = 1; pan = .zero }
     func zoomBy(_ factor: Double) { zoom = min(16, max(0.1, zoom * factor)) }
+    var zoomPercentage: Double {
+        get { zoom * 100 }
+        set { zoom = min(16, max(0.1, newValue / 100)) }
+    }
 
     func changeOutputFormat(_ format: StudioOutputFormat) {
         outputFormat = format

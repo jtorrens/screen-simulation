@@ -44,13 +44,17 @@ struct ContentView: View {
                 }
             }
             Divider()
-            HStack(spacing: 8) {
+            HStack(spacing: 16) {
+                Spacer()
                 ForEach(WorkspacePage.allCases) { destination in
                     Button {
                         page = destination
                     } label: {
-                        Image(systemName: destination.systemImage)
-                            .frame(width: 28, height: 24)
+                        VStack(spacing: 2) {
+                            Image(systemName: destination.systemImage)
+                            Text(destination.rawValue).font(.caption2)
+                        }
+                        .frame(minWidth: 64, minHeight: 38)
                     }
                     .buttonStyle(.borderless)
                     .foregroundStyle(page == destination ? Color.accentColor : .secondary)
@@ -61,7 +65,7 @@ struct ContentView: View {
                 Spacer()
             }
             .padding(.horizontal, 10)
-            .frame(height: 34)
+            .frame(height: 46)
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .toolbar { workspaceToolbar }
@@ -942,9 +946,39 @@ struct ContentView: View {
                 .labelsHidden()
                 .frame(maxWidth: 330)
                 Spacer()
+                Button {
+                    model.monitorOutput.toggle(
+                        frame: model.metalFrame,
+                        display: model.metalDisplay
+                    )
+                } label: {
+                    Image(systemName: model.monitorOutput.isActive
+                        ? "rectangle.connected.to.line.below.fill"
+                        : "rectangle.connected.to.line.below")
+                }
+                .foregroundStyle(model.monitorOutput.isActive ? .blue : .secondary)
+                .help(model.monitorOutput.isActive
+                    ? "Detener monitorización DeckLink"
+                    : "Iniciar monitorización DeckLink")
+                .accessibilityLabel(model.monitorOutput.isActive
+                    ? "Detener monitorización DeckLink"
+                    : "Iniciar monitorización DeckLink")
                 Button { model.zoomBy(0.8) } label: { Image(systemName: "minus.magnifyingglass") }
-                Button("100%", action: model.resetView)
+                    .help("Reducir zoom")
+                    .accessibilityLabel("Reducir zoom")
+                TextField("Zoom", value: Binding(
+                    get: { model.zoomPercentage },
+                    set: { model.zoomPercentage = $0 }
+                ), format: .number.precision(.fractionLength(0)))
+                    .frame(width: 52)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityLabel("Escala del visor en porcentaje")
+                Text("%").foregroundStyle(.secondary)
+                Button("Fit", action: model.resetView)
+                    .help("Ajustar imagen al visor")
                 Button { model.zoomBy(1.25) } label: { Image(systemName: "plus.magnifyingglass") }
+                    .help("Aumentar zoom")
+                    .accessibilityLabel("Aumentar zoom")
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 10)
@@ -958,10 +992,10 @@ struct ContentView: View {
                         display: model.metalDisplay,
                         frame: frame,
                         output: model.previewTransform,
+                        zoom: model.zoom,
+                        pan: model.pan,
                         onDisplayChange: { model.systemDisplayInfo = $0 }
                     )
-                    .scaleEffect(model.zoom)
-                    .offset(model.pan)
                     .gesture(
                         DragGesture().onChanged { value in model.pan = value.translation }
                     )
@@ -1018,6 +1052,7 @@ struct ContentView: View {
                 Button(action: model.togglePlayback) {
                     Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
                 }
+                .foregroundStyle(model.isPlaying ? .blue : .primary)
                 .keyboardShortcut(.space, modifiers: [])
                 Button { model.step(1) } label: { Image(systemName: "forward.frame.fill") }
                 Button { model.jump(5) } label: { Image(systemName: "forward.end.fill") }
@@ -1031,8 +1066,14 @@ struct ContentView: View {
                 }
                 .labelsHidden()
                 .frame(width: 82)
-                Toggle("Loop", isOn: $model.loopPlayback)
-                    .toggleStyle(.checkbox)
+                Button {
+                    model.loopPlayback.toggle()
+                } label: {
+                    Image(systemName: model.loopPlayback ? "repeat.circle.fill" : "repeat")
+                }
+                .foregroundStyle(model.loopPlayback ? .blue : .secondary)
+                .help(model.loopPlayback ? "Desactivar repetición" : "Activar repetición")
+                .accessibilityLabel(model.loopPlayback ? "Desactivar repetición" : "Activar repetición")
                 frameField("Entrada", value: Binding(
                     get: { model.inFrame }, set: { model.setInFrame($0) }
                 ))
@@ -1064,18 +1105,54 @@ struct MetalPreview: NSViewRepresentable {
     let display: StudioColorMetalDisplay
     let frame: StudioColorMetalFrame
     let output: StudioColorOutputTransform
+    let zoom: Double
+    let pan: CGSize
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
 
-    func makeNSView(context _: Context) -> MTKView {
+    func makeNSView(context _: Context) -> MetalPreviewContainer {
+        let container = MetalPreviewContainer()
         let view = StudioColorScreenAwareMetalView()
         view.screenDidChange = onDisplayChange
         display.configure(view)
-        return view
+        container.install(view)
+        return container
     }
 
-    func updateNSView(_ view: MTKView, context _: Context) {
-        (view as? StudioColorScreenAwareMetalView)?.screenDidChange = onDisplayChange
-        display.present(frame, output: output, in: view)
+    func updateNSView(_ container: MetalPreviewContainer, context _: Context) {
+        container.metalView.screenDidChange = onDisplayChange
+        container.updatePresentation(zoom: zoom, pan: pan)
+        display.present(frame, output: output, in: container.metalView)
+    }
+}
+
+final class MetalPreviewContainer: NSView {
+    private(set) var metalView = StudioColorScreenAwareMetalView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    func install(_ view: StudioColorScreenAwareMetalView) {
+        metalView.removeFromSuperview()
+        metalView = view
+        addSubview(view)
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        metalView.frame = bounds
+    }
+
+    func updatePresentation(zoom: Double, pan: CGSize) {
+        metalView.layer?.setAffineTransform(
+            CGAffineTransform(translationX: pan.width, y: -pan.height)
+                .scaledBy(x: zoom, y: zoom)
+        )
     }
 }
 
