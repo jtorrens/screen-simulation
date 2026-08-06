@@ -175,7 +175,7 @@ final class PhysicalMetalFrameEngine {
     func submit(
         sourceACEScg: StudioColorMetalFrame,
         deviceSignal: StudioColorMetalFrame,
-        frame: PhysicalFrameSelection,
+        orchestration: PhysicalFrameOrchestration,
         resolvedDevice: ResolvedDevice,
         resolvedPipeline: PhysicalPipelineResolvedState,
         quality: PhysicalQuality,
@@ -233,8 +233,8 @@ final class PhysicalMetalFrameEngine {
         }
         var timedSample = ScreenPhysicalTimedInputSampleV2()
         timedSample.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
-        timedSample.time_numerator = frame.timeNumerator
-        timedSample.time_denominator = frame.timeDenominator
+        timedSample.time_numerator = orchestration.frame.timeNumerator
+        timedSample.time_denominator = orchestration.frame.timeDenominator
         timedSample.source_acescg = sourceTexture
         timedSample.device_signal = deviceSignalTexture
         timedInputs = screen_physical_timed_input_set_v2_create(
@@ -248,8 +248,8 @@ final class PhysicalMetalFrameEngine {
             throw bridgeError(error, fallback: "No se ha creado el input temporal físico.")
         }
         var cameraKnot = staticPoseKnot(
-            frame: frame,
-            position: (0, 0, 1)
+            frame: orchestration.frame,
+            pose: orchestration.cameraPose
         )
         cameraPoseTrack = screen_physical_camera_pose_track_v2_create(
             &cameraKnot,
@@ -260,8 +260,8 @@ final class PhysicalMetalFrameEngine {
             throw bridgeError(error, fallback: "No se ha creado el track constante de cámara.")
         }
         var screenKnot = staticPoseKnot(
-            frame: frame,
-            position: (0, 0, 0)
+            frame: orchestration.frame,
+            pose: orchestration.screenPose
         )
         screenPoseTrack = screen_physical_screen_pose_track_v2_create(
             &screenKnot,
@@ -287,11 +287,11 @@ final class PhysicalMetalFrameEngine {
         let rawContributions = contributions.map(rawContribution)
         var raw = ScreenPhysicalFrameRequestV2()
         raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
-        raw.frame_index = frame.frameIndex
+        raw.frame_index = orchestration.frame.frameIndex
         raw.timed_inputs = timedInputs
         raw.camera_pose_track = cameraPoseTrack
         raw.screen_pose_track = screenPoseTrack
-        let shutter = try staticShutterInterval(frame: frame)
+        let shutter = orchestration.shutter
         raw.shutter_open_numerator = shutter.open.numerator
         raw.shutter_open_denominator = shutter.open.denominator
         raw.shutter_close_numerator = shutter.close.numerator
@@ -340,38 +340,21 @@ final class PhysicalMetalFrameEngine {
 
     private func staticPoseKnot(
         frame: PhysicalFrameSelection,
-        position: (Float, Float, Float)
+        pose: PhysicalPoseSnapshot
     ) -> ScreenPhysicalPoseKnotV2 {
         var knot = ScreenPhysicalPoseKnotV2()
         knot.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
         knot.time_numerator = frame.timeNumerator
         knot.time_denominator = frame.timeDenominator
-        knot.position = position
-        knot.rotation_xyzw = (0, 0, 0, 1)
+        knot.position = (pose.position.x, pose.position.y, pose.position.z)
+        knot.rotation_xyzw = (
+            pose.rotation.x,
+            pose.rotation.y,
+            pose.rotation.z,
+            pose.rotation.w
+        )
         knot.interpolation = UInt32(SCREEN_PHYSICAL_POSE_HOLD.rawValue)
         return knot
-    }
-
-    private func staticShutterInterval(
-        frame: PhysicalFrameSelection
-    ) throws -> PhysicalShutterInterval {
-        let (scaledTime, timeOverflow) = frame.timeNumerator.multipliedReportingOverflow(by: 96)
-        let (denominator, denominatorOverflow) = frame.timeDenominator.multipliedReportingOverflow(by: 96)
-        let open = scaledTime.subtractingReportingOverflow(Int64(frame.timeDenominator))
-        let close = scaledTime.addingReportingOverflow(Int64(frame.timeDenominator))
-        guard !timeOverflow, !denominatorOverflow, !open.overflow, !close.overflow else {
-            throw PhysicalContractError.invalidFrameTime
-        }
-        return PhysicalShutterInterval(
-            open: try PhysicalRationalTime(
-                numerator: open.partialValue,
-                denominator: denominator
-            ),
-            close: try PhysicalRationalTime(
-                numerator: close.partialValue,
-                denominator: denominator
-            )
-        )
     }
 
     private func rawContribution(

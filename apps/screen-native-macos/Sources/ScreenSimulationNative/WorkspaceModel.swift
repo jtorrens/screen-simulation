@@ -866,10 +866,12 @@ final class WorkspaceModel: ObservableObject {
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
-            frame: try PhysicalFrameSelection(
-                frameIndex: Int64(currentFrame),
-                timeNumerator: Int64(currentFrame),
-                timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
+            orchestration: try .staticSelectedFrame(
+                PhysicalFrameSelection(
+                    frameIndex: Int64(currentFrame),
+                    timeNumerator: Int64(currentFrame),
+                    timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
+                )
             ),
             resolvedDevice: effectiveDevice,
             resolvedPipeline: effectivePipeline,
