@@ -22,19 +22,23 @@ import Testing
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
     let movie = try await NativeOutputRenderer.render(
-        format: .h264High, preset: StudioRenderPreset.builtIns[0], peakNits: 100,
-        frameRate: 24, frameRange: 0 ... 2,
+        configuration: renderConfiguration(
+            format: .h264High, preset: StudioRenderPreset.builtIns[0],
+            alpha: .ignore, signalRange: .video, frameRange: 0 ... 2
+        ),
         destination: root.appendingPathComponent("smoke.mp4"),
-        alpha: .ignore, includeAudio: false, audioSource: nil,
+        audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
     #expect(FileManager.default.fileExists(atPath: movie.path))
 
     let exrDirectory = root.appendingPathComponent("exr")
     _ = try await NativeOutputRenderer.render(
-        format: .openEXR, preset: StudioRenderPreset.builtIns[5], peakNits: 0,
-        frameRate: 24, frameRange: 7 ... 8, destination: exrDirectory,
-        alpha: .premultiplied, includeAudio: false, audioSource: nil,
+        configuration: renderConfiguration(
+            format: .openEXR, preset: StudioRenderPreset.builtIns[5],
+            alpha: .premultiplied, signalRange: .full, frameRange: 7 ... 8
+        ),
+        destination: exrDirectory, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
     #expect(FileManager.default.fileExists(
@@ -66,9 +70,11 @@ import Testing
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-native-exr-\(UUID().uuidString)")
     _ = try await NativeOutputRenderer.render(
-        format: .openEXR, preset: StudioRenderPreset.builtIns[5], peakNits: 0,
-        frameRate: 24, frameRange: 12 ... 12, destination: root,
-        alpha: .straight, includeAudio: false, audioSource: nil,
+        configuration: renderConfiguration(
+            format: .openEXR, preset: StudioRenderPreset.builtIns[5],
+            alpha: .straight, signalRange: .full, frameRange: 12 ... 12
+        ),
+        destination: root, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
     let url = root.appendingPathComponent("ScreenSimulation-00000012.exr")
@@ -151,9 +157,13 @@ private func movieRoundtrip(
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let destination = root.appendingPathComponent("roundtrip.\(format.fileExtension)")
     let url = try await NativeOutputRenderer.render(
-        format: format, preset: StudioRenderPreset.builtIns[0], peakNits: 100,
-        frameRate: 24, frameRange: 0 ... 2, destination: destination,
-        alpha: alpha, includeAudio: false, audioSource: nil,
+        configuration: renderConfiguration(
+            format: format, preset: StudioRenderPreset.builtIns[0],
+            alpha: alpha,
+            signalRange: format == .h264High ? .video : .full,
+            frameRange: 0 ... 2
+        ),
+        destination: destination, audioSource: nil,
         display: display, frameProvider: { frames[$0] }, progress: { _, _ in }
     )
     let detection = await StudioMediaMetadataDetector.detect(url: url, isVideo: true)
@@ -262,11 +272,13 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
         alpha: alpha, matrix: matrix, range: range
     )
     let renderedURL = try await NativeOutputRenderer.render(
-        format: .proRes4444, preset: StudioRenderPreset.builtIns[0], peakNits: 100,
-        frameRate: sourceInfo.frameRate,
-        frameRange: 0 ... max(0, sourceInfo.frameCount - 1),
-        destination: outputURL, alpha: alpha,
-        includeAudio: false, audioSource: nil, display: display,
+        configuration: renderConfiguration(
+            format: .proRes4444, preset: StudioRenderPreset.builtIns[0],
+            alpha: alpha, signalRange: .full,
+            frameRate: sourceInfo.frameRate,
+            frameRange: 0 ... max(0, sourceInfo.frameCount - 1)
+        ),
+        destination: outputURL, audioSource: nil, display: display,
         frameProvider: { frameIndex in
             let time = CMTime(
                 value: CMTimeValue(frameIndex),
@@ -333,6 +345,35 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     #expect(outputDetection.proposedInputTransformID == "display-rec709-aces2-sdr")
     #expect(displayMaximum <= 5)
     #expect(displayRMSE <= 1)
+}
+
+private func renderConfiguration(
+    format: StudioOutputFormat,
+    preset: StudioRenderPreset,
+    alpha: StudioColorAlphaAssociation,
+    signalRange: StudioSignalRange,
+    frameRate: Double = 24,
+    frameRange: ClosedRange<Int>
+) -> StudioResolvedRenderConfiguration {
+    let alphaMode: StudioAlphaMode = switch alpha {
+    case .straight: .straight
+    case .premultiplied: .premultiplied
+    case .ignore: .ignore
+    }
+    return StudioResolvedRenderConfiguration(
+        format: format,
+        pipeline: preset.pipeline,
+        target: preset.target,
+        peakNits: preset.peakNits,
+        display: preset.display,
+        view: preset.view,
+        signalRange: signalRange,
+        alpha: alphaMode,
+        includeAudio: false,
+        frameRate: frameRate,
+        firstFrame: frameRange.lowerBound,
+        lastFrame: frameRange.upperBound
+    )
 }
 
 @MainActor

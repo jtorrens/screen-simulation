@@ -838,14 +838,28 @@ struct ContentView: View {
     private var outputPanel: some View {
         Form {
             Section("Preset / ODT") {
-                Picker("Preset", selection: $model.renderPreset) {
+                Picker("Preset", selection: Binding(
+                    get: { model.renderPreset },
+                    set: { model.applyRenderPreset($0) }
+                )) {
                     ForEach(library.allRenderPresets) { Text($0.name).tag($0) }
                 }
+                LabeledContent("ODT del preset", value: model.renderPreset.view ?? model.renderPreset.target.rawValue)
+                LabeledContent("ODT efectiva", value: model.renderPreset.view ?? model.renderPreset.target.rawValue)
                 LabeledContent("Peak nits") {
                     TextField("nits", value: $model.peakNits, format: .number).frame(width: 90)
                 }
-                Picker("Formato", selection: $model.outputFormat) {
+                Picker("Formato", selection: Binding(
+                    get: { model.outputFormat },
+                    set: { model.changeOutputFormat($0) }
+                )) {
                     ForEach(StudioOutputFormat.allCases) { Text($0.displayName).tag($0) }
+                }
+                Picker("Rango de señal", selection: $model.outputSignalRange) {
+                    ForEach(StudioSignalRange.allCases) { range in
+                        Text(range.label).tag(range)
+                            .disabled(!model.outputFormat.supportedSignalRanges.contains(range))
+                    }
                 }
                 Picker("Rango", selection: $model.renderRange) {
                     Text("Todo").tag(StudioRenderRange.all)
@@ -875,8 +889,8 @@ struct ContentView: View {
                         Spacer()
                         Text(job.state.rawValue.capitalized).foregroundStyle(.secondary)
                     }
-                        Text(job.format.displayName).font(.caption)
-                    Text("\(job.range.lowerBound)–\(job.range.upperBound) · \(job.detail)")
+                    Text(job.configuration.format.displayName).font(.caption)
+                    Text("\(job.configuration.firstFrame)–\(job.configuration.lastFrame) · \(job.configuration.signalRange.label) · \(job.detail)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)

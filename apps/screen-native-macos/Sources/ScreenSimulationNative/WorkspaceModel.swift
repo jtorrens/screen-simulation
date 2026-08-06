@@ -11,10 +11,7 @@ final class WorkspaceModel: ObservableObject {
         enum State: String { case pending, rendering, completed, failed, cancelled }
         let id = UUID()
         let destination: URL
-        let format: StudioOutputFormat
-        let preset: StudioRenderPreset
-        let range: ClosedRange<Int>
-        let alpha: StudioAlphaMode
+        let configuration: StudioResolvedRenderConfiguration
         var state: State = .pending
         var progress = 0.0
         var detail = "Pendiente"
@@ -51,6 +48,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var peakNits = 100.0
     @Published var includeAudio = true
     @Published var outputAlphaMode = StudioAlphaMode.premultiplied
+    @Published var outputSignalRange = StudioSignalRange.full
     @Published var decodeToPreviewMilliseconds = 0.0
     @Published var zoom = 1.0
     @Published var pan = CGSize.zero
@@ -358,6 +356,21 @@ final class WorkspaceModel: ObservableObject {
     func resetView() { zoom = 1; pan = .zero }
     func zoomBy(_ factor: Double) { zoom = min(16, max(0.1, zoom * factor)) }
 
+    func changeOutputFormat(_ format: StudioOutputFormat) {
+        outputFormat = format
+        if !format.supportedSignalRanges.contains(outputSignalRange),
+           let required = format.supportedSignalRanges.first {
+            outputSignalRange = required
+        }
+        if !format.supportsAlpha { outputAlphaMode = .ignore }
+        if !format.isMovie { includeAudio = false }
+    }
+
+    func applyRenderPreset(_ preset: StudioRenderPreset) {
+        renderPreset = preset
+        peakNits = preset.peakNits
+    }
+
     func enqueueExport() {
         guard metalFrame != nil else { return }
         let url: URL?
@@ -376,11 +389,22 @@ final class WorkspaceModel: ObservableObject {
             url = panel.runModal() == .OK ? panel.url : nil
         }
         guard let url else { return }
-        jobs.append(RenderJob(
-            destination: url, format: outputFormat, preset: renderPreset,
-            range: activeFrameRange,
-            alpha: outputFormat.supportsAlpha ? outputAlphaMode : .ignore
-        ))
+        let range = activeFrameRange
+        let configuration = StudioResolvedRenderConfiguration(
+            format: outputFormat,
+            pipeline: renderPreset.pipeline,
+            target: renderPreset.target,
+            peakNits: peakNits,
+            display: renderPreset.display,
+            view: renderPreset.view,
+            signalRange: outputSignalRange,
+            alpha: outputFormat.supportsAlpha ? outputAlphaMode : .ignore,
+            includeAudio: outputFormat.isMovie && includeAudio,
+            frameRate: frameRate,
+            firstFrame: range.lowerBound,
+            lastFrame: range.upperBound
+        )
+        jobs.append(RenderJob(destination: url, configuration: configuration))
     }
 
     func runQueue() {
@@ -394,11 +418,8 @@ final class WorkspaceModel: ObservableObject {
         renderTask = Task {
             do {
                 let url = try await NativeOutputRenderer.render(
-                    format: job.format, preset: job.preset, peakNits: peakNits,
-                    frameRate: frameRate, frameRange: job.range,
+                    configuration: job.configuration,
                     destination: job.destination,
-                    alpha: job.alpha.colorAssociation,
-                    includeAudio: includeAudio,
                     audioSource: session.sourceURL,
                     display: metalDisplay,
                     frameProvider: { [weak self] frame in
@@ -594,7 +615,7 @@ final class WorkspaceModel: ObservableObject {
     }
 }
 
-private extension StudioAlphaMode {
+extension StudioAlphaMode {
     var colorAssociation: StudioColorAlphaAssociation {
         switch self {
         case .straight: .straight

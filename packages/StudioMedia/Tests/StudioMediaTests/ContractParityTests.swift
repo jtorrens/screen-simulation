@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import StudioMedia
 
@@ -41,4 +42,38 @@ import Testing
     #expect(StudioMediaMetadataDetector.inputTransformProposal(
         primaries: "ITU_R_2020", transfer: nil, matrix: "ITU_R_2020"
     ) == nil)
+}
+
+@Test func renderJobConfigurationIsAnEffectiveImmutableSnapshot() throws {
+    var preset = StudioRenderPreset.builtIns[0]
+    let configuration = StudioResolvedRenderConfiguration(
+        format: .proRes4444,
+        pipeline: preset.pipeline,
+        target: preset.target,
+        peakNits: 120,
+        display: preset.display,
+        view: preset.view,
+        signalRange: .full,
+        alpha: .straight,
+        includeAudio: true,
+        frameRate: 24,
+        firstFrame: 12,
+        lastFrame: 47
+    )
+    preset.peakNits = 4_000
+    preset.view = "otra ODT"
+    #expect(configuration.peakNits == 120)
+    #expect(configuration.view == "ACES 2.0 - SDR 100 nits (Rec.709)")
+    #expect(configuration.frameRange == 12 ... 47)
+    let roundtrip = try JSONDecoder().decode(
+        StudioResolvedRenderConfiguration.self,
+        from: JSONEncoder().encode(configuration)
+    )
+    #expect(roundtrip == configuration)
+}
+
+@Test func outputRangeSupportIsExplicitPerWriter() {
+    #expect(StudioOutputFormat.h264High.supportedSignalRanges == [.video])
+    #expect(StudioOutputFormat.proRes4444.supportedSignalRanges == [.full])
+    #expect(StudioOutputFormat.openEXR.supportedSignalRanges == [.full])
 }

@@ -28,24 +28,22 @@ enum NativeOutputRenderer {
     typealias Progress = (Int, Int) -> Void
 
     static func render(
-        format: StudioOutputFormat,
-        preset: StudioRenderPreset,
-        peakNits: Double,
-        frameRate: Double,
-        frameRange: ClosedRange<Int>,
+        configuration: StudioResolvedRenderConfiguration,
         destination: URL,
-        alpha: StudioColorAlphaAssociation,
-        includeAudio: Bool,
         audioSource: URL?,
         display: StudioColorMetalDisplay,
         frameProvider: FrameProvider,
         progress: Progress
     ) async throws -> URL {
+        let format = configuration.format
+        let frameRange = configuration.frameRange
+        let frameRate = configuration.frameRate
+        let alpha = configuration.alpha.colorAssociation
         let frames = Array(frameRange)
         guard let firstIndex = frames.first else { throw NativeOutputError.invalidFrame }
-        try validate(format: format, preset: preset)
+        try validate(format: format, configuration: configuration)
         let first = try await frameProvider(firstIndex)
-        let output = outputTransform(for: preset)
+        let output = outputTransform(for: configuration)
         if format.isMovie {
             guard let output else {
                 throw NativeOutputError.unsupported("los masters scene-linear requieren secuencia OpenEXR")
@@ -53,14 +51,15 @@ enum NativeOutputRenderer {
             let finalURL = destination.deletingPathExtension()
                 .appendingPathExtension(format.fileExtension)
             try? FileManager.default.removeItem(at: finalURL)
-            let writerURL = includeAudio && audioSource != nil
+            let writerURL = configuration.includeAudio && audioSource != nil
                 ? finalURL.deletingLastPathComponent()
                     .appendingPathComponent(".\(UUID().uuidString)-video")
                     .appendingPathExtension(format.fileExtension)
                 : finalURL
             let writer = try MovieWriter(
                 url: writerURL, width: first.width, height: first.height,
-                frameRate: frameRate, format: format, peakNits: peakNits,
+                frameRate: frameRate, format: format,
+                peakNits: configuration.peakNits,
                 alpha: format.supportsAlpha ? alpha : .ignore, output: output
             )
             for (position, index) in frames.enumerated() {
@@ -73,7 +72,7 @@ enum NativeOutputRenderer {
                 progress(position + 1, frames.count)
             }
             try await writer.finish()
-            if includeAudio, let audioSource {
+            if configuration.includeAudio, let audioSource {
                 try await muxAudio(
                     videoURL: writerURL, audioURL: audioSource,
                     sourceStart: CMTime(seconds: Double(frameRange.lowerBound) / frameRate, preferredTimescale: 60_000),
@@ -96,7 +95,7 @@ enum NativeOutputRenderer {
             case .openEXR:
                 var values = try display.readLinearRGBA(frame)
                 applyOutputAlpha(alpha, to: &values)
-                if preset.target == .aces2065 {
+                if configuration.target == .aces2065 {
                     let processor = try StudioColorEngine.bundled().cachedColorSpaceProcessor(
                         source: "ACEScg", destination: "ACES2065-1"
                     )
@@ -138,44 +137,55 @@ enum NativeOutputRenderer {
         ).write(to: destination, options: .atomic)
     }
 
-    private static func outputTransform(for preset: StudioRenderPreset) -> StudioColorOutputTransform? {
-        if preset.pipeline == .davinciColorManaged, preset.target == .sdr {
+    private static func outputTransform(
+        for configuration: StudioResolvedRenderConfiguration
+    ) -> StudioColorOutputTransform? {
+        if configuration.pipeline == .davinciColorManaged,
+           configuration.target == .sdr {
             return StudioColorOutputTransform(
-                id: "render-\(preset.id.uuidString)", label: preset.name,
+                id: "render-dcm-sdr", label: "DCM · SDR",
                 colorSpace: "Gamma 2.4 Encoded Rec.709", encoding: .rec709
             )
         }
-        guard let display = preset.display, let view = preset.view else { return nil }
-        let encoding: StudioColorOutputTransform.Encoding = preset.target == .hdr ? .rec2100PQ : .rec709
+        guard let display = configuration.display,
+              let view = configuration.view else { return nil }
+        let encoding: StudioColorOutputTransform.Encoding =
+            configuration.target == .hdr ? .rec2100PQ : .rec709
         return StudioColorOutputTransform(
-            id: "render-\(preset.id.uuidString)", label: preset.name,
+            id: "render-\(configuration.pipeline.rawValue)-\(configuration.target.rawValue)",
+            label: "Render efectivo",
             display: display, view: view, encoding: encoding
         )
     }
 
     private static func validate(
         format: StudioOutputFormat,
-        preset: StudioRenderPreset
+        configuration: StudioResolvedRenderConfiguration
     ) throws {
+        guard format.supportedSignalRanges.contains(configuration.signalRange) else {
+            throw NativeOutputError.unsupported(
+                "\(format.displayName) no admite rango \(configuration.signalRange.label) en el writer vigente"
+            )
+        }
         switch format {
         case .h264Low, .h264Medium, .h264High:
-            guard preset.target == .sdr else {
+            guard configuration.target == .sdr else {
                 throw NativeOutputError.unsupported("H.264 requiere una ODT SDR")
             }
         case .h265Low, .h265Medium, .h265High:
-            guard preset.target == .hdr else {
+            guard configuration.target == .hdr else {
                 throw NativeOutputError.unsupported("H.265 requiere una ODT HDR")
             }
         case .proRes4444, .proRes4444XQ:
-            guard preset.target == .sdr || preset.target == .hdr else {
+            guard configuration.target == .sdr || configuration.target == .hdr else {
                 throw NativeOutputError.unsupported("ProRes 4444 requiere una ODT SDR/HDR")
             }
         case .openEXR:
-            guard preset.target == .acescg || preset.target == .aces2065 else {
+            guard configuration.target == .acescg || configuration.target == .aces2065 else {
                 throw NativeOutputError.unsupported("OpenEXR requiere ACEScg o ACES2065-1")
             }
         case .dpx10RGB, .tiff16:
-            guard preset.target == .sdr || preset.target == .hdr else {
+            guard configuration.target == .sdr || configuration.target == .hdr else {
                 throw NativeOutputError.unsupported("la secuencia display-referred requiere ODT")
             }
         }
