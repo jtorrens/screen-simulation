@@ -866,6 +866,8 @@ struct ContentView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollIndicators(.visible, axes: .vertical)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func coverGlassField(
@@ -1098,6 +1100,8 @@ struct ContentView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollIndicators(.visible, axes: .vertical)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func chromaticityRow(
