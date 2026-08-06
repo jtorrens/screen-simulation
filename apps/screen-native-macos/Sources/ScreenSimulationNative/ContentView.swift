@@ -1133,7 +1133,11 @@ struct ContentView: View {
             .background(Color(nsColor: .windowBackgroundColor))
             Divider()
             ZStack {
-                Color(nsColor: .black)
+                if deviceAspect == nil {
+                    Color(nsColor: .black)
+                } else {
+                    Color(nsColor: NSColor(deviceWhite: 0.18, alpha: 1))
+                }
                 if let frame = model.metalFrame {
                     let image = MetalPreview(
                         display: model.metalDisplay,
@@ -1156,6 +1160,12 @@ struct ContentView: View {
                         image
                             .aspectRatio(deviceAspect, contentMode: .fit)
                             .background(.black)
+                            .overlay {
+                                Rectangle()
+                                    .stroke(.white.opacity(0.22), lineWidth: 1)
+                            }
+                            .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
+                            .padding(28)
                     } else {
                         image
                     }

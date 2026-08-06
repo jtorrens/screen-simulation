@@ -64,8 +64,8 @@ final class DeviceMetalStage {
         )
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
-            width: frame.width,
-            height: frame.height,
+            width: resolvedDevice.definition.nativeWidth,
+            height: resolvedDevice.definition.nativeHeight,
             mipmapped: false
         )
         descriptor.usage = [.shaderRead, .shaderWrite]
@@ -123,7 +123,7 @@ final class DeviceMetalStage {
         let width = pipeline.threadExecutionWidth
         let height = max(1, pipeline.maxTotalThreadsPerThreadgroup / width)
         encoder.dispatchThreads(
-            MTLSize(width: frame.width, height: frame.height, depth: 1),
+            MTLSize(width: target.width, height: target.height, depth: 1),
             threadsPerThreadgroup: MTLSize(width: width, height: height, depth: 1)
         )
         encoder.endEncoding()

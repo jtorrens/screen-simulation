@@ -57,11 +57,13 @@ import QuartzCore
 @Test @MainActor func deviceMetalMatchesTheRustBatchOracleAtAmountOne() throws {
     let color = try StudioColorMetalDisplay()
     let stage = try DeviceMetalStage()
-    let definition = try #require(
+    var definition = try #require(
         try RustDeviceCatalog.builtIns().first {
             $0.id == "lcd-asus-proart-pa329cv"
         }
     )
+    definition.nativeWidth = 3
+    definition.nativeHeight = 1
     let resolved = try definition.resolved()
     let source: [Float] = [
         -0.1, 0.0, 0.18, 1,
@@ -106,10 +108,13 @@ import QuartzCore
     let fit = try stage.process(
         frame, device: resolved, amount: 1, placement: .fit, color: color
     )
+    #expect(fit.width == 2)
+    #expect(fit.height == 4)
     let values = try color.readLinearRGBA(fit)
-    let topRowMaximum = values[0 ..< 4 * 4].max() ?? 0
-    let middleOffset = 4 * 4
-    let middleRowMaximum = values[middleOffset ..< middleOffset + 4 * 4].max() ?? 0
+    let rowComponentCount = fit.width * 4
+    let topRowMaximum = values[0 ..< rowComponentCount].max() ?? 0
+    let middleOffset = rowComponentCount
+    let middleRowMaximum = values[middleOffset ..< middleOffset + rowComponentCount].max() ?? 0
     #expect(topRowMaximum < 0.01)
     #expect(middleRowMaximum > topRowMaximum * 10)
     #expect(resolved.definition.nativeWidth == 2)
