@@ -47,7 +47,9 @@ import QuartzCore
         input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
         alpha: .straight
     )
-    let result = try stage.process(frame, device: resolved, amount: 0, color: color)
+    let result = try stage.process(
+        frame, device: resolved, amount: 0, placement: .stretch, color: color
+    )
     #expect(result === frame)
     #expect(result.texture === frame.texture)
 }
@@ -78,10 +80,40 @@ import QuartzCore
     }!
     let deviceCode = try color.renderRGBAFloat(frame, output: deviceTransform)
     let expected = try resolved.cpuOracle(deviceCode: deviceCode)
-    let result = try stage.process(frame, device: resolved, amount: 1, color: color)
+    let result = try stage.process(
+        frame, device: resolved, amount: 1, placement: .stretch, color: color
+    )
     let actual = try color.readLinearRGBA(result)
     #expect(actual.count == expected.count)
     #expect(zip(actual, expected).map { abs($0 - $1) }.max() ?? 0 < 0.003)
+}
+
+@Test @MainActor func devicePlacementUsesResolvedDeviceAspectWithoutMutatingPreset() throws {
+    let color = try StudioColorMetalDisplay()
+    let stage = try DeviceMetalStage()
+    var definition = try #require(try RustDeviceCatalog.builtIns().first)
+    definition.nativeWidth = 2
+    definition.nativeHeight = 4
+    let resolved = try definition.resolved()
+    let source = [Float](repeating: 1, count: 4 * 4 * 4)
+    let frame = try color.makeACEScgFrame(
+        width: 4,
+        height: 4,
+        encodedRGBA: source,
+        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
+        alpha: .straight
+    )
+    let fit = try stage.process(
+        frame, device: resolved, amount: 1, placement: .fit, color: color
+    )
+    let values = try color.readLinearRGBA(fit)
+    let topRowMaximum = values[0 ..< 4 * 4].max() ?? 0
+    let middleOffset = 4 * 4
+    let middleRowMaximum = values[middleOffset ..< middleOffset + 4 * 4].max() ?? 0
+    #expect(topRowMaximum < 0.01)
+    #expect(middleRowMaximum > topRowMaximum * 10)
+    #expect(resolved.definition.nativeWidth == 2)
+    #expect(resolved.definition.nativeHeight == 4)
 }
 
 @Test @MainActor func deviceStagePlaybackBenchmarkWhenRequested() throws {
@@ -112,7 +144,9 @@ import QuartzCore
     var milliseconds: [Double] = []
     for _ in 0..<30 {
         let started = CACurrentMediaTime()
-        _ = try stage.process(frame, device: resolved, amount: 1, color: color)
+        _ = try stage.process(
+            frame, device: resolved, amount: 1, placement: .stretch, color: color
+        )
         milliseconds.append((CACurrentMediaTime() - started) * 1_000)
     }
     milliseconds.sort()

@@ -8,10 +8,12 @@ final class DeviceMetalStage {
         var matrixRow1: SIMD4<Float>
         var matrixRow2: SIMD4<Float>
         var levels: SIMD4<Float>
+        var geometry: SIMD4<Float>
     }
 
     private let queue: MTLCommandQueue
     private let pipeline: MTLComputePipelineState
+    private let sampler: MTLSamplerState
     private let deviceSignalTransform = StudioColorOutputTransform.catalog.first {
         $0.id == "aces2-srgb-sdr-100"
     }!
@@ -33,12 +35,22 @@ final class DeviceMetalStage {
         }
         self.queue = queue
         pipeline = try device.makeComputePipelineState(function: function)
+        let samplerDescriptor = MTLSamplerDescriptor()
+        samplerDescriptor.minFilter = .linear
+        samplerDescriptor.magFilter = .linear
+        samplerDescriptor.sAddressMode = .clampToZero
+        samplerDescriptor.tAddressMode = .clampToZero
+        guard let sampler = device.makeSamplerState(descriptor: samplerDescriptor) else {
+            throw DeviceMetalError.textureCreation
+        }
+        self.sampler = sampler
     }
 
     func process(
         _ frame: StudioColorMetalFrame,
         device resolvedDevice: ResolvedDevice,
         amount: Double,
+        placement: WorkspaceModel.SourcePlacement,
         color: StudioColorMetalDisplay
     ) throws -> StudioColorMetalFrame {
         let amount = min(1, max(0, amount))
@@ -92,6 +104,14 @@ final class DeviceMetalStage {
                 parameters.blackLevelNits,
                 parameters.whiteLevelNits,
                 Float(amount)
+            ),
+            geometry: SIMD4(
+                Float(frame.width) / Float(frame.height),
+                Float(resolvedDevice.definition.nativeWidth)
+                    / Float(resolvedDevice.definition.nativeHeight),
+                placement.metalIndex,
+                Float(resolvedDevice.definition.nativeWidth)
+                    / Float(frame.width)
             )
         )
         encoder.setBytes(
@@ -99,6 +119,7 @@ final class DeviceMetalStage {
             length: MemoryLayout<Uniforms>.stride,
             index: 0
         )
+        encoder.setSamplerState(sampler, index: 0)
         let width = pipeline.threadExecutionWidth
         let height = max(1, pipeline.maxTotalThreadsPerThreadgroup / width)
         encoder.dispatchThreads(

@@ -127,7 +127,7 @@ struct ContentView: View {
             }
             .frame(minWidth: 360, idealWidth: 400, maxWidth: 560)
 
-            preview
+            preview()
                 .frame(minWidth: 640, minHeight: 480)
         }
         .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Workspace"))
@@ -177,6 +177,19 @@ struct ContentView: View {
                 }
 
                 if let device = model.resolvedDevice?.definition {
+                    Section("Placement de fuente") {
+                        Picker("Placement", selection: Binding(
+                            get: { model.sourcePlacement },
+                            set: { model.changeSourcePlacement($0) }
+                        )) {
+                            ForEach(WorkspaceModel.SourcePlacement.allCases) {
+                                Text($0.rawValue).tag($0)
+                            }
+                        }
+                        Text("Pertenece al estado de escena/render; no modifica el preset global.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Section("Propiedades efectivas resueltas") {
                         LabeledContent("Categoría", value: device.category.rawValue)
                         LabeledContent(
@@ -238,7 +251,9 @@ struct ContentView: View {
             .formStyle(.grouped)
             .frame(minWidth: 360, idealWidth: 400, maxWidth: 560)
 
-            preview
+            preview(deviceAspect: model.resolvedDevice.map {
+                Double($0.definition.nativeWidth) / Double($0.definition.nativeHeight)
+            })
                 .frame(minWidth: 640, minHeight: 480)
         }
         .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Device"))
@@ -1053,7 +1068,7 @@ struct ContentView: View {
         .frame(minHeight: 180, idealHeight: 220)
     }
 
-    private var preview: some View {
+    private func preview(deviceAspect: Double? = nil) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Picker("Pantalla", selection: Binding(
@@ -1107,7 +1122,7 @@ struct ContentView: View {
             ZStack {
                 Color(nsColor: .black)
                 if let frame = model.metalFrame {
-                    MetalPreview(
+                    let image = MetalPreview(
                         display: model.metalDisplay,
                         frame: frame,
                         output: model.previewTransform,
@@ -1124,6 +1139,13 @@ struct ContentView: View {
                         }
                     )
                     .accessibilityLabel("Preview OCIO del resultado")
+                    if let deviceAspect {
+                        image
+                            .aspectRatio(deviceAspect, contentMode: .fit)
+                            .background(.black)
+                    } else {
+                        image
+                    }
                 } else {
                     ContentUnavailableView(
                         "Sin frame",

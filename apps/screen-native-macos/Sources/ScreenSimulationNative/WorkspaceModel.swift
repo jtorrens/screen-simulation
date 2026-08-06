@@ -7,6 +7,22 @@ import StudioMedia
 
 @MainActor
 final class WorkspaceModel: ObservableObject {
+    enum SourcePlacement: String, CaseIterable, Identifiable {
+        case fit = "Fit"
+        case fillCrop = "Fill / Crop"
+        case stretch = "Stretch"
+        case oneToOne = "One to One"
+
+        var id: String { rawValue }
+        var metalIndex: Float {
+            switch self {
+            case .fit: 0
+            case .fillCrop: 1
+            case .stretch: 2
+            case .oneToOne: 3
+            }
+        }
+    }
     struct RenderJob: Identifiable {
         enum State: String { case pending, rendering, completed, failed, cancelled }
         let id = UUID()
@@ -58,6 +74,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var defaultSignalRange = StudioSignalRange.full
     @Published private(set) var resolvedDevice: ResolvedDevice?
     @Published private(set) var deviceStageAmount = 0.0
+    @Published var sourcePlacement = SourcePlacement.fit
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -91,6 +108,11 @@ final class WorkspaceModel: ObservableObject {
 
     func setDeviceStageAmount(_ amount: Double) {
         deviceStageAmount = min(1, max(0, amount))
+        rebuildCurrent()
+    }
+
+    func changeSourcePlacement(_ placement: SourcePlacement) {
+        sourcePlacement = placement
         rebuildCurrent()
     }
 
@@ -610,6 +632,7 @@ final class WorkspaceModel: ObservableObject {
             frame,
             device: resolvedDevice,
             amount: deviceStageAmount,
+            placement: sourcePlacement,
             color: metalDisplay
         )
     }
