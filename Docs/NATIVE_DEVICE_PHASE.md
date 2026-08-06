@@ -51,6 +51,11 @@ negative values, values above one and alpha, while the existing I/O page keeps
 Device at exact identity. Preview and any future Device render consumer call the
 same `DeviceMetalStage`; no second physical route exists.
 
+On the development Apple-silicon host, 30 completed 960×540 Device evaluations
+measured 0.974 ms median and 1.917 ms p95, including the pinned OCIO device-signal
+transform and Device Metal command completion. The reproducible command is
+`SCREEN_DEVICE_BENCHMARK=1 swift test --filter deviceStagePlaybackBenchmarkWhenRequested`.
+
 ## Native UX
 
 The bottom native navigation now has Principal, Device and Settings pages.

@@ -1,5 +1,6 @@
 import Testing
 import StudioColor
+import QuartzCore
 @testable import ScreenSimulationNative
 
 @Test func rustDeviceCatalogIsTheSinglePresetAuthority() throws {
@@ -81,4 +82,42 @@ import StudioColor
     let actual = try color.readLinearRGBA(result)
     #expect(actual.count == expected.count)
     #expect(zip(actual, expected).map { abs($0 - $1) }.max() ?? 0 < 0.003)
+}
+
+@Test @MainActor func deviceStagePlaybackBenchmarkWhenRequested() throws {
+    guard ProcessInfo.processInfo.environment["SCREEN_DEVICE_BENCHMARK"] == "1" else {
+        return
+    }
+    let color = try StudioColorMetalDisplay()
+    let stage = try DeviceMetalStage()
+    let definition = try #require(try RustDeviceCatalog.builtIns().first)
+    let resolved = try definition.resolved()
+    let width = 960
+    let height = 540
+    var source = [Float](repeating: 0, count: width * height * 4)
+    for offset in stride(from: 0, to: source.count, by: 4) {
+        let x = Float((offset / 4) % width) / Float(width - 1)
+        source[offset] = x
+        source[offset + 1] = 0.18
+        source[offset + 2] = 1 - x
+        source[offset + 3] = 1
+    }
+    let frame = try color.makeACEScgFrame(
+        width: width,
+        height: height,
+        encodedRGBA: source,
+        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
+        alpha: .straight
+    )
+    var milliseconds: [Double] = []
+    for _ in 0..<30 {
+        let started = CACurrentMediaTime()
+        _ = try stage.process(frame, device: resolved, amount: 1, color: color)
+        milliseconds.append((CACurrentMediaTime() - started) * 1_000)
+    }
+    milliseconds.sort()
+    let median = milliseconds[milliseconds.count / 2]
+    let p95 = milliseconds[Int(Double(milliseconds.count - 1) * 0.95)]
+    print("DEVICE_STAGE_960x540 median_ms=\(median) p95_ms=\(p95)")
+    #expect(p95 < 41.67)
 }
