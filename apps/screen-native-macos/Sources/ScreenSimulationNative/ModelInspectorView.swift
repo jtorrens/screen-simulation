@@ -85,6 +85,16 @@ struct ModelInspectorView: View {
 
             Section("Pipeline del fotograma seleccionado") {
                 pipelineSummary
+                Picker("Diagnóstico", selection: Binding(
+                    get: { workspace.requestedPhysicalIntermediate },
+                    set: { workspace.selectPhysicalIntermediate($0) }
+                )) {
+                    ForEach(PhysicalIntermediate.supportedDiagnostics) { intermediate in
+                        Text(intermediate.uiLabel).tag(intermediate)
+                    }
+                }
+                .help("Seleccionar el intermedio del pipeline físico")
+                .accessibilityLabel("Intermedio del pipeline físico")
                 Text("El resultado permanece ACEScg. La ODT del visor y ColorSync se aplican después.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

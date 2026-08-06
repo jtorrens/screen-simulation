@@ -1368,18 +1368,6 @@ struct ContentView: View {
                 .frame(maxWidth: 330)
                 Spacer()
                 if modelMode {
-                    Picker("Intermedio físico", selection: Binding(
-                        get: { model.requestedPhysicalIntermediate },
-                        set: { model.selectPhysicalIntermediate($0) }
-                    )) {
-                        ForEach(PhysicalIntermediate.supportedDiagnostics) { intermediate in
-                            Text(intermediate.uiLabel).tag(intermediate)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 180)
-                    .help("Seleccionar el intermedio del pipeline físico")
-                    .accessibilityLabel("Intermedio del pipeline físico")
                     Picker("Calidad física", selection: Binding(
                         get: { model.physicalModel.quality },
                         set: { model.changePhysicalQuality($0) }
