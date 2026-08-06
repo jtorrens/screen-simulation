@@ -57,6 +57,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var defaultSignalRange = StudioSignalRange.full
 
     let metalDisplay: StudioColorMetalDisplay
+    let monitorOutput = MonitorOutputController()
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
     private var tickSubscription: AnyCancellable?
@@ -479,6 +480,9 @@ final class WorkspaceModel: ObservableObject {
                 width: decoded.width, height: decoded.height, encodedRGBA: decoded.rgba,
                 input: inputTransform, alpha: effectiveAlpha
             )
+            if let metalFrame {
+                monitorOutput.update(frame: metalFrame, display: metalDisplay)
+            }
             sourceDetail = "Patrón SCREEN canónico · \(decoded.width) × \(decoded.height)"
             decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
             status = "Textura ACEScg Metal · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
@@ -504,6 +508,9 @@ final class WorkspaceModel: ObservableObject {
             pixelBuffer: sample.pixelBuffer, input: inputTransform,
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
         )
+        if let metalFrame {
+            monitorOutput.update(frame: metalFrame, display: metalDisplay)
+        }
         currentFrame = min(frameCount - 1, max(0, Int((sample.time.seconds * frameRate).rounded())))
         decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
         status = "CVPixelBuffer → ACEScg → Preview · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"

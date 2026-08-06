@@ -2,6 +2,7 @@ import AppKit
 import MetalKit
 import StudioColor
 import StudioMedia
+import StudioVideoOutput
 import SwiftUI
 
 struct ContentView: View {
@@ -106,15 +107,138 @@ struct ContentView: View {
             globalCollections
             .tabItem { Label("Colecciones", systemImage: "square.stack.3d.up") }
 
-            Form {
-                Section("Monitor externo") {
-                    Text("La salida DeckLink usa una ODT de monitorización independiente.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .formStyle(.grouped)
+            monitorSettings
             .tabItem { Label("Monitor", systemImage: "rectangle.connected.to.line.below") }
         }
+    }
+
+    private var monitorSettings: some View {
+        Form {
+            Section("DeckLink") {
+                LabeledContent(
+                    "Runtime",
+                    value: model.monitorOutput.report.runtime.displayName
+                )
+                LabeledContent(
+                    "Integración",
+                    value: model.monitorOutput.report.bridge.displayName
+                )
+                LabeledContent(
+                    "Dispositivos",
+                    value: "\(model.monitorOutput.report.devices.count)"
+                )
+                LabeledContent("Estado", value: model.monitorOutput.status)
+                Button("Actualizar dispositivos") {
+                    model.monitorOutput.refresh()
+                }
+            }
+
+            if !model.monitorOutput.report.devices.isEmpty {
+                Section("Señal de monitorización") {
+                    Picker(
+                        "Dispositivo",
+                        selection: Binding(
+                            get: { model.monitorOutput.selectedDeviceID },
+                            set: { model.monitorOutput.selectDevice($0) }
+                        )
+                    ) {
+                        ForEach(model.monitorOutput.report.devices) { device in
+                            Text(device.name).tag(device.id)
+                        }
+                    }
+                    if let device = model.monitorOutput.selectedDevice {
+                        Picker(
+                            "Modo",
+                            selection: Binding(
+                                get: { model.monitorOutput.selectedModeID },
+                                set: { model.monitorOutput.selectMode($0) }
+                            )
+                        ) {
+                            ForEach(device.modes, id: \.identifier) { mode in
+                                Text(
+                                    "\(mode.name) · \(mode.width) × \(mode.height) · "
+                                        + "\(mode.framesPerSecond) fps"
+                                )
+                                .tag(mode.identifier)
+                            }
+                        }
+                    }
+                    if let mode = model.monitorOutput.selectedMode {
+                        Picker(
+                            "ODT",
+                            selection: Binding(
+                                get: { model.monitorOutput.selectedTransform },
+                                set: { model.monitorOutput.selectTransform($0) }
+                            )
+                        ) {
+                            ForEach(
+                                MonitorOutputTransform.allCases.filter {
+                                    mode.supportedSignals.contains($0.signal)
+                                }
+                            ) { transform in
+                                Text(transform.label).tag(transform)
+                            }
+                        }
+                        Picker(
+                            "Rango",
+                            selection: Binding(
+                                get: { model.monitorOutput.selectedRange },
+                                set: { model.monitorOutput.selectRange($0) }
+                            )
+                        ) {
+                            ForEach(
+                                VideoOutputRange.allCases.filter {
+                                    mode.supportedRanges.contains($0)
+                                }
+                            ) { range in
+                                Text(range.displayName).tag(range)
+                            }
+                        }
+                        Picker(
+                            "Formato de píxel",
+                            selection: Binding(
+                                get: { model.monitorOutput.selectedPixelFormat },
+                                set: { model.monitorOutput.selectPixelFormat($0) }
+                            )
+                        ) {
+                            ForEach(
+                                VideoOutputPixelFormat.allCases.filter {
+                                    mode.supportedPixelFormats.contains($0)
+                                }
+                            ) { pixelFormat in
+                                Text(pixelFormat.displayName).tag(pixelFormat)
+                            }
+                        }
+                    }
+                    Button(
+                        model.monitorOutput.isEnabled
+                            ? "Detener monitorización" : "Iniciar monitorización"
+                    ) {
+                        model.monitorOutput.toggle(
+                            frame: model.metalFrame,
+                            display: model.metalDisplay
+                        )
+                    }
+                    .disabled(model.monitorOutput.selectedMode == nil)
+                }
+            }
+
+            if let error = model.monitorOutput.errorMessage {
+                Section("Error") {
+                    Text(error).foregroundStyle(.red)
+                }
+            }
+
+            Section {
+                Text(
+                    "La ODT, el dispositivo/modo, la resolución/fps, el rango "
+                        + "y el formato de píxel pertenecen a DeckLink. No reutilizan "
+                        + "la View del Mac ni la ODT de la cola de render."
+                )
+                .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private var globalCollections: some View {

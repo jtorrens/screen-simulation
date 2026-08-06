@@ -14,6 +14,10 @@ let package = Package(
     dependencies: [
         .package(path: "../../packages/StudioColor"),
         .package(path: "../../packages/StudioMedia"),
+        .package(
+            url: "https://github.com/jtorrens/StudioVideoOutput.git",
+            exact: "0.1.0"
+        ),
     ],
     targets: [
         .target(
@@ -30,12 +34,22 @@ let package = Package(
             dependencies: [
                 .product(name: "StudioColor", package: "StudioColor"),
                 .product(name: "StudioMedia", package: "StudioMedia"),
+                .product(
+                    name: "StudioVideoOutput",
+                    package: "StudioVideoOutput"
+                ),
                 "ScreenPhysicalBridge",
             ]
         ),
         .testTarget(
             name: "ScreenSimulationNativeTests",
-            dependencies: ["ScreenSimulationNative"]
+            dependencies: [
+                "ScreenSimulationNative",
+                .product(
+                    name: "StudioVideoOutput",
+                    package: "StudioVideoOutput"
+                ),
+            ]
         ),
     ]
 )
