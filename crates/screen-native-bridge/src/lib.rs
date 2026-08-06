@@ -1474,7 +1474,7 @@ mod tests {
         }
         assert_eq!(result.state, STATE_COMPLETE);
         assert_eq!(result.progress, 1.0);
-        assert_eq!((result.native_width, result.native_height), (6, 1));
+        assert_eq!((result.native_width, result.native_height), (6, 3));
         assert_eq!((result.effective_width, result.effective_height), (4, 2));
         assert_eq!(result.parameter_revision, 42);
         assert_eq!(

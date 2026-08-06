@@ -36,7 +36,7 @@ fn request(
             placement: RasterPlacement::Stretch,
             quality,
             requested_width: 6,
-            requested_height: 1,
+            requested_height: 3,
             screen_amount,
             emission_amount,
             subpixel_geometry_amount: geometry_amount,
@@ -105,7 +105,7 @@ fn quality_lattices_keep_frame_and_reach_the_native_authority() {
     assert!(
         results
             .iter()
-            .all(|value| (value.width, value.height) == (6, 1))
+            .all(|value| (value.width, value.height) == (6, 3))
     );
     assert_eq!(
         results
