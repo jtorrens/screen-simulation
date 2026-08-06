@@ -48,7 +48,11 @@ import QuartzCore
         alpha: .straight
     )
     let result = try stage.process(
-        frame, device: resolved, amount: 0, placement: .stretch, color: color
+        sourceACEScg: frame,
+        deviceSignal: frame,
+        device: resolved,
+        amount: 0,
+        placement: .stretch
     )
     #expect(result === frame)
     #expect(result.texture === frame.texture)
@@ -80,10 +84,15 @@ import QuartzCore
     let deviceTransform = StudioColorOutputTransform.catalog.first {
         $0.id == "aces2-srgb-sdr-100"
     }!
-    let deviceCode = try color.renderRGBAFloat(frame, output: deviceTransform)
+    let deviceSignal = try color.transformToMetalFrame(frame, output: deviceTransform)
+    let deviceCode = try color.readLinearRGBA(deviceSignal)
     let expected = try resolved.cpuOracle(deviceCode: deviceCode)
     let result = try stage.process(
-        frame, device: resolved, amount: 1, placement: .stretch, color: color
+        sourceACEScg: frame,
+        deviceSignal: deviceSignal,
+        device: resolved,
+        amount: 1,
+        placement: .stretch
     )
     let actual = try color.readLinearRGBA(result)
     #expect(actual.count == expected.count)
@@ -105,8 +114,16 @@ import QuartzCore
         input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
         alpha: .straight
     )
+    let deviceTransform = StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-srgb-sdr-100"
+    }!
+    let deviceSignal = try color.transformToMetalFrame(frame, output: deviceTransform)
     let fit = try stage.process(
-        frame, device: resolved, amount: 1, placement: .fit, color: color
+        sourceACEScg: frame,
+        deviceSignal: deviceSignal,
+        device: resolved,
+        amount: 1,
+        placement: .fit
     )
     #expect(fit.width == 2)
     #expect(fit.height == 4)
@@ -146,11 +163,19 @@ import QuartzCore
         input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
         alpha: .straight
     )
+    let deviceTransform = StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-srgb-sdr-100"
+    }!
+    let deviceSignal = try color.transformToMetalFrame(frame, output: deviceTransform)
     var milliseconds: [Double] = []
     for _ in 0..<30 {
         let started = CACurrentMediaTime()
         _ = try stage.process(
-            frame, device: resolved, amount: 1, placement: .stretch, color: color
+            sourceACEScg: frame,
+            deviceSignal: deviceSignal,
+            device: resolved,
+            amount: 1,
+            placement: .stretch
         )
         milliseconds.append((CACurrentMediaTime() - started) * 1_000)
     }

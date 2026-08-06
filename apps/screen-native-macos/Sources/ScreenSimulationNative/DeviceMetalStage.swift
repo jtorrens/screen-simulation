@@ -14,10 +14,6 @@ final class DeviceMetalStage {
     private let queue: MTLCommandQueue
     private let pipeline: MTLComputePipelineState
     private let sampler: MTLSamplerState
-    private let deviceSignalTransform = StudioColorOutputTransform.catalog.first {
-        $0.id == "aces2-srgb-sdr-100"
-    }!
-
     init(device: MTLDevice = MTLCreateSystemDefaultDevice()!) throws {
         guard let queue = device.makeCommandQueue() else {
             throw DeviceMetalError.unavailableQueue
@@ -47,21 +43,17 @@ final class DeviceMetalStage {
     }
 
     func process(
-        _ frame: StudioColorMetalFrame,
+        sourceACEScg: StudioColorMetalFrame,
+        deviceSignal: StudioColorMetalFrame,
         device resolvedDevice: ResolvedDevice,
         amount: Double,
-        placement: WorkspaceModel.SourcePlacement,
-        color: StudioColorMetalDisplay
+        placement: PhysicalRasterPlacement
     ) throws -> StudioColorMetalFrame {
         let amount = min(1, max(0, amount))
         guard amount > 0 else {
-            return frame
+            return sourceACEScg
         }
         let parameters = try resolvedDevice.metalEvaluationParameters()
-        let deviceCode = try color.transformToMetalFrame(
-            frame,
-            output: deviceSignalTransform
-        )
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
             width: resolvedDevice.definition.nativeWidth,
@@ -70,15 +62,15 @@ final class DeviceMetalStage {
         )
         descriptor.usage = [.shaderRead, .shaderWrite]
         descriptor.storageMode = .private
-        guard let target = frame.texture.device.makeTexture(descriptor: descriptor),
+        guard let target = sourceACEScg.texture.device.makeTexture(descriptor: descriptor),
               let command = queue.makeCommandBuffer(),
               let encoder = command.makeComputeCommandEncoder()
         else {
             throw DeviceMetalError.textureCreation
         }
         encoder.setComputePipelineState(pipeline)
-        encoder.setTexture(frame.texture, index: 0)
-        encoder.setTexture(deviceCode.texture, index: 1)
+        encoder.setTexture(sourceACEScg.texture, index: 0)
+        encoder.setTexture(deviceSignal.texture, index: 1)
         encoder.setTexture(target, index: 2)
         var uniforms = Uniforms(
             matrixRow0: SIMD4(
@@ -106,12 +98,12 @@ final class DeviceMetalStage {
                 Float(amount)
             ),
             geometry: SIMD4(
-                Float(frame.width) / Float(frame.height),
+                Float(sourceACEScg.width) / Float(sourceACEScg.height),
                 Float(resolvedDevice.definition.nativeWidth)
                     / Float(resolvedDevice.definition.nativeHeight),
-                placement.metalIndex,
+                Float(placement.rawValue),
                 Float(resolvedDevice.definition.nativeWidth)
-                    / Float(frame.width)
+                    / Float(sourceACEScg.width)
             )
         )
         encoder.setBytes(

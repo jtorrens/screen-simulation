@@ -14,12 +14,12 @@ final class WorkspaceModel: ObservableObject {
         case oneToOne = "One to One"
 
         var id: String { rawValue }
-        var metalIndex: Float {
+        var physicalRasterPlacement: PhysicalRasterPlacement {
             switch self {
-            case .fit: 0
-            case .fillCrop: 1
-            case .stretch: 2
-            case .oneToOne: 3
+            case .fit: .fit
+            case .fillCrop: .fillCrop
+            case .stretch: .stretch
+            case .oneToOne: .oneToOne
             }
         }
     }
@@ -79,14 +79,19 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var deviceStageAmount = 0.0
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
     @Published var sourcePlacement = SourcePlacement.fit
+    @Published var modelViewerOneToOne = false
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
     let deviceMetalStage: DeviceMetalStage
     let physicalModel = PhysicalModelController()
+    private let deviceSignalTransform = StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-srgb-sdr-100"
+    }!
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
     private var tickSubscription: AnyCancellable?
+    private var physicalSubscription: AnyCancellable?
     private var renderTask: Task<Void, Never>?
     private var physicalNativeTask: Task<Void, Never>?
     private var isModelPageActive = false
@@ -99,6 +104,9 @@ final class WorkspaceModel: ObservableObject {
         }
         physicalModel.cancelNativeWork = { [weak self] in
             self?.physicalNativeTask?.cancel()
+        }
+        physicalSubscription = physicalModel.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
         }
         renderPattern()
         tickSubscription = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common)
@@ -114,6 +122,15 @@ final class WorkspaceModel: ObservableObject {
             resolvedDevice = try definition.resolved()
             deviceStageAmount = min(1, max(0, amount))
             rebuildCurrent()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func selectModelDevice(_ definition: DeviceDefinition) {
+        do {
+            resolvedDevice = try definition.resolved()
+            rebuildPhysicalSelectedFrame()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -492,6 +509,14 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func resetView() { zoom = 1; pan = .zero }
+    func fitModelPreview() {
+        modelViewerOneToOne = false
+        resetView()
+    }
+    func showModelPreviewOneToOne() {
+        modelViewerOneToOne = true
+        resetView()
+    }
     func zoomBy(_ factor: Double) { zoom = min(16, max(0.1, zoom * factor)) }
     var zoomPercentage: Double {
         get { zoom * 100 }
@@ -751,12 +776,16 @@ final class WorkspaceModel: ObservableObject {
                 "La etapa Device física necesita un snapshot resuelto."
             )
         }
-        return try deviceMetalStage.process(
+        let deviceSignal = try metalDisplay.transformToMetalFrame(
             frame,
+            output: deviceSignalTransform
+        )
+        return try deviceMetalStage.process(
+            sourceACEScg: frame,
+            deviceSignal: deviceSignal,
             device: resolvedDevice,
             amount: deviceStageAmount,
-            placement: sourcePlacement,
-            color: metalDisplay
+            placement: sourcePlacement.physicalRasterPlacement
         )
     }
 
@@ -785,7 +814,11 @@ final class WorkspaceModel: ObservableObject {
             throw PhysicalEvaluationAvailabilityError.artisticScreenPending
         }
         let changedSection = physicalModel.orderedContributions.first { contribution in
-            switch contribution.control {
+            let domainIsActive = contribution.stage.domain == .screen
+                ? physicalModel.screenAmount > 0
+                : physicalModel.captureAmount > 0
+            guard domainIsActive else { return false }
+            return switch contribution.control {
             case let .continuous(amount, _): amount != 1
             case let .discrete(enabled): !enabled
             }
