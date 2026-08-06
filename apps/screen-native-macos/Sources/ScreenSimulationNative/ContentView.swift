@@ -261,6 +261,9 @@ struct ContentView: View {
 
                     renderPresetLibrary
                         .tabItem { Label("Presets", systemImage: "slider.horizontal.3") }
+
+                    deviceLibrary
+                        .tabItem { Label("Devices", systemImage: "display") }
                 }
             }
         }
@@ -386,6 +389,237 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView("Sin preset", systemImage: "slider.horizontal.3")
             }
+        }
+    }
+
+    private var deviceLibrary: some View {
+        HSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedDeviceID) {
+                    ForEach(library.document.devices) { device in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(device.name)
+                            Text(device.category.rawValue)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(device.id)
+                    }
+                }
+                HStack {
+                    Button(action: library.addDevice) { Image(systemName: "plus") }
+                        .help("Crear device global")
+                    Button(action: library.duplicateSelectedDevice) {
+                        Image(systemName: "plus.square.on.square")
+                    }
+                    .disabled(library.selectedDeviceID == nil)
+                    .help("Duplicar device")
+                    Button(action: library.removeSelectedDevice) {
+                        Image(systemName: "minus")
+                    }
+                    .disabled(library.selectedDeviceID == nil)
+                    .help("Eliminar device")
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(8)
+            }
+            .frame(minWidth: 220, idealWidth: 280)
+
+            if let device = library.selectedDevice {
+                deviceEditor(device)
+            } else {
+                ContentUnavailableView("Sin device", systemImage: "display.slash")
+            }
+        }
+    }
+
+    private func deviceEditor(_ device: DeviceDefinition) -> some View {
+        Form {
+            Section("Identidad") {
+                TextField("Nombre", text: Binding(
+                    get: { device.name },
+                    set: { value in library.updateSelectedDevice { $0.name = value } }
+                ))
+                Picker("Categoría", selection: Binding(
+                    get: { device.category },
+                    set: { value in library.updateSelectedDevice { $0.category = value } }
+                )) {
+                    ForEach(DeviceCategory.allCases) { Text($0.rawValue).tag($0) }
+                }
+                LabeledContent("ID estable", value: device.id)
+                    .textSelection(.enabled)
+            }
+
+            Section("Geometría física") {
+                TextField("Anchura nativa", value: Binding(
+                    get: { device.nativeWidth },
+                    set: { value in library.updateSelectedDevice { $0.nativeWidth = value } }
+                ), format: .number)
+                TextField("Altura nativa", value: Binding(
+                    get: { device.nativeHeight },
+                    set: { value in library.updateSelectedDevice { $0.nativeHeight = value } }
+                ), format: .number)
+                TextField("Anchura activa (m)", value: Binding(
+                    get: { device.activeWidthMeters },
+                    set: { value in library.updateSelectedDevice { $0.activeWidthMeters = value } }
+                ), format: .number.precision(.fractionLength(6)))
+                TextField("Altura activa (m)", value: Binding(
+                    get: { device.activeHeightMeters },
+                    set: { value in library.updateSelectedDevice { $0.activeHeightMeters = value } }
+                ), format: .number.precision(.fractionLength(6)))
+                LabeledContent("Diagonal", value: "\(device.diagonalInches.formatted(.number.precision(.fractionLength(1)))) in")
+                LabeledContent("PPI", value: device.pixelsPerInch.formatted(.number.precision(.fractionLength(1))))
+                LabeledContent("Pixel pitch", value: "\(device.pixelPitchMicrometers.formatted(.number.precision(.fractionLength(1)))) µm")
+            }
+
+            Section("Panel y emisión") {
+                Picker("Tecnología", selection: Binding(
+                    get: { device.panelTechnology },
+                    set: { value in library.updateSelectedDevice { $0.panelTechnology = value } }
+                )) {
+                    ForEach(DevicePanelTechnology.allCases) { Text($0.rawValue).tag($0) }
+                }
+                Picker("Modelo", selection: Binding(
+                    get: { device.emissionModel },
+                    set: { value in library.updateSelectedDevice { $0.emissionModel = value } }
+                )) {
+                    ForEach(DeviceEmissionModel.allCases) { Text($0.rawValue).tag($0) }
+                }
+                TextField("EOTF gamma", value: Binding(
+                    get: { device.eotfGamma },
+                    set: { value in library.updateSelectedDevice { $0.eotfGamma = value } }
+                ), format: .number)
+                TextField("Negro (nits)", value: Binding(
+                    get: { device.blackLevelNits },
+                    set: { value in library.updateSelectedDevice { $0.blackLevelNits = value } }
+                ), format: .number)
+                TextField("Blanco (nits)", value: Binding(
+                    get: { device.whiteLevelNits },
+                    set: { value in library.updateSelectedDevice { $0.whiteLevelNits = value } }
+                ), format: .number)
+                TextField("Base del blanco", text: Binding(
+                    get: { device.whiteBasis },
+                    set: { value in library.updateSelectedDevice { $0.whiteBasis = value } }
+                ))
+            }
+
+            Section("Subpíxeles") {
+                Picker("Orden", selection: Binding(
+                    get: { device.stripeLayout },
+                    set: { value in library.updateSelectedDevice { $0.stripeLayout = value } }
+                )) {
+                    ForEach(DeviceStripeLayout.allCases) { Text($0.rawValue).tag($0) }
+                }
+                TextField("Black matrix", value: Binding(
+                    get: { device.blackMatrixFraction },
+                    set: { value in library.updateSelectedDevice { $0.blackMatrixFraction = value } }
+                ), format: .number)
+            }
+
+            DisclosureGroup("Colorimetría nativa") {
+                chromaticityRow("Rojo", value: device.red) { newValue in
+                    library.updateSelectedDevice { $0.red = newValue }
+                }
+                chromaticityRow("Verde", value: device.green) { newValue in
+                    library.updateSelectedDevice { $0.green = newValue }
+                }
+                chromaticityRow("Azul", value: device.blue) { newValue in
+                    library.updateSelectedDevice { $0.blue = newValue }
+                }
+                chromaticityRow("Blanco", value: device.white) { newValue in
+                    library.updateSelectedDevice { $0.white = newValue }
+                }
+            }
+
+            DisclosureGroup("Respuesta angular y temporal") {
+                ForEach(Array(["R", "G", "B"].enumerated()), id: \.offset) { item in
+                    TextField("Potencia angular \(item.element)", value: Binding(
+                        get: { device.angularEmissionPower[item.offset] },
+                        set: { value in
+                            library.updateSelectedDevice {
+                                $0.angularEmissionPower[item.offset] = value
+                            }
+                        }
+                    ), format: .number)
+                }
+                TextField("Flicker residual (Hz)", value: Binding(
+                    get: { 1 / device.residualFlickerPeriod.seconds },
+                    set: { value in
+                        library.updateSelectedDevice {
+                            $0.residualFlickerPeriod = .init(
+                                numerator: 1,
+                                denominator: UInt32(max(1, value.rounded()))
+                            )
+                        }
+                    }
+                ), format: .number)
+                TextField("Amplitud residual", value: Binding(
+                    get: { device.residualFlickerAmplitude },
+                    set: { value in
+                        library.updateSelectedDevice {
+                            $0.residualFlickerAmplitude = value
+                        }
+                    }
+                ), format: .number)
+                TextField("Banding (Hz)", value: Binding(
+                    get: { 1 / device.bandingPeriod.seconds },
+                    set: { value in
+                        library.updateSelectedDevice {
+                            let denominator = UInt32(max(1, value.rounded()))
+                            $0.bandingPeriod = .init(numerator: 1, denominator: denominator)
+                            $0.bandingOnDuration = .init(
+                                numerator: 1,
+                                denominator: denominator * 2
+                            )
+                        }
+                    }
+                ), format: .number)
+                TextField("Cantidad de banding", value: Binding(
+                    get: { device.bandingAmount },
+                    set: { value in
+                        library.updateSelectedDevice { $0.bandingAmount = value }
+                    }
+                ), format: .number)
+            }
+
+            Section("Asociación") {
+                TextField("Cover glass predeterminado", text: Binding(
+                    get: { device.defaultCoverGlassPresetID },
+                    set: { value in
+                        library.updateSelectedDevice {
+                            $0.defaultCoverGlassPresetID = value
+                        }
+                    }
+                ))
+            }
+
+            if let validation = library.deviceValidationMessage {
+                Section("Validación") {
+                    Text(validation).foregroundStyle(.red)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func chromaticityRow(
+        _ label: String,
+        value: DeviceChromaticity,
+        update: @escaping (DeviceChromaticity) -> Void
+    ) -> some View {
+        LabeledContent(label) {
+            HStack {
+                TextField("x", value: Binding(
+                    get: { value.x },
+                    set: { update(.init(x: $0, y: value.y)) }
+                ), format: .number)
+                TextField("y", value: Binding(
+                    get: { value.y },
+                    set: { update(.init(x: value.x, y: $0)) }
+                ), format: .number)
+            }
+            .frame(maxWidth: 240)
         }
     }
 

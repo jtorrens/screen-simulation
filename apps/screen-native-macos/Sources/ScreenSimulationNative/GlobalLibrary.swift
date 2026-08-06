@@ -158,6 +158,8 @@ final class GlobalLibraryController: ObservableObject {
     @Published private(set) var document = GlobalLibraryDocument()
     @Published var selectedImageID: UUID?
     @Published var selectedPresetID: UUID?
+    @Published var selectedDeviceID: String?
+    @Published private(set) var deviceValidationMessage: String?
     @Published private(set) var blockedError: String?
 
     private let store: GlobalLibraryStore?
@@ -172,6 +174,7 @@ final class GlobalLibraryController: ObservableObject {
             document = try store.load()
             selectedImageID = document.testImages.first?.id
             selectedPresetID = allRenderPresets.first?.id
+            selectedDeviceID = document.devices.first?.id
         } catch {
             blockedError = error.localizedDescription
         }
@@ -179,6 +182,10 @@ final class GlobalLibraryController: ObservableObject {
 
     var allRenderPresets: [StudioRenderPreset] {
         StudioRenderPreset.builtIns + document.renderPresets
+    }
+
+    var selectedDevice: DeviceDefinition? {
+        document.devices.first { $0.id == selectedDeviceID }
     }
 
     func addTestImage() {
@@ -253,6 +260,52 @@ final class GlobalLibraryController: ObservableObject {
         guard let selectedPresetID else { return }
         document.renderPresets.removeAll { $0.id == selectedPresetID }
         self.selectedPresetID = allRenderPresets.first?.id
+        persistOrBlock()
+    }
+
+    func addDevice() {
+        guard let catalog = try? RustDeviceCatalog.builtIns(),
+              var device = catalog.first
+        else { return }
+        device.id = UUID().uuidString.lowercased()
+        device.name = "Device personalizado"
+        document.devices.append(device)
+        selectedDeviceID = device.id
+        deviceValidationMessage = nil
+        persistOrBlock()
+    }
+
+    func duplicateSelectedDevice() {
+        guard var device = selectedDevice else { return }
+        device.id = UUID().uuidString.lowercased()
+        device.name += " copia"
+        document.devices.append(device)
+        selectedDeviceID = device.id
+        deviceValidationMessage = nil
+        persistOrBlock()
+    }
+
+    func updateSelectedDevice(_ mutation: (inout DeviceDefinition) -> Void) {
+        guard let selectedDeviceID,
+              let index = document.devices.firstIndex(where: { $0.id == selectedDeviceID })
+        else { return }
+        var candidate = document.devices[index]
+        mutation(&candidate)
+        do {
+            _ = try candidate.resolved()
+            document.devices[index] = candidate
+            try persist()
+            deviceValidationMessage = nil
+        } catch {
+            deviceValidationMessage = error.localizedDescription
+        }
+    }
+
+    func removeSelectedDevice() {
+        guard let selectedDeviceID else { return }
+        document.devices.removeAll { $0.id == selectedDeviceID }
+        self.selectedDeviceID = document.devices.first?.id
+        deviceValidationMessage = nil
         persistOrBlock()
     }
 
