@@ -43,6 +43,7 @@ enum NativeOutputRenderer {
     ) async throws -> URL {
         let frames = Array(frameRange)
         guard let firstIndex = frames.first else { throw NativeOutputError.invalidFrame }
+        try validate(format: format, preset: preset)
         let first = try await frameProvider(firstIndex)
         let output = outputTransform(for: preset)
         if format.isMovie {
@@ -93,7 +94,15 @@ enum NativeOutputRenderer {
             let url = directory.appendingPathComponent(name).appendingPathExtension(format.fileExtension)
             switch format {
             case .openEXR:
-                try encodeEXR(try display.readLinearRGBA(frame), width: frame.width, height: frame.height).write(to: url, options: .atomic)
+                var values = try display.readLinearRGBA(frame)
+                if preset.target == .aces2065 {
+                    let processor = try StudioColorEngine.bundled().cachedColorSpaceProcessor(
+                        source: "ACEScg", destination: "ACES2065-1"
+                    )
+                    try processor.apply(toRGBA: &values)
+                }
+                try encodeEXR(values, width: frame.width, height: frame.height)
+                    .write(to: url, options: .atomic)
             case .dpx10RGB:
                 guard let output else { throw NativeOutputError.unsupported("DPX requiere ODT") }
                 try encodeDPX(
@@ -135,6 +144,34 @@ enum NativeOutputRenderer {
             id: "render-\(preset.id.uuidString)", label: preset.name,
             display: display, view: view, encoding: encoding
         )
+    }
+
+    private static func validate(
+        format: StudioOutputFormat,
+        preset: StudioRenderPreset
+    ) throws {
+        switch format {
+        case .h264Low, .h264Medium, .h264High:
+            guard preset.target == .sdr else {
+                throw NativeOutputError.unsupported("H.264 requiere una ODT SDR")
+            }
+        case .h265Low, .h265Medium, .h265High:
+            guard preset.target == .hdr else {
+                throw NativeOutputError.unsupported("H.265 requiere una ODT HDR")
+            }
+        case .proRes4444, .proRes4444XQ:
+            guard preset.target == .sdr || preset.target == .hdr else {
+                throw NativeOutputError.unsupported("ProRes 4444 requiere una ODT SDR/HDR")
+            }
+        case .openEXR:
+            guard preset.target == .acescg || preset.target == .aces2065 else {
+                throw NativeOutputError.unsupported("OpenEXR requiere ACEScg o ACES2065-1")
+            }
+        case .dpx10RGB, .tiff16:
+            guard preset.target == .sdr || preset.target == .hdr else {
+                throw NativeOutputError.unsupported("la secuencia display-referred requiere ODT")
+            }
+        }
     }
 
     private static func muxAudio(
