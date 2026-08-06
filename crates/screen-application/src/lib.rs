@@ -39,6 +39,7 @@ use screen_panel::{
 use screen_sensor::{
     BayerPattern, CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
     SensorError, SensorProfile, SensorRegion, expose_raw, expose_raw_region,
+    expose_raw_with_noise_amount,
 };
 use std::time::{Duration, Instant};
 
@@ -202,6 +203,12 @@ pub struct PhysicalPipelineExecutionPlan {
     pub shutter_close: RationalTime,
     pub shutter_motion: ResolvedShutterMotionSnapshot,
     pub shutter_motion_amount: f32,
+    pub sensor: SensorProfile,
+    pub sensor_enabled: bool,
+    pub sensor_noise_amount: f32,
+    pub development: CameraDevelopment,
+    pub development_enabled: bool,
+    pub frame_index: i64,
     pub requested_intermediate: PhysicalIntermediate,
 }
 
@@ -217,6 +224,46 @@ pub struct PhysicalPipelineCpuResult {
     pub height: u32,
     pub acescg: Vec<[f32; 4]>,
     pub diagnostic: PhysicalPipelineDiagnostic,
+}
+
+fn resample_physical_rgba_area(
+    source: &[[f32; 4]],
+    source_width: u32,
+    source_height: u32,
+    output_width: u32,
+    output_height: u32,
+) -> Vec<[f32; 4]> {
+    let mut output = Vec::with_capacity((output_width * output_height) as usize);
+    for output_y in 0..output_height {
+        let minimum_y = output_y as f64 * source_height as f64 / output_height as f64;
+        let maximum_y = (output_y + 1) as f64 * source_height as f64 / output_height as f64;
+        for output_x in 0..output_width {
+            let minimum_x = output_x as f64 * source_width as f64 / output_width as f64;
+            let maximum_x = (output_x + 1) as f64 * source_width as f64 / output_width as f64;
+            let mut sum = [0.0_f64; 4];
+            let mut area = 0.0_f64;
+            for source_y in minimum_y.floor() as u32..maximum_y.ceil() as u32 {
+                let overlap_y = (maximum_y.min(f64::from(source_y + 1))
+                    - minimum_y.max(f64::from(source_y)))
+                .max(0.0);
+                for source_x in minimum_x.floor() as u32..maximum_x.ceil() as u32 {
+                    let overlap_x = (maximum_x.min(f64::from(source_x + 1))
+                        - minimum_x.max(f64::from(source_x)))
+                    .max(0.0);
+                    let weight = overlap_x * overlap_y;
+                    let pixel = source[(source_y.min(source_height - 1) * source_width
+                        + source_x.min(source_width - 1))
+                        as usize];
+                    for channel in 0..4 {
+                        sum[channel] += f64::from(pixel[channel]) * weight;
+                    }
+                    area += weight;
+                }
+            }
+            output.push(sum.map(|value| (value / area) as f32));
+        }
+    }
+    output
 }
 
 impl DeviceSignalRaster {
@@ -344,6 +391,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         plan.scene_geometry_amount,
         plan.lens_amount,
         plan.shutter_motion_amount,
+        plan.sensor_noise_amount,
     ]
     .into_iter()
     .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
@@ -730,15 +778,89 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::SceneGeometryLens => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::ShutterMotion => [shuttered.r, shuttered.g, shuttered.b],
-                PhysicalIntermediate::DevelopedAcesCg => [
+                PhysicalIntermediate::SensorNoise
+                | PhysicalIntermediate::RawMosaic
+                | PhysicalIntermediate::DevelopedAcesCg => [
                     ideal[0] + plan.screen_amount * (shuttered.r - ideal[0]),
                     ideal[1] + plan.screen_amount * (shuttered.g - ideal[1]),
                     ideal[2] + plan.screen_amount * (shuttered.b - ideal[2]),
                 ],
-                _ => return Err(ApplicationError::UnsupportedPhysicalIntermediate),
             };
             output.push([selected[0], selected[1], selected[2], ideal[3]]);
         }
+    }
+    if plan.sensor_enabled {
+        let sensor = plan.sensor.validate().map_err(ApplicationError::Sensor)?;
+        let sensor_pixels = resample_physical_rgba_area(
+            &output,
+            sampling.effective_width,
+            sampling.effective_height,
+            u32::from(sensor.native_width),
+            u32::from(sensor.native_height),
+        );
+        let duration = plan
+            .shutter_close
+            .checked_sub(plan.shutter_open)
+            .map_err(ApplicationError::Time)?;
+        let exposure = IntegratedOpticalExposure {
+            width: u32::from(sensor.native_width),
+            height: u32::from(sensor.native_height),
+            duration_seconds: duration.as_seconds() as f32,
+            acescg_illuminance_seconds: sensor_pixels
+                .iter()
+                .map(|pixel| LinearRgb::new(pixel[0], pixel[1], pixel[2]))
+                .collect(),
+        };
+        let raw = expose_raw_with_noise_amount(
+            sensor,
+            &exposure,
+            CaptureIdentity {
+                noise_seed: plan.shutter_motion.noise_seed,
+                frame_index: plan.frame_index,
+            },
+            plan.sensor_noise_amount,
+        )
+        .map_err(ApplicationError::Sensor)?;
+        if matches!(
+            plan.requested_intermediate,
+            PhysicalIntermediate::SensorNoise | PhysicalIntermediate::RawMosaic
+        ) {
+            let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
+            return Ok(PhysicalPipelineCpuResult {
+                width: raw.width,
+                height: raw.height,
+                acescg: raw
+                    .codes
+                    .iter()
+                    .zip(&raw.full_well_clipped)
+                    .zip(&raw.adc_clipped)
+                    .map(|((&code, &well), &adc)| {
+                        [
+                            code as f32 / maximum_code,
+                            f32::from(well),
+                            f32::from(adc),
+                            1.0,
+                        ]
+                    })
+                    .collect(),
+                diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
+            });
+        }
+        if !plan.development_enabled {
+            return Err(ApplicationError::UnsupportedPhysicalIntermediate);
+        }
+        let developed = develop_raw_to_acescg(&raw, sensor, plan.development)
+            .map_err(ApplicationError::CameraDevelopment)?;
+        return Ok(PhysicalPipelineCpuResult {
+            width: developed.width,
+            height: developed.height,
+            acescg: developed
+                .acescg
+                .into_iter()
+                .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
+                .collect(),
+            diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
+        });
     }
     Ok(PhysicalPipelineCpuResult {
         width: sampling.effective_width,
@@ -5965,6 +6087,12 @@ mod tests {
                     noise_seed: 0,
                 },
                 shutter_motion_amount: 0.0,
+                sensor: SensorProfile::REFERENCE,
+                sensor_enabled: false,
+                sensor_noise_amount: 0.0,
+                development: CameraDevelopment::NEUTRAL,
+                development_enabled: false,
+                frame_index: 0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         }

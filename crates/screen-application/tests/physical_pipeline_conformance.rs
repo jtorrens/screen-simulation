@@ -73,6 +73,12 @@ fn request(
                 noise_seed: 0,
             },
             shutter_motion_amount: 0.0,
+            sensor: screen_sensor::SensorProfile::REFERENCE,
+            sensor_enabled: false,
+            sensor_noise_amount: 0.0,
+            development: screen_camera::CameraDevelopment::NEUTRAL,
+            development_enabled: false,
+            frame_index: 0,
             requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
         },
     }
@@ -310,4 +316,41 @@ fn rolling_schedule_is_row_ordered_and_direction_reversible() {
     );
     assert_eq!(top[0].time, bottom[4].time);
     assert_eq!(top[4].time, bottom[0].time);
+}
+
+#[test]
+fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
+    let mut hashes = Vec::new();
+    for intermediate in [
+        PhysicalIntermediate::RawMosaic,
+        PhysicalIntermediate::DevelopedAcesCg,
+    ] {
+        let mut value = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+        value.plan.sensor = screen_sensor::SensorProfile {
+            native_width: 6,
+            native_height: 3,
+            ..screen_sensor::SensorProfile::REFERENCE
+        };
+        value.plan.sensor_enabled = true;
+        value.plan.sensor_noise_amount = 0.0;
+        value.plan.development = screen_camera::CameraDevelopment {
+            white_balance: screen_contracts::LinearRgb::new(1.7, 1.0, 0.7),
+            middle_gray_illuminance_seconds: 0.09,
+            develop_exposure_ev: 0.5,
+        };
+        value.plan.development_enabled = intermediate == PhysicalIntermediate::DevelopedAcesCg;
+        value.plan.shutter_motion_amount = 1.0;
+        value.plan.requested_intermediate = intermediate;
+        let result = evaluate_physical_pipeline_cpu_oracle(value).expect("capture intermediate");
+        hashes.push(
+            result
+                .acescg
+                .iter()
+                .flatten()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+                    (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
+                }),
+        );
+    }
+    assert_eq!(hashes, [9_823_112_176_206_848_726, 352_953_791_658_061_349]);
 }

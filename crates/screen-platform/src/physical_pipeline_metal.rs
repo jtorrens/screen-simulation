@@ -15,6 +15,33 @@ use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
 const SHADER_LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native_camera.metallib"));
 const TILE_ROWS: u32 = 64;
 
+fn inverse3(matrix: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+    let determinant = matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
+        - matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0])
+        + matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]);
+    if !determinant.is_finite() || determinant.abs() < 1.0e-8 {
+        return None;
+    }
+    let reciprocal = determinant.recip();
+    Some([
+        [
+            (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1]) * reciprocal,
+            (matrix[0][2] * matrix[2][1] - matrix[0][1] * matrix[2][2]) * reciprocal,
+            (matrix[0][1] * matrix[1][2] - matrix[0][2] * matrix[1][1]) * reciprocal,
+        ],
+        [
+            (matrix[1][2] * matrix[2][0] - matrix[1][0] * matrix[2][2]) * reciprocal,
+            (matrix[0][0] * matrix[2][2] - matrix[0][2] * matrix[2][0]) * reciprocal,
+            (matrix[0][2] * matrix[1][0] - matrix[0][0] * matrix[1][2]) * reciprocal,
+        ],
+        [
+            (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]) * reciprocal,
+            (matrix[0][1] * matrix[2][0] - matrix[0][0] * matrix[2][1]) * reciprocal,
+            (matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0]) * reciprocal,
+        ],
+    ])
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct PhysicalPipelineParams {
@@ -55,10 +82,56 @@ struct PhysicalPipelineParams {
     shutter: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SensorExposureParams {
+    input_width: u32,
+    input_height: u32,
+    width: u32,
+    height: u32,
+    pattern: u32,
+    maximum_code: u32,
+    frame_index: i64,
+    noise_seed: u64,
+    duration_seconds: f32,
+    full_well_electrons: f32,
+    dark_current_electrons_per_second: f32,
+    read_noise_electrons_rms: f32,
+    analog_gain: f32,
+    noise_amount: f32,
+    acescg_to_sensor_0: [f32; 4],
+    acescg_to_sensor_1: [f32; 4],
+    acescg_to_sensor_2: [f32; 4],
+    saturation: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CameraDevelopmentParams {
+    width: u32,
+    height: u32,
+    origin_x: u32,
+    origin_y: u32,
+    pattern: u32,
+    maximum_code: u32,
+    analog_gain: f32,
+    linear_scale: f32,
+    saturation: [f32; 4],
+    white_balance: [f32; 4],
+    sensor_to_acescg_0: [f32; 4],
+    sensor_to_acescg_1: [f32; 4],
+    sensor_to_acescg_2: [f32; 4],
+}
+
 pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
     pipeline: ComputePipelineState,
     accumulator: ComputePipelineState,
+    sensor_pipeline: ComputePipelineState,
+    publish_raw_pipeline: ComputePipelineState,
+    reconstruct_green_pipeline: ComputePipelineState,
+    develop_pipeline: ComputePipelineState,
+    publish_developed_pipeline: ComputePipelineState,
 }
 
 pub struct MetalPhysicalPipelineResult {
@@ -111,10 +184,273 @@ impl MetalPhysicalPipeline {
         let accumulator = device
             .new_compute_pipeline_state_with_function(&accumulator_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let sensor_function = library
+            .get_function("expose_sensor_raw", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let sensor_pipeline = device
+            .new_compute_pipeline_state_with_function(&sensor_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let publish_raw_function = library
+            .get_function("publish_sensor_raw", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let publish_raw_pipeline = device
+            .new_compute_pipeline_state_with_function(&publish_raw_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let reconstruct_green_function = library
+            .get_function("reconstruct_green", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let reconstruct_green_pipeline = device
+            .new_compute_pipeline_state_with_function(&reconstruct_green_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let develop_function = library
+            .get_function("develop_acescg", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let develop_pipeline = device
+            .new_compute_pipeline_state_with_function(&develop_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let publish_developed_function = library
+            .get_function("publish_developed_acescg", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let publish_developed_pipeline = device
+            .new_compute_pipeline_state_with_function(&publish_developed_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         Ok(Self {
             queue: device.new_command_queue(),
             pipeline,
             accumulator,
+            sensor_pipeline,
+            publish_raw_pipeline,
+            reconstruct_green_pipeline,
+            develop_pipeline,
+            publish_developed_pipeline,
+        })
+    }
+
+    fn evaluate_sensor_raw(
+        &self,
+        physical: MetalPhysicalPipelineResult,
+        plan: PhysicalPipelineExecutionPlan,
+        mut report_progress: impl FnMut(f32),
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        if !plan.sensor_enabled {
+            report_progress(1.0);
+            return Ok(physical);
+        }
+        if is_cancelled() {
+            return Err(MetalPhysicalPipelineError::Cancelled);
+        }
+        let sensor = plan
+            .sensor
+            .validate()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        let duration_seconds = plan
+            .shutter_close
+            .checked_sub(plan.shutter_open)
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?
+            .as_seconds() as f32;
+        let pad = |row: [f32; 3]| [row[0], row[1], row[2], 0.0];
+        let parameters = SensorExposureParams {
+            input_width: physical.texture.width() as u32,
+            input_height: physical.texture.height() as u32,
+            width: u32::from(sensor.native_width),
+            height: u32::from(sensor.native_height),
+            pattern: match sensor.bayer_pattern {
+                screen_sensor::BayerPattern::Rggb => 0,
+                screen_sensor::BayerPattern::Bggr => 1,
+                screen_sensor::BayerPattern::Grbg => 2,
+                screen_sensor::BayerPattern::Gbrg => 3,
+            },
+            maximum_code: (1_u32 << sensor.adc_bits) - 1,
+            frame_index: plan.frame_index,
+            noise_seed: plan.shutter_motion.noise_seed,
+            duration_seconds,
+            full_well_electrons: sensor.full_well_electrons,
+            dark_current_electrons_per_second: sensor.dark_current_electrons_per_second,
+            read_noise_electrons_rms: sensor.read_noise_electrons_rms,
+            analog_gain: sensor.analog_gain,
+            noise_amount: plan.sensor_noise_amount,
+            acescg_to_sensor_0: pad(sensor.acescg_to_sensor[0]),
+            acescg_to_sensor_1: pad(sensor.acescg_to_sensor[1]),
+            acescg_to_sensor_2: pad(sensor.acescg_to_sensor[2]),
+            saturation: [
+                sensor.saturation_illuminance_seconds.r,
+                sensor.saturation_illuminance_seconds.g,
+                sensor.saturation_illuminance_seconds.b,
+                0.0,
+            ],
+        };
+        let count = usize::from(sensor.native_width) * usize::from(sensor.native_height);
+        let device = physical.texture.device();
+        let codes = device.new_buffer(
+            (count * size_of::<u16>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let clipping = device.new_buffer(
+            (count * size_of::<[u8; 2]>()) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let development_parameters = if plan.development_enabled
+            && plan.requested_intermediate == PhysicalIntermediate::DevelopedAcesCg
+        {
+            let development = plan
+                .development
+                .validate()
+                .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+            let inverse = inverse3(sensor.acescg_to_sensor).ok_or_else(|| {
+                MetalPhysicalPipelineError::InvalidPlan(
+                    "sensor color matrix cannot be inverted for development".to_owned(),
+                )
+            })?;
+            Some(CameraDevelopmentParams {
+                width: u32::from(sensor.native_width),
+                height: u32::from(sensor.native_height),
+                origin_x: 0,
+                origin_y: 0,
+                pattern: parameters.pattern,
+                maximum_code: parameters.maximum_code,
+                analog_gain: sensor.analog_gain,
+                linear_scale: 0.18 / development.middle_gray_illuminance_seconds
+                    * development.develop_exposure_ev.exp2(),
+                saturation: parameters.saturation,
+                white_balance: [
+                    development.white_balance.r,
+                    development.white_balance.g,
+                    development.white_balance.b,
+                    0.0,
+                ],
+                sensor_to_acescg_0: pad(inverse[0]),
+                sensor_to_acescg_1: pad(inverse[1]),
+                sensor_to_acescg_2: pad(inverse[2]),
+            })
+        } else {
+            None
+        };
+        if plan.requested_intermediate == PhysicalIntermediate::DevelopedAcesCg
+            && development_parameters.is_none()
+        {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "developed output requires the explicit development stage".to_owned(),
+            ));
+        }
+        let green = development_parameters.as_ref().map(|_| {
+            device.new_buffer(
+                (count * size_of::<f32>()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            )
+        });
+        let developed = development_parameters.as_ref().map(|_| {
+            device.new_buffer(
+                (count * size_of::<[f32; 4]>()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            )
+        });
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+        descriptor.set_width(u64::from(sensor.native_width));
+        descriptor.set_height(u64::from(sensor.native_height));
+        descriptor.set_storage_mode(MTLStorageMode::Shared);
+        descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+        let output = device.new_texture(&descriptor);
+        let command = self.queue.new_command_buffer();
+        let encoder = command.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.sensor_pipeline);
+        encoder.set_texture(0, Some(&physical.texture));
+        encoder.set_buffer(0, Some(&codes), 0);
+        encoder.set_buffer(1, Some(&clipping), 0);
+        encoder.set_bytes(
+            2,
+            size_of::<SensorExposureParams>() as u64,
+            (&raw const parameters).cast(),
+        );
+        let thread_width = self.sensor_pipeline.thread_execution_width();
+        let thread_height =
+            (self.sensor_pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
+        encoder.dispatch_threads(
+            MTLSize::new(
+                u64::from(sensor.native_width),
+                u64::from(sensor.native_height),
+                1,
+            ),
+            MTLSize::new(thread_width, thread_height, 1),
+        );
+        encoder.memory_barrier_with_resources(&[&codes, &clipping]);
+        if let (Some(development), Some(green), Some(developed)) =
+            (development_parameters, green.as_ref(), developed.as_ref())
+        {
+            encoder.set_compute_pipeline_state(&self.reconstruct_green_pipeline);
+            encoder.set_buffer(0, Some(&codes), 0);
+            encoder.set_buffer(1, Some(green), 0);
+            encoder.set_bytes(
+                2,
+                size_of::<CameraDevelopmentParams>() as u64,
+                (&raw const development).cast(),
+            );
+            let one_dimensional_width = self
+                .reconstruct_green_pipeline
+                .thread_execution_width()
+                .min(count as u64)
+                .max(1);
+            encoder.dispatch_threads(
+                MTLSize::new(count as u64, 1, 1),
+                MTLSize::new(one_dimensional_width, 1, 1),
+            );
+            encoder.memory_barrier_with_resources(&[green]);
+            encoder.set_compute_pipeline_state(&self.develop_pipeline);
+            encoder.set_buffer(0, Some(&codes), 0);
+            encoder.set_buffer(1, Some(green), 0);
+            encoder.set_buffer(2, Some(developed), 0);
+            encoder.set_bytes(
+                3,
+                size_of::<CameraDevelopmentParams>() as u64,
+                (&raw const development).cast(),
+            );
+            encoder.dispatch_threads(
+                MTLSize::new(count as u64, 1, 1),
+                MTLSize::new(one_dimensional_width, 1, 1),
+            );
+            encoder.memory_barrier_with_resources(&[developed]);
+            encoder.set_compute_pipeline_state(&self.publish_developed_pipeline);
+            encoder.set_buffer(0, Some(developed), 0);
+            encoder.set_texture(0, Some(&output));
+            encoder.set_bytes(
+                1,
+                size_of::<CameraDevelopmentParams>() as u64,
+                (&raw const development).cast(),
+            );
+        } else {
+            encoder.set_compute_pipeline_state(&self.publish_raw_pipeline);
+            encoder.set_buffer(0, Some(&codes), 0);
+            encoder.set_buffer(1, Some(&clipping), 0);
+            encoder.set_texture(0, Some(&output));
+            encoder.set_bytes(
+                2,
+                size_of::<SensorExposureParams>() as u64,
+                (&raw const parameters).cast(),
+            );
+        }
+        encoder.dispatch_threads(
+            MTLSize::new(
+                u64::from(sensor.native_width),
+                u64::from(sensor.native_height),
+                1,
+            ),
+            MTLSize::new(thread_width, thread_height, 1),
+        );
+        encoder.end_encoding();
+        command.commit();
+        command.wait_until_completed();
+        if command.status() != MTLCommandBufferStatus::Completed {
+            return Err(MetalPhysicalPipelineError::Backend(
+                "sensor exposure command did not complete".to_owned(),
+            ));
+        }
+        report_progress(1.0);
+        Ok(MetalPhysicalPipelineResult {
+            texture: output,
+            geometry: physical.geometry,
+            sampling: physical.sampling,
         })
     }
 
@@ -153,10 +489,15 @@ impl MetalPhysicalPipeline {
             let base = index as f32 / samples.len() as f32;
             let span = 0.85 / samples.len() as f32;
             let row_range = row.map(|row| (row, 1));
+            let mut physical_plan = *plan;
+            if physical_plan.sensor_enabled {
+                physical_plan.sensor_enabled = false;
+                physical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+            }
             let evaluated = self.evaluate_rows(
                 source,
                 signal,
-                *plan,
+                physical_plan,
                 row_range,
                 |progress| report_progress(base + progress * span),
                 &is_cancelled,
@@ -223,12 +564,17 @@ impl MetalPhysicalPipeline {
             final_geometry = Some(evaluated.geometry);
             final_sampling = Some(evaluated.sampling);
         }
-        report_progress(1.0);
-        Ok(MetalPhysicalPipelineResult {
+        let physical = MetalPhysicalPipelineResult {
             texture: accumulated.expect("non-empty schedule allocates output"),
             geometry: final_geometry.expect("non-empty schedule resolves geometry"),
             sampling: final_sampling.expect("non-empty schedule resolves sampling"),
-        })
+        };
+        self.evaluate_sensor_raw(
+            physical,
+            samples[0].2,
+            |progress| report_progress(0.9 + progress * 0.1),
+            is_cancelled,
+        )
     }
 
     pub fn evaluate(
@@ -236,15 +582,32 @@ impl MetalPhysicalPipeline {
         source_acescg: &TextureRef,
         device_signal: &TextureRef,
         plan: PhysicalPipelineExecutionPlan,
-        report_progress: impl FnMut(f32),
+        mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
-        self.evaluate_rows(
+        let mut physical_plan = plan;
+        if physical_plan.sensor_enabled {
+            physical_plan.sensor_enabled = false;
+            physical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+        }
+        let physical = self.evaluate_rows(
             source_acescg,
             device_signal,
-            plan,
+            physical_plan,
             None,
-            report_progress,
+            |progress| {
+                report_progress(if plan.sensor_enabled {
+                    progress * 0.9
+                } else {
+                    progress
+                })
+            },
+            &is_cancelled,
+        )?;
+        self.evaluate_sensor_raw(
+            physical,
+            plan,
+            |progress| report_progress(0.9 + progress * 0.1),
             is_cancelled,
         )
     }
@@ -769,6 +1132,12 @@ mod tests {
                     noise_seed: 0,
                 },
                 shutter_motion_amount: 0.0,
+                sensor: screen_sensor::SensorProfile::REFERENCE,
+                sensor_enabled: false,
+                sensor_noise_amount: 0.0,
+                development: screen_camera::CameraDevelopment::NEUTRAL,
+                development_enabled: false,
+                frame_index: 0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         )
@@ -1123,6 +1492,124 @@ mod tests {
         }
         for pixel in &pixels[input.width as usize..] {
             assert_eq!(*pixel, [0.25, 0.5, 0.75, 0.375]);
+        }
+    }
+
+    #[test]
+    fn sensor_cfa_noise_and_clipping_match_cpu_for_zero_one_and_artistic_amounts() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for noise_amount in [0.0, 1.0, 2.5] {
+            let (input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Rgb,
+                0.0,
+                1.0,
+            );
+            plan.sensor = screen_sensor::SensorProfile {
+                native_width: plan.requested_width as u16,
+                native_height: plan.requested_height as u16,
+                ..screen_sensor::SensorProfile::REFERENCE
+            };
+            plan.sensor_enabled = true;
+            plan.sensor_noise_amount = noise_amount;
+            plan.shutter_motion_amount = 1.0;
+            plan.requested_intermediate = PhysicalIntermediate::RawMosaic;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .map(|value| [value.r, value.g, value.b, 1.0])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input: input.clone(),
+                plan,
+            })
+            .expect("CPU sensor oracle");
+            let gpu = backend
+                .evaluate(&source, &signal, plan, |_| {}, || false)
+                .expect("Metal sensor result");
+            let gpu = read(&gpu.texture);
+            assert_eq!(gpu.len(), cpu.acescg.len());
+            let maximum_code_error = gpu
+                .iter()
+                .zip(&cpu.acescg)
+                .map(|(gpu, cpu)| {
+                    ((gpu[0] - cpu[0]).abs() * ((1_u32 << plan.sensor.adc_bits) - 1) as f32).round()
+                        as u32
+                })
+                .max()
+                .expect("non-empty sensor");
+            let tolerance = if noise_amount == 0.0 { 1 } else { 4 };
+            assert!(
+                maximum_code_error <= tolerance,
+                "sensor CPU/Metal code deviation {maximum_code_error} at amount {noise_amount}"
+            );
+            assert!(
+                gpu.iter()
+                    .all(|pixel| pixel[3].to_bits() == 1.0_f32.to_bits())
+            );
+        }
+    }
+
+    #[test]
+    fn raw_demosaic_white_balance_and_develop_match_cpu_acescg() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for pattern in [
+            screen_sensor::BayerPattern::Rggb,
+            screen_sensor::BayerPattern::Bggr,
+            screen_sensor::BayerPattern::Grbg,
+            screen_sensor::BayerPattern::Gbrg,
+        ] {
+            let (input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Bgr,
+                0.0,
+                1.0,
+            );
+            plan.sensor = screen_sensor::SensorProfile {
+                native_width: plan.requested_width as u16,
+                native_height: plan.requested_height as u16,
+                bayer_pattern: pattern,
+                ..screen_sensor::SensorProfile::REFERENCE
+            };
+            plan.sensor_enabled = true;
+            plan.sensor_noise_amount = 0.0;
+            plan.development = screen_camera::CameraDevelopment {
+                white_balance: screen_contracts::LinearRgb::new(1.8, 1.0, 0.65),
+                middle_gray_illuminance_seconds: 0.07,
+                develop_exposure_ev: 1.25,
+            };
+            plan.development_enabled = true;
+            plan.shutter_motion_amount = 1.0;
+            plan.requested_intermediate = PhysicalIntermediate::DevelopedAcesCg;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .map(|value| [value.r, value.g, value.b, 1.0])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input: input.clone(),
+                plan,
+            })
+            .expect("CPU developed oracle");
+            let gpu = backend
+                .evaluate(&source, &signal, plan, |_| {}, || false)
+                .expect("Metal developed result");
+            let maximum = read(&gpu.texture)
+                .iter()
+                .zip(&cpu.acescg)
+                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(maximum <= 3.0e-4, "developed CPU/Metal deviation {maximum}");
         }
     }
 }

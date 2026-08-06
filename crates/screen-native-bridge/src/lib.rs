@@ -234,6 +234,9 @@ pub struct ScreenPhysicalFrameJob {
     parameter_revision: u64,
     parameter_hash: [u8; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
     static_input: bool,
+    sensor_enabled: bool,
+    sensor_noise_amount: f32,
+    development_enabled: bool,
     worker: Mutex<Option<JoinHandle<()>>>,
     // Boxes keep every C-borrowed pointer stable when the owning vectors grow.
     #[allow(clippy::vec_box)]
@@ -512,9 +515,8 @@ fn contribution_amounts(
             return None;
         }
     }
-    if contributions[10].amount != 0.0
-        || contributions[9].discrete_enabled
-        || contributions[11].discrete_enabled
+    if (contributions[10].amount != 0.0 || contributions[11].discrete_enabled)
+        && !contributions[9].discrete_enabled
     {
         return None;
     }
@@ -532,15 +534,9 @@ fn diagnostic_snapshot(
     state: u32,
     progress: f32,
     elapsed_nanoseconds: u64,
-    stage_messages: [String; 9],
+    stage_messages: [String; 12],
 ) -> Box<OwnedDiagnosticSnapshot> {
-    let mut authored_messages = Vec::from(stage_messages);
-    authored_messages.extend(
-        (9..EXPECTED_STAGE_IDS.len()).map(|_| {
-            "unsupported: snapshot validated, evaluator intentionally disabled".to_owned()
-        }),
-    );
-    let messages = authored_messages
+    let messages = Vec::from(stage_messages)
         .into_iter()
         .map(|message| message.into_bytes().into_boxed_slice())
         .collect::<Vec<_>>();
@@ -551,9 +547,9 @@ fn diagnostic_snapshot(
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             domain_id: if index < 6 { DOMAIN_SCREEN } else { 0x200 },
             stage_id: *stage_id,
-            state: if index < 9 { state } else { 0 },
-            progress: if index < 9 { progress } else { 0.0 },
-            elapsed_nanoseconds: if index < 9 { elapsed_nanoseconds } else { 0 },
+            state,
+            progress,
+            elapsed_nanoseconds,
             message: ScreenUtf8View {
                 bytes: messages[index].as_ptr(),
                 count: messages[index].len(),
@@ -758,12 +754,30 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::CoverEnvironment
             | PhysicalIntermediate::SceneGeometryLens
             | PhysicalIntermediate::ShutterMotion
+            | PhysicalIntermediate::SensorNoise
+            | PhysicalIntermediate::RawMosaic
             | PhysicalIntermediate::DevelopedAcesCg
     ) {
         unsafe {
             set_error(
                 error_message,
                 b"requested physical intermediate is unsupported\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
+    if matches!(
+        requested_intermediate,
+        PhysicalIntermediate::SensorNoise | PhysicalIntermediate::RawMosaic
+    ) && !contributions[9].discrete_enabled
+        || requested_intermediate == PhysicalIntermediate::DevelopedAcesCg
+            && contributions[9].discrete_enabled
+            && !contributions[11].discrete_enabled
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"requested sensor/develop intermediate is not enabled\0",
             )
         };
         return std::ptr::null_mut();
@@ -879,6 +893,12 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         shutter_close,
         shutter_motion: pipeline.shutter_motion,
         shutter_motion_amount: contributions[8].amount,
+        sensor: pipeline.sensor,
+        sensor_enabled: contributions[9].discrete_enabled,
+        sensor_noise_amount: contributions[10].amount,
+        development: pipeline.development,
+        development_enabled: contributions[11].discrete_enabled,
+        frame_index: request.frame_index,
         requested_intermediate,
     };
     let temporally_varying = input.samples.len() > 1
@@ -1060,11 +1080,22 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         cancellation_identity: request.cancellation_identity,
         quality: request.quality,
         requested_intermediate: request.requested_intermediate,
-        native_width: native.effective_width,
-        native_height: native.effective_height,
+        native_width: if contributions[9].discrete_enabled {
+            u32::from(pipeline.sensor.native_width)
+        } else {
+            native.effective_width
+        },
+        native_height: if contributions[9].discrete_enabled {
+            u32::from(pipeline.sensor.native_height)
+        } else {
+            native.effective_height
+        },
         parameter_revision: request.parameter_revision,
         parameter_hash: request.parameter_hash,
         static_input: !temporally_varying,
+        sensor_enabled: contributions[9].discrete_enabled,
+        sensor_noise_amount: contributions[10].amount,
+        development_enabled: contributions[11].discrete_enabled,
         worker: Mutex::new(Some(worker)),
         output_views: Mutex::new(Vec::new()),
         snapshots: Mutex::new(Vec::new()),
@@ -1254,6 +1285,24 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
                     .to_owned()
             } else {
                 "MOTION_ACTIVE: Rust-scheduled exact-time samples accumulated by Metal".to_owned()
+            },
+            if job.sensor_enabled {
+                "sensor CFA/full-well/ADC active at the resolved native photosite raster".to_owned()
+            } else {
+                "sensor CFA disabled: exact typed-domain bypass".to_owned()
+            },
+            if job.sensor_enabled {
+                format!(
+                    "shot/dark/read noise amount {:.3}; deterministic capture identity",
+                    job.sensor_noise_amount
+                )
+            } else {
+                "sensor noise disabled with CFA domain".to_owned()
+            },
+            if job.development_enabled {
+                "RAW demosaic + white balance + sensor-to-ACEScg development active".to_owned()
+            } else {
+                "RAW development disabled: no implicit developed output".to_owned()
             },
         ],
     );
@@ -2553,7 +2602,9 @@ mod tests {
             PanelLightSpreadProfile::LCD_DESKTOP,
         );
         let profile = unsafe { screen_device_profile_create(&parameters, std::ptr::null_mut()) };
-        let pipeline_parameters = pipeline_parameters();
+        let mut pipeline_parameters = pipeline_parameters();
+        pipeline_parameters.sensor_noise.native_width = 4;
+        pipeline_parameters.sensor_noise.native_height = 2;
         let pipeline = unsafe {
             screen_physical_pipeline_snapshot_create(&pipeline_parameters, std::ptr::null_mut())
         };
@@ -2562,6 +2613,10 @@ mod tests {
         contributions[3].amount = 1.0;
         contributions[6].amount = 1.0;
         contributions[7].amount = 1.0;
+        contributions[8].amount = 1.0;
+        contributions[9].discrete_enabled = true;
+        contributions[10].amount = 1.0;
+        contributions[11].discrete_enabled = true;
         let identity = ScreenPhysicalIdentity128 { high: 7, low: 9 };
         let request = ScreenPhysicalFrameRequestV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
@@ -2614,7 +2669,7 @@ mod tests {
         }
         assert_eq!(result.state, STATE_COMPLETE);
         assert_eq!(result.progress, 1.0);
-        assert_eq!((result.native_width, result.native_height), (6, 3));
+        assert_eq!((result.native_width, result.native_height), (4, 2));
         assert_eq!((result.effective_width, result.effective_height), (4, 2));
         assert_eq!(result.parameter_revision, 42);
         assert_eq!(
@@ -2647,6 +2702,10 @@ mod tests {
         assert!(messages[5].contains("synthetic HDR"));
         assert!(messages[6].contains("position + quaternion"));
         assert!(messages[7].contains("thin lens"));
+        assert!(messages[8].contains("STATIC_INPUT"));
+        assert!(messages[9].contains("sensor CFA"));
+        assert!(messages[10].contains("deterministic"));
+        assert!(messages[11].contains("demosaic"));
 
         unsafe {
             screen_physical_frame_job_release(job);
