@@ -65,9 +65,7 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         + CapturePhysicalSection.allCases.map(Self.capture)
 
     var isImplementedByUnifiedPipeline: Bool {
-        self == .screen(.emission)
-            || self == .screen(.subpixelGeometry)
-            || self == .screen(.panelLightSpread)
+        true
     }
 }
 
@@ -189,6 +187,11 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         .panelEmission,
         .subpixelRadiance,
         .panelLightSpread,
+        .coverEnvironment,
+        .sceneGeometryLens,
+        .shutterMotion,
+        .sensorNoise,
+        .rawMosaic,
         .developedACEScg,
     ]
 

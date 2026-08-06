@@ -106,6 +106,10 @@ final class WorkspaceModel: ObservableObject {
     private var isModelPageActive = false
     private var resolvedPhysicalPipeline: PhysicalPipelineResolvedState?
 
+    var physicalPipelineState: PhysicalPipelineResolvedState? {
+        resolvedPhysicalPipeline
+    }
+
     init() {
         metalDisplay = try! StudioColorMetalDisplay()
         physicalModel.interactiveInvalidation = { [weak self] in
@@ -133,7 +137,7 @@ final class WorkspaceModel: ObservableObject {
     ) {
         do {
             resolvedDevice = try definition.resolved()
-            resolvedPhysicalPipeline = try .inactiveDownstreamStages(
+            resolvedPhysicalPipeline = try .resolvedDefaults(
                 coverGlass: coverGlass
             )
             rebuildCurrent()
@@ -148,7 +152,7 @@ final class WorkspaceModel: ObservableObject {
     ) {
         do {
             resolvedDevice = try definition.resolved()
-            resolvedPhysicalPipeline = try .inactiveDownstreamStages(
+            resolvedPhysicalPipeline = try .resolvedDefaults(
                 coverGlass: coverGlass
             )
             rebuildPhysicalSelectedFrame()
@@ -851,6 +855,9 @@ final class WorkspaceModel: ObservableObject {
         var effectiveDeviceDefinition = resolvedDevice.definition
         effectiveDeviceDefinition.panelLightSpread.characterStrength = spreadAmount
         let effectiveDevice = try effectiveDeviceDefinition.resolved()
+        let effectivePipeline = try resolvedPhysicalPipeline.resolving(
+            contributions: contributions
+        )
         physicalIdentityCounter &+= 1
         let identity = PhysicalFrameIdentity(
             high: physicalModel.parameterRevision,
@@ -865,10 +872,9 @@ final class WorkspaceModel: ObservableObject {
                 timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
             ),
             resolvedDevice: effectiveDevice,
-            resolvedPipeline: resolvedPhysicalPipeline,
+            resolvedPipeline: effectivePipeline,
             quality: quality,
             screenAmount: physicalModel.screenAmount,
-            captureAmount: physicalModel.captureAmount,
             contributions: contributions,
             requestedDimensions: try physicalRequestedDimensions(
                 quality: quality,
@@ -984,7 +990,6 @@ final class WorkspaceModel: ObservableObject {
         let fields = [
             quality.rawValue.description,
             physicalModel.screenAmount.description,
-            physicalModel.captureAmount.description,
             sourcePlacement.rawValue,
             physicalModel.parameterRevision.description,
             physicalModel.orderedContributions.map {

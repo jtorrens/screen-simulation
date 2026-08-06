@@ -20,7 +20,9 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     let cancellationIdentity: PhysicalFrameIdentity
 
     private let handle: ScreenPhysicalFrameJobRef
-    private let input: ScreenPhysicalFrameInputRef
+    private let timedInputs: ScreenPhysicalTimedInputSetV2Ref
+    private let cameraPoseTrack: ScreenPhysicalCameraPoseTrackV2Ref
+    private let screenPoseTrack: ScreenPhysicalScreenPoseTrackV2Ref
     private let sourceTexture: ScreenPhysicalTextureRef
     private let deviceSignalTexture: ScreenPhysicalTextureRef
     private let deviceProfile: ScreenDeviceProfileRef
@@ -30,7 +32,9 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
 
     init(
         handle: ScreenPhysicalFrameJobRef,
-        input: ScreenPhysicalFrameInputRef,
+        timedInputs: ScreenPhysicalTimedInputSetV2Ref,
+        cameraPoseTrack: ScreenPhysicalCameraPoseTrackV2Ref,
+        screenPoseTrack: ScreenPhysicalScreenPoseTrackV2Ref,
         sourceTexture: ScreenPhysicalTextureRef,
         deviceSignalTexture: ScreenPhysicalTextureRef,
         deviceProfile: ScreenDeviceProfileRef,
@@ -40,7 +44,9 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
         cancellationIdentity: PhysicalFrameIdentity
     ) {
         self.handle = handle
-        self.input = input
+        self.timedInputs = timedInputs
+        self.cameraPoseTrack = cameraPoseTrack
+        self.screenPoseTrack = screenPoseTrack
         self.sourceTexture = sourceTexture
         self.deviceSignalTexture = deviceSignalTexture
         self.deviceProfile = deviceProfile
@@ -52,7 +58,9 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
 
     deinit {
         screen_physical_frame_job_release(handle)
-        screen_physical_frame_input_release(input)
+        screen_physical_timed_input_set_v2_release(timedInputs)
+        screen_physical_camera_pose_track_v2_release(cameraPoseTrack)
+        screen_physical_screen_pose_track_v2_release(screenPoseTrack)
         screen_physical_texture_release(deviceSignalTexture)
         screen_physical_texture_release(sourceTexture)
         screen_device_profile_release(deviceProfile)
@@ -172,7 +180,6 @@ final class PhysicalMetalFrameEngine {
         resolvedPipeline: PhysicalPipelineResolvedState,
         quality: PhysicalQuality,
         screenAmount: Double,
-        captureAmount: Double,
         contributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
         cancellationIdentity: PhysicalFrameIdentity,
@@ -189,13 +196,23 @@ final class PhysicalMetalFrameEngine {
             &error
         ) else { throw bridgeError(error, fallback: "No se ha creado la vista ACEScg.") }
         var deviceSignalTexture: ScreenPhysicalTextureRef?
-        var input: ScreenPhysicalFrameInputRef?
+        var timedInputs: ScreenPhysicalTimedInputSetV2Ref?
+        var cameraPoseTrack: ScreenPhysicalCameraPoseTrackV2Ref?
+        var screenPoseTrack: ScreenPhysicalScreenPoseTrackV2Ref?
         var deviceProfile: ScreenDeviceProfileRef?
         var pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef?
         var job: ScreenPhysicalFrameJobRef?
         defer {
             if job == nil {
-                if let input { screen_physical_frame_input_release(input) }
+                if let timedInputs {
+                    screen_physical_timed_input_set_v2_release(timedInputs)
+                }
+                if let cameraPoseTrack {
+                    screen_physical_camera_pose_track_v2_release(cameraPoseTrack)
+                }
+                if let screenPoseTrack {
+                    screen_physical_screen_pose_track_v2_release(screenPoseTrack)
+                }
                 if let deviceSignalTexture {
                     screen_physical_texture_release(deviceSignalTexture)
                 }
@@ -214,14 +231,45 @@ final class PhysicalMetalFrameEngine {
         guard let deviceSignalTexture else {
             throw bridgeError(error, fallback: "No se ha creado la vista Device RGB.")
         }
-        input = screen_physical_frame_input_create(
-            sourceTexture,
-            deviceSignalTexture,
+        var timedSample = ScreenPhysicalTimedInputSampleV2()
+        timedSample.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+        timedSample.time_numerator = frame.timeNumerator
+        timedSample.time_denominator = frame.timeDenominator
+        timedSample.source_acescg = sourceTexture
+        timedSample.device_signal = deviceSignalTexture
+        timedInputs = screen_physical_timed_input_set_v2_create(
+            &timedSample,
+            1,
             rasterPlacement.rawValue,
+            UInt32(SCREEN_PHYSICAL_SOURCE_SAMPLE_EXACT.rawValue),
             &error
         )
-        guard let input else {
-            throw bridgeError(error, fallback: "No se ha creado el input físico.")
+        guard let timedInputs else {
+            throw bridgeError(error, fallback: "No se ha creado el input temporal físico.")
+        }
+        var cameraKnot = staticPoseKnot(
+            frame: frame,
+            position: (0, 0, 1)
+        )
+        cameraPoseTrack = screen_physical_camera_pose_track_v2_create(
+            &cameraKnot,
+            1,
+            &error
+        )
+        guard let cameraPoseTrack else {
+            throw bridgeError(error, fallback: "No se ha creado el track constante de cámara.")
+        }
+        var screenKnot = staticPoseKnot(
+            frame: frame,
+            position: (0, 0, 0)
+        )
+        screenPoseTrack = screen_physical_screen_pose_track_v2_create(
+            &screenKnot,
+            1,
+            &error
+        )
+        guard let screenPoseTrack else {
+            throw bridgeError(error, fallback: "No se ha creado el track constante de pantalla.")
         }
         var deviceParameters = resolvedDevice.parameters
         deviceProfile = screen_device_profile_create(&deviceParameters, &error)
@@ -240,14 +288,18 @@ final class PhysicalMetalFrameEngine {
         var raw = ScreenPhysicalFrameRequestV2()
         raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
         raw.frame_index = frame.frameIndex
-        raw.frame_time_numerator = frame.timeNumerator
-        raw.frame_time_denominator = frame.timeDenominator
-        raw.input = input
+        raw.timed_inputs = timedInputs
+        raw.camera_pose_track = cameraPoseTrack
+        raw.screen_pose_track = screenPoseTrack
+        let shutter = try staticShutterInterval(frame: frame)
+        raw.shutter_open_numerator = shutter.open.numerator
+        raw.shutter_open_denominator = shutter.open.denominator
+        raw.shutter_close_numerator = shutter.close.numerator
+        raw.shutter_close_denominator = shutter.close.denominator
         raw.resolved_device = deviceProfile
         raw.resolved_pipeline = pipelineSnapshot
         raw.quality = quality.rawValue
         raw.screen_amount = Float(screenAmount)
-        raw.capture_amount = Float(captureAmount)
         raw.requested_width = UInt32(requestedDimensions.width)
         raw.requested_height = UInt32(requestedDimensions.height)
         raw.requested_intermediate = requestedIntermediate.rawValue
@@ -273,7 +325,9 @@ final class PhysicalMetalFrameEngine {
         }
         return PhysicalMetalFrameJob(
             handle: job,
-            input: input,
+            timedInputs: timedInputs,
+            cameraPoseTrack: cameraPoseTrack,
+            screenPoseTrack: screenPoseTrack,
             sourceTexture: sourceTexture,
             deviceSignalTexture: deviceSignalTexture,
             deviceProfile: deviceProfile,
@@ -281,6 +335,42 @@ final class PhysicalMetalFrameEngine {
             sourceFrame: sourceACEScg,
             deviceSignalFrame: deviceSignal,
             cancellationIdentity: cancellationIdentity
+        )
+    }
+
+    private func staticPoseKnot(
+        frame: PhysicalFrameSelection,
+        position: (Float, Float, Float)
+    ) -> ScreenPhysicalPoseKnotV2 {
+        var knot = ScreenPhysicalPoseKnotV2()
+        knot.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+        knot.time_numerator = frame.timeNumerator
+        knot.time_denominator = frame.timeDenominator
+        knot.position = position
+        knot.rotation_xyzw = (0, 0, 0, 1)
+        knot.interpolation = UInt32(SCREEN_PHYSICAL_POSE_HOLD.rawValue)
+        return knot
+    }
+
+    private func staticShutterInterval(
+        frame: PhysicalFrameSelection
+    ) throws -> PhysicalShutterInterval {
+        let (scaledTime, timeOverflow) = frame.timeNumerator.multipliedReportingOverflow(by: 96)
+        let (denominator, denominatorOverflow) = frame.timeDenominator.multipliedReportingOverflow(by: 96)
+        let open = scaledTime.subtractingReportingOverflow(Int64(frame.timeDenominator))
+        let close = scaledTime.addingReportingOverflow(Int64(frame.timeDenominator))
+        guard !timeOverflow, !denominatorOverflow, !open.overflow, !close.overflow else {
+            throw PhysicalContractError.invalidFrameTime
+        }
+        return PhysicalShutterInterval(
+            open: try PhysicalRationalTime(
+                numerator: open.partialValue,
+                denominator: denominator
+            ),
+            close: try PhysicalRationalTime(
+                numerator: close.partialValue,
+                denominator: denominator
+            )
         )
     }
 

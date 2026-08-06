@@ -1,13 +1,13 @@
 import Foundation
 import ScreenPhysicalBridge
 
-/// Fully materialized state crossing the physical ABI. Later stages are valid
-/// snapshots even while their contributions remain explicitly disabled.
+/// Fully materialized state crossing the physical ABI. Every value is explicit;
+/// the engine never resolves a preset or supplies a product default.
 struct PhysicalPipelineResolvedState {
     let parameters: ScreenPhysicalPipelineParametersV2
     let coverGlassID: String
 
-    static func inactiveDownstreamStages(
+    static func resolvedDefaults(
         coverGlass: CoverGlassDefinition
     ) throws -> Self {
         try coverGlass.validate()
@@ -25,9 +25,6 @@ struct PhysicalPipelineResolvedState {
 
         var scene = ScreenSceneGeometryLensParametersV2()
         scene.abi_version = version
-        scene.camera_position = (0, 0, -1)
-        scene.camera_target = (0, 0, 0)
-        scene.camera_yaw_degrees = 0
         scene.focal_length_millimeters = 50
         scene.sensor_width_millimeters = 36
         scene.sensor_height_millimeters = 24
@@ -36,7 +33,6 @@ struct PhysicalPipelineResolvedState {
         scene.f_stop = 2.8
         scene.near_clip_meters = 0.01
         scene.far_clip_meters = 100
-        scene.camera_rotation_xyzw = (0, 0, 0, 1)
         scene.lens_radial_distortion = (0, 0, 0)
         scene.lens_tangential_distortion = (0, 0)
         scene.lens_longitudinal_chromatic_meters = (0, 0, 0)
@@ -45,14 +41,9 @@ struct PhysicalPipelineResolvedState {
         scene.lens_transmission_rgb = (1, 1, 1)
         scene.lens_center_softness_micrometers = 0
         scene.lens_edge_softness_micrometers = 0
-        scene.screen_translation = (0, 0, 0)
-        scene.screen_rotation_xyzw = (0, 0, 0, 1)
-        scene.screen_scale = (1, 1)
 
         var shutter = ScreenShutterMotionParametersV2()
         shutter.abi_version = version
-        shutter.exposure_duration_numerator = 1
-        shutter.exposure_duration_denominator = 48
         shutter.temporal_samples = 1
         shutter.readout_kind = 0
         shutter.readout_duration_numerator = 1
@@ -94,5 +85,19 @@ struct PhysicalPipelineResolvedState {
         parameters.raw_develop = develop
         return Self(parameters: parameters, coverGlassID: coverGlass.id)
     }
-}
 
+    func resolving(
+        contributions: [PhysicalStageContribution]
+    ) throws -> Self {
+        func amount(_ stage: PhysicalStageID) throws -> Float {
+            guard let value = contributions.first(where: { $0.stage == stage })?.amount else {
+                throw PhysicalContractError.invalidStageOrder
+            }
+            return Float(value)
+        }
+        var resolved = parameters
+        resolved.cover.character_strength = try amount(.screen(.coverGlass))
+        resolved.environment.character_strength = try amount(.screen(.environment))
+        return Self(parameters: resolved, coverGlassID: coverGlassID)
+    }
+}

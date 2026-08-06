@@ -18,12 +18,10 @@ final class PhysicalModelController: ObservableObject {
 
     private struct IsolationSnapshot {
         let screenAmount: Double
-        let captureAmount: Double
         let stages: [PhysicalStageID: StageValue]
     }
 
     @Published private(set) var screenAmount = 1.0
-    @Published private(set) var captureAmount = 0.0
     @Published private(set) var stages: [PhysicalStageID: StageValue]
     @Published private(set) var quality = PhysicalQuality.draft
     @Published private(set) var frameState = PhysicalFrameState.idle
@@ -47,15 +45,12 @@ final class PhysicalModelController: ObservableObject {
         for stage in PhysicalStageID.ordered {
             let discrete = stage == .capture(.sensorCFA)
                 || stage == .capture(.developDemosaic)
-            let implemented = stage == .screen(.emission)
-                || stage == .screen(.subpixelGeometry)
-                || stage == .screen(.panelLightSpread)
             values[stage] = StageValue(
                 stage: stage,
                 exactIdentityAtZero: !discrete,
                 control: discrete
-                    ? .discrete(enabled: false)
-                    : .continuous(amount: implemented ? 1 : 0, limits: .standard)
+                    ? .discrete(enabled: true)
+                    : .continuous(amount: 1, limits: .standard)
             )
         }
         stages = values
@@ -88,24 +83,17 @@ final class PhysicalModelController: ObservableObject {
 
     func setDomainAmount(_ amount: Double, domain: PhysicalDomainID) throws {
         try PhysicalContributionLimits.standard.validate(amount)
-        if domain == .capture, amount != 0 {
-            throw PhysicalModelStateError.stagePending
-        }
         switch domain {
         case .screen:
             guard screenAmount != amount else { return }
             screenAmount = amount
         case .capture:
-            guard captureAmount != amount else { return }
-            captureAmount = amount
+            throw PhysicalModelStateError.domainHasNoContinuousMaster
         }
         invalidateParameters()
     }
 
     func setContinuousAmount(_ amount: Double, stage: PhysicalStageID) throws {
-        guard stage.isImplementedByUnifiedPipeline else {
-            throw PhysicalModelStateError.stagePending
-        }
         guard var value = stages[stage],
               case let .continuous(_, limits) = value.control
         else { throw PhysicalModelStateError.stageIsNotContinuous }
@@ -117,9 +105,6 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func setDiscreteEnabled(_ enabled: Bool, stage: PhysicalStageID) throws {
-        guard stage.isImplementedByUnifiedPipeline else {
-            throw PhysicalModelStateError.stagePending
-        }
         guard var value = stages[stage], case .discrete = value.control else {
             throw PhysicalModelStateError.stageIsNotDiscrete
         }
@@ -142,9 +127,6 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func toggleIsolation(_ stage: PhysicalStageID) throws {
-        guard stage.isImplementedByUnifiedPipeline else {
-            throw PhysicalModelStateError.stagePending
-        }
         if isolatedStage == stage {
             restoreIsolation()
             return
@@ -152,7 +134,6 @@ final class PhysicalModelController: ObservableObject {
         if isolatedStage != nil { restoreIsolation() }
         isolationSnapshot = IsolationSnapshot(
             screenAmount: screenAmount,
-            captureAmount: captureAmount,
             stages: stages
         )
         isolatedStage = stage
@@ -167,14 +148,12 @@ final class PhysicalModelController: ObservableObject {
             stages[candidate] = value
         }
         if stage.domain == .screen, screenAmount == 0 { screenAmount = 1 }
-        if stage.domain == .capture, captureAmount == 0 { captureAmount = 1 }
         invalidateParameters()
     }
 
     func restoreIsolation() {
         guard let snapshot = isolationSnapshot else { return }
         screenAmount = snapshot.screenAmount
-        captureAmount = snapshot.captureAmount
         stages = snapshot.stages
         isolationSnapshot = nil
         isolatedStage = nil
@@ -279,4 +258,5 @@ enum PhysicalModelStateError: Error, Equatable {
     case stageIsNotDiscrete
     case nativeAlreadyRendering
     case stagePending
+    case domainHasNoContinuousMaster
 }
