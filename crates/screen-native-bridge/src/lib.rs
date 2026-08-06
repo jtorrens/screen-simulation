@@ -533,7 +533,7 @@ fn contribution_amounts(
 fn diagnostic_snapshot(
     state: u32,
     progress: f32,
-    elapsed_nanoseconds: u64,
+    stage_elapsed_nanoseconds: [u64; 12],
     stage_messages: [String; 12],
 ) -> Box<OwnedDiagnosticSnapshot> {
     let messages = Vec::from(stage_messages)
@@ -549,7 +549,7 @@ fn diagnostic_snapshot(
             stage_id: *stage_id,
             state,
             progress,
-            elapsed_nanoseconds,
+            elapsed_nanoseconds: stage_elapsed_nanoseconds[index],
             message: ScreenUtf8View {
                 bytes: messages[index].as_ptr(),
                 count: messages[index].len(),
@@ -1158,7 +1158,8 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         effective_width,
         effective_height,
         texture_pointer,
-        elapsed_nanoseconds,
+        _elapsed_nanoseconds,
+        stage_elapsed_nanoseconds,
         emission,
         geometry,
         spread,
@@ -1174,6 +1175,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             0,
             0,
             0,
+            [0; 12],
             "physical pipeline emission rendering".to_owned(),
             "subpixel geometry rendering".to_owned(),
             "panel light spread rendering".to_owned(),
@@ -1189,6 +1191,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             0,
             0,
             0,
+            [0; 12],
             "physical pipeline emission cancelled".to_owned(),
             "subpixel geometry cancelled".to_owned(),
             "panel light spread cancelled".to_owned(),
@@ -1204,6 +1207,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             0,
             0,
             0,
+            [0; 12],
             format!("physical pipeline backend failed: {message}"),
             format!("subpixel geometry failed: {message}"),
             format!("panel light spread failed: {message}"),
@@ -1224,10 +1228,11 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             };
             (
                 STATE_COMPLETE,
-                value.sampling.effective_width,
-                value.sampling.effective_height,
+                value.texture.width() as u32,
+                value.texture.height() as u32,
                 value.texture.as_ptr() as usize,
                 *elapsed_nanoseconds,
+                value.stage_elapsed_nanoseconds,
                 format!(
                     "active {:.6} x {:.6} m; PPI {:.3}; pitch {:.3} x {:.3} um",
                     value.geometry.active_width_meters,
@@ -1270,7 +1275,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
     let snapshot = diagnostic_snapshot(
         state,
         progress,
-        elapsed_nanoseconds,
+        stage_elapsed_nanoseconds,
         [
             emission,
             geometry,
@@ -2706,6 +2711,29 @@ mod tests {
         assert!(messages[9].contains("sensor CFA"));
         assert!(messages[10].contains("deterministic"));
         assert!(messages[11].contains("demosaic"));
+        assert!(
+            diagnostics[..9]
+                .iter()
+                .all(|diagnostic| diagnostic.elapsed_nanoseconds > 0)
+        );
+        assert!(
+            diagnostics[9..]
+                .iter()
+                .all(|diagnostic| diagnostic.elapsed_nanoseconds > 0)
+        );
+        assert!(
+            diagnostics[..9]
+                .windows(2)
+                .all(|pair| pair[0].elapsed_nanoseconds == pair[1].elapsed_nanoseconds)
+        );
+        assert_eq!(
+            diagnostics[9].elapsed_nanoseconds,
+            diagnostics[10].elapsed_nanoseconds
+        );
+        assert_eq!(
+            diagnostics[10].elapsed_nanoseconds,
+            diagnostics[11].elapsed_nanoseconds
+        );
 
         unsafe {
             screen_physical_frame_job_release(job);
