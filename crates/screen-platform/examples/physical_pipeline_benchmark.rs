@@ -90,8 +90,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 environment: screen_cover::ProceduralEnvironment::NONE,
                 scene_geometry_lens:
                     screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
+                camera_position: screen_contracts::Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                camera_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
+                screen_translation: screen_contracts::Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                screen_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
                 scene_geometry_amount: 0.0,
                 lens_amount: 0.0,
+                frame_time: screen_contracts::RationalTime::new(0, 1)
+                    .expect("valid benchmark time"),
+                shutter_open: screen_contracts::RationalTime::new(-1, 96)
+                    .expect("valid benchmark open"),
+                shutter_close: screen_contracts::RationalTime::new(1, 96)
+                    .expect("valid benchmark close"),
+                shutter_motion: screen_application::ResolvedShutterMotionSnapshot {
+                    temporal_samples: 1,
+                    readout: screen_application::SensorReadout::Global,
+                    neutral_density_stops: 0.0,
+                    noise_seed: 0,
+                },
+                shutter_motion_amount: 0.0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             };
             let mut first_tile = None;

@@ -78,7 +78,6 @@ pub struct SourceAcesCgRaster {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedSceneGeometryLensSnapshot {
-    pub camera_position: Vec3,
     pub focal_length_millimeters: f32,
     pub sensor_width_millimeters: f32,
     pub sensor_height_millimeters: f32,
@@ -87,19 +86,11 @@ pub struct ResolvedSceneGeometryLensSnapshot {
     pub f_stop: f32,
     pub near_clip_meters: f32,
     pub far_clip_meters: f32,
-    pub camera_rotation: Quaternion,
     pub lens: LensModel,
-    pub screen_translation: Vec3,
-    pub screen_rotation: Quaternion,
 }
 
 impl ResolvedSceneGeometryLensSnapshot {
     pub const REFERENCE: Self = Self {
-        camera_position: Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        },
         focal_length_millimeters: 50.0,
         sensor_width_millimeters: 36.0,
         sensor_height_millimeters: 24.0,
@@ -108,24 +99,7 @@ impl ResolvedSceneGeometryLensSnapshot {
         f_stop: 2.8,
         near_clip_meters: 0.01,
         far_clip_meters: 100.0,
-        camera_rotation: Quaternion {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            w: 1.0,
-        },
         lens: LensModel::REFERENCE_PHOTOGRAPHIC,
-        screen_translation: Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        },
-        screen_rotation: Quaternion {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            w: 1.0,
-        },
     };
 
     /// Materializes the historical camera/screen domain without preset lookups.
@@ -133,6 +107,10 @@ impl ResolvedSceneGeometryLensSnapshot {
     /// diagnostics in `CameraSample`, never competing request inputs.
     pub fn resolve(
         self,
+        camera_position: Vec3,
+        camera_rotation: Quaternion,
+        screen_translation: Vec3,
+        screen_rotation: Quaternion,
         lens_character_strength: f32,
     ) -> Result<(CameraSample, ScreenSample), GeometryError> {
         let time = RationalTime::new(0, 1).expect("constant track time is valid");
@@ -145,8 +123,8 @@ impl ResolvedSceneGeometryLensSnapshot {
                 keyframes: vec![TransformKeyframe {
                     id: "resolved-camera".to_owned(),
                     time,
-                    translation: self.camera_position,
-                    rotation: self.camera_rotation,
+                    translation: camera_position,
+                    rotation: camera_rotation,
                     interpolation: KeyframeInterpolation::Hold,
                 }],
             },
@@ -171,8 +149,8 @@ impl ResolvedSceneGeometryLensSnapshot {
             keyframes: vec![TransformKeyframe {
                 id: "resolved-screen".to_owned(),
                 time,
-                translation: self.screen_translation,
-                rotation: self.screen_rotation,
+                translation: screen_translation,
+                rotation: screen_rotation,
                 interpolation: KeyframeInterpolation::Hold,
             }],
         };
@@ -182,7 +160,6 @@ impl ResolvedSceneGeometryLensSnapshot {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedShutterMotionSnapshot {
-    pub exposure_duration: RationalTime,
     pub temporal_samples: u16,
     pub readout: SensorReadout,
     pub neutral_density_stops: f32,
@@ -191,7 +168,6 @@ pub struct ResolvedShutterMotionSnapshot {
 
 impl ResolvedShutterMotionSnapshot {
     pub fn rolling(
-        exposure_duration: RationalTime,
         temporal_samples: u16,
         readout_duration: RationalTime,
         direction: RollingDirection,
@@ -199,7 +175,6 @@ impl ResolvedShutterMotionSnapshot {
         noise_seed: u64,
     ) -> Self {
         Self {
-            exposure_duration,
             temporal_samples,
             readout: SensorReadout::Rolling {
                 duration: readout_duration,
@@ -227,13 +202,8 @@ pub struct PhysicalPipelineSnapshot {
 mod tests {
     use super::*;
 
-    fn resolved(rotation: Quaternion) -> ResolvedSceneGeometryLensSnapshot {
+    fn resolved() -> ResolvedSceneGeometryLensSnapshot {
         ResolvedSceneGeometryLensSnapshot {
-            camera_position: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
             focal_length_millimeters: 50.0,
             sensor_width_millimeters: 36.0,
             sensor_height_millimeters: 24.0,
@@ -242,21 +212,28 @@ mod tests {
             f_stop: 2.8,
             near_clip_meters: 0.01,
             far_clip_meters: 100.0,
-            camera_rotation: rotation,
             lens: LensModel::REFERENCE_PHOTOGRAPHIC,
-            screen_translation: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            screen_rotation: Quaternion::from_yaw_degrees(0.0),
         }
     }
 
     #[test]
     fn identity_orientation_derives_one_consistent_implicit_target() {
-        let (camera, screen) = resolved(Quaternion::from_yaw_degrees(0.0))
-            .resolve(0.0)
+        let (camera, screen) = resolved()
+            .resolve(
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                Quaternion::from_yaw_degrees(0.0),
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Quaternion::from_yaw_degrees(0.0),
+                0.0,
+            )
             .expect("resolved identity camera");
         assert_eq!(camera.yaw_degrees.to_bits(), 0.0_f32.to_bits());
         assert_eq!(camera.target.x.to_bits(), camera.position.x.to_bits());
@@ -268,8 +245,22 @@ mod tests {
     #[test]
     fn yaw_and_pitch_are_derived_only_from_the_quaternion() {
         let rotation = Quaternion::from_orbit_yaw_pitch_degrees(30.0, -12.0);
-        let (camera, _) = resolved(rotation)
-            .resolve(1.0)
+        let (camera, _) = resolved()
+            .resolve(
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 1.0,
+                },
+                rotation,
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Quaternion::from_yaw_degrees(0.0),
+                1.0,
+            )
             .expect("resolved yaw/pitch camera");
         let forward = Vec3 {
             x: camera.target.x - camera.position.x,

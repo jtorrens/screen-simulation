@@ -186,10 +186,32 @@ struct PhysicalDeviceSignalTexture: @unchecked Sendable {
     let reference: ScreenPhysicalTextureRef
 }
 
-struct PhysicalFrameInput: @unchecked Sendable {
-    let sourceACEScg: PhysicalACEScgTexture
-    let deviceSignal: PhysicalDeviceSignalTexture
-    let rasterPlacement: PhysicalRasterPlacement
+struct PhysicalTimedInputSet: @unchecked Sendable {
+    let reference: ScreenPhysicalTimedInputSetV2Ref
+}
+
+struct PhysicalCameraPoseTrack: @unchecked Sendable {
+    let reference: ScreenPhysicalCameraPoseTrackV2Ref
+}
+
+struct PhysicalScreenPoseTrack: @unchecked Sendable {
+    let reference: ScreenPhysicalScreenPoseTrackV2Ref
+}
+
+struct PhysicalRationalTime: Equatable, Sendable {
+    let numerator: Int64
+    let denominator: UInt32
+
+    init(numerator: Int64, denominator: UInt32) throws {
+        guard denominator != 0 else { throw PhysicalContractError.invalidFrameTime }
+        self.numerator = numerator
+        self.denominator = denominator
+    }
+}
+
+struct PhysicalShutterInterval: Equatable, Sendable {
+    let open: PhysicalRationalTime
+    let close: PhysicalRationalTime
 }
 
 struct ResolvedPhysicalPipelineSnapshot: @unchecked Sendable {
@@ -200,7 +222,10 @@ struct PhysicalFrameRequest: @unchecked Sendable {
     static let abiVersion = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
 
     let frame: PhysicalFrameSelection
-    let input: PhysicalFrameInput
+    let timedInputs: PhysicalTimedInputSet
+    let cameraPoseTrack: PhysicalCameraPoseTrack
+    let screenPoseTrack: PhysicalScreenPoseTrack
+    let shutterInterval: PhysicalShutterInterval
     let resolvedDevice: ResolvedDevice
     let resolvedPipeline: ResolvedPhysicalPipelineSnapshot
     let quality: PhysicalQuality
@@ -216,7 +241,10 @@ struct PhysicalFrameRequest: @unchecked Sendable {
 
     init(
         frame: PhysicalFrameSelection,
-        input: PhysicalFrameInput,
+        timedInputs: PhysicalTimedInputSet,
+        cameraPoseTrack: PhysicalCameraPoseTrack,
+        screenPoseTrack: PhysicalScreenPoseTrack,
+        shutterInterval: PhysicalShutterInterval,
         resolvedDevice: ResolvedDevice,
         resolvedPipeline: ResolvedPhysicalPipelineSnapshot,
         quality: PhysicalQuality,
@@ -236,7 +264,10 @@ struct PhysicalFrameRequest: @unchecked Sendable {
             throw PhysicalContractError.invalidStageOrder
         }
         self.frame = frame
-        self.input = input
+        self.timedInputs = timedInputs
+        self.cameraPoseTrack = cameraPoseTrack
+        self.screenPoseTrack = screenPoseTrack
+        self.shutterInterval = shutterInterval
         self.resolvedDevice = resolvedDevice
         self.resolvedPipeline = resolvedPipeline
         self.quality = quality
