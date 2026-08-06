@@ -5,7 +5,7 @@
 use core::fmt;
 use screen_contracts::{EncodedColorMetadata, MatrixCoefficients, RationalTime, SignalRange};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct RasterSize {
     pub width: u32,
     pub height: u32,
@@ -24,13 +24,13 @@ impl RasterSize {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum AlphaPresence {
     Absent,
     Present,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum AlphaInterpretation {
     Auto,
     Straight,
@@ -60,14 +60,14 @@ pub enum SignalRangeSelection {
     Full,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ResolvedYuvMatrix {
     Bt601,
     Bt709,
     Bt2020,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ResolvedSignalRange {
     Limited,
     Full,
@@ -79,13 +79,13 @@ pub struct SourceDecodeInterpretation {
     pub range: SignalRangeSelection,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct ResolvedYuvInterpretation {
     pub matrix: ResolvedYuvMatrix,
     pub range: ResolvedSignalRange,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ResolvedSourceDecode {
     Rgb,
     Yuv(ResolvedYuvInterpretation),
@@ -98,7 +98,7 @@ pub enum FrameCadence {
     Variable,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum FrameSelectionPolicy {
     /// Require a source sample at the requested rational time. Source edges are not extended.
     Exact,
@@ -178,6 +178,28 @@ pub struct DecodedFrame {
     pub raster: RasterSize,
     pub timestamp: RationalTime,
     pub pixels: Vec<DecodedRgba>,
+}
+
+/// One decoded RGBA16 sample retaining FFmpeg's bounded integer output for direct GPU upload.
+/// Normalization and color processing deliberately happen at the GPU boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedRgba16Frame {
+    pub raster: RasterSize,
+    pub timestamp: RationalTime,
+    pub pixels: Vec<[u16; 4]>,
+}
+
+impl DecodedRgba16Frame {
+    pub fn validate(self) -> Result<Self, MediaError> {
+        let expected = self.raster.pixel_count();
+        if self.pixels.len() as u64 != expected {
+            return Err(MediaError::PixelCountMismatch {
+                expected,
+                actual: self.pixels.len() as u64,
+            });
+        }
+        Ok(self)
+    }
 }
 
 impl DecodedFrame {

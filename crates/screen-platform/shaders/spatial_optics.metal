@@ -172,6 +172,7 @@ inline float cover_interface(float view_cosine, constant SpatialParams& p, threa
 }
 
 inline float3 cover_transmission(float cosine, constant SpatialParams& p) {
+    if (p.pipeline_strengths.w != 0.0f) return 1.0f;
     float cosine_t;
     float reflection = cover_interface(cosine, p, cosine_t);
     float absorption_scale = p.cover_geometry.y / max(cosine_t, 0.01f) * p.cover_geometry.x;
@@ -181,6 +182,7 @@ inline float3 cover_transmission(float cosine, constant SpatialParams& p) {
 }
 
 inline float2 transmitted_uv(RayHit hit, constant SpatialParams& p) {
+    if (p.pipeline_strengths.w != 0.0f) return hit.uv;
     if (p.cover_geometry.x == 0.0f || p.cover_geometry.z == 1.0f) return hit.uv;
     float3 direction = normalize(hit.reflection_direction);
     float cosine_i = max(abs(direction.z), 1.0e-4f);
@@ -232,6 +234,7 @@ inline float3 environment_radiance(float3 direction, constant SpatialParams& p) 
 
 inline float reflected_channel(RayHit hit, uint channel, float weight,
                                constant SpatialParams& p) {
+    if (p.pipeline_strengths.w != 0.0f) return 0.0f;
     float cosine_t;
     float reflection = cover_interface(hit.cosine, p, cosine_t);
     return environment_radiance(hit.reflection_direction, p)[channel] * reflection * weight;
@@ -390,6 +393,7 @@ inline float resolved_native_channel(float3 code, float2 uv, uint channel, const
 }
 
 inline float channel_weight(float3 irradiance, RayHit hit, uint channel, constant SpatialParams& p) {
+    if (p.pipeline_strengths.w == 1.0f) return 1.0f;
     float angular = hit.cosine == 0.0f ? 0.0f : pow(clamp(hit.cosine, 0.0f, 1.0f),
         channel == 0 ? p.panel_levels_angular_r.z : (channel == 1 ? p.panel_levels_angular_r.w : p.panel_angular_b.x));
     return irradiance[channel] * angular;
@@ -475,9 +479,12 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
             }
             if (count == 0) continue;
             on_panel = true;
-            float ideal = area_signal(uv_min, uv_max, emission_integral, p, true)[channel];
-            float physical = linear_channel_over_rect(ideal, uv_min * float2(p.panel_meta.xy),
-                                                      uv_max * float2(p.panel_meta.xy), channel, p);
+            float ideal = area_signal(uv_min, uv_max,
+                p.pipeline_strengths.w == 1.0f ? code_integral : emission_integral,
+                p, p.pipeline_strengths.w != 1.0f)[channel];
+            float physical = p.pipeline_strengths.w == 1.0f ? ideal
+                : linear_channel_over_rect(ideal, uv_min * float2(p.panel_meta.xy),
+                                           uv_max * float2(p.panel_meta.xy), channel, p);
             float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
             native[channel] += value * weight_sum / 4.0f;
         }
@@ -499,9 +506,11 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
                 on_panel = true;
                 float3 code = point_signal(uv, signal, p);
                 float span = p.panel_levels_angular_r.y - p.panel_levels_angular_r.x;
-                float ideal = p.panel_levels_angular_r.x
-                    + span * sign(code[channel]) * pow(abs(code[channel]), p.panel_geometry.w);
-                float physical = resolved_native_channel(code, uv, channel, p);
+                float ideal = p.pipeline_strengths.w == 1.0f ? code[channel]
+                    : p.panel_levels_angular_r.x
+                        + span * sign(code[channel]) * pow(abs(code[channel]), p.panel_geometry.w);
+                float physical = p.pipeline_strengths.w == 1.0f ? ideal
+                    : resolved_native_channel(code, uv, channel, p);
                 float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
                 native[channel] += value * channel_weight(weights, hit, channel, p)
                     * cover_transmission(hit.cosine, p)[channel];
@@ -509,8 +518,10 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
         }
         native /= float(p.window.z * 16);
     }
-    float3 acescg = float3(dot(p.panel_matrix_0.xyz, native), dot(p.panel_matrix_1.xyz, native),
-                           dot(p.panel_matrix_2.xyz, native)) + reflected;
+    native *= p.pipeline_strengths.w == 1.0f ? 1.0f : p.pipeline_strengths.z;
+    float3 acescg = p.pipeline_strengths.w == 1.0f ? native
+        : float3(dot(p.panel_matrix_0.xyz, native), dot(p.panel_matrix_1.xyz, native),
+                 dot(p.panel_matrix_2.xyz, native)) + reflected;
     output[index] = float4(acescg, on_panel ? 1.0f : 0.0f);
 }
 

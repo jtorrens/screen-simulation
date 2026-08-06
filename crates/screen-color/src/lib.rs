@@ -4,8 +4,8 @@
 
 use core::fmt;
 use ocio_rs::{
-    CPUProcessor, Config, GpuLanguage, GpuShaderDesc, GpuTextureChannel, Interpolation,
-    TransformDirection,
+    CPUProcessor, Config, GPUProcessor, GpuLanguage, GpuShaderDesc, GpuTextureChannel,
+    Interpolation, TransformDirection,
 };
 use screen_contracts::{
     ColorPrimaries, DeviceRgb, EncodedColorMetadata, LinearRgb, MatrixCoefficients,
@@ -63,7 +63,7 @@ impl CameraOutputTransform {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum OcioInputTransform {
     SrgbEncodedRec709,
     CameraRec709,
@@ -143,7 +143,7 @@ impl OcioInputTransform {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum DeviceColorTarget {
     SrgbDisplay,
     Gamma22Rec709Display,
@@ -162,7 +162,7 @@ impl DeviceColorTarget {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum SourceColorInterpretation {
     IdentityDeviceSignal,
     Ocio(OcioInputTransform),
@@ -300,73 +300,121 @@ impl ColorEngine {
         let gpu = processor
             .default_gpu_processor()
             .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
-        let mut shader =
-            GpuShaderDesc::create().map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
-        shader
-            .set_language(GpuLanguage::Msl2_0)
-            .and_then(|()| shader.set_function_name("screenSimulationOcioDisplay"))
-            .and_then(|()| shader.set_resource_prefix("screen_simulation_ocio_"))
-            .and_then(|()| shader.set_allow_texture_1d(false))
-            .and_then(|()| gpu.try_extract_shader_info(&mut shader))
-            .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
-        let source = shader
-            .shader_text()
-            .ok_or_else(|| ColorError::OpenColorIo("GPU processor emitted no MSL".to_owned()))?;
-        let interpolation = |value| match value {
-            Interpolation::Nearest => Ok(OcioGpuTextureInterpolation::Nearest),
-            Interpolation::Linear => Ok(OcioGpuTextureInterpolation::Linear),
-            other => Err(ColorError::OpenColorIo(format!(
-                "unsupported GPU LUT interpolation {other:?}"
-            ))),
+        extract_gpu_shader(
+            gpu,
+            "screenSimulationOcioDisplay",
+            "screen_simulation_ocio_",
+        )
+    }
+
+    /// Resolves the same authored Source-to-Device processor used by the CPU oracle into MSL.
+    /// Identity is explicit and still crosses this single GPU contract; it is not a fallback.
+    pub fn source_to_device_gpu_shader(
+        &self,
+        interpretation: SourceColorInterpretation,
+        target: DeviceColorTarget,
+    ) -> Result<OcioGpuShader, ColorError> {
+        if interpretation == SourceColorInterpretation::IdentityDeviceSignal {
+            return Ok(OcioGpuShader {
+                function_name: "screenSimulationOcioInput".to_owned(),
+                source: "inline float4 screenSimulationOcioInput(float4 value) { return value; }\n"
+                    .to_owned(),
+                textures: Vec::new(),
+                uniform_count: 0,
+            });
+        }
+        let SourceColorInterpretation::Ocio(input) = interpretation else {
+            unreachable!("identity returned above")
         };
-        let mut textures = shader
-            .textures_2d()
+        let gpu = self
+            .config
+            .processor_display(
+                input.ocio_color_space(),
+                target.ocio_display(),
+                DeviceColorTarget::VIEW,
+                TransformDirection::Forward,
+            )
+            .and_then(|processor| processor.default_gpu_processor())
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        extract_gpu_shader(
+            gpu,
+            "screenSimulationOcioInput",
+            "screen_simulation_input_ocio_",
+        )
+    }
+}
+
+fn extract_gpu_shader(
+    gpu: GPUProcessor,
+    function_name: &str,
+    resource_prefix: &str,
+) -> Result<OcioGpuShader, ColorError> {
+    let mut shader =
+        GpuShaderDesc::create().map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+    shader
+        .set_language(GpuLanguage::Msl2_0)
+        .and_then(|()| shader.set_function_name(function_name))
+        .and_then(|()| shader.set_resource_prefix(resource_prefix))
+        .and_then(|()| shader.set_allow_texture_1d(false))
+        .and_then(|()| gpu.try_extract_shader_info(&mut shader))
+        .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+    let source = shader
+        .shader_text()
+        .ok_or_else(|| ColorError::OpenColorIo("GPU processor emitted no MSL".to_owned()))?;
+    let interpolation = |value| match value {
+        Interpolation::Nearest => Ok(OcioGpuTextureInterpolation::Nearest),
+        Interpolation::Linear => Ok(OcioGpuTextureInterpolation::Linear),
+        other => Err(ColorError::OpenColorIo(format!(
+            "unsupported GPU LUT interpolation {other:?}"
+        ))),
+    };
+    let mut textures = shader
+        .textures_2d()
+        .into_iter()
+        .map(|texture| {
+            Ok(OcioGpuTexture {
+                texture_name: texture.texture_name,
+                sampler_name: texture.sampler_name,
+                width: texture.width,
+                height: texture.height,
+                depth: 1,
+                channel_count: match texture.channel {
+                    GpuTextureChannel::Red => 1,
+                    GpuTextureChannel::Rgb => 3,
+                },
+                dimension: OcioGpuTextureDimension::Two,
+                interpolation: interpolation(texture.interpolation)?,
+                binding_index: texture.binding_index,
+                values: texture.values,
+            })
+        })
+        .collect::<Result<Vec<_>, ColorError>>()?;
+    textures.extend(
+        shader
+            .textures_3d()
             .into_iter()
             .map(|texture| {
                 Ok(OcioGpuTexture {
                     texture_name: texture.texture_name,
                     sampler_name: texture.sampler_name,
-                    width: texture.width,
-                    height: texture.height,
-                    depth: 1,
-                    channel_count: match texture.channel {
-                        GpuTextureChannel::Red => 1,
-                        GpuTextureChannel::Rgb => 3,
-                    },
-                    dimension: OcioGpuTextureDimension::Two,
+                    width: texture.edge_len,
+                    height: texture.edge_len,
+                    depth: texture.edge_len,
+                    channel_count: 3,
+                    dimension: OcioGpuTextureDimension::Three,
                     interpolation: interpolation(texture.interpolation)?,
                     binding_index: texture.binding_index,
                     values: texture.values,
                 })
             })
-            .collect::<Result<Vec<_>, ColorError>>()?;
-        textures.extend(
-            shader
-                .textures_3d()
-                .into_iter()
-                .map(|texture| {
-                    Ok(OcioGpuTexture {
-                        texture_name: texture.texture_name,
-                        sampler_name: texture.sampler_name,
-                        width: texture.edge_len,
-                        height: texture.edge_len,
-                        depth: texture.edge_len,
-                        channel_count: 3,
-                        dimension: OcioGpuTextureDimension::Three,
-                        interpolation: interpolation(texture.interpolation)?,
-                        binding_index: texture.binding_index,
-                        values: texture.values,
-                    })
-                })
-                .collect::<Result<Vec<_>, ColorError>>()?,
-        );
-        Ok(OcioGpuShader {
-            function_name: "screenSimulationOcioDisplay".to_owned(),
-            source,
-            textures,
-            uniform_count: shader.uniforms().len(),
-        })
-    }
+            .collect::<Result<Vec<_>, ColorError>>()?,
+    );
+    Ok(OcioGpuShader {
+        function_name: function_name.to_owned(),
+        source,
+        textures,
+        uniform_count: shader.uniforms().len(),
+    })
 }
 
 pub struct CameraOutputProcessor {

@@ -9,7 +9,53 @@ use screen_cover::EnvironmentPattern;
 use screen_geometry::{CameraSample, ScreenSample};
 use screen_panel::StripeLayout;
 
+use crate::media_metal::MetalNativeRasterResource;
 use crate::{MetalNativeError, MetalRawDevelopment};
+
+enum SpatialSignalBuffers<'a> {
+    Owned {
+        signal: metal::Buffer,
+        code_integral: metal::Buffer,
+        emission_integral: metal::Buffer,
+    },
+    Native(&'a MetalNativeRasterResource),
+}
+
+impl SpatialSignalBuffers<'_> {
+    fn signal(&self) -> &metal::BufferRef {
+        match self {
+            Self::Owned { signal, .. } => signal,
+            Self::Native(resource) => &resource.signal,
+        }
+    }
+
+    fn code_integral(&self) -> &metal::BufferRef {
+        match self {
+            Self::Owned { code_integral, .. } => code_integral,
+            Self::Native(resource) => &resource.code_integral,
+        }
+    }
+
+    fn emission_integral(&self) -> &metal::BufferRef {
+        match self {
+            Self::Owned {
+                emission_integral, ..
+            } => emission_integral,
+            Self::Native(resource) => &resource.emission_integral,
+        }
+    }
+}
+
+fn native_resource(
+    resource: &dyn screen_application::NativeDeviceSignalResource,
+) -> Result<&MetalNativeRasterResource, MetalNativeError> {
+    resource
+        .as_any()
+        .downcast_ref::<MetalNativeRasterResource>()
+        .ok_or_else(|| {
+            MetalNativeError("native raster belongs to another platform backend".to_owned())
+        })
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -85,6 +131,24 @@ impl SpatialParams {
                     *time_seconds,
                 ),
                 SpatialSignalPlan::Raster {
+                    width,
+                    height,
+                    placement,
+                    ..
+                } => (
+                    1,
+                    *width,
+                    *height,
+                    match placement {
+                        screen_application::RasterPlacement::Fit => 0,
+                        screen_application::RasterPlacement::FillCrop => 1,
+                        screen_application::RasterPlacement::Stretch => 2,
+                        screen_application::RasterPlacement::OneToOne => 3,
+                    },
+                    0,
+                    0.0,
+                ),
+                SpatialSignalPlan::NativeRaster {
                     width,
                     height,
                     placement,
@@ -223,8 +287,13 @@ impl SpatialParams {
             pipeline_strengths: [
                 plan.panel_character_strength,
                 plan.lens_character_strength,
-                0.0,
-                0.0,
+                plan.panel_temporal_gain,
+                match plan.diagnostic_view {
+                    screen_application::DiagnosticView::Composite => 0.0,
+                    screen_application::DiagnosticView::DeviceSignal => 1.0,
+                    screen_application::DiagnosticView::Subpixels => 2.0,
+                    screen_application::DiagnosticView::EmittedRadiance => 3.0,
+                },
             ],
         }
     }
@@ -248,6 +317,57 @@ fn row_prefix(values: &[[f32; 4]], width: u32, height: u32) -> Vec<[f32; 4]> {
         }
     }
     result
+}
+
+impl MetalRawDevelopment {
+    fn spatial_signal_buffers<'a>(
+        &self,
+        source: &'a SpatialSignalPlan,
+    ) -> Result<SpatialSignalBuffers<'a>, MetalNativeError> {
+        if let SpatialSignalPlan::NativeRaster { resource, .. } = source {
+            return native_resource(resource.as_ref()).map(SpatialSignalBuffers::Native);
+        }
+        let placeholder = vec![[0.0_f32; 4]];
+        let (signal, code_integral, emission_integral) = match source {
+            SpatialSignalPlan::Procedural { .. } => {
+                (placeholder.clone(), placeholder.clone(), placeholder)
+            }
+            SpatialSignalPlan::Raster {
+                width,
+                height,
+                device_signal,
+                linear_native_emission,
+                ..
+            } => {
+                let signal = device_signal
+                    .iter()
+                    .map(|value| [value.r, value.g, value.b, 0.0])
+                    .collect::<Vec<_>>();
+                let emission = linear_native_emission
+                    .iter()
+                    .map(|value| [value.r, value.g, value.b, 0.0])
+                    .collect::<Vec<_>>();
+                (
+                    signal.clone(),
+                    row_prefix(&signal, *width, *height),
+                    row_prefix(&emission, *width, *height),
+                )
+            }
+            SpatialSignalPlan::NativeRaster { .. } => unreachable!("returned above"),
+        };
+        let buffer = |values: &[[f32; 4]]| {
+            self.device.new_buffer_with_data(
+                values.as_ptr().cast(),
+                size_of_val(values) as u64,
+                MTLResourceOptions::StorageModeShared,
+            )
+        };
+        Ok(SpatialSignalBuffers::Owned {
+            signal: buffer(&signal),
+            code_integral: buffer(&code_integral),
+            emission_integral: buffer(&emission_integral),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -276,44 +396,8 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
         &self,
         plan: &SpatialOpticalPlan,
     ) -> Result<Vec<LinearOpticalPixel>, Self::Error> {
-        let placeholder = vec![[0.0_f32; 4]];
-        let (signal, code_integral, emission_integral) = match &plan.signal {
-            SpatialSignalPlan::Procedural { .. } => {
-                (placeholder.clone(), placeholder.clone(), placeholder)
-            }
-            SpatialSignalPlan::Raster {
-                width,
-                height,
-                device_signal,
-                linear_native_emission,
-                ..
-            } => {
-                let signal = device_signal
-                    .iter()
-                    .map(|value| [value.r, value.g, value.b, 0.0])
-                    .collect::<Vec<_>>();
-                let emission = linear_native_emission
-                    .iter()
-                    .map(|value| [value.r, value.g, value.b, 0.0])
-                    .collect::<Vec<_>>();
-                (
-                    signal.clone(),
-                    row_prefix(&signal, *width, *height),
-                    row_prefix(&emission, *width, *height),
-                )
-            }
-        };
+        let signal = self.spatial_signal_buffers(&plan.signal)?;
         let params = SpatialParams::new(plan);
-        let buffer = |values: &[[f32; 4]]| {
-            self.device.new_buffer_with_data(
-                values.as_ptr().cast(),
-                size_of_val(values) as u64,
-                MTLResourceOptions::StorageModeShared,
-            )
-        };
-        let signal = buffer(&signal);
-        let code_integral = buffer(&code_integral);
-        let emission_integral = buffer(&emission_integral);
         let params = self.device.new_buffer_with_data(
             core::ptr::from_ref(&params).cast(),
             size_of::<SpatialParams>() as u64,
@@ -327,9 +411,9 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.spatial_pipeline);
-        encoder.set_buffer(0, Some(&signal), 0);
-        encoder.set_buffer(1, Some(&code_integral), 0);
-        encoder.set_buffer(2, Some(&emission_integral), 0);
+        encoder.set_buffer(0, Some(signal.signal()), 0);
+        encoder.set_buffer(1, Some(signal.code_integral()), 0);
+        encoder.set_buffer(2, Some(signal.emission_integral()), 0);
         encoder.set_buffer(3, Some(&output), 0);
         encoder.set_buffer(4, Some(&params), 0);
         let width = self
@@ -372,10 +456,8 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
         &self,
         plans: &[SpatialOpticalPlan],
     ) -> Result<Vec<Vec<LinearOpticalPixel>>, Self::Error> {
-        struct Dispatch {
-            signal: metal::Buffer,
-            code_integral: metal::Buffer,
-            emission_integral: metal::Buffer,
+        struct Dispatch<'a> {
+            signal: SpatialSignalBuffers<'a>,
             params: metal::Buffer,
             output: metal::Buffer,
             count: usize,
@@ -412,49 +494,32 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
                         && std::sync::Arc::ptr_eq(first_device, device_signal)
                         && std::sync::Arc::ptr_eq(first_emission, linear_native_emission)
                 }
+                (
+                    SpatialSignalPlan::NativeRaster {
+                        width: first_width,
+                        height: first_height,
+                        resource: first_resource,
+                        placement: first_placement,
+                    },
+                    SpatialSignalPlan::NativeRaster {
+                        width,
+                        height,
+                        resource,
+                        placement,
+                    },
+                ) => {
+                    first_width == width
+                        && first_height == height
+                        && first_placement == placement
+                        && std::sync::Arc::ptr_eq(first_resource, resource)
+                }
                 _ => false,
             };
             usize::from(plan.raster.width) * usize::from(plan.raster.height) == shared_count
                 && shared_signal_storage
         });
         if shares_signal_and_shape {
-            let placeholder = vec![[0.0_f32; 4]];
-            let (signal, code_integral, emission_integral) = match &plans[0].signal {
-                SpatialSignalPlan::Procedural { .. } => {
-                    (placeholder.clone(), placeholder.clone(), placeholder)
-                }
-                SpatialSignalPlan::Raster {
-                    width,
-                    height,
-                    device_signal,
-                    linear_native_emission,
-                    ..
-                } => {
-                    let signal = device_signal
-                        .iter()
-                        .map(|value| [value.r, value.g, value.b, 0.0])
-                        .collect::<Vec<_>>();
-                    let emission = linear_native_emission
-                        .iter()
-                        .map(|value| [value.r, value.g, value.b, 0.0])
-                        .collect::<Vec<_>>();
-                    (
-                        signal.clone(),
-                        row_prefix(&signal, *width, *height),
-                        row_prefix(&emission, *width, *height),
-                    )
-                }
-            };
-            let buffer = |values: &[[f32; 4]]| {
-                self.device.new_buffer_with_data(
-                    values.as_ptr().cast(),
-                    size_of_val(values) as u64,
-                    MTLResourceOptions::StorageModeShared,
-                )
-            };
-            let signal = buffer(&signal);
-            let code_integral = buffer(&code_integral);
-            let emission_integral = buffer(&emission_integral);
+            let signal = self.spatial_signal_buffers(&plans[0].signal)?;
             let params = plans.iter().map(SpatialParams::new).collect::<Vec<_>>();
             let params = self.device.new_buffer_with_data(
                 params.as_ptr().cast(),
@@ -475,9 +540,9 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
             let command = self.queue.new_command_buffer();
             let encoder = command.new_compute_command_encoder();
             encoder.set_compute_pipeline_state(&self.spatial_batch_pipeline);
-            encoder.set_buffer(0, Some(&signal), 0);
-            encoder.set_buffer(1, Some(&code_integral), 0);
-            encoder.set_buffer(2, Some(&emission_integral), 0);
+            encoder.set_buffer(0, Some(signal.signal()), 0);
+            encoder.set_buffer(1, Some(signal.code_integral()), 0);
+            encoder.set_buffer(2, Some(signal.emission_integral()), 0);
             encoder.set_buffer(3, Some(&output), 0);
             encoder.set_buffer(4, Some(&params), 0);
             encoder.set_buffer(5, Some(&batch), 0);
@@ -527,46 +592,10 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
         }
         let mut dispatches = Vec::with_capacity(plans.len());
         for plan in plans {
-            let placeholder = vec![[0.0_f32; 4]];
-            let (signal, code_integral, emission_integral) = match &plan.signal {
-                SpatialSignalPlan::Procedural { .. } => {
-                    (placeholder.clone(), placeholder.clone(), placeholder)
-                }
-                SpatialSignalPlan::Raster {
-                    width,
-                    height,
-                    device_signal,
-                    linear_native_emission,
-                    ..
-                } => {
-                    let signal = device_signal
-                        .iter()
-                        .map(|value| [value.r, value.g, value.b, 0.0])
-                        .collect::<Vec<_>>();
-                    let emission = linear_native_emission
-                        .iter()
-                        .map(|value| [value.r, value.g, value.b, 0.0])
-                        .collect::<Vec<_>>();
-                    (
-                        signal.clone(),
-                        row_prefix(&signal, *width, *height),
-                        row_prefix(&emission, *width, *height),
-                    )
-                }
-            };
-            let buffer = |values: &[[f32; 4]]| {
-                self.device.new_buffer_with_data(
-                    values.as_ptr().cast(),
-                    size_of_val(values) as u64,
-                    MTLResourceOptions::StorageModeShared,
-                )
-            };
             let params = SpatialParams::new(plan);
             let count = usize::from(plan.raster.width) * usize::from(plan.raster.height);
             dispatches.push(Dispatch {
-                signal: buffer(&signal),
-                code_integral: buffer(&code_integral),
-                emission_integral: buffer(&emission_integral),
+                signal: self.spatial_signal_buffers(&plan.signal)?,
                 params: self.device.new_buffer_with_data(
                     core::ptr::from_ref(&params).cast(),
                     size_of::<SpatialParams>() as u64,
@@ -583,9 +612,9 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
         let encoder = command.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.spatial_pipeline);
         for dispatch in &dispatches {
-            encoder.set_buffer(0, Some(&dispatch.signal), 0);
-            encoder.set_buffer(1, Some(&dispatch.code_integral), 0);
-            encoder.set_buffer(2, Some(&dispatch.emission_integral), 0);
+            encoder.set_buffer(0, Some(dispatch.signal.signal()), 0);
+            encoder.set_buffer(1, Some(dispatch.signal.code_integral()), 0);
+            encoder.set_buffer(2, Some(dispatch.signal.emission_integral()), 0);
             encoder.set_buffer(3, Some(&dispatch.output), 0);
             encoder.set_buffer(4, Some(&dispatch.params), 0);
             let width = self

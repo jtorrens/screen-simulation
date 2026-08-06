@@ -121,6 +121,7 @@ pub fn capture_device_preset(id: &str) -> Option<CaptureDevicePreset> {
         .copied()
         .find(|preset| preset.id == id)
 }
+use std::any::Any;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +143,31 @@ pub struct DeviceSignalRaster {
 pub struct PreparedDeviceSignalRaster {
     source: DeviceSignalRaster,
     integral: DeviceSignalIntegral,
+}
+
+/// Retained native storage prepared by the platform adapter for the spatial backend.
+///
+/// Application owns dimensions, placement, timing and orchestration. The resource itself is
+/// deliberately opaque so no Metal type or media implementation crosses into a physical domain.
+pub trait NativeDeviceSignalResource: Any + fmt::Debug + Send + Sync {
+    fn identity(&self) -> u64;
+    fn as_any(&self) -> &dyn Any;
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedNativeDeviceSignalRaster {
+    pub width: u32,
+    pub height: u32,
+    pub resource: Arc<dyn NativeDeviceSignalResource>,
+}
+
+impl PartialEq for PreparedNativeDeviceSignalRaster {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.resource.identity() == other.resource.identity()
+            && Arc::ptr_eq(&self.resource, &other.resource)
+    }
 }
 
 impl DeviceSignalRaster {
@@ -330,7 +356,8 @@ fn linear_emission_integral(
     })
 }
 
-pub fn decoded_frame_to_device_signal(
+/// CPU color transform retained only as the numeric oracle for the authoritative GPU path.
+pub fn decoded_frame_to_device_signal_cpu_oracle(
     frame: &DecodedFrame,
     alpha_presence: AlphaPresence,
     alpha_interpretation: AlphaInterpretation,
@@ -671,7 +698,7 @@ pub struct SpatialRasterWindow {
     pub height: u16,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum SpatialSignalPlan {
     Procedural {
         pattern: ProceduralTestPattern,
@@ -684,6 +711,72 @@ pub enum SpatialSignalPlan {
         linear_native_emission: Arc<[LinearRgb]>,
         placement: RasterPlacement,
     },
+    NativeRaster {
+        width: u32,
+        height: u32,
+        resource: Arc<dyn NativeDeviceSignalResource>,
+        placement: RasterPlacement,
+    },
+}
+
+impl PartialEq for SpatialSignalPlan {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Procedural {
+                    pattern: first_pattern,
+                    time_seconds: first_time,
+                },
+                Self::Procedural {
+                    pattern,
+                    time_seconds,
+                },
+            ) => first_pattern == pattern && first_time == time_seconds,
+            (
+                Self::Raster {
+                    width: first_width,
+                    height: first_height,
+                    device_signal: first_device,
+                    linear_native_emission: first_emission,
+                    placement: first_placement,
+                },
+                Self::Raster {
+                    width,
+                    height,
+                    device_signal,
+                    linear_native_emission,
+                    placement,
+                },
+            ) => {
+                first_width == width
+                    && first_height == height
+                    && first_device == device_signal
+                    && first_emission == linear_native_emission
+                    && first_placement == placement
+            }
+            (
+                Self::NativeRaster {
+                    width: first_width,
+                    height: first_height,
+                    resource: first_resource,
+                    placement: first_placement,
+                },
+                Self::NativeRaster {
+                    width,
+                    height,
+                    resource,
+                    placement,
+                },
+            ) => {
+                first_width == width
+                    && first_height == height
+                    && first_resource.identity() == resource.identity()
+                    && Arc::ptr_eq(first_resource, resource)
+                    && first_placement == placement
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -711,6 +804,8 @@ pub struct SpatialOpticalPlan {
     pub cover: CoverGlassProfile,
     pub environment: ProceduralEnvironment,
     pub aperture_sample_count: u16,
+    pub diagnostic_view: DiagnosticView,
+    pub panel_temporal_gain: f32,
     pub signal: SpatialSignalPlan,
 }
 
@@ -726,6 +821,8 @@ impl SpatialOpticalPlan {
             && self.cover == other.cover
             && self.environment == other.environment
             && self.aperture_sample_count == other.aperture_sample_count
+            && self.diagnostic_view == other.diagnostic_view
+            && self.panel_temporal_gain == other.panel_temporal_gain
             && self.signal.has_identical_spatial_evaluation(&other.signal)
     }
 
@@ -817,6 +914,26 @@ impl SpatialSignalPlan {
                     && first_placement == placement
                     && Arc::ptr_eq(first_device, device_signal)
                     && Arc::ptr_eq(first_emission, linear_native_emission)
+            }
+            (
+                Self::NativeRaster {
+                    width: first_width,
+                    height: first_height,
+                    resource: first_resource,
+                    placement: first_placement,
+                },
+                Self::NativeRaster {
+                    width,
+                    height,
+                    resource,
+                    placement,
+                },
+            ) => {
+                first_width == width
+                    && first_height == height
+                    && first_placement == placement
+                    && first_resource.identity() == resource.identity()
+                    && Arc::ptr_eq(first_resource, resource)
             }
             _ => false,
         }
@@ -929,6 +1046,34 @@ pub fn prepare_device_signal_spatial_plan(
     )
 }
 
+pub fn prepare_native_device_signal_spatial_plan(
+    request: OpticalRequest,
+    sensor: SensorProfile,
+    region: SensorRegion,
+    source: &PreparedNativeDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> Result<SpatialOpticalPlan, ApplicationError> {
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let region = region.validate(sensor).map_err(ApplicationError::Sensor)?;
+    prepare_spatial_plan(
+        request,
+        RasterWindow::from_sensor_region(sensor, region),
+        native_device_signal_plan(source, placement),
+    )
+}
+
+fn native_device_signal_plan(
+    source: &PreparedNativeDeviceSignalRaster,
+    placement: RasterPlacement,
+) -> SpatialSignalPlan {
+    SpatialSignalPlan::NativeRaster {
+        width: source.width,
+        height: source.height,
+        resource: Arc::clone(&source.resource),
+        placement,
+    }
+}
+
 fn prepare_device_signal_spatial_signal(
     panel: LcdProfile,
     source: &PreparedDeviceSignalRaster,
@@ -1013,6 +1158,8 @@ fn prepare_spatial_plan(
             request.panel,
             raster.full_width,
         ) as u16,
+        diagnostic_view: DiagnosticView::Composite,
+        panel_temporal_gain: 1.0,
         signal,
     })
 }
@@ -1600,6 +1747,52 @@ where
         |optics, region| {
             let signal = signal_at_time(optics.time)?;
             prepare_device_signal_spatial_plan(optics, sensor, region, &signal, placement)
+        },
+    )?;
+    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
+        .map_err(ApplicationError::Sensor)?;
+    let developed = raw_backend
+        .develop_region(&raw, sensor, development)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
+    Ok(CapturedCameraRegion {
+        raw,
+        developed: crop_developed_region(developed, requested_region),
+    })
+}
+
+/// Product Native path for an animated raster retained and prepared by the platform GPU adapter.
+/// The CPU `PreparedDeviceSignalRaster` route remains an explicitly separate numeric oracle.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_and_develop_native_device_signal_region_sequence_with_compute_backends<F, S, R>(
+    request: FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+    requested_region: SensorRegion,
+    placement: RasterPlacement,
+    mut signal_at_time: F,
+    spatial_backend: &S,
+    raw_backend: &R,
+) -> Result<CapturedCameraRegion, ApplicationError>
+where
+    F: FnMut(RationalTime) -> Result<Arc<PreparedNativeDeviceSignalRaster>, ApplicationError>,
+    S: SpatialOpticalBackend,
+    R: RawDevelopmentBackend,
+{
+    let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
+    let requested_region = requested_region
+        .validate(sensor)
+        .map_err(ApplicationError::Sensor)?;
+    let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let (shutter, identity) = request.resolve()?;
+    let exposure = integrate_spatial_region_with_backend(
+        shutter,
+        sensor,
+        evaluation_region,
+        false,
+        spatial_backend,
+        |optics, region| {
+            let signal = signal_at_time(optics.time)?;
+            prepare_native_device_signal_spatial_plan(optics, sensor, region, &signal, placement)
         },
     )?;
     let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
@@ -2579,6 +2772,79 @@ pub fn evaluate_linear_optics_from_prepared_device_signal(
     )
 }
 
+pub fn prepare_raster_from_native_device_signal_with_backend<B: SpatialOpticalBackend>(
+    request: SimulationRequest,
+    width: u16,
+    height: u16,
+    source: &PreparedNativeDeviceSignalRaster,
+    placement: RasterPlacement,
+    backend: &B,
+) -> Result<PreparedRaster, ApplicationError> {
+    let linear = evaluate_linear_optics_from_native_device_signal_with_backend(
+        request.clone(),
+        width,
+        height,
+        source,
+        placement,
+        backend,
+    )?;
+    prepare_raster_from_linear(&request, linear)
+}
+
+pub fn evaluate_linear_optics_from_native_device_signal_with_backend<B: SpatialOpticalBackend>(
+    request: SimulationRequest,
+    width: u16,
+    height: u16,
+    source: &PreparedNativeDeviceSignalRaster,
+    placement: RasterPlacement,
+    backend: &B,
+) -> Result<LinearOpticalRaster, ApplicationError> {
+    if width == 0 || height == 0 {
+        return Err(ApplicationError::EmptyPreviewRaster);
+    }
+    if !request.preview_exposure_ev.is_finite() {
+        return Err(ApplicationError::InvalidPreviewExposure);
+    }
+    let mut plan = prepare_spatial_plan(
+        request.optical_request(),
+        RasterWindow::full(width, height),
+        native_device_signal_plan(source, placement),
+    )?;
+    plan.diagnostic_view = request.view;
+    let evaluator = request
+        .optics
+        .panel
+        .evaluator()
+        .map_err(ApplicationError::Panel)?;
+    plan.panel_temporal_gain = panel_temporal_gain(&request.optics, evaluator)?;
+    let pixels = backend
+        .evaluate_spatial(&plan)
+        .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
+    let frame = plan.frame;
+    let projected_device_pixel_percent =
+        projected_device_pixel_width(&frame, request.optics.panel, width)
+            .ok_or(ApplicationError::ViewRayMissesPanel)?
+            * 100.0;
+    let subpixels_resolved_at_center =
+        optical_footprint_device_pixels(&frame, request.optics.panel, width, height)
+            .is_some_and(|footprint| footprint[0] <= 1.0 / 3.0 && footprint[1] <= 1.0);
+    let inspection_field_meters = request.optics.inspection.map(|region| {
+        [
+            (region.max.x - region.min.x) * request.optics.panel.active_width.0,
+            (region.max.y - region.min.y) * request.optics.panel.active_height.0,
+        ]
+    });
+    Ok(LinearOpticalRaster {
+        frame,
+        width,
+        height,
+        pixels,
+        projected_device_pixel_percent,
+        inspection_field_meters,
+        subpixels_resolved_at_center,
+    })
+}
+
 fn evaluate_linear_optics_region_from_prepared_device_signal(
     request: OpticalRequest,
     sensor: SensorProfile,
@@ -2813,6 +3079,13 @@ fn prepare_raster_with_signal(
         signal_at,
         signal_area,
     )?;
+    prepare_raster_from_linear(&request, linear)
+}
+
+fn prepare_raster_from_linear(
+    request: &SimulationRequest,
+    linear: LinearOpticalRaster,
+) -> Result<PreparedRaster, ApplicationError> {
     let display = DiagnosticDisplayTransform {
         reference_white_nits: 100.0,
     };
@@ -5332,7 +5605,7 @@ mod tests {
             )
             .expect("identity processor");
         assert_eq!(
-            decoded_frame_to_device_signal(
+            decoded_frame_to_device_signal_cpu_oracle(
                 &frame,
                 AlphaPresence::Present,
                 AlphaInterpretation::Auto,
@@ -5340,21 +5613,21 @@ mod tests {
             ),
             Err(ApplicationError::AlphaAssociationUnresolved)
         );
-        let straight = decoded_frame_to_device_signal(
+        let straight = decoded_frame_to_device_signal_cpu_oracle(
             &frame,
             AlphaPresence::Present,
             AlphaInterpretation::Straight,
             &processor,
         )
         .expect("explicit straight alpha");
-        let premultiplied = decoded_frame_to_device_signal(
+        let premultiplied = decoded_frame_to_device_signal_cpu_oracle(
             &frame,
             AlphaPresence::Present,
             AlphaInterpretation::Premultiplied,
             &processor,
         )
         .expect("explicit premultiplied alpha");
-        let ignored = decoded_frame_to_device_signal(
+        let ignored = decoded_frame_to_device_signal_cpu_oracle(
             &frame,
             AlphaPresence::Present,
             AlphaInterpretation::Ignore,
@@ -5387,7 +5660,7 @@ mod tests {
                 DeviceColorTarget::SrgbDisplay,
             )
             .expect("identity processor");
-        let ignored = decoded_frame_to_device_signal(
+        let ignored = decoded_frame_to_device_signal_cpu_oracle(
             &frame,
             AlphaPresence::Present,
             AlphaInterpretation::Ignore,
@@ -5419,14 +5692,14 @@ mod tests {
                 DeviceColorTarget::SrgbDisplay,
             )
             .expect("LogC4 processor");
-        let straight = decoded_frame_to_device_signal(
+        let straight = decoded_frame_to_device_signal_cpu_oracle(
             &make_frame([0.4, 0.2, 0.1]),
             AlphaPresence::Present,
             AlphaInterpretation::Straight,
             &processor,
         )
         .expect("straight signal");
-        let premultiplied = decoded_frame_to_device_signal(
+        let premultiplied = decoded_frame_to_device_signal_cpu_oracle(
             &make_frame([0.2, 0.1, 0.05]),
             AlphaPresence::Present,
             AlphaInterpretation::Premultiplied,

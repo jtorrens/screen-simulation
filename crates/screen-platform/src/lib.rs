@@ -3,6 +3,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(target_os = "macos")]
+mod media_metal;
+#[cfg(target_os = "macos")]
 mod native_metal;
 #[cfg(target_os = "macos")]
 mod presentation_cpu;
@@ -10,6 +12,11 @@ mod presentation_cpu;
 mod presentation_metal;
 #[cfg(target_os = "macos")]
 mod spatial_metal;
+#[cfg(target_os = "macos")]
+pub use media_metal::{
+    MetalMediaError, MetalMediaFrameCache, MetalMediaFrameRequest, MetalMediaPreparationTimings,
+    PreparedMetalMediaFrame,
+};
 #[cfg(target_os = "macos")]
 pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 #[cfg(target_os = "macos")]
@@ -29,8 +36,9 @@ use screen_contracts::{
     TransferCharacteristic,
 };
 use screen_media::{
-    AlphaPresence, DecodedFrame, DecodedRgba, FrameCadence, FrameSelectionPolicy, MediaDescriptor,
-    PixelEncoding, RasterSize, ResolvedSignalRange, ResolvedSourceDecode, ResolvedYuvMatrix,
+    AlphaPresence, DecodedFrame, DecodedRgba, DecodedRgba16Frame, FrameCadence,
+    FrameSelectionPolicy, MediaDescriptor, PixelEncoding, RasterSize, ResolvedSignalRange,
+    ResolvedSourceDecode, ResolvedYuvMatrix,
 };
 
 static FFMPEG_INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
@@ -156,7 +164,8 @@ fn declared_range(value: ffmpeg::util::color::Range) -> Option<SignalRange> {
     }
 }
 
-pub fn decode_frame_at_time(
+/// CPU materialization retained only for conformance and before/after benchmarks.
+pub fn decode_frame_at_time_cpu_oracle(
     path: &Path,
     requested_time: RationalTime,
     policy: FrameSelectionPolicy,
@@ -243,6 +252,160 @@ pub fn decode_frame_at_time(
         earlier = Some(frame);
     }
     resolve_sample(descriptor, earlier, None, requested_time, policy)
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum MediaDecodeDimensions {
+    Native,
+    Maximum { width: u32, height: u32 },
+}
+
+impl MediaDecodeDimensions {
+    fn resolve(self, source: RasterSize) -> Result<RasterSize, PlatformMediaError> {
+        match self {
+            Self::Native => Ok(source),
+            Self::Maximum { width, height } if width > 0 && height > 0 => {
+                let scale = (f64::from(width) / f64::from(source.width))
+                    .min(f64::from(height) / f64::from(source.height))
+                    .min(1.0);
+                RasterSize::new(
+                    (f64::from(source.width) * scale).round().max(1.0) as u32,
+                    (f64::from(source.height) * scale).round().max(1.0) as u32,
+                )
+                .map_err(|error| PlatformMediaError::Decode(error.to_string()))
+            }
+            Self::Maximum { .. } => Err(PlatformMediaError::Decode(
+                "requested decode dimensions must be non-zero".to_owned(),
+            )),
+        }
+    }
+}
+
+/// Product media decode boundary. It resolves one sample and retains normalized-integer RGBA
+/// storage for direct Metal upload; it never materializes a full float raster on the CPU.
+pub fn decode_rgba16_frame_at_time(
+    path: &Path,
+    requested_time: RationalTime,
+    policy: FrameSelectionPolicy,
+    interpretation: ResolvedSourceDecode,
+    dimensions: MediaDecodeDimensions,
+) -> Result<(MediaDescriptor, DecodedRgba16Frame), PlatformMediaError> {
+    let descriptor = probe_media(path)?;
+    if requested_time.numerator() < 0 && policy == FrameSelectionPolicy::Exact {
+        return Err(PlatformMediaError::NegativeRequestedTime);
+    }
+    match descriptor.duration {
+        Some(duration) if requested_time >= duration && policy == FrameSelectionPolicy::Exact => {
+            return Err(PlatformMediaError::RequestedTimeOutsideSource);
+        }
+        None if requested_time.numerator() != 0 => {
+            return Err(PlatformMediaError::UnboundedSourceTime);
+        }
+        _ => {}
+    }
+    let output = dimensions.resolve(descriptor.raster)?;
+    let mut context = ffmpeg::format::input(path)
+        .map_err(|error| PlatformMediaError::CannotOpen(error.to_string()))?;
+    let stream = context
+        .streams()
+        .best(ffmpeg::media::Type::Video)
+        .ok_or(PlatformMediaError::NoVideoStream)?;
+    let stream_index = stream.index();
+    let time_base = stream.time_base();
+    let codec_context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+        .map_err(|error| PlatformMediaError::InvalidVideoStream(error.to_string()))?;
+    let mut decoder = codec_context
+        .decoder()
+        .video()
+        .map_err(|error| PlatformMediaError::InvalidVideoStream(error.to_string()))?;
+    let mut scaler = ffmpeg::software::scaling::context::Context::get(
+        decoder.format(),
+        decoder.width(),
+        decoder.height(),
+        ffmpeg::format::Pixel::RGBA64LE,
+        output.width,
+        output.height,
+        ffmpeg::software::scaling::flag::Flags::BILINEAR,
+    )
+    .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
+    ffmpeg_bridge::configure_scaler(&mut scaler, descriptor.pixel_encoding, interpretation)?;
+    let seek_timestamp = time_in_ffmpeg_base(media_seek_anchor(
+        requested_time,
+        descriptor.duration,
+        policy,
+    )?)?;
+    if seek_timestamp > 0 {
+        context
+            .seek(seek_timestamp, ..seek_timestamp)
+            .map_err(|error| PlatformMediaError::Seek(error.to_string()))?;
+    }
+    let mut earlier = None;
+    for (packet_stream, packet) in context.packets() {
+        if packet_stream.index() != stream_index {
+            continue;
+        }
+        decoder
+            .send_packet(&packet)
+            .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
+        while let Some(frame) = receive_rgba16_frame(&mut decoder, &mut scaler, time_base)? {
+            if frame.timestamp == requested_time {
+                return Ok((descriptor, frame));
+            }
+            if frame.timestamp > requested_time {
+                return resolve_rgba16_sample(
+                    descriptor,
+                    earlier,
+                    Some(frame),
+                    requested_time,
+                    policy,
+                );
+            }
+            earlier = Some(frame);
+        }
+    }
+    decoder
+        .send_eof()
+        .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
+    while let Some(frame) = receive_rgba16_frame(&mut decoder, &mut scaler, time_base)? {
+        if frame.timestamp == requested_time {
+            return Ok((descriptor, frame));
+        }
+        if frame.timestamp > requested_time {
+            return resolve_rgba16_sample(descriptor, earlier, Some(frame), requested_time, policy);
+        }
+        earlier = Some(frame);
+    }
+    resolve_rgba16_sample(descriptor, earlier, None, requested_time, policy)
+}
+
+fn resolve_rgba16_sample(
+    descriptor: MediaDescriptor,
+    earlier: Option<DecodedRgba16Frame>,
+    later: Option<DecodedRgba16Frame>,
+    requested_time: RationalTime,
+    policy: FrameSelectionPolicy,
+) -> Result<(MediaDescriptor, DecodedRgba16Frame), PlatformMediaError> {
+    let selected = match policy {
+        FrameSelectionPolicy::Exact => None,
+        FrameSelectionPolicy::Floor => {
+            earlier.or_else(|| (requested_time.numerator() < 0).then_some(later).flatten())
+        }
+        FrameSelectionPolicy::Nearest => match (earlier, later) {
+            (Some(earlier), Some(later)) => Some(
+                if earlier_is_nearer_or_tied(requested_time, earlier.timestamp, later.timestamp) {
+                    earlier
+                } else {
+                    later
+                },
+            ),
+            (Some(earlier), None) => Some(earlier),
+            (None, Some(later)) => Some(later),
+            (None, None) => None,
+        },
+    };
+    selected
+        .map(|frame| (descriptor, frame))
+        .ok_or(PlatformMediaError::NoSampleAtRequestedTime)
 }
 
 fn resolve_sample(
@@ -389,6 +552,69 @@ fn receive_frame(
         }
     }
     DecodedFrame {
+        raster: RasterSize::new(width, height)
+            .map_err(|error| PlatformMediaError::Decode(error.to_string()))?,
+        timestamp,
+        pixels,
+    }
+    .validate()
+    .map(Some)
+    .map_err(|error| PlatformMediaError::Decode(error.to_string()))
+}
+
+fn receive_rgba16_frame(
+    decoder: &mut ffmpeg::decoder::Video,
+    scaler: &mut ffmpeg::software::scaling::context::Context,
+    time_base: ffmpeg::Rational,
+) -> Result<Option<DecodedRgba16Frame>, PlatformMediaError> {
+    let mut decoded = ffmpeg::util::frame::video::Video::empty();
+    if decoder.receive_frame(&mut decoded).is_err() {
+        return Ok(None);
+    }
+    let mut rgba = ffmpeg::util::frame::video::Video::empty();
+    scaler
+        .run(&decoded, &mut rgba)
+        .map_err(|error| PlatformMediaError::Decode(error.to_string()))?;
+    let timestamp = decoded
+        .timestamp()
+        .ok_or(PlatformMediaError::MissingFrameTimestamp)?;
+    let exact_timestamp = timestamp
+        .checked_mul(i64::from(time_base.numerator()))
+        .ok_or(PlatformMediaError::TimestampOverflow)?;
+    let denominator = u32::try_from(time_base.denominator())
+        .map_err(|_| PlatformMediaError::TimestampOverflow)?;
+    let timestamp = RationalTime::new(exact_timestamp, denominator)
+        .map_err(|_| PlatformMediaError::TimestampOverflow)?;
+    let width = rgba.width();
+    let height = rgba.height();
+    let row_bytes = usize::try_from(width)
+        .map_err(|_| PlatformMediaError::FrameTooLarge)?
+        .checked_mul(8)
+        .ok_or(PlatformMediaError::FrameTooLarge)?;
+    let stride = rgba.stride(0);
+    if stride < row_bytes {
+        return Err(PlatformMediaError::InvalidDecodedStorage);
+    }
+    let data = rgba.data(0);
+    let capacity = usize::try_from(u64::from(width) * u64::from(height))
+        .map_err(|_| PlatformMediaError::FrameTooLarge)?;
+    let mut pixels = Vec::with_capacity(capacity);
+    for row in 0..height as usize {
+        let start = row
+            .checked_mul(stride)
+            .ok_or(PlatformMediaError::FrameTooLarge)?;
+        let end = start
+            .checked_add(row_bytes)
+            .ok_or(PlatformMediaError::FrameTooLarge)?;
+        let row_data = data
+            .get(start..end)
+            .ok_or(PlatformMediaError::InvalidDecodedStorage)?;
+        pixels.extend(row_data.chunks_exact(8).map(|pixel| {
+            let channel = |offset| u16::from_le_bytes([pixel[offset], pixel[offset + 1]]);
+            [channel(0), channel(2), channel(4), channel(6)]
+        }));
+    }
+    DecodedRgba16Frame {
         raster: RasterSize::new(width, height)
             .map_err(|error| PlatformMediaError::Decode(error.to_string()))?,
         timestamp,
