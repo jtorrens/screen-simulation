@@ -95,7 +95,8 @@
         "screen-application",
         "screen-contracts",
         "screen-cover",
-        "screen-panel"
+        "screen-panel",
+        "screen-platform"
       ]
     },
     {
