@@ -70,6 +70,15 @@ resolution/sampling. Native evaluates the panel's authored raster on the
 authoritative 3×3 subpixel lattice and exposes progress, cancellation,
 parameter revision and diagnostics through stable snapshots.
 
+The reproducible integration timing command is
+`SCREEN_PHYSICAL_BENCHMARK=1 swift test --filter physicalPanelTimingWhenRequested`.
+On the development Apple-silicon host, the bridge harness measured the UHD TV
+at 12.91 ms Draft and 89.11 ms Native (11520×6480), and the 14-inch Retina
+panel at 12.37 ms Draft and 77.63 ms Native (9072×5892). The packaged Release
+UI measured the first Phone Retina frequency preview at 17–24 ms and its
+2250×4002 Native result at 46.6 ms. These figures include job submission and
+snapshot publication; the source texture was already selected.
+
 ## Native UX
 
 The bottom native navigation now has Principal, Modelo and Settings pages.
@@ -92,9 +101,10 @@ Definition editing does not appear on the Modelo page.
 
 ## Manual visual checklist
 
-Manual visual QA remains open until the packaged Release is reviewed on the
-desktop. Verify all of the following without treating launch/build checks as a
-visual substitute:
+Manual visual QA of the packaged Release covered the canonical editorial and
+frequency patterns, the portrait Phone Retina surface, Draft and Native, and
+the stale state. The following checklist records the observed result and the
+remaining user-review surface:
 
 - The resizable split, device surface aspect and neutral viewport have no
   preview border or elevation; Fit and 1:1 retain the same framing.
@@ -110,3 +120,9 @@ visual substitute:
   state after parameter changes.
 - The frequency and editorial patterns reveal expected subpixel structure
   without changing preview ODT/ColorSync behavior.
+
+The packaged app displayed the expected RGB stripe lattice, retained the prior
+Native result while showing the amber `Desactualizado` state after an amount
+change, and kept the neutral viewport outside the device surface. Cancellation
+and all four placements remain covered by state/bridge and Rust conformance
+tests; a human review of those rapid transient states is still recommended.

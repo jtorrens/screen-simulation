@@ -1,3 +1,4 @@
+import Foundation
 import StudioColor
 import Testing
 @testable import ScreenSimulationNative
@@ -117,6 +118,52 @@ import Testing
     #expect(result.diagnostics.contains { $0.stage == .screen(.subpixelGeometry) })
 }
 
+@Test @MainActor func physicalPanelTimingWhenRequested() async throws {
+    guard ProcessInfo.processInfo.environment["SCREEN_PHYSICAL_BENCHMARK"] == "1" else {
+        return
+    }
+    let color = try StudioColorMetalDisplay()
+    let source = try color.makeACEScgFrame(
+        width: 960,
+        height: 540,
+        encodedRGBA: [Float](repeating: 0.18, count: 960 * 540 * 4),
+        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
+        alpha: .straight
+    )
+    let output = StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-srgb-sdr-100"
+    }!
+    for id in ["lcd-tv-uhd-55", "lcd-macbook-pro-retina-14"] {
+        let definition = try #require(
+            try RustDeviceCatalog.builtIns().first { $0.id == id }
+        )
+        let deviceSignal = try color.transformToMetalFrame(source, output: output)
+        let draft = try await timedPhysicalJob(
+            source: source,
+            deviceSignal: deviceSignal,
+            device: definition,
+            quality: .draft,
+            dimensions: try PhysicalDimensions(width: 960, height: 540),
+            identity: id == "lcd-tv-uhd-55" ? 10 : 20
+        )
+        let native = try await timedPhysicalJob(
+            source: source,
+            deviceSignal: deviceSignal,
+            device: definition,
+            quality: .native,
+            dimensions: try PhysicalDimensions(
+                width: definition.nativeWidth,
+                height: definition.nativeHeight
+            ),
+            identity: id == "lcd-tv-uhd-55" ? 11 : 21
+        )
+        print(
+            "PHYSICAL_PANEL device=\(id) draft_ms=\(draft.milliseconds) "
+                + "native_ms=\(native.milliseconds) native=\(native.width)x\(native.height)"
+        )
+    }
+}
+
 private func contributions(
     emission: Double,
     geometry: Double
@@ -157,4 +204,54 @@ private func completedSnapshot(
         try await Task.sleep(for: .milliseconds(2))
     }
     throw PhysicalMetalFrameEngineError.bridge("physical test job timed out")
+}
+
+@MainActor
+private func timedPhysicalJob(
+    source: StudioColorMetalFrame,
+    deviceSignal: StudioColorMetalFrame,
+    device: DeviceDefinition,
+    quality: PhysicalQuality,
+    dimensions: PhysicalDimensions,
+    identity: UInt64
+) async throws -> (milliseconds: Double, width: Int, height: Int) {
+    let started = ContinuousClock.now
+    let job = try PhysicalMetalFrameEngine().submit(
+        sourceACEScg: source,
+        deviceSignal: deviceSignal,
+        frame: try PhysicalFrameSelection(
+            frameIndex: 0,
+            timeNumerator: 0,
+            timeDenominator: 24
+        ),
+        resolvedDevice: try device.resolved(),
+        quality: quality,
+        screenAmount: 1,
+        captureAmount: 0,
+        contributions: try contributions(emission: 1, geometry: 1),
+        requestedDimensions: dimensions,
+        cancellationIdentity: PhysicalFrameIdentity(high: identity, low: identity),
+        progressIdentity: PhysicalFrameIdentity(high: identity, low: identity),
+        parameterRevision: identity,
+        parameterHash: try PhysicalParameterHash(
+            bytes: [UInt8](repeating: UInt8(identity), count: 32)
+        ),
+        rasterPlacement: .fit
+    )
+    for _ in 0..<30_000 {
+        let snapshot = try job.snapshot()
+        if snapshot.state == .complete, let dimensions = snapshot.effectiveDimensions {
+            let duration = started.duration(to: .now)
+            let milliseconds = Double(duration.components.seconds) * 1_000
+                + Double(duration.components.attoseconds) / 1e15
+            return (milliseconds, dimensions.width, dimensions.height)
+        }
+        if snapshot.state == .failed {
+            throw PhysicalMetalFrameEngineError.bridge(
+                snapshot.diagnostics.last?.message ?? "physical benchmark failed"
+            )
+        }
+        try await Task.sleep(for: .milliseconds(2))
+    }
+    throw PhysicalMetalFrameEngineError.bridge("physical benchmark timed out")
 }
