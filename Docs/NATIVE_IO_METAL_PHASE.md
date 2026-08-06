@@ -84,15 +84,16 @@ These are development observations, not a release qualification benchmark.
 Long-run dropped-frame, thermal and HDR-display measurements remain cutover
 gates.
 
-## Deferred next phase
+## Completed native UX and output boundary
 
-DeckLink monitoring, icon-based main/settings pages, global preset/test-image
-libraries and atomic schema migration are explicitly deferred. DeckLink will
-retain an independent monitoring ODT. Global presets will only populate UI;
-configured jobs will persist resolved options rather than a preset reference.
+The icon-based Principal/Settings navigation, global current-schema libraries,
+specialized native timeline and independent DeckLink monitoring configuration
+are now implemented. DeckLink is supplied exclusively by the version-pinned
+shared `StudioVideoOutput` package and retains its own ODT, device/mode,
+resolution/fps, range and pixel format. Global presets populate UI values only;
+configured jobs keep resolved options rather than a dynamic preset reference.
 
-The native UX pass will also replace the provisional navigation slider with a
-specialized timeline view: adaptive timecode ruler, draggable playhead,
-shaded IN/OUT range, blue `[` and yellow `]` handles, numeric entry/playhead/
-exit fields, CREDITOS-HDR shortcuts, loop/all-range controls and complete
-keyboard/accessibility semantics. It will not introduce an Escena concept.
+The timeline provides an adaptive timecode ruler, draggable playhead, shaded
+IN/OUT range, blue `[` and yellow `]` handles, numeric entry/playhead/exit
+fields, CREDITOS-HDR shortcuts, loop/all-range controls and native keyboard and
+accessibility semantics. It does not introduce an Escena concept.

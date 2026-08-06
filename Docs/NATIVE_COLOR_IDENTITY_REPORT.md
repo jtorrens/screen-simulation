@@ -72,22 +72,16 @@ Preview and render queue resolve processors from the same `StudioColor` engine,
 configuration and Metal shader generator. CPU/Metal parity passes every viewer
 transform with maximum one 8-bit code and no more than 0.5% changed components.
 
-## Remaining phase boundary
+## Shared video-output boundary
 
-DeckLink has not been copied into this repository. Its authoritative
-`CreditsVideoOutput` plus `CreditsDeckLinkBridge` implementation depends on the
-official vendored DeckLink SDK headers in CREDITOS-HDR. Moving those files into
-a genuinely shared package requires a repository/licensing cut; referencing the
-CREDITOS-HDR checkout or building a second local backend would violate the
-no-cross-domain/no-parallel-route rule. The Settings monitor page therefore does
-not pretend to offer an alternate implementation. The exact future cut is:
+The authoritative CREDITOS-HDR implementation has been extracted in a single
+cut to the version-pinned `StudioVideoOutput` 0.1.0 package. It is the sole owner
+of the official DeckLink SDK headers, runtime probe, capability models and
+output handle. Both applications consume that package; neither contains a
+bridge copy or references another repository checkout.
 
-1. create one shared `StudioVideoOutput` package containing the unchanged
-   bridge, official headers, capability models, runtime probe and output handle;
-2. make SCREEN-SIMULATION and CREDITOS-HDR consume that same package in one cut;
-3. delete `CreditsVideoOutput` and `CreditsDeckLinkBridge` from CREDITOS-HDR in
-   the same integration commit;
-4. give SCREEN-SIMULATION monitor selection its own independent StudioColor ODT,
-   device, mode, range and pixel-format configuration.
-
-No Device physical model is started while this phase boundary remains open.
+SCREEN-SIMULATION resolves a dedicated monitor ODT plus device, mode,
+resolution/fps, range and pixel format. That immutable configuration is
+independent of both the macOS preview transform and render-queue ODT. Missing
+Desktop Video or hardware is reported explicitly and never replaced by a
+preview mirror, simulated device, stub or fallback.
