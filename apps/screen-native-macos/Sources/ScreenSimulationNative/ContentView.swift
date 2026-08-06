@@ -42,11 +42,47 @@ struct ContentView: View {
         var id: String { rawValue }
     }
 
+    enum SettingsSection: String, CaseIterable, Identifiable {
+        case application = "Aplicación"
+        case library = "Biblioteca"
+        case monitor = "Monitor"
+
+        var id: String { rawValue }
+        var systemImage: String {
+            switch self {
+            case .application: "info.circle"
+            case .library: "books.vertical"
+            case .monitor: "rectangle.connected.to.line.below"
+            }
+        }
+    }
+
+    enum LibraryCollection: String, CaseIterable, Identifiable {
+        case patterns = "Patrones"
+        case testImages = "Imágenes de test"
+        case renderPresets = "Presets de render"
+        case devices = "Devices"
+        case coverGlasses = "Cover Glass"
+
+        var id: String { rawValue }
+        var systemImage: String {
+            switch self {
+            case .patterns: "camera.filters"
+            case .testImages: "photo.stack"
+            case .renderPresets: "slider.horizontal.3"
+            case .devices: "display"
+            case .coverGlasses: "square.3.layers.3d"
+            }
+        }
+    }
+
     @Environment(\.undoManager) private var undoManager
     @ObservedObject var model: WorkspaceModel
     @StateObject private var library = GlobalLibraryController()
     @State private var tab = SidebarTab.source
     @State private var page = WorkspacePage.main
+    @State private var settingsSection = SettingsSection.application
+    @State private var libraryCollection = LibraryCollection.patterns
     @State private var pendingLibraryDeletion: LibraryDeletion?
 
     var body: some View {
@@ -149,23 +185,80 @@ struct ContentView: View {
     }
 
     private var settingsWorkspace: some View {
-        TabView {
-            Form {
-                Section("Aplicación") {
-                    LabeledContent("Renderer", value: "Metal · RGBA16Float")
-                    LabeledContent("OCIO", value: StudioColorBuildIdentity.ocioVersion)
-                    LabeledContent("ACES", value: StudioColorBuildIdentity.acesConfigVersion)
+        HSplitView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Settings")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(SettingsSection.allCases) { section in
+                        Button {
+                            settingsSection = section
+                        } label: {
+                            Label(section.rawValue, systemImage: section.systemImage)
+                                .foregroundStyle(
+                                    settingsSection == section ? NativeTheme.accent : .primary
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(
+                            settingsSection == section ? .isSelected : []
+                        )
+                    }
+
+                    if settingsSection == .library {
+                        Divider()
+                        Text("Colecciones")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(LibraryCollection.allCases) { collection in
+                            Button {
+                                libraryCollection = collection
+                            } label: {
+                                Label(collection.rawValue, systemImage: collection.systemImage)
+                                    .foregroundStyle(
+                                        libraryCollection == collection
+                                            ? NativeTheme.accent : .primary
+                                    )
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(
+                                libraryCollection == collection ? .isSelected : []
+                            )
+                        }
+                    }
+                }
+                .padding(14)
+            }
+            .frame(width: 240)
+            .background(Color(nsColor: .windowBackgroundColor))
+
+            Group {
+                switch settingsSection {
+                case .application:
+                    applicationSettings
+                case .library:
+                    globalLibrary
+                case .monitor:
+                    monitorSettings
                 }
             }
-            .formStyle(.grouped)
-            .tabItem { Label("Aplicación", systemImage: "info.circle") }
-
-            globalLibrary
-            .tabItem { Label("Biblioteca", systemImage: "books.vertical") }
-
-            monitorSettings
-            .tabItem { Label("Monitor", systemImage: "rectangle.connected.to.line.below") }
+            .frame(minWidth: 640)
         }
+        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Settings"))
+    }
+
+    private var applicationSettings: some View {
+        Form {
+            Section("Aplicación") {
+                LabeledContent("Renderer", value: "Metal · RGBA16Float")
+                LabeledContent("OCIO", value: StudioColorBuildIdentity.ocioVersion)
+                LabeledContent("ACES", value: StudioColorBuildIdentity.acesConfigVersion)
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private var deviceWorkspace: some View {
@@ -404,7 +497,7 @@ struct ContentView: View {
     }
 
     private var globalLibrary: some View {
-        VStack(spacing: 0) {
+        Group {
             if let error = library.blockedError {
                 ContentUnavailableView(
                     "Biblioteca bloqueada",
@@ -412,28 +505,19 @@ struct ContentView: View {
                     description: Text(error)
                 )
             } else {
-                TabView {
-                    patternLibrary
-                    .tabItem { Label("Patrones", systemImage: "camera.filters") }
-
-                    testImageLibrary
-                        .tabItem { Label("Imágenes", systemImage: "photo.stack") }
-
-                    renderPresetLibrary
-                        .tabItem { Label("Presets", systemImage: "slider.horizontal.3") }
-
-                    deviceLibrary
-                        .tabItem { Label("Devices", systemImage: "display") }
-
-                    coverGlassLibrary
-                        .tabItem { Label("Cover Glass", systemImage: "square.3.layers.3d") }
+                switch libraryCollection {
+                case .patterns: patternLibrary
+                case .testImages: testImageLibrary
+                case .renderPresets: renderPresetLibrary
+                case .devices: deviceLibrary
+                case .coverGlasses: coverGlassLibrary
                 }
             }
         }
     }
 
     private var testImageLibrary: some View {
-        HSplitView {
+        VSplitView {
             VStack(spacing: 0) {
                 List(selection: $library.selectedImageID) {
                     ForEach(library.document.testImages) { image in
@@ -466,7 +550,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minWidth: 220, idealWidth: 280)
+            .frame(minHeight: 160, idealHeight: 240)
 
             if let image = selectedTestImage {
                 Form {
@@ -512,7 +596,7 @@ struct ContentView: View {
     }
 
     private var patternLibrary: some View {
-        HSplitView {
+        VSplitView {
             VStack(spacing: 0) {
                 List(selection: $library.selectedPatternID) {
                     ForEach(library.document.patterns) { pattern in
@@ -547,7 +631,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minWidth: 220, idealWidth: 280)
+            .frame(minHeight: 160, idealHeight: 240)
 
             if let item = library.selectedPatternItem {
                 Form {
@@ -581,7 +665,7 @@ struct ContentView: View {
     }
 
     private var renderPresetLibrary: some View {
-        HSplitView {
+        VSplitView {
             VStack(spacing: 0) {
                 List(selection: $library.selectedPresetID) {
                     ForEach(library.document.renderPresets) { preset in
@@ -621,7 +705,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minWidth: 220, idealWidth: 280)
+            .frame(minHeight: 160, idealHeight: 240)
 
             if let preset = selectedGlobalPreset {
                 Form {
@@ -707,7 +791,7 @@ struct ContentView: View {
     }
 
     private var deviceLibrary: some View {
-        HSplitView {
+        VSplitView {
             VStack(spacing: 0) {
                 List(selection: $library.selectedDeviceID) {
                     ForEach(library.document.devices) { device in
@@ -747,7 +831,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minWidth: 220, idealWidth: 280)
+            .frame(minHeight: 160, idealHeight: 240)
 
             if let device = library.selectedDevice {
                 deviceEditor(device)
@@ -759,7 +843,7 @@ struct ContentView: View {
     }
 
     private var coverGlassLibrary: some View {
-        HSplitView {
+        VSplitView {
             VStack(spacing: 0) {
                 List(selection: $library.selectedCoverGlassID) {
                     ForEach(library.document.coverGlasses) { cover in
@@ -799,7 +883,7 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .padding(8)
             }
-            .frame(minWidth: 220, idealWidth: 280)
+            .frame(minHeight: 160, idealHeight: 240)
 
             if let cover = library.selectedCoverGlass {
                 coverGlassEditor(cover)
