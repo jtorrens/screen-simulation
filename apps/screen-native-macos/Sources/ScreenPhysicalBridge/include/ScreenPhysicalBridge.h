@@ -29,4 +29,14 @@ bool screen_test_pattern_render_rgba32f(
     const char **error_message
 );
 
+bool screen_openexr_encode_rgba_half(
+    const float *pixels,
+    uint32_t width,
+    uint32_t height,
+    uint8_t **encoded_bytes,
+    size_t *encoded_byte_count,
+    char **error_message
+);
+void screen_openexr_free(void *pointer);
+
 #endif

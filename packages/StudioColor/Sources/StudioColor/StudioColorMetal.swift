@@ -89,7 +89,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         view.wantsLayer = true
         if let layer = view.layer as? CAMetalLayer {
             layer.pixelFormat = .rgba16Float
-            layer.wantsExtendedDynamicRangeContent = true
+            layer.wantsExtendedDynamicRangeContent = output.encoding == .rec2100PQ
+                || output.encoding == .displayP3EDR
             layer.colorspace = output.colorSpace
         }
     }
@@ -119,6 +120,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         if let layer = view.layer as? CAMetalLayer {
             layer.colorspace = output.colorSpace
             layer.wantsExtendedDynamicRangeContent = output.encoding == .rec2100PQ
+                || output.encoding == .displayP3EDR
         }
         view.setNeedsDisplay(view.bounds)
     }
@@ -232,6 +234,102 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
             )
         }
         return bytes
+    }
+
+    /// Encodes the selected ODT directly into an IOSurface-backed writer buffer.
+    public func render(
+        _ frame: StudioColorMetalFrame,
+        output: StudioColorOutputTransform,
+        into pixelBuffer: CVPixelBuffer
+    ) throws {
+        guard CVPixelBufferGetWidth(pixelBuffer) == frame.width,
+              CVPixelBufferGetHeight(pixelBuffer) == frame.height
+        else { throw StudioColorMetalError.textureCreation }
+        let pixelFormat: MTLPixelFormat
+        switch CVPixelBufferGetPixelFormatType(pixelBuffer) {
+        case kCVPixelFormatType_32BGRA: pixelFormat = .bgra8Unorm
+        case kCVPixelFormatType_64RGBAHalf: pixelFormat = .rgba16Float
+        default: throw StudioColorMetalError.textureCreation
+        }
+        let target = try cvTexture(pixelBuffer, format: pixelFormat, plane: 0)
+        guard let command = queue.makeCommandBuffer() else {
+            throw StudioColorMetalError.unavailableQueue
+        }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        try encode(
+            input: frame.texture, output: target, pass: pass,
+            transform: output, command: command, fitInputAspect: false
+        )
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
+    }
+
+    /// CPU oracle/readback boundary used only by sequence encoders that cannot
+    /// consume IOSurface textures (OpenEXR, DPX and TIFF).
+    public func readLinearRGBA(_ frame: StudioColorMetalFrame) throws -> [Float] {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: frame.width, height: frame.height, mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .shared
+        guard let target = device.makeTexture(descriptor: descriptor),
+              let command = queue.makeCommandBuffer(),
+              let blit = command.makeBlitCommandEncoder()
+        else { throw StudioColorMetalError.textureCreation }
+        blit.copy(
+            from: frame.texture, sourceSlice: 0, sourceLevel: 0,
+            sourceOrigin: MTLOrigin(), sourceSize: MTLSize(width: frame.width, height: frame.height, depth: 1),
+            to: target, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin()
+        )
+        blit.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
+        var half = [Float16](repeating: 0, count: frame.width * frame.height * 4)
+        half.withUnsafeMutableBytes {
+            target.getBytes(
+                $0.baseAddress!, bytesPerRow: frame.width * 4 * MemoryLayout<Float16>.size,
+                from: MTLRegionMake2D(0, 0, frame.width, frame.height), mipmapLevel: 0
+            )
+        }
+        return half.map(Float.init)
+    }
+
+    public func renderRGBAFloat(
+        _ frame: StudioColorMetalFrame,
+        output: StudioColorOutputTransform
+    ) throws -> [Float] {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: frame.width, height: frame.height, mipmapped: false
+        )
+        descriptor.usage = [.renderTarget]
+        descriptor.storageMode = .shared
+        guard let target = device.makeTexture(descriptor: descriptor),
+              let command = queue.makeCommandBuffer()
+        else { throw StudioColorMetalError.textureCreation }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        try encode(
+            input: frame.texture, output: target, pass: pass,
+            transform: output, command: command, fitInputAspect: false
+        )
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
+        var half = [Float16](repeating: 0, count: frame.width * frame.height * 4)
+        half.withUnsafeMutableBytes {
+            target.getBytes(
+                $0.baseAddress!, bytesPerRow: frame.width * 4 * MemoryLayout<Float16>.size,
+                from: MTLRegionMake2D(0, 0, frame.width, frame.height), mipmapLevel: 0
+            )
+        }
+        return half.map(Float.init)
     }
 
     private func applyInputTransform(

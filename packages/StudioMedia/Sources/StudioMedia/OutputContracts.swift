@@ -61,7 +61,7 @@ public enum StudioRenderTarget: String, Codable, Sendable {
     case sdr, hdr, aces2065, acescg
 }
 
-public struct StudioRenderPreset: Codable, Equatable, Identifiable, Sendable {
+public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Sendable {
     public let id: UUID
     public let name: String
     public let target: StudioRenderTarget

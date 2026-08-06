@@ -33,5 +33,9 @@ let package = Package(
                 "ScreenPhysicalBridge",
             ]
         ),
+        .testTarget(
+            name: "ScreenSimulationNativeTests",
+            dependencies: ["ScreenSimulationNative"]
+        ),
     ]
 )

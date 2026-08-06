@@ -38,6 +38,7 @@ def run(arguments: list[str], cwd: Path = ROOT) -> None:
     environment["CLANG_MODULE_CACHE_PATH"] = str(cache / "clang")
     environment["SWIFTPM_MODULECACHE_OVERRIDE"] = str(cache / "swiftpm")
     environment["XDG_CACHE_HOME"] = str(cache / "xdg")
+    environment["MACOSX_DEPLOYMENT_TARGET"] = "14.0"
     subprocess.run(arguments, cwd=cwd, check=True, env=environment)
 
 

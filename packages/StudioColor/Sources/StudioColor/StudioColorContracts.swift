@@ -28,7 +28,7 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
 }
 
 public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
-    public enum Encoding: Sendable { case sRGB, rec709, displayP3, rec2100PQ }
+    public enum Encoding: Sendable { case sRGB, rec709, displayP3, displayP3EDR, rec2100PQ }
 
     public let id: String
     public let label: String
@@ -84,7 +84,7 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
             label: "Display P3 · EDR 1000 nit",
             display: "Display P3 HDR - Display",
             view: "ACES 2.0 - HDR 1000 nits (P3 D65)",
-            encoding: .rec2100PQ
+            encoding: .displayP3EDR
         ),
         .init(
             id: "aces2-rec2100-pq-1000",
@@ -100,6 +100,7 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         case .sRGB: CGColorSpace(name: CGColorSpace.sRGB)
         case .rec709: CGColorSpace(name: CGColorSpace.itur_709)
         case .displayP3: CGColorSpace(name: CGColorSpace.displayP3)
+        case .displayP3EDR: CGColorSpace(name: CGColorSpace.displayP3)
         case .rec2100PQ: CGColorSpace(name: CGColorSpace.itur_2100_PQ)
         }
     }
