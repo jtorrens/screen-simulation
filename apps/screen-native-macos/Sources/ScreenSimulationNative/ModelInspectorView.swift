@@ -84,16 +84,20 @@ struct ModelInspectorView: View {
             }
 
             Section("Contribución maestra") {
-                domainAmount(
-                    title: "Pantalla",
-                    domain: .screen,
-                    amount: physical.screenAmount
-                )
-                domainAmount(
-                    title: "Captura",
-                    domain: .capture,
-                    amount: physical.captureAmount
-                )
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                    domainAmount(
+                        title: "Pantalla",
+                        domain: .screen,
+                        amount: physical.screenAmount
+                    )
+                    Divider().gridCellColumns(3)
+                    domainAmount(
+                        title: "Captura",
+                        domain: .capture,
+                        amount: physical.captureAmount
+                    )
+                }
+                .frame(maxWidth: .infinity)
                 Text("0 bypass/ideal · 1 físico calibrado · >1 artístico")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -149,29 +153,34 @@ struct ModelInspectorView: View {
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
     }
 
+    @ViewBuilder
     private func domainAmount(
         title: String,
         domain: PhysicalDomainID,
         amount: Double
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title)
-                Spacer()
-                Slider(value: Binding(
-                    get: { amount },
-                    set: { workspace.changePhysicalDomainAmount($0, domain: domain) }
-                ), in: 0 ... 2)
-                .frame(width: 130)
-                TextField(title, value: Binding(
-                    get: { amount },
-                    set: { workspace.changePhysicalDomainAmount($0, domain: domain) }
-                ), format: .number.precision(.fractionLength(2)))
-                .frame(width: 54)
-                .multilineTextAlignment(.trailing)
-                .accessibilityLabel("Contribución maestra de \(title)")
-            }
+        GridRow(alignment: .center) {
+            Text(title)
+                .frame(width: 82, alignment: .leading)
+            Slider(value: detentedSliderBinding(
+                value: amount,
+                update: { workspace.changePhysicalDomainAmount($0, domain: domain) }
+            ), in: 0 ... 2, step: 0.05)
+            .frame(minWidth: 150, maxWidth: .infinity)
+            .accessibilityLabel("Contribución maestra de \(title)")
+            .help("Incrementos de 0,05 · detente en 1 físico")
+            TextField("", value: Binding(
+                get: { amount },
+                set: { workspace.changePhysicalDomainAmount($0, domain: domain) }
+            ), format: .number.precision(.fractionLength(2)))
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 68)
+            .multilineTextAlignment(.trailing)
+            .accessibilityLabel("Valor de contribución maestra de \(title)")
+        }
+        GridRow {
             contributionState(amount)
+                .gridCellColumns(3)
         }
     }
 
@@ -292,12 +301,13 @@ struct ModelInspectorView: View {
     ) -> some View {
         switch value.control {
         case let .continuous(amount, limits):
-            Slider(value: Binding(
-                get: { amount },
-                set: { workspace.changePhysicalStageAmount($0, stage: stage) }
-            ), in: limits.visualRange)
+            Slider(value: detentedSliderBinding(
+                value: amount,
+                update: { workspace.changePhysicalStageAmount($0, stage: stage) }
+            ), in: limits.visualRange, step: 0.05)
             .frame(width: 116)
             .accessibilityLabel("Contribución de la etapa")
+            .help("Incrementos de 0,05 · detente en 1 físico")
             TextField("Amount", value: Binding(
                 get: { amount },
                 set: { workspace.changePhysicalStageAmount($0, stage: stage) }
@@ -343,6 +353,20 @@ struct ModelInspectorView: View {
             color = .primary
         }
         return Text(label).font(.caption2).foregroundStyle(color)
+    }
+
+    private func detentedSliderBinding(
+        value: Double,
+        update: @escaping (Double) -> Void
+    ) -> Binding<Double> {
+        Binding(
+            get: { value },
+            set: { proposed in
+                let stepped = (proposed / 0.05).rounded() * 0.05
+                let detented = abs(stepped - 1) <= 0.050_001 ? 1 : stepped
+                update(detented)
+            }
+        )
     }
 
     @ViewBuilder
