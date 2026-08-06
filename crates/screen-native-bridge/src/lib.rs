@@ -21,7 +21,8 @@ use screen_contracts::{DeviceRgb, LinearRgb, Meters, RationalTime, Vec2};
 use screen_cover::{COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile};
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, FlatPanelQuality, LcdProfile, PanelColorimetry,
-    PanelTechnology, PanelTemporalEmission, ResidualFlicker, StripeLayout, ValidatedPanelEvaluator,
+    PanelLightSpreadProfile, PanelTechnology, PanelTemporalEmission, ResidualFlicker, StripeLayout,
+    ValidatedPanelEvaluator,
 };
 #[cfg(target_os = "macos")]
 use screen_platform::{
@@ -421,6 +422,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     };
     let plan = PhysicalPipelineExecutionPlan {
         panel: device.profile,
+        panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
         placement,
         quality,
         requested_width: request.requested_width,

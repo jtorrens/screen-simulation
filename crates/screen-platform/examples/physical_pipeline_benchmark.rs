@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         TextureDescriptor,
     };
     use screen_application::{PhysicalPipelineExecutionPlan, RasterPlacement};
-    use screen_panel::{DEVICE_PRESETS, FlatPanelQuality};
+    use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile};
     use screen_platform::MetalPhysicalPipeline;
 
     const SOURCE_WIDTH: u32 = 3_840;
@@ -74,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let plan = PhysicalPipelineExecutionPlan {
                 panel: preset.profile(),
+                panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
                 placement: RasterPlacement::Stretch,
                 quality,
                 requested_width,

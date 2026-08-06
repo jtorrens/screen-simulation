@@ -3,7 +3,7 @@ use screen_application::{
     PhysicalPipelineRequest, RasterPlacement, evaluate_physical_pipeline_cpu_oracle,
 };
 use screen_contracts::{DeviceRgb, Meters};
-use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, StripeLayout};
+use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile, StripeLayout};
 
 fn request(
     quality: FlatPanelQuality,
@@ -33,6 +33,10 @@ fn request(
         },
         plan: PhysicalPipelineExecutionPlan {
             panel,
+            panel_light_spread: PanelLightSpreadProfile {
+                character_strength: 0.0,
+                ..PanelLightSpreadProfile::LCD_DESKTOP
+            },
             placement: RasterPlacement::Stretch,
             quality,
             requested_width: 6,
@@ -130,4 +134,53 @@ fn quality_lattices_keep_frame_and_reach_the_native_authority() {
         })
         .fold(0.0_f32, f32::max);
     assert!(high_native_maximum <= 1.0e-5);
+}
+
+#[test]
+fn light_spread_zero_is_exact_and_calibrated_and_artistic_are_finite() {
+    let baseline =
+        evaluate_physical_pipeline_cpu_oracle(request(FlatPanelQuality::High, 1.0, 1.0, 1.0))
+            .expect("unspread baseline");
+    let mut zero = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+    zero.plan.panel_light_spread = PanelLightSpreadProfile {
+        character_strength: 0.0,
+        core_radius_micrometers: screen_contracts::LinearRgb::new(2.0, 3.0, 4.0),
+        core_weight: screen_contracts::LinearRgb::new(0.4, 0.3, 0.2),
+        tail_radius_micrometers: screen_contracts::LinearRgb::new(200.0, 300.0, 400.0),
+        tail_weight: screen_contracts::LinearRgb::new(0.1, 0.1, 0.1),
+    };
+    assert_eq!(
+        evaluate_physical_pipeline_cpu_oracle(zero)
+            .expect("spread identity")
+            .acescg,
+        baseline.acescg
+    );
+
+    for amount in [1.0, 2.5] {
+        let mut spread = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+        spread.plan.panel_light_spread = PanelLightSpreadProfile {
+            character_strength: amount,
+            ..PanelLightSpreadProfile::LCD_DESKTOP
+        };
+        let result = evaluate_physical_pipeline_cpu_oracle(spread).expect("spread result");
+        assert!(
+            result
+                .acescg
+                .iter()
+                .flatten()
+                .all(|value| value.is_finite())
+        );
+        assert_eq!(
+            result
+                .acescg
+                .iter()
+                .map(|pixel| pixel[3])
+                .collect::<Vec<_>>(),
+            baseline
+                .acescg
+                .iter()
+                .map(|pixel| pixel[3])
+                .collect::<Vec<_>>()
+        );
+    }
 }
