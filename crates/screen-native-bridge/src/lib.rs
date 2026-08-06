@@ -1,6 +1,9 @@
 //! Coarse stable C ABI for the native shell's future Rust physical engine.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+// C-callable safety obligations are owned by the normative bridge header; the
+// Rust static library is not a separately consumable unsafe Rust API.
+#![allow(clippy::missing_safety_doc)]
 
 use std::ffi::{c_char, c_float, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -165,7 +168,10 @@ pub struct ScreenPhysicalFrameJob {
     parameter_revision: u64,
     parameter_hash: [u8; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
     worker: Mutex<Option<JoinHandle<()>>>,
+    // Boxes keep every C-borrowed pointer stable when the owning vectors grow.
+    #[allow(clippy::vec_box)]
     output_views: Mutex<Vec<Box<ScreenPhysicalTexture>>>,
+    #[allow(clippy::vec_box)]
     snapshots: Mutex<Vec<Box<OwnedDiagnosticSnapshot>>>,
 }
 
