@@ -54,7 +54,8 @@ import Testing
         range: .video,
         pixelFormat: .rgb10Bit444
     )
-    #expect(transform.colorTransform.id == "acescg-raw")
+    #expect(transform.colorTransform.id == "acescg-raw-technical")
+    #expect(transform.colorTransform.processor == .colorSpace("ACEScg"))
     #expect(configuration.signal == .acescgRaw)
     #expect(configuration.pixelFormat == .rgb10Bit444)
 }

@@ -91,6 +91,14 @@ ID 3, `ASUS PA329CV`, active ColorSync profile `ASUS PA329CV`, system color
 space `ASUS PA329CV`. Profile and screen changes are observed by the shared
 StudioColor boundary and refresh the visible diagnostic.
 
+`ACEScg Raw · sin ODT` is the intentional diagnostic exception: StudioColor
+only converts ACEScg primaries to linear Rec.709 primaries, then presents those
+linear numbers directly as display codes without an appearance or encoding
+curve. Mid-grey therefore remains approximately code value 0.18 and looks dark.
+There is no second colorimetric Raw preview. DeckLink's separately selected Raw
+contract remains exact scene-linear ACEScg for a downstream system that declares
+it understands that technical signal.
+
 The codec name is never treated as a pixel contract. The current effective
 writer matrix is: H.264 = Y′CbCr 4:2:0 8-bit legal/full; H.265 Main10 = Y′CbCr
 4:2:0 10-bit legal/full; Apple ProRes 4444/XQ = Y′CbCr 4:4:4 12-bit legal;

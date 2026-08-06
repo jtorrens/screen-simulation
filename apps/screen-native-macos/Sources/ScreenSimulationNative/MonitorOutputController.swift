@@ -28,7 +28,7 @@ enum MonitorOutputTransform: String, CaseIterable, Identifiable {
     var colorTransform: StudioColorOutputTransform {
         switch self {
         case .acescgRaw:
-            StudioColorOutputTransform.catalog.first { $0.id == "acescg-raw" }!
+            StudioColorOutputTransform.technicalACEScgRaw
         case .acesRec709SDR100:
             StudioColorOutputTransform.catalog.first {
                 $0.id == "aces2-rec709-sdr-100"

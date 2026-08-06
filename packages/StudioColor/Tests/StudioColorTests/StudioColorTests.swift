@@ -7,12 +7,29 @@ import AppKit
     #expect(StudioColorBuildIdentity.configurationSHA256.count == 64)
 }
 
-@Test func rawPreviewDeclaresLinearACEScgForColorSync() throws {
+@Test func rawPreviewShowsLinearValuesWithoutAnEncodingCurve() throws {
     let raw = try #require(StudioColorOutputTransform.catalog.first {
         $0.id == "acescg-raw"
     })
-    #expect(raw.declaredSignalDescription == "ACEScg lineal")
+    #expect(raw.declaredSignalDescription == "RGB lineal Rec.709 · sin curva")
+    #expect(raw.processor == .colorSpace("Linear Rec.709 (sRGB)"))
+    #expect(raw.colorSpace?.name == CGColorSpace.sRGB)
+
+    let processor = try StudioColorEngine.bundled().cachedColorSpaceProcessor(
+        source: "ACEScg", destination: "Linear Rec.709 (sRGB)"
+    )
+    var neutral: [Float] = [0.18, 0.18, 0.18, 1]
+    try processor.apply(toRGBA: &neutral)
+    #expect(abs(neutral[0] - 0.18) < 1e-5)
+    #expect(abs(neutral[1] - 0.18) < 1e-5)
+    #expect(abs(neutral[2] - 0.18) < 1e-5)
+}
+
+@Test func technicalRawTransportRemainsExactACEScgIdentity() {
+    let raw = StudioColorOutputTransform.technicalACEScgRaw
+    #expect(raw.processor == .colorSpace("ACEScg"))
     #expect(raw.colorSpace?.name == CGColorSpace.acescgLinear)
+    #expect(!StudioColorOutputTransform.catalog.contains(raw))
 }
 
 @Test @MainActor func activeDisplayReportsScreenAndColorSyncProfile() throws {

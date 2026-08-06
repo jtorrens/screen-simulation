@@ -71,7 +71,7 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
 
 public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
     public enum Encoding: Equatable, Sendable {
-        case acescgRaw, sRGB, rec709, displayP3, displayP3EDR, rec2100PQ
+        case linearRec709Raw, acescgRaw, sRGB, rec709, displayP3, displayP3EDR, rec2100PQ
     }
     public enum Processor: Hashable, Sendable {
         case displayView(display: String, view: String)
@@ -160,13 +160,25 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         .init(
             id: "acescg-raw",
             label: "ACEScg Raw · sin ODT",
-            colorSpace: "ACEScg",
-            encoding: .acescgRaw
+            colorSpace: "Linear Rec.709 (sRGB)",
+            encoding: .linearRec709Raw
         ),
     ]
 
+    /// Technical scene-linear transport for downstream systems that explicitly
+    /// understand ACEScg. It is intentionally absent from the Mac preview catalog.
+    public static let technicalACEScgRaw = Self(
+        id: "acescg-raw-technical",
+        label: "ACEScg Raw técnico · sin ODT",
+        colorSpace: "ACEScg",
+        encoding: .acescgRaw
+    )
+
     public var colorSpace: CGColorSpace? {
         switch encoding {
+        // Raw inspection deliberately sends linear Rec.709 values as display
+        // codes, so ColorSync does not add an encoding curve that lifts them.
+        case .linearRec709Raw: CGColorSpace(name: CGColorSpace.sRGB)
         case .acescgRaw: CGColorSpace(name: CGColorSpace.acescgLinear)
         case .sRGB: CGColorSpace(name: CGColorSpace.sRGB)
         case .rec709: CGColorSpace(name: CGColorSpace.itur_709)
@@ -178,6 +190,7 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
 
     public var declaredSignalDescription: String {
         switch encoding {
+        case .linearRec709Raw: "RGB lineal Rec.709 · sin curva"
         case .acescgRaw: "ACEScg lineal"
         case .sRGB: "sRGB · IEC 61966-2-1"
         case .rec709: "Rec.709 · SDR"
