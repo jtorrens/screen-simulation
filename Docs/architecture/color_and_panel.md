@@ -40,6 +40,22 @@ The current panel is a fixed-pixel LCD with complete native raster, physical act
 
 Every physical Composite sample evaluates the same native panel geometry. Resolution is decided independently for every rendered pixel from its complete per-channel sensor/aperture footprint. Resolved structure uses deterministic 4x4 sensor-pixel quadrature and evaluates native stripe position. When that footprint cannot resolve individual stripes, Panel analytically integrates the periodic emitter and black-matrix mask over the footprint at its exact device-cell phase. Complete cell periods converge to the declared channel average, while fractional periods retain phase variation so the sensor lattice may produce physical spatial aliasing and moire instead of an ideal uniform replacement. Device content independently uses a deterministic separable area integral of the piecewise-constant native raster for each aperture footprint. A double-precision summed-area representation is built once per source frame, so every rectangular content integral has bounded constant sampling cost independent of its covered pixel count without overflowing on finite float source values. No interpolated signal may vary between a device pixel's subpixels. Diagnostic views change presentation and inspection only; they never substitute another panel model.
 
+The native-shell physical-frame slice also exposes this same panel as one flat orthographic
+surface before any camera exists. Its resolved frame input carries source ACEScg, nonlinear Device
+RGB and one explicit placement. Draft, Medium and High retain the requested raster and evaluate
+one, four and sixteen nested area samples per output pixel. Native expands only the sample lattice
+to three by three output samples per authored device pixel: the horizontal axis resolves RGB/BGR
+stripes and both axes preserve black-matrix phase. Every quality covers the identical complete
+active-area UV domain. Content uses the existing placement and piecewise-constant area integral;
+panel emission uses the existing EOTF, colorimetry and periodic stripe/matrix evaluator. Native is
+therefore a higher-precision evaluation of the same surface, not a new panel model or framing path.
+
+Screen domain, emission and subpixel-geometry amounts are independent continuous parameters owned
+by the Rust evaluator. Screen zero returns the source ACEScg texture bit-exactly. Emission zero
+retains the placed ACEScg ideal while geometry zero retains continuous post-EOTF panel emission;
+one applies the calibrated term and values through four extrapolate that same term. RGB/BGR remains
+one discrete topology value and is never color-mixed.
+
 Bundled device presets currently describe LCD geometry, a reference operating white and one default optical-cover preset. They do not claim OLED or MicroLED emission and cannot label the LCD evaluator as another panel technology. A preset is an authoring template rather than a runtime profile reference; selection copies its values and the copied white and cover remain editable.
 
 `screen-panel` ends at the emissive LCD surface. `screen-cover` owns the next physical boundary: thickness and refractive index, RGB absorption, exact unpolarized dielectric Fresnel reflection, anti-reflective efficiency, roughness, haze and reflected authored environment radiance. Application evaluates cover transmission and reflection for every spatial, aperture and emitter-channel optical ray before sensor capture; reflection therefore inherits focus, aperture footprint and the current chromatic lens approximation instead of using a central post-process sample. Beer absorption uses the refracted angle inside the material. Roughness and haze redistribute the bounded procedural source toward its mean without creating radiance. The current model is a bounded tristimulus approximation; it does not claim wavelength-resolved thin-film interference, polarization or multi-bounce internal ghosting. Diagnostic emission views remain before the cover, while Composite and Camera Result consume it.
