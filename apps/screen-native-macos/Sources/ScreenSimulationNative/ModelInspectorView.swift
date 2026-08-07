@@ -201,10 +201,10 @@ struct ModelInspectorView: View {
                 .frame(minWidth: 150, maxWidth: .infinity)
                 .help("Incrementos de 0,05 · detente en 1 físico")
                 .opacity(value.isBypassed ? 0.45 : 1)
-                TextField("", value: Binding(
+                DeferredDoubleTextField("", value: Binding(
                     get: { amount },
                     set: { workspace.changePhysicalStageAmount($0, stage: stage) }
-                ), format: .number.precision(.fractionLength(2)))
+                ), in: limits.safeRange, fractionDigits: 0 ... 2)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 68)
                 .multilineTextAlignment(.trailing)
@@ -295,10 +295,10 @@ struct ModelInspectorView: View {
             .frame(minWidth: 150, maxWidth: .infinity)
             .help("Incrementos de 0,05 · detente en 1 físico")
             .opacity(isBypassed ? 0.45 : 1)
-            TextField("", value: Binding(
+            DeferredDoubleTextField("", value: Binding(
                 get: { amount },
                 set: { workspace.changePhysicalDomainAmount($0, domain: domain) }
-            ), format: .number.precision(.fractionLength(2)))
+            ), in: PhysicalContributionLimits.standard.safeRange, fractionDigits: 0 ... 2)
             .textFieldStyle(.roundedBorder)
             .frame(width: 68)
             .multilineTextAlignment(.trailing)
@@ -479,10 +479,10 @@ struct ModelInspectorView: View {
             accessibilityLabel: "Contribución de \(title)")
             .frame(width: 116)
             .help("Incrementos de 0,05 · detente en 1 físico")
-            TextField("Amount", value: Binding(
+            DeferredDoubleTextField("Amount", value: Binding(
                 get: { amount },
                 set: { workspace.changePhysicalStageAmount($0, stage: stage) }
-            ), format: .number.precision(.fractionLength(2)))
+            ), in: limits.safeRange, fractionDigits: 0 ... 2)
             .frame(width: 52)
             .multilineTextAlignment(.trailing)
             .accessibilityLabel("Valor de contribución de \(title)")
