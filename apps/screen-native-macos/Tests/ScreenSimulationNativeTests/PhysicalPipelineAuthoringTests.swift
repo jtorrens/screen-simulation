@@ -86,8 +86,7 @@ import Testing
         "\\.sensor.nativeHeight", "\\.sensor.bayerPattern", "\\.sensor.acescgToSensor",
         "\\.sensor.saturationIlluminanceSeconds", "\\.sensor.fullWellElectrons",
         "\\.sensor.darkCurrentElectronsPerSecond", "\\.sensor.readNoiseElectronsRMS",
-        "\\.sensor.analogGain", "\\.sensor.adcBits", "\\.develop.whiteBalance",
-        "\\.develop.middleGrayIlluminanceSeconds", "\\.develop.exposureEV",
+        "\\.sensor.analogGain", "\\.sensor.adcBits", "\\.develop.exposureEV",
     ]
     for keyPath in requiredKeyPaths {
         #expect(text.contains(keyPath), "Missing active UI binding for \(keyPath)")
@@ -103,4 +102,9 @@ import Testing
     #expect(controlsText.contains("isModified: value != defaultValue"))
     #expect(text.contains(".toggleStyle(.switch)"))
     #expect(text.contains(".labelsHidden()"))
+    #expect(text.contains("DevelopWhiteBalanceControls.controls"))
+    #expect(text.contains("DevelopWhiteBalanceControls.gains"))
+    #expect(text.contains("developWhiteBalanceRow(.temperature)"))
+    #expect(text.contains("developWhiteBalanceRow(.tint)"))
+    #expect(!text.contains("Referencia gris medio"))
 }

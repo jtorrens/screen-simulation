@@ -742,8 +742,8 @@ struct ModelInspectorView: View {
                     physicalUInt64Row("Noise seed", \.shutterMotion.noiseSeed, 0 ... Int.max)
                 case .developDemosaic:
                     PhysicalDerivedRow(label: "Demosaic", value: authored.develop.demosaicAuthority)
-                    physicalArrayRows("White balance", \.develop.whiteBalance, labels: ["R", "G", "B"], range: 0.001 ... 32, step: 0.01)
-                    physicalDoubleRow("Gris medio", \.develop.middleGrayIlluminanceSeconds, 0.000001 ... 1_000_000, 0.001, "lux·s")
+                    developWhiteBalanceRow(.temperature)
+                    developWhiteBalanceRow(.tint)
                     physicalDoubleRow("Exposición", \.develop.exposureEV, -32 ... 32, 0.05, "EV")
                 }
             }
@@ -849,6 +849,67 @@ struct ModelInspectorView: View {
                 workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
             },
             animationArmed: workspace.physicalAnimationArmBinding(String(describing: keyPath))
+        )
+    }
+
+    private enum DevelopWhiteBalanceControl {
+        case temperature, tint
+    }
+
+    private func developWhiteBalanceRow(_ control: DevelopWhiteBalanceControl) -> some View {
+        let baseline = DevelopWhiteBalanceControls.controls(
+            gains: workspace.physicalPresetAuthoringState!.develop.whiteBalance,
+            acescgToSensor: workspace.physicalPresetAuthoringState!.sensor.acescgToSensor
+        )
+        let isTemperature = control == .temperature
+        let label = isTemperature ? "Temperatura" : "Tinte"
+        let range = isTemperature
+            ? DevelopWhiteBalanceControls.temperatureRange
+            : DevelopWhiteBalanceControls.tintRange
+        let animationID = isTemperature ? "develop.temperatureKelvin" : "develop.tint"
+        return PhysicalDoubleParameterRow(
+            label: label,
+            unit: isTemperature ? "K" : "G–M",
+            range: range,
+            step: isTemperature ? 50 : 1,
+            value: Binding(
+                get: {
+                    let state = workspace.physicalAuthoringState!
+                    let controls = DevelopWhiteBalanceControls.controls(
+                        gains: state.develop.whiteBalance,
+                        acescgToSensor: state.sensor.acescgToSensor
+                    )
+                    return isTemperature ? controls.temperatureKelvin : controls.tint
+                },
+                set: { value in
+                    workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                        let controls = DevelopWhiteBalanceControls.controls(
+                            gains: state.develop.whiteBalance,
+                            acescgToSensor: state.sensor.acescgToSensor
+                        )
+                        state.develop.whiteBalance = DevelopWhiteBalanceControls.gains(
+                            temperatureKelvin: isTemperature ? value : controls.temperatureKelvin,
+                            tint: isTemperature ? controls.tint : value,
+                            acescgToSensor: state.sensor.acescgToSensor
+                        )
+                    }
+                }
+            ),
+            defaultValue: isTemperature ? baseline.temperatureKelvin : baseline.tint,
+            onRestore: {
+                workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                    let controls = DevelopWhiteBalanceControls.controls(
+                        gains: state.develop.whiteBalance,
+                        acescgToSensor: state.sensor.acescgToSensor
+                    )
+                    state.develop.whiteBalance = DevelopWhiteBalanceControls.gains(
+                        temperatureKelvin: isTemperature ? baseline.temperatureKelvin : controls.temperatureKelvin,
+                        tint: isTemperature ? controls.tint : baseline.tint,
+                        acescgToSensor: state.sensor.acescgToSensor
+                    )
+                }
+            },
+            animationArmed: workspace.physicalAnimationArmBinding(animationID)
         )
     }
 
