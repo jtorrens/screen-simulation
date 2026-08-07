@@ -2441,7 +2441,7 @@ fn native_level_image(width: u16, height: u16, pixels: &[u8]) -> Image {
     Image::from_rgba8(buffer)
 }
 
-fn encode_native_png(writer: impl Write, frame: &NativeExportFrame) -> Result<(), String> {
+fn encode_native_png(mut writer: impl Write, frame: &NativeExportFrame) -> Result<(), String> {
     let expected = usize::from(frame.width) * usize::from(frame.height) * 4;
     if frame.pixels.len() != expected {
         return Err("native export buffer does not match its authored raster".into());
@@ -2453,15 +2453,13 @@ fn encode_native_png(writer: impl Write, frame: &NativeExportFrame) -> Result<()
         "pixelRGBA8SHA256": sha256_hex(frame.pixels.as_ref()),
     });
     let metadata = serde_json::to_string(&document).map_err(|error| error.to_string())?;
-    let mut encoder = png::Encoder::new(writer, u32::from(frame.width), u32::from(frame.height));
+    let mut encoded = Vec::new();
+    let mut encoder = png::Encoder::new(&mut encoded, u32::from(frame.width), u32::from(frame.height));
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     if frame.transform == CameraOutputTransform::SrgbSdr100 {
         encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
     }
-    encoder
-        .add_itxt_chunk("ScreenSimulation.PhysicalFrame.v1".to_owned(), metadata)
-        .map_err(|error| error.to_string())?;
     encoder
         .add_text_chunk(
             "Software".to_owned(),
@@ -2471,7 +2469,74 @@ fn encode_native_png(writer: impl Write, frame: &NativeExportFrame) -> Result<()
     encoder
         .write_header()
         .and_then(|mut png| png.write_image_data(frame.pixels.as_ref()))
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    let png = insert_uncompressed_frame_metadata(&encoded, metadata.as_bytes())?;
+    writer.write_all(&png).map_err(|error| error.to_string())
+}
+
+/// Appends the canonical physical-settings JSON as raw UTF-8 `iTXt`.
+///
+/// The macOS comparison application deliberately reads this portable PNG
+/// representation directly.  We do not use png::Encoder::add_itxt_chunk here:
+/// that API emits a compressed payload, while the companion app intentionally
+/// keeps frame-check metadata inspectable without a decompression dependency.
+fn insert_uncompressed_frame_metadata(png: &[u8], metadata: &[u8]) -> Result<Vec<u8>, String> {
+    const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if !png.starts_with(SIGNATURE) {
+        return Err("PNG encoder did not produce a valid signature".into());
+    }
+    let mut cursor = SIGNATURE.len();
+    let mut insertion_start = None;
+    while cursor.checked_add(12).is_some_and(|end| end <= png.len()) {
+        let length = u32::from_be_bytes(
+            png[cursor..cursor + 4]
+                .try_into()
+                .map_err(|_| "invalid PNG chunk length")?,
+        ) as usize;
+        let chunk_end = cursor
+            .checked_add(12)
+            .and_then(|start| start.checked_add(length))
+            .ok_or("PNG chunk length overflow")?;
+        if chunk_end > png.len() {
+            return Err("truncated PNG chunk".into());
+        }
+        // Keep metadata before image data: libpng readers expose it during
+        // read_info(), and it remains standards-compliant iTXt.
+        if &png[cursor + 4..cursor + 8] == b"IDAT" {
+            insertion_start = Some(cursor);
+            break;
+        }
+        cursor = chunk_end;
+    }
+    let insertion_start = insertion_start.ok_or("PNG output has no IDAT chunk")?;
+
+    let mut payload = b"ScreenSimulation.PhysicalFrame.v1".to_vec();
+    // keyword NUL, uncompressed flag/method, empty language and translated keyword.
+    payload.extend_from_slice(&[0, 0, 0, 0, 0]);
+    payload.extend_from_slice(metadata);
+    let kind = b"iTXt";
+    let mut chunk = Vec::with_capacity(12 + payload.len());
+    chunk.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    chunk.extend_from_slice(kind);
+    chunk.extend_from_slice(&payload);
+    chunk.extend_from_slice(&png_crc32(kind, &payload).to_be_bytes());
+
+    let mut result = Vec::with_capacity(png.len() + chunk.len());
+    result.extend_from_slice(&png[..insertion_start]);
+    result.extend_from_slice(&chunk);
+    result.extend_from_slice(&png[insertion_start..]);
+    Ok(result)
+}
+
+fn png_crc32(kind: &[u8; 4], payload: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in kind.iter().chain(payload) {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ if crc & 1 == 1 { 0xedb8_8320 } else { 0 };
+        }
+    }
+    crc ^ u32::MAX
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
