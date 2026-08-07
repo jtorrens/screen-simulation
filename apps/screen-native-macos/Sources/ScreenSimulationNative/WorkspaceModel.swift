@@ -946,7 +946,7 @@ final class WorkspaceModel: ObservableObject {
     func renderCurrentFrame() {
         guard let metalFrame else { return }
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.tiff]
+        panel.allowedContentTypes = [.png]
         let quality = switch physicalModel.quality {
         case .draft: "Draft"
         case .medium: "Media"
@@ -954,16 +954,117 @@ final class WorkspaceModel: ObservableObject {
         case .native: "Nativa"
         }
         panel.nameFieldStringValue = String(
-            format: "ScreenSimulation-%@-%08d.tiff", quality, currentFrame
+            format: "ScreenSimulation-%@-%08d.png", quality, currentFrame
         )
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try NativeOutputRenderer.renderCurrentFrame(
                 frame: metalFrame, displayTransform: previewTransform,
+                metadata: currentFrameCheckMetadata(quality: quality, frame: metalFrame),
                 destination: url, display: metalDisplay
             )
             status = "Frame \(quality) renderizado · \(url.lastPathComponent)"
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func currentFrameCheckMetadata(
+        quality: String, frame: StudioColorMetalFrame
+    ) -> [String: Any] {
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "development"
+        let capture = capturePresets.first { $0.id == selectedCapturePresetID }
+        let contributions: [[String: Any]] = physicalModel.orderedContributions.map { item in
+            var value: [String: Any] = [
+                "stageID": item.stage.id,
+                "domain": item.stage.domain == .screen ? "screen" : "capture",
+                "exactIdentityAtZero": item.exactIdentityAtZero,
+            ]
+            switch item.control {
+            case let .continuous(amount, _): value["amount"] = amount
+            case let .discrete(enabled): value["enabled"] = enabled
+            }
+            return value
+        }
+        let diagnostics: [[String: Any]] = physicalModel.diagnostics.map { item in
+            [
+                "stageID": item.stage.id,
+                "state": String(describing: item.state),
+                "progress": item.progress,
+                "elapsedNanoseconds": item.elapsedNanoseconds,
+                "message": item.message,
+            ]
+        }
+        var physical: [String: Any] = [
+            "abiVersion": 2,
+            "quality": quality,
+            "requestedIntermediate": String(describing: requestedPhysicalIntermediate),
+            "screenAmount": physicalModel.screenAmount,
+            "screenBypassed": physicalModel.screenIsBypassed,
+            "contributions": contributions,
+        ]
+        if let selectedCapturePresetID { physical["capturePresetID"] = selectedCapturePresetID }
+        if let capture { physical["capturePresetName"] = capture.name }
+        if let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+           let object = FrameCheckPNG.jsonObject(device) {
+            physical["device"] = object
+        }
+        if let state = physicalAuthoringState,
+           let object = FrameCheckPNG.jsonObject(state) {
+            physical["pipelineParameters"] = object
+        }
+        var output: [String: Any] = [
+            "transformID": previewTransform.id,
+            "transformLabel": previewTransform.label,
+            "display": previewTransform.display,
+            "view": previewTransform.view,
+            "declaredSignal": previewTransform.declaredSignalDescription,
+            "observedDisplayName": systemDisplayInfo.displayName,
+            "observedDisplayProfile": systemDisplayInfo.profileName,
+            "observedSystemColorSpace": systemDisplayInfo.systemColorSpaceName,
+        ]
+        if let colorSpaceName = previewTransform.colorSpace?.name {
+            output["embeddedICCColorSpace"] = colorSpaceName as String
+        }
+        return [
+            "schema": FrameCheckPNG.metadataKeyword,
+            "schemaVersion": 1,
+            "producer": [
+                "application": "SCREEN Simulation",
+                "implementation": "native-macos-swift-rust-metal",
+                "version": appVersion,
+                "physicalABI": 2,
+            ],
+            "frame": [
+                "index": currentFrame,
+                "fps": frameRate,
+                "timeSeconds": Double(currentFrame) / max(frameRate, 1),
+                "width": frame.width,
+                "height": frame.height,
+                "quality": quality,
+            ],
+            "source": [
+                "name": sourceName,
+                "detail": sourceDetail,
+                "kind": sourceIsPattern ? "synthetic" : "media",
+            ],
+            "interpretation": [
+                "inputTransformID": inputTransform.id,
+                "inputTransformLabel": inputTransform.label,
+                "alpha": alphaMode.rawValue,
+                "colorModel": signalColorModel.rawValue,
+                "yuvMatrix": signalMatrix.rawValue,
+                "signalRange": signalRange.rawValue,
+                "placement": sourcePlacement.rawValue,
+                "workingSpace": "ACEScg",
+            ],
+            "physical": physical,
+            "output": output,
+            "diagnostics": [
+                "status": physicalPublicationSummary,
+                "stages": diagnostics,
+                "warnings": errorMessage.map { [$0] } ?? [],
+            ],
+        ]
     }
 
     private func tickPlayback() {

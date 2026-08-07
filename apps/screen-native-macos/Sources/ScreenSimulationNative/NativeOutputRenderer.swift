@@ -128,13 +128,15 @@ enum NativeOutputRenderer {
     static func renderCurrentFrame(
         frame: StudioColorMetalFrame,
         displayTransform: StudioColorOutputTransform,
+        metadata: [String: Any],
         destination: URL,
         display: StudioColorMetalDisplay
     ) throws {
-        let values = try display.renderRGBAFloat(frame, output: displayTransform)
-        try encodeTIFF16(
-            values, width: frame.width, height: frame.height,
-            colorSpace: displayTransform.colorSpace
+        let rgba8 = try display.renderRGBA8(frame, output: displayTransform)
+        let document = try FrameCheckPNG.finalizedMetadata(metadata, rgba8: rgba8)
+        try FrameCheckPNG.encode(
+            rgba8: rgba8, width: frame.width, height: frame.height,
+            colorSpace: displayTransform.colorSpace, metadata: document
         ).write(to: destination, options: .atomic)
     }
 

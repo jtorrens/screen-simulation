@@ -48,12 +48,23 @@ import Testing
         atPath: exrDirectory.appendingPathComponent("ScreenSimulation-00000008.exr").path
     ))
 
-    let tiff = root.appendingPathComponent("current.tiff")
+    let png = root.appendingPathComponent("current.png")
     try NativeOutputRenderer.renderCurrentFrame(
         frame: frame, displayTransform: StudioColorOutputTransform.catalog[0],
-        destination: tiff, display: display
+        metadata: [
+            "schema": FrameCheckPNG.metadataKeyword,
+            "schemaVersion": 1,
+            "producer": ["application": "SCREEN Simulation Tests"],
+        ],
+        destination: png, display: display
     )
-    #expect(FileManager.default.fileExists(atPath: tiff.path))
+    let pngData = try Data(contentsOf: png)
+    let metadata = try #require(FrameCheckPNG.metadata(in: pngData))
+    let document = try #require(
+        JSONSerialization.jsonObject(with: metadata) as? [String: Any]
+    )
+    #expect(document["schema"] as? String == FrameCheckPNG.metadataKeyword)
+    #expect((document["hashes"] as? [String: String])?["pixelRGBA8SHA256"] != nil)
 }
 
 @Test @MainActor func acescgEXRStraightAlphaRoundtripPreservesHalfFloatContract() async throws {
