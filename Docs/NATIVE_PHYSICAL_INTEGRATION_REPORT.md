@@ -1,6 +1,6 @@
 # Native unified physical integration report
 
-Date: 2026-08-06. Host: Apple M3 Ultra, macOS 15.6.
+Date: 2026-08-07. Host: Apple M3 Ultra, macOS 15.6.
 
 ## Adopted authority
 
@@ -47,13 +47,25 @@ Continuous UI controls have a clean track, internal step 0.05, an exact detent
 at physical 1, numeric entry, and 0/1/>1 bypass/physical/artistic semantics.
 Each model owns its interpolation rather than a generic RGB mix.
 
+General uses one aligned native-switch / label / slider / numeric-value grid.
+Switch OFF publishes exact effective amount zero while retaining the editable
+stored value; switching ON restores that value. CFA and Develop keep their one
+discrete enable rather than receiving a redundant bypass switch. Expanded cards
+use aligned label / flexible control / numeric-value / restore columns. A
+modified authorable parameter reveals an `arrow.counterclockwise` button that
+restores only that field to the preset snapshot, with undo and accessibility;
+the column stays reserved while the icon is hidden at the base value.
+
 ## Automated validation
 
-- Swift: **40 tests passed**. Coverage includes all eleven intermediates,
+- Swift: **48 tests passed**. Coverage includes all eleven intermediates,
   `STATIC_INPUT`, twelve ordered diagnostics, honest fused timings, exact source
   values at amount 0, RGB/BGR, four placements, alpha, spread 0/1/2.5, every
   continuous stage at 0/1/>1, discrete CFA/Develop, Native cancellation and
-  anchored pan/zoom mathematics.
+  anchored pan/zoom mathematics. It also covers retained bypass values,
+  persistence/undo, nonblack Developed energy and alpha, complete authorable
+  UI bindings, per-field preset restoration affordances and native switch
+  styling in General.
 - Rust workspace: **199 tests passed**.
 - `cargo fmt --all -- --check` passed.
 - `cargo clippy --workspace --all-targets -- -D warnings` passed. Cargo reports
@@ -66,7 +78,7 @@ Each model owns its interpolation rather than a generic RGB mix.
   native I/O route.
 - Release packaging and strict deep ad-hoc codesign verification passed.
   Executable SHA-256:
-  `37ac34126e5fcd5fd6eaf7cc0ad8a5d0fe84496606b8b5b349f4db4cfc1c9149`.
+  `a125da9e31b6eb9920cea54a0ed9126720652e6f34850097f023b94b9601a6e8`.
 
 ## Measured Release performance and memory
 
@@ -99,12 +111,25 @@ The active display previously reported by AppKit/ColorSync is ASUS PA329CV,
 3840x2160, scale 1, EDR 1.0, profile
 `/Library/ColorSync/Profiles/Displays/ASUS PA329CV-F3C58FD7-6A52-4D86-B8A3-255A0F791CB0.icc`.
 
-Automated launch leaves the process alive, but the current WindowServer session
-returns no application window and desktop capture is entirely black. Therefore
-manual visual QA is explicitly **pending**, and no invalid black screenshot is
-published as evidence.
+Manual visual QA was completed in the unlocked WindowServer session on that
+ASUS display. Principal published the synthetic checker visibly. Modelo
+published the Developed intermediate at 3840x2160 in Draft with nonzero image
+energy; Native had previously published 3840x2160 complete. The General grid
+shows native switches in a dedicated aligned first column. The expanded
+Emission card shows editable fields and the per-field circular restore affordance
+after changing Gamma EOTF. The application log contains source/device/result
+dimensions and publication revisions and contains no SwiftUI
+`Publishing changes from within view updates` fault after the fix.
 
-Single human checklist for the next review:
+QA evidence:
+
+- `/private/tmp/screen-general-switches-aligned.png`
+- `/private/tmp/screen-parameter-restore-arrow.png`
+- `/private/tmp/screen-p0-card-emission-expanded.png`
+- `/private/tmp/screen-p0-card-capture-collapsed.png`
+- `/private/tmp/screen-p0-release-native-complete.png`
+
+Reduced human checklist for the next review:
 
 1. Editorial, frequency/moire and color patterns in Fit, Fill/Crop, Stretch and
    1:1 at Draft, Medium, High and Native; framing must remain identical.
@@ -117,7 +142,8 @@ Single human checklist for the next review:
    final clamp, closed-hand cursor and zoom anchored under the cursor.
 7. Neutral device background without preview border/elevation, resizable
    inspector, aligned label/slider/numeric columns, clean slider tracks,
-   tooltips, keyboard navigation and accessibility labels.
+   native switches in General, per-field circular restore buttons, tooltips,
+   keyboard navigation and accessibility labels.
 
 No hardware DeckLink result is claimed. Enumeration/error behavior and build
 contract are tested without simulating success.
