@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use image::ImageEncoder;
 use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
@@ -58,6 +57,8 @@ use screen_panel::{
 use screen_platform::{DisplayPublicationBackend, MetalDisplayPublication, MetalRawDevelopment};
 use screen_platform::{decode_frame_at_time, probe_media};
 use screen_sensor::{SensorProfile, SensorRegion};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 const DURATION_FRAMES: u32 = 96;
@@ -1815,6 +1816,7 @@ fn render_camera_result(
                             height: output.height,
                             pixels: Arc::clone(&output.pixels),
                             transform: output.transform,
+                            metadata: legacy_frame_check_metadata(&output),
                         });
                     }
                     window.set_render_progress(1.0);
@@ -1849,6 +1851,10 @@ struct NativeCaptureOutput {
     transform: CameraOutputTransform,
     timings: NativeCaptureTimings,
     backend: String,
+    frame_index: i64,
+    source_kind: &'static str,
+    source_name: String,
+    physical_snapshot: String,
 }
 
 struct NativeRenderSession {
@@ -1869,6 +1875,7 @@ struct NativeExportFrame {
     height: u16,
     pixels: Arc<[u8]>,
     transform: CameraOutputTransform,
+    metadata: Value,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2097,6 +2104,21 @@ fn run_native_capture_job(
     mut progress: impl FnMut(usize, usize, SensorRegion, Option<NativeStagingPreview>),
 ) -> Result<NativeCaptureOutput, NativeCaptureError> {
     let setup_started = Instant::now();
+    let frame_index = capture.frame_index;
+    let physical_snapshot = format!("{capture:#?}");
+    let (source_kind, source_name) = match &source {
+        NativeCaptureSource::Procedural => ("synthetic", "Procedural diagnostic".to_owned()),
+        NativeCaptureSource::Static { .. } => ("raster", "Loaded still raster".to_owned()),
+        NativeCaptureSource::Media(media) => (
+            "media",
+            media
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Loaded media")
+                .to_owned(),
+        ),
+    };
     let color_engine =
         ColorEngine::bundled().map_err(|error| NativeCaptureError::Failed(error.to_string()))?;
     let publication_backend = MetalDisplayPublication::new(transform)
@@ -2268,6 +2290,10 @@ fn run_native_capture_job(
         transform,
         timings,
         backend,
+        frame_index,
+        source_kind,
+        source_name,
+        physical_snapshot,
     })
 }
 
@@ -2416,14 +2442,95 @@ fn encode_native_png(writer: impl Write, frame: &NativeExportFrame) -> Result<()
     if frame.pixels.len() != expected {
         return Err("native export buffer does not match its authored raster".into());
     }
-    image::codecs::png::PngEncoder::new(writer)
-        .write_image(
-            frame.pixels.as_ref(),
-            u32::from(frame.width),
-            u32::from(frame.height),
-            image::ExtendedColorType::Rgba8,
+    let mut document = frame.metadata.clone();
+    let configuration = serde_json::to_vec(&document).map_err(|error| error.to_string())?;
+    document["hashes"] = json!({
+        "configurationSHA256": sha256_hex(&configuration),
+        "pixelRGBA8SHA256": sha256_hex(frame.pixels.as_ref()),
+    });
+    let metadata = serde_json::to_string(&document).map_err(|error| error.to_string())?;
+    let mut encoder = png::Encoder::new(writer, u32::from(frame.width), u32::from(frame.height));
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    if frame.transform == CameraOutputTransform::SrgbSdr100 {
+        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    }
+    encoder
+        .add_itxt_chunk("ScreenSimulation.PhysicalFrame.v1".to_owned(), metadata)
+        .map_err(|error| error.to_string())?;
+    encoder
+        .add_text_chunk(
+            "Software".to_owned(),
+            "SCREEN Simulation · Rust/Slint".to_owned(),
         )
+        .map_err(|error| error.to_string())?;
+    encoder
+        .write_header()
+        .and_then(|mut png| png.write_image_data(frame.pixels.as_ref()))
         .map_err(|error| error.to_string())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn legacy_frame_check_metadata(output: &NativeCaptureOutput) -> Value {
+    json!({
+        "schema": "ScreenSimulation.PhysicalFrame.v1",
+        "schemaVersion": 1,
+        "producer": {
+            "application": "SCREEN Simulation",
+            "implementation": "legacy-rust-slint-metal",
+            "version": env!("CARGO_PKG_VERSION"),
+            "physicalABI": "legacy-pre-unified-v2"
+        },
+        "frame": {
+            "index": output.frame_index,
+            "width": output.width,
+            "height": output.height,
+            "quality": "Native"
+        },
+        "source": {
+            "kind": output.source_kind,
+            "name": output.source_name
+        },
+        "physical": {
+            "snapshotDebug": output.physical_snapshot,
+            "sensor": {
+                "nativeWidth": output.sensor.native_width,
+                "nativeHeight": output.sensor.native_height,
+                "bayerPattern": format!("{:?}", output.sensor.bayer_pattern),
+                "adcBits": output.sensor.adc_bits,
+                "fullWellElectrons": output.sensor.full_well_electrons,
+                "darkCurrentElectronsPerSecond": output.sensor.dark_current_electrons_per_second,
+                "readNoiseElectronsRMS": output.sensor.read_noise_electrons_rms,
+                "analogGain": output.sensor.analog_gain
+            },
+            "region": {
+                "originX": output.region.origin_x,
+                "originY": output.region.origin_y,
+                "width": output.region.width,
+                "height": output.region.height
+            }
+        },
+        "output": {
+            "transformID": output.transform.stable_id(),
+            "transformLabel": output.transform.label(),
+            "pixelEncoding": "RGBA8",
+            "embeddedICC": output.transform == CameraOutputTransform::SrgbSdr100
+        },
+        "diagnostics": {
+            "backend": output.backend,
+            "fullWellClipped": output.full_well_clipped,
+            "adcClipped": output.adc_clipped,
+            "timingsMilliseconds": {
+                "setup": output.timings.setup.as_secs_f64() * 1_000.0,
+                "captureAndDevelop": output.timings.capture_and_develop.as_secs_f64() * 1_000.0,
+                "outputAndAssembly": output.timings.output_and_assembly.as_secs_f64() * 1_000.0,
+                "displayPyramid": output.timings.display_pyramid.as_secs_f64() * 1_000.0
+            }
+        }
+    })
 }
 
 fn write_native_png(path: &Path, frame: &NativeExportFrame) -> Result<(), String> {
@@ -3481,6 +3588,10 @@ mod interaction_tests {
             height: 2,
             pixels: Arc::clone(&pixels),
             transform: CameraOutputTransform::SrgbSdr100,
+            metadata: json!({
+                "schema": "ScreenSimulation.PhysicalFrame.v1",
+                "schemaVersion": 1
+            }),
         };
         let mut encoded = Vec::new();
         encode_native_png(&mut encoded, &frame).expect("native PNG encoding");
@@ -3489,5 +3600,21 @@ mod interaction_tests {
             .to_rgba8();
         assert_eq!((decoded.width(), decoded.height()), (2, 2));
         assert_eq!(decoded.as_raw(), pixels.as_ref());
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(encoded.as_slice()));
+        decoder.set_transformations(png::Transformations::IDENTITY);
+        let reader = decoder.read_info().expect("PNG metadata decode");
+        let physical = reader
+            .info()
+            .utf8_text
+            .iter()
+            .find(|chunk| chunk.keyword == "ScreenSimulation.PhysicalFrame.v1")
+            .expect("physical frame iTXt");
+        let document: Value = serde_json::from_str(&physical.get_text().expect("iTXt text"))
+            .expect("physical frame JSON");
+        assert_eq!(document["schema"], "ScreenSimulation.PhysicalFrame.v1");
+        assert_eq!(
+            document["hashes"]["pixelRGBA8SHA256"],
+            sha256_hex(pixels.as_ref())
+        );
     }
 }
