@@ -352,5 +352,10 @@ fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
                 }),
         );
     }
-    assert_eq!(hashes, [9_823_112_176_206_848_726, 352_953_791_658_061_349]);
+    // Sensor input is explicitly converted from normalized panel ACEScg to
+    // physical illuminance using the resolved white luminance before RAW.
+    assert_eq!(
+        hashes,
+        [10_009_671_958_557_217_646, 6_193_047_348_620_188_270]
+    );
 }

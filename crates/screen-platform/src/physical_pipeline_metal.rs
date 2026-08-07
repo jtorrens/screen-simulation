@@ -100,6 +100,7 @@ struct SensorExposureParams {
     read_noise_electrons_rms: f32,
     analog_gain: f32,
     noise_amount: f32,
+    input_luminance_scale: [f32; 4],
     acescg_to_sensor_0: [f32; 4],
     acescg_to_sensor_1: [f32; 4],
     acescg_to_sensor_2: [f32; 4],
@@ -247,6 +248,12 @@ impl MetalPhysicalPipeline {
             .sensor
             .validate()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        let panel_white_nits = plan
+            .panel
+            .evaluator()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?
+            .device_stage_parameters()
+            .white_level_nits;
         let duration_seconds = plan
             .shutter_close
             .checked_sub(plan.shutter_open)
@@ -273,6 +280,7 @@ impl MetalPhysicalPipeline {
             read_noise_electrons_rms: sensor.read_noise_electrons_rms,
             analog_gain: sensor.analog_gain,
             noise_amount: plan.sensor_noise_amount,
+            input_luminance_scale: [panel_white_nits, 0.0, 0.0, 0.0],
             acescg_to_sensor_0: pad(sensor.acescg_to_sensor[0]),
             acescg_to_sensor_1: pad(sensor.acescg_to_sensor[1]),
             acescg_to_sensor_2: pad(sensor.acescg_to_sensor[2]),

@@ -32,6 +32,7 @@ struct SensorExposureParams {
     float read_noise_electrons_rms;
     float analog_gain;
     float noise_amount;
+    float4 input_luminance_scale;
     float4 acescg_to_sensor_0;
     float4 acescg_to_sensor_1;
     float4 acescg_to_sensor_2;
@@ -109,7 +110,8 @@ kernel void expose_sensor_raw(texture2d<float, access::read> exposure [[texture(
                               uint2 position [[thread_position_in_grid]]) {
     if (position.x >= p.width || position.y >= p.height) return;
     const uint index = position.y * p.width + position.x;
-    const float3 acescg = sensor_area_sample(exposure, position, p).rgb;
+    const float3 acescg = sensor_area_sample(exposure, position, p).rgb
+        * p.input_luminance_scale.x;
     const float3 sensor = float3(dot(p.acescg_to_sensor_0.xyz, acescg),
                                 dot(p.acescg_to_sensor_1.xyz, acescg),
                                 dot(p.acescg_to_sensor_2.xyz, acescg));

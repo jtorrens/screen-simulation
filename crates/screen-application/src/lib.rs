@@ -789,7 +789,17 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             output.push([selected[0], selected[1], selected[2], ideal[3]]);
         }
     }
-    if plan.sensor_enabled {
+    // Capture owns only the sensor/noise, RAW, and developed intermediates.
+    // Earlier diagnostics must publish the selected screen/camera-domain raster
+    // directly instead of being silently reinterpreted as sensor illuminance.
+    if plan.sensor_enabled
+        && matches!(
+            plan.requested_intermediate,
+            PhysicalIntermediate::SensorNoise
+                | PhysicalIntermediate::RawMosaic
+                | PhysicalIntermediate::DevelopedAcesCg
+        )
+    {
         let sensor = plan.sensor.validate().map_err(ApplicationError::Sensor)?;
         let sensor_pixels = resample_physical_rgba_area(
             &output,
@@ -808,7 +818,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             duration_seconds: duration.as_seconds() as f32,
             acescg_illuminance_seconds: sensor_pixels
                 .iter()
-                .map(|pixel| LinearRgb::new(pixel[0], pixel[1], pixel[2]))
+                .map(|pixel| {
+                    LinearRgb::new(
+                        pixel[0] * parameters.white_level_nits,
+                        pixel[1] * parameters.white_level_nits,
+                        pixel[2] * parameters.white_level_nits,
+                    )
+                })
                 .collect(),
         };
         let raw = expose_raw_with_noise_amount(
