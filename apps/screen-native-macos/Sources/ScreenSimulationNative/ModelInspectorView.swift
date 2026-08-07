@@ -567,7 +567,7 @@ struct ModelInspectorView: View {
                 chromaticityRows("Blanco", \.white)
                 vectorDeviceRows("Emisión angular", \.angularEmissionPower, range: 0 ... 64, step: 0.05)
             case .subpixelGeometry:
-                physicalArrayRows("Pantalla posición", \.screenPose.position, labels: ["X", "Y", "Z"], range: -10 ... 10, step: 0.5, unit: "m")
+                screenPositionRows()
                 physicalRotationRows("Pantalla rotación", \.screenPose.quaternion)
                 deviceIntegerRow("Anchura raster", \.nativeWidth, 1 ... 32_768, "px")
                 deviceIntegerRow("Altura raster", \.nativeHeight, 1 ... 32_768, "px")
@@ -1035,8 +1035,8 @@ struct ModelInspectorView: View {
                     set: { value in
                         workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
                             state.cameraPose.position[index] = value
-                            if state.cameraLookAt?.enabled == true, let target = state.cameraLookAt?.target {
-                                state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: target)
+                            if state.cameraLookAt?.enabled == true {
+                                synchronizeLookAt(&state)
                             }
                         }
                     }
@@ -1046,8 +1046,8 @@ struct ModelInspectorView: View {
                     let value = workspace.physicalPresetAuthoringState!.cameraPose.position[index]
                     workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
                         state.cameraPose.position[index] = value
-                        if state.cameraLookAt?.enabled == true, let target = state.cameraLookAt?.target {
-                            state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: target)
+                        if state.cameraLookAt?.enabled == true {
+                            synchronizeLookAt(&state)
                         }
                     }
                 },
@@ -1066,45 +1066,18 @@ struct ModelInspectorView: View {
                 get: { enabled },
                 set: { newValue in
                     workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
-                        var lookAt = state.cameraLookAt ?? .init(target: state.screenPose.position)
-                        lookAt.enabled = newValue
-                        state.cameraLookAt = lookAt
-                        if newValue { state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: lookAt.target) }
+                        if newValue {
+                            synchronizeLookAt(&state)
+                        } else {
+                            var lookAt = state.cameraLookAt ?? .init(target: state.screenPose.position)
+                            lookAt.enabled = false
+                            state.cameraLookAt = lookAt
+                        }
                     }
                 }
             )).labelsHidden()
             Text("")
             Color.clear.frame(width: 16, height: 1)
-        }
-        if enabled {
-            ForEach(0..<3, id: \.self) { index in
-                let axes = ["X", "Y", "Z"]
-                PhysicalDoubleParameterRow(
-                    label: "Objetivo \(axes[index])", unit: "m", range: -10 ... 10, step: 0.5,
-                    value: Binding(
-                        get: { workspace.physicalAuthoringState?.cameraLookAt?.target[index] ?? workspace.physicalAuthoringState!.screenPose.position[index] },
-                        set: { value in
-                            workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
-                                var lookAt = state.cameraLookAt ?? .init(target: state.screenPose.position)
-                                lookAt.target[index] = value
-                                state.cameraLookAt = lookAt
-                                state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: lookAt.target)
-                            }
-                        }
-                    ),
-                    defaultValue: workspace.physicalPresetAuthoringState?.cameraLookAt?.target[index] ?? workspace.physicalPresetAuthoringState!.screenPose.position[index],
-                    onRestore: {
-                        let value = workspace.physicalPresetAuthoringState?.cameraLookAt?.target[index] ?? workspace.physicalPresetAuthoringState!.screenPose.position[index]
-                        workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
-                            var lookAt = state.cameraLookAt ?? .init(target: state.screenPose.position)
-                            lookAt.target[index] = value
-                            state.cameraLookAt = lookAt
-                            state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: lookAt.target)
-                        }
-                    },
-                    animationArmed: workspace.physicalAnimationArmBinding("camera.lookAt.\(index)")
-                )
-            }
         }
     }
 
@@ -1112,7 +1085,13 @@ struct ModelInspectorView: View {
     private func cameraRotationRows() -> some View {
         ForEach(0..<3, id: \.self) { index in
             let axes = ["X", "Y", "Z"]
-            PhysicalDoubleParameterRow(
+            if workspace.physicalAuthoringState?.cameraLookAt?.enabled == true {
+                PhysicalDerivedRow(
+                    label: "Cámara rotación \(axes[index])",
+                    value: "\(PoseRotationProjection.degrees(from: workspace.physicalAuthoringState!.cameraPose.quaternion)[index].formatted(.number.precision(.fractionLength(2)))) °"
+                )
+            } else {
+                PhysicalDoubleParameterRow(
                 label: "Cámara rotación \(axes[index])", unit: "°", range: -180 ... 180, step: 5,
                 value: Binding(
                     get: { PoseRotationProjection.degrees(from: workspace.physicalAuthoringState!.cameraPose.quaternion)[index] },
@@ -1121,10 +1100,6 @@ struct ModelInspectorView: View {
                             var angles = PoseRotationProjection.degrees(from: state.cameraPose.quaternion)
                             angles[index] = value
                             state.cameraPose.quaternion = PoseRotationProjection.quaternion(fromDegrees: angles)
-                            if state.cameraLookAt?.enabled == true {
-                                let distance = PoseRotationProjection.distance(state.cameraLookAt!.target, state.cameraPose.position)
-                                state.cameraLookAt!.target = PoseRotationProjection.target(from: state.cameraPose.position, quaternion: state.cameraPose.quaternion, distance: distance)
-                            }
                         }
                     }
                 ),
@@ -1133,8 +1108,47 @@ struct ModelInspectorView: View {
                     workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0.cameraPose.quaternion = workspace.physicalPresetAuthoringState!.cameraPose.quaternion }
                 },
                 animationArmed: workspace.physicalAnimationArmBinding("camera.rotation.\(index)")
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func screenPositionRows() -> some View {
+        let keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, [Double]> = \.screenPose.position
+        ForEach(0..<3, id: \.self) { index in
+            let axes = ["X", "Y", "Z"]
+            PhysicalDoubleParameterRow(
+                label: "Pantalla posición \(axes[index])", unit: "m", range: -10 ... 10, step: 0.5,
+                value: Binding(
+                    get: { workspace.physicalAuthoringState![keyPath: keyPath][index] },
+                    set: { value in
+                        workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                            state[keyPath: keyPath][index] = value
+                            if state.cameraLookAt?.enabled == true { synchronizeLookAt(&state) }
+                        }
+                    }
+                ),
+                defaultValue: workspace.physicalPresetAuthoringState![keyPath: keyPath][index],
+                onRestore: {
+                    let value = workspace.physicalPresetAuthoringState![keyPath: keyPath][index]
+                    workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                        state[keyPath: keyPath][index] = value
+                        if state.cameraLookAt?.enabled == true { synchronizeLookAt(&state) }
+                    }
+                },
+                animationArmed: workspace.physicalAnimationArmBinding("screenPose.position.\(index)")
             )
         }
+    }
+
+    private func synchronizeLookAt(_ state: inout PhysicalPipelineAuthoringState) {
+        let target = state.screenPose.position
+        state.cameraLookAt = .init(enabled: true, target: target)
+        state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(
+            from: state.cameraPose.position,
+            to: target
+        )
     }
 
     @ViewBuilder

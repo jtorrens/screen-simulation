@@ -1412,12 +1412,11 @@ struct ContentView: View {
                 }
                 .help("Reducir zoom")
                 .accessibilityLabel("Reducir zoom")
-                TextField("Zoom", value: Binding(
-                    get: { model.zoomPercentage },
-                    set: { model.setZoomPercentage($0) }
-                ), format: .number.precision(.fractionLength(0)))
+                CommittedZoomField(
+                    percentage: model.zoomPercentage,
+                    onCommit: model.setZoomPercentage
+                )
                     .frame(width: 52)
-                    .multilineTextAlignment(.trailing)
                     .accessibilityLabel("Escala del visor en porcentaje")
                 Text("%").foregroundStyle(.secondary)
                 Button("Fit") {
@@ -1693,6 +1692,49 @@ struct MetalPreview: NSViewRepresentable {
     }
 }
 
+private struct CommittedZoomField: View {
+    let percentage: Double
+    let onCommit: (Double) -> Void
+
+    @State private var draft = "100"
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("Zoom", text: $draft)
+            .focused($isFocused)
+            .multilineTextAlignment(.trailing)
+            .onAppear { synchronize(with: percentage) }
+            .onSubmit { commit() }
+            .onChange(of: isFocused) { _, focused in
+                if focused {
+                    synchronize(with: percentage)
+                } else {
+                    commit()
+                }
+            }
+            .onChange(of: percentage) { _, value in
+                if !isFocused { synchronize(with: value) }
+            }
+    }
+
+    private func commit() {
+        let normalized = draft
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value.isFinite else {
+            synchronize(with: percentage)
+            return
+        }
+        let clamped = min(1_600, max(10, value))
+        onCommit(clamped)
+        synchronize(with: clamped)
+    }
+
+    private func synchronize(with value: Double) {
+        draft = value.formatted(.number.precision(.fractionLength(0 ... 1)))
+    }
+}
+
 final class MetalPreviewContainer: NSView {
     private(set) var metalView = StudioColorScreenAwareMetalView()
     private var presentationZoom = 1.0
@@ -1803,6 +1845,8 @@ final class MetalPreviewContainer: NSView {
 
     private func applyPresentation() {
         let fitted = fittedContentSize()
+        metalView.layer?.setAffineTransform(.identity)
+        metalView.bounds = NSRect(origin: .zero, size: fitted)
         metalView.frame = NSRect(
             x: bounds.midX - fitted.width / 2,
             y: bounds.midY - fitted.height / 2,
@@ -1825,11 +1869,13 @@ final class MetalPreviewContainer: NSView {
                 self?.onPanChange?(effectivePan)
             }
         }
+        metalView.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        metalView.layer?.position = CGPoint(
+            x: bounds.midX + effectivePan.width,
+            y: bounds.midY + effectivePan.height
+        )
         metalView.layer?.setAffineTransform(
-            CGAffineTransform(
-                a: scale, b: 0, c: 0, d: scale,
-                tx: effectivePan.width, ty: effectivePan.height
-            )
+            CGAffineTransform(scaleX: scale, y: scale)
         )
     }
 
