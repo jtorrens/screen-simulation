@@ -1,5 +1,4 @@
 import CoreGraphics
-import Compression
 import CryptoKit
 import Foundation
 import ImageIO
@@ -71,66 +70,10 @@ enum FrameCheckPNG {
 
     static func metadata(in png: Data) -> Data? {
         for chunk in chunks(in: png) where chunk.type == "iTXt" {
-            guard let text = internationalText(in: chunk.payload, keyword: metadataKeyword) else {
-                continue
-            }
-            return text
-        }
-        return nil
-    }
-
-    /// PNG's iTXt allows either raw UTF-8 or a zlib-compressed text payload.
-    /// The native writer uses raw text for easy inspection; the Rust writer
-    /// uses the PNG crate's compressed representation. Both carry the same
-    /// canonical JSON document and must be equally importable.
-    private static func internationalText(in payload: Data, keyword: String) -> Data? {
-        let bytes = [UInt8](payload)
-        let keywordBytes = Array(keyword.utf8)
-        guard bytes.starts(with: keywordBytes),
-              bytes.count > keywordBytes.count + 4,
-              bytes[keywordBytes.count] == 0
-        else { return nil }
-        let compressionFlagIndex = keywordBytes.count + 1
-        let compressionFlag = bytes[compressionFlagIndex]
-        guard bytes[compressionFlagIndex + 1] == 0 else { return nil }
-        var cursor = compressionFlagIndex + 2
-        guard let languageEnd = bytes[cursor...].firstIndex(of: 0) else { return nil }
-        cursor = languageEnd + 1
-        guard let translatedEnd = bytes[cursor...].firstIndex(of: 0) else { return nil }
-        cursor = translatedEnd + 1
-        let text = Data(bytes[cursor...])
-        switch compressionFlag {
-        case 0:
-            return text
-        case 1:
-            return zlibDecompressed(text)
-        default:
-            return nil
-        }
-    }
-
-    private static func zlibDecompressed(_ compressed: Data) -> Data? {
-        guard !compressed.isEmpty else { return Data() }
-        var capacity = max(compressed.count * 4, 1_024)
-        while capacity <= 16 * 1_024 * 1_024 {
-            var destination = Data(count: capacity)
-            let count = destination.withUnsafeMutableBytes { destinationBytes in
-                compressed.withUnsafeBytes { sourceBytes in
-                    compression_decode_buffer(
-                        destinationBytes.bindMemory(to: UInt8.self).baseAddress!,
-                        capacity,
-                        sourceBytes.bindMemory(to: UInt8.self).baseAddress!,
-                        compressed.count,
-                        nil,
-                        COMPRESSION_ZLIB
-                    )
-                }
-            }
-            if count > 0 {
-                destination.count = count
-                return destination
-            }
-            capacity *= 2
+            var prefix = Data(metadataKeyword.utf8)
+            prefix.append(contentsOf: [0, 0, 0, 0, 0])
+            guard chunk.payload.starts(with: prefix) else { continue }
+            return Data(chunk.payload.dropFirst(prefix.count))
         }
         return nil
     }
