@@ -19,7 +19,7 @@ use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
     DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
     PanelTemporalEvaluation, PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel,
-    ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
+    ProceduralTestPattern, RasterPlacement, RollingDirection, SensorReadout, SimulationRequest,
     capture_and_develop_device_signal_region_sequence_with_compute_backends,
     capture_and_develop_device_signal_region_with_compute_backends,
     capture_and_develop_procedural_region_with_compute_backends, capture_device_preset,
@@ -37,8 +37,8 @@ use screen_contracts::{
     DeviceRgb, FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3,
 };
 use screen_cover::{
-    COVER_GLASS_PRESETS, CoverGlassProfile, ENVIRONMENT_PRESETS, ProceduralEnvironment,
-    cover_glass_preset, environment_preset,
+    COVER_GLASS_PRESETS, CoverGlassProfile, ENVIRONMENT_PRESETS, EnvironmentPattern,
+    ProceduralEnvironment, cover_glass_preset, environment_preset,
 };
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation,
@@ -56,7 +56,7 @@ use screen_panel::{
 };
 use screen_platform::{DisplayPublicationBackend, MetalDisplayPublication, MetalRawDevelopment};
 use screen_platform::{decode_frame_at_time, probe_media};
-use screen_sensor::{SensorProfile, SensorRegion};
+use screen_sensor::{BayerPattern, SensorProfile, SensorRegion};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use slint::{Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
@@ -1855,6 +1855,7 @@ struct NativeCaptureOutput {
     source_kind: &'static str,
     source_name: String,
     physical_snapshot: String,
+    physical_settings: Value,
 }
 
 struct NativeRenderSession {
@@ -2106,6 +2107,8 @@ fn run_native_capture_job(
     let setup_started = Instant::now();
     let frame_index = capture.frame_index;
     let physical_snapshot = format!("{capture:#?}");
+    let physical_settings = legacy_physical_settings(&capture, sensor, development)
+        .map_err(NativeCaptureError::Failed)?;
     let (source_kind, source_name) = match &source {
         NativeCaptureSource::Procedural => ("synthetic", "Procedural diagnostic".to_owned()),
         NativeCaptureSource::Static { .. } => ("raster", "Loaded still raster".to_owned()),
@@ -2294,6 +2297,7 @@ fn run_native_capture_job(
         source_kind,
         source_name,
         physical_snapshot,
+        physical_settings,
     })
 }
 
@@ -2513,6 +2517,7 @@ fn legacy_frame_check_metadata(output: &NativeCaptureOutput) -> Value {
                 "height": output.region.height
             }
         },
+        "settings": output.physical_settings,
         "output": {
             "transformID": output.transform.stable_id(),
             "transformLabel": output.transform.label(),
@@ -2531,6 +2536,187 @@ fn legacy_frame_check_metadata(output: &NativeCaptureOutput) -> Value {
             }
         }
     })
+}
+
+fn legacy_physical_settings(
+    capture: &FrameCaptureRequest,
+    sensor: SensorProfile,
+    development: CameraDevelopment,
+) -> Result<Value, String> {
+    let optics = &capture.optics;
+    let panel = optics.panel;
+    let camera = optics
+        .camera
+        .sample(optics.time)
+        .map_err(|error| error.to_string())?;
+    let screen = optics
+        .screen
+        .sample(optics.time)
+        .map_err(|error| error.to_string())?;
+    let rgb = |value: screen_contracts::LinearRgb| json!([value.r, value.g, value.b]);
+    let time = |value: RationalTime| {
+        json!({
+            "numerator": value.numerator(), "denominator": value.denominator()
+        })
+    };
+    let cover_authority = match optics.cover.roughness >= 0.4 {
+        true => "Aproximación de categoría publicada",
+        false => "Aproximación genérica",
+    };
+    let readout = match capture.readout {
+        SensorReadout::Global => (
+            0_u16,
+            RationalTime::new(0, 1).map_err(|e| e.to_string())?,
+            0_u32,
+        ),
+        SensorReadout::Rolling {
+            duration,
+            direction,
+        } => (
+            1,
+            duration,
+            match direction {
+                RollingDirection::TopToBottom => 0,
+                RollingDirection::BottomToTop => 1,
+            },
+        ),
+    };
+    let half = capture.duration.as_seconds() * 0.5;
+    let shutter_denominator = 1_000_000_000_u32;
+    let half_numerator = (half * f64::from(shutter_denominator)).round() as i64;
+    let stages = json!([
+        {"stageID": 0x101, "kind": "continuous", "storedAmount": optics.panel_character_strength, "bypassed": false},
+        {"stageID": 0x102, "kind": "continuous", "storedAmount": optics.panel_character_strength, "bypassed": false},
+        {"stageID": 0x103, "kind": "continuous", "storedAmount": panel.light_spread.character_strength, "bypassed": false},
+        {"stageID": 0x104, "kind": "continuous", "storedAmount": 1.0, "bypassed": false},
+        {"stageID": 0x105, "kind": "continuous", "storedAmount": optics.cover.character_strength, "bypassed": false},
+        {"stageID": 0x106, "kind": "continuous", "storedAmount": optics.environment.character_strength, "bypassed": false},
+        {"stageID": 0x201, "kind": "continuous", "storedAmount": 1.0, "bypassed": false},
+        {"stageID": 0x202, "kind": "continuous", "storedAmount": optics.lens_character_strength, "bypassed": false},
+        {"stageID": 0x203, "kind": "continuous", "storedAmount": 1.0, "bypassed": false},
+        {"stageID": 0x204, "kind": "discrete", "enabled": true},
+        {"stageID": 0x205, "kind": "continuous", "storedAmount": 1.0, "bypassed": false},
+        {"stageID": 0x206, "kind": "discrete", "enabled": true}
+    ]);
+    Ok(json!({
+        "schema": "ScreenSimulation.PhysicalSettings.v1",
+        "device": {
+            "id": "imported-legacy-device",
+            "name": "Imported legacy device",
+            "category": "Desktop monitor",
+            "nativeWidth": panel.native_width,
+            "nativeHeight": panel.native_height,
+            "activeWidthMeters": panel.active_width.0,
+            "activeHeightMeters": panel.active_height.0,
+            "panelTechnology": "IPS LCD",
+            "emissionModel": "Power EOTF",
+            "eotfGamma": panel.eotf_gamma,
+            "blackLevelNits": panel.black_level_nits,
+            "whiteLevelNits": panel.white_level_nits,
+            "whiteBasis": "Imported legacy profile",
+            "stripeLayout": match panel.stripe_layout { StripeLayout::Rgb => "RGB", StripeLayout::Bgr => "BGR" },
+            "blackMatrixFraction": panel.black_matrix_fraction,
+            "red": {"x": panel.colorimetry.red.x, "y": panel.colorimetry.red.y},
+            "green": {"x": panel.colorimetry.green.x, "y": panel.colorimetry.green.y},
+            "blue": {"x": panel.colorimetry.blue.x, "y": panel.colorimetry.blue.y},
+            "white": {"x": panel.colorimetry.white.x, "y": panel.colorimetry.white.y},
+            "angularEmissionPower": rgb(panel.angular_emission_power),
+            "panelLightSpread": {
+                "characterStrength": panel.light_spread.character_strength,
+                "coreRadiusMicrometers": rgb(panel.light_spread.core_radius_micrometers),
+                "coreWeight": rgb(panel.light_spread.core_weight),
+                "tailRadiusMicrometers": rgb(panel.light_spread.tail_radius_micrometers),
+                "tailWeight": rgb(panel.light_spread.tail_weight)
+            },
+            "residualFlickerPeriod": time(panel.temporal_emission.residual_flicker.period),
+            "residualFlickerAmplitude": panel.temporal_emission.residual_flicker.amplitude,
+            "residualFlickerPhase": time(panel.temporal_emission.residual_flicker.phase),
+            "bandingPeriod": time(panel.temporal_emission.analytic_banding.period),
+            "bandingOnDuration": time(panel.temporal_emission.analytic_banding.on_duration),
+            "bandingPhase": time(panel.temporal_emission.analytic_banding.phase),
+            "bandingAmount": panel.temporal_emission.analytic_banding.amount,
+            "defaultCoverGlassPresetID": "imported-legacy-cover"
+        },
+        "pipeline": {
+            "coverGlass": {
+                "id": "imported-legacy-cover", "name": "Imported legacy cover",
+                "authority": cover_authority,
+                "characterStrength": optics.cover.character_strength,
+                "thicknessMillimeters": optics.cover.thickness_millimeters,
+                "refractiveIndex": optics.cover.refractive_index,
+                "antiReflectiveEfficiency": optics.cover.anti_reflective_efficiency,
+                "absorptionPerMillimeter": rgb(optics.cover.absorption_per_millimeter),
+                "roughness": optics.cover.roughness, "haze": optics.cover.haze
+            },
+            "environment": {
+                "ambientRadianceACEScg": rgb(optics.environment.ambient_radiance.0),
+                "keyRadianceACEScg": rgb(optics.environment.key_radiance.0),
+                "keyDirectionLocal": optics.environment.key_direction_local,
+                "keyAngularRadiusDegrees": optics.environment.key_angular_radius_degrees,
+                "rotationDegrees": optics.environment.rotation_degrees,
+                "pattern": match optics.environment.pattern { EnvironmentPattern::UniformNeutral => 0, EnvironmentPattern::StudioSoftboxes => 1, EnvironmentPattern::CalibrationGrid => 2 }
+            },
+            "sceneLens": {
+                "focalLengthMillimeters": camera.focal_length.0,
+                "sensorWidthMillimeters": camera.sensor_width.0,
+                "sensorHeightMillimeters": camera.sensor_height.0,
+                "lensShift": [camera.lens_shift.x, camera.lens_shift.y],
+                "focusDistanceMeters": camera.focus_distance.0,
+                "fStop": camera.f_stop,
+                "nearClipMeters": camera.near_clip.0,
+                "farClipMeters": camera.far_clip.0,
+                "radialDistortion": camera.lens.radial_distortion,
+                "tangentialDistortion": camera.lens.tangential_distortion,
+                "longitudinalChromaticMeters": camera.lens.longitudinal_chromatic_meters,
+                "lateralChromaticScale": camera.lens.lateral_chromatic_scale,
+                "vignettingStrength": camera.lens.vignetting_strength,
+                "transmissionRGB": camera.lens.transmission_rgb,
+                "centerSoftnessMicrometers": camera.lens.center_softness_micrometers,
+                "edgeSoftnessMicrometers": camera.lens.edge_softness_micrometers
+            },
+            "shutterMotion": {
+                "temporalSamples": capture.temporal_samples,
+                "readoutKind": readout.0,
+                "readoutDurationNumerator": readout.1.numerator(),
+                "readoutDurationDenominator": readout.1.denominator(),
+                "readoutDirection": readout.2,
+                "neutralDensityStops": capture.neutral_density_stops,
+                "noiseSeed": capture.noise_seed,
+                "openOffsetNumerator": -half_numerator,
+                "openOffsetDenominator": shutter_denominator,
+                "closeOffsetNumerator": half_numerator,
+                "closeOffsetDenominator": shutter_denominator
+            },
+            "sensor": {
+                "nativeWidth": sensor.native_width,
+                "nativeHeight": sensor.native_height,
+                "bayerPattern": match sensor.bayer_pattern { BayerPattern::Rggb => 0, BayerPattern::Bggr => 1, BayerPattern::Grbg => 2, BayerPattern::Gbrg => 3 },
+                "acescgToSensor": sensor.acescg_to_sensor.concat(),
+                "saturationIlluminanceSeconds": rgb(sensor.saturation_illuminance_seconds),
+                "fullWellElectrons": sensor.full_well_electrons,
+                "darkCurrentElectronsPerSecond": sensor.dark_current_electrons_per_second,
+                "readNoiseElectronsRMS": sensor.read_noise_electrons_rms,
+                "analogGain": sensor.analog_gain,
+                "adcBits": sensor.adc_bits
+            },
+            "develop": {
+                "whiteBalance": rgb(development.white_balance),
+                "middleGrayIlluminanceSeconds": development.middle_gray_illuminance_seconds,
+                "exposureEV": development.develop_exposure_ev,
+                "demosaicAuthority": "Edge-directed"
+            },
+            "cameraPose": {
+                "position": [camera.position.x, camera.position.y, camera.position.z],
+                "quaternion": [camera.rotation.x, camera.rotation.y, camera.rotation.z, camera.rotation.w]
+            },
+            "screenPose": {
+                "position": [screen.translation.x, screen.translation.y, screen.translation.z],
+                "quaternion": [screen.rotation.x, screen.rotation.y, screen.rotation.z, screen.rotation.w]
+            }
+        },
+        "screen": {"storedAmount": optics.panel_character_strength, "bypassed": false},
+        "stages": stages
+    }))
 }
 
 fn write_native_png(path: &Path, frame: &NativeExportFrame) -> Result<(), String> {
