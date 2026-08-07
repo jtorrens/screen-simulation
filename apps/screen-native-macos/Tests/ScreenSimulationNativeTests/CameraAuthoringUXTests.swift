@@ -39,6 +39,19 @@ import Testing
     #expect(authored.shutterMotion.temporalSamples > 0)
     #expect(authored.shutterMotion.openOffsetNumerator < 0)
     #expect(authored.shutterMotion.closeOffsetNumerator > 0)
+
+    let selection = try PhysicalFrameSelection(
+        frameIndex: 17,
+        timeNumerator: 17,
+        timeDenominator: 25
+    )
+    let orchestration = try authored.orchestration(for: selection)
+    let openSeconds = Double(orchestration.shutter.open.numerator)
+        / Double(orchestration.shutter.open.denominator)
+    let closeSeconds = Double(orchestration.shutter.close.numerator)
+        / Double(orchestration.shutter.close.denominator)
+    #expect(openSeconds < closeSeconds)
+    #expect(orchestration.cameraPose.position.z == Float(authored.cameraPose.position[2]))
 }
 
 @Test func modelPreviewExposesTimelineEditableZoomAndSelectedQualityFrameExport() throws {
@@ -52,4 +65,33 @@ import Testing
     #expect(text.contains("model.renderCurrentFrame()"))
     #expect(text.contains("NativeTimelineView("))
     #expect(text.contains("Divider()\n            transport\n            Divider()"))
+}
+
+@Test @MainActor func capturePresetAndCameraPoseInvalidateTheInteractivePreview() throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectModelDevice(device, coverGlass: cover)
+
+    let initialRevision = workspace.physicalModel.parameterRevision
+    let iphone = try #require(workspace.capturePresets.first { $0.name.contains("iPhone 16e") })
+    workspace.selectCapturePreset(iphone, undoManager: nil)
+    #expect(workspace.physicalModel.parameterRevision == initialRevision + 1)
+
+    let presetRevision = workspace.physicalModel.parameterRevision
+    workspace.updatePhysicalAuthoring(undoManager: nil) {
+        $0.cameraPose.position[2] = 0.5
+    }
+    #expect(workspace.physicalModel.parameterRevision == presetRevision + 1)
+
+    let state = try #require(workspace.physicalAuthoringState)
+    let selection = try PhysicalFrameSelection(
+        frameIndex: 3,
+        timeNumerator: 3,
+        timeDenominator: 24
+    )
+    let orchestration = try state.orchestration(for: selection)
+    #expect(orchestration.cameraPose.position.z == 0.5)
 }

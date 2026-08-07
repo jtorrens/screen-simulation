@@ -250,12 +250,43 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         numerator: Int64,
         denominator: UInt32
     ) throws -> PhysicalRationalTime {
-        let (framePart, a) = frame.timeNumerator.multipliedReportingOverflow(by: Int64(denominator))
-        let (offsetPart, b) = numerator.multipliedReportingOverflow(by: Int64(frame.timeDenominator))
+        // Add the two rationals through their least common denominator. Capture
+        // presets commonly author shutter/readout values against a 1 GHz clock;
+        // multiplying that denominator directly by 24/25/30 fps overflowed the
+        // UInt32 ABI denominator and left the previous preview frame visible.
+        let reduction = gcd(numerator.magnitude, UInt64(denominator))
+        let reducedNumerator = numerator / Int64(reduction)
+        let reducedDenominator = denominator / UInt32(reduction)
+        let common = UInt32(gcd(
+            UInt64(frame.timeDenominator),
+            UInt64(reducedDenominator)
+        ))
+        let frameMultiplier = reducedDenominator / common
+        let offsetMultiplier = frame.timeDenominator / common
+        let (framePart, a) = frame.timeNumerator.multipliedReportingOverflow(
+            by: Int64(frameMultiplier)
+        )
+        let (offsetPart, b) = reducedNumerator.multipliedReportingOverflow(
+            by: Int64(offsetMultiplier)
+        )
         let (sum, c) = framePart.addingReportingOverflow(offsetPart)
-        let (resolvedDenominator, d) = frame.timeDenominator.multipliedReportingOverflow(by: denominator)
-        guard !a, !b, !c, !d else { throw PhysicalContractError.invalidFrameTime }
-        return try PhysicalRationalTime(numerator: sum, denominator: resolvedDenominator)
+        let resolvedDenominator = UInt64(frame.timeDenominator) * UInt64(frameMultiplier)
+        guard !a, !b, !c, resolvedDenominator <= UInt64(UInt32.max) else {
+            throw PhysicalContractError.invalidFrameTime
+        }
+        return try PhysicalRationalTime(
+            numerator: sum,
+            denominator: UInt32(resolvedDenominator)
+        )
+    }
+
+    private func gcd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        var a = lhs
+        var b = rhs
+        while b != 0 {
+            (a, b) = (b, a % b)
+        }
+        return a
     }
 }
 
