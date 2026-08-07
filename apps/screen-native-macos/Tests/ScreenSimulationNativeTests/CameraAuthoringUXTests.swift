@@ -79,6 +79,18 @@ import Testing
     let iphone = try #require(workspace.capturePresets.first { $0.name.contains("iPhone 16e") })
     workspace.selectCapturePreset(iphone, undoManager: nil)
     #expect(workspace.physicalModel.parameterRevision == initialRevision + 1)
+    #expect(workspace.modelPreviewSurfaceAspect == 8_064.0 / 6_048.0)
+    #expect(workspace.modelNativeOutputDescription == "Captura 8064×6048")
+
+    let arri = try #require(workspace.capturePresets.first { $0.name.contains("ARRI") })
+    workspace.selectCapturePreset(arri, undoManager: nil)
+    let arriSensor = arri.parameters.sensor
+    #expect(workspace.modelPreviewSurfaceAspect
+        == Double(arriSensor.native_width) / Double(arriSensor.native_height))
+    #expect(workspace.modelNativeOutputDescription
+        == "Captura \(arriSensor.native_width)×\(arriSensor.native_height)")
+
+    workspace.selectCapturePreset(iphone, undoManager: nil)
 
     let presetRevision = workspace.physicalModel.parameterRevision
     workspace.updatePhysicalAuthoring(undoManager: nil) {

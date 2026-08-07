@@ -1538,8 +1538,8 @@ struct ContentView: View {
             Button("Renderizar fotograma", action: model.renderSelectedPhysicalFrameNative)
                 .help("Evaluar explícitamente el fotograma seleccionado a resolución nativa")
                 .accessibilityLabel("Renderizar fotograma físico Native")
-            if let device = model.resolvedDevice?.definition {
-                Text("Nativa · Panel \(device.nativeWidth * 3)×\(device.nativeHeight * 3)")
+            if let output = model.modelNativeOutputDescription {
+                Text("Nativa · \(output)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

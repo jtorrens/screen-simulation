@@ -137,10 +137,32 @@ final class WorkspaceModel: ObservableObject {
         case .panelEmission, .subpixelRadiance, .panelLightSpread, .coverEnvironment:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return Double(device.nativeWidth) / Double(device.nativeHeight)
-        case .sourceACEScg, .deviceSignal, .sceneGeometryLens, .shutterMotion,
-             .sensorNoise, .rawMosaic, .developedACEScg:
+        case .sensorNoise, .rawMosaic, .developedACEScg:
+            guard let sensor = physicalAuthoringState?.sensor,
+                  sensor.nativeWidth > 0, sensor.nativeHeight > 0
+            else { return nil }
+            // The selected capture preset is authoritative for the camera-result
+            // viewport. Do not retain the aspect of the previously published frame
+            // while the replacement physical job is being evaluated.
+            return Double(sensor.nativeWidth) / Double(sensor.nativeHeight)
+        case .sourceACEScg, .deviceSignal, .sceneGeometryLens, .shutterMotion:
             guard let metalFrame, metalFrame.height > 0 else { return nil }
             return Double(metalFrame.width) / Double(metalFrame.height)
+        }
+    }
+
+    var modelNativeOutputDescription: String? {
+        switch requestedPhysicalIntermediate {
+        case .sensorNoise, .rawMosaic, .developedACEScg:
+            guard let sensor = physicalAuthoringState?.sensor else { return nil }
+            return "Captura \(sensor.nativeWidth)×\(sensor.nativeHeight)"
+        case .panelEmission, .subpixelRadiance, .panelLightSpread, .coverEnvironment,
+             .sceneGeometryLens, .shutterMotion:
+            guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
+            return "Panel \(device.nativeWidth * 3)×\(device.nativeHeight * 3)"
+        case .sourceACEScg, .deviceSignal:
+            guard let metalFrame else { return nil }
+            return "Fuente \(metalFrame.width)×\(metalFrame.height)"
         }
     }
 
