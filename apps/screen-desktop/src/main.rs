@@ -2454,7 +2454,11 @@ fn encode_native_png(mut writer: impl Write, frame: &NativeExportFrame) -> Resul
     });
     let metadata = serde_json::to_string(&document).map_err(|error| error.to_string())?;
     let mut encoded = Vec::new();
-    let mut encoder = png::Encoder::new(&mut encoded, u32::from(frame.width), u32::from(frame.height));
+    let mut encoder = png::Encoder::new(
+        &mut encoded,
+        u32::from(frame.width),
+        u32::from(frame.height),
+    );
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     if frame.transform == CameraOutputTransform::SrgbSdr100 {
@@ -2646,9 +2650,17 @@ fn legacy_physical_settings(
             },
         ),
     };
-    let half = capture.duration.as_seconds() * 0.5;
-    let shutter_denominator = 1_000_000_000_u32;
-    let half_numerator = (half * f64::from(shutter_denominator)).round() as i64;
+    // The native ABI schedules rolling shutter per output row.  Do not export
+    // a nanosecond shutter interval beside a millisecond readout: their
+    // otherwise exact combination can exceed the ABI rational denominator
+    // limit once it is divided by the sensor height.  Author both values on a
+    // shared, exact timebase instead.
+    let shutter_timing = legacy_canonical_shutter_timing(
+        capture.duration,
+        readout.1,
+        capture.frame_rate,
+        u32::from(sensor.native_height),
+    )?;
     let stages = json!([
         {"stageID": 0x101, "kind": "continuous", "storedAmount": optics.panel_character_strength, "bypassed": false},
         {"stageID": 0x102, "kind": "continuous", "storedAmount": optics.panel_character_strength, "bypassed": false},
@@ -2742,15 +2754,15 @@ fn legacy_physical_settings(
             "shutterMotion": {
                 "temporalSamples": capture.temporal_samples,
                 "readoutKind": readout.0,
-                "readoutDurationNumerator": readout.1.numerator(),
-                "readoutDurationDenominator": readout.1.denominator(),
+                "readoutDurationNumerator": shutter_timing.readout_numerator,
+                "readoutDurationDenominator": shutter_timing.timebase,
                 "readoutDirection": readout.2,
                 "neutralDensityStops": capture.neutral_density_stops,
                 "noiseSeed": capture.noise_seed,
-                "openOffsetNumerator": -half_numerator,
-                "openOffsetDenominator": shutter_denominator,
-                "closeOffsetNumerator": half_numerator,
-                "closeOffsetDenominator": shutter_denominator
+                "openOffsetNumerator": -shutter_timing.half_exposure_numerator,
+                "openOffsetDenominator": shutter_timing.timebase,
+                "closeOffsetNumerator": shutter_timing.half_exposure_numerator,
+                "closeOffsetDenominator": shutter_timing.timebase
             },
             "sensor": {
                 "nativeWidth": sensor.native_width,
@@ -2782,6 +2794,78 @@ fn legacy_physical_settings(
         "screen": {"storedAmount": optics.panel_character_strength, "bypassed": false},
         "stages": stages
     }))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LegacyCanonicalShutterTiming {
+    /// Shared denominator for shutter offsets and rolling readout.
+    timebase: u32,
+    half_exposure_numerator: i64,
+    readout_numerator: i64,
+}
+
+/// Emits an exact common timebase that stays representable after the native
+/// rolling scheduler subdivides readout by `2 * sensor_height` rows.
+fn legacy_canonical_shutter_timing(
+    shutter_duration: RationalTime,
+    readout: RationalTime,
+    frame_rate: FrameRate,
+    sensor_height: u32,
+) -> Result<LegacyCanonicalShutterTiming, String> {
+    if sensor_height == 0 {
+        return Err("legacy export requires a non-zero sensor height".to_owned());
+    }
+    let half_exposure = shutter_duration
+        .checked_mul_ratio(1, 2)
+        .map_err(|error| error.to_string())?;
+    if half_exposure.numerator() <= 0 || readout.numerator() < 0 {
+        return Err("legacy export requires non-negative shutter timing".to_owned());
+    }
+    // The absolute shutter bounds are frame time plus these offsets.  Include
+    // the frame-time denominator too, so exporting a non-zero frame cannot
+    // introduce a second incompatible clock at import time.
+    let timebase = least_common_timebase(
+        least_common_timebase(half_exposure.denominator(), readout.denominator())?,
+        frame_rate.numerator(),
+    )?;
+    let row_denominator = u64::from(timebase)
+        .checked_mul(u64::from(sensor_height))
+        .and_then(|value| value.checked_mul(2))
+        .ok_or_else(|| "legacy shutter timebase overflows rolling rows".to_owned())?;
+    if row_denominator > u64::from(u32::MAX) {
+        return Err(format!(
+            "legacy shutter timebase {timebase} cannot represent rolling readout for {sensor_height} rows"
+        ));
+    }
+    let half_exposure_numerator = half_exposure
+        .numerator()
+        .checked_mul(i64::from(timebase / half_exposure.denominator()))
+        .ok_or_else(|| "legacy shutter numerator overflows canonical timebase".to_owned())?;
+    let readout_numerator = readout
+        .numerator()
+        .checked_mul(i64::from(timebase / readout.denominator()))
+        .ok_or_else(|| "legacy readout numerator overflows canonical timebase".to_owned())?;
+    Ok(LegacyCanonicalShutterTiming {
+        timebase,
+        half_exposure_numerator,
+        readout_numerator,
+    })
+}
+
+fn least_common_timebase(left: u32, right: u32) -> Result<u32, String> {
+    let divisor = gcd_u64(u64::from(left), u64::from(right));
+    let value = u64::from(left)
+        .checked_div(divisor)
+        .and_then(|reduced| reduced.checked_mul(u64::from(right)))
+        .ok_or_else(|| "legacy shutter timebase overflows".to_owned())?;
+    u32::try_from(value).map_err(|_| "legacy shutter timebase exceeds ABI range".to_owned())
+}
+
+fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    left.max(1)
 }
 
 fn write_native_png(path: &Path, frame: &NativeExportFrame) -> Result<(), String> {
@@ -3602,6 +3686,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod interaction_tests {
     use super::*;
+
+    #[test]
+    fn legacy_export_shutter_uses_a_shared_row_safe_timebase() {
+        // 180° at 24 fps is 1/48 s.  A 12 ms rolling readout must share
+        // the exact clock with its +/- half-exposure offsets before the
+        // native scheduler divides it across the 6,048 sensor rows.
+        let timing = legacy_canonical_shutter_timing(
+            RationalTime::new(1, 48).unwrap(),
+            RationalTime::new(12, 1_000).unwrap(),
+            FrameRate::new(24, 1).unwrap(),
+            6_048,
+        )
+        .unwrap();
+
+        assert_eq!(timing.timebase, 12_000);
+        assert_eq!(timing.half_exposure_numerator, 125);
+        assert_eq!(timing.readout_numerator, 144);
+        assert!(u64::from(timing.timebase) * 6_048 * 2 <= u64::from(u32::MAX));
+    }
+
+    #[test]
+    fn legacy_export_shutter_schedule_is_consumable_by_native_rolling_scheduler() {
+        // This is the shape exported by the legacy application for the
+        // reference capture: 1/288 second exposure, 12 ms top-to-bottom
+        // readout, and eight temporal samples on a 6,048 row sensor.  Test
+        // the actual downstream scheduler rather than only its denominators.
+        let timing = legacy_canonical_shutter_timing(
+            RationalTime::new(1, 288).unwrap(),
+            RationalTime::new(12, 1_000).unwrap(),
+            FrameRate::new(25, 1).unwrap(),
+            6_048,
+        )
+        .unwrap();
+        let open = RationalTime::new(-timing.half_exposure_numerator, timing.timebase).unwrap();
+        let close = RationalTime::new(timing.half_exposure_numerator, timing.timebase).unwrap();
+        let duration = close.checked_sub(open).unwrap();
+        let readout = RationalTime::new(timing.readout_numerator, timing.timebase).unwrap();
+
+        // Mirror the exact arithmetic used by the downstream row scheduler
+        // and its eight-way shutter quadrature.  The legacy branch predates
+        // that public helper, so exercising these operations here is the
+        // direct compatibility proof.
+        for row in 0_i64..6_048 {
+            let row_numerator = row * 2 + 1 - 6_048;
+            let row_center = readout.checked_mul_ratio(row_numerator, 12_096).unwrap();
+            let half = duration.checked_mul_ratio(1, 2).unwrap();
+            let shutter_open = row_center.checked_sub(half).unwrap();
+            for sample in 0_i64..=8 {
+                let boundary = shutter_open
+                    .checked_add(duration.checked_mul_ratio(sample, 8).unwrap())
+                    .unwrap();
+                assert!(boundary.denominator() > 0);
+            }
+        }
+    }
 
     fn editor() -> CameraEditor {
         CameraEditor::new(
