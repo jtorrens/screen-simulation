@@ -2804,8 +2804,8 @@ struct LegacyCanonicalShutterTiming {
     readout_numerator: i64,
 }
 
-/// Emits an exact common timebase that stays representable after the native
-/// rolling scheduler subdivides readout by `2 * sensor_height` rows.
+/// Emits an exact common timebase that stays representable by the native
+/// rolling scheduler.
 fn legacy_canonical_shutter_timing(
     shutter_duration: RationalTime,
     readout: RationalTime,
@@ -2828,15 +2828,6 @@ fn legacy_canonical_shutter_timing(
         least_common_timebase(half_exposure.denominator(), readout.denominator())?,
         frame_rate.numerator(),
     )?;
-    let row_denominator = u64::from(timebase)
-        .checked_mul(u64::from(sensor_height))
-        .and_then(|value| value.checked_mul(2))
-        .ok_or_else(|| "legacy shutter timebase overflows rolling rows".to_owned())?;
-    if row_denominator > u64::from(u32::MAX) {
-        return Err(format!(
-            "legacy shutter timebase {timebase} cannot represent rolling readout for {sensor_height} rows"
-        ));
-    }
     let half_exposure_numerator = half_exposure
         .numerator()
         .checked_mul(i64::from(timebase / half_exposure.denominator()))
@@ -2845,11 +2836,58 @@ fn legacy_canonical_shutter_timing(
         .numerator()
         .checked_mul(i64::from(timebase / readout.denominator()))
         .ok_or_else(|| "legacy readout numerator overflows canonical timebase".to_owned())?;
-    Ok(LegacyCanonicalShutterTiming {
+    let timing = LegacyCanonicalShutterTiming {
         timebase,
         half_exposure_numerator,
         readout_numerator,
-    })
+    };
+    legacy_shutter_schedule_is_representable(timing, sensor_height, 64)?;
+    Ok(timing)
+}
+
+/// `RationalTime` reduces every operation.  Checking `timebase * rows` is
+/// therefore too conservative: a common export timebase can be large while
+/// the actual per-row fractions remain within the ABI's UInt32 denominator.
+/// Validate the exact downstream arithmetic instead of rejecting a valid
+/// capture before it renders.
+fn legacy_shutter_schedule_is_representable(
+    timing: LegacyCanonicalShutterTiming,
+    sensor_height: u32,
+    temporal_samples: u16,
+) -> Result<(), String> {
+    let open = RationalTime::new(-timing.half_exposure_numerator, timing.timebase)
+        .map_err(|error| error.to_string())?;
+    let close = RationalTime::new(timing.half_exposure_numerator, timing.timebase)
+        .map_err(|error| error.to_string())?;
+    let duration = close.checked_sub(open).map_err(|error| error.to_string())?;
+    let readout = RationalTime::new(timing.readout_numerator, timing.timebase)
+        .map_err(|error| error.to_string())?;
+    let row_denominator = sensor_height
+        .checked_mul(2)
+        .ok_or_else(|| "legacy shutter row count overflows".to_owned())?;
+    for row in 0..sensor_height {
+        let row_numerator = i64::from(row) * 2 + 1 - i64::from(sensor_height);
+        let row_center = readout
+            .checked_mul_ratio(row_numerator, row_denominator)
+            .map_err(|error| error.to_string())?;
+        let shutter_open = row_center
+            .checked_sub(
+                duration
+                    .checked_mul_ratio(1, 2)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        for sample in 0..=temporal_samples {
+            shutter_open
+                .checked_add(
+                    duration
+                        .checked_mul_ratio(i64::from(sample), u32::from(temporal_samples))
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn least_common_timebase(left: u32, right: u32) -> Result<u32, String> {
@@ -3740,6 +3778,23 @@ mod interaction_tests {
                 assert!(boundary.denominator() > 0);
             }
         }
+    }
+
+    #[test]
+    fn legacy_export_accepts_a_large_common_timebase_when_rows_reduce_exactly() {
+        // 1/72 s exposure contributes a 1/144 s half-exposure.  Combined
+        // with the legacy microsecond readout clock this produces the 9 MHz
+        // timebase seen in real exports.  It is valid: every row/sample
+        // fraction reduces below the ABI denominator limit.
+        let timing = legacy_canonical_shutter_timing(
+            RationalTime::new(1, 72).unwrap(),
+            RationalTime::new(12_000, 1_000_000).unwrap(),
+            FrameRate::new(25, 1).unwrap(),
+            6_048,
+        )
+        .unwrap();
+
+        assert_eq!(timing.timebase, 9_000_000);
     }
 
     fn editor() -> CameraEditor {
