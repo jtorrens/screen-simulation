@@ -75,6 +75,15 @@ struct PhysicalPipelineResolvedState {
         develop.middle_gray_illuminance_seconds = 0.18
         develop.develop_exposure_ev = 0
 
+        var radiometric = ScreenCameraRadiometricCalibrationV2()
+        radiometric.abi_version = version
+        radiometric.base_exposure_index = 100
+        radiometric.reference_lambertian_reflectance = 0.18
+        radiometric.reference_illuminance_lux = 100
+        radiometric.reference_t_stop = 4
+        radiometric.reference_shutter_seconds = 1.0 / 48.0
+        radiometric.effective_sensor_exposure_scale = 1
+
         var parameters = ScreenPhysicalPipelineParametersV2()
         parameters.abi_version = version
         parameters.cover = try coverGlass.bridgeParameters()
@@ -83,6 +92,7 @@ struct PhysicalPipelineResolvedState {
         parameters.shutter_motion = shutter
         parameters.sensor_noise = sensor
         parameters.raw_develop = develop
+        parameters.radiometric_calibration = radiometric
         return Self(parameters: parameters, coverGlassID: coverGlass.id)
     }
 

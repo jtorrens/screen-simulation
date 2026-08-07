@@ -16,10 +16,10 @@ use metal::foreign_types::{ForeignType, ForeignTypeRef};
 #[cfg(target_os = "macos")]
 use metal::{MTLTexture, Texture, TextureRef};
 use screen_application::{
-    CAPTURE_DEVICE_PRESETS, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
-    PhysicalPipelineSnapshot, ProceduralTestPattern, RasterPlacement,
-    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, RollingDirection,
-    SensorReadout, diagnostic_signal, physical_shutter_schedule,
+    CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, PhysicalIntermediate,
+    PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, ProceduralTestPattern,
+    RasterPlacement, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
+    RollingDirection, SensorReadout, diagnostic_signal, physical_shutter_schedule,
 };
 use screen_camera::CameraDevelopment;
 use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
@@ -62,6 +62,7 @@ pub struct ScreenCapturePresetParametersV2 {
     default_temporal_samples: u16,
     optics_authority: u16,
     default_readout_duration_milliseconds: f32,
+    radiometric_calibration: ScreenCameraRadiometricCalibrationV2,
 }
 
 pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 2;
@@ -910,6 +911,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         shutter_motion: pipeline.shutter_motion,
         shutter_motion_amount: contributions[8].amount,
         sensor: pipeline.sensor,
+        radiometric_calibration: pipeline.radiometric_calibration,
         sensor_enabled: contributions[9].discrete_enabled,
         sensor_noise_amount: contributions[10].amount,
         development: pipeline.development,
@@ -1520,6 +1522,18 @@ pub struct ScreenRawDevelopParametersV2 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct ScreenCameraRadiometricCalibrationV2 {
+    abi_version: u32,
+    base_exposure_index: f32,
+    reference_lambertian_reflectance: f32,
+    reference_illuminance_lux: f32,
+    reference_t_stop: f32,
+    reference_shutter_seconds: f32,
+    effective_sensor_exposure_scale: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ScreenPhysicalPipelineParametersV2 {
     abi_version: u32,
     cover: ScreenCoverGlassParametersV2,
@@ -1528,6 +1542,7 @@ pub struct ScreenPhysicalPipelineParametersV2 {
     shutter_motion: ScreenShutterMotionParametersV2,
     sensor_noise: ScreenSensorNoiseParametersV2,
     raw_develop: ScreenRawDevelopParametersV2,
+    radiometric_calibration: ScreenCameraRadiometricCalibrationV2,
 }
 
 pub struct ScreenPhysicalPipelineSnapshot {
@@ -1537,6 +1552,7 @@ pub struct ScreenPhysicalPipelineSnapshot {
     shutter_motion: ResolvedShutterMotionSnapshot,
     sensor: SensorProfile,
     development: CameraDevelopment,
+    radiometric_calibration: CameraRadiometricCalibration,
 }
 
 pub struct ScreenCoverGlassProfile {
@@ -1652,6 +1668,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         parameters.shutter_motion.abi_version,
         parameters.sensor_noise.abi_version,
         parameters.raw_develop.abi_version,
+        parameters.radiometric_calibration.abi_version,
     ]
     .into_iter()
     .any(|version| version != SCREEN_PHYSICAL_FRAME_ABI_VERSION)
@@ -1863,9 +1880,20 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         middle_gray_illuminance_seconds: parameters.raw_develop.middle_gray_illuminance_seconds,
         develop_exposure_ev: parameters.raw_develop.develop_exposure_ev,
     };
+    let calibration = parameters.radiometric_calibration;
+    let radiometric_calibration = CameraRadiometricCalibration {
+        base_exposure_index: calibration.base_exposure_index,
+        reference_lambertian_reflectance: calibration.reference_lambertian_reflectance,
+        reference_illuminance_lux: calibration.reference_illuminance_lux,
+        reference_t_stop: calibration.reference_t_stop,
+        reference_shutter_seconds: calibration.reference_shutter_seconds,
+        effective_sensor_exposure_scale: calibration.effective_sensor_exposure_scale,
+        provenance: "Snapshot V2; authored from the selected camera calibration.",
+    };
     if cover.validate().is_err()
         || environment.validate().is_err()
         || development.validate().is_err()
+        || radiometric_calibration.validate().is_err()
     {
         unsafe {
             set_error(
@@ -1883,6 +1911,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         shutter_motion,
         sensor,
         development,
+        radiometric_calibration,
     }))
 }
 
@@ -2020,6 +2049,19 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
                 screen_application::CaptureOpticsAuthority::IntegratedFixedLens => 1,
             },
             default_readout_duration_milliseconds: preset.default_readout_duration_milliseconds,
+            radiometric_calibration: ScreenCameraRadiometricCalibrationV2 {
+                abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+                base_exposure_index: preset.radiometric_calibration.base_exposure_index,
+                reference_lambertian_reflectance: preset
+                    .radiometric_calibration
+                    .reference_lambertian_reflectance,
+                reference_illuminance_lux: preset.radiometric_calibration.reference_illuminance_lux,
+                reference_t_stop: preset.radiometric_calibration.reference_t_stop,
+                reference_shutter_seconds: preset.radiometric_calibration.reference_shutter_seconds,
+                effective_sensor_exposure_scale: preset
+                    .radiometric_calibration
+                    .effective_sensor_exposure_scale,
+            },
         };
     }
     true
@@ -2561,6 +2603,15 @@ mod tests {
                 white_balance: [1.0; 3],
                 middle_gray_illuminance_seconds: 0.18,
                 develop_exposure_ev: 0.0,
+            },
+            radiometric_calibration: ScreenCameraRadiometricCalibrationV2 {
+                abi_version: version,
+                base_exposure_index: 100.0,
+                reference_lambertian_reflectance: 0.18,
+                reference_illuminance_lux: 100.0,
+                reference_t_stop: 4.0,
+                reference_shutter_seconds: 1.0 / 48.0,
+                effective_sensor_exposure_scale: 1.0,
             },
         }
     }

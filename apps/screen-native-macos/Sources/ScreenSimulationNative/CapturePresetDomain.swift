@@ -48,6 +48,15 @@ struct CapturePresetDefinition: Identifiable {
         state.sensor.readNoiseElectronsRMS = Double(sensor.read_noise_electrons_rms)
         state.sensor.analogGain = Double(sensor.analog_gain)
         state.sensor.adcBits = sensor.adc_bits
+        let radiometric = parameters.radiometric_calibration
+        state.radiometricCalibration = .init(
+            baseExposureIndex: Double(radiometric.base_exposure_index),
+            referenceLambertianReflectance: Double(radiometric.reference_lambertian_reflectance),
+            referenceIlluminanceLux: Double(radiometric.reference_illuminance_lux),
+            referenceTStop: Double(radiometric.reference_t_stop),
+            referenceShutterSeconds: Double(radiometric.reference_shutter_seconds),
+            effectiveSensorExposureScale: Double(radiometric.effective_sensor_exposure_scale)
+        )
         state.develop.middleGrayIlluminanceSeconds = Double(parameters.middle_gray_illuminance_seconds)
         state.shutterMotion.temporalSamples = parameters.default_temporal_samples
         let fps = max(frameRate, 1)

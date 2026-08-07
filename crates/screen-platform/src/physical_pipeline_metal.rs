@@ -7,8 +7,8 @@ use metal::{
     MTLStorageMode, MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
 };
 use screen_application::{
-    PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
-    physical_row_temporal_gain,
+    CameraRadiometricCalibration, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
+    RasterPlacement, physical_row_temporal_gain,
 };
 use screen_cover::EnvironmentPattern;
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
@@ -248,12 +248,25 @@ impl MetalPhysicalPipeline {
             .sensor
             .validate()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        plan.radiometric_calibration
+            .validate()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let panel_white_nits = plan
             .panel
             .evaluator()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?
             .device_stage_parameters()
             .white_level_nits;
+        let (camera, _) = plan
+            .scene_geometry_lens
+            .resolve(
+                plan.camera_position,
+                plan.camera_rotation,
+                plan.screen_translation,
+                plan.screen_rotation,
+                plan.lens_amount,
+            )
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let duration_seconds = plan
             .shutter_close
             .checked_sub(plan.shutter_open)
@@ -280,7 +293,20 @@ impl MetalPhysicalPipeline {
             read_noise_electrons_rms: sensor.read_noise_electrons_rms,
             analog_gain: sensor.analog_gain,
             noise_amount: plan.sensor_noise_amount,
-            input_luminance_scale: [panel_white_nits, 0.0, 0.0, 0.0],
+            // The physical pipeline has already applied shutter integration.
+            // This is the explicit Lambertian cd/m² → sensor-plane lux
+            // conversion π/(4T²), followed by the camera's calibrated
+            // sensor-domain scale. T-stop includes transmission once.
+            input_luminance_scale: [
+                panel_white_nits
+                    * CameraRadiometricCalibration::panel_luminance_to_sensor_plane_lux(
+                        camera.f_stop,
+                    )
+                    * plan.radiometric_calibration.effective_sensor_exposure_scale,
+                0.0,
+                0.0,
+                0.0,
+            ],
             acescg_to_sensor_0: pad(sensor.acescg_to_sensor[0]),
             acescg_to_sensor_1: pad(sensor.acescg_to_sensor[1]),
             acescg_to_sensor_2: pad(sensor.acescg_to_sensor[2]),
@@ -1172,6 +1198,8 @@ mod tests {
                 },
                 shutter_motion_amount: 0.0,
                 sensor: screen_sensor::SensorProfile::REFERENCE,
+                radiometric_calibration:
+                    screen_application::CameraRadiometricCalibration::REFERENCE,
                 sensor_enabled: false,
                 sensor_noise_amount: 0.0,
                 development: screen_camera::CameraDevelopment::NEUTRAL,
@@ -1359,7 +1387,10 @@ mod tests {
                     .zip(&cpu.acescg)
                     .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                     .fold(0.0_f32, f32::max);
-                assert!(maximum <= 2.0e-3, "cover CPU/Metal deviation {maximum}");
+                assert!(
+                    maximum <= 2.0e-3,
+                    "cover CPU/Metal deviation {maximum}; cover={cover:?}; environment={environment:?}"
+                );
             }
         }
     }
@@ -1648,7 +1679,11 @@ mod tests {
                 .zip(&cpu.acescg)
                 .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                 .fold(0.0_f32, f32::max);
-            assert!(maximum <= 3.0e-4, "developed CPU/Metal deviation {maximum}");
+            // The calibrated nits-to-sensor boundary raises the meaningful
+            // developed code range while preserving the same GPU arithmetic;
+            // keep an explicit absolute tolerance for the larger physical
+            // domain rather than silently comparing a normalized surrogate.
+            assert!(maximum <= 2.5e-3, "developed CPU/Metal deviation {maximum}");
         }
     }
 }

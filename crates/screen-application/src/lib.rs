@@ -49,6 +49,111 @@ pub enum CaptureOpticsAuthority {
     IntegratedFixedLens,
 }
 
+/// Explicit bridge from scene-referred photometry to the effective exposure
+/// units accepted by a [`SensorProfile`].
+///
+/// `SensorProfile::saturation_illuminance_seconds` is intentionally an
+/// effective, calibratable quantity: manufacturers generally do not publish
+/// the quantum efficiency, microlens transmission and analogue gain needed to
+/// derive it from first principles.  This profile anchors that approximation to
+/// a reproducible ISO-style scene instead of treating panel nits as sensor
+/// lux-seconds directly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraRadiometricCalibration {
+    /// ISO/EI at which this calibration was established.
+    pub base_exposure_index: f32,
+    /// Reference Lambertian card reflectance (normally 0.18).
+    pub reference_lambertian_reflectance: f32,
+    /// Illuminance incident on the reference card, in lux.
+    pub reference_illuminance_lux: f32,
+    /// T-stop used to establish the reference exposure.
+    pub reference_t_stop: f32,
+    /// Exposure duration for the reference capture, in seconds.
+    pub reference_shutter_seconds: f32,
+    /// Multiplicative conversion from physical sensor-plane lux·s to the
+    /// profile's effective `saturation_illuminance_seconds` domain.
+    pub effective_sensor_exposure_scale: f32,
+    /// Human-readable provenance/limitation for the effective constant.
+    pub provenance: &'static str,
+}
+
+impl CameraRadiometricCalibration {
+    /// Neutral reference used by low-level physical fixtures only. Product
+    /// capture presets must always provide their own documented calibration.
+    pub const REFERENCE: Self = Self {
+        base_exposure_index: 100.0,
+        reference_lambertian_reflectance: 0.18,
+        reference_illuminance_lux: 100.0,
+        reference_t_stop: 4.0,
+        reference_shutter_seconds: 1.0 / 48.0,
+        effective_sensor_exposure_scale: 1.0,
+        provenance: "Test-only neutral radiometric reference.",
+    };
+
+    /// Lambertian card luminance, in cd/m², for the declared reference scene.
+    pub fn reference_card_luminance_nits(self) -> f32 {
+        self.reference_illuminance_lux * self.reference_lambertian_reflectance
+            / core::f32::consts::PI
+    }
+
+    /// Irradiance-time at the sensor plane for an ideal lossless T-stop.
+    pub fn reference_sensor_plane_lux_seconds(self) -> f32 {
+        self.reference_illuminance_lux * self.reference_lambertian_reflectance
+            / (4.0 * self.reference_t_stop * self.reference_t_stop)
+            * self.reference_shutter_seconds
+    }
+
+    /// Converts a Lambertian display luminance in cd/m² to ideal sensor-plane
+    /// illuminance in lux for the active T-stop. T-stop, rather than f-number,
+    /// is intentional: lens transmission belongs here exactly once.
+    pub fn panel_luminance_to_sensor_plane_lux(active_t_stop: f32) -> f32 {
+        core::f32::consts::PI / (4.0 * active_t_stop * active_t_stop)
+    }
+
+    /// The effective sensor-domain exposure that the calibration declares for
+    /// its ISO-style reference card.
+    pub fn reference_effective_sensor_exposure(self) -> f32 {
+        self.reference_sensor_plane_lux_seconds() * self.effective_sensor_exposure_scale
+    }
+
+    pub fn validate(self) -> Result<(), &'static str> {
+        if !self.base_exposure_index.is_finite() || self.base_exposure_index <= 0.0 {
+            return Err("radiometric base EI must be finite and positive");
+        }
+        if !self.reference_lambertian_reflectance.is_finite()
+            || !(0.0..=1.0).contains(&self.reference_lambertian_reflectance)
+            || self.reference_lambertian_reflectance == 0.0
+        {
+            return Err("radiometric Lambertian reflectance must be in (0, 1]");
+        }
+        for (name, value) in [
+            ("reference illuminance", self.reference_illuminance_lux),
+            ("reference T-stop", self.reference_t_stop),
+            ("reference shutter", self.reference_shutter_seconds),
+            (
+                "effective sensor exposure scale",
+                self.effective_sensor_exposure_scale,
+            ),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(match name {
+                    "reference illuminance" => {
+                        "radiometric reference illuminance must be finite and positive"
+                    }
+                    "reference T-stop" => {
+                        "radiometric reference T-stop must be finite and positive"
+                    }
+                    "reference shutter" => {
+                        "radiometric reference shutter must be finite and positive"
+                    }
+                    _ => "radiometric effective sensor exposure scale must be finite and positive",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CaptureDevicePreset {
     pub id: &'static str,
@@ -62,6 +167,7 @@ pub struct CaptureDevicePreset {
     pub f_stop: f32,
     pub reference_exposure_index: f32,
     pub middle_gray_illuminance_seconds_at_reference_ei: f32,
+    pub radiometric_calibration: CameraRadiometricCalibration,
     pub default_shutter_angle_degrees: f32,
     pub default_temporal_samples: u16,
     pub default_readout_duration_milliseconds: f32,
@@ -92,6 +198,19 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         f_stop: 4.0,
         reference_exposure_index: 800.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
+        radiometric_calibration: CameraRadiometricCalibration {
+            base_exposure_index: 800.0,
+            reference_lambertian_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_t_stop: 4.0,
+            reference_shutter_seconds: 1.0 / 48.0,
+            // Effective calibration constant: public ALEV geometry is known,
+            // but QE and analogue chain are not fully published.
+            // 0.0125 effective lux·s at EI 800 / 0.005859375 physical
+            // lux·s for the declared 18 % card, 100 lux, T4, 1/48 s anchor.
+            effective_sensor_exposure_scale: 2.133_333_4,
+            provenance: "Effective ISO-800 calibration anchored to 18% at 100 lux, T4, 1/48 s; public ALEV 4 geometry, sensor-chain constant is calibratable.",
+        },
         default_shutter_angle_degrees: 180.0,
         default_temporal_samples: 1,
         default_readout_duration_milliseconds: 7.8,
@@ -120,6 +239,19 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         f_stop: 1.64,
         reference_exposure_index: 100.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.1,
+        radiometric_calibration: CameraRadiometricCalibration {
+            base_exposure_index: 100.0,
+            reference_lambertian_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_t_stop: 1.64,
+            reference_shutter_seconds: 1.0 / 48.0,
+            // Integrated mobile sensor QE/ISP is not public; this remains an
+            // explicit calibratable effective constant, not a claimed spec.
+            // 0.1 effective lux·s at ISO 100 / 0.03484656 physical lux·s
+            // for the declared 18 % card, 100 lux, T1.64, 1/48 s anchor.
+            effective_sensor_exposure_scale: 2.868_906_7,
+            provenance: "Effective ISO-100 calibration anchored to 18% at 100 lux, T1.64, 1/48 s; integrated sensor-chain constant is calibratable.",
+        },
         default_shutter_angle_degrees: 30.0,
         default_temporal_samples: 1,
         default_readout_duration_milliseconds: 12.0,
@@ -204,6 +336,7 @@ pub struct PhysicalPipelineExecutionPlan {
     pub shutter_motion: ResolvedShutterMotionSnapshot,
     pub shutter_motion_amount: f32,
     pub sensor: SensorProfile,
+    pub radiometric_calibration: CameraRadiometricCalibration,
     pub sensor_enabled: bool,
     pub sensor_noise_amount: f32,
     pub development: CameraDevelopment,
@@ -476,6 +609,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             let mut continuous_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut average_device_code = DeviceRgb::BLACK;
             let mut ideal = [0.0_f32; 4];
+            // The cover is evaluated after aperture integration. Preserve the
+            // traced green-ray direction/cosine and per-channel lens
+            // irradiance instead of substituting a front-facing sample.
+            let mut cover_cosine = 0.0_f32;
+            let mut cover_direction = [0.0_f32; 3];
+            let mut cover_irradiance = [0.0_f32; 3];
+            let mut cover_samples = 0_u32;
             for sy in 0..side {
                 for sx in 0..side {
                     let minimum_uv = Vec2 {
@@ -503,6 +643,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         plan.panel.active_height,
                         viewport_ndc,
                     )[(sy * side + sx) as usize % screen_geometry::APERTURE_SAMPLE_COUNT];
+                    if let Some(direction) = optical.reflection_direction_local[1] {
+                        cover_cosine += optical.emission_cosine[1];
+                        cover_direction[0] += direction.x;
+                        cover_direction[1] += direction.y;
+                        cover_direction[2] += direction.z;
+                        cover_irradiance[0] += optical.irradiance_weight[0];
+                        cover_irradiance[1] += optical.irradiance_weight[1];
+                        cover_irradiance[2] += optical.irradiance_weight[2];
+                        cover_samples += 1;
+                    }
                     let field = (viewport_ndc.x * viewport_ndc.x + viewport_ndc.y * viewport_ndc.y)
                         .mul_add(0.5, 0.0)
                         .clamp(0.0, 1.0);
@@ -737,6 +887,24 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             let temporal_gain =
                 1.0 + plan.temporal_emission_amount * (resolved_temporal_gain - 1.0);
             let temporally_integrated = staged.map(|value| value * temporal_gain);
+            let reciprocal_cover = if cover_samples == 0 {
+                1.0
+            } else {
+                1.0 / cover_samples as f32
+            };
+            let direction_length = (cover_direction[0] * cover_direction[0]
+                + cover_direction[1] * cover_direction[1]
+                + cover_direction[2] * cover_direction[2])
+                .sqrt();
+            let reflection_direction_local = if direction_length > 1.0e-6 {
+                [
+                    cover_direction[0] / direction_length,
+                    cover_direction[1] / direction_length,
+                    cover_direction[2] / direction_length,
+                ]
+            } else {
+                [0.0, 0.0, 1.0]
+            };
             let covered = cover.evaluate(
                 LinearRgb::new(
                     temporally_integrated[0],
@@ -744,12 +912,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     temporally_integrated[2],
                 ),
                 CoverSurfaceSample {
-                    view_cosine: 1.0,
-                    reflection_direction_local: [0.0, 0.0, 1.0],
+                    view_cosine: (cover_cosine * reciprocal_cover).clamp(0.0, 1.0),
+                    reflection_direction_local,
                     lens_irradiance_weight: LinearRgb::new(
-                        1.0 / parameters.white_level_nits,
-                        1.0 / parameters.white_level_nits,
-                        1.0 / parameters.white_level_nits,
+                        cover_irradiance[0] * reciprocal_cover / parameters.white_level_nits,
+                        cover_irradiance[1] * reciprocal_cover / parameters.white_level_nits,
+                        cover_irradiance[2] * reciprocal_cover / parameters.white_level_nits,
                     ),
                 },
             );
@@ -801,6 +969,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         )
     {
         let sensor = plan.sensor.validate().map_err(ApplicationError::Sensor)?;
+        plan.radiometric_calibration
+            .validate()
+            .map_err(ApplicationError::InvalidRadiometricCalibration)?;
         let sensor_pixels = resample_physical_rgba_area(
             &output,
             sampling.effective_width,
@@ -812,6 +983,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             .shutter_close
             .checked_sub(plan.shutter_open)
             .map_err(ApplicationError::Time)?;
+        let panel_to_sensor_lux = CameraRadiometricCalibration::panel_luminance_to_sensor_plane_lux(
+            plan.scene_geometry_lens.f_stop,
+        );
         let exposure = IntegratedOpticalExposure {
             width: u32::from(sensor.native_width),
             height: u32::from(sensor.native_height),
@@ -820,9 +994,18 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 .iter()
                 .map(|pixel| {
                     LinearRgb::new(
-                        pixel[0] * parameters.white_level_nits,
-                        pixel[1] * parameters.white_level_nits,
-                        pixel[2] * parameters.white_level_nits,
+                        pixel[0]
+                            * parameters.white_level_nits
+                            * panel_to_sensor_lux
+                            * plan.radiometric_calibration.effective_sensor_exposure_scale,
+                        pixel[1]
+                            * parameters.white_level_nits
+                            * panel_to_sensor_lux
+                            * plan.radiometric_calibration.effective_sensor_exposure_scale,
+                        pixel[2]
+                            * parameters.white_level_nits
+                            * panel_to_sensor_lux
+                            * plan.radiometric_calibration.effective_sensor_exposure_scale,
                     )
                 })
                 .collect(),
@@ -4591,6 +4774,7 @@ pub enum ApplicationError {
     InvalidShutter,
     InvalidSensorReadout,
     InvalidOpticalAttenuation,
+    InvalidRadiometricCalibration(&'static str),
     OpticalSampleRasterMismatch,
     SensorViewportAspectMismatch {
         sensor_aspect: f32,
@@ -4646,6 +4830,12 @@ impl fmt::Display for ApplicationError {
             ),
             Self::InvalidOpticalAttenuation => formatter
                 .write_str("neutral-density attenuation must be finite and in [0, 16] stops"),
+            Self::InvalidRadiometricCalibration(reason) => {
+                write!(
+                    formatter,
+                    "invalid camera radiometric calibration: {reason}"
+                )
+            }
             Self::OpticalSampleRasterMismatch => formatter
                 .write_str("all temporal optical samples must match the authored sensor raster"),
             Self::SensorViewportAspectMismatch {
@@ -5360,12 +5550,26 @@ mod tests {
         for preset in CAPTURE_DEVICE_PRESETS {
             assert!(ids.insert(preset.id));
             preset.sensor.validate().expect("valid sensor profile");
+            preset
+                .radiometric_calibration
+                .validate()
+                .expect("valid radiometric calibration");
             assert!(preset.gate_width.0 > 0.0 && preset.gate_height.0 > 0.0);
             let lens = lens_preset(preset.default_lens_preset_id)
                 .expect("capture template lens must resolve");
             assert_eq!(lens.nominal_focal_length, preset.focal_length);
             assert!((25.0..=12_800.0).contains(&preset.reference_exposure_index));
             assert!(preset.middle_gray_illuminance_seconds_at_reference_ei > 0.0);
+            assert!(
+                (preset
+                    .radiometric_calibration
+                    .reference_effective_sensor_exposure()
+                    - preset.middle_gray_illuminance_seconds_at_reference_ei)
+                    .abs()
+                    < 1.0e-6,
+                "{} must be anchored to its declared 18% reference exposure",
+                preset.id
+            );
             assert!((1.0..=360.0).contains(&preset.default_shutter_angle_degrees));
             let raster_aspect =
                 f32::from(preset.sensor.native_width) / f32::from(preset.sensor.native_height);
@@ -6104,6 +6308,7 @@ mod tests {
                 },
                 shutter_motion_amount: 0.0,
                 sensor: SensorProfile::REFERENCE,
+                radiometric_calibration: CameraRadiometricCalibration::REFERENCE,
                 sensor_enabled: false,
                 sensor_noise_amount: 0.0,
                 development: CameraDevelopment::NEUTRAL,
@@ -6112,6 +6317,228 @@ mod tests {
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
         }
+    }
+
+    /// A deliberately unclipped, noiseless fixture for the radiometric
+    /// contract.  It keeps the panel, shutter and sensor boundaries visible
+    /// while removing CFA/noise/ADC saturation as confounding variables.
+    fn radiometric_request(
+        white_level_nits: f32,
+        shutter_open: RationalTime,
+        shutter_close: RationalTime,
+        nd_stops: f32,
+        analog_gain: f32,
+        intermediate: PhysicalIntermediate,
+    ) -> PhysicalPipelineRequest {
+        let mut request = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        request.input = PhysicalPipelineInput {
+            width: 2,
+            height: 2,
+            acescg: vec![[1.0, 1.0, 1.0, 1.0]; 4],
+            device_signal: DeviceSignalRaster {
+                width: 2,
+                height: 2,
+                pixels: vec![DeviceRgb::WHITE; 4],
+            },
+        };
+        request.plan.panel.white_level_nits = white_level_nits;
+        request.plan.panel_light_spread.character_strength = 0.0;
+        request.plan.sensor = SensorProfile {
+            native_width: 2,
+            native_height: 2,
+            bayer_pattern: BayerPattern::Rggb,
+            acescg_to_sensor: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            // This keeps 1000-nit / +1-stop cases below full well and ADC
+            // clipping while retaining enough code precision for stop tests.
+            saturation_illuminance_seconds: LinearRgb::new(100.0, 100.0, 100.0),
+            full_well_electrons: 100_000_000.0,
+            dark_current_electrons_per_second: 0.0,
+            read_noise_electrons_rms: 0.0,
+            analog_gain,
+            adc_bits: 16,
+        };
+        request.plan.radiometric_calibration = CameraRadiometricCalibration::REFERENCE;
+        request.plan.shutter_open = shutter_open;
+        request.plan.shutter_close = shutter_close;
+        request.plan.shutter_motion.neutral_density_stops = nd_stops;
+        request.plan.shutter_motion_amount = 1.0;
+        request.plan.sensor_enabled = true;
+        request.plan.sensor_noise_amount = 0.0;
+        request.plan.development_enabled = true;
+        request.plan.requested_intermediate = intermediate;
+        request
+    }
+
+    fn raw_code_fraction(request: PhysicalPipelineRequest) -> f32 {
+        let result = evaluate_physical_pipeline_cpu_oracle(request).expect("radiometric RAW");
+        result.acescg[0][0]
+    }
+
+    fn developed_luminance(request: PhysicalPipelineRequest) -> f32 {
+        let result = evaluate_physical_pipeline_cpu_oracle(request).expect("radiometric developed");
+        let pixel = result.acescg[0];
+        0.272_228_72 * pixel[0] + 0.674_081_74 * pixel[1] + 0.053_689_517 * pixel[2]
+    }
+
+    #[test]
+    fn radiometric_calibration_is_anchored_to_each_capture_preset_reference() {
+        for preset in CAPTURE_DEVICE_PRESETS {
+            let calibration = preset.radiometric_calibration;
+            calibration.validate().expect("valid required calibration");
+            assert_eq!(
+                calibration.base_exposure_index,
+                preset.reference_exposure_index
+            );
+            assert!(
+                (calibration.reference_effective_sensor_exposure()
+                    - preset.middle_gray_illuminance_seconds_at_reference_ei)
+                    .abs()
+                    < 1.0e-6,
+                "{} must keep its ISO-style 18% anchor explicit",
+                preset.id
+            );
+            assert!(calibration.reference_card_luminance_nits() > 0.0);
+        }
+    }
+
+    #[test]
+    fn radiometric_panel_sensor_contract_preserves_nits_and_stop_ratios_before_clipping() {
+        let open = RationalTime::new(-1, 96).expect("time");
+        let close = RationalTime::new(1, 96).expect("time");
+        let raw_100 = raw_code_fraction(radiometric_request(
+            100.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        let raw_350 = raw_code_fraction(radiometric_request(
+            350.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        let raw_1000 = raw_code_fraction(radiometric_request(
+            1000.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        assert!(
+            (raw_350 / raw_100 - 3.5).abs() < 0.01,
+            "raw 100={raw_100}, 350={raw_350}, 1000={raw_1000}"
+        );
+        assert!((raw_1000 / raw_100 - 10.0).abs() < 0.03);
+
+        let raw_minus_stop = raw_code_fraction(radiometric_request(
+            350.0,
+            RationalTime::new(-1, 192).expect("time"),
+            RationalTime::new(1, 192).expect("time"),
+            0.0,
+            1.0,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        let raw_plus_stop = raw_code_fraction(radiometric_request(
+            350.0,
+            RationalTime::new(-1, 48).expect("time"),
+            RationalTime::new(1, 48).expect("time"),
+            0.0,
+            1.0,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        assert!((raw_minus_stop / raw_350 - 0.5).abs() < 0.01);
+        assert!((raw_plus_stop / raw_350 - 2.0).abs() < 0.02);
+
+        let raw_iso_minus = raw_code_fraction(radiometric_request(
+            350.0,
+            open,
+            close,
+            0.0,
+            0.5,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        let raw_iso_plus = raw_code_fraction(radiometric_request(
+            350.0,
+            open,
+            close,
+            0.0,
+            2.0,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        assert!((raw_iso_minus / raw_350 - 0.5).abs() < 0.01);
+        assert!((raw_iso_plus / raw_350 - 2.0).abs() < 0.02);
+
+        let raw_nd_minus = raw_code_fraction(radiometric_request(
+            350.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        let raw_nd_plus = raw_code_fraction(radiometric_request(
+            350.0,
+            open,
+            close,
+            2.0,
+            1.0,
+            PhysicalIntermediate::RawMosaic,
+        ));
+        assert!((raw_nd_plus / raw_nd_minus - 0.25).abs() < 0.01);
+
+        // The panel stage is deliberately normalized device radiance.  The
+        // physical nits conversion happens exactly once at the sensor
+        // boundary, where the RAW checks above observe it.
+        let emission_100 = evaluate_physical_pipeline_cpu_oracle(radiometric_request(
+            100.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::PanelEmission,
+        ))
+        .expect("emission");
+        let emission_1000 = evaluate_physical_pipeline_cpu_oracle(radiometric_request(
+            1000.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::PanelEmission,
+        ))
+        .expect("emission");
+        assert!((emission_100.acescg[0][0] - emission_1000.acescg[0][0]).abs() < 1.0e-6);
+
+        let developed_100 = developed_luminance(radiometric_request(
+            100.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::DevelopedAcesCg,
+        ));
+        let developed_350 = developed_luminance(radiometric_request(
+            350.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::DevelopedAcesCg,
+        ));
+        let developed_1000 = developed_luminance(radiometric_request(
+            1000.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::DevelopedAcesCg,
+        ));
+        assert!(developed_100 < developed_350 && developed_350 < developed_1000);
     }
 
     #[test]

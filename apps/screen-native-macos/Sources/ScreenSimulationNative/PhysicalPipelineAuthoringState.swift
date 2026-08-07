@@ -59,6 +59,17 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var adcBits: UInt32 = 14
     }
 
+    /// Camera-preset owned calibration data for the physical sensor boundary.
+    /// This is never a display/preview gain.
+    struct RadiometricCalibration: Codable, Equatable, Sendable {
+        var baseExposureIndex = 100.0
+        var referenceLambertianReflectance = 0.18
+        var referenceIlluminanceLux = 100.0
+        var referenceTStop = 4.0
+        var referenceShutterSeconds = 1.0 / 48.0
+        var effectiveSensorExposureScale = 1.0
+    }
+
     struct Develop: Codable, Equatable, Sendable {
         var whiteBalance = [1.0, 1.0, 1.0]
         var middleGrayIlluminanceSeconds = 0.18
@@ -76,6 +87,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
     var sceneLens = SceneLens()
     var shutterMotion = ShutterMotion()
     var sensor = Sensor()
+    var radiometricCalibration = RadiometricCalibration()
     var develop = Develop()
     var cameraPose = Pose()
     var screenPose = Pose(position: [0, 0, 0], quaternion: [0, 0, 0, 1])
@@ -155,6 +167,15 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         developABI.middle_gray_illuminance_seconds = Float(develop.middleGrayIlluminanceSeconds)
         developABI.develop_exposure_ev = Float(develop.exposureEV)
 
+        var radiometricABI = ScreenCameraRadiometricCalibrationV2()
+        radiometricABI.abi_version = version
+        radiometricABI.base_exposure_index = Float(radiometricCalibration.baseExposureIndex)
+        radiometricABI.reference_lambertian_reflectance = Float(radiometricCalibration.referenceLambertianReflectance)
+        radiometricABI.reference_illuminance_lux = Float(radiometricCalibration.referenceIlluminanceLux)
+        radiometricABI.reference_t_stop = Float(radiometricCalibration.referenceTStop)
+        radiometricABI.reference_shutter_seconds = Float(radiometricCalibration.referenceShutterSeconds)
+        radiometricABI.effective_sensor_exposure_scale = Float(radiometricCalibration.effectiveSensorExposureScale)
+
         var parameters = ScreenPhysicalPipelineParametersV2()
         parameters.abi_version = version
         parameters.cover = try coverGlass.bridgeParameters()
@@ -163,6 +184,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         parameters.shutter_motion = shutter
         parameters.sensor_noise = sensorABI
         parameters.raw_develop = developABI
+        parameters.radiometric_calibration = radiometricABI
         return PhysicalPipelineResolvedState(parameters: parameters, coverGlassID: coverGlass.id)
     }
 

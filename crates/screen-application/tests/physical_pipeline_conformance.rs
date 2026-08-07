@@ -74,6 +74,7 @@ fn request(
             },
             shutter_motion_amount: 0.0,
             sensor: screen_sensor::SensorProfile::REFERENCE,
+            radiometric_calibration: screen_application::CameraRadiometricCalibration::REFERENCE,
             sensor_enabled: false,
             sensor_noise_amount: 0.0,
             development: screen_camera::CameraDevelopment::NEUTRAL,
@@ -356,6 +357,6 @@ fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
     // physical illuminance using the resolved white luminance before RAW.
     assert_eq!(
         hashes,
-        [10_009_671_958_557_217_646, 6_193_047_348_620_188_270]
+        [4_236_808_243_192_629_937, 7_508_220_500_444_444_758]
     );
 }

@@ -285,6 +285,19 @@ typedef struct {
     uint32_t adc_bits;
 } ScreenSensorNoiseParametersV2;
 
+// Explicit conversion between panel/scene photometry and the effective
+// exposure domain of the selected sensor profile. It is calibration data, not
+// a display or preview gain.
+typedef struct {
+    uint32_t abi_version;
+    float base_exposure_index;
+    float reference_lambertian_reflectance;
+    float reference_illuminance_lux;
+    float reference_t_stop;
+    float reference_shutter_seconds;
+    float effective_sensor_exposure_scale;
+} ScreenCameraRadiometricCalibrationV2;
+
 typedef struct {
     uint32_t abi_version;
     float white_balance[3];
@@ -305,6 +318,7 @@ typedef struct {
     uint16_t default_temporal_samples;
     uint16_t optics_authority;
     float default_readout_duration_milliseconds;
+    ScreenCameraRadiometricCalibrationV2 radiometric_calibration;
 } ScreenCapturePresetParametersV2;
 
 typedef struct {
@@ -315,6 +329,7 @@ typedef struct {
     ScreenShutterMotionParametersV2 shutter_motion;
     ScreenSensorNoiseParametersV2 sensor_noise;
     ScreenRawDevelopParametersV2 raw_develop;
+    ScreenCameraRadiometricCalibrationV2 radiometric_calibration;
 } ScreenPhysicalPipelineParametersV2;
 
 size_t screen_cover_glass_preset_count(void);

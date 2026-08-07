@@ -171,8 +171,9 @@ inline float cover_interface(float cosine_i, constant PhysicalPipelineParams& p)
         * p.cover_geometry.x, 0.0f, 0.98f);
 }
 
-inline float3 flat_environment_radiance(constant PhysicalPipelineParams& p) {
-    float3 direction = float3(0.0f, 0.0f, 1.0f);
+inline float3 flat_environment_radiance(float3 reflection_direction_local,
+    constant PhysicalPipelineParams& p) {
+    float3 direction = normalize(reflection_direction_local);
     const float sine = sin(p.environment_direction_rotation.w);
     const float cosine = cos(p.environment_direction_rotation.w);
     direction = float3(direction.x * cosine + direction.z * sine, direction.y,
@@ -205,13 +206,25 @@ inline float3 flat_environment_radiance(constant PhysicalPipelineParams& p) {
         * p.environment_ambient_strength.w;
 }
 
-inline float3 apply_flat_cover(float3 emitted, constant PhysicalPipelineParams& p) {
-    const float reflection = cover_interface(1.0f, p);
-    const float absorption_scale = p.cover_geometry.y * p.cover_geometry.x;
+inline float3 apply_flat_cover(float3 emitted, float view_cosine,
+    float3 reflection_direction_local, float3 lens_irradiance_weight,
+    constant PhysicalPipelineParams& p) {
+    const float cosine_i = clamp(view_cosine, 0.0f, 1.0f);
+    const float reflection = cover_interface(cosine_i, p);
+    // Match the CPU cover evaluator: attenuation travels through the oblique
+    // slab path, not merely its normal thickness.  The interface and this
+    // Beer-Lambert path share the same Snell cosine.
+    const float eta = p.cover_geometry.z;
+    const float sine_t2 = (1.0f - cosine_i * cosine_i) / (eta * eta);
+    const float cosine_t = sqrt(max(0.0f, 1.0f - sine_t2));
+    const float absorption_scale = p.cover_geometry.y * p.cover_geometry.x
+        / max(0.01f, cosine_t);
     const float haze_loss = clamp(p.cover_haze.x * p.cover_geometry.x, 0.0f, 0.95f);
     const float3 transmission = (1.0f - reflection)
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
-    return emitted * transmission + flat_environment_radiance(p) * reflection / p.levels.z;
+    return emitted * transmission
+        + flat_environment_radiance(reflection_direction_local, p) * reflection
+            * lens_irradiance_weight / p.levels.z;
 }
 
 inline float2 placement_scale(constant PhysicalPipelineParams& p) {
@@ -379,6 +392,10 @@ kernel void evaluate_physical_pipeline(
     float3 spread_native = 0.0f;
     float3 continuous_native = 0.0f;
     float3 average_device_code = 0.0f;
+    float cover_cosine = 0.0f;
+    float3 cover_direction = 0.0f;
+    float3 cover_irradiance = 0.0f;
+    uint cover_samples = 0;
     for (uint sy = 0; sy < side; ++sy) {
         for (uint sx = 0; sx < side; ++sx) {
             const float2 minimum_uv = (
@@ -419,6 +436,16 @@ kernel void evaluate_physical_pipeline(
                 continuous_native[channel] += continuous_channel(code[channel], p) * optical_weight;
             }
             const PhysicalRayHit green_hit = physical_trace_ray(observed, lens_sample, 1, p);
+            if (green_hit.valid) {
+                cover_cosine += green_hit.cosine;
+                cover_direction += green_hit.reflection_direction;
+                cover_irradiance += float3(
+                    physical_irradiance_weight(observed, 0, p),
+                    physical_irradiance_weight(observed, 1, p),
+                    physical_irradiance_weight(observed, 2, p)
+                );
+                ++cover_samples;
+            }
             const float2 green_target = green_hit.valid ? green_hit.uv : float2(-2.0f);
             const float2 green_center = mix(flat_center, green_target, p.panel_angular_scene.w);
             const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
@@ -428,6 +455,9 @@ kernel void evaluate_physical_pipeline(
         }
     }
     const float reciprocal = 1.0f / float(side * side);
+    const float cover_reciprocal = cover_samples == 0 ? 1.0f : 1.0f / float(cover_samples);
+    const float3 cover_reflection_direction = length_squared(cover_direction) > 1.0e-12f
+        ? normalize(cover_direction) : float3(0.0f, 0.0f, 1.0f);
     ideal *= reciprocal;
     native *= reciprocal;
     spread_native *= reciprocal;
@@ -454,7 +484,9 @@ kernel void evaluate_physical_pipeline(
         + (spread - physical);
     const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
     const float3 temporally_integrated = staged * temporal_gain;
-    const float3 covered = apply_flat_cover(temporally_integrated, p);
+    const float3 covered = apply_flat_cover(temporally_integrated,
+        cover_cosine * cover_reciprocal, cover_reflection_direction,
+        cover_irradiance * cover_reciprocal, p);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);
     const float3 shuttered = covered * shutter_scale;
     float3 selected;

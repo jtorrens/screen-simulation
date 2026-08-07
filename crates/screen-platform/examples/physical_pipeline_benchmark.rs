@@ -118,6 +118,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 shutter_motion_amount: 0.0,
                 sensor: screen_sensor::SensorProfile::REFERENCE,
+                radiometric_calibration:
+                    screen_application::CameraRadiometricCalibration::REFERENCE,
                 sensor_enabled: false,
                 sensor_noise_amount: 0.0,
                 development: screen_camera::CameraDevelopment::NEUTRAL,
