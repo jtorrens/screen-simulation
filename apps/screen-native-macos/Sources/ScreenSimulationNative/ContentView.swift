@@ -1729,7 +1729,6 @@ final class MetalPreviewContainer: NSView {
 
     override func layout() {
         super.layout()
-        metalView.frame = bounds
         applyPresentation()
     }
 
@@ -1750,14 +1749,14 @@ final class MetalPreviewContainer: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        dragStartLocation = convert(event.locationInWindow, from: nil)
+        dragStartLocation = event.locationInWindow
         dragStartPan = presentationPan
         NSCursor.closedHand.push()
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let start = dragStartLocation else { return }
-        let location = convert(event.locationInWindow, from: nil)
+        let location = event.locationInWindow
         let proposed = CGSize(
             width: dragStartPan.width + location.x - start.x,
             height: dragStartPan.height - location.y + start.y
@@ -1803,19 +1802,34 @@ final class MetalPreviewContainer: NSView {
     }
 
     private func applyPresentation() {
-        let oneToOneScale = bounds.width > 0 && bounds.height > 0
-            ? max(
-                CGFloat(textureWidth) / bounds.width,
-                CGFloat(textureHeight) / bounds.height
-            )
-            : 1
+        let fitted = fittedContentSize()
+        metalView.frame = NSRect(
+            x: bounds.midX - fitted.width / 2,
+            y: bounds.midY - fitted.height / 2,
+            width: fitted.width,
+            height: fitted.height
+        )
+        let oneToOneScale = PreviewNavigationMath.oneToOneScale(
+            texture: textureSize(), fittedContent: fitted
+        )
         let scale = (presentationOneToOne ? oneToOneScale : 1) * presentationZoom
+        let effectivePan = PreviewNavigationMath.clampedPan(
+            presentationPan,
+            viewport: bounds.size,
+            fittedContent: fitted,
+            scale: scale
+        )
+        if effectivePan != presentationPan {
+            presentationPan = effectivePan
+            Task { @MainActor [weak self] in
+                self?.onPanChange?(effectivePan)
+            }
+        }
         metalView.layer?.setAffineTransform(
             CGAffineTransform(
-                translationX: presentationPan.width,
-                y: -presentationPan.height
+                a: scale, b: 0, c: 0, d: scale,
+                tx: effectivePan.width, ty: -effectivePan.height
             )
-            .scaledBy(x: scale, y: scale)
         )
     }
 
@@ -1826,17 +1840,26 @@ final class MetalPreviewContainer: NSView {
     }
 
     private func clampedPan(_ proposed: CGSize) -> CGSize {
-        let oneToOneScale = bounds.width > 0 && bounds.height > 0
-            ? max(
-                CGFloat(textureWidth) / bounds.width,
-                CGFloat(textureHeight) / bounds.height
-            )
-            : 1
+        let fitted = fittedContentSize()
+        let oneToOneScale = PreviewNavigationMath.oneToOneScale(
+            texture: textureSize(), fittedContent: fitted
+        )
         let scale = (presentationOneToOne ? oneToOneScale : 1) * presentationZoom
         return PreviewNavigationMath.clampedPan(
             proposed,
             viewport: bounds.size,
+            fittedContent: fitted,
             scale: scale
+        )
+    }
+
+    private func textureSize() -> CGSize {
+        CGSize(width: textureWidth, height: textureHeight)
+    }
+
+    private func fittedContentSize() -> CGSize {
+        PreviewNavigationMath.fittedContentSize(
+            texture: textureSize(), viewport: bounds.size
         )
     }
 }

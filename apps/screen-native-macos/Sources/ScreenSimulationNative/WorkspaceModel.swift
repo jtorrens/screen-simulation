@@ -806,14 +806,12 @@ final class WorkspaceModel: ObservableObject {
         resetView()
     }
     func zoomBy(_ factor: Double) {
-        modelViewerOneToOne = false
         zoom = min(16, max(0.1, zoom * factor))
     }
     var zoomPercentage: Double {
         zoom * 100
     }
     func setZoomPercentage(_ percentage: Double) {
-        modelViewerOneToOne = false
         zoom = min(16, max(0.1, percentage / 100))
     }
 

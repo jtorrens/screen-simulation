@@ -14,8 +14,26 @@ import Testing
     #expect(PreviewNavigationMath.clampedPan(
         proposed,
         viewport: CGSize(width: 100, height: 80),
+        fittedContent: CGSize(width: 100, height: 50),
         scale: 2
-    ) == CGSize(width: 50, height: 35))
+    ) == CGSize(width: 50, height: 10))
+}
+
+@Test func previewFitAndOneToOneUseTheActualImageRect() {
+    let fitted = PreviewNavigationMath.fittedContentSize(
+        texture: CGSize(width: 200, height: 100),
+        viewport: CGSize(width: 100, height: 100)
+    )
+    #expect(fitted == CGSize(width: 100, height: 50))
+    #expect(PreviewNavigationMath.oneToOneScale(
+        texture: CGSize(width: 200, height: 100), fittedContent: fitted
+    ) == 2)
+    #expect(PreviewNavigationMath.clampedPan(
+        CGSize(width: 200, height: -200),
+        viewport: CGSize(width: 100, height: 100),
+        fittedContent: fitted,
+        scale: 2
+    ) == CGSize(width: 50, height: 0))
 }
 
 @Test func previewZoomPreservesTheContentPointUnderItsAnchor() {
