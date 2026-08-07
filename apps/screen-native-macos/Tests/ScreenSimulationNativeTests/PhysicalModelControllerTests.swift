@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ScreenSimulationNative
 
@@ -24,11 +25,69 @@ import Testing
     let prior = model.orderedContributions
     try model.toggleIsolation(.screen(.emission))
     #expect(model.isolatedStage == .screen(.emission))
-    #expect(model.stageValue(.screen(.subpixelGeometry)).amount == 0)
+    #expect(model.stageValue(.screen(.subpixelGeometry)).amount == 1.8)
+    #expect(model.stageValue(.screen(.subpixelGeometry)).isBypassed)
+    #expect(model.orderedContributions.first {
+        $0.stage == .screen(.subpixelGeometry)
+    }?.amount == 0)
     try model.toggleIsolation(.screen(.emission))
     #expect(model.isolatedStage == nil)
     #expect(model.screenAmount == 1.3)
     #expect(model.orderedContributions == prior)
+}
+
+@Test @MainActor func continuousBypassPreservesStoredValueAndRestoresItExactly() throws {
+    let model = PhysicalModelController()
+    let stage = PhysicalStageID.screen(.temporal)
+    try model.setContinuousAmount(1.35, stage: stage)
+    try model.setContinuousBypassed(true, stage: stage)
+    #expect(model.stageValue(stage).amount == 1.35)
+    #expect(model.orderedContributions.first { $0.stage == stage }?.amount == 0)
+    #expect(model.bypassDiagnosticMessage(for: stage)?.contains("BYPASSED") == true)
+
+    // Editing while bypassed prepares the next active value without affecting evaluation.
+    try model.setContinuousAmount(1.7, stage: stage)
+    #expect(model.stageValue(stage).amount == 1.7)
+    #expect(model.orderedContributions.first { $0.stage == stage }?.amount == 0)
+    try model.setContinuousBypassed(false, stage: stage)
+    #expect(model.orderedContributions.first { $0.stage == stage }?.amount == 1.7)
+
+    try model.setDomainAmount(1.4, domain: .screen)
+    try model.setDomainBypassed(true, domain: .screen)
+    #expect(model.screenAmount == 1.4)
+    #expect(model.effectiveScreenAmount == 0)
+    try model.setDomainBypassed(false, domain: .screen)
+    #expect(model.effectiveScreenAmount == 1.4)
+}
+
+@Test @MainActor func bypassAndStoredAmountsPersistAsSeparateAuthoringState() throws {
+    let source = PhysicalModelController()
+    try source.setContinuousAmount(1.65, stage: .capture(.lens))
+    try source.setContinuousBypassed(true, stage: .capture(.lens))
+    try source.setDomainAmount(1.25, domain: .screen)
+    try source.setDomainBypassed(true, domain: .screen)
+
+    let data = try JSONEncoder().encode(source.authoringState)
+    let decoded = try JSONDecoder().decode(PhysicalModelAuthoringState.self, from: data)
+    let restored = PhysicalModelController()
+    try restored.restoreAuthoringState(decoded)
+
+    #expect(restored.authoringState == source.authoringState)
+    #expect(restored.stageValue(.capture(.lens)).amount == 1.65)
+    #expect(restored.orderedContributions.first { $0.stage == .capture(.lens) }?.amount == 0)
+    #expect(restored.screenAmount == 1.25)
+    #expect(restored.effectiveScreenAmount == 0)
+}
+
+@Test @MainActor func workspaceBypassParticipatesInNativeUndo() async throws {
+    let workspace = WorkspaceModel()
+    let undo = UndoManager()
+    let stage = PhysicalStageID.screen(.environment)
+    workspace.changePhysicalStageBypass(true, stage: stage, undoManager: undo)
+    #expect(workspace.physicalModel.stageValue(stage).isBypassed)
+    undo.undo()
+    await Task.yield()
+    #expect(!workspace.physicalModel.stageValue(stage).isBypassed)
 }
 
 @Test @MainActor func nativeResultBecomesStaleAndCancellationIsExplicit() throws {

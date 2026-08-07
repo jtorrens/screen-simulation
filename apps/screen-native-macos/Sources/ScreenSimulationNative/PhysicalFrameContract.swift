@@ -64,6 +64,17 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         ScreenPhysicalSection.allCases.map(Self.screen)
         + CapturePhysicalSection.allCases.map(Self.capture)
 
+    /// Continuous stage amounts surfaced in General in pipeline order. These
+    /// are the contract values themselves, not group masters or copied state.
+    static let generalOverviewContinuous: [Self] = [
+        .screen(.temporal),
+        .screen(.coverGlass),
+        .screen(.environment),
+        .capture(.lens),
+        .capture(.exposureShutter),
+        .capture(.noise),
+    ]
+
     var contributionLimits: PhysicalContributionLimits {
         self == .screen(.coverGlass)
             ? .init(visualRange: 0 ... 2, safeRange: 0 ... 2)

@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import CryptoKit
 import Foundation
+import OSLog
 import StudioColor
 import StudioMedia
 
@@ -77,10 +78,13 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var defaultSignalMatrix = StudioSignalMatrix.bt709
     @Published private(set) var defaultSignalRange = StudioSignalRange.full
     @Published private(set) var resolvedDevice: ResolvedDevice?
+    @Published private(set) var modelDeviceDefinition: DeviceDefinition?
+    @Published private(set) var physicalAuthoringState: PhysicalPipelineAuthoringState?
     @Published private(set) var requestedPhysicalIntermediate = PhysicalIntermediate.developedACEScg
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
     @Published var sourcePlacement = SourcePlacement.fit
     @Published var modelViewerOneToOne = false
+    @Published private(set) var physicalPublicationSummary = "Sin publicación física"
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -105,9 +109,35 @@ final class WorkspaceModel: ObservableObject {
     private var modelViewport = CGSize(width: 960, height: 540)
     private var isModelPageActive = false
     private var resolvedPhysicalPipeline: PhysicalPipelineResolvedState?
+    private var baseModelDeviceDefinition: DeviceDefinition?
+    private var basePhysicalAuthoringState: PhysicalPipelineAuthoringState?
+    private let physicalPublicationLog = Logger(
+        subsystem: "com.jtorrens.ScreenSimulationNative",
+        category: "PhysicalPublication"
+    )
 
     var physicalPipelineState: PhysicalPipelineResolvedState? {
         resolvedPhysicalPipeline
+    }
+
+    var physicalPresetDeviceDefinition: DeviceDefinition? {
+        baseModelDeviceDefinition
+    }
+
+    var physicalPresetAuthoringState: PhysicalPipelineAuthoringState? {
+        basePhysicalAuthoringState
+    }
+
+    var modelPreviewSurfaceAspect: Double? {
+        switch requestedPhysicalIntermediate {
+        case .panelEmission, .subpixelRadiance, .panelLightSpread, .coverEnvironment:
+            guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
+            return Double(device.nativeWidth) / Double(device.nativeHeight)
+        case .sourceACEScg, .deviceSignal, .sceneGeometryLens, .shutterMotion,
+             .sensorNoise, .rawMosaic, .developedACEScg:
+            guard let metalFrame, metalFrame.height > 0 else { return nil }
+            return Double(metalFrame.width) / Double(metalFrame.height)
+        }
     }
 
     init() {
@@ -137,9 +167,15 @@ final class WorkspaceModel: ObservableObject {
     ) {
         do {
             resolvedDevice = try definition.resolved()
-            resolvedPhysicalPipeline = try .resolvedDefaults(
+            modelDeviceDefinition = definition
+            let authored = try PhysicalPipelineAuthoringState.seeded(
+                device: definition,
                 coverGlass: coverGlass
             )
+            physicalAuthoringState = authored
+            resolvedPhysicalPipeline = try authored.resolvedPipeline()
+            baseModelDeviceDefinition = definition
+            basePhysicalAuthoringState = authored
             rebuildCurrent()
         } catch {
             errorMessage = error.localizedDescription
@@ -152,13 +188,115 @@ final class WorkspaceModel: ObservableObject {
     ) {
         do {
             resolvedDevice = try definition.resolved()
-            resolvedPhysicalPipeline = try .resolvedDefaults(
+            modelDeviceDefinition = definition
+            let authored = try PhysicalPipelineAuthoringState.seeded(
+                device: definition,
                 coverGlass: coverGlass
             )
+            physicalAuthoringState = authored
+            resolvedPhysicalPipeline = try authored.resolvedPipeline()
+            baseModelDeviceDefinition = definition
+            basePhysicalAuthoringState = authored
             rebuildPhysicalSelectedFrame()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func updateModelDevice(
+        undoManager: UndoManager?,
+        _ mutation: (inout DeviceDefinition) -> Void
+    ) {
+        guard let prior = modelDeviceDefinition else { return }
+        var next = prior
+        mutation(&next)
+        do {
+            resolvedDevice = try next.resolved()
+            modelDeviceDefinition = next
+            registerModelDeviceUndo(prior, undoManager: undoManager)
+            physicalModel.invalidateExternalParameters()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func updatePhysicalAuthoring(
+        undoManager: UndoManager?,
+        _ mutation: (inout PhysicalPipelineAuthoringState) -> Void
+    ) {
+        guard let prior = physicalAuthoringState else { return }
+        var next = prior
+        mutation(&next)
+        do {
+            resolvedPhysicalPipeline = try next.resolvedPipeline()
+            physicalAuthoringState = next
+            registerPhysicalAuthoringUndo(prior, undoManager: undoManager)
+            physicalModel.invalidateExternalParameters()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func resetPhysicalParameters(
+        _ stage: PhysicalStageID,
+        undoManager: UndoManager?
+    ) {
+        switch stage {
+        case let .screen(section):
+            guard let base = baseModelDeviceDefinition else { return }
+            if section == .coverGlass || section == .environment {
+                guard let authored = basePhysicalAuthoringState else { return }
+                updatePhysicalAuthoring(undoManager: undoManager) { current in
+                    if section == .coverGlass { current.coverGlass = authored.coverGlass }
+                    else { current.environment = authored.environment }
+                }
+            } else {
+                updateModelDevice(undoManager: undoManager) { current in
+                    current.restore(section: section, from: base)
+                }
+            }
+        case let .capture(section):
+            guard let base = basePhysicalAuthoringState else { return }
+            updatePhysicalAuthoring(undoManager: undoManager) { current in
+                current.restore(section: section, from: base)
+            }
+        }
+    }
+
+    private func registerModelDeviceUndo(
+        _ prior: DeviceDefinition,
+        undoManager: UndoManager?
+    ) {
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in target.restoreModelDevice(prior) }
+        }
+        undoManager?.setActionName("Editar parámetro físico")
+    }
+
+    private func restoreModelDevice(_ value: DeviceDefinition) {
+        do {
+            resolvedDevice = try value.resolved()
+            modelDeviceDefinition = value
+            physicalModel.invalidateExternalParameters()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func registerPhysicalAuthoringUndo(
+        _ prior: PhysicalPipelineAuthoringState,
+        undoManager: UndoManager?
+    ) {
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in target.restorePhysicalAuthoring(prior) }
+        }
+        undoManager?.setActionName("Editar parámetro físico")
+    }
+
+    private func restorePhysicalAuthoring(_ value: PhysicalPipelineAuthoringState) {
+        do {
+            resolvedPhysicalPipeline = try value.resolvedPipeline()
+            physicalAuthoringState = value
+            physicalModel.invalidateExternalParameters()
+        } catch { errorMessage = error.localizedDescription }
     }
 
     func selectPhysicalIntermediate(_ intermediate: PhysicalIntermediate) {
@@ -187,6 +325,18 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    func scheduleModelViewportSize(_ size: CGSize) {
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.setModelViewportSize(size)
+        }
+    }
+
+    func publishSystemDisplayInfo(_ info: StudioColorSystemDisplayInfo) {
+        guard systemDisplayInfo != info else { return }
+        systemDisplayInfo = info
+    }
+
     func changePhysicalDomainAmount(_ amount: Double, domain: PhysicalDomainID) {
         do {
             try physicalModel.setDomainAmount(amount, domain: domain)
@@ -195,11 +345,59 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    func changePhysicalDomainBypass(
+        _ bypassed: Bool,
+        domain: PhysicalDomainID,
+        undoManager: UndoManager?
+    ) {
+        let prior = physicalModel.screenIsBypassed
+        guard prior != bypassed else { return }
+        do {
+            try physicalModel.setDomainBypassed(bypassed, domain: domain)
+            undoManager?.registerUndo(withTarget: self) { target in
+                Task { @MainActor in
+                    target.changePhysicalDomainBypass(
+                        prior,
+                        domain: domain,
+                        undoManager: nil
+                    )
+                }
+            }
+            undoManager?.setActionName(bypassed ? "Omitir Pantalla" : "Activar Pantalla")
+        } catch {
+            errorMessage = "El dominio no admite bypass continuo."
+        }
+    }
+
     func changePhysicalStageAmount(_ amount: Double, stage: PhysicalStageID) {
         do {
             try physicalModel.setContinuousAmount(amount, stage: stage)
         } catch {
             errorMessage = "La contribución no admite ese valor."
+        }
+    }
+
+    func changePhysicalStageBypass(
+        _ bypassed: Bool,
+        stage: PhysicalStageID,
+        undoManager: UndoManager?
+    ) {
+        let prior = physicalModel.stageValue(stage).isBypassed
+        guard prior != bypassed else { return }
+        do {
+            try physicalModel.setContinuousBypassed(bypassed, stage: stage)
+            undoManager?.registerUndo(withTarget: self) { target in
+                Task { @MainActor in
+                    target.changePhysicalStageBypass(
+                        prior,
+                        stage: stage,
+                        undoManager: nil
+                    )
+                }
+            }
+            undoManager?.setActionName(bypassed ? "Omitir etapa" : "Activar etapa")
+        } catch {
+            errorMessage = "La etapa no admite bypass continuo."
         }
     }
 
@@ -238,6 +436,8 @@ final class WorkspaceModel: ObservableObject {
                 if !Task.isCancelled {
                     physicalModel.failNative()
                     errorMessage = error.localizedDescription
+                    physicalPublicationSummary = "Native falló · \(error.localizedDescription)"
+                    physicalPublicationLog.error("native job failed: \(error.localizedDescription, privacy: .public)")
                 }
             }
             physicalNativeJob = nil
@@ -817,6 +1017,8 @@ final class WorkspaceModel: ObservableObject {
                 // A newer parameter revision owns the next authoritative result.
             } catch {
                 status = error.localizedDescription
+                physicalPublicationSummary = "Falló · \(error.localizedDescription)"
+                physicalPublicationLog.error("physical job failed: \(error.localizedDescription, privacy: .public)")
             }
             if physicalInteractiveJob === submittedJob {
                 physicalInteractiveJob = nil
@@ -838,6 +1040,11 @@ final class WorkspaceModel: ObservableObject {
         guard let resolvedPhysicalPipeline else {
             throw DeviceDomainError.invalidPhysicalProfile(
                 "El modelo físico necesita un snapshot completo resuelto."
+            )
+        }
+        guard let physicalAuthoringState else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "El modelo físico necesita overrides de proyecto resueltos."
             )
         }
         let deviceSignal = try metalDisplay.transformToMetalFrame(
@@ -863,20 +1070,23 @@ final class WorkspaceModel: ObservableObject {
             high: physicalModel.parameterRevision,
             low: physicalIdentityCounter
         )
+        physicalPublicationSummary = "Source \(sourceACEScgFrame.width)×\(sourceACEScgFrame.height) · Device \(deviceSignal.width)×\(deviceSignal.height) · \(quality.uiLabel)/\(requestedPhysicalIntermediate.uiLabel) · enviado"
+        physicalPublicationLog.notice(
+            "submit source=\(sourceACEScgFrame.width)x\(sourceACEScgFrame.height) device=\(deviceSignal.width)x\(deviceSignal.height) quality=\(quality.uiLabel, privacy: .public) intermediate=\(self.requestedPhysicalIntermediate.uiLabel, privacy: .public) cameraZ=\(physicalAuthoringState.cameraPose.position[2])"
+        )
+        let selection = try PhysicalFrameSelection(
+            frameIndex: Int64(currentFrame),
+            timeNumerator: Int64(currentFrame),
+            timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
+        )
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
-            orchestration: try .staticSelectedFrame(
-                PhysicalFrameSelection(
-                    frameIndex: Int64(currentFrame),
-                    timeNumerator: Int64(currentFrame),
-                    timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
-                )
-            ),
+            orchestration: try physicalAuthoringState.orchestration(for: selection),
             resolvedDevice: effectiveDevice,
             resolvedPipeline: effectivePipeline,
             quality: quality,
-            screenAmount: physicalModel.screenAmount,
+            screenAmount: physicalModel.effectiveScreenAmount,
             contributions: contributions,
             requestedDimensions: try physicalRequestedDimensions(
                 quality: quality,
@@ -911,6 +1121,9 @@ final class WorkspaceModel: ObservableObject {
             case .cancelled:
                 throw CancellationError()
             case .failed:
+                physicalPublicationLog.error(
+                    "job state=failed quality=\(snapshot.computedQuality.uiLabel, privacy: .public) intermediate=\(snapshot.returnedIntermediate.uiLabel, privacy: .public)"
+                )
                 throw PhysicalMetalFrameEngineError.bridge(
                     snapshot.diagnostics.last?.message ?? "La evaluación física ha fallado."
                 )
@@ -950,6 +1163,10 @@ final class WorkspaceModel: ObservableObject {
                     .joined(separator: " · ")
                 status = "Modelo · \(snapshot.computedQuality.uiLabel) · \(effective.width)×\(effective.height) · \((elapsed * 1_000).formatted(.number.precision(.fractionLength(1)))) ms"
                 if !diagnostic.isEmpty { status += " · \(diagnostic)" }
+                physicalPublicationSummary = "Source sí · Device sí · Result sí \(presentationFrame.width)×\(presentationFrame.height) · \(snapshot.computedQuality.uiLabel)/\(snapshot.returnedIntermediate.uiLabel) · publicado"
+                physicalPublicationLog.notice(
+                    "published result=\(presentationFrame.width)x\(presentationFrame.height) state=complete quality=\(snapshot.computedQuality.uiLabel, privacy: .public) intermediate=\(snapshot.returnedIntermediate.uiLabel, privacy: .public) revision=\(snapshot.parameterRevision)"
+                )
                 return
             }
         }
@@ -989,9 +1206,12 @@ final class WorkspaceModel: ObservableObject {
         device: DeviceDefinition
     ) throws -> PhysicalParameterHash {
         var data = try JSONEncoder().encode(device)
+        if let physicalAuthoringState {
+            data.append(try JSONEncoder().encode(physicalAuthoringState))
+        }
         let fields = [
             quality.rawValue.description,
-            physicalModel.screenAmount.description,
+            physicalModel.effectiveScreenAmount.description,
             sourcePlacement.rawValue,
             physicalModel.parameterRevision.description,
             physicalModel.orderedContributions.map {

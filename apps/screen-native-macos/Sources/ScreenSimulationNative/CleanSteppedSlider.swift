@@ -1,65 +1,40 @@
-import AppKit
 import SwiftUI
 
-struct CleanSteppedSlider: NSViewRepresentable {
+struct CleanSteppedSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let step: Double
-    let identityDetent: Double
+    let identityDetent: Double?
     let accessibilityLabel: String
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeNSView(context: Context) -> NSSlider {
-        let slider = NSSlider(
-            value: value,
-            minValue: range.lowerBound,
-            maxValue: range.upperBound,
-            target: context.coordinator,
-            action: #selector(Coordinator.changed(_:))
+    var body: some View {
+        Slider(
+            value: Binding(
+                get: { value },
+                set: { candidate in
+                    value = resolved(candidate)
+                }
+            ),
+            in: range
         )
-        slider.isContinuous = true
-        slider.numberOfTickMarks = 0
-        slider.allowsTickMarkValuesOnly = false
-        slider.altIncrementValue = step
-        slider.controlSize = .small
-        slider.setAccessibilityLabel(accessibilityLabel)
-        return slider
+        .controlSize(.small)
+        .tint(NativeTheme.accent)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(value.formatted(.number.precision(.fractionLength(2))))
     }
 
-    func updateNSView(_ slider: NSSlider, context: Context) {
-        context.coordinator.parent = self
-        slider.minValue = range.lowerBound
-        slider.maxValue = range.upperBound
-        slider.numberOfTickMarks = 0
-        slider.allowsTickMarkValuesOnly = false
-        slider.altIncrementValue = step
-        slider.doubleValue = value
-        slider.setAccessibilityLabel(accessibilityLabel)
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        var parent: CleanSteppedSlider
-
-        init(parent: CleanSteppedSlider) {
-            self.parent = parent
-        }
-
-        @objc func changed(_ sender: NSSlider) {
+    private func resolved(_ candidate: Double) -> Double {
             let clamped = min(
-                parent.range.upperBound,
-                max(parent.range.lowerBound, sender.doubleValue)
+                range.upperBound,
+                max(range.lowerBound, candidate)
             )
-            let stepped = (clamped / parent.step).rounded() * parent.step
-            let detentRadius = parent.step * 0.55
-            let resolved = abs(clamped - parent.identityDetent) <= detentRadius
-                ? parent.identityDetent
-                : stepped
-            sender.doubleValue = resolved
-            parent.value = resolved
-        }
+            let stepped = (clamped / step).rounded() * step
+            let detentRadius = step * 0.55
+            if let identityDetent,
+               abs(clamped - identityDetent) <= detentRadius
+            {
+                return identityDetent
+            }
+            return stepped
     }
 }

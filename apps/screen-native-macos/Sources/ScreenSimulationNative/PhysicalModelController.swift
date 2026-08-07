@@ -1,11 +1,32 @@
 import Foundation
 
+struct PhysicalModelAuthoringState: Codable, Equatable, Sendable {
+    struct ContinuousValue: Codable, Equatable, Sendable {
+        var storedAmount: Double
+        var isBypassed: Bool
+    }
+
+    enum StageControl: Codable, Equatable, Sendable {
+        case continuous(ContinuousValue)
+        case discrete(enabled: Bool)
+    }
+
+    struct Stage: Codable, Equatable, Sendable {
+        let stableID: UInt32
+        var control: StageControl
+    }
+
+    var screen: ContinuousValue
+    var stages: [Stage]
+}
+
 @MainActor
 final class PhysicalModelController: ObservableObject {
     struct StageValue: Equatable, Sendable {
         let stage: PhysicalStageID
         let exactIdentityAtZero: Bool
         var control: PhysicalControlSemantics
+        var isBypassed: Bool
     }
 
     struct CompletedFrame: Equatable, Sendable {
@@ -18,10 +39,12 @@ final class PhysicalModelController: ObservableObject {
 
     private struct IsolationSnapshot {
         let screenAmount: Double
+        let screenIsBypassed: Bool
         let stages: [PhysicalStageID: StageValue]
     }
 
     @Published private(set) var screenAmount = 1.0
+    @Published private(set) var screenIsBypassed = false
     @Published private(set) var stages: [PhysicalStageID: StageValue]
     @Published private(set) var quality = PhysicalQuality.draft
     @Published private(set) var frameState = PhysicalFrameState.idle
@@ -50,7 +73,8 @@ final class PhysicalModelController: ObservableObject {
                 exactIdentityAtZero: !discrete,
                 control: discrete
                     ? .discrete(enabled: true)
-                    : .continuous(amount: 1, limits: stage.contributionLimits)
+                    : .continuous(amount: 1, limits: stage.contributionLimits),
+                isBypassed: false
             )
         }
         stages = values
@@ -59,12 +83,36 @@ final class PhysicalModelController: ObservableObject {
     var orderedContributions: [PhysicalStageContribution] {
         PhysicalStageID.ordered.compactMap { stage in
             guard let value = stages[stage] else { return nil }
+            let effectiveControl: PhysicalControlSemantics
+            if value.isBypassed, case let .continuous(_, limits) = value.control {
+                effectiveControl = .continuous(amount: 0, limits: limits)
+            } else {
+                effectiveControl = value.control
+            }
             return try? PhysicalStageContribution(
                 stage: stage,
-                control: value.control,
+                control: effectiveControl,
                 exactIdentityAtZero: value.exactIdentityAtZero
             )
         }
+    }
+
+    var effectiveScreenAmount: Double { screenIsBypassed ? 0 : screenAmount }
+
+    var authoringState: PhysicalModelAuthoringState {
+        PhysicalModelAuthoringState(
+            screen: .init(storedAmount: screenAmount, isBypassed: screenIsBypassed),
+            stages: PhysicalStageID.ordered.compactMap { stage in
+                guard let value = stages[stage] else { return nil }
+                let control: PhysicalModelAuthoringState.StageControl = switch value.control {
+                case let .continuous(amount, _):
+                    .continuous(.init(storedAmount: amount, isBypassed: value.isBypassed))
+                case let .discrete(enabled):
+                    .discrete(enabled: enabled)
+                }
+                return .init(stableID: stage.id, control: control)
+            }
+        )
     }
 
     var activeScreenStageCount: Int { activeCount(in: .screen) }
@@ -75,9 +123,21 @@ final class PhysicalModelController: ObservableObject {
         return stages[stage]!
     }
 
+    func bypassDiagnosticMessage(for stage: PhysicalStageID) -> String? {
+        guard let value = stages[stage] else { return nil }
+        let domainBypassed = stage.domain == .screen && screenIsBypassed
+        guard value.isBypassed || domainBypassed else { return nil }
+        guard case let .continuous(stored, _) = value.control else { return nil }
+        return "BYPASSED · effective 0 · stored \(stored.formatted(.number.precision(.fractionLength(2))))"
+    }
+
     func setQuality(_ quality: PhysicalQuality) {
         guard self.quality != quality else { return }
         self.quality = quality
+        invalidateParameters()
+    }
+
+    func invalidateExternalParameters() {
         invalidateParameters()
     }
 
@@ -90,6 +150,15 @@ final class PhysicalModelController: ObservableObject {
         case .capture:
             throw PhysicalModelStateError.domainHasNoContinuousMaster
         }
+        invalidateParameters()
+    }
+
+    func setDomainBypassed(_ bypassed: Bool, domain: PhysicalDomainID) throws {
+        guard domain == .screen else {
+            throw PhysicalModelStateError.domainHasNoContinuousMaster
+        }
+        guard screenIsBypassed != bypassed else { return }
+        screenIsBypassed = bypassed
         invalidateParameters()
     }
 
@@ -106,6 +175,54 @@ final class PhysicalModelController: ObservableObject {
         value.control = .continuous(amount: amount, limits: limits)
         guard stages[stage] != value else { return }
         stages[stage] = value
+        invalidateParameters()
+    }
+
+    func setContinuousBypassed(_ bypassed: Bool, stage: PhysicalStageID) throws {
+        guard var value = stages[stage], case .continuous = value.control else {
+            throw PhysicalModelStateError.stageIsNotContinuous
+        }
+        guard value.isBypassed != bypassed else { return }
+        value.isBypassed = bypassed
+        stages[stage] = value
+        invalidateParameters()
+    }
+
+    func restoreAuthoringState(_ state: PhysicalModelAuthoringState) throws {
+        try PhysicalContributionLimits.standard.validate(state.screen.storedAmount)
+        guard state.stages.map(\.stableID) == PhysicalStageID.ordered.map(\.id) else {
+            throw PhysicalModelStateError.invalidAuthoringState
+        }
+        var restored: [PhysicalStageID: StageValue] = [:]
+        for (stage, authored) in zip(PhysicalStageID.ordered, state.stages) {
+            let discrete = stage == .capture(.sensorCFA)
+                || stage == .capture(.developDemosaic)
+            let control: PhysicalControlSemantics
+            let bypassed: Bool
+            switch authored.control {
+            case let .continuous(value):
+                guard !discrete else { throw PhysicalModelStateError.invalidAuthoringState }
+                try stage.contributionLimits.validate(value.storedAmount)
+                control = .continuous(
+                    amount: value.storedAmount,
+                    limits: stage.contributionLimits
+                )
+                bypassed = value.isBypassed
+            case let .discrete(enabled):
+                guard discrete else { throw PhysicalModelStateError.invalidAuthoringState }
+                control = .discrete(enabled: enabled)
+                bypassed = false
+            }
+            restored[stage] = StageValue(
+                stage: stage,
+                exactIdentityAtZero: !discrete,
+                control: control,
+                isBypassed: bypassed
+            )
+        }
+        screenAmount = state.screen.storedAmount
+        screenIsBypassed = state.screen.isBypassed
+        stages = restored
         invalidateParameters()
     }
 
@@ -156,26 +273,29 @@ final class PhysicalModelController: ObservableObject {
         if isolatedStage != nil { restoreIsolation() }
         isolationSnapshot = IsolationSnapshot(
             screenAmount: screenAmount,
+            screenIsBypassed: screenIsBypassed,
             stages: stages
         )
         isolatedStage = stage
         for candidate in PhysicalStageID.ordered where candidate != stage {
             guard var value = stages[candidate] else { continue }
             switch value.control {
-            case let .continuous(_, limits):
-                value.control = .continuous(amount: 0, limits: limits)
+            case .continuous:
+                value.isBypassed = true
             case .discrete:
                 value.control = .discrete(enabled: false)
             }
             stages[candidate] = value
         }
         if stage.domain == .screen, screenAmount == 0 { screenAmount = 1 }
+        if stage.domain == .screen { screenIsBypassed = false }
         invalidateParameters()
     }
 
     func restoreIsolation() {
         guard let snapshot = isolationSnapshot else { return }
         screenAmount = snapshot.screenAmount
+        screenIsBypassed = snapshot.screenIsBypassed
         stages = snapshot.stages
         isolationSnapshot = nil
         isolatedStage = nil
@@ -203,14 +323,14 @@ final class PhysicalModelController: ObservableObject {
     ) {
         computedQuality = snapshot.computedQuality
         effectiveDimensions = snapshot.effectiveDimensions
-        diagnostics = snapshot.diagnostics
+        diagnostics = decoratedDiagnostics(snapshot.diagnostics)
         lastInteractiveSeconds = max(0, elapsedSeconds)
     }
 
     func publishNative(_ snapshot: PhysicalMetalFrameSnapshot) {
         computedQuality = snapshot.computedQuality
         effectiveDimensions = snapshot.effectiveDimensions
-        diagnostics = snapshot.diagnostics
+        diagnostics = decoratedDiagnostics(snapshot.diagnostics)
         updateNativeProgress(snapshot.progress)
     }
 
@@ -251,13 +371,32 @@ final class PhysicalModelController: ObservableObject {
     }
 
     private func activeCount(in domain: PhysicalDomainID) -> Int {
-        stages.values.filter { value in
+        if domain == .screen, screenIsBypassed { return 0 }
+        return stages.values.filter { value in
             guard value.stage.domain == domain else { return false }
+            if value.isBypassed { return false }
             return switch value.control {
             case let .continuous(amount, _): amount > 0
             case let .discrete(enabled): enabled
             }
         }.count
+    }
+
+    private func decoratedDiagnostics(
+        _ source: [PhysicalStageDiagnostic]
+    ) -> [PhysicalStageDiagnostic] {
+        source.map { diagnostic in
+            guard let suffix = bypassDiagnosticMessage(for: diagnostic.stage) else {
+                return diagnostic
+            }
+            return PhysicalStageDiagnostic(
+                stage: diagnostic.stage,
+                state: diagnostic.state,
+                progress: diagnostic.progress,
+                elapsedNanoseconds: diagnostic.elapsedNanoseconds,
+                message: diagnostic.message.isEmpty ? suffix : "\(diagnostic.message) · \(suffix)"
+            )
+        }
     }
 
     private func invalidateParameters() {
@@ -281,4 +420,5 @@ enum PhysicalModelStateError: Error, Equatable {
     case nativeAlreadyRendering
     case domainHasNoContinuousMaster
     case invalidStageCombination
+    case invalidAuthoringState
 }

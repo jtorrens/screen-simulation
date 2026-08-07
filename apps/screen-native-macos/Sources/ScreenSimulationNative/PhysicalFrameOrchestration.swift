@@ -1,4 +1,5 @@
 import Foundation
+import ScreenPhysicalBridge
 
 struct PhysicalVector3: Equatable, Sendable {
     let x: Float
@@ -31,8 +32,12 @@ struct PhysicalFrameOrchestration: Equatable, Sendable {
     let isStaticInput: Bool
 
     static func staticSelectedFrame(
-        _ frame: PhysicalFrameSelection
+        _ frame: PhysicalFrameSelection,
+        cameraDistanceMeters: Float = 1
     ) throws -> Self {
+        guard cameraDistanceMeters.isFinite, cameraDistanceMeters > 0 else {
+            throw PhysicalContractError.invalidFrameTime
+        }
         let (scaledTime, timeOverflow) = frame.timeNumerator
             .multipliedReportingOverflow(by: 96)
         let (denominator, denominatorOverflow) = frame.timeDenominator
@@ -59,7 +64,7 @@ struct PhysicalFrameOrchestration: Equatable, Sendable {
                 )
             ),
             cameraPose: PhysicalPoseSnapshot(
-                position: PhysicalVector3(x: 0, y: 0, z: 1),
+                position: PhysicalVector3(x: 0, y: 0, z: cameraDistanceMeters),
                 rotation: .identity
             ),
             screenPose: PhysicalPoseSnapshot(
@@ -68,5 +73,26 @@ struct PhysicalFrameOrchestration: Equatable, Sendable {
             ),
             isStaticInput: true
         )
+    }
+}
+
+struct PhysicalStaticFraming: Equatable, Sendable {
+    let cameraDistanceMeters: Float
+
+    init(device: DeviceDefinition, scene: ScreenSceneGeometryLensParametersV2) throws {
+        let focal = Double(scene.focal_length_millimeters)
+        let sensorWidth = Double(scene.sensor_width_millimeters)
+        let sensorHeight = Double(scene.sensor_height_millimeters)
+        guard focal.isFinite, focal > 0,
+              sensorWidth.isFinite, sensorWidth > 0,
+              sensorHeight.isFinite, sensorHeight > 0,
+              device.activeWidthMeters.isFinite, device.activeWidthMeters > 0,
+              device.activeHeightMeters.isFinite, device.activeHeightMeters > 0
+        else { throw DeviceDomainError.invalidPhysicalProfile("Encuadre físico no válido.") }
+        let horizontal = device.activeWidthMeters * focal / sensorWidth
+        let vertical = device.activeHeightMeters * focal / sensorHeight
+        // Five percent of breathing room makes the device boundary observable
+        // while deriving the pose solely from the resolved lens/sensor/device.
+        cameraDistanceMeters = Float(max(horizontal, vertical) * 1.05)
     }
 }

@@ -12,6 +12,7 @@ struct ModelInspectorView: View {
     @ObservedObject var workspace: WorkspaceModel
     @ObservedObject var library: GlobalLibraryController
     @ObservedObject private var physical: PhysicalModelController
+    @Environment(\.undoManager) private var undoManager
     @State private var tab = Tab.general
     @State private var expandedScreen: Set<ScreenPhysicalSection> = [.emission]
     @State private var expandedCapture: Set<CapturePhysicalSection> = []
@@ -106,11 +107,20 @@ struct ModelInspectorView: View {
                         title: "Pantalla",
                         domain: .screen,
                         amount: physical.screenAmount,
-                        enabled: true
+                        isBypassed: physical.screenIsBypassed
                     )
+                    ForEach(PhysicalStageID.generalOverviewContinuous) { stage in
+                        overviewStageAmount(stage)
+                    }
                 }
                 .frame(maxWidth: .infinity)
-                Text("Captura no tiene master continuo: CFA y Revelado son discretos; Obturación y Ruido conservan amounts propios.")
+                HStack(spacing: 14) {
+                    Label("CFA · discreta", systemImage: "camera.filters")
+                    Label("Revelado · discreto", systemImage: "camera.aperture")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Text("Captura no tiene master continuo. Los valores mostrados son los amounts autoritativos de cada etapa; CFA y Revelado permanecen disponibles como enables en Captura.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -145,6 +155,7 @@ struct ModelInspectorView: View {
                             value: "\(completed.effectiveDimensions.width) × \(completed.effectiveDimensions.height)"
                         )
                     }
+                    LabeledContent("Publicación", value: workspace.physicalPublicationSummary)
                 }
             }
 
@@ -153,6 +164,67 @@ struct ModelInspectorView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func overviewStageAmount(_ stage: PhysicalStageID) -> some View {
+        let value = physical.stageValue(stage)
+        if case let .continuous(amount, limits) = value.control {
+            GridRow(alignment: .center) {
+                Toggle(isOn: Binding(
+                    get: { !value.isBypassed },
+                    set: {
+                        workspace.changePhysicalStageBypass(
+                            !$0,
+                            stage: stage,
+                            undoManager: undoManager
+                        )
+                    }
+                )) { EmptyView() }
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(NativeTheme.accent)
+                .frame(width: 38, alignment: .leading)
+                .accessibilityLabel("Activar contribución de \(overviewTitle(stage))")
+                .accessibilityHint("Desactivado conserva el valor y publica effective amount cero")
+                Text(overviewTitle(stage))
+                    .frame(width: 92, alignment: .leading)
+                CleanSteppedSlider(value: detentedSliderBinding(
+                    value: amount,
+                    update: { workspace.changePhysicalStageAmount($0, stage: stage) }
+                ), range: limits.visualRange, step: 0.05, identityDetent: 1,
+                accessibilityLabel: "Contribución de \(overviewTitle(stage))")
+                .frame(minWidth: 150, maxWidth: .infinity)
+                .help("Incrementos de 0,05 · detente en 1 físico")
+                .opacity(value.isBypassed ? 0.45 : 1)
+                TextField("", value: Binding(
+                    get: { amount },
+                    set: { workspace.changePhysicalStageAmount($0, stage: stage) }
+                ), format: .number.precision(.fractionLength(2)))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 68)
+                .multilineTextAlignment(.trailing)
+                .accessibilityLabel("Valor de contribución de \(overviewTitle(stage))")
+                .accessibilityHint("Editable aunque la etapa esté omitida")
+                .opacity(value.isBypassed ? 0.45 : 1)
+            }
+            GridRow {
+                contributionState(amount, isBypassed: value.isBypassed)
+                    .gridCellColumns(4)
+            }
+        }
+    }
+
+    private func overviewTitle(_ stage: PhysicalStageID) -> String {
+        switch stage {
+        case .screen(.temporal): "Temporal"
+        case .screen(.coverGlass): "Cristal"
+        case .screen(.environment): "Entorno"
+        case .capture(.lens): "Lente"
+        case .capture(.exposureShutter): "Obturación"
+        case .capture(.noise): "Ruido"
+        default: preconditionFailure("Etapa no autorizada en General")
+        }
     }
 
     private var pipelineSummary: some View {
@@ -186,11 +258,27 @@ struct ModelInspectorView: View {
         title: String,
         domain: PhysicalDomainID,
         amount: Double,
-        enabled: Bool
+        isBypassed: Bool
     ) -> some View {
         GridRow(alignment: .center) {
+            Toggle(isOn: Binding(
+                get: { !isBypassed },
+                set: {
+                    workspace.changePhysicalDomainBypass(
+                        !$0,
+                        domain: domain,
+                        undoManager: undoManager
+                    )
+                }
+            )) { EmptyView() }
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .tint(NativeTheme.accent)
+            .frame(width: 38, alignment: .leading)
+            .accessibilityLabel("Activar contribución maestra de \(title)")
+            .accessibilityHint("Desactivado conserva el valor y publica effective amount cero")
             Text(title)
-                .frame(width: 82, alignment: .leading)
+                .frame(width: 92, alignment: .leading)
             CleanSteppedSlider(value: detentedSliderBinding(
                 value: amount,
                 update: { workspace.changePhysicalDomainAmount($0, domain: domain) }
@@ -198,7 +286,7 @@ struct ModelInspectorView: View {
             accessibilityLabel: "Contribución maestra de \(title)")
             .frame(minWidth: 150, maxWidth: .infinity)
             .help("Incrementos de 0,05 · detente en 1 físico")
-            .disabled(!enabled)
+            .opacity(isBypassed ? 0.45 : 1)
             TextField("", value: Binding(
                 get: { amount },
                 set: { workspace.changePhysicalDomainAmount($0, domain: domain) }
@@ -207,11 +295,12 @@ struct ModelInspectorView: View {
             .frame(width: 68)
             .multilineTextAlignment(.trailing)
             .accessibilityLabel("Valor de contribución maestra de \(title)")
-            .disabled(!enabled)
+            .accessibilityHint("Editable aunque el dominio esté omitido")
+            .opacity(isBypassed ? 0.45 : 1)
         }
         GridRow {
-            contributionState(amount)
-                .gridCellColumns(3)
+            contributionState(amount, isBypassed: isBypassed)
+                .gridCellColumns(4)
         }
     }
 
@@ -286,9 +375,7 @@ struct ModelInspectorView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Grid(alignment: .leading, horizontalSpacing: 8) {
                         GridRow {
-                            Text(title)
-                                .fontWeight(.medium)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            stageTitleControl(stage, title: title, value: value)
                             stageControl(stage, title: title, value: value)
                         }
                     }
@@ -310,9 +397,37 @@ struct ModelInspectorView: View {
             Button("Restablecer a físico") {
                 workspace.resetPhysicalStage(stage)
             }
+            Button("Restablecer parámetros del preset") {
+                workspace.resetPhysicalParameters(stage, undoManager: undoManager)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Etapa \(title). \(affects)")
+    }
+
+    @ViewBuilder
+    private func stageTitleControl(
+        _ stage: PhysicalStageID,
+        title: String,
+        value: PhysicalModelController.StageValue
+    ) -> some View {
+        switch value.control {
+        case .continuous:
+            Toggle(isOn: Binding(
+                get: { !value.isBypassed },
+                set: { workspace.changePhysicalStageBypass(!$0, stage: stage, undoManager: undoManager) }
+            )) {
+                Text(title).fontWeight(.medium)
+            }
+            .toggleStyle(.switch)
+            .tint(NativeTheme.accent)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Activar etapa \(title)")
+        case .discrete:
+            Text(title)
+                .fontWeight(.medium)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     @ViewBuilder
@@ -343,6 +458,7 @@ struct ModelInspectorView: View {
                 set: { workspace.changePhysicalStageEnabled($0, stage: stage) }
             ))
             .toggleStyle(.checkbox)
+            .tint(NativeTheme.accent)
             .accessibilityLabel("Activar \(title)")
         }
     }
@@ -350,7 +466,8 @@ struct ModelInspectorView: View {
     @ViewBuilder
     private func stageState(_ value: PhysicalModelController.StageValue) -> some View {
         switch value.control {
-        case let .continuous(amount, _): contributionState(amount)
+        case let .continuous(amount, _):
+            contributionState(amount, isBypassed: value.isBypassed)
         case let .discrete(enabled):
             Text(enabled ? "Discreta · Activa" : "Discreta · Desactivada")
                 .font(.caption2)
@@ -358,10 +475,16 @@ struct ModelInspectorView: View {
         }
     }
 
-    private func contributionState(_ amount: Double) -> some View {
+    private func contributionState(
+        _ amount: Double,
+        isBypassed: Bool = false
+    ) -> some View {
         let label: String
         let color: Color
-        if amount == 0 {
+        if isBypassed {
+            label = "BYPASSED · effective 0 · almacenado \(amount.formatted(.number.precision(.fractionLength(2))))"
+            color = .secondary
+        } else if amount == 0 {
             label = "0 · Desactivado"
             color = .secondary
         } else if amount == 1 {
@@ -393,74 +516,101 @@ struct ModelInspectorView: View {
 
     @ViewBuilder
     private func screenDetails(_ section: ScreenPhysicalSection) -> some View {
-        if let device = workspace.resolvedDevice?.definition {
+        if let device = workspace.modelDeviceDefinition,
+           let authored = workspace.physicalAuthoringState
+        {
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
             switch section {
             case .emission:
-                LabeledContent("Tecnología", value: device.panelTechnology.rawValue)
-                LabeledContent(
-                    "EOTF",
-                    value: "γ \(device.eotfGamma.formatted(.number.precision(.fractionLength(2))))"
-                )
-                LabeledContent(
-                    "Negro / blanco",
-                    value: "\(device.blackLevelNits.formatted()) / \(device.whiteLevelNits.formatted()) nits"
-                )
+                PhysicalDerivedRow(label: "Tecnología", value: device.panelTechnology.rawValue)
+                PhysicalDerivedRow(label: "Modelo EOTF", value: device.emissionModel.rawValue)
+                deviceDoubleRow("Gamma EOTF", \.eotfGamma, 1 ... 4, 0.01, "γ")
+                deviceDoubleRow("Nivel negro", \.blackLevelNits, 0 ... 20, 0.01, "nit")
+                deviceDoubleRow("Nivel blanco", \.whiteLevelNits, 1 ... 10_000, 1, "nit")
+                chromaticityRows("Primaria R", \.red)
+                chromaticityRows("Primaria G", \.green)
+                chromaticityRows("Primaria B", \.blue)
+                chromaticityRows("Blanco", \.white)
+                vectorDeviceRows("Emisión angular", \.angularEmissionPower, range: 0 ... 64, step: 0.05)
             case .subpixelGeometry:
-                LabeledContent(
-                    "Resolución",
-                    value: "\(device.nativeWidth) × \(device.nativeHeight)"
-                )
-                LabeledContent("Orden", value: device.stripeLayout.rawValue)
-                LabeledContent(
-                    "Pitch",
+                deviceIntegerRow("Anchura raster", \.nativeWidth, 1 ... 32_768, "px")
+                deviceIntegerRow("Altura raster", \.nativeHeight, 1 ... 32_768, "px")
+                deviceDoubleRow("Anchura activa", \.activeWidthMeters, 0.001 ... 20, 0.001, "m")
+                deviceDoubleRow("Altura activa", \.activeHeightMeters, 0.001 ... 20, 0.001, "m")
+                GridRow {
+                    Text("Orden subpíxel")
+                    Picker("Orden subpíxel", selection: deviceBinding(\.stripeLayout)) {
+                        ForEach(DeviceStripeLayout.allCases) { Text($0.rawValue).tag($0) }
+                    }.labelsHidden()
+                    Text("")
+                    deviceRestoreButton("Orden subpíxel", \.stripeLayout)
+                }
+                deviceDoubleRow("Black matrix", \.blackMatrixFraction, 0 ... 0.95, 0.01, "")
+                PhysicalDerivedRow(
+                    label: "Pixel pitch",
                     value: "\(device.pixelPitchMicrometers.formatted(.number.precision(.fractionLength(1)))) µm"
                 )
-                LabeledContent("Matriz negra", value: device.blackMatrixFraction.formatted(.percent))
-                Text("Aporta frecuencias espaciales; moiré y fringe aparecen al combinarla con Captura.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             case .panelLightSpread:
-                LabeledContent(
-                    "Fuerza del perfil",
-                    value: device.panelLightSpread.characterStrength.formatted(
-                        .number.precision(.fractionLength(2))
-                    )
-                )
-                LabeledContent(
-                    "Radio core RGB",
-                    value: device.panelLightSpread.coreRadiusMicrometers
-                        .map { $0.formatted(.number.precision(.fractionLength(1))) }
-                        .joined(separator: " / ") + " µm"
-                )
-                LabeledContent(
-                    "Radio tail RGB",
-                    value: device.panelLightSpread.tailRadiusMicrometers
-                        .map { $0.formatted(.number.precision(.fractionLength(1))) }
-                        .joined(separator: " / ") + " µm"
-                )
-                Text("Contaminación luminosa y bloom entre píxeles/subpíxeles. No es bloom de lente, halation, cristal ni sensor.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                PhysicalDerivedRow(label: "Strength", value: "Control amount de cabecera")
+                vectorDeviceRows("Core radius", \.panelLightSpread.coreRadiusMicrometers, range: 0 ... 5_000, step: 0.5, unit: "µm")
+                vectorDeviceRows("Core weight", \.panelLightSpread.coreWeight, range: 0 ... 1, step: 0.01)
+                vectorDeviceRows("Tail radius", \.panelLightSpread.tailRadiusMicrometers, range: 0 ... 20_000, step: 1, unit: "µm")
+                vectorDeviceRows("Tail weight", \.panelLightSpread.tailWeight, range: 0 ... 1, step: 0.01)
             case .temporal:
-                LabeledContent(
-                    "Flicker residual",
-                    value: device.residualFlickerAmplitude.formatted(.percent)
-                )
-                LabeledContent("Banding creativo", value: device.bandingAmount.formatted())
+                exactTimeRows("Periodo flicker", numerator: \.residualFlickerPeriod.numerator, denominator: \.residualFlickerPeriod.denominator)
+                deviceDoubleRow("Flicker amplitude", \.residualFlickerAmplitude, 0 ... 1, 0.01, "")
+                exactTimeRows("Fase flicker", numerator: \.residualFlickerPhase.numerator, denominator: \.residualFlickerPhase.denominator)
+                exactTimeRows("Periodo banding", numerator: \.bandingPeriod.numerator, denominator: \.bandingPeriod.denominator)
+                exactTimeRows("On banding", numerator: \.bandingOnDuration.numerator, denominator: \.bandingOnDuration.denominator)
+                exactTimeRows("Fase banding", numerator: \.bandingPhase.numerator, denominator: \.bandingPhase.denominator)
+                deviceDoubleRow("Banding artístico", \.bandingAmount, 0 ... 4, 0.05, "")
             case .coverGlass:
-                LabeledContent("Preset asociado", value: device.defaultCoverGlassPresetID)
-            case .environment:
-                if let parameters = workspace.physicalPipelineState?.parameters.environment {
-                    LabeledContent("Patrón HDR", value: "\(parameters.pattern)")
-                    LabeledContent(
-                        "Ángulo de key",
-                        value: "\(parameters.key_angular_radius_degrees.formatted())°"
-                    )
-                    LabeledContent(
-                        "Rotación",
-                        value: "\(parameters.rotation_degrees.formatted())°"
+                GridRow {
+                    Text("Preset base")
+                    Picker("Preset Cover Glass", selection: Binding(
+                        get: { authored.coverGlass.id },
+                        set: { id in
+                            guard let entry = library.document.coverGlasses.first(where: { $0.id == id }) else { return }
+                            workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0.coverGlass = entry.value }
+                        }
+                    )) {
+                        ForEach(library.document.coverGlasses) { Text($0.name).tag($0.id) }
+                    }.labelsHidden()
+                    Text("")
+                    PhysicalParameterRestoreButton(
+                        label: "Preset Cover Glass",
+                        isModified: authored.coverGlass != workspace.physicalPresetAuthoringState!.coverGlass,
+                        action: {
+                            let value = workspace.physicalPresetAuthoringState!.coverGlass
+                            workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0.coverGlass = value }
+                        }
                     )
                 }
+                PhysicalDerivedRow(label: "Strength", value: "Control amount de cabecera")
+                physicalDoubleRow("Espesor", \.coverGlass.thicknessMillimeters, 0.01 ... 20, 0.01, "mm")
+                physicalDoubleRow("Índice refracción", \.coverGlass.refractiveIndex, 1 ... 3, 0.01, "IOR")
+                physicalDoubleRow("Eficiencia AR", \.coverGlass.antiReflectiveEfficiency, 0 ... 1, 0.01, "")
+                vectorPhysicalRows("Absorción", \.coverGlass.absorptionPerMillimeter, range: 0 ... 20, step: 0.01, unit: "mm⁻¹")
+                physicalDoubleRow("Roughness", \.coverGlass.roughness, 0 ... 1, 0.01, "")
+                physicalDoubleRow("Haze", \.coverGlass.haze, 0 ... 1, 0.01, "")
+            case .environment:
+                GridRow {
+                    Text("Patrón HDR")
+                    Picker("Patrón HDR", selection: physicalUInt32Binding(\.environment.pattern)) {
+                        Text("Ninguno").tag(UInt32(0))
+                        Text("Cielo / suelo").tag(UInt32(1))
+                        Text("Softbox").tag(UInt32(2))
+                    }.labelsHidden()
+                    Text("")
+                    physicalRestoreButton("Patrón HDR", \.environment.pattern)
+                }
+                PhysicalDerivedRow(label: "Strength", value: "Control amount de cabecera")
+                vectorPhysicalRows("Ambient ACEScg", \.environment.ambientRadianceACEScg, range: 0 ... 100_000, step: 1, unit: "nit")
+                vectorPhysicalRows("Key ACEScg", \.environment.keyRadianceACEScg, range: 0 ... 100_000, step: 1, unit: "nit")
+                vectorPhysicalRows("Dirección key", \.environment.keyDirectionLocal, range: -1 ... 1, step: 0.01)
+                physicalDoubleRow("Radio key", \.environment.keyAngularRadiusDegrees, 0.01 ... 180, 0.1, "°")
+                physicalDoubleRow("Rotación", \.environment.rotationDegrees, -360 ... 360, 0.5, "°")
+            }
             }
         } else {
             Text("Selecciona un Device en General.").foregroundStyle(.secondary)
@@ -469,27 +619,439 @@ struct ModelInspectorView: View {
 
     @ViewBuilder
     private func captureDetails(_ section: CapturePhysicalSection) -> some View {
-        switch section {
-        case .geometry, .lens:
-            CaptureGeometryLensDetails(
-                section: section,
-                pipeline: workspace.physicalPipelineState
-            )
-        case .exposureShutter:
-            CaptureShutterMotionDetails(pipeline: workspace.physicalPipelineState)
-        case .sensorCFA, .noise, .developDemosaic:
-            CaptureSensorDevelopDetails(
-                section: section,
-                pipeline: workspace.physicalPipelineState
+        if let authored = workspace.physicalAuthoringState {
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
+                switch section {
+                case .geometry:
+                    PhysicalDerivedRow(label: "Input temporal", value: "STATIC_INPUT · tracks constantes")
+                    physicalArrayRows("Cámara posición", \.cameraPose.position, labels: ["X", "Y", "Z"], range: -100 ... 100, step: 0.001, unit: "m")
+                    physicalArrayRows("Cámara quaternion", \.cameraPose.quaternion, labels: ["X", "Y", "Z", "W"], range: -1 ... 1, step: 0.001)
+                    physicalArrayRows("Pantalla posición", \.screenPose.position, labels: ["X", "Y", "Z"], range: -100 ... 100, step: 0.001, unit: "m")
+                    physicalArrayRows("Pantalla quaternion", \.screenPose.quaternion, labels: ["X", "Y", "Z", "W"], range: -1 ... 1, step: 0.001)
+                    physicalDoubleRow("Near clip", \.sceneLens.nearClipMeters, 0.0001 ... 100, 0.001, "m")
+                    physicalDoubleRow("Far clip", \.sceneLens.farClipMeters, 0.01 ... 100_000, 0.1, "m")
+                case .lens:
+                    PhysicalDerivedRow(label: "Preset", value: "Valores efectivos del proyecto · ABI v2")
+                    physicalDoubleRow("Focal", \.sceneLens.focalLengthMillimeters, 0.1 ... 2_000, 0.1, "mm")
+                    physicalDoubleRow("Sensor ancho", \.sceneLens.sensorWidthMillimeters, 0.1 ... 200, 0.1, "mm")
+                    physicalDoubleRow("Sensor alto", \.sceneLens.sensorHeightMillimeters, 0.1 ... 200, 0.1, "mm")
+                    physicalArrayRows("Lens shift", \.sceneLens.lensShift, labels: ["X", "Y"], range: -2 ... 2, step: 0.001)
+                    physicalDoubleRow("Distancia foco", \.sceneLens.focusDistanceMeters, 0.001 ... 100_000, 0.01, "m")
+                    physicalDoubleRow("Diafragma", \.sceneLens.fStop, 0.1 ... 128, 0.05, "f/")
+                    physicalArrayRows("Distorsión radial", \.sceneLens.radialDistortion, labels: ["K1", "K2", "K3"], range: -10 ... 10, step: 0.001)
+                    physicalArrayRows("Distorsión tangencial", \.sceneLens.tangentialDistortion, labels: ["P1", "P2"], range: -10 ... 10, step: 0.001)
+                    physicalArrayRows("CA longitudinal", \.sceneLens.longitudinalChromaticMeters, labels: ["R", "G", "B"], range: -1 ... 1, step: 0.0001, unit: "m")
+                    physicalArrayRows("CA lateral", \.sceneLens.lateralChromaticScale, labels: ["R", "G", "B"], range: 0 ... 4, step: 0.001)
+                    physicalDoubleRow("Vignetting", \.sceneLens.vignettingStrength, 0 ... 4, 0.01, "")
+                    physicalArrayRows("Transmisión", \.sceneLens.transmissionRGB, labels: ["R", "G", "B"], range: 0 ... 4, step: 0.01)
+                    physicalDoubleRow("Softness centro", \.sceneLens.centerSoftnessMicrometers, 0 ... 10_000, 0.1, "µm")
+                    physicalDoubleRow("Softness borde", \.sceneLens.edgeSoftnessMicrometers, 0 ... 10_000, 0.1, "µm")
+                case .exposureShutter:
+                    physicalUInt16Row("Muestras temporales", \.shutterMotion.temporalSamples, 1 ... 256)
+                    GridRow {
+                        Text("Tipo obturador")
+                        Picker("Tipo obturador", selection: physicalUInt16Binding(\.shutterMotion.readoutKind)) {
+                            Text("Global").tag(UInt16(0))
+                            Text("Rolling").tag(UInt16(1))
+                        }.labelsHidden()
+                        Text("")
+                        physicalRestoreButton("Tipo obturador", \.shutterMotion.readoutKind)
+                    }
+                    physicalInt64Row("Readout num", \.shutterMotion.readoutDurationNumerator, -1_000_000 ... 1_000_000)
+                    physicalUInt32Row("Readout den", \.shutterMotion.readoutDurationDenominator, 1 ... 1_000_000)
+                    physicalUInt32Row("Dirección readout", \.shutterMotion.readoutDirection, 0 ... 3)
+                    physicalDoubleRow("ND", \.shutterMotion.neutralDensityStops, 0 ... 32, 0.05, "stops")
+                    physicalUInt64Row("Noise seed", \.shutterMotion.noiseSeed, 0 ... Int.max)
+                    physicalInt64Row("Open offset num", \.shutterMotion.openOffsetNumerator, -1_000_000 ... 1_000_000)
+                    physicalUInt32Row("Open offset den", \.shutterMotion.openOffsetDenominator, 1 ... 1_000_000)
+                    physicalInt64Row("Close offset num", \.shutterMotion.closeOffsetNumerator, -1_000_000 ... 1_000_000)
+                    physicalUInt32Row("Close offset den", \.shutterMotion.closeOffsetDenominator, 1 ... 1_000_000)
+                    PhysicalDerivedRow(label: "Motion", value: "Tracks constantes · no motion activo")
+                case .sensorCFA:
+                    PhysicalDerivedRow(label: "Preset", value: "Valores efectivos del proyecto · ABI v2")
+                    physicalUInt32Row("Anchura sensor", \.sensor.nativeWidth, 1 ... 32_768, unit: "px")
+                    physicalUInt32Row("Altura sensor", \.sensor.nativeHeight, 1 ... 32_768, unit: "px")
+                    GridRow {
+                        Text("Patrón CFA")
+                        Picker("Patrón CFA", selection: physicalUInt32Binding(\.sensor.bayerPattern)) {
+                            Text("RGGB").tag(UInt32(0)); Text("BGGR").tag(UInt32(1))
+                            Text("GRBG").tag(UInt32(2)); Text("GBRG").tag(UInt32(3))
+                        }.labelsHidden()
+                        Text("")
+                        physicalRestoreButton("Patrón CFA", \.sensor.bayerPattern)
+                    }
+                    physicalArrayRows("ACEScg→Sensor", \.sensor.acescgToSensor, labels: (0..<9).map { "M\($0 / 3)\($0 % 3)" }, range: -8 ... 8, step: 0.001)
+                    physicalArrayRows("Saturación", \.sensor.saturationIlluminanceSeconds, labels: ["R", "G", "B"], range: 0.0001 ... 1_000_000, step: 0.01, unit: "lux·s")
+                    physicalDoubleRow("Full well", \.sensor.fullWellElectrons, 1 ... 10_000_000, 1, "e⁻")
+                    physicalUInt32Row("ADC", \.sensor.adcBits, 1 ... 31, unit: "bit")
+                case .noise:
+                    physicalDoubleRow("Dark current", \.sensor.darkCurrentElectronsPerSecond, 0 ... 1_000_000, 0.01, "e⁻/s")
+                    physicalDoubleRow("Read noise", \.sensor.readNoiseElectronsRMS, 0 ... 1_000_000, 0.01, "e⁻ RMS")
+                    physicalDoubleRow("Analog gain", \.sensor.analogGain, 0.0001 ... 1_000_000, 0.01, "")
+                    physicalUInt64Row("Noise seed", \.shutterMotion.noiseSeed, 0 ... Int.max)
+                case .developDemosaic:
+                    PhysicalDerivedRow(label: "Demosaic", value: authored.develop.demosaicAuthority)
+                    physicalArrayRows("White balance", \.develop.whiteBalance, labels: ["R", "G", "B"], range: 0.001 ... 32, step: 0.01)
+                    physicalDoubleRow("Gris medio", \.develop.middleGrayIlluminanceSeconds, 0.000001 ... 1_000_000, 0.001, "lux·s")
+                    physicalDoubleRow("Exposición", \.develop.exposureEV, -32 ... 32, 0.05, "EV")
+                }
+            }
+        } else {
+            Text("Selecciona un Device en General.").foregroundStyle(.secondary)
+        }
+    }
+
+    private func deviceBinding<Value>(
+        _ keyPath: WritableKeyPath<DeviceDefinition, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { workspace.modelDeviceDefinition![keyPath: keyPath] },
+            set: { newValue in
+                workspace.updateModelDevice(undoManager: undoManager) {
+                    $0[keyPath: keyPath] = newValue
+                }
+            }
+        )
+    }
+
+    private func physicalBinding<Value>(
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { workspace.physicalAuthoringState![keyPath: keyPath] },
+            set: { newValue in
+                workspace.updatePhysicalAuthoring(undoManager: undoManager) {
+                    $0[keyPath: keyPath] = newValue
+                }
+            }
+        )
+    }
+
+    private func deviceRestoreButton<Value: Equatable>(
+        _ label: String,
+        _ keyPath: WritableKeyPath<DeviceDefinition, Value>
+    ) -> some View {
+        PhysicalParameterRestoreButton(
+            label: label,
+            isModified: workspace.modelDeviceDefinition![keyPath: keyPath]
+                != workspace.physicalPresetDeviceDefinition![keyPath: keyPath],
+            action: {
+                let value = workspace.physicalPresetDeviceDefinition![keyPath: keyPath]
+                workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func physicalRestoreButton<Value: Equatable>(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, Value>
+    ) -> some View {
+        PhysicalParameterRestoreButton(
+            label: label,
+            isModified: workspace.physicalAuthoringState![keyPath: keyPath]
+                != workspace.physicalPresetAuthoringState![keyPath: keyPath],
+            action: {
+                let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
+                workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func deviceDoubleRow(
+        _ label: String,
+        _ keyPath: WritableKeyPath<DeviceDefinition, Double>,
+        _ range: ClosedRange<Double>,
+        _ step: Double,
+        _ unit: String
+    ) -> some View {
+        PhysicalDoubleParameterRow(
+            label: label,
+            unit: unit,
+            range: range,
+            step: step,
+            value: deviceBinding(keyPath),
+            defaultValue: workspace.physicalPresetDeviceDefinition![keyPath: keyPath],
+            onRestore: {
+                let value = workspace.physicalPresetDeviceDefinition![keyPath: keyPath]
+                workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func physicalDoubleRow(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, Double>,
+        _ range: ClosedRange<Double>,
+        _ step: Double,
+        _ unit: String
+    ) -> some View {
+        PhysicalDoubleParameterRow(
+            label: label,
+            unit: unit,
+            range: range,
+            step: step,
+            value: physicalBinding(keyPath),
+            defaultValue: workspace.physicalPresetAuthoringState![keyPath: keyPath],
+            onRestore: {
+                let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
+                workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func deviceIntegerRow(
+        _ label: String,
+        _ keyPath: WritableKeyPath<DeviceDefinition, Int>,
+        _ range: ClosedRange<Int>,
+        _ unit: String
+    ) -> some View {
+        PhysicalIntegerParameterRow(
+            label: label,
+            unit: unit,
+            range: range,
+            value: deviceBinding(keyPath),
+            defaultValue: workspace.physicalPresetDeviceDefinition![keyPath: keyPath],
+            onRestore: {
+                let value = workspace.physicalPresetDeviceDefinition![keyPath: keyPath]
+                workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func physicalUInt32Binding(
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, UInt32>
+    ) -> Binding<UInt32> {
+        physicalBinding(keyPath)
+    }
+
+    private func physicalUInt16Binding(
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, UInt16>
+    ) -> Binding<UInt16> {
+        physicalBinding(keyPath)
+    }
+
+    @ViewBuilder
+    private func physicalArrayRows(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, [Double]>,
+        labels: [String],
+        range: ClosedRange<Double>,
+        step: Double,
+        unit: String = ""
+    ) -> some View {
+        ForEach(labels.indices, id: \.self) { index in
+            PhysicalDoubleParameterRow(
+                label: "\(label) \(labels[index])", unit: unit,
+                range: range, step: step,
+                value: Binding(
+                    get: { workspace.physicalAuthoringState![keyPath: keyPath][index] },
+                    set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath][index] = value } }
+                ),
+                defaultValue: workspace.physicalPresetAuthoringState![keyPath: keyPath][index],
+                onRestore: {
+                    let value = workspace.physicalPresetAuthoringState![keyPath: keyPath][index]
+                    workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath][index] = value }
+                }
             )
         }
+    }
+
+    private func physicalUInt16Row(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, UInt16>,
+        _ range: ClosedRange<Int>
+    ) -> some View {
+        PhysicalIntegerParameterRow(
+            label: label, unit: "", range: range,
+            value: Binding(
+                get: { Int(workspace.physicalAuthoringState![keyPath: keyPath]) },
+                set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = UInt16(value) } }
+            ),
+            defaultValue: Int(workspace.physicalPresetAuthoringState![keyPath: keyPath]),
+            onRestore: {
+                let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
+                workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func physicalUInt32Row(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, UInt32>,
+        _ range: ClosedRange<Int>,
+        unit: String = ""
+    ) -> some View {
+        PhysicalIntegerParameterRow(
+            label: label, unit: unit, range: range,
+            value: Binding(
+                get: { Int(workspace.physicalAuthoringState![keyPath: keyPath]) },
+                set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = UInt32(value) } }
+            ),
+            defaultValue: Int(workspace.physicalPresetAuthoringState![keyPath: keyPath]),
+            onRestore: {
+                let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
+                workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func physicalInt64Row(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, Int64>,
+        _ range: ClosedRange<Int>
+    ) -> some View {
+        PhysicalIntegerParameterRow(
+            label: label, unit: "", range: range,
+            value: Binding(
+                get: { Int(workspace.physicalAuthoringState![keyPath: keyPath]) },
+                set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = Int64(value) } }
+            ),
+            defaultValue: Int(workspace.physicalPresetAuthoringState![keyPath: keyPath]),
+            onRestore: {
+                let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
+                workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func physicalUInt64Row(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, UInt64>,
+        _ range: ClosedRange<Int>
+    ) -> some View {
+        PhysicalIntegerParameterRow(
+            label: label, unit: "", range: range,
+            value: Binding(
+                get: { Int(clamping: workspace.physicalAuthoringState![keyPath: keyPath]) },
+                set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = UInt64(value) } }
+            ),
+            defaultValue: Int(clamping: workspace.physicalPresetAuthoringState![keyPath: keyPath]),
+            onRestore: {
+                let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
+                workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func chromaticityRows(
+        _ label: String,
+        _ keyPath: WritableKeyPath<DeviceDefinition, DeviceChromaticity>
+    ) -> some View {
+        PhysicalDoubleParameterRow(
+            label: "\(label) x", unit: "", range: 0 ... 1, step: 0.001,
+            value: Binding(
+                get: { workspace.modelDeviceDefinition![keyPath: keyPath].x },
+                set: { value in workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath].x = value } }
+            ),
+            defaultValue: workspace.physicalPresetDeviceDefinition![keyPath: keyPath].x,
+            onRestore: {
+                let value = workspace.physicalPresetDeviceDefinition![keyPath: keyPath].x
+                workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath].x = value }
+            }
+        )
+        PhysicalDoubleParameterRow(
+            label: "\(label) y", unit: "", range: 0 ... 1, step: 0.001,
+            value: Binding(
+                get: { workspace.modelDeviceDefinition![keyPath: keyPath].y },
+                set: { value in workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath].y = value } }
+            ),
+            defaultValue: workspace.physicalPresetDeviceDefinition![keyPath: keyPath].y,
+            onRestore: {
+                let value = workspace.physicalPresetDeviceDefinition![keyPath: keyPath].y
+                workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath].y = value }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func vectorDeviceRows(
+        _ label: String,
+        _ keyPath: WritableKeyPath<DeviceDefinition, [Double]>,
+        range: ClosedRange<Double>,
+        step: Double,
+        unit: String = ""
+    ) -> some View {
+        ForEach(0..<3, id: \.self) { index in
+            PhysicalDoubleParameterRow(
+                label: "\(label) \(["R", "G", "B"][index])",
+                unit: unit, range: range, step: step,
+                value: Binding(
+                    get: { workspace.modelDeviceDefinition![keyPath: keyPath][index] },
+                    set: { value in workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath][index] = value } }
+                ),
+                defaultValue: workspace.physicalPresetDeviceDefinition![keyPath: keyPath][index],
+                onRestore: {
+                    let value = workspace.physicalPresetDeviceDefinition![keyPath: keyPath][index]
+                    workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath][index] = value }
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func vectorPhysicalRows(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, [Double]>,
+        range: ClosedRange<Double>,
+        step: Double,
+        unit: String = ""
+    ) -> some View {
+        ForEach(0..<3, id: \.self) { index in
+            PhysicalDoubleParameterRow(
+                label: "\(label) \(["R", "G", "B"][index])",
+                unit: unit, range: range, step: step,
+                value: Binding(
+                    get: { workspace.physicalAuthoringState![keyPath: keyPath][index] },
+                    set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath][index] = value } }
+                ),
+                defaultValue: workspace.physicalPresetAuthoringState![keyPath: keyPath][index],
+                onRestore: {
+                    let value = workspace.physicalPresetAuthoringState![keyPath: keyPath][index]
+                    workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath][index] = value }
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func exactTimeRows(
+        _ label: String,
+        numerator: WritableKeyPath<DeviceDefinition, Int64>,
+        denominator: WritableKeyPath<DeviceDefinition, UInt32>
+    ) -> some View {
+        PhysicalIntegerParameterRow(
+            label: "\(label) num", unit: "", range: -1_000_000 ... 1_000_000,
+            value: Binding(
+                get: { Int(workspace.modelDeviceDefinition![keyPath: numerator]) },
+                set: { value in workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: numerator] = Int64(value) } }
+            ),
+            defaultValue: Int(workspace.physicalPresetDeviceDefinition![keyPath: numerator]),
+            onRestore: {
+                let value = workspace.physicalPresetDeviceDefinition![keyPath: numerator]
+                workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: numerator] = value }
+            }
+        )
+        PhysicalIntegerParameterRow(
+            label: "\(label) den", unit: "", range: 1 ... 1_000_000,
+            value: Binding(
+                get: { Int(workspace.modelDeviceDefinition![keyPath: denominator]) },
+                set: { value in workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: denominator] = UInt32(value) } }
+            ),
+            defaultValue: Int(workspace.physicalPresetDeviceDefinition![keyPath: denominator]),
+            onRestore: {
+                let value = workspace.physicalPresetDeviceDefinition![keyPath: denominator]
+                workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: denominator] = value }
+            }
+        )
     }
 
 }
 
 private extension PhysicalModelController.StageValue {
     var isDisabled: Bool {
-        switch control {
+        if isBypassed { return true }
+        return switch control {
         case let .continuous(amount, _): amount == 0
         case let .discrete(enabled): !enabled
         }

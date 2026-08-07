@@ -2,6 +2,19 @@ import ScreenPhysicalBridge
 import Testing
 @testable import ScreenSimulationNative
 
+@Test func generalOverviewContainsEveryAuthoritativeContinuousCategoryWithoutCaptureMaster() {
+    #expect(PhysicalStageID.generalOverviewContinuous == [
+        .screen(.temporal),
+        .screen(.coverGlass),
+        .screen(.environment),
+        .capture(.lens),
+        .capture(.exposureShutter),
+        .capture(.noise),
+    ])
+    #expect(!PhysicalStageID.generalOverviewContinuous.contains(.capture(.sensorCFA)))
+    #expect(!PhysicalStageID.generalOverviewContinuous.contains(.capture(.developDemosaic)))
+}
+
 @Test func physicalContractHasOneStableOrderedDomainAndStageNamespace() {
     #expect(PhysicalFrameRequest.abiVersion == 2)
     #expect(PhysicalQuality.draft.rawValue == SCREEN_PHYSICAL_QUALITY_DRAFT.rawValue)

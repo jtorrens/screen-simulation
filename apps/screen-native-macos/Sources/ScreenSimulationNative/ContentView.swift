@@ -270,9 +270,7 @@ struct ContentView: View {
             ModelInspectorView(workspace: model, library: library)
                 .frame(minWidth: 380, idealWidth: 430, maxWidth: 620)
 
-            preview(deviceAspect: model.resolvedDevice.map {
-                Double($0.definition.nativeWidth) / Double($0.definition.nativeHeight)
-            }, modelMode: true)
+            preview(deviceAspect: model.modelPreviewSurfaceAspect, modelMode: true)
                 .frame(minWidth: 640, minHeight: 480)
         }
         .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Model"))
@@ -1449,7 +1447,7 @@ struct ContentView: View {
                         zoom: model.zoom,
                         pan: model.pan,
                         oneToOne: modelMode && model.modelViewerOneToOne,
-                        onDisplayChange: { model.systemDisplayInfo = $0 },
+                        onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
                         onZoomChange: { model.zoom = $0 }
                     )
@@ -1489,9 +1487,9 @@ struct ContentView: View {
                 if modelMode {
                     GeometryReader { proxy in
                         Color.clear
-                            .onAppear { model.setModelViewportSize(proxy.size) }
+                            .onAppear { model.scheduleModelViewportSize(proxy.size) }
                             .onChange(of: proxy.size) { _, size in
-                                model.setModelViewportSize(size)
+                                model.scheduleModelViewportSize(size)
                             }
                     }
                 }
@@ -1628,17 +1626,22 @@ struct MetalPreview: NSViewRepresentable {
     let onPanChange: (CGSize) -> Void
     let onZoomChange: (Double) -> Void
 
-    func makeNSView(context _: Context) -> MetalPreviewContainer {
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDisplayChange: onDisplayChange)
+    }
+
+    func makeNSView(context: Context) -> MetalPreviewContainer {
         let container = MetalPreviewContainer()
         let view = StudioColorScreenAwareMetalView()
-        view.screenDidChange = onDisplayChange
+        view.screenDidChange = context.coordinator.reportDisplayChange
         display.configure(view)
         container.install(view)
         return container
     }
 
-    func updateNSView(_ container: MetalPreviewContainer, context _: Context) {
-        container.metalView.screenDidChange = onDisplayChange
+    func updateNSView(_ container: MetalPreviewContainer, context: Context) {
+        context.coordinator.onDisplayChange = onDisplayChange
+        container.metalView.screenDidChange = context.coordinator.reportDisplayChange
         container.updatePresentation(
             zoom: zoom,
             pan: pan,
@@ -1649,6 +1652,26 @@ struct MetalPreview: NSViewRepresentable {
         container.onPanChange = onPanChange
         container.onZoomChange = onZoomChange
         display.present(frame, output: output, in: container.metalView)
+    }
+
+    @MainActor
+    final class Coordinator {
+        var onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
+        private var lastScheduled: StudioColorSystemDisplayInfo?
+
+        init(onDisplayChange: @escaping (StudioColorSystemDisplayInfo) -> Void) {
+            self.onDisplayChange = onDisplayChange
+        }
+
+        func reportDisplayChange(_ info: StudioColorSystemDisplayInfo) {
+            guard lastScheduled != info else { return }
+            lastScheduled = info
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self, self.lastScheduled == info else { return }
+                self.onDisplayChange(info)
+            }
+        }
     }
 }
 

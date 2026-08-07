@@ -87,7 +87,8 @@ struct PhysicalPipelineResolvedState {
     }
 
     func resolving(
-        contributions: [PhysicalStageContribution]
+        contributions: [PhysicalStageContribution],
+        focusDistanceMeters: Float? = nil
     ) throws -> Self {
         func amount(_ stage: PhysicalStageID) throws -> Float {
             guard let value = contributions.first(where: { $0.stage == stage })?.amount else {
@@ -98,6 +99,12 @@ struct PhysicalPipelineResolvedState {
         var resolved = parameters
         resolved.cover.character_strength = try amount(.screen(.coverGlass))
         resolved.environment.character_strength = try amount(.screen(.environment))
+        if let focusDistanceMeters {
+            guard focusDistanceMeters.isFinite, focusDistanceMeters > 0 else {
+                throw DeviceDomainError.invalidPhysicalProfile("Distancia de foco no válida.")
+            }
+            resolved.scene_geometry_lens.focus_distance_meters = focusDistanceMeters
+        }
         return Self(parameters: resolved, coverGlassID: coverGlassID)
     }
 }

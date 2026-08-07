@@ -58,6 +58,64 @@ import Testing
     })
 }
 
+@Test @MainActor func unifiedPhysicalABIPublishesDevelopedFrameWithEnergyAndOpaqueAlpha() async throws {
+    let fixture = try makePhysicalFixture(width: 64, height: 36)
+    let job = try submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(),
+        intermediate: .developedACEScg,
+        identity: 31
+    )
+    let result = try await terminalSnapshot(job)
+    let texture = try #require(result.frame?.texture)
+    let values = readRGBA32(texture)
+    let rgb = values.enumerated().compactMap { index, value in
+        index % 4 == 3 ? nil : value
+    }
+    let alpha = values.enumerated().compactMap { index, value in
+        index % 4 == 3 ? value : nil
+    }
+    #expect(rgb.allSatisfy { $0.isFinite })
+    #expect(rgb.reduce(0) { $0 + max(0, $1) } / Float(rgb.count) > 0.01)
+    #expect(alpha.allSatisfy { $0 == 1 })
+}
+
+@Test @MainActor func authoredSnapshotRoundTripsThroughUnifiedEngineAndRestore() async throws {
+    let base = try makePhysicalFixture(width: 32, height: 18)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == base.device.definition.defaultCoverGlassPresetID
+    })
+    var authored = try PhysicalPipelineAuthoringState.seeded(
+        device: base.device.definition,
+        coverGlass: cover
+    )
+    authored.sceneLens.focalLengthMillimeters = 62
+    authored.sensor.nativeWidth = 32
+    authored.sensor.nativeHeight = 18
+    authored.develop.exposureEV = 0.5
+    let restored = try JSONDecoder().decode(
+        PhysicalPipelineAuthoringState.self,
+        from: JSONEncoder().encode(authored)
+    )
+    let fixture = PhysicalFixture(
+        source: base.source,
+        deviceSignal: base.deviceSignal,
+        device: base.device,
+        pipeline: try restored.resolvedPipeline()
+    )
+    let result = try await terminalSnapshot(submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(),
+        intermediate: .developedACEScg,
+        identity: 32
+    ))
+    #expect(result.state == .complete)
+    #expect(result.frame?.width == 32)
+    #expect(result.frame?.height == 18)
+}
+
 @Test @MainActor func unifiedPhysicalABICoversTopologyPlacementAndSpreadMatrix() async throws {
     for stripe in [DeviceStripeLayout.rgb, .bgr] {
         let fixture = try makePhysicalFixture(stripe: stripe, blackMatrix: 0.18)
@@ -197,18 +255,21 @@ private struct PhysicalFixture {
 private func makePhysicalFixture(
     stripe: DeviceStripeLayout = .rgb,
     blackMatrix: Double = 0.12,
-    useNativeDeviceRaster: Bool = false
+    useNativeDeviceRaster: Bool = false,
+    width: Int = 4,
+    height: Int = 4
 ) throws -> PhysicalFixture {
     let display = try StudioColorMetalDisplay()
-    let sourcePixels = (0..<16).flatMap { index -> [Float] in
-            let value = Float(index) / 15
-            return [value, 1 - value, value * 1.25 - 0.1, Float(index) / 15]
+    let pixelCount = width * height
+    let sourcePixels = (0..<pixelCount).flatMap { index -> [Float] in
+            let value = Float(index) / Float(max(1, pixelCount - 1))
+            return [value, 1 - value, value * 1.25 - 0.1, value]
         }
     let metal = try #require(MTLCreateSystemDefaultDevice())
     let descriptor = MTLTextureDescriptor.texture2DDescriptor(
         pixelFormat: .rgba32Float,
-        width: 4,
-        height: 4,
+        width: width,
+        height: height,
         mipmapped: false
     )
     descriptor.storageMode = .shared
@@ -216,10 +277,10 @@ private func makePhysicalFixture(
     let sourceTexture = try #require(metal.makeTexture(descriptor: descriptor))
     sourcePixels.withUnsafeBytes { bytes in
         sourceTexture.replace(
-            region: MTLRegionMake2D(0, 0, 4, 4),
+            region: MTLRegionMake2D(0, 0, width, height),
             mipmapLevel: 0,
             withBytes: bytes.baseAddress!,
-            bytesPerRow: 4 * 4 * MemoryLayout<Float>.size
+            bytesPerRow: width * 4 * MemoryLayout<Float>.size
         )
     }
     let source = StudioColorMetalFrame(texture: sourceTexture)
@@ -229,8 +290,8 @@ private func makePhysicalFixture(
     let signal = try display.transformToMetalFrame(source, output: output)
     var device = try #require(try RustDeviceCatalog.builtIns().first)
     if !useNativeDeviceRaster {
-        device.nativeWidth = 4
-        device.nativeHeight = 4
+        device.nativeWidth = width
+        device.nativeHeight = height
     }
     device.stripeLayout = stripe
     device.blackMatrixFraction = blackMatrix
@@ -243,8 +304,8 @@ private func makePhysicalFixture(
         coverGlass: cover
     )
     var pipelineParameters = defaultPipeline.parameters
-    pipelineParameters.sensor_noise.native_width = 4
-    pipelineParameters.sensor_noise.native_height = 4
+    pipelineParameters.sensor_noise.native_width = UInt32(width)
+    pipelineParameters.sensor_noise.native_height = UInt32(height)
     let pipeline = PhysicalPipelineResolvedState(
         parameters: pipelineParameters,
         coverGlassID: defaultPipeline.coverGlassID
@@ -309,12 +370,22 @@ private func submit(
         timeNumerator: 0,
         timeDenominator: 24
     )
+    let framing = try PhysicalStaticFraming(
+        device: effectiveDefinition,
+        scene: fixture.pipeline.parameters.scene_geometry_lens
+    )
     return try PhysicalMetalFrameEngine().submit(
         sourceACEScg: fixture.source,
         deviceSignal: fixture.deviceSignal,
-        orchestration: try .staticSelectedFrame(frame),
+        orchestration: try .staticSelectedFrame(
+            frame,
+            cameraDistanceMeters: framing.cameraDistanceMeters
+        ),
         resolvedDevice: try effectiveDefinition.resolved(),
-        resolvedPipeline: try fixture.pipeline.resolving(contributions: contributions),
+        resolvedPipeline: try fixture.pipeline.resolving(
+            contributions: contributions,
+            focusDistanceMeters: framing.cameraDistanceMeters
+        ),
         quality: quality,
         screenAmount: screenAmount,
         contributions: contributions,
