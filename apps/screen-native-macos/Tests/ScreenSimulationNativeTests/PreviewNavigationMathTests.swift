@@ -8,15 +8,15 @@ import Testing
     let current = CGPoint(x: 175, y: 25)
     let proposed = CGSize(
         width: initial.width + current.x - start.x,
-        height: initial.height - current.y + start.y
+        height: initial.height + current.y - start.y
     )
-    #expect(proposed == CGSize(width: 95, height: 35))
+    #expect(proposed == CGSize(width: 95, height: -75))
     #expect(PreviewNavigationMath.clampedPan(
         proposed,
         viewport: CGSize(width: 100, height: 80),
         fittedContent: CGSize(width: 100, height: 50),
         scale: 2
-    ) == CGSize(width: 50, height: 10))
+    ) == CGSize(width: 50, height: -10))
 }
 
 @Test func previewFitAndOneToOneUseTheActualImageRect() {
@@ -46,5 +46,22 @@ import Testing
         viewportCenter: center,
         scaleRatio: 2
     )
-    #expect(result == CGSize(width: 15, height: -40))
+    #expect(result == CGSize(width: 15, height: 0))
+}
+
+@Test func previewPanReachesEveryEdgeAndCentersContentThatIsSmallerThanViewport() {
+    let viewport = CGSize(width: 100, height: 80)
+    let fitted = CGSize(width: 100, height: 50)
+    #expect(PreviewNavigationMath.clampedPan(
+        CGSize(width: 10_000, height: 10_000), viewport: viewport,
+        fittedContent: fitted, scale: 3
+    ) == CGSize(width: 100, height: 35))
+    #expect(PreviewNavigationMath.clampedPan(
+        CGSize(width: -10_000, height: -10_000), viewport: viewport,
+        fittedContent: fitted, scale: 3
+    ) == CGSize(width: -100, height: -35))
+    #expect(PreviewNavigationMath.clampedPan(
+        CGSize(width: 50, height: -50), viewport: viewport,
+        fittedContent: fitted, scale: 1
+    ) == .zero)
 }

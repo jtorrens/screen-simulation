@@ -19,6 +19,32 @@ import Testing
     #expect(abs(minusFiveY[3] - cos(-5 * .pi / 360)) < 1e-12)
 }
 
+@Test func lookAtProducesTheOnlyQuaternionAndCanDeriveTheSameTarget() {
+    let position = [0.2, -0.1, 1.0]
+    let target = [0.0, 0.0, 0.0]
+    let quaternion = PoseRotationProjection.quaternionLooking(from: position, to: target)
+    let distance = PoseRotationProjection.distance(position, target)
+    let restored = PoseRotationProjection.target(
+        from: position, quaternion: quaternion, distance: distance
+    )
+    for index in 0..<3 {
+        #expect(abs(restored[index] - target[index]) < 1e-10)
+    }
+}
+
+@Test func shutterAngleTimeAndReadoutRemainLinkedInStandardUnits() {
+    var shutter = PhysicalPipelineAuthoringState.ShutterMotion()
+    ShutterPresentation.setAngle(180, fps: 24, in: &shutter)
+    #expect(abs(ShutterPresentation.exposureSeconds(shutter) - 1.0 / 48.0) < 1e-9)
+    #expect(abs(ShutterPresentation.angle(shutter, fps: 24) - 180) < 1e-4)
+
+    ShutterPresentation.setExposureSeconds(1.0 / 96.0, in: &shutter)
+    #expect(abs(ShutterPresentation.angle(shutter, fps: 24) - 90) < 1e-4)
+
+    ShutterPresentation.setReadoutMilliseconds(12, in: &shutter)
+    #expect(abs(ShutterPresentation.readoutMilliseconds(shutter) - 12) < 1e-9)
+}
+
 @Test func capturePresetCatalogComesFromRustAndAppliesAnImmutableSnapshot() throws {
     let catalog = try CapturePresetDefinition.catalog()
     #expect(catalog.count == 2)

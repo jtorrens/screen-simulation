@@ -26,7 +26,7 @@ enum PreviewNavigationMath {
         let offsetY = anchor.y - viewportCenter.y
         return CGSize(
             width: previous.width * scaleRatio + offsetX * (1 - scaleRatio),
-            height: previous.height * scaleRatio + offsetY * (scaleRatio - 1)
+            height: previous.height * scaleRatio + offsetY * (1 - scaleRatio)
         )
     }
 

@@ -82,6 +82,11 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var quaternion = [0.0, 0.0, 0.0, 1.0]
     }
 
+    struct CameraLookAt: Codable, Equatable, Sendable {
+        var enabled = true
+        var target = [0.0, 0.0, 0.0]
+    }
+
     var coverGlass: CoverGlassDefinition
     var environment = Environment()
     var sceneLens = SceneLens()
@@ -90,6 +95,9 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
     var radiometricCalibration = RadiometricCalibration()
     var develop = Develop()
     var cameraPose = Pose()
+    /// UI authoring aid only. The physical engine continues to receive one
+    /// canonical quaternion, never a second orientation authority.
+    var cameraLookAt: CameraLookAt?
     var screenPose = Pose(position: [0, 0, 0], quaternion: [0, 0, 0, 1])
 
     static func seeded(
@@ -103,6 +111,11 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             scene: defaults.parameters.scene_geometry_lens
         ).cameraDistanceMeters)
         value.sceneLens.focusDistanceMeters = value.cameraPose.position[2]
+        value.cameraLookAt = CameraLookAt(target: value.screenPose.position)
+        value.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(
+            from: value.cameraPose.position,
+            to: value.screenPose.position
+        )
         return value
     }
 
@@ -320,7 +333,7 @@ extension PhysicalPipelineAuthoringState {
         switch section {
         case .geometry:
             cameraPose = base.cameraPose
-            screenPose = base.screenPose
+            cameraLookAt = base.cameraLookAt
             sceneLens.nearClipMeters = base.sceneLens.nearClipMeters
             sceneLens.farClipMeters = base.sceneLens.farClipMeters
         case .lens:

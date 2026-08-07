@@ -1759,7 +1759,7 @@ final class MetalPreviewContainer: NSView {
         let location = event.locationInWindow
         let proposed = CGSize(
             width: dragStartPan.width + location.x - start.x,
-            height: dragStartPan.height - location.y + start.y
+            height: dragStartPan.height + location.y - start.y
         )
         publishPan(clampedPan(proposed))
     }
@@ -1828,7 +1828,7 @@ final class MetalPreviewContainer: NSView {
         metalView.layer?.setAffineTransform(
             CGAffineTransform(
                 a: scale, b: 0, c: 0, d: scale,
-                tx: effectivePan.width, ty: -effectivePan.height
+                tx: effectivePan.width, ty: effectivePan.height
             )
         )
     }

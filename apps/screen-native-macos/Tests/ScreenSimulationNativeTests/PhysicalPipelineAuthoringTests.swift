@@ -67,7 +67,7 @@ import Testing
         "\\.environment.ambientRadianceACEScg", "\\.environment.keyRadianceACEScg",
         "\\.environment.keyDirectionLocal", "\\.environment.keyAngularRadiusDegrees",
         "\\.environment.rotationDegrees", "\\.environment.pattern",
-        "\\.cameraPose.position", "\\.cameraPose.quaternion",
+        "cameraPose.position", "cameraPose.quaternion",
         "\\.screenPose.position", "\\.screenPose.quaternion",
         "\\.sceneLens.focalLengthMillimeters", "\\.sceneLens.sensorWidthMillimeters",
         "\\.sceneLens.sensorHeightMillimeters", "\\.sceneLens.lensShift",
@@ -78,11 +78,8 @@ import Testing
         "\\.sceneLens.vignettingStrength", "\\.sceneLens.transmissionRGB",
         "\\.sceneLens.centerSoftnessMicrometers", "\\.sceneLens.edgeSoftnessMicrometers",
         "\\.shutterMotion.temporalSamples", "\\.shutterMotion.readoutKind",
-        "\\.shutterMotion.readoutDurationNumerator", "\\.shutterMotion.readoutDurationDenominator",
         "\\.shutterMotion.readoutDirection", "\\.shutterMotion.neutralDensityStops",
-        "\\.shutterMotion.noiseSeed", "\\.shutterMotion.openOffsetNumerator",
-        "\\.shutterMotion.openOffsetDenominator", "\\.shutterMotion.closeOffsetNumerator",
-        "\\.shutterMotion.closeOffsetDenominator", "\\.sensor.nativeWidth",
+        "\\.shutterMotion.noiseSeed", "\\.sensor.nativeWidth",
         "\\.sensor.nativeHeight", "\\.sensor.bayerPattern", "\\.sensor.acescgToSensor",
         "\\.sensor.saturationIlluminanceSeconds", "\\.sensor.fullWellElectrons",
         "\\.sensor.darkCurrentElectronsPerSecond", "\\.sensor.readNoiseElectronsRMS",
@@ -107,4 +104,10 @@ import Testing
     #expect(text.contains("developWhiteBalanceRow(.temperature)"))
     #expect(text.contains("developWhiteBalanceRow(.tint)"))
     #expect(!text.contains("Referencia gris medio"))
+    #expect(text.contains("ShutterPresentation.angle"))
+    #expect(text.contains("ShutterPresentation.setAngle"))
+    #expect(text.contains("ShutterPresentation.exposureSeconds"))
+    #expect(text.contains("ShutterPresentation.setExposureSeconds"))
+    #expect(text.contains("ShutterPresentation.readoutMilliseconds"))
+    #expect(text.contains("ShutterPresentation.setReadoutMilliseconds"))
 }

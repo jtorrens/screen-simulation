@@ -567,6 +567,8 @@ struct ModelInspectorView: View {
                 chromaticityRows("Blanco", \.white)
                 vectorDeviceRows("Emisión angular", \.angularEmissionPower, range: 0 ... 64, step: 0.05)
             case .subpixelGeometry:
+                physicalArrayRows("Pantalla posición", \.screenPose.position, labels: ["X", "Y", "Z"], range: -10 ... 10, step: 0.5, unit: "m")
+                physicalRotationRows("Pantalla rotación", \.screenPose.quaternion)
                 deviceIntegerRow("Anchura raster", \.nativeWidth, 1 ... 32_768, "px")
                 deviceIntegerRow("Altura raster", \.nativeHeight, 1 ... 32_768, "px")
                 deviceDoubleRow("Anchura activa", \.activeWidthMeters, 0.001 ... 20, 0.001, "m")
@@ -667,10 +669,9 @@ struct ModelInspectorView: View {
                 switch section {
                 case .geometry:
                     PhysicalDerivedRow(label: "Input temporal", value: "STATIC_INPUT · tracks constantes")
-                    physicalArrayRows("Cámara posición", \.cameraPose.position, labels: ["X", "Y", "Z"], range: -10 ... 10, step: 0.5, unit: "m")
-                    physicalRotationRows("Cámara rotación", \.cameraPose.quaternion)
-                    physicalArrayRows("Pantalla posición", \.screenPose.position, labels: ["X", "Y", "Z"], range: -10 ... 10, step: 0.5, unit: "m")
-                    physicalRotationRows("Pantalla rotación", \.screenPose.quaternion)
+                    cameraPositionRows()
+                    lookAtControl()
+                    cameraRotationRows()
                     physicalDoubleRow("Near clip", \.sceneLens.nearClipMeters, 0.0001 ... 100, 0.001, "m")
                     physicalDoubleRow("Far clip", \.sceneLens.farClipMeters, 0.01 ... 100_000, 0.1, "m")
                 case .lens:
@@ -690,6 +691,7 @@ struct ModelInspectorView: View {
                     physicalDoubleRow("Softness centro", \.sceneLens.centerSoftnessMicrometers, 0 ... 10_000, 0.1, "µm")
                     physicalDoubleRow("Softness borde", \.sceneLens.edgeSoftnessMicrometers, 0 ... 10_000, 0.1, "µm")
                 case .exposureShutter:
+                    shutterAngleAndTimeRows()
                     physicalUInt16Row("Muestras temporales", \.shutterMotion.temporalSamples, 1 ... 256)
                     GridRow {
                         PhysicalAnimationArmButton(
@@ -704,15 +706,19 @@ struct ModelInspectorView: View {
                         Text("")
                         physicalRestoreButton("Tipo obturador", \.shutterMotion.readoutKind)
                     }
-                    physicalInt64Row("Readout num", \.shutterMotion.readoutDurationNumerator, -1_000_000 ... 1_000_000)
-                    physicalUInt32Row("Readout den", \.shutterMotion.readoutDurationDenominator, 1 ... 1_000_000)
-                    physicalUInt32Row("Dirección readout", \.shutterMotion.readoutDirection, 0 ... 3)
+                    shutterReadoutRow()
+                    GridRow {
+                        PhysicalAnimationArmButton(label: "Dirección readout", armed: workspace.physicalAnimationArmBinding("shutter.readoutDirection"))
+                        Text("Dirección readout")
+                        Picker("Dirección readout", selection: physicalUInt32Binding(\.shutterMotion.readoutDirection)) {
+                            Text("Arriba → abajo").tag(UInt32(0))
+                            Text("Abajo → arriba").tag(UInt32(1))
+                        }.labelsHidden()
+                        Text("")
+                        physicalRestoreButton("Dirección readout", \.shutterMotion.readoutDirection)
+                    }
                     physicalDoubleRow("ND", \.shutterMotion.neutralDensityStops, 0 ... 32, 0.05, "stops")
                     physicalUInt64Row("Noise seed", \.shutterMotion.noiseSeed, 0 ... Int.max)
-                    physicalInt64Row("Open offset num", \.shutterMotion.openOffsetNumerator, -1_000_000 ... 1_000_000)
-                    physicalUInt32Row("Open offset den", \.shutterMotion.openOffsetDenominator, 1 ... 1_000_000)
-                    physicalInt64Row("Close offset num", \.shutterMotion.closeOffsetNumerator, -1_000_000 ... 1_000_000)
-                    physicalUInt32Row("Close offset den", \.shutterMotion.closeOffsetDenominator, 1 ... 1_000_000)
                     PhysicalDerivedRow(label: "Motion", value: "Tracks constantes · no motion activo")
                 case .sensorCFA:
                     PhysicalDerivedRow(label: "Preset", value: "Valores efectivos del proyecto · ABI v2")
@@ -1016,6 +1022,151 @@ struct ModelInspectorView: View {
                 )
             )
         }
+    }
+
+    @ViewBuilder
+    private func cameraPositionRows() -> some View {
+        ForEach(0..<3, id: \.self) { index in
+            let axes = ["X", "Y", "Z"]
+            PhysicalDoubleParameterRow(
+                label: "Cámara posición \(axes[index])", unit: "m", range: -10 ... 10, step: 0.5,
+                value: Binding(
+                    get: { workspace.physicalAuthoringState!.cameraPose.position[index] },
+                    set: { value in
+                        workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                            state.cameraPose.position[index] = value
+                            if state.cameraLookAt?.enabled == true, let target = state.cameraLookAt?.target {
+                                state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: target)
+                            }
+                        }
+                    }
+                ),
+                defaultValue: workspace.physicalPresetAuthoringState!.cameraPose.position[index],
+                onRestore: {
+                    let value = workspace.physicalPresetAuthoringState!.cameraPose.position[index]
+                    workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                        state.cameraPose.position[index] = value
+                        if state.cameraLookAt?.enabled == true, let target = state.cameraLookAt?.target {
+                            state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: target)
+                        }
+                    }
+                },
+                animationArmed: workspace.physicalAnimationArmBinding("camera.position.\(index)")
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func lookAtControl() -> some View {
+        let enabled = workspace.physicalAuthoringState?.cameraLookAt?.enabled ?? true
+        GridRow {
+            Color.clear.frame(width: 16, height: 1)
+            Text("Look At")
+            Toggle("Look At", isOn: Binding(
+                get: { enabled },
+                set: { newValue in
+                    workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                        var lookAt = state.cameraLookAt ?? .init(target: state.screenPose.position)
+                        lookAt.enabled = newValue
+                        state.cameraLookAt = lookAt
+                        if newValue { state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: lookAt.target) }
+                    }
+                }
+            )).labelsHidden()
+            Text("")
+            Color.clear.frame(width: 16, height: 1)
+        }
+        if enabled {
+            ForEach(0..<3, id: \.self) { index in
+                let axes = ["X", "Y", "Z"]
+                PhysicalDoubleParameterRow(
+                    label: "Objetivo \(axes[index])", unit: "m", range: -10 ... 10, step: 0.5,
+                    value: Binding(
+                        get: { workspace.physicalAuthoringState?.cameraLookAt?.target[index] ?? workspace.physicalAuthoringState!.screenPose.position[index] },
+                        set: { value in
+                            workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                                var lookAt = state.cameraLookAt ?? .init(target: state.screenPose.position)
+                                lookAt.target[index] = value
+                                state.cameraLookAt = lookAt
+                                state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: lookAt.target)
+                            }
+                        }
+                    ),
+                    defaultValue: workspace.physicalPresetAuthoringState?.cameraLookAt?.target[index] ?? workspace.physicalPresetAuthoringState!.screenPose.position[index],
+                    onRestore: {
+                        let value = workspace.physicalPresetAuthoringState?.cameraLookAt?.target[index] ?? workspace.physicalPresetAuthoringState!.screenPose.position[index]
+                        workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                            var lookAt = state.cameraLookAt ?? .init(target: state.screenPose.position)
+                            lookAt.target[index] = value
+                            state.cameraLookAt = lookAt
+                            state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(from: state.cameraPose.position, to: lookAt.target)
+                        }
+                    },
+                    animationArmed: workspace.physicalAnimationArmBinding("camera.lookAt.\(index)")
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cameraRotationRows() -> some View {
+        ForEach(0..<3, id: \.self) { index in
+            let axes = ["X", "Y", "Z"]
+            PhysicalDoubleParameterRow(
+                label: "Cámara rotación \(axes[index])", unit: "°", range: -180 ... 180, step: 5,
+                value: Binding(
+                    get: { PoseRotationProjection.degrees(from: workspace.physicalAuthoringState!.cameraPose.quaternion)[index] },
+                    set: { value in
+                        workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                            var angles = PoseRotationProjection.degrees(from: state.cameraPose.quaternion)
+                            angles[index] = value
+                            state.cameraPose.quaternion = PoseRotationProjection.quaternion(fromDegrees: angles)
+                            if state.cameraLookAt?.enabled == true {
+                                let distance = PoseRotationProjection.distance(state.cameraLookAt!.target, state.cameraPose.position)
+                                state.cameraLookAt!.target = PoseRotationProjection.target(from: state.cameraPose.position, quaternion: state.cameraPose.quaternion, distance: distance)
+                            }
+                        }
+                    }
+                ),
+                defaultValue: PoseRotationProjection.degrees(from: workspace.physicalPresetAuthoringState!.cameraPose.quaternion)[index],
+                onRestore: {
+                    workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0.cameraPose.quaternion = workspace.physicalPresetAuthoringState!.cameraPose.quaternion }
+                },
+                animationArmed: workspace.physicalAnimationArmBinding("camera.rotation.\(index)")
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func shutterAngleAndTimeRows() -> some View {
+        let current = workspace.physicalAuthoringState!.shutterMotion
+        let base = workspace.physicalPresetAuthoringState!.shutterMotion
+        PhysicalDoubleParameterRow(
+            label: "Ángulo obturación", unit: "°", range: 1 ... 360, step: 1,
+            value: Binding(get: { ShutterPresentation.angle(workspace.physicalAuthoringState!.shutterMotion, fps: workspace.frameRate) }, set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { ShutterPresentation.setAngle(value, fps: workspace.frameRate, in: &$0.shutterMotion) } }),
+            defaultValue: ShutterPresentation.angle(base, fps: workspace.frameRate),
+            onRestore: { workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0.shutterMotion.openOffsetNumerator = base.openOffsetNumerator; $0.shutterMotion.openOffsetDenominator = base.openOffsetDenominator; $0.shutterMotion.closeOffsetNumerator = base.closeOffsetNumerator; $0.shutterMotion.closeOffsetDenominator = base.closeOffsetDenominator } },
+            animationArmed: workspace.physicalAnimationArmBinding("shutter.angle")
+        )
+        PhysicalDoubleParameterRow(
+            label: "Tiempo exposición", unit: "ms", range: 0.01 ... 1_000, step: 0.01,
+            value: Binding(get: { ShutterPresentation.exposureSeconds(workspace.physicalAuthoringState!.shutterMotion) * 1_000 }, set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { ShutterPresentation.setExposureSeconds(value / 1_000, in: &$0.shutterMotion) } }),
+            defaultValue: ShutterPresentation.exposureSeconds(base) * 1_000,
+            onRestore: { workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0.shutterMotion.openOffsetNumerator = base.openOffsetNumerator; $0.shutterMotion.openOffsetDenominator = base.openOffsetDenominator; $0.shutterMotion.closeOffsetNumerator = base.closeOffsetNumerator; $0.shutterMotion.closeOffsetDenominator = base.closeOffsetDenominator } },
+            animationArmed: workspace.physicalAnimationArmBinding("shutter.exposure")
+        )
+        PhysicalDerivedRow(label: "Equivalente", value: "1/\(max(1, Int((1 / max(ShutterPresentation.exposureSeconds(current), 0.000001)).rounded()))) s · \(workspace.frameRate.formatted()) fps")
+    }
+
+    private func shutterReadoutRow() -> some View {
+        let base = workspace.physicalPresetAuthoringState!.shutterMotion
+        return PhysicalDoubleParameterRow(
+            label: "Readout", unit: "ms", range: 0 ... 1_000, step: 0.1,
+            value: Binding(get: { ShutterPresentation.readoutMilliseconds(workspace.physicalAuthoringState!.shutterMotion) }, set: { value in workspace.updatePhysicalAuthoring(undoManager: undoManager) { ShutterPresentation.setReadoutMilliseconds(value, in: &$0.shutterMotion) } }),
+            defaultValue: ShutterPresentation.readoutMilliseconds(base),
+            onRestore: { workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0.shutterMotion.readoutDurationNumerator = base.readoutDurationNumerator; $0.shutterMotion.readoutDurationDenominator = base.readoutDurationDenominator } },
+            animationArmed: workspace.physicalAnimationArmBinding("shutter.readout")
+        )
     }
 
     private func physicalUInt16Row(
