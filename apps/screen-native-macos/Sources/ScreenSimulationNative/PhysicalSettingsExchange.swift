@@ -1,7 +1,8 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.PhysicalSettings.v1"
+    static let schema = "ScreenSimulation.PhysicalSettings.v2"
+    private static let selectedMigrationSchema = "ScreenSimulation.PhysicalSettings.v1"
 
     struct Imported: Sendable {
         let device: DeviceDefinition
@@ -106,6 +107,52 @@ enum PhysicalSettingsExchange {
         )
     }
 
+    /// Explicit, user-selected one-way migration. Normal reads remain current-schema only.
+    @MainActor
+    static func decodeSelectedImport(
+        from document: [String: Any],
+        retainedCalibration: PhysicalPipelineAuthoringState.RadiometricCalibration,
+        retainedCaptureName: String
+    ) throws -> Imported {
+        guard let settings = document["settings"] as? [String: Any] else {
+            throw ImportError.missingSettings
+        }
+        let sourceSchema = settings["schema"] as? String
+        if sourceSchema == schema {
+            return try decode(from: document)
+        }
+        guard sourceSchema == selectedMigrationSchema else {
+            throw ImportError.unsupportedSchema(sourceSchema)
+        }
+        var migratedDocument = document
+        var migratedSettings = settings
+        var pipeline = try requiredObject("pipeline", in: settings)
+        guard pipeline["radiometricCalibration"] == nil else {
+            throw ImportError.invalidLegacyCalibration
+        }
+        guard let calibration = FrameCheckPNG.jsonObject(retainedCalibration) else {
+            throw ImportError.invalidLegacyCalibration
+        }
+        pipeline["radiometricCalibration"] = calibration
+        migratedSettings["pipeline"] = pipeline
+        migratedSettings["schema"] = schema
+        migratedDocument["settings"] = migratedSettings
+        let imported = try decode(from: migratedDocument)
+        return Imported(
+            device: imported.device,
+            pipeline: imported.pipeline,
+            model: imported.model,
+            report: imported.report + """
+
+
+            Migración seleccionada
+            • Origen: \(selectedMigrationSchema)
+            • Calibración radiométrica conservada del estado actual (cámara seleccionada: \(retainedCaptureName)).
+            • No se ha inferido una cámara por nombre, resolución ni valores del PNG.
+            """
+        )
+    }
+
     @MainActor
     private static func validated(
         model: PhysicalModelAuthoringState
@@ -165,6 +212,7 @@ enum PhysicalSettingsExchange {
         case unsupportedSchema(String?)
         case missingField(String)
         case invalidModel
+        case invalidLegacyCalibration
 
         var errorDescription: String? {
             switch self {
@@ -176,6 +224,8 @@ enum PhysicalSettingsExchange {
                 "Falta el campo físico obligatorio ‘\(field)’ en el PNG."
             case .invalidModel:
                 "Los controles físicos del PNG no cumplen el contrato vigente."
+            case .invalidLegacyCalibration:
+                "El PNG antiguo no puede migrarse de forma inequívoca a la calibración radiométrica vigente."
             }
         }
     }

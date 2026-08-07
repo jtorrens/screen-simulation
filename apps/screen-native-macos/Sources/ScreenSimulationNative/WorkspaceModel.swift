@@ -1085,12 +1085,20 @@ final class WorkspaceModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let png = try Data(contentsOf: url)
-            guard let metadata = FrameCheckPNG.metadata(in: png),
+            guard let metadata = FrameCheckPNG.metadataForSelectedImport(in: png),
                   let document = try JSONSerialization.jsonObject(with: metadata) as? [String: Any]
             else {
                 throw PhysicalSettingsExchange.ImportError.missingSettings
             }
-            let imported = try PhysicalSettingsExchange.decode(from: document)
+            guard let capture = capturePresets.first(where: { $0.id == selectedCapturePresetID })
+                ?? capturePresets.first,
+                let calibration = physicalAuthoringState?.radiometricCalibration
+            else { throw PhysicalSettingsExchange.ImportError.invalidModel }
+            let imported = try PhysicalSettingsExchange.decodeSelectedImport(
+                from: document,
+                retainedCalibration: calibration,
+                retainedCaptureName: capture.name
+            )
             guard confirmPhysicalSettingsImport(imported.report) else { return }
             try applyPhysicalSettings(imported, undoManager: undoManager)
             status = "Ajustes físicos importados · \(url.lastPathComponent)"
