@@ -1025,7 +1025,7 @@ final class WorkspaceModel: ObservableObject {
         if let colorSpaceName = previewTransform.colorSpace?.name {
             output["embeddedICCColorSpace"] = colorSpaceName as String
         }
-        return [
+        var document: [String: Any] = [
             "schema": FrameCheckPNG.metadataKeyword,
             "schemaVersion": 1,
             "producer": [
@@ -1065,6 +1065,95 @@ final class WorkspaceModel: ObservableObject {
                 "warnings": errorMessage.map { [$0] } ?? [],
             ],
         ]
+        if let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+           let state = physicalAuthoringState,
+           let settings = PhysicalSettingsExchange.metadata(
+               device: device,
+               pipeline: state,
+               model: physicalModel.authoringState
+           ) {
+            document["settings"] = settings
+        }
+        return document
+    }
+
+    func importPhysicalSettings(undoManager: UndoManager?) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png]
+        panel.allowsMultipleSelection = false
+        panel.message = "Importa únicamente los ajustes del modelo físico; ODT y calidad se conservan."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let png = try Data(contentsOf: url)
+            guard let metadata = FrameCheckPNG.metadata(in: png),
+                  let document = try JSONSerialization.jsonObject(with: metadata) as? [String: Any]
+            else {
+                throw PhysicalSettingsExchange.ImportError.missingSettings
+            }
+            let imported = try PhysicalSettingsExchange.decode(from: document)
+            guard confirmPhysicalSettingsImport(imported.report) else { return }
+            try applyPhysicalSettings(imported, undoManager: undoManager)
+            status = "Ajustes físicos importados · \(url.lastPathComponent)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private struct ImportedPhysicalState {
+        let device: DeviceDefinition
+        let pipeline: PhysicalPipelineAuthoringState
+        let model: PhysicalModelAuthoringState
+    }
+
+    private func applyPhysicalSettings(
+        _ imported: PhysicalSettingsExchange.Imported,
+        undoManager: UndoManager?
+    ) throws {
+        guard let priorDevice = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let priorPipeline = physicalAuthoringState
+        else { throw PhysicalSettingsExchange.ImportError.invalidModel }
+        let prior = ImportedPhysicalState(
+            device: priorDevice,
+            pipeline: priorPipeline,
+            model: physicalModel.authoringState
+        )
+        try restoreImportedPhysicalState(.init(
+            device: imported.device,
+            pipeline: imported.pipeline,
+            model: imported.model
+        ))
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in try? target.restoreImportedPhysicalState(prior) }
+        }
+        undoManager?.setActionName("Importar ajustes físicos")
+    }
+
+    private func restoreImportedPhysicalState(_ state: ImportedPhysicalState) throws {
+        resolvedDevice = try state.device.resolved()
+        resolvedPhysicalPipeline = try state.pipeline.resolvedPipeline()
+        try physicalModel.restoreAuthoringState(state.model)
+        modelDeviceDefinition = state.device
+        physicalAuthoringState = state.pipeline
+        physicalModel.invalidateExternalParameters()
+    }
+
+    private func confirmPhysicalSettingsImport(_ report: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Importar ajustes físicos"
+        alert.informativeText = "Se aplicarán los valores compatibles. ODT, calidad y navegación no cambiarán."
+        alert.addButton(withTitle: "Importar")
+        alert.addButton(withTitle: "Cancelar")
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 300))
+        scroll.hasVerticalScroller = true
+        let text = NSTextView(frame: scroll.bounds)
+        text.string = report
+        text.isEditable = false
+        text.isSelectable = true
+        text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        text.textContainerInset = NSSize(width: 8, height: 8)
+        scroll.documentView = text
+        alert.accessoryView = scroll
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func tickPlayback() {

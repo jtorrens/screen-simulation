@@ -1382,6 +1382,13 @@ struct ContentView: View {
                     if model.physicalModel.quality == .native {
                         nativeFrameControl
                     }
+                    Button {
+                        model.importPhysicalSettings(undoManager: undoManager)
+                    } label: {
+                        Label("Importar ajustes", systemImage: "square.and.arrow.down.on.square")
+                    }
+                    .help("Importar ajustes físicos desde un PNG de comprobación")
+                    .accessibilityLabel("Importar ajustes físicos")
                 }
                 Button {
                     model.monitorOutput.toggle(
