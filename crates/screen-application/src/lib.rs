@@ -4904,7 +4904,7 @@ mod tests {
     use screen_cover::{COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset};
     use screen_geometry::lens_preset;
     use screen_panel::{AnalyticBanding, PanelTemporalEmission};
-    use screen_panel::{DEVICE_PRESETS, PanelColorimetry, StripeLayout};
+    use screen_panel::{DEVICE_PRESETS, PanelColorimetry, StripeLayout, device_preset};
     use std::collections::HashSet;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6378,6 +6378,335 @@ mod tests {
         let result = evaluate_physical_pipeline_cpu_oracle(request).expect("radiometric developed");
         let pixel = result.acescg[0];
         0.272_228_72 * pixel[0] + 0.674_081_74 * pixel[1] + 0.053_689_517 * pixel[2]
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct ProductionPatchObservation {
+        raw_mean: f32,
+        raw_maximum: f32,
+        full_well_clipped_fraction: f32,
+        adc_clipped_fraction: f32,
+        developed_luminance: f32,
+    }
+
+    fn centered_shutter(seconds: f32) -> (RationalTime, RationalTime) {
+        let denominator = 1_000_000_u32;
+        let half_ticks = (seconds * denominator as f32 * 0.5).round() as i64;
+        (
+            RationalTime::new(-half_ticks, denominator).expect("valid shutter open"),
+            RationalTime::new(half_ticks, denominator).expect("valid shutter close"),
+        )
+    }
+
+    /// Exercises the production panel and camera profiles on a small uniform
+    /// patch. Spatial character, reflections and noise are deliberately zero:
+    /// this isolates the absolute panel-to-sensor exposure contract while
+    /// retaining the real EOTF, sensor/CFA, ADC and RAW-development profiles.
+    fn production_patch_request(
+        capture_id: &str,
+        display_id: &str,
+        white_level_nits: f32,
+        shutter_seconds: f32,
+        exposure_index: f32,
+        neutral_density_stops: f32,
+        intermediate: PhysicalIntermediate,
+    ) -> PhysicalPipelineRequest {
+        let capture = capture_device_preset(capture_id).expect("known capture preset");
+        let display = device_preset(display_id).expect("known display preset");
+        let mut request = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        request.input = PhysicalPipelineInput {
+            width: 8,
+            height: 8,
+            acescg: vec![[1.0, 1.0, 1.0, 1.0]; 64],
+            device_signal: DeviceSignalRaster {
+                width: 8,
+                height: 8,
+                pixels: vec![DeviceRgb::WHITE; 64],
+            },
+        };
+
+        let mut panel = display.profile();
+        panel.native_width = 8;
+        panel.native_height = 8;
+        panel.white_level_nits = white_level_nits;
+        panel.temporal_emission.residual_flicker.amplitude = 0.0;
+        request.plan.panel = panel;
+        request.plan.requested_width = 8;
+        request.plan.requested_height = 8;
+        request.plan.subpixel_geometry_amount = 0.0;
+        request.plan.panel_light_spread.character_strength = 0.0;
+        request.plan.temporal_emission_amount = 0.0;
+        request.plan.cover = CoverGlassProfile::NEUTRAL;
+        request.plan.environment = ProceduralEnvironment::NONE;
+        request.plan.scene_geometry_amount = 0.0;
+        request.plan.lens_amount = 0.0;
+        request.plan.scene_geometry_lens = ResolvedSceneGeometryLensSnapshot {
+            focal_length_millimeters: capture.focal_length.0,
+            sensor_width_millimeters: capture.gate_width.0,
+            sensor_height_millimeters: capture.gate_height.0,
+            f_stop: capture.f_stop,
+            ..ResolvedSceneGeometryLensSnapshot::REFERENCE
+        };
+
+        let (shutter_open, shutter_close) = centered_shutter(shutter_seconds);
+        request.plan.shutter_open = shutter_open;
+        request.plan.shutter_close = shutter_close;
+        request.plan.shutter_motion.neutral_density_stops = neutral_density_stops;
+        request.plan.shutter_motion_amount = 1.0;
+
+        request.plan.sensor = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            analog_gain: exposure_index / capture.reference_exposure_index,
+            dark_current_electrons_per_second: 0.0,
+            read_noise_electrons_rms: 0.0,
+            ..capture.sensor
+        };
+        request.plan.radiometric_calibration = capture.radiometric_calibration;
+        request.plan.sensor_enabled = true;
+        request.plan.sensor_noise_amount = 0.0;
+        request.plan.development = CameraDevelopment {
+            white_balance: LinearRgb::new(1.0, 1.0, 1.0),
+            middle_gray_illuminance_seconds: capture
+                .middle_gray_illuminance_seconds_at_reference_ei,
+            develop_exposure_ev: 0.0,
+        };
+        request.plan.development_enabled = true;
+        request.plan.requested_intermediate = intermediate;
+        request
+    }
+
+    fn observe_production_patch(
+        capture_id: &str,
+        display_id: &str,
+        white_level_nits: f32,
+        shutter_seconds: f32,
+        exposure_index: f32,
+        neutral_density_stops: f32,
+    ) -> ProductionPatchObservation {
+        let raw = evaluate_physical_pipeline_cpu_oracle(production_patch_request(
+            capture_id,
+            display_id,
+            white_level_nits,
+            shutter_seconds,
+            exposure_index,
+            neutral_density_stops,
+            PhysicalIntermediate::RawMosaic,
+        ))
+        .expect("production RAW patch");
+        let count = raw.acescg.len() as f32;
+        let raw_mean = raw.acescg.iter().map(|pixel| pixel[0]).sum::<f32>() / count;
+        let raw_maximum = raw
+            .acescg
+            .iter()
+            .map(|pixel| pixel[0])
+            .fold(0.0_f32, f32::max);
+        let full_well_clipped_fraction =
+            raw.acescg.iter().map(|pixel| pixel[1]).sum::<f32>() / count;
+        let adc_clipped_fraction = raw.acescg.iter().map(|pixel| pixel[2]).sum::<f32>() / count;
+
+        let developed = evaluate_physical_pipeline_cpu_oracle(production_patch_request(
+            capture_id,
+            display_id,
+            white_level_nits,
+            shutter_seconds,
+            exposure_index,
+            neutral_density_stops,
+            PhysicalIntermediate::DevelopedAcesCg,
+        ))
+        .expect("production developed patch");
+        let developed_luminance = developed
+            .acescg
+            .iter()
+            .map(|pixel| {
+                0.272_228_72 * pixel[0] + 0.674_081_74 * pixel[1] + 0.053_689_517 * pixel[2]
+            })
+            .sum::<f32>()
+            / developed.acescg.len() as f32;
+
+        ProductionPatchObservation {
+            raw_mean,
+            raw_maximum,
+            full_well_clipped_fraction,
+            adc_clipped_fraction,
+            developed_luminance,
+        }
+    }
+
+    #[test]
+    fn production_camera_display_patch_matrix_is_physically_plausible() {
+        let scenarios = [
+            ("arri-alexa-35-open-gate", 1.0 / 48.0, 800.0),
+            ("iphone-16e-main-48mp", 1.0 / 48.0, 100.0),
+            ("iphone-16e-main-48mp", 1.0 / 60.0, 80.0),
+            ("iphone-16e-main-48mp", 1.0 / 82.0, 80.0),
+            ("iphone-16e-main-48mp", 1.0 / 48.0, 320.0),
+        ];
+        let displays = [
+            ("lcd-asus-proart-pa329cv", 100.0),
+            ("lcd-asus-proart-pa329cv", 350.0),
+            ("lcd-phone-4_7-retina", 625.0),
+            ("lcd-tv-uhd-55", 1000.0),
+        ];
+
+        for (capture_id, shutter, ei) in scenarios {
+            let mut previous = None;
+            for (display_id, nits) in displays {
+                let observation =
+                    observe_production_patch(capture_id, display_id, nits, shutter, ei, 0.0);
+                assert!(observation.raw_mean.is_finite());
+                assert!(observation.raw_maximum.is_finite());
+                assert!(observation.developed_luminance.is_finite());
+                assert!((0.0..=1.0).contains(&observation.raw_mean));
+                assert!((0.0..=1.0).contains(&observation.raw_maximum));
+                assert!((0.0..=1.0).contains(&observation.full_well_clipped_fraction));
+                assert!((0.0..=1.0).contains(&observation.adc_clipped_fraction));
+                if let Some(previous_raw) = previous {
+                    assert!(
+                        observation.raw_mean + 1.0e-6 >= previous_raw,
+                        "{capture_id} RAW response must be monotonic with panel nits"
+                    );
+                }
+                previous = Some(observation.raw_mean);
+                eprintln!(
+                    "PATCH\t{capture_id}\t{display_id}\t{nits:.0}\t{shutter:.8}\t{ei:.0}\t{:.6}\t{:.6}\t{:.3}\t{:.3}\t{:.6}",
+                    observation.raw_mean,
+                    observation.raw_maximum,
+                    observation.full_well_clipped_fraction,
+                    observation.adc_clipped_fraction,
+                    observation.developed_luminance,
+                );
+            }
+        }
+
+        let base = observe_production_patch(
+            "iphone-16e-main-48mp",
+            "lcd-asus-proart-pa329cv",
+            5.0,
+            1.0 / 82.0,
+            80.0,
+            0.0,
+        );
+        let plus_shutter = observe_production_patch(
+            "iphone-16e-main-48mp",
+            "lcd-asus-proart-pa329cv",
+            5.0,
+            1.0 / 41.0,
+            80.0,
+            0.0,
+        );
+        let plus_ei = observe_production_patch(
+            "iphone-16e-main-48mp",
+            "lcd-asus-proart-pa329cv",
+            5.0,
+            1.0 / 82.0,
+            160.0,
+            0.0,
+        );
+        let plus_nd = observe_production_patch(
+            "iphone-16e-main-48mp",
+            "lcd-asus-proart-pa329cv",
+            5.0,
+            1.0 / 82.0,
+            80.0,
+            1.0,
+        );
+        assert!((plus_shutter.raw_mean / base.raw_mean - 2.0).abs() < 0.03);
+        assert!((plus_ei.raw_mean / base.raw_mean - 2.0).abs() < 0.03);
+        assert!((plus_nd.raw_mean / base.raw_mean - 0.5).abs() < 0.03);
+
+        let arri_hdr = observe_production_patch(
+            "arri-alexa-35-open-gate",
+            "lcd-tv-uhd-55",
+            1000.0,
+            1.0 / 48.0,
+            800.0,
+            0.0,
+        );
+        assert!(arri_hdr.raw_mean > 0.90 && arri_hdr.raw_mean < 0.92);
+        assert_eq!(arri_hdr.full_well_clipped_fraction, 0.0);
+        assert_eq!(arri_hdr.adc_clipped_fraction, 0.0);
+
+        let iphone_sdr = observe_production_patch(
+            "iphone-16e-main-48mp",
+            "lcd-asus-proart-pa329cv",
+            100.0,
+            1.0 / 48.0,
+            100.0,
+            0.0,
+        );
+        assert_eq!(iphone_sdr.full_well_clipped_fraction, 1.0);
+        assert_eq!(iphone_sdr.adc_clipped_fraction, 1.0);
+
+        let iphone_shorter_exposure = observe_production_patch(
+            "iphone-16e-main-48mp",
+            "lcd-asus-proart-pa329cv",
+            100.0,
+            1.0 / 60.0,
+            80.0,
+            0.0,
+        );
+        assert_eq!(iphone_shorter_exposure.full_well_clipped_fraction, 1.0);
+        assert_eq!(iphone_shorter_exposure.adc_clipped_fraction, 0.0);
+        assert!((iphone_shorter_exposure.raw_mean - 0.8).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn every_capture_preset_must_pass_radiometric_stop_invariants() {
+        for preset in CAPTURE_DEVICE_PRESETS {
+            let calibration = preset.radiometric_calibration;
+            let base_nits = calibration.reference_card_luminance_nits() * 0.25;
+            let shutter = calibration.reference_shutter_seconds;
+            let exposure_index = calibration.base_exposure_index;
+            let observe = |nits, shutter_seconds, ei, nd| {
+                observe_production_patch(
+                    preset.id,
+                    "lcd-asus-proart-pa329cv",
+                    nits,
+                    shutter_seconds,
+                    ei,
+                    nd,
+                )
+            };
+            let base = observe(base_nits, shutter, exposure_index, 0.0);
+            let plus_nits = observe(base_nits * 2.0, shutter, exposure_index, 0.0);
+            let plus_shutter = observe(base_nits, shutter * 2.0, exposure_index, 0.0);
+            let plus_ei = observe(base_nits, shutter, exposure_index * 2.0, 0.0);
+            let plus_nd = observe(base_nits, shutter, exposure_index, 1.0);
+
+            for observation in [base, plus_nits, plus_shutter, plus_ei, plus_nd] {
+                assert_eq!(
+                    observation.full_well_clipped_fraction, 0.0,
+                    "{} reference stop test must remain below full-well clipping",
+                    preset.id
+                );
+                assert_eq!(
+                    observation.adc_clipped_fraction, 0.0,
+                    "{} reference stop test must remain below ADC clipping",
+                    preset.id
+                );
+            }
+            assert!(
+                (plus_nits.raw_mean / base.raw_mean - 2.0).abs() < 0.05,
+                "{} must gain one RAW stop when panel luminance doubles",
+                preset.id
+            );
+            assert!(
+                (plus_shutter.raw_mean / base.raw_mean - 2.0).abs() < 0.05,
+                "{} must gain one RAW stop when shutter duration doubles",
+                preset.id
+            );
+            assert!(
+                (plus_ei.raw_mean / base.raw_mean - 2.0).abs() < 0.05,
+                "{} must gain one RAW stop when EI doubles",
+                preset.id
+            );
+            assert!(
+                (plus_nd.raw_mean / base.raw_mean - 0.5).abs() < 0.05,
+                "{} must lose one RAW stop at ND 1",
+                preset.id
+            );
+        }
     }
 
     #[test]
