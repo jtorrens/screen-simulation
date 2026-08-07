@@ -8,9 +8,11 @@ struct PhysicalDoubleParameterRow: View {
     @Binding var value: Double
     let defaultValue: Double
     let onRestore: () -> Void
+    var animationArmed: Binding<Bool>? = nil
 
     var body: some View {
         GridRow(alignment: .center) {
+            PhysicalAnimationArmButton(label: label, armed: animationArmed)
             Text(label).frame(minWidth: 116, alignment: .leading)
             CleanSteppedSlider(
                 value: $value,
@@ -50,9 +52,11 @@ struct PhysicalIntegerParameterRow: View {
     @Binding var value: Int
     let defaultValue: Int
     let onRestore: () -> Void
+    var animationArmed: Binding<Bool>? = nil
 
     var body: some View {
         GridRow(alignment: .center) {
+            PhysicalAnimationArmButton(label: label, armed: animationArmed)
             Text(label).frame(minWidth: 116, alignment: .leading)
             Stepper(value: $value, in: range) { EmptyView() }
                 .labelsHidden()
@@ -101,6 +105,7 @@ struct PhysicalDerivedRow: View {
 
     var body: some View {
         GridRow {
+            Color.clear.frame(width: 16, height: 1)
             Text(label)
             Spacer()
             HStack(spacing: 5) {
@@ -108,6 +113,32 @@ struct PhysicalDerivedRow: View {
                 Text("Derivado").font(.caption2).foregroundStyle(.secondary)
             }
             Color.clear.frame(width: 22, height: 1)
+        }
+    }
+}
+
+struct PhysicalAnimationArmButton: View {
+    let label: String
+    let armed: Binding<Bool>?
+
+    var body: some View {
+        if let armed {
+            Button {
+                armed.wrappedValue.toggle()
+            } label: {
+                Image(systemName: armed.wrappedValue ? "circle.inset.filled" : "circle")
+                    .foregroundStyle(armed.wrappedValue ? NativeTheme.accent : .secondary)
+            }
+            .buttonStyle(.borderless)
+            .frame(width: 16)
+            .help(armed.wrappedValue
+                ? "Preparado para Animación: \(label)"
+                : "Preparar para Animación: \(label)")
+            .accessibilityLabel(armed.wrappedValue
+                ? "Quitar \(label) de Animación"
+                : "Preparar \(label) para Animación")
+        } else {
+            Color.clear.frame(width: 16, height: 1)
         }
     }
 }

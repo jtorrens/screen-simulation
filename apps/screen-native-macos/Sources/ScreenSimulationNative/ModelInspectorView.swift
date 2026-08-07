@@ -187,6 +187,10 @@ struct ModelInspectorView: View {
                 .frame(width: 38, alignment: .leading)
                 .accessibilityLabel("Activar contribución de \(overviewTitle(stage))")
                 .accessibilityHint("Desactivado conserva el valor y publica effective amount cero")
+                PhysicalAnimationArmButton(
+                    label: "Contribución de \(overviewTitle(stage))",
+                    armed: workspace.physicalAnimationArmBinding("stage.amount.\(stage.id)")
+                )
                 Text(overviewTitle(stage))
                     .frame(width: 92, alignment: .leading)
                 CleanSteppedSlider(value: detentedSliderBinding(
@@ -210,7 +214,7 @@ struct ModelInspectorView: View {
             }
             GridRow {
                 contributionState(amount, isBypassed: value.isBypassed)
-                    .gridCellColumns(4)
+                    .gridCellColumns(5)
             }
         }
     }
@@ -277,6 +281,10 @@ struct ModelInspectorView: View {
             .frame(width: 38, alignment: .leading)
             .accessibilityLabel("Activar contribución maestra de \(title)")
             .accessibilityHint("Desactivado conserva el valor y publica effective amount cero")
+            PhysicalAnimationArmButton(
+                label: "Contribución maestra de \(title)",
+                armed: workspace.physicalAnimationArmBinding("domain.amount.\(domain.id)")
+            )
             Text(title)
                 .frame(width: 92, alignment: .leading)
             CleanSteppedSlider(value: detentedSliderBinding(
@@ -300,7 +308,7 @@ struct ModelInspectorView: View {
         }
         GridRow {
             contributionState(amount, isBypassed: isBypassed)
-                .gridCellColumns(4)
+                .gridCellColumns(5)
         }
     }
 
@@ -332,6 +340,32 @@ struct ModelInspectorView: View {
     private var capture: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
+                GroupBox("Cámara de captura") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Cámara", selection: Binding(
+                            get: { workspace.selectedCapturePresetID ?? "" },
+                            set: { id in
+                                guard let preset = workspace.capturePresets.first(where: { $0.id == id }) else { return }
+                                workspace.selectCapturePreset(preset, undoManager: undoManager)
+                            }
+                        )) {
+                            ForEach(workspace.capturePresets) { preset in
+                                Text(preset.name).tag(preset.id)
+                            }
+                        }
+                        if let preset = workspace.capturePresets.first(where: {
+                            $0.id == workspace.selectedCapturePresetID
+                        }) {
+                            Text(preset.calibration)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Valores copiados al modelo y editables · lente \(preset.defaultLensID)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 ForEach(CapturePhysicalSection.allCases) { section in
                     physicalCard(
                         stage: .capture(section),
@@ -538,6 +572,10 @@ struct ModelInspectorView: View {
                 deviceDoubleRow("Anchura activa", \.activeWidthMeters, 0.001 ... 20, 0.001, "m")
                 deviceDoubleRow("Altura activa", \.activeHeightMeters, 0.001 ... 20, 0.001, "m")
                 GridRow {
+                    PhysicalAnimationArmButton(
+                        label: "Orden subpíxel",
+                        armed: workspace.physicalAnimationArmBinding("device.stripeLayout")
+                    )
                     Text("Orden subpíxel")
                     Picker("Orden subpíxel", selection: deviceBinding(\.stripeLayout)) {
                         ForEach(DeviceStripeLayout.allCases) { Text($0.rawValue).tag($0) }
@@ -566,6 +604,7 @@ struct ModelInspectorView: View {
                 deviceDoubleRow("Banding artístico", \.bandingAmount, 0 ... 4, 0.05, "")
             case .coverGlass:
                 GridRow {
+                    Color.clear.frame(width: 16, height: 1)
                     Text("Preset base")
                     Picker("Preset Cover Glass", selection: Binding(
                         get: { authored.coverGlass.id },
@@ -595,6 +634,10 @@ struct ModelInspectorView: View {
                 physicalDoubleRow("Haze", \.coverGlass.haze, 0 ... 1, 0.01, "")
             case .environment:
                 GridRow {
+                    PhysicalAnimationArmButton(
+                        label: "Patrón HDR",
+                        armed: workspace.physicalAnimationArmBinding("environment.pattern")
+                    )
                     Text("Patrón HDR")
                     Picker("Patrón HDR", selection: physicalUInt32Binding(\.environment.pattern)) {
                         Text("Ninguno").tag(UInt32(0))
@@ -624,10 +667,10 @@ struct ModelInspectorView: View {
                 switch section {
                 case .geometry:
                     PhysicalDerivedRow(label: "Input temporal", value: "STATIC_INPUT · tracks constantes")
-                    physicalArrayRows("Cámara posición", \.cameraPose.position, labels: ["X", "Y", "Z"], range: -100 ... 100, step: 0.001, unit: "m")
-                    physicalArrayRows("Cámara quaternion", \.cameraPose.quaternion, labels: ["X", "Y", "Z", "W"], range: -1 ... 1, step: 0.001)
-                    physicalArrayRows("Pantalla posición", \.screenPose.position, labels: ["X", "Y", "Z"], range: -100 ... 100, step: 0.001, unit: "m")
-                    physicalArrayRows("Pantalla quaternion", \.screenPose.quaternion, labels: ["X", "Y", "Z", "W"], range: -1 ... 1, step: 0.001)
+                    physicalArrayRows("Cámara posición", \.cameraPose.position, labels: ["X", "Y", "Z"], range: -10 ... 10, step: 0.5, unit: "m")
+                    physicalRotationRows("Cámara rotación", \.cameraPose.quaternion)
+                    physicalArrayRows("Pantalla posición", \.screenPose.position, labels: ["X", "Y", "Z"], range: -10 ... 10, step: 0.5, unit: "m")
+                    physicalRotationRows("Pantalla rotación", \.screenPose.quaternion)
                     physicalDoubleRow("Near clip", \.sceneLens.nearClipMeters, 0.0001 ... 100, 0.001, "m")
                     physicalDoubleRow("Far clip", \.sceneLens.farClipMeters, 0.01 ... 100_000, 0.1, "m")
                 case .lens:
@@ -649,6 +692,10 @@ struct ModelInspectorView: View {
                 case .exposureShutter:
                     physicalUInt16Row("Muestras temporales", \.shutterMotion.temporalSamples, 1 ... 256)
                     GridRow {
+                        PhysicalAnimationArmButton(
+                            label: "Tipo obturador",
+                            armed: workspace.physicalAnimationArmBinding("shutter.readoutKind")
+                        )
                         Text("Tipo obturador")
                         Picker("Tipo obturador", selection: physicalUInt16Binding(\.shutterMotion.readoutKind)) {
                             Text("Global").tag(UInt16(0))
@@ -672,6 +719,10 @@ struct ModelInspectorView: View {
                     physicalUInt32Row("Anchura sensor", \.sensor.nativeWidth, 1 ... 32_768, unit: "px")
                     physicalUInt32Row("Altura sensor", \.sensor.nativeHeight, 1 ... 32_768, unit: "px")
                     GridRow {
+                        PhysicalAnimationArmButton(
+                            label: "Patrón CFA",
+                            armed: workspace.physicalAnimationArmBinding("sensor.bayerPattern")
+                        )
                         Text("Patrón CFA")
                         Picker("Patrón CFA", selection: physicalUInt32Binding(\.sensor.bayerPattern)) {
                             Text("RGGB").tag(UInt32(0)); Text("BGGR").tag(UInt32(1))
@@ -774,7 +825,8 @@ struct ModelInspectorView: View {
             onRestore: {
                 let value = workspace.physicalPresetDeviceDefinition![keyPath: keyPath]
                 workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath] = value }
-            }
+            },
+            animationArmed: workspace.physicalAnimationArmBinding(String(describing: keyPath))
         )
     }
 
@@ -795,7 +847,8 @@ struct ModelInspectorView: View {
             onRestore: {
                 let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
                 workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
-            }
+            },
+            animationArmed: workspace.physicalAnimationArmBinding(String(describing: keyPath))
         )
     }
 
@@ -814,7 +867,8 @@ struct ModelInspectorView: View {
             onRestore: {
                 let value = workspace.physicalPresetDeviceDefinition![keyPath: keyPath]
                 workspace.updateModelDevice(undoManager: undoManager) { $0[keyPath: keyPath] = value }
-            }
+            },
+            animationArmed: workspace.physicalAnimationArmBinding(String(describing: keyPath))
         )
     }
 
@@ -851,7 +905,54 @@ struct ModelInspectorView: View {
                 onRestore: {
                     let value = workspace.physicalPresetAuthoringState![keyPath: keyPath][index]
                     workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath][index] = value }
-                }
+                },
+                animationArmed: workspace.physicalAnimationArmBinding(
+                    "\(String(describing: keyPath)).\(index)"
+                )
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func physicalRotationRows(
+        _ label: String,
+        _ keyPath: WritableKeyPath<PhysicalPipelineAuthoringState, [Double]>
+    ) -> some View {
+        ForEach(0..<3, id: \.self) { index in
+            let axes = ["X", "Y", "Z"]
+            PhysicalDoubleParameterRow(
+                label: "\(label) \(axes[index])", unit: "°",
+                range: -180 ... 180, step: 5,
+                value: Binding(
+                    get: {
+                        PoseRotationProjection.degrees(
+                            from: workspace.physicalAuthoringState![keyPath: keyPath]
+                        )[index]
+                    },
+                    set: { value in
+                        workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                            var rotations = PoseRotationProjection.degrees(
+                                from: state[keyPath: keyPath]
+                            )
+                            rotations[index] = value
+                            state[keyPath: keyPath] = PoseRotationProjection.quaternion(
+                                fromDegrees: rotations
+                            )
+                        }
+                    }
+                ),
+                defaultValue: PoseRotationProjection.degrees(
+                    from: workspace.physicalPresetAuthoringState![keyPath: keyPath]
+                )[index],
+                onRestore: {
+                    let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
+                    workspace.updatePhysicalAuthoring(undoManager: undoManager) {
+                        $0[keyPath: keyPath] = value
+                    }
+                },
+                animationArmed: workspace.physicalAnimationArmBinding(
+                    "\(String(describing: keyPath)).rotation.\(index)"
+                )
             )
         }
     }
@@ -871,7 +972,8 @@ struct ModelInspectorView: View {
             onRestore: {
                 let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
                 workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
-            }
+            },
+            animationArmed: workspace.physicalAnimationArmBinding(String(describing: keyPath))
         )
     }
 
@@ -891,7 +993,8 @@ struct ModelInspectorView: View {
             onRestore: {
                 let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
                 workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
-            }
+            },
+            animationArmed: workspace.physicalAnimationArmBinding(String(describing: keyPath))
         )
     }
 
@@ -910,7 +1013,8 @@ struct ModelInspectorView: View {
             onRestore: {
                 let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
                 workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
-            }
+            },
+            animationArmed: workspace.physicalAnimationArmBinding(String(describing: keyPath))
         )
     }
 
@@ -929,7 +1033,8 @@ struct ModelInspectorView: View {
             onRestore: {
                 let value = workspace.physicalPresetAuthoringState![keyPath: keyPath]
                 workspace.updatePhysicalAuthoring(undoManager: undoManager) { $0[keyPath: keyPath] = value }
-            }
+            },
+            animationArmed: workspace.physicalAnimationArmBinding(String(describing: keyPath))
         )
     }
 

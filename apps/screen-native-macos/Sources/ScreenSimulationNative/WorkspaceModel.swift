@@ -6,6 +6,7 @@ import Foundation
 import OSLog
 import StudioColor
 import StudioMedia
+import SwiftUI
 
 @MainActor
 final class WorkspaceModel: ObservableObject {
@@ -84,6 +85,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
     @Published var sourcePlacement = SourcePlacement.fit
     @Published var modelViewerOneToOne = false
+    @Published private(set) var armedPhysicalParameterIDs: Set<String> = []
+    @Published private(set) var selectedCapturePresetID: String?
+    let capturePresets = try! CapturePresetDefinition.catalog()
     @Published private(set) var physicalPublicationSummary = "Sin publicación física"
 
     let metalDisplay: StudioColorMetalDisplay
@@ -189,10 +193,14 @@ final class WorkspaceModel: ObservableObject {
         do {
             resolvedDevice = try definition.resolved()
             modelDeviceDefinition = definition
-            let authored = try PhysicalPipelineAuthoringState.seeded(
+            var authored = try PhysicalPipelineAuthoringState.seeded(
                 device: definition,
                 coverGlass: coverGlass
             )
+            let capture = capturePresets.first { $0.id == selectedCapturePresetID }
+                ?? capturePresets.first
+            capture?.apply(to: &authored, frameRate: frameRate)
+            selectedCapturePresetID = capture?.id
             physicalAuthoringState = authored
             resolvedPhysicalPipeline = try authored.resolvedPipeline()
             baseModelDeviceDefinition = definition
@@ -201,6 +209,39 @@ final class WorkspaceModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func selectCapturePreset(_ preset: CapturePresetDefinition, undoManager: UndoManager?) {
+        guard let prior = physicalAuthoringState else { return }
+        let priorID = selectedCapturePresetID
+        var next = prior
+        preset.apply(to: &next, frameRate: frameRate)
+        do {
+            resolvedPhysicalPipeline = try next.resolvedPipeline()
+            physicalAuthoringState = next
+            basePhysicalAuthoringState = next
+            selectedCapturePresetID = preset.id
+            undoManager?.registerUndo(withTarget: self) { target in
+                Task { @MainActor in
+                    target.restoreCapturePresetState(prior, selectedID: priorID)
+                }
+            }
+            undoManager?.setActionName("Cambiar cámara")
+            physicalModel.invalidateExternalParameters()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func restoreCapturePresetState(
+        _ state: PhysicalPipelineAuthoringState,
+        selectedID: String?
+    ) {
+        do {
+            resolvedPhysicalPipeline = try state.resolvedPipeline()
+            physicalAuthoringState = state
+            basePhysicalAuthoringState = state
+            selectedCapturePresetID = selectedID
+            physicalModel.invalidateExternalParameters()
+        } catch { errorMessage = error.localizedDescription }
     }
 
     func updateModelDevice(
@@ -742,10 +783,29 @@ final class WorkspaceModel: ObservableObject {
         modelViewerOneToOne = true
         resetView()
     }
-    func zoomBy(_ factor: Double) { zoom = min(16, max(0.1, zoom * factor)) }
+    func zoomBy(_ factor: Double) {
+        modelViewerOneToOne = false
+        zoom = min(16, max(0.1, zoom * factor))
+    }
     var zoomPercentage: Double {
-        get { zoom * 100 }
-        set { zoom = min(16, max(0.1, newValue / 100)) }
+        zoom * 100
+    }
+    func setZoomPercentage(_ percentage: Double) {
+        modelViewerOneToOne = false
+        zoom = min(16, max(0.1, percentage / 100))
+    }
+
+    func physicalAnimationArmBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { self.armedPhysicalParameterIDs.contains(id) },
+            set: { armed in
+                if armed {
+                    self.armedPhysicalParameterIDs.insert(id)
+                } else {
+                    self.armedPhysicalParameterIDs.remove(id)
+                }
+            }
+        )
     }
 
     func changeOutputFormat(_ format: StudioOutputFormat) {
@@ -865,14 +925,22 @@ final class WorkspaceModel: ObservableObject {
         guard let metalFrame else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.tiff]
-        panel.nameFieldStringValue = String(format: "ScreenSimulation-%08d.tiff", currentFrame)
+        let quality = switch physicalModel.quality {
+        case .draft: "Draft"
+        case .medium: "Media"
+        case .high: "Alta"
+        case .native: "Nativa"
+        }
+        panel.nameFieldStringValue = String(
+            format: "ScreenSimulation-%@-%08d.tiff", quality, currentFrame
+        )
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try NativeOutputRenderer.renderCurrentFrame(
                 frame: metalFrame, displayTransform: previewTransform,
                 destination: url, display: metalDisplay
             )
-            status = "Frame actual renderizado · \(url.lastPathComponent)"
+            status = "Frame \(quality) renderizado · \(url.lastPathComponent)"
         } catch { errorMessage = error.localizedDescription }
     }
 

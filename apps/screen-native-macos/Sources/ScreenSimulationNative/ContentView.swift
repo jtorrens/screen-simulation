@@ -1136,16 +1136,16 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var workspaceToolbar: some ToolbarContent {
         ToolbarItemGroup {
-            Button(action: model.openMedia) { Label("Abrir", systemImage: "folder") }
+            Button("Abrir", action: model.openMedia)
                 .disabled(page != .main)
                 .help("Abrir un vídeo o una imagen")
-            Button(action: model.enqueueExport) { Label("Añadir render", systemImage: "plus.rectangle.on.rectangle") }
+            Button("A cola", action: model.enqueueExport)
                 .disabled(page != .main || model.metalFrame == nil)
                 .help("Añadir la película o el rango completo a Render Queue")
-            Button(action: model.renderCurrentFrame) { Label("Frame actual", systemImage: "photo") }
+            Button("Frame", action: model.renderCurrentFrame)
                 .disabled(page != .main || model.metalFrame == nil)
                 .help("Renderizar el frame actual horneando la transformación del visor")
-            Button(action: model.runQueue) { Label("Render", systemImage: "play.fill") }
+            Button("Render", action: model.runQueue)
                 .disabled(page != .main || !model.jobs.contains { $0.state == .pending })
                 .help("Procesar los trabajos en cola")
         }
@@ -1405,16 +1405,14 @@ struct ContentView: View {
                 }
                 .help("Reducir zoom")
                 .accessibilityLabel("Reducir zoom")
-                if !modelMode {
-                    TextField("Zoom", value: Binding(
-                        get: { model.zoomPercentage },
-                        set: { model.zoomPercentage = $0 }
-                    ), format: .number.precision(.fractionLength(0)))
-                        .frame(width: 52)
-                        .multilineTextAlignment(.trailing)
-                        .accessibilityLabel("Escala del visor en porcentaje")
-                    Text("%").foregroundStyle(.secondary)
-                }
+                TextField("Zoom", value: Binding(
+                    get: { model.zoomPercentage },
+                    set: { model.setZoomPercentage($0) }
+                ), format: .number.precision(.fractionLength(0)))
+                    .frame(width: 52)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityLabel("Escala del visor en porcentaje")
+                Text("%").foregroundStyle(.secondary)
                 Button("Fit") {
                     modelMode ? model.fitModelPreview() : model.resetView()
                 }
@@ -1427,6 +1425,21 @@ struct ContentView: View {
                 Button { model.zoomBy(1.25) } label: { Image(systemName: "plus.magnifyingglass") }
                     .help("Aumentar zoom")
                     .accessibilityLabel("Aumentar zoom")
+                Button {
+                    model.renderCurrentFrame()
+                } label: {
+                    Label("Guardar frame", systemImage: "square.and.arrow.down")
+                }
+                .disabled(
+                    model.metalFrame == nil
+                        || (modelMode && (
+                            model.physicalModel.computedQuality != model.physicalModel.quality
+                                || (model.physicalModel.quality == .native
+                                    && model.physicalModel.frameState == .stale)
+                        ))
+                )
+                .help("Guardar el fotograma de la calidad física seleccionada")
+                .accessibilityLabel("Guardar fotograma actual")
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 10)
@@ -1495,10 +1508,8 @@ struct ContentView: View {
                 }
             }
             .clipped()
-            if !modelMode {
-                Divider()
-                transport
-            }
+            Divider()
+            transport
             Divider()
             HStack(spacing: 8) {
                 Image(systemName: model.metalFrame == nil ? "exclamationmark.circle" : "checkmark.circle")

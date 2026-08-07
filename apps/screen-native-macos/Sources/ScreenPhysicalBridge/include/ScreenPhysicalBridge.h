@@ -294,6 +294,21 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
+    ScreenSensorNoiseParametersV2 sensor;
+    float gate_width_millimeters;
+    float gate_height_millimeters;
+    float focal_length_millimeters;
+    float f_stop;
+    float reference_exposure_index;
+    float middle_gray_illuminance_seconds;
+    float default_shutter_angle_degrees;
+    uint16_t default_temporal_samples;
+    uint16_t optics_authority;
+    float default_readout_duration_milliseconds;
+} ScreenCapturePresetParametersV2;
+
+typedef struct {
+    uint32_t abi_version;
     ScreenCoverGlassParametersV2 cover;
     ScreenEnvironmentParametersV2 environment;
     ScreenSceneGeometryLensParametersV2 scene_geometry_lens;
@@ -335,6 +350,15 @@ ScreenDeviceProfileRef screen_device_profile_create(
     const char **error_message
 );
 void screen_device_profile_release(ScreenDeviceProfileRef profile);
+size_t screen_capture_preset_count(void);
+ScreenUTF8View screen_capture_preset_id(size_t index);
+ScreenUTF8View screen_capture_preset_label(size_t index);
+ScreenUTF8View screen_capture_preset_calibration(size_t index);
+ScreenUTF8View screen_capture_preset_default_lens_id(size_t index);
+bool screen_capture_preset_parameters(
+    size_t index,
+    ScreenCapturePresetParametersV2 *parameters
+);
 /*
  * Physical-frame ABI v2. These declarations are the single UI/engine contract.
  * The immutable timed input set retains every source linear ACEScg texture and

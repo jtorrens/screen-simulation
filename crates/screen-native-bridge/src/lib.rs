@@ -16,10 +16,10 @@ use metal::foreign_types::{ForeignType, ForeignTypeRef};
 #[cfg(target_os = "macos")]
 use metal::{MTLTexture, Texture, TextureRef};
 use screen_application::{
-    PhysicalIntermediate, PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot,
-    ProceduralTestPattern, RasterPlacement, ResolvedSceneGeometryLensSnapshot,
-    ResolvedShutterMotionSnapshot, RollingDirection, SensorReadout, diagnostic_signal,
-    physical_shutter_schedule,
+    CAPTURE_DEVICE_PRESETS, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
+    PhysicalPipelineSnapshot, ProceduralTestPattern, RasterPlacement,
+    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, RollingDirection,
+    SensorReadout, diagnostic_signal, physical_shutter_schedule,
 };
 use screen_camera::CameraDevelopment;
 use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
@@ -45,6 +45,23 @@ use screen_sensor::{BayerPattern, SensorProfile};
 pub struct ScreenUtf8View {
     bytes: *const u8,
     count: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenCapturePresetParametersV2 {
+    abi_version: u32,
+    sensor: ScreenSensorNoiseParametersV2,
+    gate_width_millimeters: f32,
+    gate_height_millimeters: f32,
+    focal_length_millimeters: f32,
+    f_stop: f32,
+    reference_exposure_index: f32,
+    middle_gray_illuminance_seconds: f32,
+    default_shutter_angle_degrees: f32,
+    default_temporal_samples: u16,
+    optics_authority: u16,
+    default_readout_duration_milliseconds: f32,
 }
 
 pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 2;
@@ -1909,6 +1926,106 @@ pub extern "C" fn screen_device_preset_count() -> usize {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn screen_capture_preset_count() -> usize {
+    CAPTURE_DEVICE_PRESETS.len()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_capture_preset_id(index: usize) -> ScreenUtf8View {
+    CAPTURE_DEVICE_PRESETS
+        .get(index)
+        .map_or(utf8_view(""), |preset| utf8_view(preset.id))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_capture_preset_label(index: usize) -> ScreenUtf8View {
+    CAPTURE_DEVICE_PRESETS
+        .get(index)
+        .map_or(utf8_view(""), |preset| utf8_view(preset.label))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_capture_preset_calibration(index: usize) -> ScreenUtf8View {
+    CAPTURE_DEVICE_PRESETS
+        .get(index)
+        .map_or(utf8_view(""), |preset| utf8_view(preset.calibration))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_capture_preset_default_lens_id(index: usize) -> ScreenUtf8View {
+    CAPTURE_DEVICE_PRESETS
+        .get(index)
+        .map_or(utf8_view(""), |preset| {
+            utf8_view(preset.default_lens_preset_id)
+        })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_capture_preset_parameters(
+    index: usize,
+    parameters: *mut ScreenCapturePresetParametersV2,
+) -> bool {
+    let Some(preset) = CAPTURE_DEVICE_PRESETS.get(index) else {
+        return false;
+    };
+    if parameters.is_null() {
+        return false;
+    }
+    let sensor = preset.sensor;
+    unsafe {
+        *parameters = ScreenCapturePresetParametersV2 {
+            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+            sensor: ScreenSensorNoiseParametersV2 {
+                abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+                native_width: u32::from(sensor.native_width),
+                native_height: u32::from(sensor.native_height),
+                bayer_pattern: match sensor.bayer_pattern {
+                    BayerPattern::Rggb => 0,
+                    BayerPattern::Bggr => 1,
+                    BayerPattern::Grbg => 2,
+                    BayerPattern::Gbrg => 3,
+                },
+                acescg_to_sensor: [
+                    sensor.acescg_to_sensor[0][0],
+                    sensor.acescg_to_sensor[0][1],
+                    sensor.acescg_to_sensor[0][2],
+                    sensor.acescg_to_sensor[1][0],
+                    sensor.acescg_to_sensor[1][1],
+                    sensor.acescg_to_sensor[1][2],
+                    sensor.acescg_to_sensor[2][0],
+                    sensor.acescg_to_sensor[2][1],
+                    sensor.acescg_to_sensor[2][2],
+                ],
+                saturation_illuminance_seconds: [
+                    sensor.saturation_illuminance_seconds.r,
+                    sensor.saturation_illuminance_seconds.g,
+                    sensor.saturation_illuminance_seconds.b,
+                ],
+                full_well_electrons: sensor.full_well_electrons,
+                dark_current_electrons_per_second: sensor.dark_current_electrons_per_second,
+                read_noise_electrons_rms: sensor.read_noise_electrons_rms,
+                analog_gain: sensor.analog_gain,
+                adc_bits: u32::from(sensor.adc_bits),
+            },
+            gate_width_millimeters: preset.gate_width.0,
+            gate_height_millimeters: preset.gate_height.0,
+            focal_length_millimeters: preset.focal_length.0,
+            f_stop: preset.f_stop,
+            reference_exposure_index: preset.reference_exposure_index,
+            middle_gray_illuminance_seconds: preset.middle_gray_illuminance_seconds_at_reference_ei,
+            default_shutter_angle_degrees: preset.default_shutter_angle_degrees,
+            default_temporal_samples: preset.default_temporal_samples,
+            optics_authority: match preset.optics_authority {
+                screen_application::CaptureOpticsAuthority::InterchangeableReferenceLens => 0,
+                screen_application::CaptureOpticsAuthority::IntegratedFixedLens => 1,
+            },
+            default_readout_duration_milliseconds: preset.default_readout_duration_milliseconds,
+        };
+    }
+    true
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn screen_device_preset_id(index: usize) -> ScreenUtf8View {
     preset_at(index).map_or(utf8_view(""), |preset| utf8_view(preset.id))
 }
@@ -2815,6 +2932,32 @@ mod tests {
             assert!(!profile.is_null());
             unsafe { screen_device_profile_release(profile) };
         }
+    }
+
+    #[test]
+    fn capture_catalog_exposes_the_two_authoritative_camera_presets() {
+        assert_eq!(screen_capture_preset_count(), CAPTURE_DEVICE_PRESETS.len());
+        assert_eq!(screen_capture_preset_count(), 2);
+        for index in 0..screen_capture_preset_count() {
+            let mut parameters: ScreenCapturePresetParametersV2 = unsafe { std::mem::zeroed() };
+            assert!(unsafe { screen_capture_preset_parameters(index, &mut parameters) });
+            assert_eq!(parameters.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);
+            assert!(parameters.sensor.native_width > 0);
+            assert!(parameters.sensor.native_height > 0);
+            assert!(parameters.gate_width_millimeters > 0.0);
+            assert!(parameters.gate_height_millimeters > 0.0);
+            assert!(parameters.focal_length_millimeters > 0.0);
+            assert!(parameters.f_stop > 0.0);
+            assert!(parameters.default_temporal_samples > 0);
+            assert!(parameters.default_readout_duration_milliseconds >= 0.0);
+            assert!(!screen_capture_preset_id(index).bytes.is_null());
+            assert!(!screen_capture_preset_label(index).bytes.is_null());
+            assert!(!screen_capture_preset_default_lens_id(index).bytes.is_null());
+        }
+        let mut invalid: ScreenCapturePresetParametersV2 = unsafe { std::mem::zeroed() };
+        assert!(!unsafe {
+            screen_capture_preset_parameters(screen_capture_preset_count(), &mut invalid)
+        });
     }
 
     #[test]
