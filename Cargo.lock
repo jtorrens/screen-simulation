@@ -4485,6 +4485,7 @@ dependencies = [
 name = "screen-desktop"
 version = "0.1.0"
 dependencies = [
+ "half",
  "image",
  "rfd",
  "screen-application",
@@ -4498,6 +4499,8 @@ dependencies = [
  "screen-persistence",
  "screen-platform",
  "screen-sensor",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
 ]
@@ -4555,6 +4558,7 @@ version = "0.1.0"
 dependencies = [
  "ffmpeg-next",
  "half",
+ "image",
  "metal",
  "rayon",
  "screen-application",

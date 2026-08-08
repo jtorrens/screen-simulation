@@ -4,6 +4,11 @@ import StudioColor
 import StudioMedia
 import UniformTypeIdentifiers
 
+struct LibraryColorModeOption: Identifiable, Equatable, Sendable {
+    let id: String
+    let label: String
+}
+
 @dynamicMemberLookup
 struct LibraryItem<Value>: Codable, Equatable, Identifiable, Sendable
 where Value: Codable & Equatable & Identifiable & Sendable,
@@ -32,7 +37,7 @@ struct GlobalTestImage: Codable, Equatable, Identifiable, Sendable {
             throw GlobalLibraryError.invalidEntity("La imagen de prueba necesita nombre.")
         }
         guard StudioColorInputTransform.catalog.contains(where: { $0.id == inputTransformID }) else {
-            throw GlobalLibraryError.invalidEntity("La IDT de \(name) no existe en StudioColor.")
+            throw GlobalLibraryError.invalidEntity("El Input Transform de \(name) no existe en StudioColor.")
         }
         guard !bookmark.isEmpty else {
             throw GlobalLibraryError.invalidEntity("La imagen de prueba \(name) no contiene bookmark.")
@@ -57,7 +62,7 @@ struct GlobalPatternDefinition: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 5
+    static let currentSchemaVersion = 7
     let schemaVersion: Int
     var patterns: [LibraryItem<GlobalPatternDefinition>]
     var testImages: [LibraryItem<GlobalTestImage>]
@@ -428,6 +433,16 @@ final class GlobalLibraryController: ObservableObject {
         document.renderPresets.map(\.value)
     }
 
+    var authorableColorModes: [LibraryColorModeOption] {
+        StudioColorMode.catalog.map { .init(id: $0.id, label: $0.label) }
+    }
+
+    func colorModes(for device: DeviceDefinition) -> [LibraryColorModeOption] {
+        device.colorModeIDs.compactMap { id in
+            authorableColorModes.first(where: { $0.id == id })
+        }
+    }
+
     var selectedDevice: DeviceDefinition? {
         selectedDeviceItem?.value
     }
@@ -519,7 +534,7 @@ final class GlobalLibraryController: ObservableObject {
             let entry = GlobalTestImage(
                 id: UUID(), name: url.deletingPathExtension().lastPathComponent,
                 bookmark: bookmark,
-                inputTransformID: url.pathExtension.lowercased() == "exr" ? "acescg" : "display-srgb-aces2-sdr",
+                inputTransformID: url.pathExtension.lowercased() == "exr" ? "acescg" : "srgb-encoded-rec709",
                 alpha: .straight, matrix: .bt709, range: .full
             )
             document.testImages.append(.init(value: entry, isLocked: false))

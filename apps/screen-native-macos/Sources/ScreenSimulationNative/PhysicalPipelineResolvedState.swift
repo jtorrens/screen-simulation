@@ -68,6 +68,9 @@ struct PhysicalPipelineResolvedState {
         sensor.read_noise_electrons_rms = 2
         sensor.analog_gain = 1
         sensor.adc_bits = 14
+        sensor.bloom_character_strength = 1
+        sensor.bloom_crosstalk_fraction = 0.012
+        sensor.bloom_overflow_transfer_fraction = 0.22
 
         var develop = ScreenRawDevelopParametersV2()
         develop.abi_version = version
@@ -108,7 +111,9 @@ struct PhysicalPipelineResolvedState {
         }
         var resolved = parameters
         resolved.cover.character_strength = try amount(.screen(.coverGlass))
+        resolved.cover.glow_character_strength = try amount(.screen(.coverGlow))
         resolved.environment.character_strength = try amount(.screen(.environment))
+        resolved.sensor_noise.bloom_character_strength = try amount(.capture(.sensorBloom))
         if let focusDistanceMeters {
             guard focusDistanceMeters.isFinite, focusDistanceMeters > 0 else {
                 throw DeviceDomainError.invalidPhysicalProfile("Distancia de foco no válida.")

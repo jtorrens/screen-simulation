@@ -32,6 +32,54 @@ import AppKit
     #expect(!StudioColorOutputTransform.catalog.contains(raw))
 }
 
+@Test func colorModeResolvesFromTheAuthoredSourceDomain() throws {
+    let mode = try #require(StudioColorMode.catalog.first { $0.id == "srgb" })
+    let displayInput = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    })
+    let sceneInput = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "arri-logc4"
+    })
+
+    #expect(displayInput.referenceDomain == .displayReferred)
+    #expect(mode.resolvedOutput(for: displayInput).processor == .colorSpace(
+        "sRGB Encoded Rec.709 (sRGB)"
+    ))
+    #expect(sceneInput.referenceDomain == .sceneReferred)
+    #expect(mode.resolvedOutput(for: sceneInput).id == "aces2-srgb-sdr-100")
+    #expect(mode.resolvedPreviewInput(for: displayInput).id == "srgb-encoded-rec709")
+    #expect(mode.resolvedPreviewInput(for: sceneInput).id == "display-srgb-aces2-sdr")
+}
+
+@Test func srgbDeviceSignalAlwaysTraversesACEScgWithoutABypass() throws {
+    let input = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    })
+    let mode = try #require(StudioColorMode.catalog.first { $0.id == "srgb" })
+    let samples: [Float] = [
+        0, 0, 0, 1,
+        1, 1, 1, 1,
+        1, 0, 0, 1,
+        0.18, 0.42, 0.73, 1,
+    ]
+    let frame = try StudioColorPipeline().prepareInput(
+        width: 4, height: 1, encodedRGBA: samples,
+        input: input, alpha: .straight
+    )
+    var result = frame.premultipliedRGBA
+    let processor = try StudioColorEngine.bundled().cachedColorSpaceProcessor(
+        source: "ACEScg",
+        destination: try #require({
+            if case let .colorSpace(destination) = mode.resolvedOutput(for: input).processor {
+                return destination
+            }
+            return nil
+        }())
+    )
+    try processor.apply(toRGBA: &result)
+    #expect(zip(result, samples).map { abs($0 - $1) }.max() ?? 0 <= 3e-5)
+}
+
 @Test @MainActor func activeDisplayReportsScreenAndColorSyncProfile() throws {
     let screen = try #require(NSScreen.main)
     let info = StudioColorSystemDisplayInfo.current(screen: screen)
@@ -87,7 +135,17 @@ import AppKit
     try assertDisplayRoundtrip(
         inputID: "display-rec2100-pq-aces2-hdr-1000",
         display: "Rec.2100-PQ - Display",
-        view: "ACES 2.0 - HDR 1000 nits (Rec.2020)",
+        view: "ACES 2.0 - HDR 1000 nits (P3 D65)",
+        tolerance: 2e-4,
+        samples: hdrRoundtripSamples
+    )
+}
+
+@Test func hlgHDRInverseRoundTripsThroughMatchingACESOutput() throws {
+    try assertDisplayRoundtrip(
+        inputID: "display-rec2100-hlg-aces2-hdr-1000",
+        display: "Rec.2100-HLG - Display",
+        view: "ACES 2.0 - HDR 1000 nits (P3 D65)",
         tolerance: 2e-4,
         samples: hdrRoundtripSamples
     )
@@ -116,6 +174,15 @@ import AppKit
     try assertDisplayRoundtrip(
         inputID: "display-rec2100-pq-dcm",
         display: "Rec.2100-PQ - Display",
+        view: "Video (colorimetric)",
+        tolerance: 1e-3
+    )
+}
+
+@Test func dcmHLGUsesItsColorimetricContractAndRoundTrips() throws {
+    try assertDisplayRoundtrip(
+        inputID: "display-rec2100-hlg-dcm",
+        display: "Rec.2100-HLG - Display",
         view: "Video (colorimetric)",
         tolerance: 1e-3
     )

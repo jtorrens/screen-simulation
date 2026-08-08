@@ -19,16 +19,20 @@ use screen_application::{
     CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, PhysicalIntermediate,
     PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, ProceduralTestPattern,
     RasterPlacement, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
-    RollingDirection, SensorReadout, diagnostic_signal, physical_shutter_schedule,
+    RollingDirection, SensorReadout, TestAuthoringError, TestAuthoringSelection,
+    TestControlRequirement, TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice,
+    apply_test_scalar, default_test_authoring_selection, diagnostic_signal,
+    physical_shutter_schedule, test_page_descriptor,
 };
 use screen_camera::CameraDevelopment;
 use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
-    EnvironmentPattern, ProceduralEnvironment,
+    ENVIRONMENT_PRESETS, EnvironmentPattern, ProceduralEnvironment,
 };
 use screen_geometry::{
-    KeyframeInterpolation, LensModel, Quaternion, TransformKeyframe, TransformTrack,
+    KeyframeInterpolation, LENS_PRESETS, LensModel, LensPresetAuthority, Quaternion,
+    TransformKeyframe, TransformTrack,
 };
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, FlatPanelQuality, LcdProfile, PanelColorimetry,
@@ -38,7 +42,7 @@ use screen_panel::{
 use screen_platform::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
 };
-use screen_sensor::{BayerPattern, SensorProfile};
+use screen_sensor::{BayerPattern, SensorBloomProfile, SensorProfile};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -47,25 +51,129 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 7;
+pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
+pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenCapturePresetParametersV2 {
+pub struct ScreenTestAuthoringSelectionV7 {
+    abi_version: u32,
+    input_transform_id: ScreenUtf8View,
+    output_signal_id: ScreenUtf8View,
+    device_id: ScreenUtf8View,
+    color_mode_id: ScreenUtf8View,
+    device_eotf_gamma: f32,
+    white_luminance_nits: f32,
+    placement_id: ScreenUtf8View,
+    preview_quality_id: ScreenUtf8View,
+    subpixel_geometry_amount: f32,
+    panel_light_spread_amount: f32,
+    capture_preset_id: ScreenUtf8View,
+    geometry_mode_id: ScreenUtf8View,
+    camera_distance_meters: f32,
+    camera_orbit_x_degrees: f32,
+    camera_orbit_y_degrees: f32,
+    camera_position_x_meters: f32,
+    camera_position_y_meters: f32,
+    camera_position_z_meters: f32,
+    camera_rotation_x_degrees: f32,
+    camera_rotation_y_degrees: f32,
+    camera_rotation_z_degrees: f32,
+    screen_position_x_meters: f32,
+    screen_position_y_meters: f32,
+    screen_position_z_meters: f32,
+    screen_rotation_x_degrees: f32,
+    screen_yaw_degrees: f32,
+    screen_rotation_z_degrees: f32,
+    cover_glass_preset_id: ScreenUtf8View,
+    cover_glass_amount: f32,
+    environment_preset_id: ScreenUtf8View,
+    environment_amount: f32,
+    cover_glow_amount: f32,
+    lens_preset_id: ScreenUtf8View,
+    lens_amount: f32,
+    focus_distance_meters: f32,
+    shutter_motion_amount: f32,
+    sensor_bloom_amount: f32,
+    sensor_noise_amount: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenTestPhaseDescriptorV2 {
+    abi_version: u32,
+    id: ScreenUtf8View,
+    label: ScreenUtf8View,
+    character_scale_note: ScreenUtf8View,
+    input_artifact: ScreenUtf8View,
+    output_artifact: ScreenUtf8View,
+    preview_result: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenTestControlDescriptorV3 {
+    abi_version: u32,
+    kind: u32,
+    id: ScreenUtf8View,
+    label: ScreenUtf8View,
+    selected_id: ScreenUtf8View,
+    reset_id: ScreenUtf8View,
+    value: f32,
+    reset_value: f32,
+    minimum: f32,
+    maximum: f32,
+    step: f32,
+    unit: ScreenUtf8View,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenTestChoiceOptionV2 {
+    abi_version: u32,
+    id: ScreenUtf8View,
+    label: ScreenUtf8View,
+}
+
+pub struct ScreenTestPageDescriptor {
+    page: ApplicationTestPageDescriptor,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenCapturePresetParametersV1 {
     abi_version: u32,
     sensor: ScreenSensorNoiseParametersV2,
     gate_width_millimeters: f32,
     gate_height_millimeters: f32,
-    focal_length_millimeters: f32,
-    f_stop: f32,
+    default_f_stop: f32,
     reference_exposure_index: f32,
     middle_gray_illuminance_seconds: f32,
     default_shutter_angle_degrees: f32,
     default_temporal_samples: u16,
-    optics_authority: u16,
+    lens_association_policy: u16,
     default_readout_duration_milliseconds: f32,
     radiometric_calibration: ScreenCameraRadiometricCalibrationV2,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 2;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenLensPresetParametersV1 {
+    abi_version: u32,
+    nominal_focal_length_millimeters: f32,
+    radial_distortion: [f32; 3],
+    tangential_distortion: [f32; 2],
+    longitudinal_chromatic_meters: [f32; 3],
+    lateral_chromatic_scale: [f32; 3],
+    vignetting_strength: f32,
+    transmission_rgb: [f32; 3],
+    center_softness_micrometers: f32,
+    edge_softness_micrometers: f32,
+}
+
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 4;
+pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 1;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
 pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;
@@ -210,9 +318,19 @@ const STATE_CANCELLED: u32 = 3;
 const STATE_FAILED: u32 = 4;
 const STATE_COMPLETE: u32 = 5;
 const DOMAIN_SCREEN: u32 = 0x100;
-const EXPECTED_STAGE_IDS: [u32; 12] = [
-    0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x201, 0x202, 0x203, 0x204, 0x205, 0x206,
+const DOMAIN_CAPTURE: u32 = 0x200;
+const EXPECTED_STAGE_IDS: [u32; 14] = [
+    0x101, 0x102, 0x103, 0x104, 0x201, 0x105, 0x106, 0x107, 0x202, 0x203, 0x207, 0x204, 0x205,
+    0x206,
 ];
+
+fn stage_domain(stage_id: u32) -> u32 {
+    if stage_id & 0xF00 == DOMAIN_SCREEN {
+        DOMAIN_SCREEN
+    } else {
+        DOMAIN_CAPTURE
+    }
+}
 
 #[cfg(target_os = "macos")]
 enum PhysicalJobOutcome {
@@ -493,26 +611,45 @@ fn intermediate(value: u32) -> Option<PhysicalIntermediate> {
         2 => PhysicalIntermediate::PanelEmission,
         3 => PhysicalIntermediate::SubpixelRadiance,
         4 => PhysicalIntermediate::PanelLightSpread,
-        5 => PhysicalIntermediate::CoverEnvironment,
-        6 => PhysicalIntermediate::SceneGeometryLens,
-        7 => PhysicalIntermediate::ShutterMotion,
-        8 => PhysicalIntermediate::SensorNoise,
-        9 => PhysicalIntermediate::RawMosaic,
-        10 => PhysicalIntermediate::DevelopedAcesCg,
+        5 => PhysicalIntermediate::RelativeGeometry,
+        6 => PhysicalIntermediate::CoverEnvironment,
+        7 => PhysicalIntermediate::CoverGlow,
+        8 => PhysicalIntermediate::LensProjection,
+        9 => PhysicalIntermediate::ShutterMotion,
+        10 => PhysicalIntermediate::SensorBloom,
+        11 => PhysicalIntermediate::SensorNoise,
+        12 => PhysicalIntermediate::RawMosaic,
+        13 => PhysicalIntermediate::DevelopedAcesCg,
         _ => return None,
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ResolvedContributionAmounts {
+    emission: f32,
+    subpixel_geometry: f32,
+    panel_light_spread: f32,
+    temporal_emission: f32,
+    scene_geometry: f32,
+    cover: f32,
+    environment: f32,
+    cover_glow: f32,
+    lens: f32,
+    shutter_motion: f32,
+    sensor_bloom: f32,
+    sensor_noise: f32,
+}
+
 fn contribution_amounts(
     contributions: &[ScreenPhysicalStageContributionV2],
-) -> Option<(f32, f32, f32, f32, f32, f32)> {
+) -> Option<ResolvedContributionAmounts> {
     if contributions.len() != EXPECTED_STAGE_IDS.len() {
         return None;
     }
     for (index, contribution) in contributions.iter().enumerate() {
-        let expected_domain = if index < 6 { 0x100 } else { 0x200 };
-        let discrete = matches!(index, 9 | 11);
-        let expected_safe_maximum = if index == 4 { 2.0 } else { 4.0 };
+        let expected_domain = stage_domain(EXPECTED_STAGE_IDS[index]);
+        let discrete = matches!(index, 11 | 13);
+        let expected_safe_maximum = if index == 5 { 2.0 } else { 4.0 };
         if contribution.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
             || contribution.domain_id != expected_domain
             || contribution.stage_id != EXPECTED_STAGE_IDS[index]
@@ -533,26 +670,34 @@ fn contribution_amounts(
             return None;
         }
     }
-    if (contributions[10].amount != 0.0 || contributions[11].discrete_enabled)
-        && !contributions[9].discrete_enabled
+    if (contributions[10].amount != 0.0
+        || contributions[12].amount != 0.0
+        || contributions[13].discrete_enabled)
+        && !contributions[11].discrete_enabled
     {
         return None;
     }
-    Some((
-        contributions[0].amount,
-        contributions[1].amount,
-        contributions[2].amount,
-        contributions[3].amount,
-        contributions[4].amount,
-        contributions[5].amount,
-    ))
+    Some(ResolvedContributionAmounts {
+        emission: contributions[0].amount,
+        subpixel_geometry: contributions[1].amount,
+        panel_light_spread: contributions[2].amount,
+        temporal_emission: contributions[3].amount,
+        scene_geometry: contributions[4].amount,
+        cover: contributions[5].amount,
+        environment: contributions[6].amount,
+        cover_glow: contributions[7].amount,
+        lens: contributions[8].amount,
+        shutter_motion: contributions[9].amount,
+        sensor_bloom: contributions[10].amount,
+        sensor_noise: contributions[12].amount,
+    })
 }
 
 fn diagnostic_snapshot(
     state: u32,
     progress: f32,
-    stage_elapsed_nanoseconds: [u64; 12],
-    stage_messages: [String; 12],
+    stage_elapsed_nanoseconds: [u64; 14],
+    stage_messages: [String; 14],
 ) -> Box<OwnedDiagnosticSnapshot> {
     let messages = Vec::from(stage_messages)
         .into_iter()
@@ -563,7 +708,7 @@ fn diagnostic_snapshot(
         .enumerate()
         .map(|(index, stage_id)| ScreenPhysicalStageDiagnosticV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-            domain_id: if index < 6 { DOMAIN_SCREEN } else { 0x200 },
+            domain_id: stage_domain(*stage_id),
             stage_id: *stage_id,
             state,
             progress,
@@ -635,6 +780,46 @@ fn track_is_constant(track: &TransformTrack) -> bool {
         .all(|key| key.translation == first.translation && key.rotation == first.rotation)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EffectiveCaptureCheckpoint {
+    sensor_enabled: bool,
+    sensor_noise_amount: f32,
+    development_enabled: bool,
+}
+
+fn effective_capture_checkpoint(
+    intermediate: PhysicalIntermediate,
+    authored_sensor_enabled: bool,
+    authored_sensor_noise_amount: f32,
+    authored_development_enabled: bool,
+) -> EffectiveCaptureCheckpoint {
+    let sensor_enabled = authored_sensor_enabled
+        && matches!(
+            intermediate,
+            PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorNoise
+                | PhysicalIntermediate::RawMosaic
+                | PhysicalIntermediate::DevelopedAcesCg
+        );
+    let sensor_noise_amount = if sensor_enabled
+        && matches!(
+            intermediate,
+            PhysicalIntermediate::RawMosaic | PhysicalIntermediate::DevelopedAcesCg
+        ) {
+        authored_sensor_noise_amount
+    } else {
+        0.0
+    };
+    let development_enabled = sensor_enabled
+        && authored_development_enabled
+        && intermediate == PhysicalIntermediate::DevelopedAcesCg;
+    EffectiveCaptureCheckpoint {
+        sensor_enabled,
+        sensor_noise_amount,
+        development_enabled,
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_physical_frame_submit(
@@ -678,15 +863,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             request.stage_contribution_count,
         )
     };
-    let Some((
-        emission_amount,
-        subpixel_geometry_amount,
-        light_spread_amount,
-        temporal_amount,
-        cover_amount,
-        environment_amount,
-    )) = contribution_amounts(contributions)
-    else {
+    let Some(amounts) = contribution_amounts(contributions) else {
         unsafe {
             set_error(
                 error_message,
@@ -768,9 +945,12 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::PanelEmission
             | PhysicalIntermediate::SubpixelRadiance
             | PhysicalIntermediate::PanelLightSpread
+            | PhysicalIntermediate::RelativeGeometry
             | PhysicalIntermediate::CoverEnvironment
-            | PhysicalIntermediate::SceneGeometryLens
+            | PhysicalIntermediate::CoverGlow
+            | PhysicalIntermediate::LensProjection
             | PhysicalIntermediate::ShutterMotion
+            | PhysicalIntermediate::SensorBloom
             | PhysicalIntermediate::SensorNoise
             | PhysicalIntermediate::RawMosaic
             | PhysicalIntermediate::DevelopedAcesCg
@@ -785,11 +965,13 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     }
     if matches!(
         requested_intermediate,
-        PhysicalIntermediate::SensorNoise | PhysicalIntermediate::RawMosaic
-    ) && !contributions[9].discrete_enabled
+        PhysicalIntermediate::SensorBloom
+            | PhysicalIntermediate::SensorNoise
+            | PhysicalIntermediate::RawMosaic
+    ) && !contributions[11].discrete_enabled
         || requested_intermediate == PhysicalIntermediate::DevelopedAcesCg
-            && contributions[9].discrete_enabled
-            && !contributions[11].discrete_enabled
+            && contributions[11].discrete_enabled
+            && !contributions[13].discrete_enabled
     {
         unsafe {
             set_error(
@@ -830,7 +1012,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         sensor: pipeline.sensor,
         development: pipeline.development,
     };
-    if device.light_spread.character_strength != light_spread_amount {
+    if device.light_spread.character_strength != amounts.panel_light_spread {
         unsafe {
             set_error(
                 error_message,
@@ -839,8 +1021,10 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         };
         return std::ptr::null_mut();
     }
-    if pipeline.cover.character_strength != cover_amount
-        || pipeline.environment.character_strength != environment_amount
+    if pipeline.cover.character_strength != amounts.cover
+        || pipeline.cover.glow.character_strength != amounts.cover_glow
+        || pipeline.environment.character_strength != amounts.environment
+        || pipeline.sensor.bloom.character_strength != amounts.sensor_bloom
     {
         unsafe {
             set_error(
@@ -892,9 +1076,9 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         requested_width: request.requested_width,
         requested_height: request.requested_height,
         screen_amount: request.screen_amount,
-        emission_amount,
-        subpixel_geometry_amount,
-        temporal_emission_amount: temporal_amount,
+        emission_amount: amounts.emission,
+        subpixel_geometry_amount: amounts.subpixel_geometry,
+        temporal_emission_amount: amounts.temporal_emission,
         temporal_emission_gain: temporal_gain,
         cover: pipeline.cover,
         environment: pipeline.environment,
@@ -903,19 +1087,19 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         camera_rotation: camera_pose.rotation,
         screen_translation: screen_pose.translation,
         screen_rotation: screen_pose.rotation,
-        scene_geometry_amount: contributions[6].amount,
-        lens_amount: contributions[7].amount,
+        scene_geometry_amount: amounts.scene_geometry,
+        lens_amount: amounts.lens,
         frame_time,
         shutter_open,
         shutter_close,
         shutter_motion: pipeline.shutter_motion,
-        shutter_motion_amount: contributions[8].amount,
+        shutter_motion_amount: amounts.shutter_motion,
         sensor: pipeline.sensor,
         radiometric_calibration: pipeline.radiometric_calibration,
-        sensor_enabled: contributions[9].discrete_enabled,
-        sensor_noise_amount: contributions[10].amount,
+        sensor_enabled: contributions[11].discrete_enabled,
+        sensor_noise_amount: amounts.sensor_noise,
         development: pipeline.development,
-        development_enabled: contributions[11].discrete_enabled,
+        development_enabled: contributions[13].discrete_enabled,
         frame_index: request.frame_index,
         requested_intermediate,
     };
@@ -1052,6 +1236,12 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             None,
         ));
     }
+    let capture_checkpoint = effective_capture_checkpoint(
+        requested_intermediate,
+        contributions[11].discrete_enabled,
+        contributions[12].amount,
+        contributions[13].discrete_enabled,
+    );
     let shared = Arc::new(PhysicalJobShared {
         outcome: Mutex::new(PhysicalJobOutcome::Rendering),
         progress_bits: AtomicU32::new(0.0_f32.to_bits()),
@@ -1098,12 +1288,12 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         cancellation_identity: request.cancellation_identity,
         quality: request.quality,
         requested_intermediate: request.requested_intermediate,
-        native_width: if contributions[9].discrete_enabled {
+        native_width: if capture_checkpoint.sensor_enabled {
             u32::from(pipeline.sensor.native_width)
         } else {
             native.effective_width
         },
-        native_height: if contributions[9].discrete_enabled {
+        native_height: if capture_checkpoint.sensor_enabled {
             u32::from(pipeline.sensor.native_height)
         } else {
             native.effective_height
@@ -1111,9 +1301,9 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         parameter_revision: request.parameter_revision,
         parameter_hash: request.parameter_hash,
         static_input: !temporally_varying,
-        sensor_enabled: contributions[9].discrete_enabled,
-        sensor_noise_amount: contributions[10].amount,
-        development_enabled: contributions[11].discrete_enabled,
+        sensor_enabled: capture_checkpoint.sensor_enabled,
+        sensor_noise_amount: capture_checkpoint.sensor_noise_amount,
+        development_enabled: capture_checkpoint.development_enabled,
         worker: Mutex::new(Some(worker)),
         output_views: Mutex::new(Vec::new()),
         snapshots: Mutex::new(Vec::new()),
@@ -1184,8 +1374,10 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
         temporal,
         cover,
         environment,
+        glass_glow,
         scene,
         lens,
+        sensor_bloom,
     ) = match &*outcome {
         PhysicalJobOutcome::Rendering => (
             STATE_RENDERING,
@@ -1193,15 +1385,17 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             0,
             0,
             0,
-            [0; 12],
+            [0; 14],
             "physical pipeline emission rendering".to_owned(),
             "subpixel geometry rendering".to_owned(),
             "panel light spread rendering".to_owned(),
             "panel temporal emission rendering".to_owned(),
             "cover glass rendering".to_owned(),
             "environment reflection rendering".to_owned(),
+            "cover glow rendering".to_owned(),
             "scene geometry rendering".to_owned(),
             "generalized lens rendering".to_owned(),
+            "sensor bloom rendering".to_owned(),
         ),
         PhysicalJobOutcome::Cancelled => (
             STATE_CANCELLED,
@@ -1209,15 +1403,17 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             0,
             0,
             0,
-            [0; 12],
+            [0; 14],
             "physical pipeline emission cancelled".to_owned(),
             "subpixel geometry cancelled".to_owned(),
             "panel light spread cancelled".to_owned(),
             "panel temporal emission cancelled".to_owned(),
             "cover glass cancelled".to_owned(),
             "environment reflection cancelled".to_owned(),
+            "cover glow cancelled".to_owned(),
             "scene geometry cancelled".to_owned(),
             "generalized lens cancelled".to_owned(),
+            "sensor bloom cancelled".to_owned(),
         ),
         PhysicalJobOutcome::Failed(message) => (
             STATE_FAILED,
@@ -1225,15 +1421,17 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             0,
             0,
             0,
-            [0; 12],
+            [0; 14],
             format!("physical pipeline backend failed: {message}"),
             format!("subpixel geometry failed: {message}"),
             format!("panel light spread failed: {message}"),
             format!("panel temporal emission failed: {message}"),
             format!("cover glass failed: {message}"),
             format!("environment reflection failed: {message}"),
+            format!("cover glow failed: {message}"),
             format!("scene geometry failed: {message}"),
             format!("generalized lens failed: {message}"),
+            format!("sensor bloom failed: {message}"),
         ),
         PhysicalJobOutcome::Complete {
             result: value,
@@ -1271,10 +1469,12 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
                     .to_owned(),
                 "synthetic HDR environment sampled independently from panel temporal emission"
                     .to_owned(),
+                "energy-preserving cover glow with physical core/tail radii".to_owned(),
                 "position + quaternion pose; device active dimensions are the sole screen scale"
                     .to_owned(),
                 "thin lens + distortion/CA/vignette/transmission/PSF; focal-length generalized"
                     .to_owned(),
+                "global-coordinate photosite crosstalk and full-well overflow transfer".to_owned(),
             )
         }
     };
@@ -1299,9 +1499,10 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             geometry,
             spread,
             temporal,
+            scene,
             cover,
             environment,
-            scene,
+            glass_glow,
             lens,
             if job.static_input {
                 "STATIC_INPUT: exact shutter/rolling/banding evaluation; motion blur inactive"
@@ -1309,6 +1510,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
             } else {
                 "MOTION_ACTIVE: Rust-scheduled exact-time samples accumulated by Metal".to_owned()
             },
+            sensor_bloom,
             if job.sensor_enabled {
                 "sensor CFA/full-well/ADC active at the resolved native photosite raster".to_owned()
             } else {
@@ -1445,6 +1647,11 @@ pub struct ScreenCoverGlassParametersV2 {
     absorption_per_millimeter: [f32; 3],
     roughness: f32,
     haze: f32,
+    glow_character_strength: f32,
+    glow_scatter_fraction: f32,
+    glow_core_radius_millimeters: f32,
+    glow_tail_radius_millimeters: f32,
+    glow_tail_fraction: f32,
 }
 
 #[repr(C)]
@@ -1509,6 +1716,9 @@ pub struct ScreenSensorNoiseParametersV2 {
     read_noise_electrons_rms: f32,
     analog_gain: f32,
     adc_bits: u32,
+    bloom_character_strength: f32,
+    bloom_crosstalk_fraction: f32,
+    bloom_overflow_transfer_fraction: f32,
 }
 
 #[repr(C)]
@@ -1566,6 +1776,515 @@ fn utf8_view(value: &'static str) -> ScreenUtf8View {
     }
 }
 
+unsafe fn borrowed_utf8<'a>(view: ScreenUtf8View) -> Option<&'a str> {
+    if view.bytes.is_null() || view.count == 0 {
+        return None;
+    }
+    // SAFETY: the ABI caller keeps the immutable bytes alive for this call.
+    let bytes = unsafe { std::slice::from_raw_parts(view.bytes, view.count) };
+    std::str::from_utf8(bytes).ok()
+}
+
+unsafe fn test_selection<'a>(
+    selection: *const ScreenTestAuthoringSelectionV7,
+) -> Option<TestAuthoringSelection<'a>> {
+    let selection = unsafe { selection.as_ref() }?;
+    if selection.abi_version != SCREEN_TEST_AUTHORING_ABI_VERSION {
+        return None;
+    }
+    Some(TestAuthoringSelection {
+        input_transform_id: unsafe { borrowed_utf8(selection.input_transform_id) }?,
+        output_signal_id: unsafe { borrowed_utf8(selection.output_signal_id) }?,
+        device_id: unsafe { borrowed_utf8(selection.device_id) }?,
+        color_mode_id: unsafe { borrowed_utf8(selection.color_mode_id) }?,
+        white_luminance_nits: selection.white_luminance_nits,
+        placement_id: unsafe { borrowed_utf8(selection.placement_id) }?,
+        preview_quality_id: unsafe { borrowed_utf8(selection.preview_quality_id) }?,
+        subpixel_geometry_amount: selection.subpixel_geometry_amount,
+        panel_light_spread_amount: selection.panel_light_spread_amount,
+        capture_preset_id: unsafe { borrowed_utf8(selection.capture_preset_id) }?,
+        geometry_mode_id: unsafe { borrowed_utf8(selection.geometry_mode_id) }?,
+        camera_distance_meters: selection.camera_distance_meters,
+        camera_orbit_x_degrees: selection.camera_orbit_x_degrees,
+        camera_orbit_y_degrees: selection.camera_orbit_y_degrees,
+        camera_position_x_meters: selection.camera_position_x_meters,
+        camera_position_y_meters: selection.camera_position_y_meters,
+        camera_position_z_meters: selection.camera_position_z_meters,
+        camera_rotation_x_degrees: selection.camera_rotation_x_degrees,
+        camera_rotation_y_degrees: selection.camera_rotation_y_degrees,
+        camera_rotation_z_degrees: selection.camera_rotation_z_degrees,
+        screen_position_x_meters: selection.screen_position_x_meters,
+        screen_position_y_meters: selection.screen_position_y_meters,
+        screen_position_z_meters: selection.screen_position_z_meters,
+        screen_rotation_x_degrees: selection.screen_rotation_x_degrees,
+        screen_yaw_degrees: selection.screen_yaw_degrees,
+        screen_rotation_z_degrees: selection.screen_rotation_z_degrees,
+        cover_glass_preset_id: unsafe { borrowed_utf8(selection.cover_glass_preset_id) }?,
+        cover_glass_amount: selection.cover_glass_amount,
+        environment_preset_id: unsafe { borrowed_utf8(selection.environment_preset_id) }?,
+        environment_amount: selection.environment_amount,
+        cover_glow_amount: selection.cover_glow_amount,
+        lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
+        lens_amount: selection.lens_amount,
+        focus_distance_meters: selection.focus_distance_meters,
+        shutter_motion_amount: selection.shutter_motion_amount,
+        sensor_bloom_amount: selection.sensor_bloom_amount,
+        sensor_noise_amount: selection.sensor_noise_amount,
+    })
+}
+
+fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
+    match error {
+        TestAuthoringError::UnknownInputTransform => b"unknown Test Input Transform\0",
+        TestAuthoringError::UnknownOutputSignal => b"unknown Test Output Signal\0",
+        TestAuthoringError::UnknownDevice => b"unknown Test device preset\0",
+        TestAuthoringError::UnknownColorMode => b"unknown Test Color Mode\0",
+        TestAuthoringError::UnsupportedColorMode => {
+            b"Color Mode is not supported by the selected device\0"
+        }
+        TestAuthoringError::InvalidWhiteLuminance => {
+            b"White Luminance is outside the selected device capability\0"
+        }
+        TestAuthoringError::InvalidSubpixelGeometryAmount => {
+            b"Subpixel Geometry amount is outside 0..=4\0"
+        }
+        TestAuthoringError::InvalidPanelLightSpreadAmount => {
+            b"Panel Light Spread amount is outside 0..=4\0"
+        }
+        TestAuthoringError::UnknownCapturePreset => b"unknown Test Capture preset\0",
+        TestAuthoringError::UnknownLensPreset => b"unknown Test Lens preset\0",
+        TestAuthoringError::UnsupportedLensPreset => {
+            b"Lens is not compatible with the selected Camera\0"
+        }
+        TestAuthoringError::InvalidGeometry => b"invalid Test relative geometry\0",
+        TestAuthoringError::UnknownCoverGlassPreset => b"unknown Test Cover Glass preset\0",
+        TestAuthoringError::InvalidCoverGlassAmount => b"Cover Glass amount is outside 0..=2\0",
+        TestAuthoringError::UnknownEnvironmentPreset => b"unknown Test Environment preset\0",
+        TestAuthoringError::InvalidEnvironmentAmount => b"Environment amount is outside 0..=4\0",
+        TestAuthoringError::InvalidCoverGlowAmount => b"Cover Glow amount is outside 0..=4\0",
+        TestAuthoringError::InvalidLensAmount => b"Lens amount is outside 0..=4\0",
+        TestAuthoringError::InvalidFocusDistance => b"invalid Test Focus Distance\0",
+        TestAuthoringError::InvalidShutterMotionAmount => b"Shutter amount is outside 0..=4\0",
+        TestAuthoringError::InvalidSensorBloomAmount => b"Sensor Bloom amount is outside 0..=4\0",
+        TestAuthoringError::InvalidSensorNoiseAmount => b"Sensor Noise amount is outside 0..=4\0",
+        TestAuthoringError::UnknownPlacement => b"unknown Test placement\0",
+        TestAuthoringError::UnknownPreviewQuality => b"unknown Test preview quality\0",
+        TestAuthoringError::UnknownControl => b"unknown Test control\0",
+        TestAuthoringError::WrongControlType => b"Test intent has the wrong control type\0",
+    }
+}
+
+fn resolved_test_selection(
+    selection: screen_application::ResolvedTestAuthoringSelection,
+) -> ScreenTestAuthoringSelectionV7 {
+    ScreenTestAuthoringSelectionV7 {
+        abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
+        input_transform_id: utf8_view(selection.input_transform_id),
+        output_signal_id: utf8_view(selection.output_signal_id),
+        device_id: utf8_view(selection.device_id),
+        color_mode_id: utf8_view(selection.color_mode_id),
+        device_eotf_gamma: selection.device_eotf_gamma,
+        white_luminance_nits: selection.white_luminance_nits,
+        placement_id: utf8_view(selection.placement_id),
+        preview_quality_id: utf8_view(selection.preview_quality_id),
+        subpixel_geometry_amount: selection.subpixel_geometry_amount,
+        panel_light_spread_amount: selection.panel_light_spread_amount,
+        capture_preset_id: utf8_view(selection.capture_preset_id),
+        geometry_mode_id: utf8_view(selection.geometry_mode_id),
+        camera_distance_meters: selection.camera_distance_meters,
+        camera_orbit_x_degrees: selection.camera_orbit_x_degrees,
+        camera_orbit_y_degrees: selection.camera_orbit_y_degrees,
+        camera_position_x_meters: selection.camera_position_x_meters,
+        camera_position_y_meters: selection.camera_position_y_meters,
+        camera_position_z_meters: selection.camera_position_z_meters,
+        camera_rotation_x_degrees: selection.camera_rotation_x_degrees,
+        camera_rotation_y_degrees: selection.camera_rotation_y_degrees,
+        camera_rotation_z_degrees: selection.camera_rotation_z_degrees,
+        screen_position_x_meters: selection.screen_position_x_meters,
+        screen_position_y_meters: selection.screen_position_y_meters,
+        screen_position_z_meters: selection.screen_position_z_meters,
+        screen_rotation_x_degrees: selection.screen_rotation_x_degrees,
+        screen_yaw_degrees: selection.screen_yaw_degrees,
+        screen_rotation_z_degrees: selection.screen_rotation_z_degrees,
+        cover_glass_preset_id: utf8_view(selection.cover_glass_preset_id),
+        cover_glass_amount: selection.cover_glass_amount,
+        environment_preset_id: utf8_view(selection.environment_preset_id),
+        environment_amount: selection.environment_amount,
+        cover_glow_amount: selection.cover_glow_amount,
+        lens_preset_id: utf8_view(selection.lens_preset_id),
+        lens_amount: selection.lens_amount,
+        focus_distance_meters: selection.focus_distance_meters,
+        shutter_motion_amount: selection.shutter_motion_amount,
+        sensor_bloom_amount: selection.sensor_bloom_amount,
+        sensor_noise_amount: selection.sensor_noise_amount,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_authoring_default_selection(
+    input_transform_id: ScreenUtf8View,
+    device_id: ScreenUtf8View,
+    resolved: *mut ScreenTestAuthoringSelectionV7,
+    error_message: *mut *const c_char,
+) -> bool {
+    let Some(input_transform_id) = (unsafe { borrowed_utf8(input_transform_id) }) else {
+        unsafe { set_error(error_message, b"invalid Test Input Transform UTF-8\0") };
+        return false;
+    };
+    let Some(device_id) = (unsafe { borrowed_utf8(device_id) }) else {
+        unsafe { set_error(error_message, b"invalid Test Device UTF-8\0") };
+        return false;
+    };
+    let Some(destination) = (unsafe { resolved.as_mut() }) else {
+        unsafe {
+            set_error(
+                error_message,
+                b"missing Test default-selection destination\0",
+            )
+        };
+        return false;
+    };
+    match default_test_authoring_selection(input_transform_id, device_id) {
+        Ok(selection) => {
+            *destination = resolved_test_selection(selection);
+            unsafe { set_error(error_message, b"\0") };
+            true
+        }
+        Err(error) => {
+            unsafe { set_error(error_message, test_authoring_error(error)) };
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_descriptor_create(
+    selection: *const ScreenTestAuthoringSelectionV7,
+    error_message: *mut *const c_char,
+) -> *mut ScreenTestPageDescriptor {
+    let Some(selection) = (unsafe { test_selection(selection) }) else {
+        unsafe { set_error(error_message, b"invalid Test authoring selection ABI\0") };
+        return std::ptr::null_mut();
+    };
+    match test_page_descriptor(selection) {
+        Ok(page) => {
+            unsafe { set_error(error_message, b"\0") };
+            Box::into_raw(Box::new(ScreenTestPageDescriptor { page }))
+        }
+        Err(error) => {
+            unsafe { set_error(error_message, test_authoring_error(error)) };
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_descriptor_release(
+    descriptor: *mut ScreenTestPageDescriptor,
+) {
+    if !descriptor.is_null() {
+        // SAFETY: the ABI requires the unique pointer returned by create.
+        unsafe { drop(Box::from_raw(descriptor)) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_phase_count(
+    descriptor: *const ScreenTestPageDescriptor,
+) -> usize {
+    unsafe { descriptor.as_ref() }.map_or(0, |value| value.page.phases.len())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_default_preview_phase_id(
+    descriptor: *const ScreenTestPageDescriptor,
+) -> ScreenUtf8View {
+    unsafe { descriptor.as_ref() }.map_or(utf8_view(""), |value| {
+        utf8_view(value.page.default_preview_phase_id)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_phase_descriptor(
+    descriptor: *const ScreenTestPageDescriptor,
+    phase_index: usize,
+    phase: *mut ScreenTestPhaseDescriptorV2,
+) -> bool {
+    let Some(source) =
+        unsafe { descriptor.as_ref() }.and_then(|value| value.page.phases.get(phase_index))
+    else {
+        return false;
+    };
+    let Some(destination) = (unsafe { phase.as_mut() }) else {
+        return false;
+    };
+    *destination = ScreenTestPhaseDescriptorV2 {
+        abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
+        id: utf8_view(source.id),
+        label: utf8_view(source.label),
+        character_scale_note: utf8_view(source.character_scale_note.unwrap_or("")),
+        input_artifact: utf8_view(source.input_artifact),
+        output_artifact: utf8_view(source.output_artifact),
+        preview_result: source.preview_result as u32,
+    };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_control_count(
+    descriptor: *const ScreenTestPageDescriptor,
+    phase_index: usize,
+) -> usize {
+    unsafe { descriptor.as_ref() }
+        .and_then(|value| value.page.phases.get(phase_index))
+        .map_or(0, |phase| phase.controls.len())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_control_descriptor(
+    descriptor: *const ScreenTestPageDescriptor,
+    phase_index: usize,
+    control_index: usize,
+    control: *mut ScreenTestControlDescriptorV3,
+) -> bool {
+    let Some(source) = unsafe { descriptor.as_ref() }
+        .and_then(|value| value.page.phases.get(phase_index))
+        .and_then(|phase| phase.controls.get(control_index))
+    else {
+        return false;
+    };
+    let Some(destination) = (unsafe { control.as_mut() }) else {
+        return false;
+    };
+    *destination = test_control_descriptor(source);
+    true
+}
+
+fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControlDescriptorV3 {
+    match source {
+        TestControlRequirement::Choice {
+            id,
+            label,
+            selected_id,
+            reset_id,
+            ..
+        } => ScreenTestControlDescriptorV3 {
+            abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
+            kind: SCREEN_TEST_CONTROL_CHOICE,
+            id: utf8_view(id),
+            label: utf8_view(label),
+            selected_id: utf8_view(selected_id),
+            reset_id: utf8_view(reset_id),
+            value: 0.0,
+            reset_value: 0.0,
+            minimum: 0.0,
+            maximum: 0.0,
+            step: 0.0,
+            unit: utf8_view(""),
+        },
+        TestControlRequirement::Scalar {
+            id,
+            label,
+            value,
+            minimum,
+            maximum,
+            step,
+            unit,
+            reset_value,
+        } => ScreenTestControlDescriptorV3 {
+            abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
+            kind: SCREEN_TEST_CONTROL_SCALAR,
+            id: utf8_view(id),
+            label: utf8_view(label),
+            selected_id: utf8_view(""),
+            reset_id: utf8_view(""),
+            value: *value,
+            reset_value: *reset_value,
+            minimum: *minimum,
+            maximum: *maximum,
+            step: *step,
+            unit: utf8_view(unit),
+        },
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_choice_option_count(
+    descriptor: *const ScreenTestPageDescriptor,
+    phase_index: usize,
+    control_index: usize,
+) -> usize {
+    let Some(TestControlRequirement::Choice { options, .. }) = (unsafe { descriptor.as_ref() })
+        .and_then(|value| value.page.phases.get(phase_index))
+        .and_then(|phase| phase.controls.get(control_index))
+    else {
+        return 0;
+    };
+    options.len()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_choice_option(
+    descriptor: *const ScreenTestPageDescriptor,
+    phase_index: usize,
+    control_index: usize,
+    option_index: usize,
+    option: *mut ScreenTestChoiceOptionV2,
+) -> bool {
+    let Some(TestControlRequirement::Choice { options, .. }) = (unsafe { descriptor.as_ref() })
+        .and_then(|value| value.page.phases.get(phase_index))
+        .and_then(|phase| phase.controls.get(control_index))
+    else {
+        return false;
+    };
+    let Some(source) = options.get(option_index) else {
+        return false;
+    };
+    let Some(destination) = (unsafe { option.as_mut() }) else {
+        return false;
+    };
+    *destination = ScreenTestChoiceOptionV2 {
+        abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
+        id: utf8_view(source.id),
+        label: utf8_view(source.label),
+    };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_preview_control_count(
+    descriptor: *const ScreenTestPageDescriptor,
+) -> usize {
+    unsafe { descriptor.as_ref() }.map_or(0, |value| value.page.preview_controls.len())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_preview_control_descriptor(
+    descriptor: *const ScreenTestPageDescriptor,
+    control_index: usize,
+    control: *mut ScreenTestControlDescriptorV3,
+) -> bool {
+    let Some(source) = (unsafe { descriptor.as_ref() })
+        .and_then(|value| value.page.preview_controls.get(control_index))
+    else {
+        return false;
+    };
+    let Some(destination) = (unsafe { control.as_mut() }) else {
+        return false;
+    };
+    *destination = test_control_descriptor(source);
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_preview_choice_option_count(
+    descriptor: *const ScreenTestPageDescriptor,
+    control_index: usize,
+) -> usize {
+    let Some(TestControlRequirement::Choice { options, .. }) = (unsafe { descriptor.as_ref() })
+        .and_then(|value| value.page.preview_controls.get(control_index))
+    else {
+        return 0;
+    };
+    options.len()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_preview_choice_option(
+    descriptor: *const ScreenTestPageDescriptor,
+    control_index: usize,
+    option_index: usize,
+    option: *mut ScreenTestChoiceOptionV2,
+) -> bool {
+    let Some(TestControlRequirement::Choice { options, .. }) = (unsafe { descriptor.as_ref() })
+        .and_then(|value| value.page.preview_controls.get(control_index))
+    else {
+        return false;
+    };
+    let Some(source) = options.get(option_index) else {
+        return false;
+    };
+    let Some(destination) = (unsafe { option.as_mut() }) else {
+        return false;
+    };
+    *destination = ScreenTestChoiceOptionV2 {
+        abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
+        id: utf8_view(source.id),
+        label: utf8_view(source.label),
+    };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_authoring_apply_choice(
+    selection: *const ScreenTestAuthoringSelectionV7,
+    control_id: ScreenUtf8View,
+    option_id: ScreenUtf8View,
+    resolved: *mut ScreenTestAuthoringSelectionV7,
+    error_message: *mut *const c_char,
+) -> bool {
+    let Some(selection) = (unsafe { test_selection(selection) }) else {
+        unsafe { set_error(error_message, b"invalid Test authoring selection ABI\0") };
+        return false;
+    };
+    let Some(control_id) = (unsafe { borrowed_utf8(control_id) }) else {
+        unsafe { set_error(error_message, b"invalid Test control id\0") };
+        return false;
+    };
+    let Some(option_id) = (unsafe { borrowed_utf8(option_id) }) else {
+        unsafe { set_error(error_message, b"invalid Test option id\0") };
+        return false;
+    };
+    let Some(destination) = (unsafe { resolved.as_mut() }) else {
+        unsafe { set_error(error_message, b"missing resolved Test selection output\0") };
+        return false;
+    };
+    match apply_test_choice(selection, control_id, option_id) {
+        Ok(selection) => {
+            *destination = resolved_test_selection(selection);
+            unsafe { set_error(error_message, b"\0") };
+            true
+        }
+        Err(error) => {
+            unsafe { set_error(error_message, test_authoring_error(error)) };
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
+    selection: *const ScreenTestAuthoringSelectionV7,
+    control_id: ScreenUtf8View,
+    value: f32,
+    resolved: *mut ScreenTestAuthoringSelectionV7,
+    error_message: *mut *const c_char,
+) -> bool {
+    let Some(selection) = (unsafe { test_selection(selection) }) else {
+        unsafe { set_error(error_message, b"invalid Test authoring selection ABI\0") };
+        return false;
+    };
+    let Some(control_id) = (unsafe { borrowed_utf8(control_id) }) else {
+        unsafe { set_error(error_message, b"invalid Test control id\0") };
+        return false;
+    };
+    let Some(destination) = (unsafe { resolved.as_mut() }) else {
+        unsafe { set_error(error_message, b"missing resolved Test selection output\0") };
+        return false;
+    };
+    match apply_test_scalar(selection, control_id, value) {
+        Ok(selection) => {
+            *destination = resolved_test_selection(selection);
+            unsafe { set_error(error_message, b"\0") };
+            true
+        }
+        Err(error) => {
+            unsafe { set_error(error_message, test_authoring_error(error)) };
+            false
+        }
+    }
+}
+
 fn preset_at(index: usize) -> Option<screen_panel::DevicePreset> {
     DEVICE_PRESETS.get(index).copied()
 }
@@ -1606,6 +2325,62 @@ pub unsafe extern "C" fn screen_cover_glass_preset_parameters(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn screen_environment_preset_count() -> usize {
+    ENVIRONMENT_PRESETS.len()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_environment_preset_id(index: usize) -> ScreenUtf8View {
+    ENVIRONMENT_PRESETS
+        .get(index)
+        .map_or(utf8_view(""), |preset| utf8_view(preset.id))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_environment_preset_label(index: usize) -> ScreenUtf8View {
+    ENVIRONMENT_PRESETS
+        .get(index)
+        .map_or(utf8_view(""), |preset| utf8_view(preset.label))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_environment_preset_parameters(
+    index: usize,
+    parameters: *mut ScreenEnvironmentParametersV2,
+) -> bool {
+    let Some(preset) = ENVIRONMENT_PRESETS.get(index) else {
+        return false;
+    };
+    let Some(destination) = (unsafe { parameters.as_mut() }) else {
+        return false;
+    };
+    let environment = preset.environment;
+    *destination = ScreenEnvironmentParametersV2 {
+        abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+        character_strength: environment.character_strength,
+        ambient_radiance_acescg: [
+            environment.ambient_radiance.0.r,
+            environment.ambient_radiance.0.g,
+            environment.ambient_radiance.0.b,
+        ],
+        key_radiance_acescg: [
+            environment.key_radiance.0.r,
+            environment.key_radiance.0.g,
+            environment.key_radiance.0.b,
+        ],
+        key_direction_local: environment.key_direction_local,
+        key_angular_radius_degrees: environment.key_angular_radius_degrees,
+        rotation_degrees: environment.rotation_degrees,
+        pattern: match environment.pattern {
+            EnvironmentPattern::UniformNeutral => 0,
+            EnvironmentPattern::StudioSoftboxes => 1,
+            EnvironmentPattern::CalibrationGrid => 2,
+        },
+    };
+    true
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_cover_glass_profile_create(
     parameters: *const ScreenCoverGlassParametersV2,
     error_message: *mut *const c_char,
@@ -1632,6 +2407,13 @@ pub unsafe extern "C" fn screen_cover_glass_profile_create(
         ),
         roughness: parameters.roughness,
         haze: parameters.haze,
+        glow: screen_cover::CoverGlowProfile {
+            character_strength: parameters.glow_character_strength,
+            scatter_fraction: parameters.glow_scatter_fraction,
+            core_radius_millimeters: parameters.glow_core_radius_millimeters,
+            tail_radius_millimeters: parameters.glow_tail_radius_millimeters,
+            tail_fraction: parameters.glow_tail_fraction,
+        },
     };
     let Ok(profile) = profile.validate() else {
         unsafe { set_error(error_message, b"invalid physical cover glass profile\0") };
@@ -1688,6 +2470,13 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         ),
         roughness: parameters.cover.roughness,
         haze: parameters.cover.haze,
+        glow: screen_cover::CoverGlowProfile {
+            character_strength: parameters.cover.glow_character_strength,
+            scatter_fraction: parameters.cover.glow_scatter_fraction,
+            core_radius_millimeters: parameters.cover.glow_core_radius_millimeters,
+            tail_radius_millimeters: parameters.cover.glow_tail_radius_millimeters,
+            tail_fraction: parameters.cover.glow_tail_fraction,
+        },
     };
     let pattern = match parameters.environment.pattern {
         0 => EnvironmentPattern::UniformNeutral,
@@ -1866,6 +2655,11 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
                 return std::ptr::null_mut();
             }
         },
+        bloom: SensorBloomProfile {
+            character_strength: sensor.bloom_character_strength,
+            crosstalk_fraction: sensor.bloom_crosstalk_fraction,
+            overflow_transfer_fraction: sensor.bloom_overflow_transfer_fraction,
+        },
     };
     if sensor.validate().is_err() {
         unsafe { set_error(error_message, b"invalid sensor/noise snapshot\0") };
@@ -1946,6 +2740,11 @@ fn cover_parameters(
         ],
         roughness: profile.roughness,
         haze: profile.haze,
+        glow_character_strength: profile.glow.character_strength,
+        glow_scatter_fraction: profile.glow.scatter_fraction,
+        glow_core_radius_millimeters: profile.glow.core_radius_millimeters,
+        glow_tail_radius_millimeters: profile.glow.tail_radius_millimeters,
+        glow_tail_fraction: profile.glow.tail_fraction,
     }
 }
 
@@ -1990,9 +2789,27 @@ pub extern "C" fn screen_capture_preset_default_lens_id(index: usize) -> ScreenU
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn screen_capture_preset_compatible_lens_count(index: usize) -> usize {
+    CAPTURE_DEVICE_PRESETS
+        .get(index)
+        .map_or(0, |preset| preset.compatible_lens_preset_ids.len())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_capture_preset_compatible_lens_id(
+    index: usize,
+    lens_index: usize,
+) -> ScreenUtf8View {
+    CAPTURE_DEVICE_PRESETS
+        .get(index)
+        .and_then(|preset| preset.compatible_lens_preset_ids.get(lens_index))
+        .map_or(utf8_view(""), |id| utf8_view(id))
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_capture_preset_parameters(
     index: usize,
-    parameters: *mut ScreenCapturePresetParametersV2,
+    parameters: *mut ScreenCapturePresetParametersV1,
 ) -> bool {
     let Some(preset) = CAPTURE_DEVICE_PRESETS.get(index) else {
         return false;
@@ -2002,8 +2819,8 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
     }
     let sensor = preset.sensor;
     unsafe {
-        *parameters = ScreenCapturePresetParametersV2 {
-            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+        *parameters = ScreenCapturePresetParametersV1 {
+            abi_version: SCREEN_AUTHORING_CATALOG_ABI_VERSION,
             sensor: ScreenSensorNoiseParametersV2 {
                 abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
                 native_width: u32::from(sensor.native_width),
@@ -2035,18 +2852,20 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
                 read_noise_electrons_rms: sensor.read_noise_electrons_rms,
                 analog_gain: sensor.analog_gain,
                 adc_bits: u32::from(sensor.adc_bits),
+                bloom_character_strength: sensor.bloom.character_strength,
+                bloom_crosstalk_fraction: sensor.bloom.crosstalk_fraction,
+                bloom_overflow_transfer_fraction: sensor.bloom.overflow_transfer_fraction,
             },
             gate_width_millimeters: preset.gate_width.0,
             gate_height_millimeters: preset.gate_height.0,
-            focal_length_millimeters: preset.focal_length.0,
-            f_stop: preset.f_stop,
+            default_f_stop: preset.f_stop,
             reference_exposure_index: preset.reference_exposure_index,
             middle_gray_illuminance_seconds: preset.middle_gray_illuminance_seconds_at_reference_ei,
             default_shutter_angle_degrees: preset.default_shutter_angle_degrees,
             default_temporal_samples: preset.default_temporal_samples,
-            optics_authority: match preset.optics_authority {
-                screen_application::CaptureOpticsAuthority::InterchangeableReferenceLens => 0,
-                screen_application::CaptureOpticsAuthority::IntegratedFixedLens => 1,
+            lens_association_policy: match preset.lens_association_policy {
+                screen_application::LensAssociationPolicy::Interchangeable => 0,
+                screen_application::LensAssociationPolicy::Fixed => 1,
             },
             default_readout_duration_milliseconds: preset.default_readout_duration_milliseconds,
             radiometric_calibration: ScreenCameraRadiometricCalibrationV2 {
@@ -2064,6 +2883,61 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
             },
         };
     }
+    true
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_lens_preset_count() -> usize {
+    LENS_PRESETS.len()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_lens_preset_id(index: usize) -> ScreenUtf8View {
+    LENS_PRESETS
+        .get(index)
+        .map_or(utf8_view(""), |preset| utf8_view(preset.id))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_lens_preset_label(index: usize) -> ScreenUtf8View {
+    LENS_PRESETS
+        .get(index)
+        .map_or(utf8_view(""), |preset| utf8_view(preset.label))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_lens_preset_authority(index: usize) -> u32 {
+    LENS_PRESETS
+        .get(index)
+        .map_or(u32::MAX, |preset| match preset.authority {
+            LensPresetAuthority::GenericApproximation => 0,
+            LensPresetAuthority::CalibratedApproximation => 1,
+        })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_lens_preset_parameters(
+    index: usize,
+    parameters: *mut ScreenLensPresetParametersV1,
+) -> bool {
+    let Some(preset) = LENS_PRESETS.get(index) else {
+        return false;
+    };
+    let Some(destination) = (unsafe { parameters.as_mut() }) else {
+        return false;
+    };
+    *destination = ScreenLensPresetParametersV1 {
+        abi_version: SCREEN_AUTHORING_CATALOG_ABI_VERSION,
+        nominal_focal_length_millimeters: preset.nominal_focal_length.0,
+        radial_distortion: preset.lens.radial_distortion,
+        tangential_distortion: preset.lens.tangential_distortion,
+        longitudinal_chromatic_meters: preset.lens.longitudinal_chromatic_meters,
+        lateral_chromatic_scale: preset.lens.lateral_chromatic_scale,
+        vignetting_strength: preset.lens.vignetting_strength,
+        transmission_rgb: preset.lens.transmission_rgb,
+        center_softness_micrometers: preset.lens.center_softness_micrometers,
+        edge_softness_micrometers: preset.lens.edge_softness_micrometers,
+    };
     true
 }
 
@@ -2088,6 +2962,43 @@ pub extern "C" fn screen_device_preset_white_basis(index: usize) -> ScreenUtf8Vi
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_color_mode_count(index: usize) -> usize {
+    preset_at(index).map_or(0, |preset| preset.color_mode_ids.len())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_color_mode_id(
+    index: usize,
+    color_mode_index: usize,
+) -> ScreenUtf8View {
+    preset_at(index)
+        .and_then(|preset| preset.color_mode_ids.get(color_mode_index).copied())
+        .map_or(utf8_view(""), utf8_view)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_default_color_mode_id(index: usize) -> ScreenUtf8View {
+    preset_at(index).map_or(utf8_view(""), |preset| {
+        utf8_view(preset.default_color_mode_id)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_minimum_white_nits(index: usize) -> f32 {
+    preset_at(index).map_or(0.0, |preset| preset.minimum_white_nits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_maximum_white_nits(index: usize) -> f32 {
+    preset_at(index).map_or(0.0, |preset| preset.maximum_white_nits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_device_preset_white_step_nits(index: usize) -> f32 {
+    preset_at(index).map_or(0.0, |preset| preset.white_step_nits)
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn screen_device_preset_default_cover_id(index: usize) -> ScreenUtf8View {
     preset_at(index).map_or(utf8_view(""), |preset| {
         utf8_view(preset.default_cover_glass_preset_id)
@@ -2106,14 +3017,12 @@ pub unsafe extern "C" fn screen_device_preset_parameters(
         return false;
     }
     // SAFETY: the caller provided a writable current-version parameter structure.
-    let light_spread = match preset.category {
-        "Phone" => PanelLightSpreadProfile::LCD_MOBILE,
-        "Television" => PanelLightSpreadProfile::LCD_TV,
-        _ => PanelLightSpreadProfile::LCD_DESKTOP,
-    };
     unsafe {
-        *parameters =
-            parameters_from_profile(preset.profile(), preset.panel_technology, light_spread)
+        *parameters = parameters_from_profile(
+            preset.profile(),
+            preset.panel_technology,
+            preset.light_spread,
+        )
     };
     true
 }
@@ -2513,22 +3422,68 @@ mod tests {
         texture
     }
 
-    fn contributions() -> [ScreenPhysicalStageContributionV2; 12] {
+    fn contributions() -> [ScreenPhysicalStageContributionV2; 14] {
         core::array::from_fn(|index| {
-            let discrete = matches!(index, 9 | 11);
+            let discrete = matches!(index, 11 | 13);
             ScreenPhysicalStageContributionV2 {
                 abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-                domain_id: if index < 6 { 0x100 } else { 0x200 },
+                domain_id: stage_domain(EXPECTED_STAGE_IDS[index]),
                 stage_id: EXPECTED_STAGE_IDS[index],
                 control_semantics: u32::from(discrete),
                 amount: if index < 3 { 1.0 } else { 0.0 },
                 visual_minimum: 0.0,
                 visual_maximum: 2.0,
-                safe_maximum: if index == 4 { 2.0 } else { 4.0 },
+                safe_maximum: if index == 5 { 2.0 } else { 4.0 },
                 discrete_enabled: false,
                 exact_identity_at_zero: !discrete,
             }
         })
+    }
+
+    #[test]
+    fn scene_geometry_and_environment_keep_independent_stage_amounts() {
+        let mut values = contributions();
+        values[4].amount = 1.0;
+        values[6].amount = 0.0;
+        let resolved = contribution_amounts(&values).expect("valid contribution contract");
+        assert_eq!(resolved.scene_geometry, 1.0);
+        assert_eq!(resolved.environment, 0.0);
+
+        values[4].amount = 0.0;
+        values[6].amount = 1.0;
+        let resolved = contribution_amounts(&values).expect("valid contribution contract");
+        assert_eq!(resolved.scene_geometry, 0.0);
+        assert_eq!(resolved.environment, 1.0);
+    }
+
+    #[test]
+    fn capture_diagnostics_describe_the_effective_requested_checkpoint() {
+        let before_sensor =
+            effective_capture_checkpoint(PhysicalIntermediate::ShutterMotion, true, 1.0, true);
+        assert_eq!(
+            before_sensor,
+            EffectiveCaptureCheckpoint {
+                sensor_enabled: false,
+                sensor_noise_amount: 0.0,
+                development_enabled: false,
+            }
+        );
+
+        let clean_raw =
+            effective_capture_checkpoint(PhysicalIntermediate::SensorNoise, true, 1.0, true);
+        assert_eq!(clean_raw.sensor_noise_amount, 0.0);
+        assert!(clean_raw.sensor_enabled);
+        assert!(!clean_raw.development_enabled);
+
+        let noisy_raw =
+            effective_capture_checkpoint(PhysicalIntermediate::RawMosaic, true, 1.0, true);
+        assert_eq!(noisy_raw.sensor_noise_amount, 1.0);
+        assert!(noisy_raw.sensor_enabled);
+        assert!(!noisy_raw.development_enabled);
+
+        let developed =
+            effective_capture_checkpoint(PhysicalIntermediate::DevelopedAcesCg, true, 1.0, true);
+        assert!(developed.development_enabled);
     }
 
     fn pipeline_parameters() -> ScreenPhysicalPipelineParametersV2 {
@@ -2545,6 +3500,11 @@ mod tests {
                 absorption_per_millimeter: [0.0; 3],
                 roughness: 0.0,
                 haze: 0.0,
+                glow_character_strength: 1.0,
+                glow_scatter_fraction: 0.03,
+                glow_core_radius_millimeters: 0.1,
+                glow_tail_radius_millimeters: 1.0,
+                glow_tail_fraction: 0.0,
             },
             environment: ScreenEnvironmentParametersV2 {
                 abi_version: version,
@@ -2597,6 +3557,9 @@ mod tests {
                 read_noise_electrons_rms: 2.0,
                 analog_gain: 1.0,
                 adc_bits: 14,
+                bloom_character_strength: 1.0,
+                bloom_crosstalk_fraction: 0.012,
+                bloom_overflow_transfer_fraction: 0.22,
             },
             raw_develop: ScreenRawDevelopParametersV2 {
                 abi_version: version,
@@ -2777,18 +3740,24 @@ mod tests {
         let mut pipeline_parameters = pipeline_parameters();
         pipeline_parameters.sensor_noise.native_width = 4;
         pipeline_parameters.sensor_noise.native_height = 2;
+        pipeline_parameters.environment.character_strength = 1.0;
+        pipeline_parameters.environment.ambient_radiance_acescg = [50.0; 3];
         let pipeline = unsafe {
             screen_physical_pipeline_snapshot_create(&pipeline_parameters, std::ptr::null_mut())
         };
         assert!(!pipeline.is_null());
         let mut contributions = contributions();
         contributions[3].amount = 1.0;
+        contributions[4].amount = 1.0;
         contributions[6].amount = 1.0;
         contributions[7].amount = 1.0;
         contributions[8].amount = 1.0;
-        contributions[9].discrete_enabled = true;
+        contributions[9].amount = 1.0;
         contributions[10].amount = 1.0;
         contributions[11].discrete_enabled = true;
+        contributions[12].amount = 1.0;
+        contributions[13].discrete_enabled = true;
+        assert!(contribution_amounts(&contributions).is_some());
         let identity = ScreenPhysicalIdentity128 { high: 7, low: 9 };
         let request = ScreenPhysicalFrameRequestV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
@@ -2814,8 +3783,16 @@ mod tests {
             parameter_revision: 42,
             parameter_hash: [0x5a; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
         };
-        let job = unsafe { screen_physical_frame_submit(&request, std::ptr::null_mut()) };
-        assert!(!job.is_null());
+        let mut error = std::ptr::null();
+        let job = unsafe { screen_physical_frame_submit(&request, &mut error) };
+        let message = if error.is_null() {
+            "".to_owned()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert!(!job.is_null(), "{message}");
         unsafe {
             screen_physical_timed_input_set_v2_release(input);
             screen_physical_camera_pose_track_v2_release(camera_track);
@@ -2848,7 +3825,7 @@ mod tests {
             [0x5a; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE]
         );
         assert!(!result.output_texture.is_null());
-        assert_eq!(result.stage_diagnostic_count, 12);
+        assert_eq!(result.stage_diagnostic_count, 14);
         assert_eq!(
             result.returned_intermediate,
             PhysicalIntermediate::DevelopedAcesCg as u32
@@ -2869,36 +3846,38 @@ mod tests {
         assert!(messages[1].contains("samples/pixel"));
         assert!(messages[2].contains("9 taps/channel"));
         assert!(messages[3].contains("exact rational shutter integral"));
-        assert!(messages[4].contains("Beer-Lambert"));
-        assert!(messages[5].contains("synthetic HDR"));
-        assert!(messages[6].contains("position + quaternion"));
-        assert!(messages[7].contains("thin lens"));
-        assert!(messages[8].contains("STATIC_INPUT"));
-        assert!(messages[9].contains("sensor CFA"));
-        assert!(messages[10].contains("deterministic"));
-        assert!(messages[11].contains("demosaic"));
+        assert!(messages[4].contains("position + quaternion"));
+        assert!(messages[5].contains("Beer-Lambert"));
+        assert!(messages[6].contains("synthetic HDR"));
+        assert!(messages[7].contains("physical core/tail radii"));
+        assert!(messages[8].contains("thin lens"));
+        assert!(messages[9].contains("STATIC_INPUT"));
+        assert!(messages[10].contains("crosstalk"));
+        assert!(messages[11].contains("sensor CFA"));
+        assert!(messages[12].contains("deterministic"));
+        assert!(messages[13].contains("demosaic"));
         assert!(
-            diagnostics[..9]
+            diagnostics[..11]
                 .iter()
                 .all(|diagnostic| diagnostic.elapsed_nanoseconds > 0)
         );
         assert!(
-            diagnostics[9..]
+            diagnostics[11..]
                 .iter()
                 .all(|diagnostic| diagnostic.elapsed_nanoseconds > 0)
         );
         assert!(
-            diagnostics[..9]
+            diagnostics[..10]
                 .windows(2)
                 .all(|pair| pair[0].elapsed_nanoseconds == pair[1].elapsed_nanoseconds)
         );
         assert_eq!(
-            diagnostics[9].elapsed_nanoseconds,
-            diagnostics[10].elapsed_nanoseconds
-        );
-        assert_eq!(
             diagnostics[10].elapsed_nanoseconds,
             diagnostics[11].elapsed_nanoseconds
+        );
+        assert_eq!(
+            diagnostics[11].elapsed_nanoseconds,
+            diagnostics[12].elapsed_nanoseconds
         );
 
         unsafe {
@@ -2978,6 +3957,26 @@ mod tests {
             };
             assert!(unsafe { screen_device_preset_parameters(index, &mut parameters) });
             assert_eq!(parameters.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);
+            let mode_count = screen_device_preset_color_mode_count(index);
+            assert!(mode_count > 0);
+            for mode_index in 0..mode_count {
+                assert!(
+                    !screen_device_preset_color_mode_id(index, mode_index)
+                        .bytes
+                        .is_null()
+                );
+            }
+            assert!(
+                !screen_device_preset_default_color_mode_id(index)
+                    .bytes
+                    .is_null()
+            );
+            let minimum = screen_device_preset_minimum_white_nits(index);
+            let maximum = screen_device_preset_maximum_white_nits(index);
+            let reference = parameters.white_level_nits;
+            assert!(minimum.is_finite() && maximum.is_finite());
+            assert!(minimum > 0.0 && minimum <= reference && reference <= maximum);
+            assert!(screen_device_preset_white_step_nits(index) > 0.0);
             let profile =
                 unsafe { screen_device_profile_create(&parameters, std::ptr::null_mut()) };
             assert!(!profile.is_null());
@@ -2990,25 +3989,49 @@ mod tests {
         assert_eq!(screen_capture_preset_count(), CAPTURE_DEVICE_PRESETS.len());
         assert_eq!(screen_capture_preset_count(), 2);
         for index in 0..screen_capture_preset_count() {
-            let mut parameters: ScreenCapturePresetParametersV2 = unsafe { std::mem::zeroed() };
+            let mut parameters: ScreenCapturePresetParametersV1 = unsafe { std::mem::zeroed() };
             assert!(unsafe { screen_capture_preset_parameters(index, &mut parameters) });
-            assert_eq!(parameters.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);
+            assert_eq!(parameters.abi_version, SCREEN_AUTHORING_CATALOG_ABI_VERSION);
             assert!(parameters.sensor.native_width > 0);
             assert!(parameters.sensor.native_height > 0);
             assert!(parameters.gate_width_millimeters > 0.0);
             assert!(parameters.gate_height_millimeters > 0.0);
-            assert!(parameters.focal_length_millimeters > 0.0);
-            assert!(parameters.f_stop > 0.0);
+            assert!(parameters.default_f_stop > 0.0);
             assert!(parameters.default_temporal_samples > 0);
             assert!(parameters.default_readout_duration_milliseconds >= 0.0);
+            assert!(parameters.lens_association_policy <= 1);
             assert!(!screen_capture_preset_id(index).bytes.is_null());
             assert!(!screen_capture_preset_label(index).bytes.is_null());
             assert!(!screen_capture_preset_default_lens_id(index).bytes.is_null());
+            let compatible_count = screen_capture_preset_compatible_lens_count(index);
+            assert!(compatible_count > 0);
+            for lens_index in 0..compatible_count {
+                assert!(
+                    !screen_capture_preset_compatible_lens_id(index, lens_index)
+                        .bytes
+                        .is_null()
+                );
+            }
         }
-        let mut invalid: ScreenCapturePresetParametersV2 = unsafe { std::mem::zeroed() };
+        let mut invalid: ScreenCapturePresetParametersV1 = unsafe { std::mem::zeroed() };
         assert!(!unsafe {
             screen_capture_preset_parameters(screen_capture_preset_count(), &mut invalid)
         });
+    }
+
+    #[test]
+    fn lens_catalog_exposes_integrated_and_interchangeable_optics_uniformly() {
+        assert_eq!(screen_lens_preset_count(), LENS_PRESETS.len());
+        assert!(screen_lens_preset_count() > 1);
+        for index in 0..screen_lens_preset_count() {
+            let mut parameters: ScreenLensPresetParametersV1 = unsafe { std::mem::zeroed() };
+            assert!(unsafe { screen_lens_preset_parameters(index, &mut parameters) });
+            assert_eq!(parameters.abi_version, SCREEN_AUTHORING_CATALOG_ABI_VERSION);
+            assert!(parameters.nominal_focal_length_millimeters > 0.0);
+            assert!(screen_lens_preset_authority(index) <= 1);
+            assert!(!screen_lens_preset_id(index).bytes.is_null());
+            assert!(!screen_lens_preset_label(index).bytes.is_null());
+        }
     }
 
     #[test]
@@ -3025,6 +4048,11 @@ mod tests {
                 absorption_per_millimeter: [0.0; 3],
                 roughness: 0.0,
                 haze: 0.0,
+                glow_character_strength: 0.0,
+                glow_scatter_fraction: 0.0,
+                glow_core_radius_millimeters: 0.0,
+                glow_tail_radius_millimeters: 0.0,
+                glow_tail_fraction: 0.0,
             };
             assert!(unsafe { screen_cover_glass_preset_parameters(index, &mut parameters) });
             assert_eq!(parameters.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);

@@ -7,6 +7,9 @@ license.workspace = true
 
 [dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+half = "2.7.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 rfd = { version = "0.17.2", default-features = false }
 slint = { version = "1.17.1", default-features = false, features = ["accessibility", "backend-winit", "compat-1-2", "renderer-femtovg-wgpu", "std"] }
 screen-application = { path = "../../crates/screen-application" }

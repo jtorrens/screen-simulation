@@ -19,6 +19,7 @@ struct PhysicalPipelineParams {
     float4 cover_geometry;
     float4 cover_absorption_roughness;
     float4 cover_haze;
+    float4 cover_glow; // core mm, tail mm, scattered fraction, tail fraction
     float4 environment_ambient_strength;
     float4 environment_key_radius;
     float4 environment_direction_rotation;
@@ -376,6 +377,39 @@ inline float spread_native_channel(
     return value;
 }
 
+inline float cover_glow_native_channel(
+    texture2d<float, access::read> device_signal,
+    uint channel,
+    float2 device_minimum,
+    float2 device_maximum,
+    constant PhysicalPipelineParams& p
+) {
+    const float scattered = p.cover_glow.z;
+    if (scattered == 0.0f) {
+        return spread_native_channel(device_signal, channel, device_minimum, device_maximum, p);
+    }
+    const float2 inverse_panel = 1.0f / p.panel_size_meters.xy;
+    const float core = p.cover_glow.x * 0.001f;
+    const float tail = p.cover_glow.y * 0.001f * 0.7071067811865475f;
+    const float core_weight = scattered * (1.0f - p.cover_glow.w) * 0.25f;
+    const float tail_weight = scattered * p.cover_glow.w * 0.25f;
+    float value = spread_native_channel(device_signal, channel, device_minimum, device_maximum, p)
+        * (1.0f - scattered);
+    const float2 core_x = float2(core, 0.0f) * inverse_panel;
+    const float2 core_y = float2(0.0f, core) * inverse_panel;
+    const float2 tail_xy = float2(tail, tail) * inverse_panel;
+    const float2 tail_xn = float2(tail, -tail) * inverse_panel;
+    value += spread_native_channel(device_signal, channel, device_minimum + core_x, device_maximum + core_x, p) * core_weight;
+    value += spread_native_channel(device_signal, channel, device_minimum - core_x, device_maximum - core_x, p) * core_weight;
+    value += spread_native_channel(device_signal, channel, device_minimum + core_y, device_maximum + core_y, p) * core_weight;
+    value += spread_native_channel(device_signal, channel, device_minimum - core_y, device_maximum - core_y, p) * core_weight;
+    value += spread_native_channel(device_signal, channel, device_minimum + tail_xy, device_maximum + tail_xy, p) * tail_weight;
+    value += spread_native_channel(device_signal, channel, device_minimum - tail_xy, device_maximum - tail_xy, p) * tail_weight;
+    value += spread_native_channel(device_signal, channel, device_minimum + tail_xn, device_maximum + tail_xn, p) * tail_weight;
+    value += spread_native_channel(device_signal, channel, device_minimum - tail_xn, device_maximum - tail_xn, p) * tail_weight;
+    return value;
+}
+
 kernel void evaluate_physical_pipeline(
     texture2d<float, access::read> source_acescg [[texture(0)]],
     texture2d<float, access::read> device_signal [[texture(1)]],
@@ -390,6 +424,7 @@ kernel void evaluate_physical_pipeline(
     float4 ideal = 0.0f;
     float3 native = 0.0f;
     float3 spread_native = 0.0f;
+    float3 glow_native = 0.0f;
     float3 continuous_native = 0.0f;
     float3 average_device_code = 0.0f;
     float cover_cosine = 0.0f;
@@ -433,6 +468,8 @@ kernel void evaluate_physical_pipeline(
                     device_maximum, p) * optical_weight;
                 spread_native[channel] += spread_native_channel(device_signal, channel,
                     channel_minimum, channel_maximum, p) * optical_weight;
+                glow_native[channel] += cover_glow_native_channel(device_signal, channel,
+                    channel_minimum, channel_maximum, p) * optical_weight;
                 continuous_native[channel] += continuous_channel(code[channel], p) * optical_weight;
             }
             const PhysicalRayHit green_hit = physical_trace_ray(observed, lens_sample, 1, p);
@@ -461,6 +498,7 @@ kernel void evaluate_physical_pipeline(
     ideal *= reciprocal;
     native *= reciprocal;
     spread_native *= reciprocal;
+    glow_native *= reciprocal;
     continuous_native *= reciprocal;
     average_device_code *= reciprocal;
     const float3 physical = float3(
@@ -478,12 +516,18 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix1.xyz, spread_native),
         dot(p.matrix2.xyz, spread_native)
     ) / p.levels.z;
+    const float3 glow = float3(
+        dot(p.matrix0.xyz, glow_native),
+        dot(p.matrix1.xyz, glow_native),
+        dot(p.matrix2.xyz, glow_native)
+    ) / p.levels.z;
     const float3 staged = ideal.rgb
         + p.strengths.y * (continuous - ideal.rgb)
         + p.strengths.z * (physical - continuous)
         + (spread - physical);
+    const float3 glass_scattered = staged + (glow - spread);
     const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
-    const float3 temporally_integrated = staged * temporal_gain;
+    const float3 temporally_integrated = glass_scattered * temporal_gain;
     const float3 covered = apply_flat_cover(temporally_integrated,
         cover_cosine * cover_reciprocal, cover_reflection_direction,
         cover_irradiance * cover_reciprocal, p);
@@ -496,9 +540,11 @@ kernel void evaluate_physical_pipeline(
         case 2: selected = continuous; break;
         case 3: selected = physical; break;
         case 4: selected = spread; break;
-        case 5: selected = covered; break;
+        case 5: selected = temporally_integrated; break;
         case 6: selected = covered; break;
-        case 7: selected = shuttered; break;
+        case 7: selected = covered; break;
+        case 8: selected = covered; break;
+        case 9: selected = shuttered; break;
         default: selected = ideal.rgb + p.strengths.x * (shuttered - ideal.rgb); break;
     }
     output.write(float4(selected, ideal.a), position);

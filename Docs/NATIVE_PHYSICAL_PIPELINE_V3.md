@@ -1,4 +1,4 @@
-# Unified native physical pipeline v2
+# Unified native physical pipeline v3
 
 Status: complete Rust/Metal migration cut for adoption by the native macOS shell.
 
@@ -6,7 +6,7 @@ Evidence date: 2026-08-06. Branch: `feature/physical-panel-spatial-v1`.
 
 ## One contract and one product route
 
-ABI v2 is the only live physical-frame ABI. One coarse request carries ordered,
+ABI v3 is the only live physical-frame ABI. One coarse request carries ordered,
 immutable Source ACEScg and nonlinear Device Signal samples at exact rational
 times, explicit raster placement, retained Metal texture handles, camera and
 screen pose tracks, the exact shutter interval, an explicit source-sampling
@@ -36,8 +36,9 @@ Source ACEScg + Device Signal + placement
   -> RGB or BGR subpixel geometry / fill / black matrix
   -> physical panel light spread
   -> rational temporal emission integral
+  -> resolved camera/screen relative geometry and ideal projection
   -> cover glass transmission + synthetic HDR environment reflection
-  -> camera/screen geometry + generalized lens
+  -> generalized lens character and projection
   -> exact global/rolling shutter integration and motion scheduling
   -> sensor exposure + Bayer CFA + full well / clipping / ADC
   -> deterministic shot / dark / read noise

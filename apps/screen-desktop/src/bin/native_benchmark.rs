@@ -113,7 +113,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             keyframes: vec![CameraIntrinsicsKeyframe {
                 id: "benchmark-intrinsics".to_owned(),
                 time: at_zero,
-                focal_length: iphone.focal_length,
+                focal_length: lens_preset(iphone.default_lens_preset_id)
+                    .expect("current integrated lens")
+                    .nominal_focal_length,
                 sensor_width: iphone.gate_width,
                 sensor_height: iphone.gate_height,
                 lens_shift: Vec2 { x: 0.0, y: 0.0 },

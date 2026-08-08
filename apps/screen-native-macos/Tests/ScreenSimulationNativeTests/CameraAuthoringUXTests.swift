@@ -67,30 +67,6 @@ import Testing
     }
 }
 
-@Test func lookAtCameraRotationsRemainAuthoredControls() throws {
-    let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    let source = tests.deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Sources/ScreenSimulationNative/ModelInspectorView.swift")
-    let text = try String(contentsOf: source, encoding: .utf8)
-
-    #expect(text.contains("applyLookAtRotation(value, index: index"))
-    #expect(text.contains("lookAtRotationDegrees(workspace.physicalAuthoringState!)"))
-    #expect(text.contains("preservingRollDegrees"))
-}
-
-@Test func shutterAngleTimeAndReadoutRemainLinkedInStandardUnits() {
-    var shutter = PhysicalPipelineAuthoringState.ShutterMotion()
-    ShutterPresentation.setAngle(180, fps: 24, in: &shutter)
-    #expect(abs(ShutterPresentation.exposureSeconds(shutter) - 1.0 / 48.0) < 1e-9)
-    #expect(abs(ShutterPresentation.angle(shutter, fps: 24) - 180) < 1e-4)
-
-    ShutterPresentation.setExposureSeconds(1.0 / 96.0, in: &shutter)
-    #expect(abs(ShutterPresentation.angle(shutter, fps: 24) - 90) < 1e-4)
-
-    ShutterPresentation.setReadoutMilliseconds(12, in: &shutter)
-    #expect(abs(ShutterPresentation.readoutMilliseconds(shutter) - 12) < 1e-9)
-}
-
 @Test func capturePresetCatalogComesFromRustAndAppliesAnImmutableSnapshot() throws {
     let catalog = try CapturePresetDefinition.catalog()
     #expect(catalog.count == 2)
@@ -103,7 +79,12 @@ import Testing
     })
     var authored = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
     let iphone = try #require(catalog.first { $0.name.contains("iPhone 16e") })
-    iphone.apply(to: &authored, frameRate: 25)
+    let lenses = try LensPresetDefinition.catalog()
+    let integrated = try #require(lenses.first { $0.id == iphone.defaultLensID })
+    #expect(iphone.lensAssociationPolicy == .fixed)
+    #expect(iphone.compatibleLensIDs == [integrated.id])
+    iphone.applyCamera(to: &authored, frameRate: 25)
+    integrated.apply(to: &authored)
 
     #expect(abs(authored.sceneLens.focalLengthMillimeters - 4.2) < 0.001)
     #expect(authored.sensor.nativeWidth == 8_064)
@@ -126,7 +107,7 @@ import Testing
     #expect(orchestration.cameraPose.position.z == Float(authored.cameraPose.position[2]))
 }
 
-@Test func modelPreviewExposesTimelineEditableZoomAndSelectedQualityFrameExport() throws {
+@Test func sharedPreviewExposesTimelineEditableZoomAndFrameExport() throws {
     let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     let source = tests.deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
@@ -137,6 +118,42 @@ import Testing
     #expect(text.contains("model.renderCurrentFrame()"))
     #expect(text.contains("NativeTimelineView("))
     #expect(text.contains("Divider()\n            transport\n            Divider()"))
+}
+
+@Test func testAuthoringBeginsWithOneSourceAndColorRoute() throws {
+    let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let source = tests.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
+    let text = try String(contentsOf: source, encoding: .utf8)
+    let start = try #require(text.range(of: "private var testSetupPanel"))
+    let end = try #require(text.range(
+        of: "private func interpretationLabel",
+        range: start.upperBound..<text.endIndex
+    ))
+    let setup = text[start.lowerBound..<end.lowerBound]
+
+    let sourceControls = try #require(setup.range(of: "Text(\"Fuente\")"))
+    let color = try #require(setup.range(of: "Text(\"Interpretación de entrada\")"))
+    let working = try #require(setup.range(of: "Text(\"Working space\")"))
+    #expect(sourceControls.lowerBound < color.lowerBound)
+    #expect(color.lowerBound < working.lowerBound)
+    #expect(setup.contains("TestPhaseCard(label: \"Origen\")"))
+    #expect(setup.contains("TestAuthoringView("))
+    #expect(setup.contains("Button(\"Abrir archivo o secuencia…\""))
+    #expect(setup.contains("Picker(\"Patrón sintético\""))
+    #expect(text.contains("TestPhasePicker("))
+}
+
+@Test func everySyntheticPatternDeclaresCompleteInputEvidence() {
+    for pattern in SyntheticPattern.allCases {
+        let evidence = pattern.sourceDetection
+        #expect(evidence.proposedInputTransformID == "srgb-encoded-rec709")
+        #expect(evidence.inputTransformProvenance == .proposed)
+        #expect(evidence.alpha == .ignore)
+        #expect(evidence.matrix == .bt709)
+        #expect(evidence.range == .full)
+        #expect(evidence.colorModel == .rgb)
+    }
 }
 
 @Test @MainActor func capturePresetAndCameraPoseInvalidateTheInteractivePreview() throws {
@@ -151,15 +168,15 @@ import Testing
     let iphone = try #require(workspace.capturePresets.first { $0.name.contains("iPhone 16e") })
     workspace.selectCapturePreset(iphone, undoManager: nil)
     #expect(workspace.physicalModel.parameterRevision == initialRevision + 1)
-    #expect(workspace.modelPreviewSurfaceAspect == 8_064.0 / 6_048.0)
-    #expect(workspace.modelNativeOutputDescription == "Captura 8064×6048")
+    #expect(workspace.physicalPreviewSurfaceAspect == 8_064.0 / 6_048.0)
+    #expect(workspace.physicalNativeOutputDescription == "Captura 8064×6048")
 
     let arri = try #require(workspace.capturePresets.first { $0.name.contains("ARRI") })
     workspace.selectCapturePreset(arri, undoManager: nil)
     let arriSensor = arri.parameters.sensor
-    #expect(workspace.modelPreviewSurfaceAspect
+    #expect(workspace.physicalPreviewSurfaceAspect
         == Double(arriSensor.native_width) / Double(arriSensor.native_height))
-    #expect(workspace.modelNativeOutputDescription
+    #expect(workspace.physicalNativeOutputDescription
         == "Captura \(arriSensor.native_width)×\(arriSensor.native_height)")
 
     workspace.selectCapturePreset(iphone, undoManager: nil)

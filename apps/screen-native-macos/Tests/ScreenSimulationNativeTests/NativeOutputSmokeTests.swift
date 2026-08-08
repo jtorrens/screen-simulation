@@ -105,7 +105,7 @@ import Testing
 @Test @MainActor func proRes4444RoundtripPreservesFramesMetadataAndAlpha() async throws {
     for alpha in [StudioColorAlphaAssociation.straight, .premultiplied] {
         let result = try await movieRoundtrip(format: .proRes4444, alpha: alpha)
-        #expect(result.detection.proposedInputTransformID == "display-rec709-aces2-sdr")
+        #expect(result.detection.proposedInputTransformID == "display-rec709-gamma24-dcm")
         #expect(result.detection.hasAlpha)
         #expect(result.detection.alpha == (alpha == .straight ? .straight : .premultiplied))
         #expect(result.frameRate == 24)
@@ -121,7 +121,7 @@ import Testing
         let result = try await movieRoundtrip(
             format: .h264High, alpha: .ignore, signalRange: range
         )
-        #expect(result.detection.proposedInputTransformID == "display-rec709-aces2-sdr")
+        #expect(result.detection.proposedInputTransformID == "display-rec709-gamma24-dcm")
         #expect(!result.detection.hasAlpha)
         #expect(result.detection.matrix == .bt709)
         #expect(result.detection.range == range)
@@ -167,7 +167,7 @@ import Testing
             progress: { _, _ in }
         )
         let detection = await StudioMediaMetadataDetector.detect(url: url, isVideo: true)
-        #expect(detection.proposedInputTransformID == "display-rec2100-pq-aces2-hdr-1000")
+        #expect(detection.proposedInputTransformID == "display-rec2100-pq-dcm")
         #expect(detection.inputTransformProvenance == .detected)
         #expect(detection.matrix == .bt2020)
         #expect(detection.range == range)
@@ -313,7 +313,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     let sourceInfo = try await sourceSession.openVideo(sourceURL, hasAlpha: detection.hasAlpha)
     let display = try StudioColorMetalDisplay()
     let input = StudioColorInputTransform.catalog.first {
-        $0.id == (detection.proposedInputTransformID ?? "display-rec709-aces2-sdr")
+        $0.id == (detection.proposedInputTransformID ?? "display-rec709-gamma24-dcm")
     }!
     let alpha: StudioColorAlphaAssociation = switch detection.alpha {
     case .premultiplied: .premultiplied
@@ -406,7 +406,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     print("GOLDEN source=\(sourceURL.lastPathComponent) frames=\(sourceInfo.frameCount) fps=\(sourceInfo.frameRate) source_model=\(sourceModel) source_range=\(sourceRange) source_matrix=\(sourceMatrix) input_provenance=\(inputProvenance) output_model=\(outputModel) output_range=\(outputRange) linear_max=\(maximum) linear_rmse=\(rmse) display_max_code=\(displayMaximum) display_rmse_code=\(displayRMSE) sequential_decode_aces_preview_p95_ms=\(playbackP95) output=\(renderedURL.path)")
     #expect(outputInfo.frameCount == sourceInfo.frameCount)
     #expect(abs(outputInfo.frameRate - sourceInfo.frameRate) < 0.01)
-    #expect(outputDetection.proposedInputTransformID == "display-rec709-aces2-sdr")
+    #expect(outputDetection.proposedInputTransformID == "display-rec709-gamma24-dcm")
     #expect(displayMaximum <= 5)
     #expect(displayRMSE <= 1)
 }

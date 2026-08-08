@@ -16,6 +16,50 @@ pub enum PanelTechnology {
     IpsLcd,
 }
 
+/// A panel-owned interpretation of already encoded feeder RGB codes.
+///
+/// Stable identifiers may intentionally match Color-owned Output Signal
+/// identifiers, but the two catalogs remain independent semantic owners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelColorMode {
+    Srgb,
+    Rec709Gamma22,
+    Rec709Gamma24,
+}
+
+impl PanelColorMode {
+    pub const ALL: [Self; 3] = [Self::Srgb, Self::Rec709Gamma22, Self::Rec709Gamma24];
+
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::Srgb => "srgb",
+            Self::Rec709Gamma22 => "rec709-gamma22",
+            Self::Rec709Gamma24 => "rec709-gamma24",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Srgb => "sRGB",
+            Self::Rec709Gamma22 => "Rec.709 · Gamma 2.2",
+            Self::Rec709Gamma24 => "Rec.709 · Gamma 2.4",
+        }
+    }
+
+    pub const fn eotf_gamma(self) -> f32 {
+        match self {
+            Self::Srgb | Self::Rec709Gamma22 => 2.2,
+            Self::Rec709Gamma24 => 2.4,
+        }
+    }
+
+    pub fn from_stable_id(id: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.stable_id() == id)
+    }
+}
+
 /// Precision policy for the orthographic panel surface. Every level covers the
 /// same complete active area; only the sample lattice changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,12 +296,18 @@ pub struct DevicePreset {
     pub label: &'static str,
     pub category: &'static str,
     pub panel_technology: PanelTechnology,
+    pub light_spread: PanelLightSpreadProfile,
     pub native_width: u32,
     pub native_height: u32,
     pub active_width: Meters,
     pub active_height: Meters,
     pub reference_white_nits: f32,
+    pub minimum_white_nits: f32,
+    pub maximum_white_nits: f32,
+    pub white_step_nits: f32,
     pub white_basis: &'static str,
+    pub color_mode_ids: &'static [&'static str],
+    pub default_color_mode_id: &'static str,
     pub default_cover_glass_preset_id: &'static str,
 }
 
@@ -308,12 +358,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "Phone LCD · 4.7 Retina",
         category: "Phone",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_MOBILE,
         native_width: 750,
         native_height: 1_334,
         active_width: Meters(0.058_436),
         active_height: Meters(0.103_941),
         reference_white_nits: 625.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 625.0,
+        white_step_nits: 1.0,
         white_basis: "Generic authored reference",
+        color_mode_ids: &["srgb"],
+        default_color_mode_id: "srgb",
         default_cover_glass_preset_id: "cover-glossy-strong-ar",
     },
     DevicePreset {
@@ -321,12 +377,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "Phone LCD · 6.1 Liquid Retina",
         category: "Phone",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_MOBILE,
         native_width: 828,
         native_height: 1_792,
         active_width: Meters(0.064_517),
         active_height: Meters(0.139_607),
         reference_white_nits: 625.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 625.0,
+        white_step_nits: 1.0,
         white_basis: "Generic authored reference",
+        color_mode_ids: &["srgb"],
+        default_color_mode_id: "srgb",
         default_cover_glass_preset_id: "cover-glossy-strong-ar",
     },
     DevicePreset {
@@ -334,12 +396,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "Phone LCD · 6.5 high density",
         category: "Phone",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_MOBILE,
         native_width: 1_080,
         native_height: 2_400,
         active_width: Meters(0.067_733),
         active_height: Meters(0.150_519),
         reference_white_nits: 500.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 500.0,
+        white_step_nits: 1.0,
         white_basis: "Generic authored reference",
+        color_mode_ids: &["srgb"],
+        default_color_mode_id: "srgb",
         default_cover_glass_preset_id: "cover-glossy-strong-ar",
     },
     DevicePreset {
@@ -347,12 +415,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "MacBook Pro Retina · 14.2",
         category: "Laptop",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
         native_width: 3_024,
         native_height: 1_964,
         active_width: Meters(0.302_4),
         active_height: Meters(0.196_4),
         reference_white_nits: 500.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 500.0,
+        white_step_nits: 1.0,
         white_basis: "Published SDR reference",
+        color_mode_ids: &["srgb"],
+        default_color_mode_id: "srgb",
         default_cover_glass_preset_id: "cover-glossy-strong-ar",
     },
     DevicePreset {
@@ -360,12 +434,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "Laptop LCD · 15.6 Full HD",
         category: "Laptop",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
         native_width: 1_920,
         native_height: 1_080,
         active_width: Meters(0.345_353),
         active_height: Meters(0.194_261),
         reference_white_nits: 300.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 300.0,
+        white_step_nits: 1.0,
         white_basis: "Generic authored reference",
+        color_mode_ids: &["srgb"],
+        default_color_mode_id: "srgb",
         default_cover_glass_preset_id: "cover-semi-gloss",
     },
     DevicePreset {
@@ -373,12 +453,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "TV LCD · 32 HD",
         category: "Television",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_TV,
         native_width: 1_366,
         native_height: 768,
         active_width: Meters(0.708_500),
         active_height: Meters(0.398_337),
         reference_white_nits: 250.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 250.0,
+        white_step_nits: 1.0,
         white_basis: "Generic authored reference",
+        color_mode_ids: &["rec709-gamma24"],
+        default_color_mode_id: "rec709-gamma24",
         default_cover_glass_preset_id: "cover-semi-gloss",
     },
     DevicePreset {
@@ -386,12 +472,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "TV LCD · 43 Full HD",
         category: "Television",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_TV,
         native_width: 1_920,
         native_height: 1_080,
         active_width: Meters(0.951_935),
         active_height: Meters(0.535_463),
         reference_white_nits: 300.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 300.0,
+        white_step_nits: 1.0,
         white_basis: "Generic authored reference",
+        color_mode_ids: &["rec709-gamma24"],
+        default_color_mode_id: "rec709-gamma24",
         default_cover_glass_preset_id: "cover-glossy-standard-ar",
     },
     DevicePreset {
@@ -399,12 +491,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "TV LCD · 55 UHD",
         category: "Television",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_TV,
         native_width: 3_840,
         native_height: 2_160,
         active_width: Meters(1.217_591),
         active_height: Meters(0.684_895),
         reference_white_nits: 350.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 350.0,
+        white_step_nits: 1.0,
         white_basis: "Generic authored reference",
+        color_mode_ids: &["rec709-gamma24"],
+        default_color_mode_id: "rec709-gamma24",
         default_cover_glass_preset_id: "cover-glossy-standard-ar",
     },
     DevicePreset {
@@ -412,12 +510,18 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         label: "ASUS ProArt PA329CV · 32 UHD",
         category: "Desktop monitor",
         panel_technology: PanelTechnology::IpsLcd,
+        light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
         native_width: 3_840,
         native_height: 2_160,
         active_width: Meters(0.708_480),
         active_height: Meters(0.398_520),
         reference_white_nits: 350.0,
+        minimum_white_nits: 100.0,
+        maximum_white_nits: 350.0,
+        white_step_nits: 1.0,
         white_basis: "ASUS published typical SDR",
+        color_mode_ids: &["srgb", "rec709-gamma24"],
+        default_color_mode_id: "srgb",
         default_cover_glass_preset_id: "cover-matte-ar",
     },
 ];
@@ -1273,6 +1377,30 @@ mod tests {
             assert!((40.0..500.0).contains(&preset.pixels_per_inch()));
             assert!((4.0..60.0).contains(&preset.diagonal_inches()));
             assert!(preset.reference_white_nits > 0.0);
+            assert!(preset.minimum_white_nits.is_finite());
+            assert!(preset.maximum_white_nits.is_finite());
+            assert!(preset.white_step_nits.is_finite() && preset.white_step_nits > 0.0);
+            assert!(preset.minimum_white_nits > 0.0);
+            assert!(preset.minimum_white_nits <= preset.reference_white_nits);
+            assert!(preset.reference_white_nits <= preset.maximum_white_nits);
+            assert!(!preset.color_mode_ids.is_empty());
+            assert!(
+                preset
+                    .color_mode_ids
+                    .iter()
+                    .all(|id| { PanelColorMode::from_stable_id(id).is_some() })
+            );
+            let unique_modes = preset
+                .color_mode_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(unique_modes.len(), preset.color_mode_ids.len());
+            assert!(
+                preset
+                    .color_mode_ids
+                    .contains(&preset.default_color_mode_id)
+            );
             assert!(!preset.white_basis.is_empty());
             assert_eq!(preset.panel_technology, PanelTechnology::IpsLcd);
             assert!(preset.profile().validate().is_ok());

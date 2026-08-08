@@ -3,11 +3,21 @@
 #![forbid(unsafe_code)]
 
 mod physical_pipeline;
+mod test_authoring;
 
 pub use physical_pipeline::{
     PHYSICAL_STAGE_ORDER, PhysicalIntermediate, PhysicalPipelineSnapshot, PhysicalStage,
     PhysicalStageControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
     SourceAcesCgRaster,
+};
+pub use test_authoring::{
+    COLOR_MODE_CONTROL_ID, DEVICE_CONTROL_ID, DEVICE_INTERPRETATION_PHASE_ID,
+    FEEDER_SIGNAL_PHASE_ID, ORIGIN_PHASE_ID, OUTPUT_SIGNAL_CONTROL_ID, PLACEMENT_CONTROL_ID,
+    PREVIEW_QUALITY_CONTROL_ID, ResolvedTestAuthoringSelection, TestAuthoringError,
+    TestAuthoringSelection, TestChoiceOption, TestControlRequirement, TestPageDescriptor,
+    TestPhaseDescriptor, TestPreviewResult, WHITE_LUMINANCE_CONTROL_ID, apply_test_choice,
+    apply_test_scalar, default_test_authoring_selection, resolve_test_authoring_selection,
+    test_page_descriptor,
 };
 
 use core::fmt;
@@ -38,15 +48,15 @@ use screen_panel::{
 };
 use screen_sensor::{
     BayerPattern, CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
-    SensorError, SensorProfile, SensorRegion, expose_raw, expose_raw_region,
+    SensorBloomProfile, SensorError, SensorProfile, SensorRegion, expose_raw, expose_raw_region,
     expose_raw_with_noise_amount,
 };
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CaptureOpticsAuthority {
-    InterchangeableReferenceLens,
-    IntegratedFixedLens,
+pub enum LensAssociationPolicy {
+    Interchangeable,
+    Fixed,
 }
 
 /// Explicit bridge from scene-referred photometry to the effective exposure
@@ -162,8 +172,9 @@ pub struct CaptureDevicePreset {
     pub sensor: SensorProfile,
     pub gate_width: Millimeters,
     pub gate_height: Millimeters,
-    pub focal_length: Millimeters,
     pub default_lens_preset_id: &'static str,
+    pub compatible_lens_preset_ids: &'static [&'static str],
+    pub lens_association_policy: LensAssociationPolicy,
     pub f_stop: f32,
     pub reference_exposure_index: f32,
     pub middle_gray_illuminance_seconds_at_reference_ei: f32,
@@ -171,7 +182,6 @@ pub struct CaptureDevicePreset {
     pub default_shutter_angle_degrees: f32,
     pub default_temporal_samples: u16,
     pub default_readout_duration_milliseconds: f32,
-    pub optics_authority: CaptureOpticsAuthority,
 }
 
 pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
@@ -190,11 +200,20 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             read_noise_electrons_rms: 2.0,
             analog_gain: 1.0,
             adc_bits: 14,
+            bloom: SensorBloomProfile::LARGE_CAMERA,
         },
         gate_width: Millimeters(27.99),
         gate_height: Millimeters(19.22),
-        focal_length: Millimeters(50.0),
         default_lens_preset_id: "generic-prime-50mm",
+        compatible_lens_preset_ids: &[
+            "generic-prime-18mm",
+            "generic-prime-25mm",
+            "generic-prime-35mm",
+            "generic-prime-50mm",
+            "generic-prime-85mm",
+            "generic-prime-135mm",
+        ],
+        lens_association_policy: LensAssociationPolicy::Interchangeable,
         f_stop: 4.0,
         reference_exposure_index: 800.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
@@ -214,7 +233,6 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         default_shutter_angle_degrees: 180.0,
         default_temporal_samples: 1,
         default_readout_duration_milliseconds: 7.8,
-        optics_authority: CaptureOpticsAuthority::InterchangeableReferenceLens,
     },
     CaptureDevicePreset {
         id: "iphone-16e-main-48mp",
@@ -231,11 +249,13 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             read_noise_electrons_rms: 1.5,
             analog_gain: 1.0,
             adc_bits: 12,
+            bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
         },
         gate_width: Millimeters(5.815_385),
         gate_height: Millimeters(4.361_539),
-        focal_length: Millimeters(4.2),
         default_lens_preset_id: "iphone-16e-main-integrated",
+        compatible_lens_preset_ids: &["iphone-16e-main-integrated"],
+        lens_association_policy: LensAssociationPolicy::Fixed,
         f_stop: 1.64,
         reference_exposure_index: 100.0,
         middle_gray_illuminance_seconds_at_reference_ei: 0.1,
@@ -255,7 +275,6 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         default_shutter_angle_degrees: 30.0,
         default_temporal_samples: 1,
         default_readout_duration_milliseconds: 12.0,
-        optics_authority: CaptureOpticsAuthority::IntegratedFixedLens,
     },
 ];
 
@@ -345,6 +364,41 @@ pub struct PhysicalPipelineExecutionPlan {
     pub requested_intermediate: PhysicalIntermediate,
 }
 
+impl PhysicalPipelineExecutionPlan {
+    /// Returns the current immutable request with every stage after the requested
+    /// diagnostic boundary neutralized. Geometry is a data checkpoint: it becomes
+    /// observable by the following cover/environment stage without fabricating a
+    /// separate display-referred raster.
+    pub fn stopped_at_requested_intermediate(mut self) -> Self {
+        match self.requested_intermediate {
+            PhysicalIntermediate::SourceAcesCg
+            | PhysicalIntermediate::DeviceSignal
+            | PhysicalIntermediate::PanelEmission
+            | PhysicalIntermediate::SubpixelRadiance
+            | PhysicalIntermediate::PanelLightSpread => {
+                self.scene_geometry_amount = 0.0;
+                self.lens_amount = 0.0;
+                self.cover.glow.character_strength = 0.0;
+            }
+            PhysicalIntermediate::RelativeGeometry | PhysicalIntermediate::CoverEnvironment => {
+                self.lens_amount = 0.0;
+                self.cover.glow.character_strength = 0.0;
+            }
+            PhysicalIntermediate::CoverGlow => {
+                self.lens_amount = 0.0;
+            }
+            PhysicalIntermediate::LensProjection
+            | PhysicalIntermediate::ShutterMotion
+            | PhysicalIntermediate::RawMosaic
+            | PhysicalIntermediate::DevelopedAcesCg => {}
+            PhysicalIntermediate::SensorBloom | PhysicalIntermediate::SensorNoise => {
+                self.sensor_noise_amount = 0.0;
+            }
+        }
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalPipelineDiagnostic {
     pub geometry: FlatPanelGeometry,
@@ -397,6 +451,84 @@ fn resample_physical_rgba_area(
         }
     }
     output
+}
+
+/// Canonical Application-owned transition from the shutter-integrated physical
+/// raster into the Sensor-owned integer RAW boundary. Platform adapters may
+/// accelerate the optical work before this call and camera development after
+/// it, but they cannot reproduce photosite, noise, clipping, or ADC semantics.
+pub fn expose_physical_pipeline_raw(
+    shuttered: &[[f32; 4]],
+    shuttered_width: u32,
+    shuttered_height: u32,
+    plan: PhysicalPipelineExecutionPlan,
+) -> Result<RawSensorRaster, ApplicationError> {
+    let expected = u64::from(shuttered_width) * u64::from(shuttered_height);
+    if shuttered_width == 0
+        || shuttered_height == 0
+        || shuttered.len() as u64 != expected
+        || !plan.sensor_enabled
+        || !matches!(
+            plan.requested_intermediate,
+            PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorNoise
+                | PhysicalIntermediate::RawMosaic
+                | PhysicalIntermediate::DevelopedAcesCg
+        )
+    {
+        return Err(ApplicationError::OpticalSampleRasterMismatch);
+    }
+    let sensor = plan.sensor.validate().map_err(ApplicationError::Sensor)?;
+    plan.radiometric_calibration
+        .validate()
+        .map_err(ApplicationError::InvalidRadiometricCalibration)?;
+    let parameters = plan
+        .panel
+        .evaluator()
+        .map_err(ApplicationError::Panel)?
+        .device_stage_parameters();
+    let sensor_pixels = resample_physical_rgba_area(
+        shuttered,
+        shuttered_width,
+        shuttered_height,
+        u32::from(sensor.native_width),
+        u32::from(sensor.native_height),
+    );
+    let duration = plan
+        .shutter_close
+        .checked_sub(plan.shutter_open)
+        .map_err(ApplicationError::Time)?;
+    let panel_to_sensor_lux = CameraRadiometricCalibration::panel_luminance_to_sensor_plane_lux(
+        plan.scene_geometry_lens.f_stop,
+    );
+    let exposure_scale = parameters.white_level_nits
+        * panel_to_sensor_lux
+        * plan.radiometric_calibration.effective_sensor_exposure_scale;
+    let exposure = IntegratedOpticalExposure {
+        width: u32::from(sensor.native_width),
+        height: u32::from(sensor.native_height),
+        duration_seconds: duration.as_seconds() as f32,
+        acescg_illuminance_seconds: sensor_pixels
+            .iter()
+            .map(|pixel| {
+                LinearRgb::new(
+                    pixel[0] * exposure_scale,
+                    pixel[1] * exposure_scale,
+                    pixel[2] * exposure_scale,
+                )
+            })
+            .collect(),
+    };
+    expose_raw_with_noise_amount(
+        sensor,
+        &exposure,
+        CaptureIdentity {
+            noise_seed: plan.shutter_motion.noise_seed,
+            frame_index: plan.frame_index,
+        },
+        plan.sensor_noise_amount,
+    )
+    .map_err(ApplicationError::Sensor)
 }
 
 impl DeviceSignalRaster {
@@ -515,7 +647,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     request: PhysicalPipelineRequest,
 ) -> Result<PhysicalPipelineCpuResult, ApplicationError> {
     request.input.validate()?;
-    let plan = request.plan;
+    let plan = request.plan.stopped_at_requested_intermediate();
     if [
         plan.screen_amount,
         plan.emission_amount,
@@ -606,6 +738,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         for x in 0..sampling.effective_width {
             let mut physical_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut spread_native = LinearRgb::new(0.0, 0.0, 0.0);
+            let mut glow_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut continuous_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut average_device_code = DeviceRgb::BLACK;
             let mut ideal = [0.0_f32; 4];
@@ -726,16 +859,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                             device_maximum,
                             channel,
                         );
-                        let value = if plan.panel_light_spread.character_strength == 0.0 {
-                            base
-                        } else {
+                        let spread_at = |cover_offset_meters: [f32; 2]| {
                             plan.panel_light_spread
                                 .samples_for_channel(channel)
                                 .into_iter()
                                 .map(|sample| {
                                     let offset = Vec2 {
-                                        x: sample.offset_meters.x / plan.panel.active_width.0,
-                                        y: sample.offset_meters.y / plan.panel.active_height.0,
+                                        x: (sample.offset_meters.x + cover_offset_meters[0])
+                                            / plan.panel.active_width.0,
+                                        y: (sample.offset_meters.y + cover_offset_meters[1])
+                                            / plan.panel.active_height.0,
                                     };
                                     let shifted_minimum = Vec2 {
                                         x: channel_minimum.x + offset.x,
@@ -768,12 +901,30 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     ) * sample.weight
                                 })
                                 .sum::<f32>()
-                        } * optical_weight;
+                        };
+                        let value = if plan.panel_light_spread.character_strength == 0.0 {
+                            base * optical_weight
+                        } else {
+                            spread_at([0.0, 0.0]) * optical_weight
+                        };
+                        let glow_value = if plan.cover.glow.character_strength == 0.0 {
+                            value
+                        } else {
+                            plan.cover
+                                .glow
+                                .samples()
+                                .map_err(ApplicationError::Cover)?
+                                .into_iter()
+                                .map(|sample| spread_at(sample.offset_meters) * sample.weight)
+                                .sum::<f32>()
+                                * optical_weight
+                        };
                         let base = base * optical_weight;
                         match channel {
                             0 => {
                                 physical_native.r += base;
                                 spread_native.r += value;
+                                glow_native.r += glow_value;
                                 continuous_native.r +=
                                     area.linear_native_emission.r * optical_weight;
                                 average_device_code.r += area.device_code.r;
@@ -781,6 +932,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                             1 => {
                                 physical_native.g += base;
                                 spread_native.g += value;
+                                glow_native.g += glow_value;
                                 continuous_native.g +=
                                     area.linear_native_emission.g * optical_weight;
                                 average_device_code.g += area.device_code.g;
@@ -788,6 +940,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                             _ => {
                                 physical_native.b += base;
                                 spread_native.b += value;
+                                glow_native.b += glow_value;
                                 continuous_native.b +=
                                     area.linear_native_emission.b * optical_weight;
                                 average_device_code.b += area.device_code.b;
@@ -816,6 +969,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             spread_native.r *= reciprocal;
             spread_native.g *= reciprocal;
             spread_native.b *= reciprocal;
+            glow_native.r *= reciprocal;
+            glow_native.g *= reciprocal;
+            glow_native.b *= reciprocal;
             continuous_native.r *= reciprocal;
             continuous_native.g *= reciprocal;
             continuous_native.b *= reciprocal;
@@ -868,6 +1024,20 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * spread_native.b)
                     / parameters.white_level_nits,
             ];
+            let glowed = [
+                (matrix[0][0] * glow_native.r
+                    + matrix[0][1] * glow_native.g
+                    + matrix[0][2] * glow_native.b)
+                    / parameters.white_level_nits,
+                (matrix[1][0] * glow_native.r
+                    + matrix[1][1] * glow_native.g
+                    + matrix[1][2] * glow_native.b)
+                    / parameters.white_level_nits,
+                (matrix[2][0] * glow_native.r
+                    + matrix[2][1] * glow_native.g
+                    + matrix[2][2] * glow_native.b)
+                    / parameters.white_level_nits,
+            ];
             let staged = [
                 ideal[0]
                     + plan.emission_amount * (continuous[0] - ideal[0])
@@ -881,6 +1051,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + plan.emission_amount * (continuous[2] - ideal[2])
                     + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
                     + (spread[2] - physical[2]),
+            ];
+            let staged = [
+                staged[0] + glowed[0] - spread[0],
+                staged[1] + glowed[1] - spread[1],
+                staged[2] + glowed[2] - spread[2],
             ];
             let resolved_temporal_gain =
                 physical_row_temporal_gain(plan, y as usize, sampling.effective_height as usize)?;
@@ -943,10 +1118,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::PanelEmission => continuous,
                 PhysicalIntermediate::SubpixelRadiance => physical,
                 PhysicalIntermediate::PanelLightSpread => spread,
+                PhysicalIntermediate::RelativeGeometry => temporally_integrated,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
-                PhysicalIntermediate::SceneGeometryLens => [covered.r, covered.g, covered.b],
+                PhysicalIntermediate::CoverGlow => [covered.r, covered.g, covered.b],
+                PhysicalIntermediate::LensProjection => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::ShutterMotion => [shuttered.r, shuttered.g, shuttered.b],
-                PhysicalIntermediate::SensorNoise
+                PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
                 | PhysicalIntermediate::DevelopedAcesCg => [
                     ideal[0] + plan.screen_amount * (shuttered.r - ideal[0]),
@@ -963,66 +1141,24 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     if plan.sensor_enabled
         && matches!(
             plan.requested_intermediate,
-            PhysicalIntermediate::SensorNoise
+            PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
                 | PhysicalIntermediate::DevelopedAcesCg
         )
     {
-        let sensor = plan.sensor.validate().map_err(ApplicationError::Sensor)?;
-        plan.radiometric_calibration
-            .validate()
-            .map_err(ApplicationError::InvalidRadiometricCalibration)?;
-        let sensor_pixels = resample_physical_rgba_area(
+        let sensor = plan.sensor;
+        let raw = expose_physical_pipeline_raw(
             &output,
             sampling.effective_width,
             sampling.effective_height,
-            u32::from(sensor.native_width),
-            u32::from(sensor.native_height),
-        );
-        let duration = plan
-            .shutter_close
-            .checked_sub(plan.shutter_open)
-            .map_err(ApplicationError::Time)?;
-        let panel_to_sensor_lux = CameraRadiometricCalibration::panel_luminance_to_sensor_plane_lux(
-            plan.scene_geometry_lens.f_stop,
-        );
-        let exposure = IntegratedOpticalExposure {
-            width: u32::from(sensor.native_width),
-            height: u32::from(sensor.native_height),
-            duration_seconds: duration.as_seconds() as f32,
-            acescg_illuminance_seconds: sensor_pixels
-                .iter()
-                .map(|pixel| {
-                    LinearRgb::new(
-                        pixel[0]
-                            * parameters.white_level_nits
-                            * panel_to_sensor_lux
-                            * plan.radiometric_calibration.effective_sensor_exposure_scale,
-                        pixel[1]
-                            * parameters.white_level_nits
-                            * panel_to_sensor_lux
-                            * plan.radiometric_calibration.effective_sensor_exposure_scale,
-                        pixel[2]
-                            * parameters.white_level_nits
-                            * panel_to_sensor_lux
-                            * plan.radiometric_calibration.effective_sensor_exposure_scale,
-                    )
-                })
-                .collect(),
-        };
-        let raw = expose_raw_with_noise_amount(
-            sensor,
-            &exposure,
-            CaptureIdentity {
-                noise_seed: plan.shutter_motion.noise_seed,
-                frame_index: plan.frame_index,
-            },
-            plan.sensor_noise_amount,
-        )
-        .map_err(ApplicationError::Sensor)?;
+            plan,
+        )?;
         if matches!(
             plan.requested_intermediate,
-            PhysicalIntermediate::SensorNoise | PhysicalIntermediate::RawMosaic
+            PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorNoise
+                | PhysicalIntermediate::RawMosaic
         ) {
             let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
             return Ok(PhysicalPipelineCpuResult {
@@ -2281,10 +2417,17 @@ pub fn capture_and_develop_procedural_region_with_backend<B: RawDevelopmentBacke
         .validate(sensor)
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let sensor_support_region = evaluation_region.expanded_for_sensor_bloom(sensor);
     let (shutter, identity) = request.resolve()?;
-    let exposure = integrate_procedural_region(shutter, sensor, evaluation_region)?;
-    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
-        .map_err(ApplicationError::Sensor)?;
+    let exposure = integrate_procedural_region(shutter, sensor, sensor_support_region)?;
+    let raw = expose_raw_region(
+        sensor,
+        &exposure,
+        identity,
+        sensor_support_region,
+        evaluation_region,
+    )
+    .map_err(ApplicationError::Sensor)?;
     let developed = backend
         .develop_region(&raw, sensor, development)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
@@ -2338,6 +2481,7 @@ where
         .validate(sensor)
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let sensor_support_region = evaluation_region.expanded_for_sensor_bloom(sensor);
     let source_is_static =
         request.optics.procedural_pattern != ProceduralTestPattern::AnimatedCheckerboard;
     let (shutter, identity) = request.resolve()?;
@@ -2345,15 +2489,21 @@ where
     let exposure = integrate_spatial_region_with_backend_timed(
         shutter,
         sensor,
-        evaluation_region,
+        sensor_support_region,
         source_is_static,
         spatial_backend,
         |optics, region| prepare_procedural_spatial_plan(optics, sensor, region),
         &mut timings,
     )?;
     let sensor_started = Instant::now();
-    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
-        .map_err(ApplicationError::Sensor)?;
+    let raw = expose_raw_region(
+        sensor,
+        &exposure,
+        identity,
+        sensor_support_region,
+        evaluation_region,
+    )
+    .map_err(ApplicationError::Sensor)?;
     timings.integration_and_sensor_cpu += sensor_started.elapsed();
     let raw_started = Instant::now();
     let developed = raw_backend
@@ -2403,11 +2553,18 @@ pub fn capture_and_develop_device_signal_region_with_backend<B: RawDevelopmentBa
         .validate(sensor)
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let sensor_support_region = evaluation_region.expanded_for_sensor_bloom(sensor);
     let (shutter, identity) = request.resolve()?;
     let exposure =
-        integrate_device_signal_region(shutter, sensor, evaluation_region, signal, placement)?;
-    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
-        .map_err(ApplicationError::Sensor)?;
+        integrate_device_signal_region(shutter, sensor, sensor_support_region, signal, placement)?;
+    let raw = expose_raw_region(
+        sensor,
+        &exposure,
+        identity,
+        sensor_support_region,
+        evaluation_region,
+    )
+    .map_err(ApplicationError::Sensor)?;
     let developed = backend
         .develop_region(&raw, sensor, development)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
@@ -2437,13 +2594,14 @@ where
         .validate(sensor)
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let sensor_support_region = evaluation_region.expanded_for_sensor_bloom(sensor);
     let spatial_signal =
         prepare_device_signal_spatial_signal(request.optics.panel, signal, placement)?;
     let (shutter, identity) = request.resolve()?;
     let exposure = integrate_spatial_region_with_backend(
         shutter,
         sensor,
-        evaluation_region,
+        sensor_support_region,
         true,
         spatial_backend,
         |optics, region| {
@@ -2454,8 +2612,14 @@ where
             )
         },
     )?;
-    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
-        .map_err(ApplicationError::Sensor)?;
+    let raw = expose_raw_region(
+        sensor,
+        &exposure,
+        identity,
+        sensor_support_region,
+        evaluation_region,
+    )
+    .map_err(ApplicationError::Sensor)?;
     let developed = raw_backend
         .develop_region(&raw, sensor, development)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
@@ -2509,25 +2673,28 @@ where
         .validate(sensor)
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let sensor_support_region = evaluation_region.expanded_for_sensor_bloom(sensor);
     let (shutter, identity) = request.resolve()?;
     let exposure = match shutter.readout {
-        SensorReadout::Global => integrate_global_region(shutter, evaluation_region, |optics| {
-            let signal = signal_at_time(optics.time)?;
-            evaluate_linear_optics_region_from_prepared_device_signal(
-                optics,
-                sensor,
-                evaluation_region,
-                &signal,
-                placement,
-            )
-        }),
+        SensorReadout::Global => {
+            integrate_global_region(shutter, sensor_support_region, |optics| {
+                let signal = signal_at_time(optics.time)?;
+                evaluate_linear_optics_region_from_prepared_device_signal(
+                    optics,
+                    sensor,
+                    sensor_support_region,
+                    &signal,
+                    placement,
+                )
+            })
+        }
         SensorReadout::Rolling {
             duration,
             direction,
         } => integrate_rolling_region(
             shutter,
             sensor,
-            evaluation_region,
+            sensor_support_region,
             duration,
             direction,
             |optics, row| {
@@ -2535,7 +2702,7 @@ where
                 evaluate_device_signal_optical_sensor_row(
                     optics,
                     sensor,
-                    evaluation_region,
+                    sensor_support_region,
                     row,
                     &signal,
                     placement,
@@ -2543,8 +2710,14 @@ where
             },
         ),
     }?;
-    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
-        .map_err(ApplicationError::Sensor)?;
+    let raw = expose_raw_region(
+        sensor,
+        &exposure,
+        identity,
+        sensor_support_region,
+        evaluation_region,
+    )
+    .map_err(ApplicationError::Sensor)?;
     let developed = backend
         .develop_region(&raw, sensor, development)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
@@ -2575,11 +2748,12 @@ where
         .validate(sensor)
         .map_err(ApplicationError::Sensor)?;
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
+    let sensor_support_region = evaluation_region.expanded_for_sensor_bloom(sensor);
     let (shutter, identity) = request.resolve()?;
     let exposure = integrate_spatial_region_with_backend(
         shutter,
         sensor,
-        evaluation_region,
+        sensor_support_region,
         false,
         spatial_backend,
         |optics, region| {
@@ -2587,8 +2761,14 @@ where
             prepare_device_signal_spatial_plan(optics, sensor, region, &signal, placement)
         },
     )?;
-    let raw = expose_raw_region(sensor, &exposure, identity, evaluation_region)
-        .map_err(ApplicationError::Sensor)?;
+    let raw = expose_raw_region(
+        sensor,
+        &exposure,
+        identity,
+        sensor_support_region,
+        evaluation_region,
+    )
+    .map_err(ApplicationError::Sensor)?;
     let developed = raw_backend
         .develop_region(&raw, sensor, development)
         .map_err(|error| ApplicationError::NativeBackend(error.to_string()))?;
@@ -4262,6 +4442,13 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
     cover: ValidatedCoverEvaluator,
 ) -> LinearOpticalPixel {
     let subpixels_resolved = subpixels_resolved_for_samples(spatial_samples, panel, cover, view);
+    let glow_samples = if view == DiagnosticView::Composite {
+        cover.glow_samples()
+    } else {
+        screen_cover::CoverGlowProfile::NEUTRAL
+            .samples()
+            .expect("neutral cover glow is valid")
+    };
     let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
     let mut on_panel = false;
     let reflected = reflected_environment_average(spatial_samples, view, cover);
@@ -4281,7 +4468,6 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                 for spatial in spatial_samples {
                     let optical = spatial[aperture];
                     let Some(uv) = transmitted_panel_uv(cover, optical, panel, view, channel)
-                        .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
                     else {
                         continue;
                     };
@@ -4301,43 +4487,59 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                 if count == 0 {
                     continue;
                 }
-                on_panel = true;
-                let signal = signal_area(minimum, maximum);
-                let value = if view == DiagnosticView::DeviceSignal {
-                    [
-                        signal.device_code.r,
-                        signal.device_code.g,
-                        signal.device_code.b,
-                    ][channel]
-                } else {
-                    let ideal = [
-                        signal.linear_native_emission.r,
-                        signal.linear_native_emission.g,
-                        signal.linear_native_emission.b,
-                    ][channel];
-                    let physical = evaluator.linear_native_channel_over_device_rect(
+                for glow in glow_samples {
+                    let offset = Vec2 {
+                        x: glow.offset_meters[0] / panel.active_width.0,
+                        y: glow.offset_meters[1] / panel.active_height.0,
+                    };
+                    let shifted_minimum = Vec2 {
+                        x: (minimum.x + offset.x).clamp(0.0, 1.0),
+                        y: (minimum.y + offset.y).clamp(0.0, 1.0),
+                    };
+                    let shifted_maximum = Vec2 {
+                        x: (maximum.x + offset.x).clamp(0.0, 1.0),
+                        y: (maximum.y + offset.y).clamp(0.0, 1.0),
+                    };
+                    if shifted_minimum.x >= shifted_maximum.x
+                        || shifted_minimum.y >= shifted_maximum.y
+                    {
+                        continue;
+                    }
+                    on_panel = true;
+                    let signal = signal_area(shifted_minimum, shifted_maximum);
+                    let value = if view == DiagnosticView::DeviceSignal {
                         [
+                            signal.device_code.r,
+                            signal.device_code.g,
+                            signal.device_code.b,
+                        ][channel]
+                    } else {
+                        let ideal = [
                             signal.linear_native_emission.r,
                             signal.linear_native_emission.g,
                             signal.linear_native_emission.b,
-                        ][channel],
-                        Vec2 {
-                            x: minimum.x * panel.native_width as f32,
-                            y: minimum.y * panel.native_height as f32,
-                        },
-                        Vec2 {
-                            x: maximum.x * panel.native_width as f32,
-                            y: maximum.y * panel.native_height as f32,
-                        },
-                        channel,
-                    );
-                    (ideal + panel_character_strength * (physical - ideal)).max(0.0)
-                };
-                let contribution = value * weight_sum / spatial_samples.len() as f32;
-                match channel {
-                    0 => sum.r += contribution,
-                    1 => sum.g += contribution,
-                    _ => sum.b += contribution,
+                        ][channel];
+                        let physical = evaluator.linear_native_channel_over_device_rect(
+                            ideal,
+                            Vec2 {
+                                x: shifted_minimum.x * panel.native_width as f32,
+                                y: shifted_minimum.y * panel.native_height as f32,
+                            },
+                            Vec2 {
+                                x: shifted_maximum.x * panel.native_width as f32,
+                                y: shifted_maximum.y * panel.native_height as f32,
+                            },
+                            channel,
+                        );
+                        (ideal + panel_character_strength * (physical - ideal)).max(0.0)
+                    };
+                    let contribution =
+                        value * weight_sum * glow.weight / spatial_samples.len() as f32;
+                    match channel {
+                        0 => sum.r += contribution,
+                        1 => sum.g += contribution,
+                        _ => sum.b += contribution,
+                    }
                 }
             }
         }
@@ -4360,45 +4562,52 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
     for optical_sample in spatial_samples.iter().flatten() {
         for channel in 0..3 {
             let Some(uv) = transmitted_panel_uv(cover, *optical_sample, panel, view, channel)
-                .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
             else {
                 continue;
             };
-            on_panel = true;
-            let signal = signal_at(uv);
-            let value = match view {
-                DiagnosticView::DeviceSignal => [signal.r, signal.g, signal.b][channel],
-                DiagnosticView::Composite
-                | DiagnosticView::EmittedRadiance
-                | DiagnosticView::Subpixels
-                    if subpixels_resolved =>
-                {
-                    let pixel_uv = Vec2 {
-                        x: (uv.x * panel.native_width as f32).fract(),
-                        y: (uv.y * panel.native_height as f32).fract(),
-                    };
-                    let ideal = evaluator.native_channel(signal, channel);
-                    let physical = evaluator.native_channel_at_pixel(signal, pixel_uv, channel);
-                    (ideal + panel_character_strength * (physical - ideal)).max(0.0)
+            let optical_weight =
+                optical_channel_weight(
+                    *optical_sample,
+                    evaluator,
+                    panel_temporal_gain,
+                    view,
+                    channel,
+                ) * cover_transmission_channel(cover, *optical_sample, view, channel);
+            for glow in glow_samples {
+                let shifted_uv = Vec2 {
+                    x: uv.x + glow.offset_meters[0] / panel.active_width.0,
+                    y: uv.y + glow.offset_meters[1] / panel.active_height.0,
+                };
+                if !(0.0..=1.0).contains(&shifted_uv.x) || !(0.0..=1.0).contains(&shifted_uv.y) {
+                    continue;
                 }
-                DiagnosticView::Composite
-                | DiagnosticView::EmittedRadiance
-                | DiagnosticView::Subpixels => evaluator.native_channel(signal, channel),
-            };
-            let optical_weight = optical_channel_weight(
-                *optical_sample,
-                evaluator,
-                panel_temporal_gain,
-                view,
-                channel,
-            );
-            let weighted = value * optical_weight;
-            let weighted =
-                weighted * cover_transmission_channel(cover, *optical_sample, view, channel);
-            match channel {
-                0 => sum.r += weighted,
-                1 => sum.g += weighted,
-                _ => sum.b += weighted,
+                on_panel = true;
+                let signal = signal_at(shifted_uv);
+                let value = match view {
+                    DiagnosticView::DeviceSignal => [signal.r, signal.g, signal.b][channel],
+                    DiagnosticView::Composite
+                    | DiagnosticView::EmittedRadiance
+                    | DiagnosticView::Subpixels
+                        if subpixels_resolved =>
+                    {
+                        let pixel_uv = Vec2 {
+                            x: (shifted_uv.x * panel.native_width as f32).fract(),
+                            y: (shifted_uv.y * panel.native_height as f32).fract(),
+                        };
+                        let ideal = evaluator.native_channel(signal, channel);
+                        let physical = evaluator.native_channel_at_pixel(signal, pixel_uv, channel);
+                        (ideal + panel_character_strength * (physical - ideal)).max(0.0)
+                    }
+                    DiagnosticView::Composite
+                    | DiagnosticView::EmittedRadiance
+                    | DiagnosticView::Subpixels => evaluator.native_channel(signal, channel),
+                };
+                let weighted = value * optical_weight * glow.weight;
+                match channel {
+                    0 => sum.r += weighted,
+                    1 => sum.g += weighted,
+                    _ => sum.b += weighted,
+                }
             }
         }
     }
@@ -4899,9 +5108,11 @@ impl std::error::Error for ApplicationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use screen_color::{ColorEngine, DeviceColorTarget, SourceColorInterpretation};
+    use screen_color::{
+        ColorEngine, DeviceColorTarget, OcioInputTransform, SourceColorInterpretation,
+    };
     use screen_contracts::{Meters, Millimeters};
-    use screen_cover::{COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset};
+    use screen_cover::{COVER_GLASS_PRESETS, cover_glass_preset, environment_preset};
     use screen_geometry::lens_preset;
     use screen_panel::{AnalyticBanding, PanelTemporalEmission};
     use screen_panel::{DEVICE_PRESETS, PanelColorimetry, StripeLayout, device_preset};
@@ -5520,7 +5731,10 @@ mod tests {
         let mut neutralized = baseline.clone();
         neutralized.optics.cover = COVER_GLASS_PRESETS[1].profile;
         neutralized.optics.cover.character_strength = 0.0;
-        neutralized.optics.environment = ENVIRONMENT_PRESETS[1].environment;
+        neutralized.optics.cover.glow.character_strength = 0.0;
+        neutralized.optics.environment = environment_preset("environment-studio-softboxes")
+            .unwrap()
+            .environment;
         neutralized.optics.environment.character_strength = 0.0;
         let neutral_composite = evaluate_linear_optics(neutralized.optical_request(), 32, 18)
             .expect("neutral composite");
@@ -5528,7 +5742,9 @@ mod tests {
 
         let mut physical = baseline.clone();
         physical.optics.cover = COVER_GLASS_PRESETS[1].profile;
-        physical.optics.environment = ENVIRONMENT_PRESETS[1].environment;
+        physical.optics.environment = environment_preset("environment-studio-softboxes")
+            .unwrap()
+            .environment;
         let physical_composite =
             evaluate_linear_optics(physical.optical_request(), 32, 18).expect("physical composite");
         assert_ne!(baseline_composite.pixels, physical_composite.pixels);
@@ -5557,7 +5773,20 @@ mod tests {
             assert!(preset.gate_width.0 > 0.0 && preset.gate_height.0 > 0.0);
             let lens = lens_preset(preset.default_lens_preset_id)
                 .expect("capture template lens must resolve");
-            assert_eq!(lens.nominal_focal_length, preset.focal_length);
+            assert!(
+                preset
+                    .compatible_lens_preset_ids
+                    .contains(&preset.default_lens_preset_id)
+            );
+            assert!(!preset.compatible_lens_preset_ids.is_empty());
+            let mut compatible_ids = HashSet::new();
+            for compatible_id in preset.compatible_lens_preset_ids {
+                assert!(compatible_ids.insert(*compatible_id));
+                assert!(lens_preset(compatible_id).is_some());
+            }
+            if preset.lens_association_policy == LensAssociationPolicy::Fixed {
+                assert_eq!(preset.compatible_lens_preset_ids, &[lens.id]);
+            }
             assert!((25.0..=12_800.0).contains(&preset.reference_exposure_index));
             assert!(preset.middle_gray_illuminance_seconds_at_reference_ei > 0.0);
             assert!(
@@ -6241,6 +6470,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fit_and_fill_crop_preserve_aspect_while_stretch_is_the_only_deforming_mode() {
+        let source = [1_000, 1_000];
+        let device = [1_600, 900];
+        let device_aspect = device[0] as f32 / device[1] as f32;
+        let mapped_aspect = |placement| {
+            let center = source_uv_unbounded(source, device, placement, Vec2 { x: 0.5, y: 0.5 })
+                .expect("valid center");
+            let horizontal =
+                source_uv_unbounded(source, device, placement, Vec2 { x: 0.6, y: 0.5 })
+                    .expect("valid horizontal sample");
+            let vertical = source_uv_unbounded(source, device, placement, Vec2 { x: 0.5, y: 0.6 })
+                .expect("valid vertical sample");
+            let derivative_x = (horizontal.x - center.x) / 0.1;
+            let derivative_y = (vertical.y - center.y) / 0.1;
+            device_aspect * derivative_y / derivative_x
+        };
+
+        assert!((mapped_aspect(RasterPlacement::Fit) - 1.0).abs() < 1.0e-5);
+        assert!((mapped_aspect(RasterPlacement::FillCrop) - 1.0).abs() < 1.0e-5);
+        assert!((mapped_aspect(RasterPlacement::OneToOne) - 1.0).abs() < 1.0e-5);
+        assert!((mapped_aspect(RasterPlacement::Stretch) - device_aspect).abs() < 1.0e-5);
+    }
+
     fn flat_panel_request(
         placement: RasterPlacement,
         quality: FlatPanelQuality,
@@ -6356,6 +6609,7 @@ mod tests {
             read_noise_electrons_rms: 0.0,
             analog_gain,
             adc_bits: 16,
+            bloom: SensorBloomProfile::NEUTRAL,
         };
         request.plan.radiometric_calibration = CameraRadiometricCalibration::REFERENCE;
         request.plan.shutter_open = shutter_open;
@@ -6412,6 +6666,8 @@ mod tests {
         intermediate: PhysicalIntermediate,
     ) -> PhysicalPipelineRequest {
         let capture = capture_device_preset(capture_id).expect("known capture preset");
+        let lens = lens_preset(capture.default_lens_preset_id)
+            .expect("capture default Lens preset must resolve");
         let display = device_preset(display_id).expect("known display preset");
         let mut request = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
         request.input = PhysicalPipelineInput {
@@ -6441,7 +6697,7 @@ mod tests {
         request.plan.scene_geometry_amount = 0.0;
         request.plan.lens_amount = 0.0;
         request.plan.scene_geometry_lens = ResolvedSceneGeometryLensSnapshot {
-            focal_length_millimeters: capture.focal_length.0,
+            focal_length_millimeters: lens.nominal_focal_length.0,
             sensor_width_millimeters: capture.gate_width.0,
             sensor_height_millimeters: capture.gate_height.0,
             f_stop: capture.f_stop,
@@ -6531,6 +6787,90 @@ mod tests {
             adc_clipped_fraction,
             developed_luminance,
         }
+    }
+
+    #[test]
+    fn sensor_cfa_checkpoint_forces_clean_raw_and_noise_checkpoint_retains_authored_noise() {
+        let open = RationalTime::new(-1, 96).expect("time");
+        let close = RationalTime::new(1, 96).expect("time");
+        let mut clean_request = radiometric_request(
+            100.0,
+            open,
+            close,
+            0.0,
+            1.0,
+            PhysicalIntermediate::SensorNoise,
+        );
+        clean_request.plan.sensor.read_noise_electrons_rms = 500.0;
+        clean_request.plan.sensor_noise_amount = 1.0;
+        clean_request.plan.shutter_motion.noise_seed = 42;
+
+        let mut noisy_request = clean_request.clone();
+        noisy_request.plan.requested_intermediate = PhysicalIntermediate::RawMosaic;
+
+        let clean_plan = clean_request
+            .plan
+            .clone()
+            .stopped_at_requested_intermediate();
+        let noisy_plan = noisy_request
+            .plan
+            .clone()
+            .stopped_at_requested_intermediate();
+        assert_eq!(clean_plan.sensor_noise_amount, 0.0);
+        assert_eq!(noisy_plan.sensor_noise_amount, 1.0);
+
+        let clean = evaluate_physical_pipeline_cpu_oracle(clean_request).expect("clean RAW");
+        let noisy = evaluate_physical_pipeline_cpu_oracle(noisy_request).expect("noisy RAW");
+        assert_eq!((clean.width, clean.height), (noisy.width, noisy.height));
+        assert_ne!(clean.acescg, noisy.acescg);
+    }
+
+    #[test]
+    fn canonical_sensor_transition_reproduces_the_cpu_oracle_raw_boundary_exactly() {
+        let mut request = radiometric_request(
+            350.0,
+            RationalTime::new(-1, 576).expect("open"),
+            RationalTime::new(1, 576).expect("close"),
+            0.0,
+            1.0,
+            PhysicalIntermediate::SensorNoise,
+        );
+        request.plan.sensor = SensorProfile {
+            native_width: 13,
+            native_height: 9,
+            adc_bits: 12,
+            ..request.plan.sensor
+        };
+        let expected = evaluate_physical_pipeline_cpu_oracle(request.clone())
+            .expect("complete CPU RAW boundary");
+        let mut shutter_request = request.clone();
+        shutter_request.plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+        let shuttered = evaluate_physical_pipeline_cpu_oracle(shutter_request)
+            .expect("canonical shutter checkpoint");
+        let raw = expose_physical_pipeline_raw(
+            &shuttered.acescg,
+            shuttered.width,
+            shuttered.height,
+            request.plan.stopped_at_requested_intermediate(),
+        )
+        .expect("canonical sensor transition");
+        let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
+        let published = raw
+            .codes
+            .iter()
+            .zip(&raw.full_well_clipped)
+            .zip(&raw.adc_clipped)
+            .map(|((&code, &well), &adc)| {
+                [
+                    code as f32 / maximum_code,
+                    f32::from(well),
+                    f32::from(adc),
+                    1.0,
+                ]
+            })
+            .collect::<Vec<_>>();
+        assert_eq!((raw.width, raw.height), (expected.width, expected.height));
+        assert_eq!(published, expected.acescg);
     }
 
     #[test]
@@ -7081,7 +7421,10 @@ mod tests {
             .expect("cover transmission");
         assert_ne!(covered.acescg, baseline.acescg);
 
-        covered_request.plan.environment = screen_cover::ENVIRONMENT_PRESETS[1].environment;
+        covered_request.plan.environment =
+            screen_cover::environment_preset("environment-studio-softboxes")
+                .unwrap()
+                .environment;
         let composite = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
             .expect("cover plus environment");
         assert_ne!(composite.acescg, covered.acescg);
@@ -7229,7 +7572,7 @@ mod tests {
         let processor = ColorEngine::bundled()
             .expect("bundled color engine")
             .source_to_device_processor(
-                SourceColorInterpretation::IdentityDeviceSignal,
+                SourceColorInterpretation::Ocio(OcioInputTransform::SrgbEncodedRec709),
                 DeviceColorTarget::SrgbDisplay,
             )
             .expect("identity processor");
@@ -7285,7 +7628,7 @@ mod tests {
         let processor = ColorEngine::bundled()
             .expect("bundled color engine")
             .source_to_device_processor(
-                SourceColorInterpretation::IdentityDeviceSignal,
+                SourceColorInterpretation::Ocio(OcioInputTransform::SrgbEncodedRec709),
                 DeviceColorTarget::SrgbDisplay,
             )
             .expect("identity processor");
@@ -7474,5 +7817,53 @@ mod tests {
             half.pixels[center].acescg_irradiance.g / white.pixels[center].acescg_irradiance.g;
         let expected = 0.5_f32.powf(optics.panel.eotf_gamma);
         assert!((measured - expected).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn cover_glow_collects_panel_emission_for_a_ray_just_outside_the_active_outline() {
+        let mut optics = request().optical_request();
+        optics.panel.black_level_nits = 0.0;
+        optics.cover = screen_cover::cover_glass_preset("cover-thick-crt")
+            .expect("thick cover")
+            .profile;
+        optics.cover.glow.character_strength = 4.0;
+        optics.cover.glow.scatter_fraction = 0.20;
+        optics.cover.glow.core_radius_millimeters = 5.0;
+        optics.cover.glow.tail_radius_millimeters = 30.0;
+        optics.cover.glow.tail_fraction = 1.0;
+        let evaluator = optics.panel.evaluator().expect("panel evaluator");
+        let cover = optics
+            .cover
+            .evaluator(optics.environment)
+            .expect("cover evaluator");
+        let ray = OpticalSample {
+            panel_uv: [Some(Vec2 { x: -0.02, y: 0.5 }); 3],
+            emission_cosine: [1.0; 3],
+            reflection_direction_local: [Some(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            }); 3],
+            irradiance_weight: [1.0; 3],
+        };
+        let samples = [[ray; 16]; 1];
+        let output = integrate_aperture_samples(
+            &samples,
+            DiagnosticView::Composite,
+            optics.panel,
+            0.0,
+            evaluator,
+            1.0,
+            &|_| DeviceRgb::WHITE,
+            &|_, _| AreaSignalSample {
+                device_code: DeviceRgb::WHITE,
+                linear_native_emission: LinearRgb::new(1.0, 1.0, 1.0),
+            },
+            cover,
+        );
+        assert!(output.on_panel);
+        assert!(output.acescg_irradiance.r > 0.0);
+        assert!(output.acescg_irradiance.g > 0.0);
+        assert!(output.acescg_irradiance.b > 0.0);
     }
 }

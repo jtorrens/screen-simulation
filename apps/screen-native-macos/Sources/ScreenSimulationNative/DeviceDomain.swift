@@ -1,5 +1,6 @@
 import Foundation
 import ScreenPhysicalBridge
+import StudioColor
 
 enum DeviceCategory: String, Codable, CaseIterable, Identifiable, Sendable {
     case phone = "Phone"
@@ -61,8 +62,13 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
     var activeHeightMeters: Double
     var panelTechnology: DevicePanelTechnology
     var emissionModel: DeviceEmissionModel
+    var colorModeIDs: [String]
+    var colorModeID: String
     var eotfGamma: Double
     var blackLevelNits: Double
+    var minimumWhiteLuminance: Double
+    var maximumWhiteLuminance: Double
+    var whiteLuminanceStep: Double
     var whiteLevelNits: Double
     var whiteBasis: String
     var stripeLayout: DeviceStripeLayout
@@ -120,8 +126,31 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
         guard !whiteBasis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw DeviceDomainError.invalidWhiteBasis
         }
+        guard !colorModeIDs.isEmpty,
+              Set(colorModeIDs).count == colorModeIDs.count,
+              colorModeIDs.allSatisfy({ id in
+                  StudioColorMode.catalog.contains(where: { $0.id == id })
+              }),
+              colorModeIDs.contains(colorModeID)
+        else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "Los Color Modes del Device son desconocidos, están duplicados o no incluyen el modo seleccionado."
+            )
+        }
         guard !defaultCoverGlassPresetID.isEmpty else {
             throw DeviceDomainError.invalidCoverAssociation
+        }
+        guard minimumWhiteLuminance.isFinite,
+              maximumWhiteLuminance.isFinite,
+              whiteLuminanceStep.isFinite,
+              minimumWhiteLuminance > 0,
+              minimumWhiteLuminance <= whiteLevelNits,
+              whiteLevelNits <= maximumWhiteLuminance,
+              whiteLuminanceStep > 0
+        else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "La capacidad White Luminance del Device es inválida."
+            )
         }
         guard angularEmissionPower.count == 3,
               panelLightSpread.coreRadiusMicrometers.count == 3,
@@ -141,7 +170,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
             throw DeviceDomainError.invalidAngularResponse
         }
         var value = ScreenDeviceParametersV2()
-        value.abi_version = 2
+        value.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
         value.native_width = UInt32(clamping: nativeWidth)
         value.native_height = UInt32(clamping: nativeHeight)
         value.panel_technology = 0
@@ -229,8 +258,19 @@ enum RustDeviceCatalog {
                 activeHeightMeters: Double(parameters.active_height_meters),
                 panelTechnology: .ipsLCD,
                 emissionModel: .powerEOTF,
+                colorModeIDs: (0..<screen_device_preset_color_mode_count(index)).map {
+                    string(screen_device_preset_color_mode_id(index, $0))
+                },
+                colorModeID: string(screen_device_preset_default_color_mode_id(index)),
                 eotfGamma: Double(parameters.eotf_gamma),
                 blackLevelNits: Double(parameters.black_level_nits),
+                minimumWhiteLuminance: Double(
+                    screen_device_preset_minimum_white_nits(index)
+                ),
+                maximumWhiteLuminance: Double(
+                    screen_device_preset_maximum_white_nits(index)
+                ),
+                whiteLuminanceStep: Double(screen_device_preset_white_step_nits(index)),
                 whiteLevelNits: Double(parameters.white_level_nits),
                 whiteBasis: string(screen_device_preset_white_basis(index)),
                 stripeLayout: parameters.stripe_layout == 0 ? .rgb : .bgr,

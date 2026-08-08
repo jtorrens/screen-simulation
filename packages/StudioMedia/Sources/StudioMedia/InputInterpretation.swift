@@ -158,7 +158,7 @@ public enum StudioMediaMetadataDetector {
         let hasPQ = transfer.contains("2084") || transfer.contains("pq")
         if has2020Primaries, has2020Matrix, hasPQ {
             return .init(
-                id: "display-rec2100-pq-aces2-hdr-1000",
+                id: "display-rec2100-pq-dcm",
                 provenance: .detected
             )
         }
@@ -168,14 +168,14 @@ public enum StudioMediaMetadataDetector {
             || transfer.contains("1886") || transfer.contains("gamma 2.4")
         if has709Primaries, has709Matrix {
             return .init(
-                id: "display-rec709-aces2-sdr",
+                id: "display-rec709-gamma24-dcm",
                 provenance: has709Transfer ? .detected : .proposed
             )
         }
         if primaries.contains("srgb") || primaries.contains("s-rgb")
             || transfer.contains("srgb") || transfer.contains("s-rgb") {
             return .init(
-                id: "display-srgb-aces2-sdr",
+                id: "srgb-encoded-rec709",
                 provenance: .detected
             )
         }
@@ -272,7 +272,7 @@ public enum StudioMediaMetadataDetector {
         let sourceType = CGImageSourceGetType(source) as String?
         let description = [profile, model].compactMap { $0?.lowercased() }.joined(separator: " ")
         let input = description.contains("srgb")
-            ? "display-srgb-aces2-sdr" : nil
+            ? "srgb-encoded-rec709" : nil
         return StudioMediaDetection(
             proposedInputTransformID: input,
             inputTransformProvenance: input == nil ? nil : .detected,

@@ -8,31 +8,45 @@ The current boundary is:
 
 ```text
 decoded encoded RGB
-→ explicit Source Color Interpretation
-→ explicit Source-to-Device transform
-→ nonlinear device signal RGB
+→ explicit Input Transform
+→ linear ACEScg interchange
+→ independently authored feeder Output Signal transform
+→ nonlinear feeder signal RGB
+→ feeder placement into the selected target-device raster
+→ explicit Device Color Mode interpretation
 → panel EOTF, black/white levels and channel response
 → physical native-primary subpixel emission and angular response
+→ calibrated panel light spread
+→ resolved camera/screen relative geometry and ideal incidence rays
 → optical-cover transmission and authored environment reflection
-→ per-emitter lens integration with absolute luminance retained
+→ calibrated physical cover-glass glow
+→ per-emitter lens character and projection with absolute luminance retained
 → explicit native-primary/white-point conversion
 → linear image-plane illuminance in ACEScg
 ```
 
 The current incident environment is one complete synthetic linear-HDR profile owned by `screen-cover`. Its spherical distribution is authored as uniform neutral, two finite rectangular studio softboxes, or a diagnostic latitude-longitude grid with calibrated stop bands. Horizontal rotation is an explicit angle around panel-local vertical. Environment strength zero is exact absence; nonzero radiance is added only through the cover interface reflection and never modulates or replaces panel emission. Roughness and haze redistribute environment structure toward its bounded mean. CPU and Metal evaluate the same analytic distributions; an image-backed HDR source must later replace only this sampling capability, not create another glass or reflection evaluator.
 
-The source transform and panel EOTF must never linearize the same signal twice. `screen-color` resolves named transformations and reference processing. `screen-panel` alone converts the final device signal into physical emission.
+The Input Transform and panel EOTF must never linearize the same signal twice. `screen-color` resolves every named Input Transform through the pinned OCIO configuration into linear ACEScg. It classifies that explicit transform as scene-referred, display-referred or the inverse of one named ACES Output Transform. The independently authored feeder `Output Signal` then resolves exactly one OCIO processor. Scene-referred sources use its named display/view processor; display-referred sources use its colorimetric output color space. A source and Output Signal with the same encoding still traverse OCIO through ACEScg in float. There is no identity source-to-feeder route. The Device `Color Mode` never selects or changes this processor: `screen-panel` interprets the already-produced codes through the selected mode's EOTF and converts them into physical emission. Matching Output Signal and Color Mode preserve intended appearance; an intentional mismatch remains executable and changes emission.
 
 The native macOS physical-frame input therefore carries two distinct typed
 texture views in one opaque handle: the source linear ACEScg texture used for
-identity/bypass, and the nonlinear Device RGB texture produced by StudioColor
-after the explicit Source-to-Device transform. It also carries the authored
-`Fit`, `FillCrop`, `Stretch` or `OneToOne` placement. Screen sampling consumes
-placement and Device RGB; it never derives Device RGB from ACEScg internally.
+identity/bypass, and the nonlinear feeder RGB texture produced by StudioColor
+after the explicit Output Signal transform. It also carries the authored
+`Fit`, `FillCrop`, `Stretch` or `OneToOne` placement. Feeder composition owns
+that placement into the selected target-device raster. The current physical
+port evaluates the composed raster without allocating a duplicate full-native
+texture, but Panel receives exactly the same typed result and cannot reinterpret
+or choose its placement. Screen sampling consumes the prepared Device RGB; it
+never derives Device RGB from ACEScg internally.
 Capture consumes the physical Screen result. Neither domain may reinterpret
 one texture as the other or infer placement from raster dimensions.
 
-Media transports declared primaries, transfer characteristic, matrix coefficients and range as typed metadata without interpreting them. `screen-color` may return one proposal only for a complete exact metadata pattern that it owns. A proposal is visible UI information and never becomes an authored selection. The persisted authored selection is authoritative. Missing, conflicting, unsupported or unknown required interpretation blocks evaluation. `Identity` is a valid explicit Source-to-Device selection; it is never an implicit fallback. Named transforms are stable application identifiers resolved only by `screen-color` against the one bundled OCIO configuration. The desktop receives the catalog labels and proposal from `screen-color`; it does not reproduce OCIO names or color rules.
+Media transports declared primaries, transfer characteristic, matrix coefficients and range as typed metadata without interpreting them. `screen-color` may return one proposal only for a complete exact metadata pattern that it owns. A proposal is visible UI information and never becomes an authored selection. The persisted authored Input Transform and Output Signal are independent and authoritative. Missing, conflicting, unsupported or unknown required interpretation blocks evaluation. Named transforms and Output Signals are stable application identifiers resolved only by `screen-color` against the one bundled OCIO configuration. Device Color Modes and their EOTFs are Panel-owned capabilities. The desktop receives every catalog label and proposal from the owning domain; it does not reproduce OCIO names, EOTFs or color rules. UI calls the source control `Input Transform`, the feeder control `Output Signal`, the screen control `Color Mode` and the independent physical white control `White Luminance`.
+
+A Device preset declares the stable Color Mode identifiers and EOTF interpretations it supports and its calibrated White Luminance capability, including finite minimum, maximum, step and reference value. It does not own or duplicate feeder OCIO processors. The authored simulation instance separately selects one Output Signal, one Device, one supported Color Mode and one in-range White Luminance. Application validates and materializes that selection before Color or Panel evaluation; changing instance authoring never mutates the preset. Presentation receives only the resolved option and scalar descriptors and cannot filter Color Modes or invent luminance bounds.
+
+Feeder owns two consecutive typed artifacts. Its strict color checkpoint contains the nonlinear RGBA16F source raster without display quantization, exact source dimensions, Input Transform id and reference domain, Output Signal id, resolved feeder-output id and resolved alpha interpretation. Device, Color Mode, White Luminance, placement and Preview quality cannot mutate that color checkpoint. Feeder then applies the authored placement against the selected target Device raster and publishes `placed-feeder-signal-v1`; changing Device dimensions or placement therefore changes this phase output without recoding the strict color checkpoint. Device Mapping and Interpretation consumes only the placed artifact. Both comparison evaluators consume the same accepted artifact; diagnostic PNGs are derived views and never become physical inputs. End-to-end evaluation remains separately validated so checkpoint isolation cannot hide an integration error.
 
 Alpha association is an independent authored decision. `Auto` accepts only unambiguous association metadata; otherwise evaluation blocks. `Straight` and `Premultiplied` are explicit overrides for absent or incorrect metadata. `Ignore` is a third explicit interpretation: it discards the alpha channel and treats the decoded RGB as fully opaque; it is never selected automatically. Before the source color processor, straight RGB remains unassociated and premultiplied RGB is unassociated explicitly; zero-alpha premultiplied samples resolve to zero unassociated RGB. After the color processor, associated modes use their unchanged alpha over the current explicit opaque-black target, while `Ignore` remains opaque. Alpha interpretation never selects an IDT.
 
@@ -58,7 +72,7 @@ one discrete topology value and is never color-mixed.
 
 Bundled device presets currently describe LCD geometry, a reference operating white and one default optical-cover preset. They do not claim OLED or MicroLED emission and cannot label the LCD evaluator as another panel technology. A preset is an authoring template rather than a runtime profile reference; selection copies its values and the copied white and cover remain editable.
 
-`screen-panel` ends at the emissive LCD surface. `screen-cover` owns the next physical boundary: thickness and refractive index, RGB absorption, exact unpolarized dielectric Fresnel reflection, anti-reflective efficiency, roughness, haze and reflected authored environment radiance. Application evaluates cover transmission and reflection for every spatial, aperture and emitter-channel optical ray before sensor capture; reflection therefore inherits focus, aperture footprint and the current chromatic lens approximation instead of using a central post-process sample. Beer absorption uses the refracted angle inside the material. Roughness and haze redistribute the bounded procedural source toward its mean without creating radiance. The current model is a bounded tristimulus approximation; it does not claim wavelength-resolved thin-film interference, polarization or multi-bounce internal ghosting. Diagnostic emission views remain before the cover, while Composite and Camera Result consume it.
+`screen-panel` ends after the emissive LCD surface and its calibrated light-spread profile. Geometry then resolves the camera/screen relationship and ideal incidence rays as a typed data checkpoint. `screen-cover` owns the next physical boundary: thickness and refractive index, RGB absorption, exact unpolarized dielectric Fresnel reflection, anti-reflective efficiency, roughness, haze and reflected authored environment radiance. Application evaluates cover transmission and reflection for every spatial and emitter-channel ray before lens character; it never uses a central post-process sample. After material transmission and reflection, the same owner applies its calibrated energy-preserving core/tail glow kernel in physical cover-space millimetres. Amount zero bypasses it exactly, amount one uses the preset calibration and larger bounded values extrapolate creatively. Shifted samples may collect emission beyond the projected active-panel boundary when that support still lies inside the camera gate; the operation never expands or resizes the sensor frame. The following lens stage may change aperture footprint, focus and chromatic projection without changing ownership of the already-authored material response. Beer absorption uses the refracted angle inside the material. Roughness and haze redistribute the bounded procedural source toward its mean without creating radiance. The current model is a bounded tristimulus approximation; it does not claim wavelength-resolved thin-film interference, polarization or multi-bounce internal ghosting. Diagnostic emission views remain before the cover, while Composite and Camera Result consume it.
 
 The current environment is an explicit ACEScg linear-radiance profile with ambient illumination and either one finite angular source or the structured `Reflection chart` diagnostic. The chart is an incident-radiance pattern, not a second reflection algorithm, and exists to make cover response, focus and roughness directly testable. A future HDR adapter replaces only that authored incident-radiance source and must enter the same `screen-cover` evaluator. It cannot introduce another reflection operator. Cover and environment character amounts are multiplicative authoring controls: zero cover is an exact identity, zero environment contributes no reflection and values above one deliberately exaggerate the current material response.
 

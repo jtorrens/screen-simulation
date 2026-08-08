@@ -7,8 +7,10 @@ import Testing
         .screen(.temporal),
         .screen(.coverGlass),
         .screen(.environment),
+        .screen(.coverGlow),
         .capture(.lens),
         .capture(.exposureShutter),
+        .capture(.sensorBloom),
         .capture(.noise),
     ])
     #expect(!PhysicalStageID.generalOverviewContinuous.contains(.capture(.sensorCFA)))
@@ -16,7 +18,7 @@ import Testing
 }
 
 @Test func physicalContractHasOneStableOrderedDomainAndStageNamespace() {
-    #expect(PhysicalFrameRequest.abiVersion == 2)
+    #expect(PhysicalFrameRequest.abiVersion == SCREEN_PHYSICAL_FRAME_ABI_VERSION)
     #expect(PhysicalQuality.draft.rawValue == SCREEN_PHYSICAL_QUALITY_DRAFT.rawValue)
     #expect(PhysicalQuality.native.rawValue == SCREEN_PHYSICAL_QUALITY_NATIVE.rawValue)
     #expect(PhysicalDomainID.screen.rawValue == SCREEN_PHYSICAL_DOMAIN_SCREEN.rawValue)
@@ -36,12 +38,13 @@ import Testing
     #expect(PhysicalQuality.allCases.map(\.rawValue) == [0, 1, 2, 3])
     #expect(PhysicalDomainID.allCases.map(\.rawValue) == [0x100, 0x200])
     #expect(PhysicalStageID.ordered.map(\.id) == [
-        0x101, 0x102, 0x103, 0x104, 0x105, 0x106,
-        0x201, 0x202, 0x203, 0x204, 0x205, 0x206,
+        0x101, 0x102, 0x103, 0x104, 0x201, 0x105,
+        0x106, 0x107, 0x202, 0x203, 0x207, 0x204, 0x205, 0x206,
     ])
-    #expect(PhysicalStageID.ordered.map(\.domain) ==
-        Array(repeating: .screen, count: 6)
-        + Array(repeating: .capture, count: 6))
+    #expect(PhysicalStageID.ordered.map(\.domain) == [
+        .screen, .screen, .screen, .screen, .capture, .screen,
+        .screen, .screen, .capture, .capture, .capture, .capture, .capture, .capture,
+    ])
 }
 
 @Test func continuousContributionEnforcesVisualAndSafeRanges() throws {

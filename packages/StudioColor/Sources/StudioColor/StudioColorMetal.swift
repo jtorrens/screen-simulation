@@ -123,6 +123,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         if let layer = view.layer as? CAMetalLayer {
             layer.pixelFormat = .rgba16Float
             layer.wantsExtendedDynamicRangeContent = output.encoding == .rec2100PQ
+                || output.encoding == .rec2100HLG
                 || output.encoding == .displayP3EDR
             layer.colorspace = output.colorSpace
         }
@@ -145,6 +146,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         if let layer = view.layer as? CAMetalLayer {
             layer.colorspace = output.colorSpace
             layer.wantsExtendedDynamicRangeContent = output.encoding == .rec2100PQ
+                || output.encoding == .rec2100HLG
                 || output.encoding == .displayP3EDR
         }
         view.setNeedsDisplay(view.bounds)
@@ -161,6 +163,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         if let layer = view.layer as? CAMetalLayer {
             layer.colorspace = output.colorSpace
             layer.wantsExtendedDynamicRangeContent = output.encoding == .rec2100PQ
+                || output.encoding == .rec2100HLG
                 || output.encoding == .displayP3EDR
         }
         view.setNeedsDisplay(view.bounds)
@@ -426,32 +429,103 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     /// CPU oracle/readback boundary used only by sequence encoders that cannot
     /// consume IOSurface textures (OpenEXR, DPX and TIFF).
     public func readLinearRGBA(_ frame: StudioColorMetalFrame) throws -> [Float] {
+        let readable: MTLTexture
+        if frame.texture.storageMode == .shared {
+            readable = frame.texture
+        } else {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: frame.texture.pixelFormat,
+                width: frame.width,
+                height: frame.height,
+                mipmapped: false
+            )
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            descriptor.storageMode = .shared
+            guard let target = device.makeTexture(descriptor: descriptor),
+                  let command = queue.makeCommandBuffer(),
+                  let blit = command.makeBlitCommandEncoder()
+            else { throw StudioColorMetalError.textureCreation }
+            blit.copy(
+                from: frame.texture,
+                sourceSlice: 0,
+                sourceLevel: 0,
+                sourceOrigin: MTLOrigin(),
+                sourceSize: MTLSize(width: frame.width, height: frame.height, depth: 1),
+                to: target,
+                destinationSlice: 0,
+                destinationLevel: 0,
+                destinationOrigin: MTLOrigin()
+            )
+            blit.endEncoding()
+            command.commit()
+            command.waitUntilCompleted()
+            guard command.status == .completed else {
+                throw StudioColorMetalError.commandFailure
+            }
+            readable = target
+        }
+        switch readable.pixelFormat {
+        case .rgba16Float:
+            var half = [Float16](repeating: 0, count: frame.width * frame.height * 4)
+            half.withUnsafeMutableBytes {
+                readable.getBytes(
+                    $0.baseAddress!, bytesPerRow: frame.width * 4 * MemoryLayout<Float16>.size,
+                    from: MTLRegionMake2D(0, 0, frame.width, frame.height), mipmapLevel: 0
+                )
+            }
+            return half.map(Float.init)
+        case .rgba32Float:
+            var values = [Float](repeating: 0, count: frame.width * frame.height * 4)
+            values.withUnsafeMutableBytes {
+                readable.getBytes(
+                    $0.baseAddress!, bytesPerRow: frame.width * 4 * MemoryLayout<Float>.size,
+                    from: MTLRegionMake2D(0, 0, frame.width, frame.height), mipmapLevel: 0
+                )
+            }
+            return values
+        default:
+            throw StudioColorMetalError.commandFailure
+        }
+    }
+
+    /// Materializes one immutable cross-domain RGBA16F checkpoint in shared
+    /// storage without changing any channel code.
+    public func materializeSharedRGBA16F(
+        _ frame: StudioColorMetalFrame
+    ) throws -> StudioColorMetalFrame {
+        guard frame.texture.pixelFormat == .rgba16Float else {
+            throw StudioColorMetalError.textureCreation
+        }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float, width: frame.width, height: frame.height, mipmapped: false
+            pixelFormat: .rgba16Float,
+            width: frame.width,
+            height: frame.height,
+            mipmapped: false
         )
-        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.usage = [.shaderRead]
         descriptor.storageMode = .shared
         guard let target = device.makeTexture(descriptor: descriptor),
               let command = queue.makeCommandBuffer(),
               let blit = command.makeBlitCommandEncoder()
         else { throw StudioColorMetalError.textureCreation }
         blit.copy(
-            from: frame.texture, sourceSlice: 0, sourceLevel: 0,
-            sourceOrigin: MTLOrigin(), sourceSize: MTLSize(width: frame.width, height: frame.height, depth: 1),
-            to: target, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin()
+            from: frame.texture,
+            sourceSlice: 0,
+            sourceLevel: 0,
+            sourceOrigin: MTLOrigin(),
+            sourceSize: MTLSize(width: frame.width, height: frame.height, depth: 1),
+            to: target,
+            destinationSlice: 0,
+            destinationLevel: 0,
+            destinationOrigin: MTLOrigin()
         )
         blit.endEncoding()
         command.commit()
         command.waitUntilCompleted()
-        guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
-        var half = [Float16](repeating: 0, count: frame.width * frame.height * 4)
-        half.withUnsafeMutableBytes {
-            target.getBytes(
-                $0.baseAddress!, bytesPerRow: frame.width * 4 * MemoryLayout<Float16>.size,
-                from: MTLRegionMake2D(0, 0, frame.width, frame.height), mipmapLevel: 0
-            )
+        guard command.status == .completed else {
+            throw StudioColorMetalError.commandFailure
         }
-        return half.map(Float.init)
+        return StudioColorMetalFrame(texture: target, submittedAt: frame.submittedAt)
     }
 
     public func renderRGBAFloat(

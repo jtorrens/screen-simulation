@@ -2,34 +2,52 @@ import Foundation
 import ScreenPhysicalBridge
 
 struct CapturePresetDefinition: Identifiable {
+    enum LensAssociationPolicy: UInt16 {
+        case interchangeable = 0
+        case fixed = 1
+    }
+
     let id: String
     let name: String
     let calibration: String
     let defaultLensID: String
-    let parameters: ScreenCapturePresetParametersV2
+    let compatibleLensIDs: [String]
+    let lensAssociationPolicy: LensAssociationPolicy
+    let parameters: ScreenCapturePresetParametersV1
 
     static func catalog() throws -> [Self] {
         try (0..<screen_capture_preset_count()).map { index in
-            var parameters = ScreenCapturePresetParametersV2()
+            var parameters = ScreenCapturePresetParametersV1()
             guard screen_capture_preset_parameters(index, &parameters),
-                  parameters.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION
+                  parameters.abi_version == SCREEN_AUTHORING_CATALOG_ABI_VERSION,
+                  let policy = LensAssociationPolicy(
+                    rawValue: parameters.lens_association_policy
+                  )
+            else { throw CapturePresetError.invalidCatalog(index) }
+            let compatibleLensIDs = (0..<screen_capture_preset_compatible_lens_count(index)).map {
+                text(screen_capture_preset_compatible_lens_id(index, $0))
+            }
+            let defaultLensID = text(screen_capture_preset_default_lens_id(index))
+            guard !compatibleLensIDs.isEmpty,
+                  compatibleLensIDs.contains(defaultLensID)
             else { throw CapturePresetError.invalidCatalog(index) }
             return Self(
                 id: text(screen_capture_preset_id(index)),
                 name: text(screen_capture_preset_label(index)),
                 calibration: text(screen_capture_preset_calibration(index)),
-                defaultLensID: text(screen_capture_preset_default_lens_id(index)),
+                defaultLensID: defaultLensID,
+                compatibleLensIDs: compatibleLensIDs,
+                lensAssociationPolicy: policy,
                 parameters: parameters
             )
         }
     }
 
-    func apply(to state: inout PhysicalPipelineAuthoringState, frameRate: Double) {
+    func applyCamera(to state: inout PhysicalPipelineAuthoringState, frameRate: Double) {
         let sensor = parameters.sensor
-        state.sceneLens.focalLengthMillimeters = Double(parameters.focal_length_millimeters)
         state.sceneLens.sensorWidthMillimeters = Double(parameters.gate_width_millimeters)
         state.sceneLens.sensorHeightMillimeters = Double(parameters.gate_height_millimeters)
-        state.sceneLens.fStop = Double(parameters.f_stop)
+        state.sceneLens.fStop = Double(parameters.default_f_stop)
         state.sensor.nativeWidth = sensor.native_width
         state.sensor.nativeHeight = sensor.native_height
         state.sensor.bayerPattern = sensor.bayer_pattern
@@ -48,6 +66,11 @@ struct CapturePresetDefinition: Identifiable {
         state.sensor.readNoiseElectronsRMS = Double(sensor.read_noise_electrons_rms)
         state.sensor.analogGain = Double(sensor.analog_gain)
         state.sensor.adcBits = sensor.adc_bits
+        state.sensor.bloomCharacterStrength = Double(sensor.bloom_character_strength)
+        state.sensor.bloomCrosstalkFraction = Double(sensor.bloom_crosstalk_fraction)
+        state.sensor.bloomOverflowTransferFraction = Double(
+            sensor.bloom_overflow_transfer_fraction
+        )
         let radiometric = parameters.radiometric_calibration
         state.radiometricCalibration = .init(
             baseExposureIndex: Double(radiometric.base_exposure_index),
@@ -78,6 +101,72 @@ struct CapturePresetDefinition: Identifiable {
     }
 }
 
+struct LensPresetDefinition: Identifiable, Equatable, Sendable {
+    enum Authority: UInt32 {
+        case genericApproximation = 0
+        case calibratedApproximation = 1
+    }
+
+    let id: String
+    let name: String
+    let authority: Authority
+    let parameters: ScreenLensPresetParametersV1
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    static func catalog() throws -> [Self] {
+        try (0..<screen_lens_preset_count()).map { index in
+            var parameters = ScreenLensPresetParametersV1()
+            guard screen_lens_preset_parameters(index, &parameters),
+                  parameters.abi_version == SCREEN_AUTHORING_CATALOG_ABI_VERSION,
+                  let authority = Authority(rawValue: screen_lens_preset_authority(index))
+            else { throw CapturePresetError.invalidLensCatalog(index) }
+            return Self(
+                id: text(screen_lens_preset_id(index)),
+                name: text(screen_lens_preset_label(index)),
+                authority: authority,
+                parameters: parameters
+            )
+        }
+    }
+
+    func apply(to state: inout PhysicalPipelineAuthoringState) {
+        state.sceneLens.focalLengthMillimeters = Double(
+            parameters.nominal_focal_length_millimeters
+        )
+        state.sceneLens.radialDistortion = tuple3(parameters.radial_distortion)
+        state.sceneLens.tangentialDistortion = tuple2(parameters.tangential_distortion)
+        state.sceneLens.longitudinalChromaticMeters = tuple3(
+            parameters.longitudinal_chromatic_meters
+        )
+        state.sceneLens.lateralChromaticScale = tuple3(parameters.lateral_chromatic_scale)
+        state.sceneLens.vignettingStrength = Double(parameters.vignetting_strength)
+        state.sceneLens.transmissionRGB = tuple3(parameters.transmission_rgb)
+        state.sceneLens.centerSoftnessMicrometers = Double(
+            parameters.center_softness_micrometers
+        )
+        state.sceneLens.edgeSoftnessMicrometers = Double(
+            parameters.edge_softness_micrometers
+        )
+    }
+
+    private func tuple3(_ value: (Float, Float, Float)) -> [Double] {
+        [Double(value.0), Double(value.1), Double(value.2)]
+    }
+
+    private func tuple2(_ value: (Float, Float)) -> [Double] {
+        [Double(value.0), Double(value.1)]
+    }
+
+    private static func text(_ view: ScreenUTF8View) -> String {
+        guard let bytes = view.bytes, view.count > 0 else { return "" }
+        return String(decoding: UnsafeBufferPointer(start: bytes, count: view.count), as: UTF8.self)
+    }
+}
+
 enum CapturePresetError: Error {
     case invalidCatalog(Int)
+    case invalidLensCatalog(Int)
 }

@@ -13,14 +13,170 @@ typedef struct ScreenPhysicalTimedInputSetV2 *ScreenPhysicalTimedInputSetV2Ref;
 typedef struct ScreenPhysicalCameraPoseTrackV2 *ScreenPhysicalCameraPoseTrackV2Ref;
 typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2Ref;
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
+typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 2u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 4u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 1u
 
 typedef struct {
     const uint8_t *bytes;
     size_t count;
 } ScreenUTF8View;
+
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 7u
+
+typedef enum {
+    SCREEN_TEST_CONTROL_CHOICE = 0,
+    SCREEN_TEST_CONTROL_SCALAR = 1,
+} ScreenTestControlKind;
+
+typedef struct {
+    uint32_t abi_version;
+    ScreenUTF8View input_transform_id;
+    ScreenUTF8View output_signal_id;
+    ScreenUTF8View device_id;
+    ScreenUTF8View color_mode_id;
+    float device_eotf_gamma;
+    float white_luminance_nits;
+    ScreenUTF8View placement_id;
+    ScreenUTF8View preview_quality_id;
+    float subpixel_geometry_amount;
+    float panel_light_spread_amount;
+    ScreenUTF8View capture_preset_id;
+    ScreenUTF8View geometry_mode_id;
+    float camera_distance_meters;
+    float camera_orbit_x_degrees;
+    float camera_orbit_y_degrees;
+    float camera_position_x_meters;
+    float camera_position_y_meters;
+    float camera_position_z_meters;
+    float camera_rotation_x_degrees;
+    float camera_rotation_y_degrees;
+    float camera_rotation_z_degrees;
+    float screen_position_x_meters;
+    float screen_position_y_meters;
+    float screen_position_z_meters;
+    float screen_rotation_x_degrees;
+    float screen_yaw_degrees;
+    float screen_rotation_z_degrees;
+    ScreenUTF8View cover_glass_preset_id;
+    float cover_glass_amount;
+    ScreenUTF8View environment_preset_id;
+    float environment_amount;
+    float cover_glow_amount;
+    ScreenUTF8View lens_preset_id;
+    float lens_amount;
+    float focus_distance_meters;
+    float shutter_motion_amount;
+    float sensor_bloom_amount;
+    float sensor_noise_amount;
+} ScreenTestAuthoringSelectionV7;
+
+typedef struct {
+    uint32_t abi_version;
+    ScreenUTF8View id;
+    ScreenUTF8View label;
+    ScreenUTF8View character_scale_note;
+    ScreenUTF8View input_artifact;
+    ScreenUTF8View output_artifact;
+    uint32_t preview_result;
+} ScreenTestPhaseDescriptorV2;
+
+typedef struct {
+    uint32_t abi_version;
+    uint32_t kind;
+    ScreenUTF8View id;
+    ScreenUTF8View label;
+    ScreenUTF8View selected_id;
+    ScreenUTF8View reset_id;
+    float value;
+    float reset_value;
+    float minimum;
+    float maximum;
+    float step;
+    ScreenUTF8View unit;
+} ScreenTestControlDescriptorV3;
+
+typedef struct {
+    uint32_t abi_version;
+    ScreenUTF8View id;
+    ScreenUTF8View label;
+} ScreenTestChoiceOptionV2;
+
+bool screen_test_authoring_default_selection(
+    ScreenUTF8View input_transform_id,
+    ScreenUTF8View device_id,
+    ScreenTestAuthoringSelectionV7 *resolved,
+    const char **error_message
+);
+
+ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
+    const ScreenTestAuthoringSelectionV7 *selection,
+    const char **error_message
+);
+void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
+size_t screen_test_page_phase_count(ScreenTestPageDescriptorRef descriptor);
+ScreenUTF8View screen_test_page_default_preview_phase_id(
+    ScreenTestPageDescriptorRef descriptor
+);
+bool screen_test_page_phase_descriptor(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t phase_index,
+    ScreenTestPhaseDescriptorV2 *phase
+);
+size_t screen_test_page_control_count(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t phase_index
+);
+bool screen_test_page_control_descriptor(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t phase_index,
+    size_t control_index,
+    ScreenTestControlDescriptorV3 *control
+);
+size_t screen_test_page_choice_option_count(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t phase_index,
+    size_t control_index
+);
+bool screen_test_page_choice_option(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t phase_index,
+    size_t control_index,
+    size_t option_index,
+    ScreenTestChoiceOptionV2 *option
+);
+size_t screen_test_page_preview_control_count(ScreenTestPageDescriptorRef descriptor);
+bool screen_test_page_preview_control_descriptor(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t control_index,
+    ScreenTestControlDescriptorV3 *control
+);
+size_t screen_test_page_preview_choice_option_count(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t control_index
+);
+bool screen_test_page_preview_choice_option(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t control_index,
+    size_t option_index,
+    ScreenTestChoiceOptionV2 *option
+);
+bool screen_test_authoring_apply_choice(
+    const ScreenTestAuthoringSelectionV7 *selection,
+    ScreenUTF8View control_id,
+    ScreenUTF8View option_id,
+    ScreenTestAuthoringSelectionV7 *resolved,
+    const char **error_message
+);
+bool screen_test_authoring_apply_scalar(
+    const ScreenTestAuthoringSelectionV7 *selection,
+    ScreenUTF8View control_id,
+    float value,
+    ScreenTestAuthoringSelectionV7 *resolved,
+    const char **error_message
+);
 
 typedef enum {
     SCREEN_PHYSICAL_QUALITY_DRAFT = 0,
@@ -41,12 +197,14 @@ typedef enum {
     SCREEN_PHYSICAL_STAGE_SCREEN_TEMPORAL = 0x104,
     SCREEN_PHYSICAL_STAGE_SCREEN_COVER_GLASS = 0x105,
     SCREEN_PHYSICAL_STAGE_SCREEN_ENVIRONMENT = 0x106,
+    SCREEN_PHYSICAL_STAGE_SCREEN_COVER_GLOW = 0x107,
     SCREEN_PHYSICAL_STAGE_CAPTURE_GEOMETRY = 0x201,
     SCREEN_PHYSICAL_STAGE_CAPTURE_LENS = 0x202,
     SCREEN_PHYSICAL_STAGE_CAPTURE_EXPOSURE_SHUTTER = 0x203,
     SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_CFA = 0x204,
     SCREEN_PHYSICAL_STAGE_CAPTURE_NOISE = 0x205,
     SCREEN_PHYSICAL_STAGE_CAPTURE_DEVELOP_DEMOSAIC = 0x206,
+    SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_BLOOM = 0x207,
 } ScreenPhysicalStageID;
 
 typedef enum {
@@ -88,12 +246,15 @@ typedef enum {
     SCREEN_PHYSICAL_INTERMEDIATE_PANEL_EMISSION = 2,
     SCREEN_PHYSICAL_INTERMEDIATE_SUBPIXEL_RADIANCE = 3,
     SCREEN_PHYSICAL_INTERMEDIATE_PANEL_LIGHT_SPREAD = 4,
-    SCREEN_PHYSICAL_INTERMEDIATE_COVER_ENVIRONMENT = 5,
-    SCREEN_PHYSICAL_INTERMEDIATE_SCENE_GEOMETRY_LENS = 6,
-    SCREEN_PHYSICAL_INTERMEDIATE_SHUTTER_MOTION = 7,
-    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_NOISE = 8,
-    SCREEN_PHYSICAL_INTERMEDIATE_RAW_MOSAIC = 9,
-    SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 10,
+    SCREEN_PHYSICAL_INTERMEDIATE_RELATIVE_GEOMETRY = 5,
+    SCREEN_PHYSICAL_INTERMEDIATE_COVER_ENVIRONMENT = 6,
+    SCREEN_PHYSICAL_INTERMEDIATE_COVER_GLOW = 7,
+    SCREEN_PHYSICAL_INTERMEDIATE_LENS_PROJECTION = 8,
+    SCREEN_PHYSICAL_INTERMEDIATE_SHUTTER_MOTION = 9,
+    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_BLOOM = 10,
+    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_NOISE = 11,
+    SCREEN_PHYSICAL_INTERMEDIATE_RAW_MOSAIC = 12,
+    SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 13,
 } ScreenPhysicalIntermediate;
 
 typedef struct {
@@ -227,6 +388,11 @@ typedef struct {
     float absorption_per_millimeter[3];
     float roughness;
     float haze;
+    float glow_character_strength;
+    float glow_scatter_fraction;
+    float glow_core_radius_millimeters;
+    float glow_tail_radius_millimeters;
+    float glow_tail_fraction;
 } ScreenCoverGlassParametersV2;
 
 typedef struct {
@@ -283,6 +449,9 @@ typedef struct {
     float read_noise_electrons_rms;
     float analog_gain;
     uint32_t adc_bits;
+    float bloom_character_strength;
+    float bloom_crosstalk_fraction;
+    float bloom_overflow_transfer_fraction;
 } ScreenSensorNoiseParametersV2;
 
 // Explicit conversion between panel/scene photometry and the effective
@@ -310,16 +479,28 @@ typedef struct {
     ScreenSensorNoiseParametersV2 sensor;
     float gate_width_millimeters;
     float gate_height_millimeters;
-    float focal_length_millimeters;
-    float f_stop;
+    float default_f_stop;
     float reference_exposure_index;
     float middle_gray_illuminance_seconds;
     float default_shutter_angle_degrees;
     uint16_t default_temporal_samples;
-    uint16_t optics_authority;
+    uint16_t lens_association_policy;
     float default_readout_duration_milliseconds;
     ScreenCameraRadiometricCalibrationV2 radiometric_calibration;
-} ScreenCapturePresetParametersV2;
+} ScreenCapturePresetParametersV1;
+
+typedef struct {
+    uint32_t abi_version;
+    float nominal_focal_length_millimeters;
+    float radial_distortion[3];
+    float tangential_distortion[2];
+    float longitudinal_chromatic_meters[3];
+    float lateral_chromatic_scale[3];
+    float vignetting_strength;
+    float transmission_rgb[3];
+    float center_softness_micrometers;
+    float edge_softness_micrometers;
+} ScreenLensPresetParametersV1;
 
 typedef struct {
     uint32_t abi_version;
@@ -339,6 +520,13 @@ bool screen_cover_glass_preset_parameters(
     size_t index,
     ScreenCoverGlassParametersV2 *parameters
 );
+size_t screen_environment_preset_count(void);
+ScreenUTF8View screen_environment_preset_id(size_t index);
+ScreenUTF8View screen_environment_preset_label(size_t index);
+bool screen_environment_preset_parameters(
+    size_t index,
+    ScreenEnvironmentParametersV2 *parameters
+);
 ScreenCoverGlassProfileRef screen_cover_glass_profile_create(
     const ScreenCoverGlassParametersV2 *parameters,
     const char **error_message
@@ -355,6 +543,15 @@ ScreenUTF8View screen_device_preset_id(size_t index);
 ScreenUTF8View screen_device_preset_label(size_t index);
 ScreenUTF8View screen_device_preset_category(size_t index);
 ScreenUTF8View screen_device_preset_white_basis(size_t index);
+size_t screen_device_preset_color_mode_count(size_t index);
+ScreenUTF8View screen_device_preset_color_mode_id(
+    size_t index,
+    size_t color_mode_index
+);
+ScreenUTF8View screen_device_preset_default_color_mode_id(size_t index);
+float screen_device_preset_minimum_white_nits(size_t index);
+float screen_device_preset_maximum_white_nits(size_t index);
+float screen_device_preset_white_step_nits(size_t index);
 ScreenUTF8View screen_device_preset_default_cover_id(size_t index);
 bool screen_device_preset_parameters(
     size_t index,
@@ -370,12 +567,25 @@ ScreenUTF8View screen_capture_preset_id(size_t index);
 ScreenUTF8View screen_capture_preset_label(size_t index);
 ScreenUTF8View screen_capture_preset_calibration(size_t index);
 ScreenUTF8View screen_capture_preset_default_lens_id(size_t index);
+size_t screen_capture_preset_compatible_lens_count(size_t index);
+ScreenUTF8View screen_capture_preset_compatible_lens_id(
+    size_t index,
+    size_t lens_index
+);
 bool screen_capture_preset_parameters(
     size_t index,
-    ScreenCapturePresetParametersV2 *parameters
+    ScreenCapturePresetParametersV1 *parameters
+);
+size_t screen_lens_preset_count(void);
+ScreenUTF8View screen_lens_preset_id(size_t index);
+ScreenUTF8View screen_lens_preset_label(size_t index);
+uint32_t screen_lens_preset_authority(size_t index);
+bool screen_lens_preset_parameters(
+    size_t index,
+    ScreenLensPresetParametersV1 *parameters
 );
 /*
- * Physical-frame ABI v2. These declarations are the single UI/engine contract.
+ * Physical-frame ABI v3. These declarations are the single UI/engine contract.
  * The immutable timed input set retains every source linear ACEScg texture and
  * matching nonlinear device-signal texture resolved by StudioColor until its
  * release. A submitted job retains the selected Metal textures independently,

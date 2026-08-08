@@ -42,8 +42,34 @@ These rules apply to every task in this repository.
 - Application owns the current phase's immutable simulation request and orchestration through narrow domain ports.
 - Persistence owns strict current project documents and portable references. It does not decode, resolve color, simulate, or render.
 - Platform owns replaceable macOS/Windows media, GPU, display, and filesystem adapters.
-- Executable and host adapters are composition roots. The current workspace contains only Desktop, whose Slint shell displays immutable prepared state and contains no domain rules. Any later host adapter must consume the same Application evaluator and cannot duplicate domain semantics.
+- Executable and host adapters are composition roots. Desktop, native macOS and any later OFX or other host adapter consume the same Application evaluator and cannot duplicate domain semantics.
 - Cross-domain workflows use narrow typed ports. Do not introduce a universal engine, service locator, general repository, catch-all project facade, or runtime registry with semantic conditions.
+
+## Model-authored controls and presets
+
+- Physical models live in Rust. Each model owns the stable phase identifiers it implements, the typed input and output contract of every phase, and the parameter descriptors, limits, units, animation capability and validation required by that phase.
+- UI code renders prepared presentation descriptors and sends stable control intents. It never declares phase order, model parameters, physical limits, units, preset compatibility, Color Mode availability or mappings from a visible phase to an evaluator intermediate.
+- UI targets may depend only on presentation contracts and host UI frameworks. They cannot import Color, Media, Panel, Geometry, Camera, Sensor, Persistence, a native physical bridge or a model implementation. Enforce this with target dependencies so an illegal import fails compilation.
+- Presets are explicit parameter providers owned by their corresponding domain: Device/Panel, Cover Glass, Camera, Lens, Sensor and later preset families remain separate. A preset contains capabilities, calibrated/reference values and supported stable identifiers; it is never an evaluator or UI definition.
+- Application materializes a selected preset plus explicit manual authoring into one complete immutable resolved request before evaluation. Models never look up presets or invent missing values during evaluation.
+- Preset capability and authored instance selection are different contracts. For example a Device may declare supported Color Mode ids and a luminance range, while the simulation request separately stores the selected Device id, selected Color Mode id and White Luminance. Editing the request never mutates the preset.
+- Color owns the meaning and resolution of Input Transform and Output Signal identifiers. Panel owns Device Color Mode identifiers and their EOTF interpretation. A Device references the Panel-owned Color Mode ids it supports but cannot duplicate either Panel response or Color-owned OCIO transforms. UI displays only the options prepared by Application from the owning domains.
+
+## Composable phase boundaries
+
+- Every phase consumes and publishes a named, versioned, typed artifact independent of the preceding or following implementation. A phase output is not a generic metadata bag and cannot contain undocumented data intended only for one next model.
+- ACEScg is used only where the boundary is explicitly scene-linear tristimulus imagery. Device signal, emitted radiance, sensor exposure, RAW mosaic and other physical artifacts retain their own contracts and must not be relabeled ACEScg for convenience.
+- A new physical model may be inserted only when it implements the exact input and output ports at that position, or when an explicit separately owned adapter is added. Other phases are not rewritten to inspect its identity.
+- An accepted phase checkpoint is the sole input to the next phase for both interactive and reference evaluation. Diagnostic previews and PNGs are presentation artifacts and never replace the canonical checkpoint.
+- Preview applies only the explicitly selected output transform. If a correct checkpoint contains values that transform cannot represent, presentation may clip or hide them; no diagnostic normalization, false-color substitution or visibility compensation may alter their meaning.
+
+## Host-neutral core and OFX readiness
+
+- Core contracts, presets, Application orchestration and physical evaluators are host-neutral. They cannot depend on SwiftUI, AppKit, Slint, OFX, a host clip type, a file dialog, Metal presentation, a decoder session or an output writer.
+- Host adapters replace only source-frame acquisition, presentation/parameter binding, render context acquisition and final-frame publication. Desktop files/patterns and an OFX input clip must resolve into the same source contract; Desktop preview/export and an OFX output clip must consume the same evaluated result.
+- Application render requests explicitly carry exact time, frame rate, render scale, render window or region, pixel aspect and requested quality where applicable. Models declare spatial support and temporal frame requirements so a host may evaluate tiles, regions or multiple input times without changing semantics.
+- Parameter and phase ids are stable independently of labels, language and UI order. The set of parameter identities exposed by a plugin version must be describable before an OFX instance is created; runtime state controls availability and values, not the invention of new identities by the host UI.
+- CPU reference evaluation remains host-neutral even when a shipped adapter requires a particular GPU backend. Adapter-specific Metal, Windows or OFX tests cannot make that backend a dependency of the core or redefine the evaluator.
 
 ## Deterministic boundaries
 
@@ -57,8 +83,19 @@ These rules apply to every task in this repository.
 ## Validation
 
 - Architecture rules must become executable checks whenever practical.
+- Prefer compiler-enforced module and crate boundaries over source-text checks. Each target declares the narrowest allowed dependencies; forbidden domain imports must fail to compile.
 - Dependency tests must prove forbidden domain edges cannot compile or link.
+- Architecture validation rejects a host or UI target that is granted a model/domain dependency merely to make an illegal import compile.
+- Contract tests prove phase descriptors have unique stable ids, preset capabilities contain the authored selection, scalar limits are finite and ordered, and every phase input/output artifact is explicit and versioned.
+- Host-conformance tests run the same immutable request through host-neutral reference evaluation and adapter-specific input/output bindings. Render-window and temporal tests prove tiled or multi-frame host requests do not select another physical route.
 - Contract tests reject unknown versions, unknown fields, missing required values, aliases, and retired representations.
 - Migration tests use disposable copies and prove normal startup is byte-for-byte read-only.
 - CPU reference and GPU implementations are compared with documented numeric tolerances.
 - Every changed path must have a declared validation owner; an unclassified path is an error, not a reason to run a broad fallback suite.
+
+## Phase-gated implementation
+
+- Before changing or adding a simulation phase, present a non-technical high-level summary and wait for explicit user confirmation.
+- The summary states what the phase represents, what it receives and delivers, which controls become visible, which cumulative Preview option is added, and how it will be compared with the previous model.
+- A phase is complete only after checking owner-supplied parameters and presets, limits and units, exact consumption of the prior canonical artifact, cumulative Preview selection, color/alpha/raster/placement identity, comparable old/new diagnostic PNGs, visual observations with user review, compilation and owning contract/architecture tests.
+- Only a phase that passes that checklist becomes the canonical checkpoint feeding the next phase.

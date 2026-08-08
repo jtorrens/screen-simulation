@@ -4,6 +4,7 @@ import Combine
 import CryptoKit
 import Foundation
 import OSLog
+import ScreenSimulationPresentation
 import StudioColor
 import StudioMedia
 import SwiftUI
@@ -17,6 +18,23 @@ final class WorkspaceModel: ObservableObject {
         case oneToOne = "One to One"
 
         var id: String { rawValue }
+        var stableID: String {
+            switch self {
+            case .fit: "fit"
+            case .fillCrop: "fill-crop"
+            case .stretch: "stretch"
+            case .oneToOne: "one-to-one"
+            }
+        }
+        init?(stableID: String) {
+            switch stableID {
+            case "fit": self = .fit
+            case "fill-crop": self = .fillCrop
+            case "stretch": self = .stretch
+            case "one-to-one": self = .oneToOne
+            default: return nil
+            }
+        }
         var physicalRasterPlacement: PhysicalRasterPlacement {
             switch self {
             case .fit: .fit
@@ -37,7 +55,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     @Published var inputTransform = StudioColorInputTransform.catalog.first {
-        $0.id == "input-rec709"
+        $0.id == "srgb-encoded-rec709"
     }!
     @Published var previewTransform = StudioColorOutputTransform.catalog.first {
         $0.id == "aces2-srgb-sdr-100"
@@ -47,7 +65,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var signalColorModel = StudioSignalColorModel.rgb
     @Published var signalMatrix = StudioSignalMatrix.bt709
     @Published var signalRange = StudioSignalRange.full
-    @Published var detection = StudioMediaDetection()
+    @Published var detection = SyntheticPattern.animatedCheckerboard.sourceDetection
     @Published var selectedPattern = SyntheticPattern.animatedCheckerboard
     @Published var sourceName = "Checker animado"
     @Published var sourceDetail = "Patrón SCREEN canónico · 960 × 540"
@@ -72,8 +90,9 @@ final class WorkspaceModel: ObservableObject {
     @Published var outputSignalRange = StudioSignalRange.video
     @Published var decodeToPreviewMilliseconds = 0.0
     @Published var zoom = 1.0
+    @Published private(set) var previewIsFitted = true
     @Published var pan = CGSize.zero
-    @Published private(set) var defaultInputTransformID = "input-rec709"
+    @Published private(set) var defaultInputTransformID = "srgb-encoded-rec709"
     @Published private(set) var defaultAlphaMode = StudioAlphaMode.ignore
     @Published private(set) var defaultSignalColorModel = StudioSignalColorModel.rgb
     @Published private(set) var defaultSignalMatrix = StudioSignalMatrix.bt709
@@ -83,22 +102,22 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var physicalAuthoringState: PhysicalPipelineAuthoringState?
     @Published private(set) var requestedPhysicalIntermediate = PhysicalIntermediate.developedACEScg
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
+    @Published private(set) var deviceSignalCheckpoint: DeviceSignalCheckpoint?
     @Published var sourcePlacement = SourcePlacement.fit
     @Published var modelViewerOneToOne = false
     @Published private(set) var armedPhysicalParameterIDs: Set<String> = []
     @Published private(set) var selectedCapturePresetID: String?
+    @Published private(set) var selectedLensPresetID: String?
     let capturePresets = try! CapturePresetDefinition.catalog()
+    let lensPresets = try! LensPresetDefinition.catalog()
+    let environmentPresets = try! EnvironmentPresetDefinition.catalog()
     @Published private(set) var physicalPublicationSummary = "Sin publicación física"
+    @Published private(set) var testPresentation: TestPagePresentation?
+    private var testAuthoringSelection: TestAuthoringResolvedSelection?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
     let physicalModel = PhysicalModelController()
-    private let deviceSignalTransform = StudioColorOutputTransform.catalog.first {
-        $0.id == "aces2-srgb-sdr-100"
-    }!
-    private let deviceSignalInverseTransform = StudioColorInputTransform.catalog.first {
-        $0.id == "display-srgb-aces2-sdr"
-    }!
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
     private var tickSubscription: AnyCancellable?
@@ -112,6 +131,8 @@ final class WorkspaceModel: ObservableObject {
     private var physicalIdentityCounter: UInt64 = 0
     private var modelViewport = CGSize(width: 960, height: 540)
     private var isModelPageActive = false
+    private var isTestPageActive = false
+    private var testPreviewResultByPhaseID: [String: TestPreviewResultKind] = [:]
     private var resolvedPhysicalPipeline: PhysicalPipelineResolvedState?
     private var baseModelDeviceDefinition: DeviceDefinition?
     private var basePhysicalAuthoringState: PhysicalPipelineAuthoringState?
@@ -132,12 +153,13 @@ final class WorkspaceModel: ObservableObject {
         basePhysicalAuthoringState
     }
 
-    var modelPreviewSurfaceAspect: Double? {
+    var physicalPreviewSurfaceAspect: Double? {
         switch requestedPhysicalIntermediate {
-        case .panelEmission, .subpixelRadiance, .panelLightSpread, .coverEnvironment:
+        case .panelEmission, .subpixelRadiance, .panelLightSpread, .relativeGeometry,
+             .coverEnvironment, .coverGlow, .lensProjection:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return Double(device.nativeWidth) / Double(device.nativeHeight)
-        case .sensorNoise, .rawMosaic, .developedACEScg:
+        case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg:
             guard let sensor = physicalAuthoringState?.sensor,
                   sensor.nativeWidth > 0, sensor.nativeHeight > 0
             else { return nil }
@@ -145,19 +167,19 @@ final class WorkspaceModel: ObservableObject {
             // viewport. Do not retain the aspect of the previously published frame
             // while the replacement physical job is being evaluated.
             return Double(sensor.nativeWidth) / Double(sensor.nativeHeight)
-        case .sourceACEScg, .deviceSignal, .sceneGeometryLens, .shutterMotion:
+        case .sourceACEScg, .deviceSignal, .shutterMotion:
             guard let metalFrame, metalFrame.height > 0 else { return nil }
             return Double(metalFrame.width) / Double(metalFrame.height)
         }
     }
 
-    var modelNativeOutputDescription: String? {
+    var physicalNativeOutputDescription: String? {
         switch requestedPhysicalIntermediate {
-        case .sensorNoise, .rawMosaic, .developedACEScg:
+        case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg:
             guard let sensor = physicalAuthoringState?.sensor else { return nil }
             return "Captura \(sensor.nativeWidth)×\(sensor.nativeHeight)"
-        case .panelEmission, .subpixelRadiance, .panelLightSpread, .coverEnvironment,
-             .sceneGeometryLens, .shutterMotion:
+        case .panelEmission, .subpixelRadiance, .panelLightSpread, .relativeGeometry,
+             .coverEnvironment, .coverGlow, .lensProjection, .shutterMotion:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return "Panel \(device.nativeWidth * 3)×\(device.nativeHeight * 3)"
         case .sourceACEScg, .deviceSignal:
@@ -183,7 +205,46 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var pipelineSummary: String {
-        "Input → YUV/rango → IDT → ACEScg → Pantalla → Captura → Display/ODT"
+        if isTestPageActive, let testPresentation,
+           let phase = testPresentation.phases.first(where: {
+               $0.id == testPresentation.selectedPhaseID
+           }) {
+            return "Ver hasta · \(phase.label) → Display/ODT"
+        }
+        return "Input Transform → ACEScg → Color Mode → Pantalla → Captura → Display/ODT"
+    }
+
+    var previewMetadataLines: [String] {
+        guard isTestPageActive, let frame = metalFrame,
+              let presentation = testPresentation,
+              let phase = presentation.phases.first(where: {
+                  $0.id == presentation.selectedPhaseID
+              })
+        else { return [] }
+        let format = switch frame.texture.pixelFormat {
+        case .rgba16Float: "RGBA16F"
+        case .rgba32Float: "RGBA32F"
+        default: "Metal \(frame.texture.pixelFormat.rawValue)"
+        }
+        if testPreviewResultByPhaseID[presentation.selectedPhaseID] == .sourceACEScg {
+            return ["[\(phase.label)] \(frame.width)×\(frame.height) · \(format) · ACEScg"]
+        }
+        let device = modelDeviceDefinition ?? resolvedDevice?.definition
+        let native = device.map { "\($0.nativeWidth)×\($0.nativeHeight)" } ?? "—"
+        let first = "[\(phase.label) · \(physicalModel.computedQuality.uiLabel)] \(frame.width)×\(frame.height) / \(native) · \(format)"
+        guard let device else { return [first] }
+        let second = "\(device.name) · \(device.colorModeID) · \(Int(device.whiteLevelNits.rounded())) cd/m² · \(sourcePlacement.rawValue) · Zoom \(zoomPercentage.formatted(.number.precision(.fractionLength(0 ... 1)))) %"
+        return [first, second]
+    }
+
+    var testRequiresExplicitRender: Bool {
+        isTestPageActive
+            && selectedTestPhysicalIntermediate != nil
+            && physicalModel.quality == .native
+    }
+
+    var sourceKindLabel: String {
+        sourceIsPattern ? "Patrón sintético" : "Archivo o secuencia"
     }
 
     func selectDevice(
@@ -192,6 +253,7 @@ final class WorkspaceModel: ObservableObject {
         amount _: Double
     ) {
         do {
+            testAuthoringSelection = nil
             resolvedDevice = try definition.resolved()
             modelDeviceDefinition = definition
             let authored = try PhysicalPipelineAuthoringState.seeded(
@@ -202,6 +264,7 @@ final class WorkspaceModel: ObservableObject {
             resolvedPhysicalPipeline = try authored.resolvedPipeline()
             baseModelDeviceDefinition = definition
             basePhysicalAuthoringState = authored
+            try refreshTestAuthoringDescriptor()
             rebuildCurrent()
         } catch {
             errorMessage = error.localizedDescription
@@ -213,6 +276,7 @@ final class WorkspaceModel: ObservableObject {
         coverGlass: CoverGlassDefinition
     ) {
         do {
+            testAuthoringSelection = nil
             resolvedDevice = try definition.resolved()
             modelDeviceDefinition = definition
             var authored = try PhysicalPipelineAuthoringState.seeded(
@@ -221,12 +285,15 @@ final class WorkspaceModel: ObservableObject {
             )
             let capture = capturePresets.first { $0.id == selectedCapturePresetID }
                 ?? capturePresets.first
-            capture?.apply(to: &authored, frameRate: frameRate)
+            if let capture {
+                try apply(capture: capture, lensID: capture.defaultLensID, to: &authored)
+            }
             selectedCapturePresetID = capture?.id
             physicalAuthoringState = authored
             resolvedPhysicalPipeline = try authored.resolvedPipeline()
             baseModelDeviceDefinition = definition
             basePhysicalAuthoringState = authored
+            try refreshTestAuthoringDescriptor()
             rebuildPhysicalSelectedFrame()
         } catch {
             errorMessage = error.localizedDescription
@@ -236,16 +303,21 @@ final class WorkspaceModel: ObservableObject {
     func selectCapturePreset(_ preset: CapturePresetDefinition, undoManager: UndoManager?) {
         guard let prior = physicalAuthoringState else { return }
         let priorID = selectedCapturePresetID
+        let priorLensID = selectedLensPresetID
         var next = prior
-        preset.apply(to: &next, frameRate: frameRate)
         do {
+            try apply(capture: preset, lensID: preset.defaultLensID, to: &next)
             resolvedPhysicalPipeline = try next.resolvedPipeline()
             physicalAuthoringState = next
             basePhysicalAuthoringState = next
             selectedCapturePresetID = preset.id
             undoManager?.registerUndo(withTarget: self) { target in
                 Task { @MainActor in
-                    target.restoreCapturePresetState(prior, selectedID: priorID)
+                    target.restoreCapturePresetState(
+                        prior,
+                        selectedID: priorID,
+                        selectedLensID: priorLensID
+                    )
                 }
             }
             undoManager?.setActionName("Cambiar cámara")
@@ -253,15 +325,34 @@ final class WorkspaceModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    private func apply(
+        capture: CapturePresetDefinition,
+        lensID: String,
+        to state: inout PhysicalPipelineAuthoringState
+    ) throws {
+        guard capture.compatibleLensIDs.contains(lensID),
+              let lens = lensPresets.first(where: { $0.id == lensID })
+        else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "La cámara no admite el objetivo seleccionado."
+            )
+        }
+        capture.applyCamera(to: &state, frameRate: frameRate)
+        lens.apply(to: &state)
+        selectedLensPresetID = lens.id
+    }
+
     private func restoreCapturePresetState(
         _ state: PhysicalPipelineAuthoringState,
-        selectedID: String?
+        selectedID: String?,
+        selectedLensID: String?
     ) {
         do {
             resolvedPhysicalPipeline = try state.resolvedPipeline()
             physicalAuthoringState = state
             basePhysicalAuthoringState = state
             selectedCapturePresetID = selectedID
+            selectedLensPresetID = selectedLensID
             physicalModel.invalidateExternalParameters()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -276,6 +367,7 @@ final class WorkspaceModel: ObservableObject {
         do {
             resolvedDevice = try next.resolved()
             modelDeviceDefinition = next
+            try refreshTestAuthoringDescriptor()
             registerModelDeviceUndo(prior, undoManager: undoManager)
             physicalModel.invalidateExternalParameters()
         } catch {
@@ -307,11 +399,14 @@ final class WorkspaceModel: ObservableObject {
         switch stage {
         case let .screen(section):
             guard let base = baseModelDeviceDefinition else { return }
-            if section == .coverGlass || section == .environment {
+            if section == .coverGlass || section == .environment || section == .coverGlow {
                 guard let authored = basePhysicalAuthoringState else { return }
                 updatePhysicalAuthoring(undoManager: undoManager) { current in
-                    if section == .coverGlass { current.coverGlass = authored.coverGlass }
-                    else { current.environment = authored.environment }
+                    if section == .coverGlass || section == .coverGlow {
+                        current.coverGlass = authored.coverGlass
+                    } else {
+                        current.environment = authored.environment
+                    }
                 }
             } else {
                 updateModelDevice(undoManager: undoManager) { current in
@@ -340,6 +435,7 @@ final class WorkspaceModel: ObservableObject {
         do {
             resolvedDevice = try value.resolved()
             modelDeviceDefinition = value
+            try refreshTestAuthoringDescriptor()
             physicalModel.invalidateExternalParameters()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -371,6 +467,92 @@ final class WorkspaceModel: ObservableObject {
         isModelPageActive = active
         if active { pause() }
         rebuildPhysicalSelectedFrame()
+    }
+
+    func setTestPageActive(_ active: Bool) {
+        isTestPageActive = active
+        if active { pause() }
+        if active, let intermediate = selectedTestPhysicalIntermediate {
+            requestedPhysicalIntermediate = intermediate
+            rebuildPhysicalSelectedFrame()
+        } else {
+            publishSelectedTestPreview()
+        }
+    }
+
+    func handleTestIntent(_ intent: TestControlIntent) {
+        do {
+            switch intent {
+            case let .selectPhase(phaseID):
+                guard let selection = currentTestAuthoringSelection() else {
+                    throw TestAuthoringCoordinatorError.malformedDescriptor(
+                        "Test necesita un Device resuelto."
+                    )
+                }
+                let snapshot = try RustTestAuthoringCoordinator.snapshot(
+                    selection: selection,
+                    selectedPreviewPhaseID: phaseID
+                )
+                testPresentation = snapshot.presentation
+                testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+                if let intermediate = physicalIntermediate(
+                    for: snapshot.previewResultByPhaseID[phaseID]
+                ) {
+                    requestedPhysicalIntermediate = intermediate
+                    rebuildPhysicalSelectedFrame()
+                } else {
+                    publishSelectedTestPreview()
+                }
+            case .setChoice, .setScalar:
+                guard let selection = currentTestAuthoringSelection() else {
+                    throw TestAuthoringCoordinatorError.malformedDescriptor(
+                        "Test necesita un Device resuelto."
+                    )
+                }
+                let phaseToReveal = testPhaseToReveal(for: intent)
+                let resolved = try RustTestAuthoringCoordinator.apply(intent, to: selection)
+                try applyTestAuthoringSelection(resolved)
+                if let phaseToReveal,
+                   let updatedSelection = currentTestAuthoringSelection() {
+                    let snapshot = try RustTestAuthoringCoordinator.snapshot(
+                        selection: updatedSelection,
+                        selectedPreviewPhaseID: phaseToReveal
+                    )
+                    testPresentation = snapshot.presentation
+                    testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+                    if let intermediate = physicalIntermediate(
+                        for: snapshot.previewResultByPhaseID[phaseToReveal]
+                    ) {
+                        requestedPhysicalIntermediate = intermediate
+                        rebuildPhysicalSelectedFrame()
+                    } else {
+                        publishSelectedTestPreview()
+                    }
+                }
+            case .performAction:
+                throw TestAuthoringCoordinatorError.unsupportedIntent
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func testPhaseToReveal(for intent: TestControlIntent) -> String? {
+        let controlID: String
+        switch intent {
+        case let .setChoice(id, _), let .setScalar(id, _): controlID = id
+        case .selectPhase, .performAction: return nil
+        }
+        guard let presentation = testPresentation,
+              let selectedIndex = presentation.phases.firstIndex(where: {
+                  $0.id == presentation.selectedPhaseID
+              }),
+              let ownerIndex = presentation.phases.firstIndex(where: { phase in
+                  phase.sections.flatMap(\.controls).contains(where: { $0.id == controlID })
+              }),
+              ownerIndex > selectedIndex
+        else { return nil }
+        return presentation.phases[ownerIndex].id
     }
 
     func changePhysicalQuality(_ quality: PhysicalQuality) {
@@ -606,29 +788,28 @@ final class WorkspaceModel: ObservableObject {
         sourceIsPattern = true
         sourceName = pattern.label
         sourceDetail = "Patrón SCREEN canónico"
-        detection = StudioMediaDetection(
-            proposedInputTransformID: "input-rec709",
-            inputTransformProvenance: .proposed,
-            matrix: .bt709,
-            matrixProvenance: .proposed,
-            range: .full,
-            rangeProvenance: .proposed,
-            colorModel: .rgb,
-            colorModelProvenance: .proposed,
-            hasAlpha: false,
-            alpha: .ignore,
-            alphaProvenance: .proposed
-        )
-        inputTransform = StudioColorInputTransform.catalog.first { $0.id == "input-rec709" }!
-        alphaMode = .ignore
-        signalMatrix = .bt709
-        signalRange = .full
-        signalColorModel = .rgb
-        defaultInputTransformID = "input-rec709"
-        defaultAlphaMode = .ignore
-        defaultSignalMatrix = .bt709
-        defaultSignalRange = .full
-        defaultSignalColorModel = .rgb
+        detection = pattern.sourceDetection
+        guard let inputID = detection.proposedInputTransformID,
+              let resolvedInput = StudioColorInputTransform.catalog.first(
+                where: { $0.id == inputID }
+              ),
+              let resolvedAlpha = detection.alpha,
+              let resolvedMatrix = detection.matrix,
+              let resolvedRange = detection.range,
+              let resolvedColorModel = detection.colorModel
+        else {
+            preconditionFailure("El contrato del patrón sintético debe ser completo.")
+        }
+        inputTransform = resolvedInput
+        alphaMode = resolvedAlpha
+        signalMatrix = resolvedMatrix
+        signalRange = resolvedRange
+        signalColorModel = resolvedColorModel
+        defaultInputTransformID = inputID
+        defaultAlphaMode = resolvedAlpha
+        defaultSignalMatrix = resolvedMatrix
+        defaultSignalRange = resolvedRange
+        defaultSignalColorModel = resolvedColorModel
         currentFrame = 0
         frameRate = 24
         frameCount = pattern == .animatedCheckerboard ? 240 : 1
@@ -663,8 +844,8 @@ final class WorkspaceModel: ObservableObject {
         let isVideo = Self.isVideo(first) && expanded.count == 1
         detection = await StudioMediaMetadataDetector.detect(url: first, isVideo: isVideo)
         let defaultInputID = isVideo
-            ? "display-rec709-aces2-sdr"
-            : "display-srgb-aces2-sdr"
+            ? "display-rec709-gamma24-dcm"
+            : "srgb-encoded-rec709"
         defaultInputTransformID = defaultInputID
         defaultAlphaMode = detection.hasAlpha ? .straight : .ignore
         defaultSignalMatrix = .bt709
@@ -796,7 +977,26 @@ final class WorkspaceModel: ObservableObject {
         outFrame = max(inFrame, min(max(0, frame), max(0, frameCount - 1)))
     }
 
-    func resetView() { zoom = 1; pan = .zero }
+    func fitPreview() {
+        previewIsFitted = true
+        pan = .zero
+    }
+    func showPreviewOneToOne() {
+        previewIsFitted = false
+        zoom = 1
+        pan = .zero
+    }
+    func updateFittedZoom(_ value: Double) {
+        guard previewIsFitted, value.isFinite, value > 0,
+              abs(zoom - value) > 0.000_001
+        else { return }
+        zoom = value
+    }
+    func setInteractiveZoom(_ value: Double) {
+        previewIsFitted = false
+        zoom = min(16, max(0.01, value))
+    }
+    func resetView() { fitPreview() }
     func fitModelPreview() {
         modelViewerOneToOne = false
         resetView()
@@ -806,13 +1006,13 @@ final class WorkspaceModel: ObservableObject {
         resetView()
     }
     func zoomBy(_ factor: Double) {
-        zoom = min(16, max(0.1, zoom * factor))
+        setInteractiveZoom(zoom * factor)
     }
     var zoomPercentage: Double {
         zoom * 100
     }
     func setZoomPercentage(_ percentage: Double) {
-        zoom = min(16, max(0.1, percentage / 100))
+        setInteractiveZoom(percentage / 100)
     }
 
     func physicalAnimationArmBinding(_ id: String) -> Binding<Bool> {
@@ -993,7 +1193,7 @@ final class WorkspaceModel: ObservableObject {
             ]
         }
         var physical: [String: Any] = [
-            "abiVersion": 2,
+            "abiVersion": PhysicalFrameRequest.abiVersion,
             "quality": quality,
             "requestedIntermediate": String(describing: requestedPhysicalIntermediate),
             "screenAmount": physicalModel.screenAmount,
@@ -1226,6 +1426,7 @@ final class WorkspaceModel: ObservableObject {
             decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
             status = "Textura ACEScg Metal · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
             rebuildPhysicalSelectedFrame()
+            publishSelectedTestPreview()
         } catch {
             metalFrame = nil
             errorMessage = error.localizedDescription
@@ -1257,6 +1458,7 @@ final class WorkspaceModel: ObservableObject {
         decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
         status = "CVPixelBuffer → ACEScg → Preview · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
         rebuildPhysicalSelectedFrame()
+        publishSelectedTestPreview()
     }
 
     private func renderFrame(_ index: Int) async throws -> StudioColorMetalFrame {
@@ -1281,10 +1483,12 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func rebuildPhysicalSelectedFrame() {
-        guard isModelPageActive else {
+        let testNeedsPhysicalResult = isTestPageActive
+            && selectedTestPhysicalIntermediate != nil
+        guard isModelPageActive || testNeedsPhysicalResult else {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
-            if let sourceACEScgFrame { metalFrame = sourceACEScgFrame }
+            if !isTestPageActive, let sourceACEScgFrame { metalFrame = sourceACEScgFrame }
             return
         }
         guard physicalModel.quality != .native else { return }
@@ -1333,10 +1537,16 @@ final class WorkspaceModel: ObservableObject {
                 "El modelo físico necesita overrides de proyecto resueltos."
             )
         }
-        let deviceSignal = try metalDisplay.transformToMetalFrame(
-            sourceACEScgFrame,
-            output: deviceSignalTransform
+        let outputSignal = try resolvedOutputSignal()
+        let checkpoint = try DeviceSignalCheckpoint.prepare(
+            sourceACEScg: sourceACEScgFrame,
+            inputTransform: inputTransform,
+            outputSignal: outputSignal,
+            alphaInterpretation: String(describing: effectiveAlpha),
+            display: metalDisplay
         )
+        deviceSignalCheckpoint = checkpoint
+        let deviceSignal = checkpoint.deviceSignal
         let contributions = physicalModel.orderedContributions
         guard let spreadAmount = contributions.first(where: {
             $0.stage == .screen(.panelLightSpread)
@@ -1390,6 +1600,246 @@ final class WorkspaceModel: ObservableObject {
         )
     }
 
+    private func resolvedOutputSignal() throws -> StudioColorMode {
+        guard let outputSignalID = testAuthoringSelection?.outputSignalID,
+              let mode = StudioColorMode.catalog.first(where: {
+                  $0.id == outputSignalID
+        }) else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "La Output Signal seleccionada no existe en StudioColor."
+            )
+        }
+        return mode
+    }
+
+    private func currentTestAuthoringSelection() -> TestAuthoringResolvedSelection? {
+        testAuthoringSelection
+    }
+
+    private func refreshTestAuthoringDescriptor() throws {
+        guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return }
+        if testAuthoringSelection == nil {
+            testAuthoringSelection = try RustTestAuthoringCoordinator.defaultSelection(
+                inputTransformID: inputTransform.id,
+                deviceID: device.id
+            )
+        }
+        guard let selection = testAuthoringSelection else { return }
+        let snapshot = try RustTestAuthoringCoordinator.snapshot(
+            selection: selection,
+            selectedPreviewPhaseID: testPresentation?.selectedPhaseID
+        )
+        testPresentation = snapshot.presentation
+        testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+        publishSelectedTestPreview()
+    }
+
+    private func applyTestAuthoringSelection(
+        _ selection: TestAuthoringResolvedSelection
+    ) throws {
+        guard var device = try RustDeviceCatalog.builtIns().first(where: {
+            $0.id == selection.deviceID
+        }) else {
+            throw TestAuthoringCoordinatorError.malformedDescriptor(
+                "Rust devolvió un Device que no existe en su catálogo."
+            )
+        }
+        device.colorModeID = selection.colorModeID
+        device.eotfGamma = selection.deviceEOTFGamma
+        device.whiteLevelNits = selection.whiteLuminanceNits
+        device.panelLightSpread.characterStrength = selection.panelLightSpreadAmount
+        guard let placement = SourcePlacement(stableID: selection.placementID),
+              let quality = PhysicalQuality(stableID: selection.previewQualityID)
+        else {
+            throw TestAuthoringCoordinatorError.malformedDescriptor(
+                "Rust devolvió una colocación o calidad desconocida."
+            )
+        }
+        testAuthoringSelection = selection
+        sourcePlacement = placement
+        physicalModel.setQuality(quality)
+        try physicalModel.setContinuousAmount(
+            selection.subpixelGeometryAmount,
+            stage: .screen(.subpixelGeometry)
+        )
+        try physicalModel.setContinuousAmount(
+            selection.panelLightSpreadAmount,
+            stage: .screen(.panelLightSpread)
+        )
+        guard let cover = try RustCoverGlassCatalog.builtIns().first(where: {
+            $0.id == selection.coverGlassPresetID
+        }) else {
+            throw TestAuthoringCoordinatorError.malformedDescriptor(
+                "El Device seleccionado no resuelve su Cover Glass."
+            )
+        }
+        resolvedDevice = try device.resolved()
+        modelDeviceDefinition = device
+        var selectedCover = cover
+        selectedCover.characterStrength = selection.coverGlassAmount
+        selectedCover.glowCharacterStrength = selection.coverGlowAmount
+        var authored = try PhysicalPipelineAuthoringState.seeded(
+            device: device,
+            coverGlass: selectedCover
+        )
+        guard let capture = capturePresets.first(where: {
+            $0.id == selection.capturePresetID
+        }), let environment = environmentPresets.first(where: {
+            $0.id == selection.environmentPresetID
+        }) else {
+            throw TestAuthoringCoordinatorError.malformedDescriptor(
+                "Rust devolvió una cámara o entorno que no existe en sus catálogos."
+            )
+        }
+        try apply(capture: capture, lensID: selection.lensPresetID, to: &authored)
+        environment.apply(to: &authored)
+        authored.sceneLens.focusDistanceMeters = selection.focusDistanceMeters
+        authored.screenPose.position = [
+            selection.screenPositionXMeters,
+            selection.screenPositionYMeters,
+            selection.screenPositionZMeters,
+        ]
+        authored.screenPose.quaternion = PoseRotationProjection.quaternion(fromDegrees: [
+            selection.screenRotationXDegrees,
+            selection.screenYawDegrees,
+            selection.screenRotationZDegrees,
+        ])
+        switch selection.geometryModeID {
+        case "look-at":
+            authored.cameraPose.position = PoseRotationProjection.orbitPosition(
+                around: authored.screenPose.position,
+                distance: selection.cameraDistanceMeters,
+                rotationDegrees: [
+                    selection.cameraOrbitXDegrees,
+                    selection.cameraOrbitYDegrees,
+                    0,
+                ]
+            )
+            authored.cameraLookAt = .init(target: authored.screenPose.position)
+            authored.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(
+                from: authored.cameraPose.position,
+                to: authored.screenPose.position
+            )
+        case "free":
+            authored.cameraPose.position = [
+                selection.cameraPositionXMeters,
+                selection.cameraPositionYMeters,
+                selection.cameraPositionZMeters,
+            ]
+            authored.cameraPose.quaternion = PoseRotationProjection.quaternion(fromDegrees: [
+                selection.cameraRotationXDegrees,
+                selection.cameraRotationYDegrees,
+                selection.cameraRotationZDegrees,
+            ])
+            authored.cameraLookAt = nil
+        default:
+            throw TestAuthoringCoordinatorError.malformedDescriptor(
+                "Rust devolvió un modo de geometría desconocido."
+            )
+        }
+        try physicalModel.setContinuousAmount(
+            selection.coverGlassAmount,
+            stage: .screen(.coverGlass)
+        )
+        try physicalModel.setContinuousAmount(
+            selection.environmentAmount,
+            stage: .screen(.environment)
+        )
+        try physicalModel.setContinuousAmount(
+            selection.coverGlowAmount,
+            stage: .screen(.coverGlow)
+        )
+        try physicalModel.setContinuousAmount(1, stage: .capture(.geometry))
+        try physicalModel.setContinuousAmount(
+            selection.lensAmount,
+            stage: .capture(.lens)
+        )
+        try physicalModel.setContinuousAmount(
+            selection.shutterMotionAmount,
+            stage: .capture(.exposureShutter)
+        )
+        try physicalModel.setContinuousAmount(
+            selection.sensorBloomAmount,
+            stage: .capture(.sensorBloom)
+        )
+        try physicalModel.setContinuousAmount(
+            selection.sensorNoiseAmount,
+            stage: .capture(.noise)
+        )
+        selectedCapturePresetID = capture.id
+        selectedLensPresetID = selection.lensPresetID
+        physicalAuthoringState = authored
+        resolvedPhysicalPipeline = try authored.resolvedPipeline()
+        baseModelDeviceDefinition = device
+        basePhysicalAuthoringState = authored
+        try refreshTestAuthoringDescriptor()
+        rebuildCurrent()
+    }
+
+    private var selectedTestPreviewResult: TestPreviewResultKind? {
+        guard let phaseID = testPresentation?.selectedPhaseID else { return nil }
+        return testPreviewResultByPhaseID[phaseID]
+    }
+
+    private var selectedTestPhysicalIntermediate: PhysicalIntermediate? {
+        physicalIntermediate(for: selectedTestPreviewResult)
+    }
+
+    private func physicalIntermediate(
+        for result: TestPreviewResultKind?
+    ) -> PhysicalIntermediate? {
+        switch result {
+        case .feederSignal: .deviceSignal
+        case .deviceInterpretation: .panelEmission
+        case .panelStructure: .subpixelRadiance
+        case .panelLightSpread: .panelLightSpread
+        case .relativeGeometry: .relativeGeometry
+        case .coverEnvironment: .coverEnvironment
+        case .coverGlow: .coverGlow
+        case .lensProjection: .lensProjection
+        case .shutterExposure: .shutterMotion
+        case .sensorBloom: .sensorBloom
+        case .sensorCfa: .sensorNoise
+        case .sensorNoise: .rawMosaic
+        case .developDemosaic: .developedACEScg
+        case .sourceACEScg, nil: nil
+        }
+    }
+
+    private func publishSelectedTestPreview() {
+        guard let sourceACEScgFrame else { return }
+        guard isTestPageActive,
+              let presentation = testPresentation,
+              let result = testPreviewResultByPhaseID[presentation.selectedPhaseID]
+        else {
+            metalFrame = sourceACEScgFrame
+            monitorOutput.update(frame: sourceACEScgFrame, display: metalDisplay)
+            return
+        }
+        let presentationFrame: StudioColorMetalFrame
+        switch result {
+        case .sourceACEScg:
+            requestedPhysicalIntermediate = .sourceACEScg
+            presentationFrame = sourceACEScgFrame
+        case .feederSignal:
+            requestedPhysicalIntermediate = .deviceSignal
+            rebuildPhysicalSelectedFrame()
+            return
+        case .deviceInterpretation, .panelStructure, .panelLightSpread,
+             .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
+             .shutterExposure, .sensorBloom, .sensorCfa, .sensorNoise, .developDemosaic:
+            requestedPhysicalIntermediate = physicalIntermediate(for: result)!
+            rebuildPhysicalSelectedFrame()
+            return
+        }
+        metalFrame = presentationFrame
+        monitorOutput.update(frame: presentationFrame, display: metalDisplay)
+        let phase = presentation.phases.first(where: {
+            $0.id == presentation.selectedPhaseID
+        })
+        status = "Test · Ver hasta \(phase?.label ?? presentation.selectedPhaseID) · \(presentationFrame.width)×\(presentationFrame.height)"
+    }
+
     private func pollPhysicalJob(
         _ job: PhysicalMetalFrameJob,
         native: Bool
@@ -1421,9 +1871,10 @@ final class WorkspaceModel: ObservableObject {
                 else { throw CancellationError() }
                 let presentationFrame: StudioColorMetalFrame
                 if snapshot.returnedIntermediate == .deviceSignal {
+                    let outputSignal = try resolvedOutputSignal()
                     presentationFrame = try metalDisplay.makeACEScgFrame(
                         encodedTexture: frame.texture,
-                        input: deviceSignalInverseTransform,
+                        input: outputSignal.resolvedPreviewInput(for: inputTransform),
                         alpha: .premultiplied
                     )
                 } else {
@@ -1531,16 +1982,26 @@ enum PhysicalEvaluationAvailabilityError: Error, LocalizedError {
         case .missingSelectedFrame:
             "No hay un fotograma ACEScg seleccionado."
         case .capturePending:
-            "Captura está pendiente del motor físico ABI v2; no se ha simulado."
+            "Captura está pendiente del motor físico ABI v3; no se ha simulado."
         case .artisticScreenPending:
-            "Pantalla >1 está pendiente del motor físico ABI v2; se conserva el último resultado."
+            "Pantalla >1 está pendiente del motor físico ABI v3; se conserva el último resultado."
         case let .sectionPending(stage):
-            "La contribución 0x\(String(stage.id, radix: 16)) está pendiente del motor ABI v2."
+            "La contribución 0x\(String(stage.id, radix: 16)) está pendiente del motor ABI v3."
         }
     }
 }
 
 private extension PhysicalQuality {
+    init?(stableID: String) {
+        switch stableID {
+        case "draft": self = .draft
+        case "medium": self = .medium
+        case "high": self = .high
+        case "native": self = .native
+        default: return nil
+        }
+    }
+
     var uiLabel: String {
         switch self {
         case .draft: "Draft"

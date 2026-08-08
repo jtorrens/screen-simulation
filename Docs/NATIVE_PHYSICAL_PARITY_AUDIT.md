@@ -29,7 +29,7 @@ Validación ejecutada durante la auditoría:
 2. Ese código sigue físicamente presente en los crates de la rama del motor plano porque ésta parte de `main@715ec98`; la regresión actual es principalmente de **alcanzabilidad por el ABI y el shell nativo**, no de pérdida de fuentes.
 3. Emisión y geometría subpíxel sí están migradas al job nativo, con un nuevo backend plano especializado. Conservan el catálogo y `ValidatedPanelEvaluator`, pero todavía no consumen geometría cámara–pantalla, respuesta angular, cover ni captura.
 4. El bloom de píxeles, denominado autoritativamente **panel light spread**, quedó **implementado y conectado**, no parcial ni solamente documentado. Vive fuera de `main`, en `b58525c`, y dispone de CPU, Metal, UI Slint, persistencia schema 8, tests y benchmark.
-5. En el estado auditado, el contrato binario no transportaba `PanelLightSpreadProfile`, cover/environment ni camera/lens/sensor. Esta carencia quedó resuelta posteriormente por el único ABI v2; no debe restaurarse la frontera insuficiente.
+5. El único ABI v3 transporta `PanelLightSpreadProfile`, geometría relativa, cover/environment y camera/lens/sensor; no debe restaurarse una frontera insuficiente.
 6. `ScreenDeviceParametersV2` ya transporta el perfil temporal completo. Flicker/banding es el corte pendiente que menos frontera nueva necesita, pero depende de definir su relación exacta con exposición/captura para no crear banding espacial falso.
 7. La antigua identidad C y el evaluator Device-only de Swift/Metal fueron retirados en el corte unificado; no deben reaparecer como fallback ni recibir modelos.
 
@@ -280,8 +280,8 @@ No son benchmarks equivalentes: el anterior incluye optics/capture/publication p
 
 ## 4. Decisiones requeridas antes del siguiente código físico
 
-1. Mantener la materialización completa de `PanelLightSpreadProfile` del ABI v2 sin lookup de preset, adaptador o default implícito.
+1. Mantener la materialización completa de `PanelLightSpreadProfile` del ABI v3 sin lookup de preset, adaptador o default implícito.
 2. Confirmar el snapshot completo de cover + environment que recibe cada frame job; el handle de cover actualmente no está referenciado por `ScreenPhysicalFrameRequestV2`.
 3. Definir el transporte inmutable de camera/screen tracks, intrinsics, shutter, sensor y development antes de activar Capture.
 4. Decidir si panel light spread se añade como etapa estable propia o como parámetro material del stage Emission. No debe confundirse con Subpixel Geometry ni interpolar layout.
-5. Mantener el stage list ABI actual como orden de alto nivel; los submodelos de esta matriz son responsabilidades internas de esas etapas, no excusa para crear ABI v2 o rutas paralelas.
+5. Mantener el stage list ABI actual como orden de alto nivel; los submodelos de esta matriz son responsabilidades internas de esas etapas, no excusa para crear otro ABI o rutas paralelas.

@@ -3,7 +3,6 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
-use rayon::prelude::*;
 use screen_contracts::LinearRgb;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +26,18 @@ pub struct SensorProfile {
     pub read_noise_electrons_rms: f32,
     pub analog_gain: f32,
     pub adc_bits: u8,
+    pub bloom: SensorBloomProfile,
+}
+
+/// Lateral charge coupling and non-recursive full-well overflow transfer.
+/// Both operations are defined on global photosite coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SensorBloomProfile {
+    pub character_strength: f32,
+    /// Energy-preserving four-neighbour coupling applied before well clipping.
+    pub crosstalk_fraction: f32,
+    /// Fraction of charge above full well transferred to four neighbours.
+    pub overflow_transfer_fraction: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +106,7 @@ pub enum SensorError {
     InvalidNoiseAmount,
     InvalidAnalogGain,
     InvalidAdcBits,
+    InvalidBloom,
     InvalidSensorRegion,
 }
 
@@ -110,8 +122,8 @@ impl SensorProfile {
         read_noise_electrons_rms: 2.0,
         analog_gain: 1.0,
         adc_bits: 14,
+        bloom: SensorBloomProfile::REFERENCE,
     };
-
     pub fn validate(self) -> Result<Self, SensorError> {
         if self.native_width == 0 || self.native_height == 0 {
             return Err(SensorError::InvalidNativeRaster);
@@ -147,6 +159,45 @@ impl SensorProfile {
         }
         if !(8..=16).contains(&self.adc_bits) {
             return Err(SensorError::InvalidAdcBits);
+        }
+        self.bloom.validate()?;
+        Ok(self)
+    }
+}
+
+impl SensorBloomProfile {
+    pub const NEUTRAL: Self = Self {
+        character_strength: 0.0,
+        crosstalk_fraction: 0.0,
+        overflow_transfer_fraction: 0.0,
+    };
+    pub const REFERENCE: Self = Self {
+        character_strength: 1.0,
+        crosstalk_fraction: 0.012,
+        overflow_transfer_fraction: 0.22,
+    };
+    pub const LARGE_CAMERA: Self = Self {
+        character_strength: 1.0,
+        crosstalk_fraction: 0.006,
+        overflow_transfer_fraction: 0.12,
+    };
+    pub const SMALL_PIXEL_PHONE: Self = Self {
+        character_strength: 1.0,
+        crosstalk_fraction: 0.020,
+        overflow_transfer_fraction: 0.30,
+    };
+
+    pub fn validate(self) -> Result<Self, SensorError> {
+        if !self.character_strength.is_finite()
+            || !(0.0..=4.0).contains(&self.character_strength)
+            || !self.crosstalk_fraction.is_finite()
+            || !(0.0..=0.20).contains(&self.crosstalk_fraction)
+            || !self.overflow_transfer_fraction.is_finite()
+            || !(0.0..=1.0).contains(&self.overflow_transfer_fraction)
+            || self.crosstalk_fraction * self.character_strength > 0.80
+            || self.overflow_transfer_fraction * self.character_strength > 1.0
+        {
+            return Err(SensorError::InvalidBloom);
         }
         Ok(self)
     }
@@ -195,27 +246,131 @@ pub fn expose_raw_with_noise_amount(
     noise_amount: f32,
 ) -> Result<RawSensorRaster, SensorError> {
     let profile = profile.validate()?;
+    let full = SensorRegion::full(profile);
+    let region =
+        expose_raw_region_with_noise_amount(profile, exposure, identity, full, full, noise_amount)?;
+    Ok(RawSensorRaster {
+        width: u32::from(region.region.width),
+        height: u32::from(region.region.height),
+        bayer_pattern: region.bayer_pattern,
+        adc_bits: region.adc_bits,
+        sensor_profile: region.sensor_profile,
+        codes: region.codes,
+        full_well_clipped: region.full_well_clipped,
+        adc_clipped: region.adc_clipped,
+    })
+}
+
+fn redistribute_sensor_charge(
+    input: &[f64],
+    width: u32,
+    height: u32,
+    full_well_electrons: f32,
+    profile: SensorBloomProfile,
+) -> Vec<f64> {
+    if profile.character_strength == 0.0 {
+        return input.to_vec();
+    }
+    let coupling = f64::from(profile.crosstalk_fraction * profile.character_strength) / 4.0;
+    let transfer = f64::from(profile.overflow_transfer_fraction * profile.character_strength);
+    let mut coupled = input.to_vec();
+    // Pairwise exchange across each undirected edge conserves charge exactly
+    // apart from normal floating-point addition.
+    for y in 0..height {
+        for x in 0..width {
+            let index = (y * width + x) as usize;
+            if x + 1 < width {
+                let other = (y * width + x + 1) as usize;
+                let delta = (input[index] - input[other]) * coupling;
+                coupled[index] -= delta;
+                coupled[other] += delta;
+            }
+            if y + 1 < height {
+                let other = ((y + 1) * width + x) as usize;
+                let delta = (input[index] - input[other]) * coupling;
+                coupled[index] -= delta;
+                coupled[other] += delta;
+            }
+        }
+    }
+    let full_well = f64::from(full_well_electrons);
+    let mut bloomed = coupled
+        .iter()
+        .map(|charge| charge.min(full_well))
+        .collect::<Vec<_>>();
+    for y in 0..height {
+        for x in 0..width {
+            let index = (y * width + x) as usize;
+            let overflow = (coupled[index] - full_well).max(0.0) * transfer;
+            if overflow == 0.0 {
+                continue;
+            }
+            let neighbours = [
+                x.checked_sub(1).map(|nx| (nx, y)),
+                (x + 1 < width).then_some((x + 1, y)),
+                y.checked_sub(1).map(|ny| (x, ny)),
+                (y + 1 < height).then_some((x, y + 1)),
+            ];
+            let count = neighbours.iter().flatten().count() as f64;
+            for (nx, ny) in neighbours.into_iter().flatten() {
+                bloomed[(ny * width + nx) as usize] += overflow / count;
+            }
+        }
+    }
+    bloomed
+}
+
+pub fn expose_raw_region(
+    profile: SensorProfile,
+    exposure: &IntegratedOpticalExposure,
+    identity: CaptureIdentity,
+    exposure_region: SensorRegion,
+    output_region: SensorRegion,
+) -> Result<RawSensorRegion, SensorError> {
+    expose_raw_region_with_noise_amount(
+        profile,
+        exposure,
+        identity,
+        exposure_region,
+        output_region,
+        1.0,
+    )
+}
+
+pub fn expose_raw_region_with_noise_amount(
+    profile: SensorProfile,
+    exposure: &IntegratedOpticalExposure,
+    identity: CaptureIdentity,
+    exposure_region: SensorRegion,
+    output_region: SensorRegion,
+    noise_amount: f32,
+) -> Result<RawSensorRegion, SensorError> {
+    let profile = profile.validate()?;
     exposure.validate()?;
+    exposure_region.validate(profile)?;
+    output_region.validate(profile)?;
     if !noise_amount.is_finite() || !(0.0..=4.0).contains(&noise_amount) {
         return Err(SensorError::InvalidNoiseAmount);
     }
-    if exposure.width != u32::from(profile.native_width)
-        || exposure.height != u32::from(profile.native_height)
+    if exposure.width != u32::from(exposure_region.width)
+        || exposure.height != u32::from(exposure_region.height)
+        || !exposure_region.contains(output_region)
     {
         return Err(SensorError::RasterProfileMismatch);
     }
-    let maximum_code = (1_u32 << profile.adc_bits) - 1;
-    let mut codes = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
-    let mut full_well_clipped_mask = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
-    let mut adc_clipped_mask = Vec::with_capacity(exposure.acescg_illuminance_seconds.len());
-    for (index, acescg) in exposure
+    let support_count = exposure.acescg_illuminance_seconds.len();
+    let mut collected = Vec::with_capacity(support_count);
+    let mut read = Vec::with_capacity(support_count);
+    for (local_index, acescg) in exposure
         .acescg_illuminance_seconds
         .iter()
         .copied()
         .enumerate()
     {
-        let x = (index % exposure.width as usize) as u32;
-        let y = (index / exposure.width as usize) as u32;
+        let local_x = local_index % usize::from(exposure_region.width);
+        let local_y = local_index / usize::from(exposure_region.width);
+        let x = u32::from(exposure_region.origin_x) + local_x as u32;
+        let y = u32::from(exposure_region.origin_y) + local_y as u32;
         let channel = profile.bayer_pattern.channel_at(x, y);
         let sensor_rgb = mat_vec(profile.acescg_to_sensor, acescg);
         let native_exposure = [sensor_rgb.r, sensor_rgb.g, sensor_rgb.b][channel].max(0.0);
@@ -226,7 +381,8 @@ pub fn expose_raw_with_noise_amount(
         ][channel];
         let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
             * f64::from(profile.full_well_electrons);
-        let key = pixel_noise_key(identity, index as u64);
+        let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
+        let key = pixel_noise_key(identity, global_index);
         let sampled_photoelectrons = sample_poisson(ideal_photoelectrons, key);
         let photoelectrons = ideal_photoelectrons
             + f64::from(noise_amount) * (sampled_photoelectrons - ideal_photoelectrons);
@@ -239,95 +395,44 @@ pub fn expose_raw_with_noise_amount(
         let read_electrons = f64::from(noise_amount)
             * f64::from(profile.read_noise_electrons_rms)
             * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB);
-        let full_well = f64::from(profile.full_well_electrons);
-        let collected_electrons = photoelectrons + dark_electrons;
-        let full_well_clipped = collected_electrons >= full_well;
-        let well_electrons = collected_electrons.clamp(0.0, full_well);
-        let post_read_electrons = (well_electrons + read_electrons).max(0.0);
-        let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
-        let adc_clipped = normalized >= 1.0;
-        let code = (normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16;
-        codes.push(code);
-        full_well_clipped_mask.push(full_well_clipped);
-        adc_clipped_mask.push(adc_clipped);
+        collected.push((photoelectrons + dark_electrons).max(0.0));
+        read.push(read_electrons);
     }
-    Ok(RawSensorRaster {
-        width: exposure.width,
-        height: exposure.height,
-        bayer_pattern: profile.bayer_pattern,
-        adc_bits: profile.adc_bits,
-        sensor_profile: profile,
-        codes,
-        full_well_clipped: full_well_clipped_mask,
-        adc_clipped: adc_clipped_mask,
-    })
-}
-
-pub fn expose_raw_region(
-    profile: SensorProfile,
-    exposure: &IntegratedOpticalExposure,
-    identity: CaptureIdentity,
-    region: SensorRegion,
-) -> Result<RawSensorRegion, SensorError> {
-    let profile = profile.validate()?;
-    exposure.validate()?;
-    region.validate(profile)?;
-    if exposure.width != u32::from(region.width) || exposure.height != u32::from(region.height) {
-        return Err(SensorError::RasterProfileMismatch);
-    }
+    let collected = redistribute_sensor_charge(
+        &collected,
+        u32::from(exposure_region.width),
+        u32::from(exposure_region.height),
+        profile.full_well_electrons,
+        profile.bloom,
+    );
     let maximum_code = (1_u32 << profile.adc_bits) - 1;
-    let pixel_count = exposure.acescg_illuminance_seconds.len();
-    let mut codes = vec![0_u16; pixel_count];
-    let mut full_well_clipped_mask = vec![false; pixel_count];
-    let mut adc_clipped_mask = vec![false; pixel_count];
-    codes
-        .par_iter_mut()
-        .zip(full_well_clipped_mask.par_iter_mut())
-        .zip(adc_clipped_mask.par_iter_mut())
-        .enumerate()
-        .for_each(
-            |(local_index, ((code, full_well_clipped_mask), adc_clipped_mask))| {
-                let acescg = exposure.acescg_illuminance_seconds[local_index];
-                let local_x = local_index % usize::from(region.width);
-                let local_y = local_index / usize::from(region.width);
-                let x = u32::from(region.origin_x) + local_x as u32;
-                let y = u32::from(region.origin_y) + local_y as u32;
-                let channel = profile.bayer_pattern.channel_at(x, y);
-                let sensor_rgb = mat_vec(profile.acescg_to_sensor, acescg);
-                let native_exposure = [sensor_rgb.r, sensor_rgb.g, sensor_rgb.b][channel].max(0.0);
-                let saturation = [
-                    profile.saturation_illuminance_seconds.r,
-                    profile.saturation_illuminance_seconds.g,
-                    profile.saturation_illuminance_seconds.b,
-                ][channel];
-                let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
-                    * f64::from(profile.full_well_electrons);
-                let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
-                let key = pixel_noise_key(identity, global_index);
-                let photoelectrons = sample_poisson(ideal_photoelectrons, key);
-                let dark_electrons = sample_poisson(
-                    f64::from(profile.dark_current_electrons_per_second)
-                        * f64::from(exposure.duration_seconds),
-                    key ^ 0xA076_1D64_78BD_642F,
-                );
-                let read_electrons = f64::from(profile.read_noise_electrons_rms)
-                    * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB);
-                let full_well = f64::from(profile.full_well_electrons);
-                let collected_electrons = photoelectrons + dark_electrons;
-                let full_well_clipped = collected_electrons >= full_well;
-                let well_electrons = collected_electrons.clamp(0.0, full_well);
-                let post_read_electrons = (well_electrons + read_electrons).max(0.0);
-                let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
-                let adc_clipped = normalized >= 1.0;
-                *code = (normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16;
-                *full_well_clipped_mask = full_well_clipped;
-                *adc_clipped_mask = adc_clipped;
-            },
-        );
+    let full_well = f64::from(profile.full_well_electrons);
+    let output_count = usize::from(output_region.width) * usize::from(output_region.height);
+    let mut codes = Vec::with_capacity(output_count);
+    let mut full_well_clipped_mask = Vec::with_capacity(output_count);
+    let mut adc_clipped_mask = Vec::with_capacity(output_count);
+    for output_y in 0..u32::from(output_region.height) {
+        for output_x in 0..u32::from(output_region.width) {
+            let support_x =
+                u32::from(output_region.origin_x) + output_x - u32::from(exposure_region.origin_x);
+            let support_y =
+                u32::from(output_region.origin_y) + output_y - u32::from(exposure_region.origin_y);
+            let index = (support_y * u32::from(exposure_region.width) + support_x) as usize;
+            let collected_electrons = collected[index];
+            let full_well_clipped = collected_electrons >= full_well;
+            let well_electrons = collected_electrons.clamp(0.0, full_well);
+            let post_read_electrons = (well_electrons + read[index]).max(0.0);
+            let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
+            let adc_clipped = normalized >= 1.0;
+            codes.push((normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16);
+            full_well_clipped_mask.push(full_well_clipped);
+            adc_clipped_mask.push(adc_clipped);
+        }
+    }
     Ok(RawSensorRegion {
         sensor_width: profile.native_width,
         sensor_height: profile.native_height,
-        region,
+        region: output_region,
         bayer_pattern: profile.bayer_pattern,
         adc_bits: profile.adc_bits,
         sensor_profile: profile,
@@ -361,11 +466,19 @@ impl SensorRegion {
     }
 
     pub fn expanded_for_demosaic(self, profile: SensorProfile) -> Self {
-        let origin_x = self.origin_x.saturating_sub(3);
-        let origin_y = self.origin_y.saturating_sub(3);
-        let end_x = (u32::from(self.origin_x) + u32::from(self.width) + 3)
+        self.expanded(profile, 3)
+    }
+
+    pub fn expanded_for_sensor_bloom(self, profile: SensorProfile) -> Self {
+        self.expanded(profile, 2)
+    }
+
+    fn expanded(self, profile: SensorProfile, radius: u16) -> Self {
+        let origin_x = self.origin_x.saturating_sub(radius);
+        let origin_y = self.origin_y.saturating_sub(radius);
+        let end_x = (u32::from(self.origin_x) + u32::from(self.width) + u32::from(radius))
             .min(u32::from(profile.native_width)) as u16;
-        let end_y = (u32::from(self.origin_y) + u32::from(self.height) + 3)
+        let end_y = (u32::from(self.origin_y) + u32::from(self.height) + u32::from(radius))
             .min(u32::from(profile.native_height)) as u16;
         Self {
             origin_x,
@@ -373,6 +486,15 @@ impl SensorRegion {
             width: end_x - origin_x,
             height: end_y - origin_y,
         }
+    }
+
+    fn contains(self, other: Self) -> bool {
+        other.origin_x >= self.origin_x
+            && other.origin_y >= self.origin_y
+            && u32::from(other.origin_x) + u32::from(other.width)
+                <= u32::from(self.origin_x) + u32::from(self.width)
+            && u32::from(other.origin_y) + u32::from(other.height)
+                <= u32::from(self.origin_y) + u32::from(self.height)
     }
 }
 
@@ -518,6 +640,7 @@ impl fmt::Display for SensorError {
             Self::InvalidNoiseAmount => "sensor noise amount must be finite and inside 0..=4",
             Self::InvalidAnalogGain => "sensor analog gain must be finite and positive",
             Self::InvalidAdcBits => "sensor ADC precision must be between 8 and 16 bits",
+            Self::InvalidBloom => "sensor crosstalk/bloom profile is outside its physical bounds",
             Self::InvalidSensorRegion => "sensor region must lie inside the authored native raster",
         };
         formatter.write_str(message)
@@ -537,6 +660,7 @@ mod tests {
             acescg_to_sensor: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             dark_current_electrons_per_second: 0.0,
             read_noise_electrons_rms: 0.0,
+            bloom: SensorBloomProfile::NEUTRAL,
             ..SensorProfile::REFERENCE
         }
     }
@@ -718,14 +842,19 @@ mod tests {
             width: 3,
             height: 4,
         };
+        let support = region.expanded_for_sensor_bloom(profile);
         let region_exposure = IntegratedOpticalExposure {
-            width: 3,
-            height: 4,
+            width: u32::from(support.width),
+            height: u32::from(support.height),
             duration_seconds: 1.0 / 48.0,
-            acescg_illuminance_seconds: vec![pixel; 12],
+            acescg_illuminance_seconds: vec![
+                pixel;
+                usize::from(support.width)
+                    * usize::from(support.height)
+            ],
         };
-        let cropped =
-            expose_raw_region(profile, &region_exposure, identity, region).expect("region capture");
+        let cropped = expose_raw_region(profile, &region_exposure, identity, support, region)
+            .expect("region capture");
         for local_y in 0..usize::from(region.height) {
             for local_x in 0..usize::from(region.width) {
                 let full_index = (usize::from(region.origin_y) + local_y) * 8
@@ -778,9 +907,95 @@ mod tests {
                 .num_threads(threads)
                 .build()
                 .unwrap()
-                .install(|| expose_raw_region(profile, &exposure, identity, region).unwrap())
+                .install(|| {
+                    expose_raw_region(profile, &exposure, identity, region, region).unwrap()
+                })
         };
         assert_eq!(expose_with_threads(1), expose_with_threads(4));
+    }
+
+    #[test]
+    fn sensor_bloom_zero_is_exact_and_calibrated_bloom_reaches_neighbours() {
+        let mut neutral = noiseless_profile(5, 5);
+        neutral.bloom = SensorBloomProfile::NEUTRAL;
+        let mut calibrated = neutral;
+        calibrated.bloom = SensorBloomProfile::REFERENCE;
+        let mut pixels = vec![LinearRgb::new(0.0, 0.0, 0.0); 25];
+        pixels[12] = LinearRgb::new(2.0, 2.0, 2.0);
+        let exposure = IntegratedOpticalExposure {
+            width: 5,
+            height: 5,
+            duration_seconds: 1.0,
+            acescg_illuminance_seconds: pixels,
+        };
+        let identity = CaptureIdentity {
+            noise_seed: 1,
+            frame_index: 0,
+        };
+        let baseline = expose_raw_with_noise_amount(neutral, &exposure, identity, 0.0)
+            .expect("neutral capture");
+        let bloomed = expose_raw_with_noise_amount(calibrated, &exposure, identity, 0.0)
+            .expect("bloomed capture");
+        assert_eq!(baseline.codes[7], 0);
+        assert!(bloomed.codes[7] > baseline.codes[7]);
+        assert!(bloomed.codes[11] > baseline.codes[11]);
+        assert!(bloomed.codes[13] > baseline.codes[13]);
+        assert!(bloomed.codes[17] > baseline.codes[17]);
+    }
+
+    #[test]
+    fn bloom_region_with_two_pixel_support_is_exactly_the_full_sensor_crop() {
+        let mut profile = noiseless_profile(9, 9);
+        profile.bloom = SensorBloomProfile::REFERENCE;
+        let mut pixels = vec![LinearRgb::new(0.01, 0.01, 0.01); 81];
+        pixels[4 * 9 + 4] = LinearRgb::new(1.8, 1.8, 1.8);
+        let identity = CaptureIdentity {
+            noise_seed: 22,
+            frame_index: 4,
+        };
+        let full_exposure = IntegratedOpticalExposure {
+            width: 9,
+            height: 9,
+            duration_seconds: 1.0,
+            acescg_illuminance_seconds: pixels.clone(),
+        };
+        let full = expose_raw_with_noise_amount(profile, &full_exposure, identity, 0.0)
+            .expect("full bloom");
+        let output = SensorRegion {
+            origin_x: 3,
+            origin_y: 3,
+            width: 3,
+            height: 3,
+        };
+        let support = output.expanded_for_sensor_bloom(profile);
+        let mut support_pixels = Vec::new();
+        for y in 0..usize::from(support.height) {
+            let global_y = usize::from(support.origin_y) + y;
+            for x in 0..usize::from(support.width) {
+                let global_x = usize::from(support.origin_x) + x;
+                support_pixels.push(pixels[global_y * 9 + global_x]);
+            }
+        }
+        let support_exposure = IntegratedOpticalExposure {
+            width: u32::from(support.width),
+            height: u32::from(support.height),
+            duration_seconds: 1.0,
+            acescg_illuminance_seconds: support_pixels,
+        };
+        let crop = expose_raw_region_with_noise_amount(
+            profile,
+            &support_exposure,
+            identity,
+            support,
+            output,
+            0.0,
+        )
+        .expect("supported bloom crop");
+        for y in 0..3_usize {
+            for x in 0..3_usize {
+                assert_eq!(crop.codes[y * 3 + x], full.codes[(y + 3) * 9 + x + 3]);
+            }
+        }
     }
 
     #[test]

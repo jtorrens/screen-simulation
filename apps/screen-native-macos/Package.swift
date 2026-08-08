@@ -21,6 +21,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "ScreenSimulationPresentation"
+        ),
+        .target(
+            name: "ScreenSimulationMacUI",
+            dependencies: ["ScreenSimulationPresentation"]
+        ),
+        .target(
             name: "ScreenPhysicalBridge",
             path: "Sources/ScreenPhysicalBridge",
             publicHeadersPath: "include",
@@ -32,6 +39,8 @@ let package = Package(
         .executableTarget(
             name: "ScreenSimulationNative",
             dependencies: [
+                "ScreenSimulationPresentation",
+                "ScreenSimulationMacUI",
                 .product(name: "StudioColor", package: "StudioColor"),
                 .product(name: "StudioMedia", package: "StudioMedia"),
                 .product(
@@ -40,6 +49,10 @@ let package = Package(
                 ),
                 "ScreenPhysicalBridge",
             ]
+        ),
+        .testTarget(
+            name: "ScreenSimulationPresentationTests",
+            dependencies: ["ScreenSimulationPresentation"]
         ),
         .testTarget(
             name: "ScreenSimulationNativeTests",

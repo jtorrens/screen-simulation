@@ -40,6 +40,7 @@ struct SpatialParams {
     cover_geometry: [f32; 4],
     cover_absorption_roughness: [f32; 4],
     cover_haze: [f32; 4],
+    cover_glow: [f32; 4],
     environment_ambient_strength: [f32; 4],
     environment_key_radius: [f32; 4],
     environment_direction: [f32; 4],
@@ -203,6 +204,12 @@ impl SpatialParams {
                 plan.cover.roughness,
             ],
             cover_haze: [plan.cover.haze, 0.0, 0.0, 0.0],
+            cover_glow: [
+                plan.cover.glow.core_radius_millimeters * 0.001,
+                plan.cover.glow.tail_radius_millimeters * 0.001 * core::f32::consts::FRAC_1_SQRT_2,
+                plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength,
+                plan.cover.glow.tail_fraction,
+            ],
             environment_ambient_strength: [
                 plan.environment.ambient_radiance.0.r,
                 plan.environment.ambient_radiance.0.g,
@@ -879,7 +886,9 @@ mod tests {
                 keyframes: vec![CameraIntrinsicsKeyframe {
                     id: "full-sensor-lens".to_owned(),
                     time,
-                    focal_length: iphone.focal_length,
+                    focal_length: lens_preset(iphone.default_lens_preset_id)
+                        .expect("current iPhone integrated lens")
+                        .nominal_focal_length,
                     sensor_width: iphone.gate_width,
                     sensor_height: iphone.gate_height,
                     lens_shift: Vec2 { x: 0.0, y: 0.0 },

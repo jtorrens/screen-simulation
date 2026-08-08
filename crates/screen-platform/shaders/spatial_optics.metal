@@ -32,6 +32,7 @@ struct SpatialParams {
     float4 cover_geometry; // strength, thickness mm, ior, AR efficiency
     float4 cover_absorption_roughness; // absorption rgb, roughness
     float4 cover_haze;
+    float4 cover_glow; // core m, diagonal tail component m, scattered fraction, tail fraction
     float4 environment_ambient_strength; // ambient rgb, strength
     float4 environment_key_radius; // key rgb, angular radius radians
     float4 environment_direction; // key direction xyz, environment rotation radians
@@ -45,6 +46,24 @@ struct RayHit {
     float3 reflection_direction;
     bool valid;
 };
+
+inline float2 cover_glow_offset(uint sample, constant SpatialParams& p) {
+    if (sample == 1) return float2(p.cover_glow.x, 0.0f);
+    if (sample == 2) return float2(-p.cover_glow.x, 0.0f);
+    if (sample == 3) return float2(0.0f, p.cover_glow.x);
+    if (sample == 4) return float2(0.0f, -p.cover_glow.x);
+    if (sample == 5) return float2(p.cover_glow.y, p.cover_glow.y);
+    if (sample == 6) return float2(-p.cover_glow.y, p.cover_glow.y);
+    if (sample == 7) return float2(p.cover_glow.y, -p.cover_glow.y);
+    if (sample == 8) return float2(-p.cover_glow.y, -p.cover_glow.y);
+    return 0.0f;
+}
+
+inline float cover_glow_weight(uint sample, constant SpatialParams& p) {
+    if (sample == 0) return 1.0f - p.cover_glow.z;
+    if (sample <= 4) return p.cover_glow.z * (1.0f - p.cover_glow.w) * 0.25f;
+    return p.cover_glow.z * p.cover_glow.w * 0.25f;
+}
 
 inline float3 quaternion_rotate(float4 quaternion, float3 value) {
     float3 t = 2.0f * cross(quaternion.xyz, value);
@@ -467,19 +486,25 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
                 RayHit hit = trace_ray(ideal_corners[spatial], aperture_sample(aperture), channel, p);
                 if (!hit.valid) continue;
                 float2 uv = transmitted_uv(hit, p);
-                if (!all(uv >= 0.0f) || !all(uv <= 1.0f)) continue;
                 uv_min = min(uv_min, uv); uv_max = max(uv_max, uv);
                 float3 weights = irradiance_weight(ideal_corners[spatial], p);
                 weight_sum += channel_weight(weights, hit, channel, p) * cover_transmission(hit.cosine, p)[channel];
                 count++;
             }
             if (count == 0) continue;
-            on_panel = true;
-            float ideal = area_signal(uv_min, uv_max, emission_integral, p, true)[channel];
-            float physical = linear_channel_over_rect(ideal, uv_min * float2(p.panel_meta.xy),
-                                                      uv_max * float2(p.panel_meta.xy), channel, p);
-            float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
-            native[channel] += value * weight_sum / 4.0f;
+            for (uint glow = 0; glow < 9; ++glow) {
+                float2 meters = cover_glow_offset(glow, p);
+                float2 uv_offset = meters / p.panel_geometry.xy;
+                float2 shifted_min = clamp(uv_min + uv_offset, 0.0f, 1.0f);
+                float2 shifted_max = clamp(uv_max + uv_offset, 0.0f, 1.0f);
+                if (any(shifted_min >= shifted_max)) continue;
+                on_panel = true;
+                float ideal = area_signal(shifted_min, shifted_max, emission_integral, p, true)[channel];
+                float physical = linear_channel_over_rect(ideal, shifted_min * float2(p.panel_meta.xy),
+                                                          shifted_max * float2(p.panel_meta.xy), channel, p);
+                float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
+                native[channel] += value * weight_sum * cover_glow_weight(glow, p) / 4.0f;
+            }
         }
         native /= float(p.window.z);
     } else {
@@ -495,16 +520,19 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
                 RayHit hit = trace_ray(ideal, aperture_sample(aperture), channel, p);
                 if (!hit.valid) continue;
                 float2 uv = transmitted_uv(hit, p);
-                if (!all(uv >= 0.0f) || !all(uv <= 1.0f)) continue;
-                on_panel = true;
-                float3 code = point_signal(uv, signal, p);
-                float span = p.panel_levels_angular_r.y - p.panel_levels_angular_r.x;
-                float ideal = p.panel_levels_angular_r.x
-                    + span * sign(code[channel]) * pow(abs(code[channel]), p.panel_geometry.w);
-                float physical = resolved_native_channel(code, uv, channel, p);
-                float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
-                native[channel] += value * channel_weight(weights, hit, channel, p)
-                    * cover_transmission(hit.cosine, p)[channel];
+                for (uint glow = 0; glow < 9; ++glow) {
+                    float2 shifted_uv = uv + cover_glow_offset(glow, p) / p.panel_geometry.xy;
+                    if (!all(shifted_uv >= 0.0f) || !all(shifted_uv <= 1.0f)) continue;
+                    on_panel = true;
+                    float3 code = point_signal(shifted_uv, signal, p);
+                    float span = p.panel_levels_angular_r.y - p.panel_levels_angular_r.x;
+                    float ideal = p.panel_levels_angular_r.x
+                        + span * sign(code[channel]) * pow(abs(code[channel]), p.panel_geometry.w);
+                    float physical = resolved_native_channel(code, shifted_uv, channel, p);
+                    float value = max(ideal + p.pipeline_strengths.x * (physical - ideal), 0.0f);
+                    native[channel] += value * channel_weight(weights, hit, channel, p)
+                        * cover_transmission(hit.cosine, p)[channel] * cover_glow_weight(glow, p);
+                }
             }
         }
         native /= float(p.window.z * 16);

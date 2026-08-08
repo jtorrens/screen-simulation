@@ -1,8 +1,12 @@
 use screen_application::{RasterPlacement, RollingDirection, SensorReadout};
 use screen_camera::CameraDevelopment;
-use screen_color::{CameraOutputTransform, OcioInputTransform, SourceColorInterpretation};
+use screen_color::{
+    CameraOutputTransform, DeviceColorTarget, OcioInputTransform, SourceColorInterpretation,
+};
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
-use screen_cover::{AcesCgRadiance, CoverGlassProfile, EnvironmentPattern, ProceduralEnvironment};
+use screen_cover::{
+    AcesCgRadiance, CoverGlassProfile, CoverGlowProfile, EnvironmentPattern, ProceduralEnvironment,
+};
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, LensModel,
     Quaternion, ScreenTrack, TransformKeyframe, TransformTrack,
@@ -15,17 +19,19 @@ use screen_panel::{
     ResidualFlicker, StripeLayout,
 };
 use screen_persistence::{
-    AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics, ExactTime,
-    InterpolationSelection, MatrixSelection, PlacementSelection, ProjectPackage, RangeSelection,
-    RollingDirectionSelection, SensorReadoutDocument, SourceColorSelection, StripeSelection,
+    AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics,
+    CoverGlowDocument, ExactTime, InterpolationSelection, MatrixSelection, PlacementSelection,
+    ProjectPackage, RangeSelection, RollingDirectionSelection, SensorBloomDocument,
+    SensorReadoutDocument, SourceColorSelection, StripeSelection,
     TransformKeyframe as StoredTransform,
 };
-use screen_sensor::{BayerPattern, SensorProfile};
+use screen_sensor::{BayerPattern, SensorBloomProfile, SensorProfile};
 
 pub struct ProjectScene {
     pub packaged_media_path: String,
     pub decode: SourceDecodeInterpretation,
     pub color: SourceColorInterpretation,
+    pub device_color_target: DeviceColorTarget,
     pub alpha: AlphaInterpretation,
     pub placement: RasterPlacement,
     pub frame_rate: FrameRate,
@@ -67,7 +73,6 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             },
         },
         color: match &package.source.color {
-            SourceColorSelection::Identity => SourceColorInterpretation::IdentityDeviceSignal,
             SourceColorSelection::Named { transform_id } => SourceColorInterpretation::Ocio(
                 OcioInputTransform::from_stable_id(transform_id.as_str()).ok_or_else(|| {
                     format!(
@@ -77,6 +82,15 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 })?,
             ),
         },
+        device_color_target: DeviceColorTarget::from_stable_id(
+            package.device.color_mode_id.as_str(),
+        )
+        .ok_or_else(|| {
+            format!(
+                "unknown current Color Mode id `{}`",
+                package.device.color_mode_id.as_str()
+            )
+        })?,
         alpha: match package.source.alpha {
             AlphaSelection::Auto => AlphaInterpretation::Auto,
             AlphaSelection::Straight => AlphaInterpretation::Straight,
@@ -146,6 +160,13 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             ),
             roughness: device.cover.roughness,
             haze: device.cover.haze,
+            glow: CoverGlowProfile {
+                character_strength: device.cover.glow.character_strength,
+                scatter_fraction: device.cover.glow.scatter_fraction,
+                core_radius_millimeters: device.cover.glow.core_radius_millimeters,
+                tail_radius_millimeters: device.cover.glow.tail_radius_millimeters,
+                tail_fraction: device.cover.glow.tail_fraction,
+            },
         }
         .validate()
         .map_err(|error| error.to_string())?,
@@ -224,6 +245,11 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             read_noise_electrons_rms: package.sensor.read_noise_electrons_rms,
             analog_gain: package.sensor.analog_gain,
             adc_bits: package.sensor.adc_bits,
+            bloom: SensorBloomProfile {
+                character_strength: package.sensor.bloom.character_strength,
+                crosstalk_fraction: package.sensor.bloom.crosstalk_fraction,
+                overflow_transfer_fraction: package.sensor.bloom.overflow_transfer_fraction,
+            },
         }
         .validate()
         .map_err(|error| error.to_string())?,
@@ -393,6 +419,7 @@ mod tests {
                 schema: "screen_simulation_device".into(),
                 version: CURRENT_VERSION,
                 device_id: id("device-01"),
+                color_mode_id: id("srgb"),
                 native_width: 1920,
                 native_height: 1080,
                 active_width_meters: 0.531,
@@ -435,6 +462,13 @@ mod tests {
                     absorption_per_millimeter: [0.012; 3],
                     roughness: 0.46,
                     haze: 0.03,
+                    glow: CoverGlowDocument {
+                        character_strength: 1.0,
+                        scatter_fraction: 0.08,
+                        core_radius_millimeters: 0.22,
+                        tail_radius_millimeters: 1.4,
+                        tail_fraction: 0.18,
+                    },
                 },
             },
             camera: CameraDocument {
@@ -483,6 +517,11 @@ mod tests {
                 read_noise_electrons_rms: 2.0,
                 analog_gain: 1.0,
                 adc_bits: 14,
+                bloom: SensorBloomDocument {
+                    character_strength: 1.0,
+                    crosstalk_fraction: 0.012,
+                    overflow_transfer_fraction: 0.45,
+                },
                 shutter_duration: ExactTime {
                     numerator: 1,
                     denominator: 48,
@@ -540,6 +579,7 @@ mod tests {
             scene.color,
             SourceColorInterpretation::Ocio(OcioInputTransform::ArriLogC4)
         );
+        assert_eq!(scene.device_color_target, DeviceColorTarget::SrgbDisplay);
         assert_eq!(scene.alpha, AlphaInterpretation::Premultiplied);
         assert_eq!(scene.placement, RasterPlacement::OneToOne);
         assert_eq!(scene.sensor.bayer_pattern, BayerPattern::Rggb);

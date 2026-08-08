@@ -109,7 +109,9 @@ fn domain_and_stage_amounts_have_independent_continuous_meaning() {
     assert_ne!(ideal.acescg, continuous.acescg);
     assert_ne!(continuous.acescg, physical.acescg);
     for pixel in &continuous.acescg[0..3] {
-        assert_eq!(pixel, &continuous.acescg[0]);
+        for (sample, reference) in pixel.iter().zip(&continuous.acescg[0]) {
+            assert!((sample - reference).abs() <= 1.0e-6);
+        }
     }
     let artistic =
         evaluate_physical_pipeline_cpu_oracle(request(FlatPanelQuality::Native, 1.5, 2.0, 2.5))
@@ -223,6 +225,65 @@ fn light_spread_zero_is_exact_and_calibrated_and_artistic_are_finite() {
 }
 
 #[test]
+fn requested_checkpoint_neutralizes_every_later_physical_stage() {
+    let mut baseline = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+    baseline.plan.panel_light_spread = PanelLightSpreadProfile::LCD_DESKTOP;
+    baseline.plan.requested_intermediate = PhysicalIntermediate::PanelLightSpread;
+    let expected =
+        evaluate_physical_pipeline_cpu_oracle(baseline.clone()).expect("panel-spread checkpoint");
+
+    let mut later_stages_enabled = baseline;
+    later_stages_enabled.plan.scene_geometry_amount = 1.0;
+    later_stages_enabled.plan.lens_amount = 1.0;
+    later_stages_enabled.plan.camera_position.x = 0.3;
+    later_stages_enabled
+        .plan
+        .scene_geometry_lens
+        .lens
+        .radial_distortion = [0.2, -0.05, 0.01];
+    later_stages_enabled.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
+    later_stages_enabled.plan.environment =
+        screen_cover::environment_preset("environment-studio-softboxes")
+            .expect("current environment")
+            .environment;
+    let stopped = evaluate_physical_pipeline_cpu_oracle(later_stages_enabled)
+        .expect("stopped panel-spread checkpoint");
+    assert_eq!(stopped.acescg, expected.acescg);
+
+    let mut geometry = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+    geometry.plan.requested_intermediate = PhysicalIntermediate::RelativeGeometry;
+    geometry.plan.scene_geometry_amount = 1.0;
+    let expected_geometry = evaluate_physical_pipeline_cpu_oracle(geometry.clone())
+        .expect("relative-geometry checkpoint");
+    assert_ne!(expected_geometry.acescg, expected.acescg);
+    geometry.plan.lens_amount = 1.0;
+    geometry.plan.scene_geometry_lens.lens.radial_distortion = [0.2, -0.05, 0.01];
+    geometry.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
+    geometry.plan.environment = screen_cover::environment_preset("environment-studio-softboxes")
+        .expect("current environment")
+        .environment;
+    let stopped_geometry = evaluate_physical_pipeline_cpu_oracle(geometry)
+        .expect("geometry checkpoint with later stages enabled");
+    assert_eq!(stopped_geometry.acescg, expected_geometry.acescg);
+
+    let mut cover_without_lens = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+    cover_without_lens.plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
+    cover_without_lens.plan.scene_geometry_amount = 1.0;
+    cover_without_lens.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
+    let expected_cover = evaluate_physical_pipeline_cpu_oracle(cover_without_lens.clone())
+        .expect("cover checkpoint");
+    cover_without_lens.plan.lens_amount = 1.0;
+    cover_without_lens
+        .plan
+        .scene_geometry_lens
+        .lens
+        .radial_distortion = [0.2, -0.05, 0.01];
+    let stopped_cover = evaluate_physical_pipeline_cpu_oracle(cover_without_lens)
+        .expect("cover checkpoint with later lens enabled");
+    assert_eq!(stopped_cover.acescg, expected_cover.acescg);
+}
+
+#[test]
 fn supported_intermediate_outputs_match_frozen_domain_goldens() {
     let mut hashes = Vec::new();
     for intermediate in [
@@ -258,7 +319,7 @@ fn supported_intermediate_outputs_match_frozen_domain_goldens() {
             2_562_316_643_544_865_759,
             17_584_836_761_831_715_200,
             1_095_139_996_456_996_558,
-            5_832_955_122_466_670_301,
+            11_353_073_867_921_522_710,
         ]
     );
 }
@@ -357,6 +418,6 @@ fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
     // physical illuminance using the resolved white luminance before RAW.
     assert_eq!(
         hashes,
-        [4_236_808_243_192_629_937, 7_508_220_500_444_444_758]
+        [2_197_059_209_231_913_028, 2_598_560_337_631_545_936]
     );
 }

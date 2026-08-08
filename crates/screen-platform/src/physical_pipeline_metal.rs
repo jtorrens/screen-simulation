@@ -3,12 +3,13 @@ use core::mem::size_of;
 use std::time::Instant;
 
 use metal::{
-    ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLResourceOptions, MTLSize,
-    MTLStorageMode, MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
+    ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLRegion, MTLResourceOptions,
+    MTLSize, MTLStorageMode, MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor,
+    TextureRef,
 };
 use screen_application::{
-    CameraRadiometricCalibration, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
-    RasterPlacement, physical_row_temporal_gain,
+    PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
+    expose_physical_pipeline_raw, physical_row_temporal_gain,
 };
 use screen_cover::EnvironmentPattern;
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
@@ -63,6 +64,7 @@ struct PhysicalPipelineParams {
     cover_geometry: [f32; 4],
     cover_absorption_roughness: [f32; 4],
     cover_haze: [f32; 4],
+    cover_glow: [f32; 4],
     environment_ambient_strength: [f32; 4],
     environment_key_radius: [f32; 4],
     environment_direction_rotation: [f32; 4],
@@ -85,26 +87,11 @@ struct PhysicalPipelineParams {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct SensorExposureParams {
-    input_width: u32,
-    input_height: u32,
+struct RawPublicationParams {
     width: u32,
     height: u32,
-    pattern: u32,
     maximum_code: u32,
-    frame_index: i64,
-    noise_seed: u64,
-    duration_seconds: f32,
-    full_well_electrons: f32,
-    dark_current_electrons_per_second: f32,
-    read_noise_electrons_rms: f32,
-    analog_gain: f32,
-    noise_amount: f32,
-    input_luminance_scale: [f32; 4],
-    acescg_to_sensor_0: [f32; 4],
-    acescg_to_sensor_1: [f32; 4],
-    acescg_to_sensor_2: [f32; 4],
-    saturation: [f32; 4],
+    _padding: u32,
 }
 
 #[repr(C)]
@@ -129,7 +116,6 @@ pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
     pipeline: ComputePipelineState,
     accumulator: ComputePipelineState,
-    sensor_pipeline: ComputePipelineState,
     publish_raw_pipeline: ComputePipelineState,
     reconstruct_green_pipeline: ComputePipelineState,
     develop_pipeline: ComputePipelineState,
@@ -140,7 +126,7 @@ pub struct MetalPhysicalPipelineResult {
     pub texture: Texture,
     pub geometry: FlatPanelGeometry,
     pub sampling: FlatPanelSampling,
-    pub stage_elapsed_nanoseconds: [u64; 12],
+    pub stage_elapsed_nanoseconds: [u64; 14],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,6 +157,16 @@ impl fmt::Display for MetalPhysicalPipelineError {
 impl std::error::Error for MetalPhysicalPipelineError {}
 
 impl MetalPhysicalPipeline {
+    fn requests_sensor_evaluation(intermediate: PhysicalIntermediate) -> bool {
+        matches!(
+            intermediate,
+            PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorNoise
+                | PhysicalIntermediate::RawMosaic
+                | PhysicalIntermediate::DevelopedAcesCg
+        )
+    }
+
     pub fn new(device: &DeviceRef) -> Result<Self, MetalPhysicalPipelineError> {
         let library = device
             .new_library_with_data(SHADER_LIBRARY)
@@ -186,12 +182,6 @@ impl MetalPhysicalPipeline {
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let accumulator = device
             .new_compute_pipeline_state_with_function(&accumulator_function)
-            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let sensor_function = library
-            .get_function("expose_sensor_raw", None)
-            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let sensor_pipeline = device
-            .new_compute_pipeline_state_with_function(&sensor_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let publish_raw_function = library
             .get_function("publish_sensor_raw", None)
@@ -221,12 +211,36 @@ impl MetalPhysicalPipeline {
             queue: device.new_command_queue(),
             pipeline,
             accumulator,
-            sensor_pipeline,
             publish_raw_pipeline,
             reconstruct_green_pipeline,
             develop_pipeline,
             publish_developed_pipeline,
         })
+    }
+
+    fn read_physical_raster(
+        texture: &TextureRef,
+    ) -> Result<Vec<[f32; 4]>, MetalPhysicalPipelineError> {
+        if texture.pixel_format() != metal::MTLPixelFormat::RGBA32Float {
+            return Err(MetalPhysicalPipelineError::UnsupportedTexture);
+        }
+        let count = texture
+            .width()
+            .checked_mul(texture.height())
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| {
+                MetalPhysicalPipelineError::Backend(
+                    "physical raster size exceeds host address space".to_owned(),
+                )
+            })?;
+        let mut values = vec![[0.0_f32; 4]; count];
+        texture.get_bytes(
+            values.as_mut_ptr().cast(),
+            texture.width() * size_of::<[f32; 4]>() as u64,
+            MTLRegion::new_2d(0, 0, texture.width(), texture.height()),
+            0,
+        );
+        Ok(values)
     }
 
     fn evaluate_sensor_raw(
@@ -244,87 +258,47 @@ impl MetalPhysicalPipeline {
             return Err(MetalPhysicalPipelineError::Cancelled);
         }
         let capture_started = Instant::now();
-        let sensor = plan
-            .sensor
-            .validate()
-            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
-        plan.radiometric_calibration
-            .validate()
-            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
-        let panel_white_nits = plan
-            .panel
-            .evaluator()
-            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?
-            .device_stage_parameters()
-            .white_level_nits;
-        let (camera, _) = plan
-            .scene_geometry_lens
-            .resolve(
-                plan.camera_position,
-                plan.camera_rotation,
-                plan.screen_translation,
-                plan.screen_rotation,
-                plan.lens_amount,
-            )
-            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
-        let duration_seconds = plan
-            .shutter_close
-            .checked_sub(plan.shutter_open)
-            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?
-            .as_seconds() as f32;
+        let sensor = plan.sensor;
+        let physical_values = Self::read_physical_raster(&physical.texture)?;
+        let raw = expose_physical_pipeline_raw(
+            &physical_values,
+            physical.texture.width() as u32,
+            physical.texture.height() as u32,
+            plan,
+        )
+        .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        if is_cancelled() {
+            return Err(MetalPhysicalPipelineError::Cancelled);
+        }
         let pad = |row: [f32; 3]| [row[0], row[1], row[2], 0.0];
-        let parameters = SensorExposureParams {
-            input_width: physical.texture.width() as u32,
-            input_height: physical.texture.height() as u32,
-            width: u32::from(sensor.native_width),
-            height: u32::from(sensor.native_height),
-            pattern: match sensor.bayer_pattern {
-                screen_sensor::BayerPattern::Rggb => 0,
-                screen_sensor::BayerPattern::Bggr => 1,
-                screen_sensor::BayerPattern::Grbg => 2,
-                screen_sensor::BayerPattern::Gbrg => 3,
-            },
-            maximum_code: (1_u32 << sensor.adc_bits) - 1,
-            frame_index: plan.frame_index,
-            noise_seed: plan.shutter_motion.noise_seed,
-            duration_seconds,
-            full_well_electrons: sensor.full_well_electrons,
-            dark_current_electrons_per_second: sensor.dark_current_electrons_per_second,
-            read_noise_electrons_rms: sensor.read_noise_electrons_rms,
-            analog_gain: sensor.analog_gain,
-            noise_amount: plan.sensor_noise_amount,
-            // The physical pipeline has already applied shutter integration.
-            // This is the explicit Lambertian cd/m² → sensor-plane lux
-            // conversion π/(4T²), followed by the camera's calibrated
-            // sensor-domain scale. T-stop includes transmission once.
-            input_luminance_scale: [
-                panel_white_nits
-                    * CameraRadiometricCalibration::panel_luminance_to_sensor_plane_lux(
-                        camera.f_stop,
-                    )
-                    * plan.radiometric_calibration.effective_sensor_exposure_scale,
-                0.0,
-                0.0,
-                0.0,
-            ],
-            acescg_to_sensor_0: pad(sensor.acescg_to_sensor[0]),
-            acescg_to_sensor_1: pad(sensor.acescg_to_sensor[1]),
-            acescg_to_sensor_2: pad(sensor.acescg_to_sensor[2]),
-            saturation: [
-                sensor.saturation_illuminance_seconds.r,
-                sensor.saturation_illuminance_seconds.g,
-                sensor.saturation_illuminance_seconds.b,
-                0.0,
-            ],
+        let publication = RawPublicationParams {
+            width: raw.width,
+            height: raw.height,
+            maximum_code: (1_u32 << raw.adc_bits) - 1,
+            _padding: 0,
         };
-        let count = usize::from(sensor.native_width) * usize::from(sensor.native_height);
+        let pattern = match raw.bayer_pattern {
+            screen_sensor::BayerPattern::Rggb => 0,
+            screen_sensor::BayerPattern::Bggr => 1,
+            screen_sensor::BayerPattern::Grbg => 2,
+            screen_sensor::BayerPattern::Gbrg => 3,
+        };
+        let count = raw.codes.len();
         let device = physical.texture.device();
-        let codes = device.new_buffer(
-            (count * size_of::<u16>()) as u64,
+        let codes = device.new_buffer_with_data(
+            raw.codes.as_ptr().cast(),
+            size_of_val(raw.codes.as_slice()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
-        let clipping = device.new_buffer(
-            (count * size_of::<[u8; 2]>()) as u64,
+        let clipping_values = raw
+            .full_well_clipped
+            .iter()
+            .zip(&raw.adc_clipped)
+            .map(|(&well, &adc)| [u8::from(well), u8::from(adc)])
+            .collect::<Vec<_>>();
+        let clipping = device.new_buffer_with_data(
+            clipping_values.as_ptr().cast(),
+            size_of_val(clipping_values.as_slice()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
         let development_parameters = if plan.development_enabled
@@ -344,12 +318,17 @@ impl MetalPhysicalPipeline {
                 height: u32::from(sensor.native_height),
                 origin_x: 0,
                 origin_y: 0,
-                pattern: parameters.pattern,
-                maximum_code: parameters.maximum_code,
+                pattern,
+                maximum_code: publication.maximum_code,
                 analog_gain: sensor.analog_gain,
                 linear_scale: 0.18 / development.middle_gray_illuminance_seconds
                     * development.develop_exposure_ev.exp2(),
-                saturation: parameters.saturation,
+                saturation: [
+                    sensor.saturation_illuminance_seconds.r,
+                    sensor.saturation_illuminance_seconds.g,
+                    sensor.saturation_illuminance_seconds.b,
+                    0.0,
+                ],
                 white_balance: [
                     development.white_balance.r,
                     development.white_balance.g,
@@ -385,34 +364,13 @@ impl MetalPhysicalPipeline {
         let descriptor = TextureDescriptor::new();
         descriptor.set_texture_type(MTLTextureType::D2);
         descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
-        descriptor.set_width(u64::from(sensor.native_width));
-        descriptor.set_height(u64::from(sensor.native_height));
+        descriptor.set_width(u64::from(raw.width));
+        descriptor.set_height(u64::from(raw.height));
         descriptor.set_storage_mode(MTLStorageMode::Shared);
         descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
         let output = device.new_texture(&descriptor);
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.sensor_pipeline);
-        encoder.set_texture(0, Some(&physical.texture));
-        encoder.set_buffer(0, Some(&codes), 0);
-        encoder.set_buffer(1, Some(&clipping), 0);
-        encoder.set_bytes(
-            2,
-            size_of::<SensorExposureParams>() as u64,
-            (&raw const parameters).cast(),
-        );
-        let thread_width = self.sensor_pipeline.thread_execution_width();
-        let thread_height =
-            (self.sensor_pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
-        encoder.dispatch_threads(
-            MTLSize::new(
-                u64::from(sensor.native_width),
-                u64::from(sensor.native_height),
-                1,
-            ),
-            MTLSize::new(thread_width, thread_height, 1),
-        );
-        encoder.memory_barrier_with_resources(&[&codes, &clipping]);
         if let (Some(development), Some(green), Some(developed)) =
             (development_parameters, green.as_ref(), developed.as_ref())
         {
@@ -463,16 +421,20 @@ impl MetalPhysicalPipeline {
             encoder.set_texture(0, Some(&output));
             encoder.set_bytes(
                 2,
-                size_of::<SensorExposureParams>() as u64,
-                (&raw const parameters).cast(),
+                size_of::<RawPublicationParams>() as u64,
+                (&raw const publication).cast(),
             );
         }
+        let publication_pipeline = if development_parameters.is_some() {
+            &self.publish_developed_pipeline
+        } else {
+            &self.publish_raw_pipeline
+        };
+        let thread_width = publication_pipeline.thread_execution_width();
+        let thread_height =
+            (publication_pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
         encoder.dispatch_threads(
-            MTLSize::new(
-                u64::from(sensor.native_width),
-                u64::from(sensor.native_height),
-                1,
-            ),
+            MTLSize::new(u64::from(raw.width), u64::from(raw.height), 1),
             MTLSize::new(thread_width, thread_height, 1),
         );
         encoder.end_encoding();
@@ -480,7 +442,7 @@ impl MetalPhysicalPipeline {
         command.wait_until_completed();
         if command.status() != MTLCommandBufferStatus::Completed {
             return Err(MetalPhysicalPipelineError::Backend(
-                "sensor exposure command did not complete".to_owned(),
+                "RAW publication or camera development command did not complete".to_owned(),
             ));
         }
         report_progress(1.0);
@@ -489,10 +451,11 @@ impl MetalPhysicalPipeline {
             .elapsed()
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        stage_elapsed_nanoseconds[9] = capture_elapsed;
         stage_elapsed_nanoseconds[10] = capture_elapsed;
+        stage_elapsed_nanoseconds[11] = capture_elapsed;
+        stage_elapsed_nanoseconds[12] = capture_elapsed;
         if plan.development_enabled {
-            stage_elapsed_nanoseconds[11] = capture_elapsed;
+            stage_elapsed_nanoseconds[13] = capture_elapsed;
         }
         Ok(MetalPhysicalPipelineResult {
             texture: output,
@@ -530,7 +493,7 @@ impl MetalPhysicalPipeline {
         let mut accumulated: Option<Texture> = None;
         let mut final_geometry = None;
         let mut final_sampling = None;
-        let mut stage_elapsed_nanoseconds = [0_u64; 12];
+        let mut stage_elapsed_nanoseconds = [0_u64; 14];
         for (index, (source, signal, plan, weight, row)) in samples.iter().enumerate() {
             if is_cancelled() {
                 return Err(MetalPhysicalPipelineError::Cancelled);
@@ -538,10 +501,14 @@ impl MetalPhysicalPipeline {
             let base = index as f32 / samples.len() as f32;
             let span = 0.85 / samples.len() as f32;
             let row_range = row.map(|row| (row, 1));
-            let mut physical_plan = *plan;
-            if physical_plan.sensor_enabled {
+            let mut physical_plan = plan.stopped_at_requested_intermediate();
+            let evaluate_sensor = physical_plan.sensor_enabled
+                && Self::requests_sensor_evaluation(physical_plan.requested_intermediate);
+            if evaluate_sensor {
                 physical_plan.sensor_enabled = false;
                 physical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+            } else {
+                physical_plan.sensor_enabled = false;
             }
             let evaluated = self.evaluate_rows(
                 source,
@@ -625,9 +592,12 @@ impl MetalPhysicalPipeline {
             sampling: final_sampling.expect("non-empty schedule resolves sampling"),
             stage_elapsed_nanoseconds,
         };
+        let mut final_plan = samples[0].2.stopped_at_requested_intermediate();
+        final_plan.sensor_enabled = final_plan.sensor_enabled
+            && Self::requests_sensor_evaluation(final_plan.requested_intermediate);
         self.evaluate_sensor_raw(
             physical,
-            samples[0].2,
+            final_plan,
             |progress| report_progress(0.9 + progress * 0.1),
             is_cancelled,
         )
@@ -641,10 +611,15 @@ impl MetalPhysicalPipeline {
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        let plan = plan.stopped_at_requested_intermediate();
         let mut physical_plan = plan;
-        if physical_plan.sensor_enabled {
+        let evaluate_sensor = physical_plan.sensor_enabled
+            && Self::requests_sensor_evaluation(physical_plan.requested_intermediate);
+        if evaluate_sensor {
             physical_plan.sensor_enabled = false;
             physical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+        } else {
+            physical_plan.sensor_enabled = false;
         }
         let physical = self.evaluate_rows(
             source_acescg,
@@ -660,9 +635,11 @@ impl MetalPhysicalPipeline {
             },
             &is_cancelled,
         )?;
+        let mut final_plan = plan;
+        final_plan.sensor_enabled = evaluate_sensor;
         self.evaluate_sensor_raw(
             physical,
-            plan,
+            final_plan,
             |progress| report_progress(0.9 + progress * 0.1),
             is_cancelled,
         )
@@ -677,6 +654,7 @@ impl MetalPhysicalPipeline {
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        let plan = plan.stopped_at_requested_intermediate();
         let physical_started = Instant::now();
         if source_acescg.width() == 0
             || source_acescg.height() == 0
@@ -741,9 +719,12 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::PanelEmission
                 | PhysicalIntermediate::SubpixelRadiance
                 | PhysicalIntermediate::PanelLightSpread
+                | PhysicalIntermediate::RelativeGeometry
                 | PhysicalIntermediate::CoverEnvironment
-                | PhysicalIntermediate::SceneGeometryLens
+                | PhysicalIntermediate::CoverGlow
+                | PhysicalIntermediate::LensProjection
                 | PhysicalIntermediate::ShutterMotion
+                | PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::DevelopedAcesCg
         ) {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
@@ -761,7 +742,7 @@ impl MetalPhysicalPipeline {
                 texture: source_acescg.to_owned(),
                 geometry,
                 sampling,
-                stage_elapsed_nanoseconds: [0; 12],
+                stage_elapsed_nanoseconds: [0; 14],
             });
         }
 
@@ -880,6 +861,12 @@ impl MetalPhysicalPipeline {
                 plan.cover.roughness,
             ],
             cover_haze: [plan.cover.haze, 0.0, 0.0, 0.0],
+            cover_glow: [
+                plan.cover.glow.core_radius_millimeters,
+                plan.cover.glow.tail_radius_millimeters,
+                plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength,
+                plan.cover.glow.tail_fraction,
+            ],
             environment_ambient_strength: [
                 plan.environment.ambient_radiance.0.r,
                 plan.environment.ambient_radiance.0.g,
@@ -1047,8 +1034,8 @@ impl MetalPhysicalPipeline {
             .elapsed()
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        let mut stage_elapsed_nanoseconds = [0_u64; 12];
-        stage_elapsed_nanoseconds[..9].fill(elapsed);
+        let mut stage_elapsed_nanoseconds = [0_u64; 14];
+        stage_elapsed_nanoseconds[..10].fill(elapsed);
         Ok(MetalPhysicalPipelineResult {
             texture: output,
             geometry,
@@ -1354,9 +1341,15 @@ mod tests {
         ] {
             for environment in [
                 screen_cover::ProceduralEnvironment::NONE,
-                screen_cover::ENVIRONMENT_PRESETS[0].environment,
-                screen_cover::ENVIRONMENT_PRESETS[1].environment,
-                screen_cover::ENVIRONMENT_PRESETS[2].environment,
+                screen_cover::environment_preset("environment-uniform-neutral")
+                    .unwrap()
+                    .environment,
+                screen_cover::environment_preset("environment-studio-softboxes")
+                    .unwrap()
+                    .environment,
+                screen_cover::environment_preset("environment-calibration-grid")
+                    .unwrap()
+                    .environment,
             ] {
                 let (input, mut plan) = fixture(
                     RasterPlacement::Stretch,
@@ -1418,7 +1411,7 @@ mod tests {
             plan.scene_geometry_lens.focal_length_millimeters = 10.0;
             plan.scene_geometry_lens.sensor_width_millimeters = 4.0;
             plan.scene_geometry_lens.sensor_height_millimeters = 2.0;
-            plan.requested_intermediate = PhysicalIntermediate::SceneGeometryLens;
+            plan.requested_intermediate = PhysicalIntermediate::LensProjection;
             let source = texture(&device, input.width, input.height, &input.acescg);
             let signal_values = input
                 .device_signal
@@ -1623,6 +1616,159 @@ mod tests {
                     .all(|pixel| pixel[3].to_bits() == 1.0_f32.to_bits())
             );
         }
+    }
+
+    #[test]
+    fn metal_adapter_preserves_application_raw_codes_and_masks_exactly() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for (intermediate, noise_amount) in [
+            (PhysicalIntermediate::SensorNoise, 0.0),
+            (PhysicalIntermediate::RawMosaic, 1.0),
+        ] {
+            let (input, mut plan) = fixture(
+                RasterPlacement::FillCrop,
+                FlatPanelQuality::High,
+                StripeLayout::Rgb,
+                0.0,
+                1.0,
+            );
+            plan.sensor = screen_sensor::SensorProfile {
+                native_width: 13,
+                native_height: 9,
+                adc_bits: 12,
+                ..screen_sensor::SensorProfile::REFERENCE
+            };
+            plan.sensor_enabled = true;
+            plan.sensor_noise_amount = noise_amount;
+            plan.requested_intermediate = intermediate;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .map(|value| [value.r, value.g, value.b, 1.0])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let stopped = plan.stopped_at_requested_intermediate();
+            let mut optical_plan = stopped;
+            optical_plan.sensor_enabled = false;
+            optical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+            let physical = backend
+                .evaluate(&source, &signal, optical_plan, |_| {}, || false)
+                .expect("Metal shutter checkpoint");
+            let physical_values = MetalPhysicalPipeline::read_physical_raster(&physical.texture)
+                .expect("shared optical raster");
+            let raw = expose_physical_pipeline_raw(
+                &physical_values,
+                physical.texture.width() as u32,
+                physical.texture.height() as u32,
+                stopped,
+            )
+            .expect("Application RAW boundary");
+            let result = backend
+                .evaluate_sensor_raw(physical, stopped, |_| {}, || false)
+                .expect("adapter RAW publication");
+            let published = read(&result.texture);
+            let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
+            let published_codes = published
+                .iter()
+                .map(|pixel| (pixel[0] * maximum_code).round() as u16)
+                .collect::<Vec<_>>();
+            let published_full_well = published
+                .iter()
+                .map(|pixel| pixel[1].to_bits() == 1.0_f32.to_bits())
+                .collect::<Vec<_>>();
+            let published_adc = published
+                .iter()
+                .map(|pixel| pixel[2].to_bits() == 1.0_f32.to_bits())
+                .collect::<Vec<_>>();
+            assert_eq!(published_codes, raw.codes);
+            assert_eq!(published_full_well, raw.full_well_clipped);
+            assert_eq!(published_adc, raw.adc_clipped);
+        }
+    }
+
+    #[test]
+    fn direct_backend_enforces_clean_sensor_cfa_before_the_noisy_raw_phase() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut authored) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            StripeLayout::Rgb,
+            0.0,
+            1.0,
+        );
+        authored.sensor = screen_sensor::SensorProfile {
+            native_width: authored.requested_width as u16,
+            native_height: authored.requested_height as u16,
+            read_noise_electrons_rms: 500.0,
+            ..screen_sensor::SensorProfile::REFERENCE
+        };
+        authored.sensor_enabled = true;
+        authored.sensor_noise_amount = 1.0;
+        authored.requested_intermediate = PhysicalIntermediate::SensorNoise;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let clean = backend
+            .evaluate(&source, &signal, authored, |_| {}, || false)
+            .expect("clean Sensor/CFA checkpoint");
+        let mut explicit_zero = authored;
+        explicit_zero.sensor_noise_amount = 0.0;
+        let zero = backend
+            .evaluate(&source, &signal, explicit_zero, |_| {}, || false)
+            .expect("explicit zero-noise checkpoint");
+        assert_eq!(read(&clean.texture), read(&zero.texture));
+
+        let mut noisy = authored;
+        noisy.requested_intermediate = PhysicalIntermediate::RawMosaic;
+        let noisy = backend
+            .evaluate(&source, &signal, noisy, |_| {}, || false)
+            .expect("authored noisy RAW checkpoint");
+        assert_ne!(read(&clean.texture), read(&noisy.texture));
+    }
+
+    #[test]
+    fn an_earlier_checkpoint_does_not_execute_the_enabled_sensor() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.0,
+            1.0,
+        );
+        plan.sensor_enabled = true;
+        plan.development_enabled = true;
+        plan.requested_intermediate = PhysicalIntermediate::PanelEmission;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let with_later_stages_enabled = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("panel checkpoint with later stages enabled");
+        plan.sensor_enabled = false;
+        plan.development_enabled = false;
+        let stopped_at_panel = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("panel checkpoint");
+        assert_eq!(
+            read(&with_later_stages_enabled.texture),
+            read(&stopped_at_panel.texture)
+        );
     }
 
     #[test]

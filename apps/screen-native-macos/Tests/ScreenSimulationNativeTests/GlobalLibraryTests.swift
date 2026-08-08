@@ -129,7 +129,7 @@ import Testing
     try bytes.write(to: url)
 
     let migrated = try GlobalLibraryStore(documentURL: url).load()
-    #expect(migrated.schemaVersion == 5)
+    #expect(migrated.schemaVersion == GlobalLibraryDocument.currentSchemaVersion)
     #expect(migrated.renderPresets.allSatisfy { $0.isLocked })
     #expect(migrated.devices.allSatisfy { $0.isLocked })
     #expect(migrated.coverGlasses.count == 6)

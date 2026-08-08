@@ -48,13 +48,13 @@ import Testing
     )
     let result = try await terminalSnapshot(job)
     #expect(result.state == .complete)
-    #expect(result.diagnostics.count == 12)
-    #expect(result.diagnostics[8].message.contains("STATIC_INPUT"))
-    #expect(result.diagnostics.prefix(9).allSatisfy {
+    #expect(result.diagnostics.count == 14)
+    #expect(result.diagnostics[9].message.contains("STATIC_INPUT"))
+    #expect(result.diagnostics.prefix(10).allSatisfy {
         $0.elapsedNanoseconds == result.diagnostics[0].elapsedNanoseconds
     })
-    #expect(result.diagnostics.suffix(3).allSatisfy {
-        $0.elapsedNanoseconds == result.diagnostics[9].elapsedNanoseconds
+    #expect(result.diagnostics[10..<13].allSatisfy {
+        $0.elapsedNanoseconds == result.diagnostics[10].elapsedNanoseconds
     })
 }
 
@@ -141,7 +141,7 @@ import Testing
                 #expect(result.state == .complete)
                 #expect(result.frame != nil)
                 #expect(result.progress == 1)
-                #expect(result.diagnostics.count == 12)
+                #expect(result.diagnostics.count == 14)
             }
         }
     }
@@ -164,13 +164,19 @@ import Testing
                 exactIdentityAtZero: true
             )
             identity &+= 1
-            let result = try await terminalSnapshot(submit(
-                fixture: fixture,
-                screenAmount: 1,
-                contributions: values,
-                intermediate: .developedACEScg,
-                identity: identity
-            ))
+            let result: PhysicalMetalFrameSnapshot
+            do {
+                result = try await terminalSnapshot(submit(
+                    fixture: fixture,
+                    screenAmount: 1,
+                    contributions: values,
+                    intermediate: .developedACEScg,
+                    identity: identity
+                ))
+            } catch {
+                Issue.record("stage=\(stage.id) amount=\(amount): \(error)")
+                throw error
+            }
             #expect(result.state == .complete)
         }
     }
@@ -183,6 +189,12 @@ import Testing
             exactIdentityAtZero: false
         )
         if !enabled {
+            let bloomIndex = try #require(cfa.firstIndex { $0.stage == .capture(.sensorBloom) })
+            cfa[bloomIndex] = try PhysicalStageContribution(
+                stage: .capture(.sensorBloom),
+                control: .continuous(amount: 0, limits: .standard),
+                exactIdentityAtZero: true
+            )
             let noiseIndex = try #require(cfa.firstIndex { $0.stage == .capture(.noise) })
             cfa[noiseIndex] = try PhysicalStageContribution(
                 stage: .capture(.noise),

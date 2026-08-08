@@ -3,6 +3,7 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import ScreenPhysicalBridge
+import StudioMedia
 
 struct DecodedNativeFrame: Sendable {
     let width: Int
@@ -97,6 +98,22 @@ enum SyntheticPattern: UInt32, Codable, CaseIterable, Identifiable, Sendable {
         case .frequencyMoireReference: "Frecuencia / moiré 4K"
         case .photometricDeviceScale: "Escala fotométrica"
         }
+    }
+
+    var sourceDetection: StudioMediaDetection {
+        StudioMediaDetection(
+            proposedInputTransformID: "srgb-encoded-rec709",
+            inputTransformProvenance: .proposed,
+            matrix: .bt709,
+            matrixProvenance: .proposed,
+            range: .full,
+            rangeProvenance: .proposed,
+            colorModel: .rgb,
+            colorModelProvenance: .proposed,
+            hasAlpha: false,
+            alpha: .ignore,
+            alphaProvenance: .proposed
+        )
     }
 
     func frame(time: Double = 0) throws -> DecodedNativeFrame {

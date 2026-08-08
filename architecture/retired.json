@@ -1,6 +1,21 @@
 {
   "schema": "screen_simulation_retired_surfaces",
   "version": 1,
-  "paths": [],
-  "identifiers": ["eframe", "egui"]
+  "paths": [
+    "apps/screen-native-macos/Sources/ScreenSimulationNative/CleanSteppedSlider.swift",
+    "apps/screen-native-macos/Sources/ScreenSimulationNative/DevelopWhiteBalanceControls.swift",
+    "apps/screen-native-macos/Sources/ScreenSimulationNative/ModelInspectorView.swift",
+    "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalDiagnosticsView.swift",
+    "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalParameterControls.swift",
+    "apps/screen-native-macos/Sources/ScreenSimulationNative/ShutterPresentation.swift"
+  ],
+  "identifiers": [
+    "DevelopWhiteBalanceControls",
+    "ModelInspectorView",
+    "PhysicalDiagnosticsView",
+    "PhysicalParameterControls",
+    "ShutterPresentation",
+    "eframe",
+    "egui"
+  ]
 }

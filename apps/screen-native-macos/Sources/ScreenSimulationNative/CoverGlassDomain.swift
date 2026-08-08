@@ -19,6 +19,11 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
     var absorptionPerMillimeter: [Double]
     var roughness: Double
     var haze: Double
+    var glowCharacterStrength: Double
+    var glowScatterFraction: Double
+    var glowCoreRadiusMillimeters: Double
+    var glowTailRadiusMillimeters: Double
+    var glowTailFraction: Double
 
     func validate() throws {
         guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -48,7 +53,7 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
             throw CoverGlassDomainError.invalidAbsorption
         }
         var parameters = ScreenCoverGlassParametersV2()
-        parameters.abi_version = 2
+        parameters.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
         parameters.authority = authority == .genericApproximation ? 0 : 1
         parameters.character_strength = Float(characterStrength)
         parameters.thickness_millimeters = Float(thicknessMillimeters)
@@ -61,6 +66,11 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
         )
         parameters.roughness = Float(roughness)
         parameters.haze = Float(haze)
+        parameters.glow_character_strength = Float(glowCharacterStrength)
+        parameters.glow_scatter_fraction = Float(glowScatterFraction)
+        parameters.glow_core_radius_millimeters = Float(glowCoreRadiusMillimeters)
+        parameters.glow_tail_radius_millimeters = Float(glowTailRadiusMillimeters)
+        parameters.glow_tail_fraction = Float(glowTailFraction)
         return parameters
     }
 }
@@ -70,7 +80,7 @@ enum RustCoverGlassCatalog {
         try (0..<screen_cover_glass_preset_count()).map { index in
             var parameters = ScreenCoverGlassParametersV2()
             guard screen_cover_glass_preset_parameters(index, &parameters),
-                  parameters.abi_version == 2,
+                  parameters.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION,
                   let authority = parameters.authority == 0
                     ? CoverGlassAuthority.genericApproximation
                     : parameters.authority == 1
@@ -90,7 +100,12 @@ enum RustCoverGlassCatalog {
                     Double(parameters.absorption_per_millimeter.2),
                 ],
                 roughness: Double(parameters.roughness),
-                haze: Double(parameters.haze)
+                haze: Double(parameters.haze),
+                glowCharacterStrength: Double(parameters.glow_character_strength),
+                glowScatterFraction: Double(parameters.glow_scatter_fraction),
+                glowCoreRadiusMillimeters: Double(parameters.glow_core_radius_millimeters),
+                glowTailRadiusMillimeters: Double(parameters.glow_tail_radius_millimeters),
+                glowTailFraction: Double(parameters.glow_tail_fraction)
             )
             try definition.validate()
             return definition

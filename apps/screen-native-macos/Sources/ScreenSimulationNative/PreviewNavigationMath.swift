@@ -1,19 +1,10 @@
 import Foundation
 
 enum PreviewNavigationMath {
-    static func fittedContentSize(
-        texture: CGSize,
-        viewport: CGSize
-    ) -> CGSize {
+    static func fittedScale(texture: CGSize, viewport: CGSize) -> CGFloat {
         guard texture.width > 0, texture.height > 0,
-              viewport.width > 0, viewport.height > 0 else { return .zero }
-        let scale = min(viewport.width / texture.width, viewport.height / texture.height)
-        return CGSize(width: texture.width * scale, height: texture.height * scale)
-    }
-
-    static func oneToOneScale(texture: CGSize, fittedContent: CGSize) -> CGFloat {
-        guard fittedContent.width > 0, fittedContent.height > 0 else { return 1 }
-        return max(texture.width / fittedContent.width, texture.height / fittedContent.height)
+              viewport.width > 0, viewport.height > 0 else { return 1 }
+        return min(viewport.width / texture.width, viewport.height / texture.height)
     }
 
     static func anchoredPan(

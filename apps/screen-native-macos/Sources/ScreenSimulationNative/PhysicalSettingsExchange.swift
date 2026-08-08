@@ -1,7 +1,7 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.PhysicalSettings.v2"
+    static let schema = "ScreenSimulation.PhysicalSettings.v4"
     private static let selectedMigrationSchema = "ScreenSimulation.PhysicalSettings.v1"
 
     struct Imported: Sendable {

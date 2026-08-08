@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use image::ImageEncoder;
 use screen_application::{
-    ApplicationError, CAPTURE_DEVICE_PRESETS, CaptureOpticsAuthority, DeviceSignalRaster,
-    DiagnosticView, FrameCaptureRequest, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
+    ApplicationError, CAPTURE_DEVICE_PRESETS, DeviceSignalRaster, DiagnosticView,
+    FrameCaptureRequest, LensAssociationPolicy, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
     PanelTemporalEvaluation, PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel,
     ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
     capture_and_develop_device_signal_region_sequence_with_compute_backends,
@@ -122,6 +122,7 @@ struct RenderControls {
     frame_number: i32,
     placement_index: i32,
     idt_index: i32,
+    color_mode_index: i32,
     alpha_index: i32,
     matrix_index: i32,
     range_index: i32,
@@ -181,6 +182,7 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         frame_number: window.get_frame_number(),
         placement_index: window.get_placement_index(),
         idt_index: window.get_idt_index(),
+        color_mode_index: window.get_color_mode_index(),
         alpha_index: window.get_alpha_index(),
         matrix_index: window.get_matrix_index(),
         range_index: window.get_range_index(),
@@ -240,7 +242,7 @@ struct InteractionState {
     capture_cancel: Option<Arc<AtomicBool>>,
     latest_native_export: Arc<Mutex<Option<NativeExportFrame>>>,
     preview_pending: bool,
-    embedded_source: Option<(i32, Arc<PreparedDeviceSignalRaster>)>,
+    embedded_source: Option<((i32, DeviceColorTarget), Arc<PreparedDeviceSignalRaster>)>,
 }
 
 struct CameraEditor {
@@ -343,9 +345,13 @@ struct LoadedSource {
     decoded_sample_key: Option<DecodedSampleKey>,
     decoded_timestamp: Option<RationalTime>,
     decoded_frame: Option<DecodedFrame>,
-    processor_interpretation: Option<SourceColorInterpretation>,
+    processor_interpretation: Option<(SourceColorInterpretation, DeviceColorTarget)>,
     color_processor: Option<SourceToDeviceProcessor>,
-    prepared_signal_key: Option<(SourceColorInterpretation, AlphaInterpretation)>,
+    prepared_signal_key: Option<(
+        SourceColorInterpretation,
+        AlphaInterpretation,
+        DeviceColorTarget,
+    )>,
     device_signal: Option<DeviceSignalRaster>,
 }
 
@@ -614,15 +620,17 @@ fn source_color_interpretation(
 ) -> Option<(SourceColorInterpretation, &'static str)> {
     match window.get_idt_index() {
         0 => None,
-        1 => Some((
-            SourceColorInterpretation::IdentityDeviceSignal,
-            "Identity device signal",
-        )),
         index => OcioInputTransform::ALL
-            .get(usize::try_from(index - 2).ok()?)
+            .get(usize::try_from(index - 1).ok()?)
             .copied()
             .map(|input| (SourceColorInterpretation::Ocio(input), input.label())),
     }
+}
+
+fn device_color_target(window: &MainWindow) -> Option<DeviceColorTarget> {
+    DeviceColorTarget::ALL
+        .get(usize::try_from(window.get_color_mode_index()).ok()?)
+        .copied()
 }
 
 fn project_frame_rate(window: &MainWindow) -> Result<FrameRate, String> {
@@ -985,7 +993,9 @@ fn apply_capture_preset(
     window.set_capture_sensor_height(f32::from(preset.sensor.native_height));
     window.set_capture_gate_width_mm(preset.gate_width.0);
     window.set_capture_gate_height_mm(preset.gate_height.0);
-    window.set_focal_mm(preset.focal_length.0);
+    let default_lens = lens_preset(preset.default_lens_preset_id)
+        .ok_or_else(|| format!("capture preset {} has an unknown default Lens", preset.id))?;
+    window.set_focal_mm(default_lens.nominal_focal_length.0);
     window.set_f_stop(preset.f_stop);
     window.set_capture_exposure_index(preset.reference_exposure_index);
     window.set_shutter_angle_degrees(preset.default_shutter_angle_degrees);
@@ -993,9 +1003,7 @@ fn apply_capture_preset(
     window.set_sensor_readout_index(1);
     window.set_readout_duration_ms(preset.default_readout_duration_milliseconds);
     window.set_neutral_density_stops(0.0);
-    window.set_capture_fixed_optics(
-        preset.optics_authority == CaptureOpticsAuthority::IntegratedFixedLens,
-    );
+    window.set_capture_fixed_optics(preset.lens_association_policy == LensAssociationPolicy::Fixed);
     apply_lens_preset(window, state, preset.default_lens_preset_id)?;
     window.set_capture_summary(preset.calibration.into());
     window.set_preview_aspect(preset.gate_width.0 / preset.gate_height.0);
@@ -1073,6 +1081,7 @@ fn selected_sensor_region(window: &MainWindow, sensor: SensorProfile) -> SensorR
 fn embedded_test_signal(
     state: &mut InteractionState,
     pattern_index: i32,
+    target: DeviceColorTarget,
 ) -> Result<Option<Arc<PreparedDeviceSignalRaster>>, String> {
     let encoded = match pattern_index {
         2 => include_bytes!("../assets/editorial-text-reference.png").as_slice(),
@@ -1083,8 +1092,8 @@ fn embedded_test_signal(
             return Ok(None);
         }
     };
-    if let Some((cached_index, signal)) = &state.embedded_source
-        && *cached_index == pattern_index
+    if let Some((cached_key, signal)) = &state.embedded_source
+        && *cached_key == (pattern_index, target)
     {
         return Ok(Some(Arc::clone(signal)));
     }
@@ -1098,15 +1107,27 @@ fn embedded_test_signal(
             "bundled test image must be 3840 × 2160, got {width} × {height}"
         ));
     }
-    let pixels = decoded
-        .pixels()
-        .map(|pixel| {
-            DeviceRgb::new(
-                f32::from(pixel[0]) / 255.0,
-                f32::from(pixel[1]) / 255.0,
-                f32::from(pixel[2]) / 255.0,
-            )
-        })
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for pixel in decoded.pixels() {
+        rgba.extend_from_slice(&[
+            f32::from(pixel[0]) / 255.0,
+            f32::from(pixel[1]) / 255.0,
+            f32::from(pixel[2]) / 255.0,
+            1.0,
+        ]);
+    }
+    state
+        .color_engine
+        .source_to_device_processor(
+            SourceColorInterpretation::Ocio(OcioInputTransform::SrgbEncodedRec709),
+            target,
+        )
+        .map_err(|error| error.to_string())?
+        .apply_rgba_buffer(&mut rgba)
+        .map_err(|error| error.to_string())?;
+    let pixels = rgba
+        .chunks_exact(4)
+        .map(|pixel| DeviceRgb::new(pixel[0], pixel[1], pixel[2]))
         .collect();
     let signal = Arc::new(
         PreparedDeviceSignalRaster::new(DeviceSignalRaster {
@@ -1116,7 +1137,7 @@ fn embedded_test_signal(
         })
         .map_err(|error| error.to_string())?,
     );
-    state.embedded_source = Some((pattern_index, Arc::clone(&signal)));
+    state.embedded_source = Some(((pattern_index, target), Arc::clone(&signal)));
     Ok(Some(signal))
 }
 
@@ -1210,8 +1231,12 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         }
         return;
     }
+    let Some(color_target) = device_color_target(window) else {
+        block_preview(window, "Select an authoritative Color Mode");
+        return;
+    };
     let embedded_signal = if state.source.is_none() {
-        match embedded_test_signal(state, window.get_procedural_pattern_index()) {
+        match embedded_test_signal(state, window.get_procedural_pattern_index(), color_target) {
             Ok(signal) => signal,
             Err(error) => {
                 block_preview(window, &error);
@@ -1265,7 +1290,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 }
             };
             let Some((interpretation, _)) = source_color_interpretation(window) else {
-                block_preview(window, "Select an authoritative source IDT");
+                block_preview(window, "Select an authoritative Input Transform");
                 return;
             };
             if source.descriptor.alpha == AlphaPresence::Present
@@ -1297,9 +1322,17 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 block_preview(window, &error);
                 return;
             }
-            if let Err(error) =
-                ensure_device_signal(source, color_engine, interpretation, alpha_interpretation)
-            {
+            let Some(color_target) = device_color_target(window) else {
+                block_preview(window, "Select an authoritative Color Mode");
+                return;
+            };
+            if let Err(error) = ensure_device_signal(
+                source,
+                color_engine,
+                interpretation,
+                alpha_interpretation,
+                color_target,
+            ) {
                 block_preview(window, &error.to_string());
                 return;
             }
@@ -1649,12 +1682,9 @@ fn present_loaded_source_interpretation(
     sample_key: DecodedSampleKey,
     decode_interpretation: ResolvedSourceDecode,
 ) {
-    let (interpretation, interpretation_label) =
+    let (_interpretation, interpretation_label) =
         source_color_interpretation(window).expect("prepared media has an explicit interpretation");
-    let interpretation_description = match interpretation {
-        SourceColorInterpretation::IdentityDeviceSignal => interpretation_label.to_owned(),
-        SourceColorInterpretation::Ocio(_) => format!("{interpretation_label} → sRGB device"),
-    };
+    let interpretation_description = format!("{interpretation_label} → ACEScg → Color Mode");
     let alpha = match source.descriptor.alpha {
         AlphaPresence::Absent => "opaque",
         AlphaPresence::Present if window.get_alpha_index() == 1 => "straight → opaque black",
@@ -1734,6 +1764,10 @@ fn render_camera_result(
     region: SensorRegion,
     session: NativeRenderSession,
 ) {
+    let Some(device_target) = device_color_target(window) else {
+        block_preview(window, "Select an authoritative Color Mode");
+        return;
+    };
     let sensor = capture_profile.sensor;
     window.set_render_progress_visible(true);
     window.set_render_progress(0.0);
@@ -1773,6 +1807,7 @@ fn render_camera_result(
             settings.development,
             region,
             settings.transform,
+            device_target,
             &cancel,
             move |completed, total, tile, staging| {
                 let _ = progress_window.upgrade_in_event_loop(move |window| {
@@ -2082,6 +2117,7 @@ fn run_native_capture_job(
     development: CameraDevelopment,
     region: SensorRegion,
     transform: CameraOutputTransform,
+    device_target: DeviceColorTarget,
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, usize, SensorRegion, Option<NativeStagingPreview>),
 ) -> Result<NativeCaptureOutput, NativeCaptureError> {
@@ -2093,10 +2129,7 @@ fn run_native_capture_job(
     let media_processor = match &source {
         NativeCaptureSource::Media(media) => Some(
             color_engine
-                .source_to_device_processor(
-                    media.color_interpretation,
-                    DeviceColorTarget::SrgbDisplay,
-                )
+                .source_to_device_processor(media.color_interpretation, device_target)
                 .map_err(|error| NativeCaptureError::Failed(error.to_string()))?,
         ),
         _ => None,
@@ -2539,18 +2572,19 @@ fn ensure_device_signal(
     color_engine: &ColorEngine,
     interpretation: SourceColorInterpretation,
     alpha_interpretation: AlphaInterpretation,
+    target: DeviceColorTarget,
 ) -> Result<(), ApplicationError> {
-    let key = (interpretation, alpha_interpretation);
+    let key = (interpretation, alpha_interpretation, target);
     if source.prepared_signal_key == Some(key) {
         return Ok(());
     }
-    if source.processor_interpretation != Some(interpretation) {
+    if source.processor_interpretation != Some((interpretation, target)) {
         source.color_processor = Some(
             color_engine
-                .source_to_device_processor(interpretation, DeviceColorTarget::SrgbDisplay)
+                .source_to_device_processor(interpretation, target)
                 .map_err(ApplicationError::Color)?,
         );
-        source.processor_interpretation = Some(interpretation);
+        source.processor_interpretation = Some((interpretation, target));
     }
     let processor = source
         .color_processor
@@ -2626,14 +2660,15 @@ fn present_source(window: &MainWindow, path: &Path, descriptor: &MediaDescriptor
     let interpretation_status = propose_ocio_input(&descriptor.color_metadata).map_or_else(
         || {
             if descriptor.color_metadata.is_empty() {
-                "No declared color metadata · choose IDT to authorize".to_owned()
+                "No declared color metadata · choose Input Transform to authorize".to_owned()
             } else {
-                "Declared color metadata is not decisive · choose IDT to authorize".to_owned()
+                "Declared color metadata is not decisive · choose Input Transform to authorize"
+                    .to_owned()
             }
         },
         |proposal| {
             format!(
-                "Metadata proposes {} · choose IDT to authorize",
+                "Metadata proposes {} · choose Input Transform to authorize",
                 proposal.label()
             )
         },
@@ -2644,7 +2679,7 @@ fn present_source(window: &MainWindow, path: &Path, descriptor: &MediaDescriptor
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window = MainWindow::new()?;
-    let idt_labels: Vec<SharedString> = ["Select IDT…", "Identity (device signal)"]
+    let idt_labels: Vec<SharedString> = ["Select Input Transform…"]
         .into_iter()
         .chain(
             OcioInputTransform::ALL
@@ -2654,6 +2689,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(Into::into)
         .collect();
     window.set_idt_model(ModelRc::new(VecModel::from(idt_labels)));
+    window.set_color_mode_model(ModelRc::new(VecModel::from(
+        DeviceColorTarget::ALL
+            .into_iter()
+            .map(|target| SharedString::from(target.label()))
+            .collect::<Vec<_>>(),
+    )));
     let device_labels: Vec<SharedString> = DEVICE_PRESETS
         .iter()
         .map(|preset| preset.label.into())

@@ -60,7 +60,7 @@ section remain explicit zero/bypass pending implementation.
 This section records the superseded Device-only cut. Its Swift evaluator and
 shader were removed when the unified Rust/Metal frame job became authoritative.
 The current `amount = 0` exact identity, calibrated evaluation, negative/>1 and
-alpha guarantees are owned by `NATIVE_PHYSICAL_PIPELINE_V2.md`; no Device-only
+alpha guarantees are owned by `NATIVE_PHYSICAL_PIPELINE_V3.md`; no Device-only
 runtime route remains.
 
 Historically, on the development Apple-silicon host, 30 completed 960×540 Device evaluations

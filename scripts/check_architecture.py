@@ -13,7 +13,9 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ACTIVE_TEXT_SUFFIXES = {".json", ".md", ".py", ".rs", ".slint", ".toml", ".yml", ".yaml"}
+ACTIVE_TEXT_SUFFIXES = {
+    ".h", ".json", ".md", ".py", ".rs", ".slint", ".swift", ".toml", ".yml", ".yaml"
+}
 
 
 class ValidationError(RuntimeError):
@@ -93,9 +95,63 @@ def validate_domains() -> None:
             )
 
 
+def validate_swift_domains() -> None:
+    manifest = load_json("architecture/swift-domains.json")
+    if set(manifest) != {"schema", "version", "packages"}:
+        raise ValidationError("swift-domains.json has undeclared root fields")
+    if (
+        manifest["schema"] != "screen_simulation_swift_domains"
+        or manifest["version"] != 1
+    ):
+        raise ValidationError("swift-domains.json has an unknown contract")
+
+    for package_entry in manifest["packages"]:
+        if set(package_entry) != {"path", "targets"}:
+            raise ValidationError("A Swift package has undeclared fields")
+        package_path = package_entry["path"]
+        description = json.loads(
+            run([
+                "swift", "package", "--package-path", package_path,
+                "describe", "--type", "json",
+            ])
+        )
+        actual = {target["name"]: target for target in description["targets"]}
+        declared = {target["name"]: target for target in package_entry["targets"]}
+        if set(actual) != set(declared):
+            missing = sorted(set(actual) - set(declared))
+            extra = sorted(set(declared) - set(actual))
+            raise ValidationError(
+                f"Swift target mismatch in {package_path}; undeclared={missing}, absent={extra}"
+            )
+        for name, declaration in declared.items():
+            if set(declaration) != {
+                "name", "owner", "allowed_target_dependencies",
+                "allowed_product_dependencies",
+            }:
+                raise ValidationError(f"Swift target {name} has undeclared fields")
+            target = actual[name]
+            target_dependencies = sorted(target.get("target_dependencies", []))
+            product_dependencies = sorted(target.get("product_dependencies", []))
+            allowed_targets = sorted(declaration["allowed_target_dependencies"])
+            allowed_products = sorted(declaration["allowed_product_dependencies"])
+            if target_dependencies != allowed_targets:
+                raise ValidationError(
+                    f"Swift target {name} dependencies are {target_dependencies}, "
+                    f"expected {allowed_targets}"
+                )
+            if product_dependencies != allowed_products:
+                raise ValidationError(
+                    f"Swift target {name} products are {product_dependencies}, "
+                    f"expected {allowed_products}"
+                )
+
+
 def repository_paths() -> list[str]:
     output = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
-    return sorted(path for path in output.split("\0") if path)
+    return sorted(
+        path for path in output.split("\0")
+        if path and (ROOT / path).exists()
+    )
 
 
 def validate_path_owners(paths: list[str]) -> None:
@@ -202,14 +258,83 @@ def validate_native_backend_composition(paths: list[str]) -> None:
         raise ValidationError(f"Desktop Native composition calls CPU reference entrypoints: {present}")
 
 
+def validate_presentation_boundaries() -> None:
+    mac_ui_root = ROOT / "apps/screen-native-macos/Sources/ScreenSimulationMacUI"
+    forbidden_ui_identifiers = [
+        "DeviceDefinition",
+        "PhysicalIntermediate",
+        "ScreenPhysicalBridge",
+        "StudioColor",
+        "StudioMedia",
+        "acescg",
+        "colorModeIDs",
+        "device-signal",
+        "feeder-signal",
+        "outputSignalID",
+        "placementID",
+        "previewQualityID",
+        "rec709",
+        "srgb",
+        "whiteLevelNits",
+    ]
+    for path in mac_ui_root.glob("**/*.swift"):
+        text = path.read_text(encoding="utf-8")
+        present = [identifier for identifier in forbidden_ui_identifiers if identifier in text]
+        if present:
+            relative = path.relative_to(ROOT).as_posix()
+            raise ValidationError(
+                f"Presentation target {relative} contains model semantics: {present}"
+            )
+
+    content = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift"
+    ).read_text(encoding="utf-8")
+    start = content.find("private var testWorkspace")
+    end = content.find("private var monitorSettings", start)
+    if start < 0 or end < 0:
+        raise ValidationError("ContentView must contain one bounded Test workspace shell")
+    test_shell = content[start:end]
+    forbidden_shell_identifiers = [
+        "ForEach(Physical",
+        "Input Transform",
+        "PhysicalIntermediate",
+        "StudioColorMode",
+        "TestPhaseOption",
+        "TextField(",
+        "colorModeID",
+        "whiteLevelNits",
+    ]
+    present = [identifier for identifier in forbidden_shell_identifiers if identifier in test_shell]
+    if present:
+        raise ValidationError(f"Test workspace hard-codes model controls: {present}")
+
+
+def validate_phase_gated_workflow() -> None:
+    rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    required = [
+        "## Phase-gated implementation",
+        "present a non-technical high-level summary",
+        "wait for explicit user confirmation",
+        "comparable old/new diagnostic PNGs",
+        "canonical checkpoint feeding the next phase",
+    ]
+    absent = [statement for statement in required if statement not in rules]
+    if absent:
+        raise ValidationError(f"Phase-gated workflow rule is incomplete: {absent}")
+
+
 def main() -> int:
     try:
         paths = repository_paths()
         validate_domains()
+        validate_swift_domains()
         validate_path_owners(paths)
         validate_archive_isolation(paths)
         validate_retired_surfaces(paths)
         validate_native_backend_composition(paths)
+        validate_presentation_boundaries()
+        validate_phase_gated_workflow()
     except (ValidationError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)
         return 1

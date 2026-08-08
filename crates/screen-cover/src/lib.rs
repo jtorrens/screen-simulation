@@ -26,6 +26,26 @@ pub struct CoverGlassProfile {
     pub absorption_per_millimeter: LinearRgb,
     pub roughness: f32,
     pub haze: f32,
+    pub glow: CoverGlowProfile,
+}
+
+/// Energy-redistributing lateral scatter inside the cover stack. Radii are
+/// measured on the physical panel surface rather than in preview pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoverGlowProfile {
+    /// Zero is exact identity, one is calibrated and values above one
+    /// extrapolate the redistributed fraction without changing its radii.
+    pub character_strength: f32,
+    pub scatter_fraction: f32,
+    pub core_radius_millimeters: f32,
+    pub tail_radius_millimeters: f32,
+    pub tail_fraction: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoverGlowSample {
+    pub offset_meters: [f32; 2],
+    pub weight: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +79,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.006),
             roughness: 0.025,
             haze: 0.002,
+            glow: CoverGlowProfile::GLOSSY_STRONG_AR,
         },
     },
     CoverGlassPreset {
@@ -73,6 +94,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.008),
             roughness: 0.045,
             haze: 0.004,
+            glow: CoverGlowProfile::GLOSSY_STANDARD_AR,
         },
     },
     CoverGlassPreset {
@@ -87,6 +109,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.010),
             roughness: 0.20,
             haze: 0.012,
+            glow: CoverGlowProfile::SEMI_GLOSS,
         },
     },
     CoverGlassPreset {
@@ -101,6 +124,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.012),
             roughness: 0.46,
             haze: 0.030,
+            glow: CoverGlowProfile::MATTE_AR,
         },
     },
     CoverGlassPreset {
@@ -115,6 +139,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.018),
             roughness: 0.72,
             haze: 0.075,
+            glow: CoverGlowProfile::HEAVY_MATTE,
         },
     },
     CoverGlassPreset {
@@ -129,6 +154,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: LinearRgb::new(0.010, 0.008, 0.006),
             roughness: 0.035,
             haze: 0.010,
+            glow: CoverGlowProfile::THICK_GLASS,
         },
     },
 ];
@@ -161,6 +187,11 @@ pub struct EnvironmentPreset {
 }
 
 pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
+    EnvironmentPreset {
+        id: "environment-none",
+        label: "Sin entorno",
+        environment: ProceduralEnvironment::NONE,
+    },
     EnvironmentPreset {
         id: "environment-uniform-neutral",
         label: "HDR · uniform neutral",
@@ -232,6 +263,7 @@ impl CoverGlassProfile {
         absorption_per_millimeter: LinearRgb::new(0.0, 0.0, 0.0),
         roughness: 0.0,
         haze: 0.0,
+        glow: CoverGlowProfile::NEUTRAL,
     };
 
     pub fn validate(self) -> Result<Self, CoverError> {
@@ -268,6 +300,7 @@ impl CoverGlassProfile {
         {
             return Err(CoverError::InvalidSurface);
         }
+        self.glow.validate()?;
         Ok(self)
     }
 
@@ -279,6 +312,124 @@ impl CoverGlassProfile {
             cover: self.validate()?,
             environment: environment.validate()?,
         })
+    }
+}
+
+impl CoverGlowProfile {
+    pub const NEUTRAL: Self = Self {
+        character_strength: 0.0,
+        scatter_fraction: 0.0,
+        core_radius_millimeters: 0.1,
+        tail_radius_millimeters: 1.0,
+        tail_fraction: 0.5,
+    };
+    pub const GLOSSY_STRONG_AR: Self = Self {
+        character_strength: 1.0,
+        scatter_fraction: 0.018,
+        core_radius_millimeters: 0.12,
+        tail_radius_millimeters: 1.2,
+        tail_fraction: 0.35,
+    };
+    pub const GLOSSY_STANDARD_AR: Self = Self {
+        character_strength: 1.0,
+        scatter_fraction: 0.030,
+        core_radius_millimeters: 0.18,
+        tail_radius_millimeters: 1.8,
+        tail_fraction: 0.40,
+    };
+    pub const SEMI_GLOSS: Self = Self {
+        character_strength: 1.0,
+        scatter_fraction: 0.060,
+        core_radius_millimeters: 0.28,
+        tail_radius_millimeters: 2.5,
+        tail_fraction: 0.45,
+    };
+    pub const MATTE_AR: Self = Self {
+        character_strength: 1.0,
+        scatter_fraction: 0.10,
+        core_radius_millimeters: 0.42,
+        tail_radius_millimeters: 3.5,
+        tail_fraction: 0.50,
+    };
+    pub const HEAVY_MATTE: Self = Self {
+        character_strength: 1.0,
+        scatter_fraction: 0.16,
+        core_radius_millimeters: 0.65,
+        tail_radius_millimeters: 5.0,
+        tail_fraction: 0.55,
+    };
+    pub const THICK_GLASS: Self = Self {
+        character_strength: 1.0,
+        scatter_fraction: 0.035,
+        core_radius_millimeters: 0.80,
+        tail_radius_millimeters: 8.0,
+        tail_fraction: 0.65,
+    };
+
+    pub fn validate(self) -> Result<Self, CoverError> {
+        if !self.character_strength.is_finite()
+            || !(0.0..=4.0).contains(&self.character_strength)
+            || !self.scatter_fraction.is_finite()
+            || !(0.0..=0.35).contains(&self.scatter_fraction)
+            || !self.core_radius_millimeters.is_finite()
+            || !(0.01..=5.0).contains(&self.core_radius_millimeters)
+            || !self.tail_radius_millimeters.is_finite()
+            || self.tail_radius_millimeters < self.core_radius_millimeters
+            || self.tail_radius_millimeters > 30.0
+            || !self.tail_fraction.is_finite()
+            || !(0.0..=1.0).contains(&self.tail_fraction)
+            || self.scatter_fraction * self.character_strength > 0.95
+        {
+            return Err(CoverError::InvalidGlow);
+        }
+        Ok(self)
+    }
+
+    pub fn samples(self) -> Result<[CoverGlowSample; 9], CoverError> {
+        let profile = self.validate()?;
+        let scattered = profile.scatter_fraction * profile.character_strength;
+        let core_weight = scattered * (1.0 - profile.tail_fraction) * 0.25;
+        let tail_weight = scattered * profile.tail_fraction * 0.25;
+        let core = profile.core_radius_millimeters * 0.001;
+        let tail = profile.tail_radius_millimeters * 0.001 * core::f32::consts::FRAC_1_SQRT_2;
+        Ok([
+            CoverGlowSample {
+                offset_meters: [0.0, 0.0],
+                weight: 1.0 - scattered,
+            },
+            CoverGlowSample {
+                offset_meters: [core, 0.0],
+                weight: core_weight,
+            },
+            CoverGlowSample {
+                offset_meters: [-core, 0.0],
+                weight: core_weight,
+            },
+            CoverGlowSample {
+                offset_meters: [0.0, core],
+                weight: core_weight,
+            },
+            CoverGlowSample {
+                offset_meters: [0.0, -core],
+                weight: core_weight,
+            },
+            CoverGlowSample {
+                offset_meters: [tail, tail],
+                weight: tail_weight,
+            },
+            CoverGlowSample {
+                offset_meters: [-tail, tail],
+                weight: tail_weight,
+            },
+            CoverGlowSample {
+                offset_meters: [tail, -tail],
+                weight: tail_weight,
+            },
+            CoverGlowSample {
+                offset_meters: [-tail, -tail],
+                weight: tail_weight,
+            },
+        ])
     }
 }
 
@@ -338,6 +489,13 @@ impl ProceduralEnvironment {
 }
 
 impl ValidatedCoverEvaluator {
+    pub fn glow_samples(self) -> [CoverGlowSample; 9] {
+        self.cover
+            .glow
+            .samples()
+            .expect("validated cover owns a validated glow profile")
+    }
+
     pub fn evaluate(self, emitted_illuminance: LinearRgb, sample: CoverSurfaceSample) -> LinearRgb {
         let transmission = self.transmission(sample.view_cosine);
         let reflected = self.reflected_illuminance(sample);
@@ -517,6 +675,7 @@ pub enum CoverError {
     InvalidCoating,
     InvalidAbsorption,
     InvalidSurface,
+    InvalidGlow,
     InvalidEnvironmentStrength,
     InvalidEnvironmentRadiance,
     InvalidEnvironmentDirection,
@@ -533,6 +692,7 @@ impl fmt::Display for CoverError {
             Self::InvalidCoating => "cover coating efficiency must be finite in [0, 1]",
             Self::InvalidAbsorption => "cover absorption must be finite in [0, 2] per millimeter",
             Self::InvalidSurface => "cover roughness and haze must be finite in [0, 1]",
+            Self::InvalidGlow => "cover glow profile is outside its physical bounds",
             Self::InvalidEnvironmentStrength => "environment strength must be finite in [0, 4]",
             Self::InvalidEnvironmentRadiance => {
                 "environment radiance must be finite and non-negative"
@@ -586,17 +746,45 @@ mod tests {
     #[test]
     fn zero_character_strength_is_exactly_neutral() {
         let cover = CoverGlassProfile::NEUTRAL
-            .evaluator(ENVIRONMENT_PRESETS[2].environment)
+            .evaluator(
+                environment_preset("environment-calibration-grid")
+                    .unwrap()
+                    .environment,
+            )
             .expect("valid evaluator");
         let emitted = LinearRgb::new(12.0, 8.0, 4.0);
         assert_eq!(cover.evaluate(emitted, sample(0.5)), emitted);
     }
 
     #[test]
+    fn glow_kernel_is_exactly_neutral_at_zero_and_conserves_emitted_energy() {
+        let neutral = CoverGlowProfile::NEUTRAL.samples().expect("neutral glow");
+        assert_eq!(neutral[0].offset_meters, [0.0, 0.0]);
+        assert_eq!(neutral[0].weight, 1.0);
+        assert!(neutral[1..].iter().all(|sample| sample.weight == 0.0));
+
+        for preset in COVER_GLASS_PRESETS {
+            let samples = preset.profile.glow.samples().expect("catalog glow");
+            let weight = samples.iter().map(|sample| sample.weight).sum::<f32>();
+            assert!((weight - 1.0).abs() <= 2.0 * f32::EPSILON);
+            assert!(samples.iter().all(|sample| sample.weight >= 0.0));
+            assert!(
+                samples[1..]
+                    .iter()
+                    .any(|sample| sample.offset_meters != [0.0, 0.0])
+            );
+        }
+    }
+
+    #[test]
     fn fresnel_reflection_grows_at_grazing_angles() {
         let cover = COVER_GLASS_PRESETS[1]
             .profile
-            .evaluator(ENVIRONMENT_PRESETS[1].environment)
+            .evaluator(
+                environment_preset("environment-studio-softboxes")
+                    .unwrap()
+                    .environment,
+            )
             .expect("valid evaluator");
         let black = LinearRgb::new(0.0, 0.0, 0.0);
         let frontal = cover.evaluate(black, sample(1.0));
@@ -608,7 +796,9 @@ mod tests {
 
     #[test]
     fn environment_zero_removes_reflection_without_changing_cover_transmission() {
-        let mut environment = ENVIRONMENT_PRESETS[2].environment;
+        let mut environment = environment_preset("environment-calibration-grid")
+            .unwrap()
+            .environment;
         environment.character_strength = 0.0;
         let cover = COVER_GLASS_PRESETS[0]
             .profile
@@ -623,7 +813,9 @@ mod tests {
 
     #[test]
     fn synthetic_hdr_rotation_moves_the_reflected_distribution() {
-        let mut environment = ENVIRONMENT_PRESETS[1].environment;
+        let mut environment = environment_preset("environment-studio-softboxes")
+            .unwrap()
+            .environment;
         environment.rotation_degrees = -90.0;
         let rotated = COVER_GLASS_PRESETS[1]
             .profile
@@ -645,7 +837,9 @@ mod tests {
 
     #[test]
     fn physically_zero_interfaces_do_not_reflect_at_extreme_angles() {
-        let environment = ENVIRONMENT_PRESETS[2].environment;
+        let environment = environment_preset("environment-calibration-grid")
+            .unwrap()
+            .environment;
         let base = CoverGlassProfile {
             character_strength: 1.0,
             thickness_millimeters: 1.0,
@@ -654,6 +848,7 @@ mod tests {
             absorption_per_millimeter: rgb(0.0),
             roughness: 0.0,
             haze: 0.0,
+            glow: CoverGlowProfile::NEUTRAL,
         };
         let no_interface = base.evaluator(environment).expect("valid interface");
         assert_eq!(no_interface.evaluate(rgb(0.0), sample(0.01)), rgb(0.0));
@@ -669,7 +864,9 @@ mod tests {
 
     #[test]
     fn calibration_grid_is_spatially_structured_and_roughness_reduces_contrast() {
-        let environment = ENVIRONMENT_PRESETS[2].environment;
+        let environment = environment_preset("environment-calibration-grid")
+            .unwrap()
+            .environment;
         let glossy = COVER_GLASS_PRESETS[1]
             .profile
             .evaluator(environment)

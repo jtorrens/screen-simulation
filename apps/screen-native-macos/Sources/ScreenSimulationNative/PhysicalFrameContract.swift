@@ -27,6 +27,7 @@ enum ScreenPhysicalSection: UInt32, PhysicalSectionID {
     case temporal = 0x104
     case coverGlass = 0x105
     case environment = 0x106
+    case coverGlow = 0x107
 
     var id: UInt32 { rawValue }
 }
@@ -38,6 +39,7 @@ enum CapturePhysicalSection: UInt32, PhysicalSectionID {
     case sensorCFA = 0x204
     case noise = 0x205
     case developDemosaic = 0x206
+    case sensorBloom = 0x207
 
     var id: UInt32 { rawValue }
 }
@@ -60,9 +62,22 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         }
     }
 
-    static let ordered: [Self] =
-        ScreenPhysicalSection.allCases.map(Self.screen)
-        + CapturePhysicalSection.allCases.map(Self.capture)
+    static let ordered: [Self] = [
+        .screen(.emission),
+        .screen(.subpixelGeometry),
+        .screen(.panelLightSpread),
+        .screen(.temporal),
+        .capture(.geometry),
+        .screen(.coverGlass),
+        .screen(.environment),
+        .screen(.coverGlow),
+        .capture(.lens),
+        .capture(.exposureShutter),
+        .capture(.sensorBloom),
+        .capture(.sensorCFA),
+        .capture(.noise),
+        .capture(.developDemosaic),
+    ]
 
     /// Continuous stage amounts surfaced in General in pipeline order. These
     /// are the contract values themselves, not group masters or copied state.
@@ -70,8 +85,10 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         .screen(.temporal),
         .screen(.coverGlass),
         .screen(.environment),
+        .screen(.coverGlow),
         .capture(.lens),
         .capture(.exposureShutter),
+        .capture(.sensorBloom),
         .capture(.noise),
     ]
 
@@ -185,12 +202,15 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case panelEmission = 2
     case subpixelRadiance = 3
     case panelLightSpread = 4
-    case coverEnvironment = 5
-    case sceneGeometryLens = 6
-    case shutterMotion = 7
-    case sensorNoise = 8
-    case rawMosaic = 9
-    case developedACEScg = 10
+    case relativeGeometry = 5
+    case coverEnvironment = 6
+    case coverGlow = 7
+    case lensProjection = 8
+    case shutterMotion = 9
+    case sensorBloom = 10
+    case sensorNoise = 11
+    case rawMosaic = 12
+    case developedACEScg = 13
 
     var id: UInt32 { rawValue }
 
@@ -200,9 +220,12 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         .panelEmission,
         .subpixelRadiance,
         .panelLightSpread,
+        .relativeGeometry,
         .coverEnvironment,
-        .sceneGeometryLens,
+        .coverGlow,
+        .lensProjection,
         .shutterMotion,
+        .sensorBloom,
         .sensorNoise,
         .rawMosaic,
         .developedACEScg,
@@ -215,10 +238,13 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         case .panelEmission: "Emission"
         case .subpixelRadiance: "Subpixel"
         case .panelLightSpread: "Spread"
+        case .relativeGeometry: "Relative Geometry"
         case .developedACEScg: "Developed"
         case .coverEnvironment: "Cover / Environment"
-        case .sceneGeometryLens: "Geometry / Lens"
+        case .coverGlow: "Cover Glow"
+        case .lensProjection: "Lens / Projection"
         case .shutterMotion: "Shutter / Motion"
+        case .sensorBloom: "Sensor Bloom"
         case .sensorNoise: "Sensor / Noise"
         case .rawMosaic: "RAW Mosaic"
         }

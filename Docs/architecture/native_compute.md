@@ -24,16 +24,23 @@ that boundary.
 
 Metal/CPU parity for developed linear ACEScg uses a maximum absolute channel tolerance of `2e-5`
 over all four Bayer patterns, odd global CFA origins, edge support and aggressive white balance and
-develop exposure. Raw sensor codes and clipping masks are still produced by the unchanged CPU sensor
+develop exposure. Raw sensor codes and clipping masks, including calibrated neighbour crosstalk and
+nonrecursive overflow transfer, are still produced by the CPU sensor
 owner and are bit-identical because Metal begins strictly after the authoritative RAW boundary.
+The native macOS Test adapter follows the same boundary: its coarse Metal physical pass stops at
+shutter-integrated linear exposure, Application performs the higher-precision photosite-footprint
+integration, expands regional work by the sensor bloom model's complete two-photosite support and
+calls `screen-sensor`; only the resulting immutable integer RAW may be uploaded
+for Metal camera development. No Metal kernel owns area-to-photosite resampling, sensor noise,
+full-well state, ADC clipping or RAW quantization.
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and
-colorimetry, cover and complete rotated synthetic-HDR environment, globally selected 16–128 aperture sample count, and either the
+colorimetry, cover, its physical core/tail glow kernel and complete rotated synthetic-HDR environment, globally selected 16–128 aperture sample count, and either the
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
 represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
 and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
-Fresnel/transmission/reflection, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
+Fresnel/transmission/reflection, cover-glow shifted sampling, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
 The native-shell physical-frame ABI has one earlier flat-panel compute slice with no camera,

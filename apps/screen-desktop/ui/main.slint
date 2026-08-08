@@ -164,6 +164,8 @@ export component MainWindow inherits Window {
     in-out property <int> device-preset-index: 3;
     in property <[string]> device-preset-model;
     in property <[string]> device-preset-ids;
+    in-out property <int> color-mode-index: 0;
+    in property <[string]> color-mode-model;
     in-out property <float> device-native-width: 3024;
     in-out property <float> device-native-height: 1964;
     in-out property <float> device-active-width-mm: 302.4;
@@ -753,7 +755,7 @@ export component MainWindow inherits Window {
 
                         HorizontalLayout {
                             height: 34px;
-                            Text { text: "IDT"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            Text { text: "Input Transform"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
                             ComboBox {
                                 model: root.idt-model;
                                 current-index <=> root.idt-index;
@@ -970,6 +972,15 @@ export component MainWindow inherits Window {
                             }
                         }
 
+                        HorizontalLayout {
+                            height: 34px;
+                            Text { text: "Color Mode"; color: #aeb7c8; width: 94px; vertical-alignment: center; }
+                            ComboBox {
+                                model: root.color-mode-model;
+                                current-index <=> root.color-mode-index;
+                            }
+                        }
+
                         Text {
                             text: root.device-native-width + " × " + root.device-native-height + " px · " + root.device-active-width-mm + " × " + root.device-active-height-mm + " mm";
                             color: #c3ccda;
@@ -1031,7 +1042,7 @@ export component MainWindow inherits Window {
                         Text { text: "LCD PANEL"; color: #71819b; font-size: 11px; }
 
                         ValueRow {
-                            label: "White";
+                            label: "White Luminance";
                             minimum: 100;
                             maximum: 1500;
                             step: 1;

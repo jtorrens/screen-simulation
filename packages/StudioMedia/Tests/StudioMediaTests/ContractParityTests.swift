@@ -20,7 +20,7 @@ import Testing
     let explicit = StudioMediaMetadataDetector.inputTransformProposal(
         primaries: "ITU_R_709_2", transfer: "ITU_R_709_2", matrix: "ITU_R_709_2"
     )
-    #expect(explicit?.id == "display-rec709-aces2-sdr")
+    #expect(explicit?.id == "display-rec709-gamma24-dcm")
     #expect(explicit?.provenance == .detected)
     #expect(StudioMediaMetadataDetector.proposedMatrix("ITU_R_2020") == .bt2020)
 }
@@ -29,7 +29,7 @@ import Testing
     let incomplete = StudioMediaMetadataDetector.inputTransformProposal(
         primaries: "ITU_R_709_2", transfer: nil, matrix: "ITU_R_709_2"
     )
-    #expect(incomplete?.id == "display-rec709-aces2-sdr")
+    #expect(incomplete?.id == "display-rec709-gamma24-dcm")
     #expect(incomplete?.provenance == .proposed)
 }
 
@@ -37,7 +37,7 @@ import Testing
     let explicit = StudioMediaMetadataDetector.inputTransformProposal(
         primaries: "ITU_R_2020", transfer: "SMPTE_ST_2084_PQ", matrix: "ITU_R_2020"
     )
-    #expect(explicit?.id == "display-rec2100-pq-aces2-hdr-1000")
+    #expect(explicit?.id == "display-rec2100-pq-dcm")
     #expect(explicit?.provenance == .detected)
     #expect(StudioMediaMetadataDetector.inputTransformProposal(
         primaries: "ITU_R_2020", transfer: nil, matrix: "ITU_R_2020"

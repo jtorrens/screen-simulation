@@ -19,20 +19,19 @@ import Testing
     ) == CGSize(width: 50, height: -10))
 }
 
-@Test func previewFitAndOneToOneUseTheActualImageRect() {
-    let fitted = PreviewNavigationMath.fittedContentSize(
+@Test func previewFitPublishesAnAbsoluteScaleAndOneToOneIsExactlyOne() {
+    let fittedScale = PreviewNavigationMath.fittedScale(
         texture: CGSize(width: 200, height: 100),
         viewport: CGSize(width: 100, height: 100)
     )
-    #expect(fitted == CGSize(width: 100, height: 50))
-    #expect(PreviewNavigationMath.oneToOneScale(
-        texture: CGSize(width: 200, height: 100), fittedContent: fitted
-    ) == 2)
+    #expect(fittedScale == 0.5)
+    let oneToOneScale: CGFloat = 1
+    #expect(oneToOneScale == 1)
     #expect(PreviewNavigationMath.clampedPan(
         CGSize(width: 200, height: -200),
         viewport: CGSize(width: 100, height: 100),
-        fittedContent: fitted,
-        scale: 2
+        fittedContent: CGSize(width: 200, height: 100),
+        scale: oneToOneScale
     ) == CGSize(width: 50, height: 0))
 }
 

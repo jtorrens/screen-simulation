@@ -66,6 +66,7 @@ impl CameraOutputTransform {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OcioInputTransform {
     SrgbEncodedRec709,
+    Rec709Gamma24Display,
     CameraRec709,
     ArriLogC3Ei800,
     ArriLogC4,
@@ -78,8 +79,9 @@ pub enum OcioInputTransform {
 }
 
 impl OcioInputTransform {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::SrgbEncodedRec709,
+        Self::Rec709Gamma24Display,
         Self::CameraRec709,
         Self::ArriLogC3Ei800,
         Self::ArriLogC4,
@@ -94,6 +96,7 @@ impl OcioInputTransform {
     pub const fn label(self) -> &'static str {
         match self {
             Self::SrgbEncodedRec709 => "sRGB encoded Rec.709",
+            Self::Rec709Gamma24Display => "Display Rec.709 Gamma 2.4",
             Self::CameraRec709 => "Camera Rec.709",
             Self::ArriLogC3Ei800 => "ARRI LogC3 (EI800)",
             Self::ArriLogC4 => "ARRI LogC4",
@@ -109,6 +112,7 @@ impl OcioInputTransform {
     pub const fn stable_id(self) -> &'static str {
         match self {
             Self::SrgbEncodedRec709 => "srgb-encoded-rec709",
+            Self::Rec709Gamma24Display => "display-rec709-gamma24",
             Self::CameraRec709 => "camera-rec709",
             Self::ArriLogC3Ei800 => "arri-logc3-ei800",
             Self::ArriLogC4 => "arri-logc4",
@@ -130,6 +134,7 @@ impl OcioInputTransform {
     const fn ocio_color_space(self) -> &'static str {
         match self {
             Self::SrgbEncodedRec709 => "sRGB Encoded Rec.709 (sRGB)",
+            Self::Rec709Gamma24Display => "Gamma 2.4 Encoded Rec.709",
             Self::CameraRec709 => "Camera Rec.709",
             Self::ArriLogC3Ei800 => "ARRI LogC3 (EI800)",
             Self::ArriLogC4 => "ARRI LogC4",
@@ -141,6 +146,38 @@ impl OcioInputTransform {
             Self::SLog3SGamut3Cine => "S-Log3 S-Gamut3.Cine",
         }
     }
+
+    pub const fn reference_domain(self) -> SourceReferenceDomain {
+        match self {
+            Self::SrgbEncodedRec709 | Self::Rec709Gamma24Display => {
+                SourceReferenceDomain::DisplayReferred
+            }
+            Self::CameraRec709
+            | Self::ArriLogC3Ei800
+            | Self::ArriLogC4
+            | Self::BmdFilmWideGamutGen5
+            | Self::DavinciIntermediateWideGamut
+            | Self::CanonLog3CinemaGamutD55
+            | Self::VLogVGamut
+            | Self::Log3G10RedWideGamutRgb
+            | Self::SLog3SGamut3Cine => SourceReferenceDomain::SceneReferred,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceReferenceDomain {
+    SceneReferred,
+    DisplayReferred,
+}
+
+impl SourceReferenceDomain {
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::SceneReferred => "sceneReferred",
+            Self::DisplayReferred => "displayReferred",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,23 +185,117 @@ pub enum DeviceColorTarget {
     SrgbDisplay,
     Gamma22Rec709Display,
     Rec1886Rec709Display,
+    Rec2100Pq1000Display,
+    Rec2100Hlg1000Display,
 }
 
 impl DeviceColorTarget {
-    const VIEW: &'static str = "ACES 2.0 - SDR 100 nits (Rec.709)";
+    pub const ALL: [Self; 5] = [
+        Self::SrgbDisplay,
+        Self::Gamma22Rec709Display,
+        Self::Rec1886Rec709Display,
+        Self::Rec2100Pq1000Display,
+        Self::Rec2100Hlg1000Display,
+    ];
 
     const fn ocio_display(self) -> &'static str {
         match self {
             Self::SrgbDisplay => "sRGB - Display",
             Self::Gamma22Rec709Display => "Gamma 2.2 Rec.709 - Display",
             Self::Rec1886Rec709Display => "Rec.1886 Rec.709 - Display",
+            Self::Rec2100Pq1000Display => "Rec.2100-PQ - Display",
+            Self::Rec2100Hlg1000Display => "Rec.2100-HLG - Display",
+        }
+    }
+
+    const fn scene_view(self) -> &'static str {
+        match self {
+            Self::SrgbDisplay | Self::Gamma22Rec709Display | Self::Rec1886Rec709Display => {
+                "ACES 2.0 - SDR 100 nits (Rec.709)"
+            }
+            Self::Rec2100Pq1000Display => "ACES 2.0 - HDR 1000 nits (Rec.2020)",
+            Self::Rec2100Hlg1000Display => "ACES 2.0 - HDR 1000 nits (P3 D65)",
+        }
+    }
+
+    const fn uses_display_processor_for_display_referred(self) -> bool {
+        matches!(
+            self,
+            Self::Rec2100Pq1000Display | Self::Rec2100Hlg1000Display
+        )
+    }
+
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::SrgbDisplay => "srgb",
+            Self::Gamma22Rec709Display => "rec709-gamma22",
+            Self::Rec1886Rec709Display => "rec709-gamma24",
+            Self::Rec2100Pq1000Display => "rec2100-pq-1000",
+            Self::Rec2100Hlg1000Display => "rec2100-hlg-1000",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SrgbDisplay => "sRGB",
+            Self::Gamma22Rec709Display => "Rec.709 Gamma 2.2",
+            Self::Rec1886Rec709Display => "Rec.709 / Rec.1886 Gamma 2.4",
+            Self::Rec2100Pq1000Display => "Rec.2100 PQ · 1000 nit",
+            Self::Rec2100Hlg1000Display => "Rec.2100 HLG · 1000 nit · P3-D65",
+        }
+    }
+
+    pub fn from_stable_id(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|target| target.stable_id() == value)
+    }
+
+    pub const fn feeder_output_id(self, domain: SourceReferenceDomain) -> &'static str {
+        match (self, domain) {
+            (Self::SrgbDisplay, SourceReferenceDomain::DisplayReferred) => {
+                "device-srgb-colorimetric"
+            }
+            (Self::SrgbDisplay, SourceReferenceDomain::SceneReferred) => "aces2-srgb-sdr-100",
+            (Self::Gamma22Rec709Display, SourceReferenceDomain::DisplayReferred) => {
+                "device-rec709-gamma22-colorimetric"
+            }
+            (Self::Gamma22Rec709Display, SourceReferenceDomain::SceneReferred) => {
+                "aces2-rec709-gamma22-sdr-100"
+            }
+            (Self::Rec1886Rec709Display, SourceReferenceDomain::DisplayReferred) => {
+                "device-rec709-gamma24-colorimetric"
+            }
+            (Self::Rec1886Rec709Display, SourceReferenceDomain::SceneReferred) => {
+                "aces2-rec709-sdr-100"
+            }
+            (Self::Rec2100Pq1000Display, SourceReferenceDomain::DisplayReferred) => {
+                "device-rec2100-pq-colorimetric"
+            }
+            (Self::Rec2100Pq1000Display, SourceReferenceDomain::SceneReferred) => {
+                "aces2-rec2100-pq-1000"
+            }
+            (Self::Rec2100Hlg1000Display, SourceReferenceDomain::DisplayReferred) => {
+                "device-rec2100-hlg-colorimetric"
+            }
+            (Self::Rec2100Hlg1000Display, SourceReferenceDomain::SceneReferred) => {
+                "aces2-rec2100-hlg-1000"
+            }
+        }
+    }
+
+    const fn ocio_color_space(self) -> &'static str {
+        match self {
+            Self::SrgbDisplay => "sRGB Encoded Rec.709 (sRGB)",
+            Self::Gamma22Rec709Display => "Gamma 2.2 Encoded Rec.709",
+            Self::Rec1886Rec709Display => "Gamma 2.4 Encoded Rec.709",
+            Self::Rec2100Pq1000Display | Self::Rec2100Hlg1000Display => ACESCG_COLOR_SPACE,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceColorInterpretation {
-    IdentityDeviceSignal,
     Ocio(OcioInputTransform),
 }
 
@@ -179,7 +310,7 @@ pub fn propose_ocio_input(metadata: &EncodedColorMetadata) -> Option<OcioInputTr
             Some(ColorPrimaries::Bt709),
             Some(TransferCharacteristic::Bt709),
             Some(MatrixCoefficients::Bt709),
-        ) => Some(OcioInputTransform::CameraRec709),
+        ) => Some(OcioInputTransform::Rec709Gamma24Display),
         _ => None,
     }
 }
@@ -243,20 +374,30 @@ impl ColorEngine {
         target: DeviceColorTarget,
     ) -> Result<SourceToDeviceProcessor, ColorError> {
         match interpretation {
-            SourceColorInterpretation::IdentityDeviceSignal => {
-                Ok(SourceToDeviceProcessor::Identity)
-            }
             SourceColorInterpretation::Ocio(input) => {
-                let processor = self
-                    .config
-                    .processor_display(
+                let processor = match input.reference_domain() {
+                    SourceReferenceDomain::DisplayReferred
+                        if target.uses_display_processor_for_display_referred() =>
+                    {
+                        self.config.processor_display(
+                            input.ocio_color_space(),
+                            target.ocio_display(),
+                            "Video (colorimetric)",
+                            TransformDirection::Forward,
+                        )
+                    }
+                    SourceReferenceDomain::DisplayReferred => self
+                        .config
+                        .processor(input.ocio_color_space(), target.ocio_color_space()),
+                    SourceReferenceDomain::SceneReferred => self.config.processor_display(
                         input.ocio_color_space(),
                         target.ocio_display(),
-                        DeviceColorTarget::VIEW,
+                        target.scene_view(),
                         TransformDirection::Forward,
-                    )
-                    .and_then(|processor| processor.default_cpu_processor())
-                    .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+                    ),
+                }
+                .and_then(|processor| processor.default_cpu_processor())
+                .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
                 Ok(SourceToDeviceProcessor::Ocio(processor))
             }
         }
@@ -404,7 +545,6 @@ impl CameraOutputProcessor {
 }
 
 pub enum SourceToDeviceProcessor {
-    Identity,
     Ocio(CPUProcessor),
 }
 
@@ -414,7 +554,6 @@ impl SourceToDeviceProcessor {
             return Err(ColorError::InvalidRgbaBufferLength(pixels.len()));
         }
         match self {
-            Self::Identity => Ok(()),
             Self::Ocio(processor) => processor
                 .try_apply_rgba_pixels(
                     pixels,
@@ -511,20 +650,19 @@ mod tests {
     }
 
     #[test]
-    fn identity_device_interpretation_preserves_code_values() {
+    fn srgb_device_signal_round_trips_through_acescg_without_a_bypass() {
         let engine = ColorEngine::bundled().expect("bundled color engine");
         let processor = engine
             .source_to_device_processor(
-                SourceColorInterpretation::IdentityDeviceSignal,
+                SourceColorInterpretation::Ocio(OcioInputTransform::SrgbEncodedRec709),
                 DeviceColorTarget::SrgbDisplay,
             )
-            .expect("identity processor");
-        assert_eq!(
-            processor
-                .apply_rgb([-0.1, 0.5, 1.2])
-                .expect("identity pixel"),
-            DeviceRgb::new(-0.1, 0.5, 1.2)
-        );
+            .expect("sRGB roundtrip processor");
+        let source = [0.1, 0.5, 0.9];
+        let signal = processor.apply_rgb(source).expect("roundtrip pixel");
+        for (actual, expected) in [signal.r, signal.g, signal.b].into_iter().zip(source) {
+            assert!((actual - expected).abs() <= 3.0e-5);
+        }
     }
 
     #[test]
@@ -626,14 +764,63 @@ mod tests {
     }
 
     #[test]
+    fn color_modes_have_stable_ids_and_domain_specific_feeder_outputs() {
+        for target in DeviceColorTarget::ALL {
+            assert_eq!(
+                DeviceColorTarget::from_stable_id(target.stable_id()),
+                Some(target)
+            );
+        }
+        assert_eq!(DeviceColorTarget::from_stable_id("Rec.709"), None);
+        assert_eq!(
+            DeviceColorTarget::SrgbDisplay.feeder_output_id(SourceReferenceDomain::DisplayReferred),
+            "device-srgb-colorimetric"
+        );
+        assert_eq!(
+            DeviceColorTarget::SrgbDisplay.feeder_output_id(SourceReferenceDomain::SceneReferred),
+            "aces2-srgb-sdr-100"
+        );
+        assert_eq!(
+            DeviceColorTarget::Rec2100Pq1000Display
+                .feeder_output_id(SourceReferenceDomain::DisplayReferred),
+            "device-rec2100-pq-colorimetric"
+        );
+        assert_eq!(
+            DeviceColorTarget::Rec2100Hlg1000Display
+                .feeder_output_id(SourceReferenceDomain::SceneReferred),
+            "aces2-rec2100-hlg-1000"
+        );
+    }
+
+    #[test]
+    fn hdr_feeder_signals_resolve_for_display_and_scene_referred_sources() {
+        let engine = ColorEngine::bundled().expect("bundled color engine");
+        for target in [
+            DeviceColorTarget::Rec2100Pq1000Display,
+            DeviceColorTarget::Rec2100Hlg1000Display,
+        ] {
+            for input in [
+                OcioInputTransform::SrgbEncodedRec709,
+                OcioInputTransform::ArriLogC4,
+            ] {
+                let signal = engine
+                    .source_to_device_processor(SourceColorInterpretation::Ocio(input), target)
+                    .and_then(|processor| processor.apply_rgb([0.18, 0.18, 0.18]))
+                    .unwrap_or_else(|error| panic!("{} failed: {error}", target.label()));
+                assert!(signal.r.is_finite() && signal.g.is_finite() && signal.b.is_finite());
+            }
+        }
+    }
+
+    #[test]
     fn processor_rejects_incomplete_rgba_storage() {
         let engine = ColorEngine::bundled().expect("bundled color engine");
         let processor = engine
             .source_to_device_processor(
-                SourceColorInterpretation::IdentityDeviceSignal,
+                SourceColorInterpretation::Ocio(OcioInputTransform::SrgbEncodedRec709),
                 DeviceColorTarget::SrgbDisplay,
             )
-            .expect("identity processor");
+            .expect("sRGB processor");
         assert_eq!(
             processor.apply_rgba_buffer(&mut [0.0; 3]),
             Err(ColorError::InvalidRgbaBufferLength(3))
@@ -668,7 +855,7 @@ mod tests {
         };
         assert_eq!(
             propose_ocio_input(&metadata),
-            Some(OcioInputTransform::CameraRec709)
+            Some(OcioInputTransform::Rec709Gamma24Display)
         );
         let incomplete = EncodedColorMetadata {
             matrix: None,

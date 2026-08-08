@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 7;
+pub const CURRENT_VERSION: u32 = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -120,7 +120,6 @@ pub struct PixelDecodeSelection {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceColorSelection {
-    Identity,
     Named { transform_id: OpaqueId },
 }
 
@@ -148,6 +147,7 @@ pub struct DeviceDocument {
     pub schema: String,
     pub version: u32,
     pub device_id: OpaqueId,
+    pub color_mode_id: OpaqueId,
     pub native_width: u32,
     pub native_height: u32,
     pub active_width_meters: f32,
@@ -180,6 +180,17 @@ pub struct CoverDocument {
     pub absorption_per_millimeter: [f32; 3],
     pub roughness: f32,
     pub haze: f32,
+    pub glow: CoverGlowDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverGlowDocument {
+    pub character_strength: f32,
+    pub scatter_fraction: f32,
+    pub core_radius_millimeters: f32,
+    pub tail_radius_millimeters: f32,
+    pub tail_fraction: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,9 +307,18 @@ pub struct SensorDocument {
     pub read_noise_electrons_rms: f32,
     pub analog_gain: f32,
     pub adc_bits: u8,
+    pub bloom: SensorBloomDocument,
     pub shutter_duration: ExactTime,
     pub temporal_samples: u16,
     pub readout: SensorReadoutDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SensorBloomDocument {
+    pub character_strength: f32,
+    pub crosstalk_fraction: f32,
+    pub overflow_transfer_fraction: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -838,6 +858,11 @@ fn validate_cover(cover: &CoverDocument) -> Result<(), PersistenceError> {
         cover.absorption_per_millimeter[2],
         cover.roughness,
         cover.haze,
+        cover.glow.character_strength,
+        cover.glow.scatter_fraction,
+        cover.glow.core_radius_millimeters,
+        cover.glow.tail_radius_millimeters,
+        cover.glow.tail_fraction,
     ]
     .into_iter()
     .all(f32::is_finite);
@@ -883,6 +908,9 @@ fn validate_sensor(sensor: &SensorDocument) -> Result<(), PersistenceError> {
             sensor.dark_current_electrons_per_second,
             sensor.read_noise_electrons_rms,
             sensor.analog_gain,
+            sensor.bloom.character_strength,
+            sensor.bloom.crosstalk_fraction,
+            sensor.bloom.overflow_transfer_fraction,
         ])
         .all(f32::is_finite);
     if !finite {
@@ -1112,7 +1140,9 @@ mod tests {
                     matrix: MatrixSelection::Auto,
                     range: RangeSelection::Auto,
                 },
-                color: SourceColorSelection::Identity,
+                color: SourceColorSelection::Named {
+                    transform_id: id("srgb-encoded-rec709"),
+                },
                 alpha: AlphaSelection::Straight,
                 placement: PlacementSelection::Fit,
             },
@@ -1120,6 +1150,7 @@ mod tests {
                 schema: "screen_simulation_device".into(),
                 version: CURRENT_VERSION,
                 device_id: id("device-01"),
+                color_mode_id: id("srgb"),
                 native_width: 3840,
                 native_height: 2160,
                 active_width_meters: 0.596_736,
@@ -1162,6 +1193,13 @@ mod tests {
                     absorption_per_millimeter: [0.012; 3],
                     roughness: 0.46,
                     haze: 0.03,
+                    glow: CoverGlowDocument {
+                        character_strength: 1.0,
+                        scatter_fraction: 0.08,
+                        core_radius_millimeters: 0.22,
+                        tail_radius_millimeters: 1.4,
+                        tail_fraction: 0.18,
+                    },
                 },
             },
             camera: CameraDocument {
@@ -1210,6 +1248,11 @@ mod tests {
                 read_noise_electrons_rms: 2.0,
                 analog_gain: 1.0,
                 adc_bits: 14,
+                bloom: SensorBloomDocument {
+                    character_strength: 1.0,
+                    crosstalk_fraction: 0.012,
+                    overflow_transfer_fraction: 0.45,
+                },
                 shutter_duration: ExactTime {
                     numerator: 1,
                     denominator: 48,

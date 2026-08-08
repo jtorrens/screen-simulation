@@ -95,8 +95,23 @@
       "checks": ["architecture", "studio-media"]
     },
     {
+      "id": "presentation-contracts",
+      "paths": [
+        "apps/screen-native-macos/Sources/ScreenSimulationPresentation/**",
+        "apps/screen-native-macos/Tests/ScreenSimulationPresentationTests/**"
+      ],
+      "checks": ["architecture", "presentation-contracts", "native-macos"]
+    },
+    {
+      "id": "macos-presentation",
+      "paths": [
+        "apps/screen-native-macos/Sources/ScreenSimulationMacUI/**"
+      ],
+      "checks": ["architecture", "macos-presentation", "native-macos"]
+    },
+    {
       "id": "native-macos-composition",
-      "paths": ["apps/screen-native-macos/**", "crates/screen-native-bridge/**", "Docs/CAPTURE_RADIOMETRIC_CALIBRATION.md", "Docs/NATIVE_MACOS_CUTOVER.md", "Docs/NATIVE_IO_METAL_PHASE.md", "Docs/NATIVE_COLOR_IDENTITY_REPORT.md", "Docs/NATIVE_DEVICE_PHASE.md", "Docs/NATIVE_PHYSICAL_FRAME_CONTRACT.md", "Docs/NATIVE_PHYSICAL_INTEGRATION_REPORT.md", "Docs/NATIVE_PHYSICAL_PARITY_AUDIT.md", "Docs/NATIVE_PHYSICAL_PIPELINE_V2.md", "Docs/NATIVE_PHYSICAL_UI_FIELD_MATRIX.md", "Docs/RADIOMETRIC_PATCH_VALIDATION.md"],
+      "paths": ["apps/screen-native-macos/Package.swift", "apps/screen-native-macos/Package.resolved", "apps/screen-native-macos/Sources/ScreenPhysicalBridge/**", "apps/screen-native-macos/Sources/ScreenSimulationNative/**", "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/**", "crates/screen-native-bridge/**", "Docs/CAPTURE_RADIOMETRIC_CALIBRATION.md", "Docs/NATIVE_MACOS_CUTOVER.md", "Docs/NATIVE_IO_METAL_PHASE.md", "Docs/NATIVE_COLOR_IDENTITY_REPORT.md", "Docs/NATIVE_DEVICE_PHASE.md", "Docs/NATIVE_PHYSICAL_FRAME_CONTRACT.md", "Docs/NATIVE_PHYSICAL_INTEGRATION_REPORT.md", "Docs/NATIVE_PHYSICAL_PARITY_AUDIT.md", "Docs/NATIVE_PHYSICAL_PIPELINE_V3.md", "Docs/NATIVE_PHYSICAL_UI_FIELD_MATRIX.md", "Docs/RADIOMETRIC_PATCH_VALIDATION.md"],
       "checks": ["architecture", "workspace", "native-macos"]
     },
     {

@@ -564,7 +564,7 @@ impl std::error::Error for CameraDevelopmentError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use screen_sensor::{BayerPattern, RawSensorRegion, SensorRegion};
+    use screen_sensor::{BayerPattern, RawSensorRegion, SensorBloomProfile, SensorRegion};
 
     fn identity_sensor(pattern: BayerPattern) -> SensorProfile {
         SensorProfile {
@@ -578,6 +578,7 @@ mod tests {
             read_noise_electrons_rms: 0.0,
             analog_gain: 1.0,
             adc_bits: 16,
+            bloom: SensorBloomProfile::NEUTRAL,
         }
     }
 

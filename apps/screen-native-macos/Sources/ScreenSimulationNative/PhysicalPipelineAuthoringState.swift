@@ -57,6 +57,9 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var readNoiseElectronsRMS = 2.0
         var analogGain = 1.0
         var adcBits: UInt32 = 14
+        var bloomCharacterStrength = 1.0
+        var bloomCrosstalkFraction = 0.012
+        var bloomOverflowTransferFraction = 0.22
     }
 
     /// Camera-preset owned calibration data for the physical sensor boundary.
@@ -173,6 +176,9 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         sensorABI.read_noise_electrons_rms = Float(sensor.readNoiseElectronsRMS)
         sensorABI.analog_gain = Float(sensor.analogGain)
         sensorABI.adc_bits = sensor.adcBits
+        sensorABI.bloom_character_strength = Float(sensor.bloomCharacterStrength)
+        sensorABI.bloom_crosstalk_fraction = Float(sensor.bloomCrosstalkFraction)
+        sensorABI.bloom_overflow_transfer_fraction = Float(sensor.bloomOverflowTransferFraction)
 
         var developABI = ScreenRawDevelopParametersV2()
         developABI.abi_version = version
@@ -256,7 +262,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             develop.middleGrayIlluminanceSeconds > 0
         else {
             throw DeviceDomainError.invalidPhysicalProfile(
-                "Los overrides físicos no cumplen el dominio seguro del snapshot ABI v2."
+                "Los overrides físicos no cumplen el dominio seguro del snapshot ABI v3."
             )
         }
     }
@@ -348,6 +354,10 @@ extension PhysicalPipelineAuthoringState {
             sensor.saturationIlluminanceSeconds = base.sensor.saturationIlluminanceSeconds
             sensor.fullWellElectrons = base.sensor.fullWellElectrons
             sensor.adcBits = base.sensor.adcBits
+        case .sensorBloom:
+            sensor.bloomCharacterStrength = base.sensor.bloomCharacterStrength
+            sensor.bloomCrosstalkFraction = base.sensor.bloomCrosstalkFraction
+            sensor.bloomOverflowTransferFraction = base.sensor.bloomOverflowTransferFraction
         case .noise:
             sensor.darkCurrentElectronsPerSecond = base.sensor.darkCurrentElectronsPerSecond
             sensor.readNoiseElectronsRMS = base.sensor.readNoiseElectronsRMS
@@ -391,7 +401,7 @@ extension DeviceDefinition {
             bandingOnDuration = base.bandingOnDuration
             bandingPhase = base.bandingPhase
             bandingAmount = base.bandingAmount
-        case .coverGlass, .environment:
+        case .coverGlass, .environment, .coverGlow:
             break
         }
     }

@@ -1,5 +1,7 @@
 import AppKit
 import MetalKit
+import ScreenSimulationMacUI
+import ScreenSimulationPresentation
 import StudioColor
 import StudioMedia
 import StudioVideoOutput
@@ -22,21 +24,19 @@ struct ContentView: View {
     }
     enum WorkspacePage: String, CaseIterable, Identifiable {
         case main = "Principal"
-        case model = "Modelo"
+        case test = "Test"
         case settings = "Settings"
         var id: String { rawValue }
         var systemImage: String {
             switch self {
             case .main: "rectangle.on.rectangle"
-            case .model: "square.3.layers.3d"
+            case .test: "checklist.checked"
             case .settings: "gearshape"
             }
         }
     }
 
     enum SidebarTab: String, CaseIterable, Identifiable {
-        case source = "Source"
-        case color = "Color"
         case output = "Output"
         case queue = "Render Queue"
         var id: String { rawValue }
@@ -79,7 +79,7 @@ struct ContentView: View {
     @Environment(\.undoManager) private var undoManager
     @ObservedObject var model: WorkspaceModel
     @StateObject private var library = GlobalLibraryController()
-    @State private var tab = SidebarTab.source
+    @State private var tab = SidebarTab.output
     @State private var page = WorkspacePage.main
     @State private var settingsSection = SettingsSection.application
     @State private var libraryCollection = LibraryCollection.patterns
@@ -90,7 +90,7 @@ struct ContentView: View {
             Group {
                 switch page {
                 case .main: mainWorkspace
-                case .model: modelWorkspace
+                case .test: testWorkspace
                 case .settings: settingsWorkspace
                 }
             }
@@ -134,7 +134,8 @@ struct ContentView: View {
             }
         }
         .onChange(of: page) { _, destination in
-            model.setModelPageActive(destination == .model)
+            model.setModelPageActive(false)
+            model.setTestPageActive(destination == .test)
         }
         .alert(
             "SCREEN-SIMULATION",
@@ -171,8 +172,6 @@ struct ContentView: View {
         HSplitView {
             VStack(spacing: 0) {
                 TabView(selection: $tab) {
-                    sourcePanel.tabItem { Label("Source", systemImage: "film") }.tag(SidebarTab.source)
-                    colorPanel.tabItem { Label("Color", systemImage: "paintpalette") }.tag(SidebarTab.color)
                     outputPanel.tabItem { Label("Output", systemImage: "square.and.arrow.up") }.tag(SidebarTab.output)
                     queuePanel.tabItem { Label("Queue", systemImage: "list.bullet.rectangle") }.tag(SidebarTab.queue)
                 }
@@ -265,15 +264,15 @@ struct ContentView: View {
         .formStyle(.grouped)
     }
 
-    private var modelWorkspace: some View {
+    private var testWorkspace: some View {
         HSplitView {
-            ModelInspectorView(workspace: model, library: library)
+            testSetupPanel
                 .frame(minWidth: 380, idealWidth: 430, maxWidth: 620)
 
-            preview(deviceAspect: model.modelPreviewSurfaceAspect, modelMode: true)
-                .frame(minWidth: 640, minHeight: 480)
+            preview(showTestPhasePicker: true)
+            .frame(minWidth: 640, minHeight: 480)
         }
-        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Model"))
+        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Test"))
     }
 
     private var monitorSettings: some View {
@@ -468,7 +467,7 @@ struct ContentView: View {
                             get: { image.name },
                             set: { value in library.updateSelectedImage { $0.name = value } }
                         ))
-                        Picker("IDT", selection: Binding(
+                        Picker("Input Transform", selection: Binding(
                             get: { image.inputTransformID },
                             set: { value in library.updateSelectedImage { $0.inputTransformID = value } }
                         )) {
@@ -970,6 +969,29 @@ struct ContentView: View {
             }
 
             Section("Panel y emisión") {
+                Picker("Color Mode", selection: Binding(
+                    get: { device.colorModeID },
+                    set: { value in library.updateSelectedDevice { $0.colorModeID = value } }
+                )) {
+                    ForEach(library.colorModes(for: device)) {
+                        Text($0.label).tag($0.id)
+                    }
+                }
+                ForEach(library.authorableColorModes) { mode in
+                    Toggle("Admite \(mode.label)", isOn: Binding(
+                        get: { device.colorModeIDs.contains(mode.id) },
+                        set: { enabled in
+                            library.updateSelectedDevice { candidate in
+                                if enabled {
+                                    candidate.colorModeIDs.append(mode.id)
+                                } else {
+                                    candidate.colorModeIDs.removeAll { $0 == mode.id }
+                                }
+                            }
+                        }
+                    ))
+                    .disabled(device.colorModeID == mode.id)
+                }
                 Picker("Tecnología", selection: Binding(
                     get: { device.panelTechnology },
                     set: { value in library.updateSelectedDevice { $0.panelTechnology = value } }
@@ -990,7 +1012,25 @@ struct ContentView: View {
                     get: { device.blackLevelNits },
                     set: { value in library.updateSelectedDevice { $0.blackLevelNits = value } }
                 ), format: .number)
-                TextField("Blanco (nits)", value: Binding(
+                TextField("White Luminance mínima (cd/m²)", value: Binding(
+                    get: { device.minimumWhiteLuminance },
+                    set: { value in
+                        library.updateSelectedDevice { $0.minimumWhiteLuminance = value }
+                    }
+                ), format: .number)
+                TextField("White Luminance máxima (cd/m²)", value: Binding(
+                    get: { device.maximumWhiteLuminance },
+                    set: { value in
+                        library.updateSelectedDevice { $0.maximumWhiteLuminance = value }
+                    }
+                ), format: .number)
+                TextField("Paso White Luminance (cd/m²)", value: Binding(
+                    get: { device.whiteLuminanceStep },
+                    set: { value in
+                        library.updateSelectedDevice { $0.whiteLuminanceStep = value }
+                    }
+                ), format: .number)
+                TextField("White Luminance (cd/m²)", value: Binding(
                     get: { device.whiteLevelNits },
                     set: { value in library.updateSelectedDevice { $0.whiteLevelNits = value } }
                 ), format: .number)
@@ -1137,7 +1177,7 @@ struct ContentView: View {
     private var workspaceToolbar: some ToolbarContent {
         ToolbarItemGroup {
             Button("Abrir", action: model.openMedia)
-                .disabled(page != .main)
+                .disabled(page == .settings)
                 .help("Abrir un vídeo o una imagen")
             Button("A cola", action: model.enqueueExport)
                 .disabled(page != .main || model.metalFrame == nil)
@@ -1151,100 +1191,161 @@ struct ContentView: View {
         }
     }
 
-    private var sourcePanel: some View {
-        Form {
-            Section("Fuente") {
-                LabeledContent("Archivo") { Text(model.sourceName).lineLimit(1) }
-                LabeledContent("Detalle") { Text(model.sourceDetail).lineLimit(2) }
-                LabeledContent("Tiempo (s)") {
+    private var testSetupPanel: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                TestPhaseCard(label: "Origen") {
+                    originAuthoringControls
+                }
+                if let presentation = model.testPresentation {
+                    TestAuthoringView(
+                        state: presentation,
+                        onIntent: model.handleTestIntent
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "Esperando descriptor de fase",
+                        systemImage: "point.3.connected.trianglepath.dotted",
+                        description: Text(
+                            "Application/Rust debe publicar las fases y controles antes de autorizar su edición."
+                        )
+                    )
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    @ViewBuilder
+    private var originAuthoringControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Fuente")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                originRow("Tipo") { Text(model.sourceKindLabel) }
+                originRow("Fuente actual") { Text(model.sourceName).lineLimit(1) }
+                originRow("Detalle") { Text(model.sourceDetail).lineLimit(2) }
+                originRow("Tiempo (s)") {
                     TextField("0", value: Binding(
                         get: { model.requestedSeconds },
                         set: { model.requestedSeconds = $0 }
                     ), format: .number)
-                        .frame(width: 72)
-                        .accessibilityLabel("Tiempo solicitado en segundos")
+                    .accessibilityLabel("Tiempo solicitado en segundos")
                 }
-                Button("Abrir medio…", action: model.openMedia)
-            }
-            Section("Patrones sintéticos") {
-                Picker("Patrón", selection: Binding(
-                    get: {
-                        if let selected = library.selectedPatternItem,
-                           selected.pattern == model.selectedPattern {
-                            return selected.id
+                originRow("") {
+                    Button("Abrir archivo o secuencia…", action: model.openMedia)
+                }
+                originRow("Patrón sintético") {
+                    Picker("Patrón sintético", selection: Binding(
+                        get: {
+                            if let selected = library.selectedPatternItem,
+                               selected.pattern == model.selectedPattern {
+                                return selected.id
+                            }
+                            return library.document.patterns.first {
+                                $0.pattern == model.selectedPattern
+                            }?.id ?? ""
+                        },
+                        set: { id in
+                            guard let item = library.document.patterns.first(
+                                where: { $0.id == id }
+                            ) else { return }
+                            library.selectedPatternID = id
+                            model.choosePattern(item.pattern, undoManager: undoManager)
                         }
-                        return library.document.patterns.first {
-                            $0.pattern == model.selectedPattern
-                        }?.id ?? ""
-                    },
-                    set: { id in
-                        guard let item = library.document.patterns.first(
-                            where: { $0.id == id }
-                        ) else { return }
-                        library.selectedPatternID = id
-                        model.choosePattern(item.pattern, undoManager: undoManager)
+                    )) {
+                        ForEach(library.document.patterns) {
+                            Text($0.name).tag($0.id)
+                        }
                     }
-                )) {
-                    ForEach(library.document.patterns) {
-                        Text($0.name).tag($0.id)
-                    }
+                    .labelsHidden()
                 }
+            }
+            Divider()
+            Text("Interpretación de entrada")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                inputInterpretationControls
+            }
+            Divider()
+            Text("Working space")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                originRow("Espacio") { Text("ACEScg lineal") }
+                originRow("Alpha") { Text("Premultiplicado") }
+                originRow("Rango") { Text("Negativos y >1 preservados") }
             }
         }
-        .formStyle(.grouped)
     }
 
-    private var colorPanel: some View {
-        Form {
-            Section("Interpretación de entrada") {
-                Picker("IDT", selection: Binding(
-                    get: { model.inputTransform },
-                    set: { model.changeInput($0, undoManager: undoManager) }
-                )) {
-                    ForEach(StudioColorInputTransform.catalog) { value in
-                        interpretationLabel(value.label, annotation: model.inputAnnotation(value))
-                            .tag(value)
-                    }
-                }
-                Picker("Alpha", selection: Binding(
-                    get: { model.alphaMode },
-                    set: { model.changeAlpha($0, undoManager: undoManager) }
-                )) {
-                    ForEach(StudioAlphaMode.allCases) { value in
-                        interpretationLabel(value.label, annotation: model.alphaAnnotation(value))
-                            .tag(value)
-                    }
-                }
-                LabeledContent("Modelo de señal") {
-                    interpretationLabel(
-                        model.signalColorModel.label,
-                        annotation: model.colorModelAnnotation(model.signalColorModel)
-                    )
-                }
-                Picker("Matriz YUV", selection: Binding(
-                    get: { model.signalMatrix }, set: { model.changeMatrix($0) }
-                )) {
-                    ForEach(StudioSignalMatrix.allCases) { value in
-                        interpretationLabel(value.label, annotation: model.matrixAnnotation(value))
-                            .tag(value)
-                    }
-                }
-                Picker("Rango señal", selection: Binding(
-                    get: { model.signalRange }, set: { model.changeRange($0) }
-                )) {
-                    ForEach(StudioSignalRange.allCases) { value in
-                        interpretationLabel(value.label, annotation: model.rangeAnnotation(value))
-                            .tag(value)
-                    }
-                }
-            }
-            Section("Working space") {
-                LabeledContent("Espacio") { Text("ACEScg lineal") }
-                LabeledContent("Alpha") { Text("Premultiplicado") }
-                LabeledContent("Rango") { Text("Negativos y >1 preservados") }
-            }
+    private func originRow<Content: View>(
+        _ label: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        GridRow {
+            Text(label).frame(width: 122, alignment: .leading)
+            content().frame(maxWidth: .infinity, alignment: .leading)
+            Text("").frame(width: 52)
         }
-        .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var inputInterpretationControls: some View {
+        originRow("Input Transform") {
+            Picker("Input Transform", selection: Binding(
+                get: { model.inputTransform },
+                set: { model.changeInput($0, undoManager: undoManager) }
+            )) {
+                ForEach(StudioColorInputTransform.catalog) { value in
+                    interpretationLabel(value.label, annotation: model.inputAnnotation(value))
+                        .tag(value)
+                }
+            }
+            .labelsHidden()
+        }
+        originRow("Alpha") {
+            Picker("Alpha", selection: Binding(
+                get: { model.alphaMode },
+                set: { model.changeAlpha($0, undoManager: undoManager) }
+            )) {
+                ForEach(StudioAlphaMode.allCases) { value in
+                    interpretationLabel(value.label, annotation: model.alphaAnnotation(value))
+                        .tag(value)
+                }
+            }
+            .labelsHidden()
+        }
+        originRow("Modelo de señal") {
+            interpretationLabel(
+                model.signalColorModel.label,
+                annotation: model.colorModelAnnotation(model.signalColorModel)
+            )
+        }
+        originRow("Matriz YUV") {
+            Picker("Matriz YUV", selection: Binding(
+                get: { model.signalMatrix }, set: { model.changeMatrix($0) }
+            )) {
+                ForEach(StudioSignalMatrix.allCases) { value in
+                    interpretationLabel(value.label, annotation: model.matrixAnnotation(value))
+                        .tag(value)
+                }
+            }
+            .labelsHidden()
+        }
+        originRow("Rango señal") {
+            Picker("Rango señal", selection: Binding(
+                get: { model.signalRange }, set: { model.changeRange($0) }
+            )) {
+                ForEach(StudioSignalRange.allCases) { value in
+                    interpretationLabel(value.label, annotation: model.rangeAnnotation(value))
+                        .tag(value)
+                }
+            }
+            .labelsHidden()
+        }
     }
 
     private func interpretationLabel(_ label: String, annotation: String?) -> Text {
@@ -1350,10 +1451,7 @@ struct ContentView: View {
         .frame(minHeight: 180, idealHeight: 220)
     }
 
-    private func preview(
-        deviceAspect: Double? = nil,
-        modelMode: Bool = false
-    ) -> some View {
+    private func preview(showTestPhasePicker: Bool = false) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Picker("Pantalla", selection: Binding(
@@ -1364,32 +1462,22 @@ struct ContentView: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 330)
-                Spacer()
-                if modelMode {
-                    Picker("Calidad física", selection: Binding(
-                        get: { model.physicalModel.quality },
-                        set: { model.changePhysicalQuality($0) }
-                    )) {
-                        ForEach(PhysicalQuality.allCases) { quality in
-                            Text(qualityLabel(quality)).tag(quality)
-                        }
+                if showTestPhasePicker, let presentation = model.testPresentation {
+                    TestPhasePicker(
+                        state: presentation,
+                        onIntent: model.handleTestIntent
+                    )
+                    .frame(maxWidth: 230)
+                    TestPreviewControls(
+                        state: presentation,
+                        onIntent: model.handleTestIntent
+                    )
+                    .frame(maxWidth: 150)
+                    if model.testRequiresExplicitRender {
+                        Button("Render", action: model.renderSelectedPhysicalFrameNative)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 250)
-                    .help("Calidad de evaluación física")
-                    .accessibilityLabel("Calidad de evaluación física")
-                    if model.physicalModel.quality == .native {
-                        nativeFrameControl
-                    }
-                    Button {
-                        model.importPhysicalSettings(undoManager: undoManager)
-                    } label: {
-                        Label("Importar ajustes", systemImage: "square.and.arrow.down.on.square")
-                    }
-                    .help("Importar ajustes físicos desde un PNG de comprobación")
-                    .accessibilityLabel("Importar ajustes físicos")
                 }
+                Spacer()
                 Button {
                     model.monitorOutput.toggle(
                         frame: model.metalFrame,
@@ -1419,15 +1507,10 @@ struct ContentView: View {
                     .frame(width: 52)
                     .accessibilityLabel("Escala del visor en porcentaje")
                 Text("%").foregroundStyle(.secondary)
-                Button("Fit") {
-                    modelMode ? model.fitModelPreview() : model.resetView()
-                }
+                Button("Fit", action: model.fitPreview)
                     .help("Ajustar imagen al visor")
-                if modelMode {
-                    Button("1:1", action: model.showModelPreviewOneToOne)
-                        .help("Un píxel nativo por píxel lógico del visor")
-                        .accessibilityLabel("Mostrar resultado físico uno a uno")
-                }
+                Button("1:1", action: model.showPreviewOneToOne)
+                    .help("Un píxel calculado por píxel lógico del visor")
                 Button { model.zoomBy(1.25) } label: { Image(systemName: "plus.magnifyingglass") }
                     .help("Aumentar zoom")
                     .accessibilityLabel("Aumentar zoom")
@@ -1436,15 +1519,8 @@ struct ContentView: View {
                 } label: {
                     Label("Guardar frame", systemImage: "square.and.arrow.down")
                 }
-                .disabled(
-                    model.metalFrame == nil
-                        || (modelMode && (
-                            model.physicalModel.computedQuality != model.physicalModel.quality
-                                || (model.physicalModel.quality == .native
-                                    && model.physicalModel.frameState == .stale)
-                        ))
-                )
-                .help("Guardar el fotograma de la calidad física seleccionada")
+                .disabled(model.metalFrame == nil)
+                .help("Guardar el fotograma actual")
                 .accessibilityLabel("Guardar fotograma actual")
             }
             .buttonStyle(.borderless)
@@ -1453,11 +1529,7 @@ struct ContentView: View {
             .background(Color(nsColor: .windowBackgroundColor))
             Divider()
             ZStack {
-                if deviceAspect == nil {
-                    Color(nsColor: .black)
-                } else {
-                    Color(nsColor: NSColor(deviceWhite: 0.18, alpha: 1))
-                }
+                Color(nsColor: NSColor(calibratedWhite: 0.18, alpha: 1))
                 if let frame = model.metalFrame {
                     let image = MetalPreview(
                         display: model.metalDisplay,
@@ -1465,52 +1537,21 @@ struct ContentView: View {
                         output: model.previewTransform,
                         zoom: model.zoom,
                         pan: model.pan,
-                        oneToOne: modelMode && model.modelViewerOneToOne,
+                        fitted: model.previewIsFitted,
+                        metadataLines: model.previewMetadataLines,
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
-                        onZoomChange: { model.zoom = $0 }
+                        onZoomChange: model.setInteractiveZoom,
+                        onFittedZoomChange: model.updateFittedZoom
                     )
                     .accessibilityLabel("Preview OCIO del resultado")
-                    if let deviceAspect {
-                        image
-                            .aspectRatio(deviceAspect, contentMode: .fit)
-                            .background(.black)
-                            .padding(28)
-                    } else {
-                        image
-                    }
+                    image
                 } else {
                     ContentUnavailableView(
                         "Sin frame",
                         systemImage: "exclamationmark.triangle",
                         description: Text("Abre un medio o selecciona un patrón.")
                     )
-                }
-                if modelMode, model.physicalModel.frameState == .stale {
-                    VStack {
-                        HStack {
-                            Label("Desactualizado", systemImage: "clock.arrow.circlepath")
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(.regularMaterial, in: Capsule())
-                                .foregroundStyle(NativeTheme.accent)
-                            Spacer()
-                        }
-                        Spacer()
-                    }
-                    .padding(12)
-                    .allowsHitTesting(false)
-                }
-            }
-            .background {
-                if modelMode {
-                    GeometryReader { proxy in
-                        Color.clear
-                            .onAppear { model.scheduleModelViewportSize(proxy.size) }
-                            .onChange(of: proxy.size) { _, size in
-                                model.scheduleModelViewportSize(size)
-                            }
-                    }
                 }
             }
             .clipped()
@@ -1527,37 +1568,6 @@ struct ContentView: View {
             .padding(.horizontal, 10)
             .frame(height: 30)
             .background(Color(nsColor: .windowBackgroundColor))
-        }
-    }
-
-    @ViewBuilder
-    private var nativeFrameControl: some View {
-        if model.physicalModel.frameState == .rendering {
-            ProgressView(value: model.physicalModel.progress)
-                .frame(width: 70)
-                .tint(.blue)
-                .accessibilityLabel("Progreso del fotograma Native")
-            Button("Cancelar", action: model.cancelSelectedPhysicalFrameNative)
-                .foregroundStyle(.blue)
-                .help("Cancelar cálculo Native")
-        } else {
-            Button("Renderizar fotograma", action: model.renderSelectedPhysicalFrameNative)
-                .help("Evaluar explícitamente el fotograma seleccionado a resolución nativa")
-                .accessibilityLabel("Renderizar fotograma físico Native")
-            if let output = model.modelNativeOutputDescription {
-                Text("Nativa · \(output)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func qualityLabel(_ quality: PhysicalQuality) -> String {
-        switch quality {
-        case .draft: "Draft"
-        case .medium: "Media"
-        case .high: "Alta"
-        case .native: "Nativa"
         }
     }
 
@@ -1638,10 +1648,12 @@ struct MetalPreview: NSViewRepresentable {
     let output: StudioColorOutputTransform
     let zoom: Double
     let pan: CGSize
-    let oneToOne: Bool
+    let fitted: Bool
+    let metadataLines: [String]
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
     let onZoomChange: (Double) -> Void
+    let onFittedZoomChange: (Double) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onDisplayChange: onDisplayChange)
@@ -1662,12 +1674,14 @@ struct MetalPreview: NSViewRepresentable {
         container.updatePresentation(
             zoom: zoom,
             pan: pan,
-            oneToOne: oneToOne,
+            fitted: fitted,
+            metadataLines: metadataLines,
             textureWidth: frame.width,
             textureHeight: frame.height
         )
         container.onPanChange = onPanChange
         container.onZoomChange = onZoomChange
+        container.onFittedZoomChange = onFittedZoomChange
         display.present(frame, output: output, in: container.metalView)
     }
 
@@ -1739,11 +1753,13 @@ final class MetalPreviewContainer: NSView {
     private(set) var metalView = StudioColorScreenAwareMetalView()
     private var presentationZoom = 1.0
     private var presentationPan = CGSize.zero
-    private var presentationOneToOne = false
+    private var presentationFitted = true
     private var textureWidth = 1
     private var textureHeight = 1
     var onPanChange: ((CGSize) -> Void)?
     var onZoomChange: ((Double) -> Void)?
+    var onFittedZoomChange: ((Double) -> Void)?
+    private let metadataLabel = NSTextField(labelWithString: "")
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
     private var magnifyAnchor: CGPoint?
@@ -1752,6 +1768,13 @@ final class MetalPreviewContainer: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor(calibratedWhite: 0.18, alpha: 1).cgColor
+        metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
+        metadataLabel.alignment = .right
+        metadataLabel.maximumNumberOfLines = 2
+        metadataLabel.lineBreakMode = .byTruncatingHead
+        addSubview(metadataLabel)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -1777,13 +1800,16 @@ final class MetalPreviewContainer: NSView {
     func updatePresentation(
         zoom: Double,
         pan: CGSize,
-        oneToOne: Bool,
+        fitted: Bool,
+        metadataLines: [String],
         textureWidth: Int,
         textureHeight: Int
     ) {
         presentationZoom = zoom
         presentationPan = pan
-        presentationOneToOne = oneToOne
+        presentationFitted = fitted
+        metadataLabel.stringValue = metadataLines.joined(separator: "\n")
+        metadataLabel.isHidden = metadataLines.isEmpty
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
         applyPresentation()
@@ -1820,11 +1846,11 @@ final class MetalPreviewContainer: NSView {
             magnifyAnchor = anchor
         }
         guard let origin = magnifyAnchor else { return }
-        let oldZoom = presentationZoom
+        let oldZoom = effectiveScale()
         let oldPan = presentationPan
-        let newZoom = min(16, max(0.1, oldZoom * (1 + event.magnification)))
-        let ratio = CGFloat(newZoom / max(0.1, oldZoom))
-        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let newZoom = min(16, max(0.01, oldZoom * (1 + event.magnification)))
+        let ratio = CGFloat(newZoom / max(0.01, oldZoom))
+        let center = CGPoint(x: bounds.midX, y: contentCenterY())
         let anchoredPan = PreviewNavigationMath.anchoredPan(
             previous: oldPan,
             anchor: origin,
@@ -1832,6 +1858,7 @@ final class MetalPreviewContainer: NSView {
             scaleRatio: ratio
         )
         presentationZoom = newZoom
+        presentationFitted = false
         onZoomChange?(newZoom)
         publishPan(clampedPan(anchoredPan))
         if event.phase == .ended || event.phase == .cancelled {
@@ -1844,23 +1871,20 @@ final class MetalPreviewContainer: NSView {
     }
 
     private func applyPresentation() {
-        let fitted = fittedContentSize()
+        let scale = effectiveScale()
         metalView.layer?.setAffineTransform(.identity)
-        metalView.bounds = NSRect(origin: .zero, size: fitted)
+        let texture = textureSize()
+        metalView.bounds = NSRect(origin: .zero, size: texture)
         metalView.frame = NSRect(
-            x: bounds.midX - fitted.width / 2,
-            y: bounds.midY - fitted.height / 2,
-            width: fitted.width,
-            height: fitted.height
+            x: bounds.midX - texture.width / 2,
+            y: contentCenterY() - texture.height / 2,
+            width: texture.width,
+            height: texture.height
         )
-        let oneToOneScale = PreviewNavigationMath.oneToOneScale(
-            texture: textureSize(), fittedContent: fitted
-        )
-        let scale = (presentationOneToOne ? oneToOneScale : 1) * presentationZoom
         let effectivePan = PreviewNavigationMath.clampedPan(
             presentationPan,
-            viewport: bounds.size,
-            fittedContent: fitted,
+            viewport: contentViewportSize(),
+            fittedContent: texture,
             scale: scale
         )
         if effectivePan != presentationPan {
@@ -1872,10 +1896,24 @@ final class MetalPreviewContainer: NSView {
         metalView.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         metalView.layer?.position = CGPoint(
             x: bounds.midX + effectivePan.width,
-            y: bounds.midY + effectivePan.height
+            y: contentCenterY() + effectivePan.height
         )
         metalView.layer?.setAffineTransform(
             CGAffineTransform(scaleX: scale, y: scale)
+        )
+        metalView.layer?.borderWidth = 1 / max(0.01, scale)
+        metalView.layer?.borderColor = NSColor(calibratedWhite: 0.72, alpha: 0.45).cgColor
+        let displayed = CGSize(width: texture.width * scale, height: texture.height * scale)
+        let displayedOriginX = bounds.midX + effectivePan.width - displayed.width / 2
+        let displayedTopY = contentCenterY() + effectivePan.height + displayed.height / 2
+        metadataLabel.frame = NSRect(
+            x: min(
+                max(12, displayedOriginX),
+                max(12, bounds.maxX - min(displayed.width, bounds.width - 24) - 12)
+            ),
+            y: min(bounds.maxY - 28, max(8, displayedTopY + 4)),
+            width: min(displayed.width, bounds.width - 24),
+            height: 26
         )
     }
 
@@ -1886,15 +1924,12 @@ final class MetalPreviewContainer: NSView {
     }
 
     private func clampedPan(_ proposed: CGSize) -> CGSize {
-        let fitted = fittedContentSize()
-        let oneToOneScale = PreviewNavigationMath.oneToOneScale(
-            texture: textureSize(), fittedContent: fitted
-        )
-        let scale = (presentationOneToOne ? oneToOneScale : 1) * presentationZoom
+        let texture = textureSize()
+        let scale = effectiveScale()
         return PreviewNavigationMath.clampedPan(
             proposed,
-            viewport: bounds.size,
-            fittedContent: fitted,
+            viewport: contentViewportSize(),
+            fittedContent: texture,
             scale: scale
         )
     }
@@ -1903,10 +1938,25 @@ final class MetalPreviewContainer: NSView {
         CGSize(width: textureWidth, height: textureHeight)
     }
 
-    private func fittedContentSize() -> CGSize {
-        PreviewNavigationMath.fittedContentSize(
-            texture: textureSize(), viewport: bounds.size
+    private func effectiveScale() -> CGFloat {
+        let fittedScale = PreviewNavigationMath.fittedScale(
+            texture: textureSize(), viewport: contentViewportSize()
         )
+        if presentationFitted {
+            Task { @MainActor [weak self] in
+                self?.onFittedZoomChange?(Double(fittedScale))
+            }
+            return fittedScale
+        }
+        return CGFloat(presentationZoom)
+    }
+
+    private func contentViewportSize() -> CGSize {
+        CGSize(width: max(1, bounds.width - 24), height: max(1, bounds.height - 58))
+    }
+
+    private func contentCenterY() -> CGFloat {
+        bounds.midY - 10
     }
 }
 

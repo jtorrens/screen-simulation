@@ -1,0 +1,55 @@
+{
+  "schema": "screen_simulation_swift_domains",
+  "version": 1,
+  "packages": [
+    {
+      "path": "apps/screen-native-macos",
+      "targets": [
+        {
+          "name": "ScreenSimulationPresentation",
+          "owner": "presentation-contracts",
+          "allowed_target_dependencies": [],
+          "allowed_product_dependencies": []
+        },
+        {
+          "name": "ScreenSimulationMacUI",
+          "owner": "macos-presentation",
+          "allowed_target_dependencies": ["ScreenSimulationPresentation"],
+          "allowed_product_dependencies": []
+        },
+        {
+          "name": "ScreenPhysicalBridge",
+          "owner": "native-macos-composition",
+          "allowed_target_dependencies": [],
+          "allowed_product_dependencies": []
+        },
+        {
+          "name": "ScreenSimulationNative",
+          "owner": "native-macos-composition",
+          "allowed_target_dependencies": [
+            "ScreenPhysicalBridge",
+            "ScreenSimulationMacUI",
+            "ScreenSimulationPresentation"
+          ],
+          "allowed_product_dependencies": [
+            "StudioColor",
+            "StudioMedia",
+            "StudioVideoOutput"
+          ]
+        },
+        {
+          "name": "ScreenSimulationPresentationTests",
+          "owner": "presentation-contracts",
+          "allowed_target_dependencies": ["ScreenSimulationPresentation"],
+          "allowed_product_dependencies": []
+        },
+        {
+          "name": "ScreenSimulationNativeTests",
+          "owner": "native-macos-composition",
+          "allowed_target_dependencies": ["ScreenSimulationNative"],
+          "allowed_product_dependencies": ["StudioVideoOutput"]
+        }
+      ]
+    }
+  ]
+}
