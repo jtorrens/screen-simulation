@@ -32,6 +32,52 @@ import Testing
     }
 }
 
+@Test func lookAtRotationsOrbitAtFixedDistanceAndPreserveRoll() {
+    let target = [0.0, 0.0, 0.0]
+    let distance = 2.0
+    let authored = [20.0, -35.0, 15.0]
+    let position = PoseRotationProjection.orbitPosition(
+        around: target,
+        distance: distance,
+        rotationDegrees: authored
+    )
+    let quaternion = PoseRotationProjection.quaternionLooking(
+        from: position,
+        to: target,
+        rollDegrees: authored[2]
+    )
+    let restored = PoseRotationProjection.lookAtOrbitDegrees(
+        position: position,
+        target: target,
+        quaternion: quaternion
+    )
+
+    #expect(abs(PoseRotationProjection.distance(position, target) - distance) < 1e-10)
+    for index in authored.indices {
+        #expect(abs(restored[index] - authored[index]) < 1e-10)
+    }
+
+    let restoredTarget = PoseRotationProjection.target(
+        from: position,
+        quaternion: quaternion,
+        distance: distance
+    )
+    for index in target.indices {
+        #expect(abs(restoredTarget[index] - target[index]) < 1e-10)
+    }
+}
+
+@Test func lookAtCameraRotationsRemainAuthoredControls() throws {
+    let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let source = tests.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ModelInspectorView.swift")
+    let text = try String(contentsOf: source, encoding: .utf8)
+
+    #expect(text.contains("applyLookAtRotation(value, index: index"))
+    #expect(text.contains("lookAtRotationDegrees(workspace.physicalAuthoringState!)"))
+    #expect(text.contains("preservingRollDegrees"))
+}
+
 @Test func shutterAngleTimeAndReadoutRemainLinkedInStandardUnits() {
     var shutter = PhysicalPipelineAuthoringState.ShutterMotion()
     ShutterPresentation.setAngle(180, fps: 24, in: &shutter)

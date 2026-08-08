@@ -1034,9 +1034,10 @@ struct ModelInspectorView: View {
                     get: { workspace.physicalAuthoringState!.cameraPose.position[index] },
                     set: { value in
                         workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                            let roll = lookAtRotationDegrees(state)[2]
                             state.cameraPose.position[index] = value
                             if state.cameraLookAt?.enabled == true {
-                                synchronizeLookAt(&state)
+                                synchronizeLookAt(&state, preservingRollDegrees: roll)
                             }
                         }
                     }
@@ -1045,9 +1046,10 @@ struct ModelInspectorView: View {
                 onRestore: {
                     let value = workspace.physicalPresetAuthoringState!.cameraPose.position[index]
                     workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                        let roll = lookAtRotationDegrees(state)[2]
                         state.cameraPose.position[index] = value
                         if state.cameraLookAt?.enabled == true {
-                            synchronizeLookAt(&state)
+                            synchronizeLookAt(&state, preservingRollDegrees: roll)
                         }
                     }
                 },
@@ -1067,7 +1069,10 @@ struct ModelInspectorView: View {
                 set: { newValue in
                     workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
                         if newValue {
-                            synchronizeLookAt(&state)
+                            let roll = PoseRotationProjection.degrees(
+                                from: state.cameraPose.quaternion
+                            )[2]
+                            synchronizeLookAt(&state, preservingRollDegrees: roll)
                         } else {
                             var lookAt = state.cameraLookAt ?? .init(target: state.screenPose.position)
                             lookAt.enabled = false
@@ -1086,9 +1091,31 @@ struct ModelInspectorView: View {
         ForEach(0..<3, id: \.self) { index in
             let axes = ["X", "Y", "Z"]
             if workspace.physicalAuthoringState?.cameraLookAt?.enabled == true {
-                PhysicalDerivedRow(
-                    label: "Cámara rotación \(axes[index])",
-                    value: "\(PoseRotationProjection.degrees(from: workspace.physicalAuthoringState!.cameraPose.quaternion)[index].formatted(.number.precision(.fractionLength(2)))) °"
+                PhysicalDoubleParameterRow(
+                    label: "Cámara rotación \(axes[index])", unit: "°",
+                    range: index == 0 ? -89 ... 89 : -180 ... 180, step: 5,
+                    value: Binding(
+                        get: { lookAtRotationDegrees(workspace.physicalAuthoringState!)[index] },
+                        set: { value in
+                            workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                                applyLookAtRotation(value, index: index, to: &state)
+                            }
+                        }
+                    ),
+                    defaultValue: lookAtRotationDegrees(
+                        workspace.physicalPresetAuthoringState!
+                    )[index],
+                    onRestore: {
+                        let value = lookAtRotationDegrees(
+                            workspace.physicalPresetAuthoringState!
+                        )[index]
+                        workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                            applyLookAtRotation(value, index: index, to: &state)
+                        }
+                    },
+                    animationArmed: workspace.physicalAnimationArmBinding(
+                        "camera.rotation.\(index)"
+                    )
                 )
             } else {
                 PhysicalDoubleParameterRow(
@@ -1124,8 +1151,11 @@ struct ModelInspectorView: View {
                     get: { workspace.physicalAuthoringState![keyPath: keyPath][index] },
                     set: { value in
                         workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                            let roll = lookAtRotationDegrees(state)[2]
                             state[keyPath: keyPath][index] = value
-                            if state.cameraLookAt?.enabled == true { synchronizeLookAt(&state) }
+                            if state.cameraLookAt?.enabled == true {
+                                synchronizeLookAt(&state, preservingRollDegrees: roll)
+                            }
                         }
                     }
                 ),
@@ -1133,8 +1163,11 @@ struct ModelInspectorView: View {
                 onRestore: {
                     let value = workspace.physicalPresetAuthoringState![keyPath: keyPath][index]
                     workspace.updatePhysicalAuthoring(undoManager: undoManager) { state in
+                        let roll = lookAtRotationDegrees(state)[2]
                         state[keyPath: keyPath][index] = value
-                        if state.cameraLookAt?.enabled == true { synchronizeLookAt(&state) }
+                        if state.cameraLookAt?.enabled == true {
+                            synchronizeLookAt(&state, preservingRollDegrees: roll)
+                        }
                     }
                 },
                 animationArmed: workspace.physicalAnimationArmBinding("screenPose.position.\(index)")
@@ -1142,12 +1175,48 @@ struct ModelInspectorView: View {
         }
     }
 
-    private func synchronizeLookAt(_ state: inout PhysicalPipelineAuthoringState) {
+    private func lookAtRotationDegrees(_ state: PhysicalPipelineAuthoringState) -> [Double] {
+        PoseRotationProjection.lookAtOrbitDegrees(
+            position: state.cameraPose.position,
+            target: state.screenPose.position,
+            quaternion: state.cameraPose.quaternion
+        )
+    }
+
+    private func applyLookAtRotation(
+        _ value: Double,
+        index: Int,
+        to state: inout PhysicalPipelineAuthoringState
+    ) {
+        let target = state.screenPose.position
+        var rotations = lookAtRotationDegrees(state)
+        rotations[index] = value
+        if index < 2 {
+            let distance = PoseRotationProjection.distance(state.cameraPose.position, target)
+            state.cameraPose.position = PoseRotationProjection.orbitPosition(
+                around: target,
+                distance: distance,
+                rotationDegrees: rotations
+            )
+        }
+        state.cameraLookAt = .init(enabled: true, target: target)
+        state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(
+            from: state.cameraPose.position,
+            to: target,
+            rollDegrees: rotations[2]
+        )
+    }
+
+    private func synchronizeLookAt(
+        _ state: inout PhysicalPipelineAuthoringState,
+        preservingRollDegrees roll: Double
+    ) {
         let target = state.screenPose.position
         state.cameraLookAt = .init(enabled: true, target: target)
         state.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(
             from: state.cameraPose.position,
-            to: target
+            to: target,
+            rollDegrees: roll
         )
     }
 

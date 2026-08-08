@@ -24,6 +24,57 @@ enum PoseRotationProjection {
     static func target(from position: [Double], quaternion: [Double], distance: Double) -> [Double] {
         zip(position, forwardDirection(from: quaternion)).map { $0 + $1 * max(distance, 0.001) }
     }
+
+    /// Stable authoring projection for the single canonical camera pose while Look At is active.
+    /// X and Y are orbit elevation/yaw around the target; Z is camera roll.
+    static func lookAtOrbitDegrees(
+        position: [Double],
+        target: [Double],
+        quaternion: [Double]
+    ) -> [Double] {
+        let offset = zip(position, target).map(-)
+        let radius = offset.length3
+        guard radius > 1e-12 else { return [0, 0, 0] }
+
+        let rotationX = asin(min(1, max(-1, -offset[1] / radius)))
+        let rotationY = atan2(offset[0], offset[2])
+        let base = quaternionLooking(from: position, to: target)
+        var relative = multiply(conjugate(base), quaternion.normalized4).normalized4
+        if relative[3] < 0 {
+            relative = relative.map(-)
+        }
+        let rotationZ = 2 * atan2(relative[2], relative[3])
+        return [rotationX, rotationY, rotationZ].map { normalizedDegrees($0 * 180 / .pi) }
+    }
+
+    static func orbitPosition(
+        around target: [Double],
+        distance: Double,
+        rotationDegrees: [Double]
+    ) -> [Double] {
+        precondition(rotationDegrees.count == 3)
+        let radius = max(distance, 0.001)
+        let rotationX = rotationDegrees[0] * .pi / 180
+        let rotationY = rotationDegrees[1] * .pi / 180
+        let cosX = cos(rotationX)
+        let offset = [
+            sin(rotationY) * cosX * radius,
+            -sin(rotationX) * radius,
+            cos(rotationY) * cosX * radius,
+        ]
+        return zip(target, offset).map(+)
+    }
+
+    static func quaternionLooking(
+        from position: [Double],
+        to target: [Double],
+        rollDegrees: Double
+    ) -> [Double] {
+        let base = quaternionLooking(from: position, to: target)
+        let halfRoll = rollDegrees * .pi / 360
+        let localRoll = [0.0, 0.0, sin(halfRoll), cos(halfRoll)]
+        return multiply(base, localRoll).normalized4
+    }
     static func degrees(from quaternion: [Double]) -> [Double] {
         precondition(quaternion.count == 4)
         let length = sqrt(quaternion.reduce(0) { $0 + $1 * $1 })
@@ -60,6 +111,28 @@ enum PoseRotationProjection {
             let delta = pair.0 - pair.1
             return partial + delta * delta
         }.squareRoot()
+    }
+
+    private static func multiply(_ lhs: [Double], _ rhs: [Double]) -> [Double] {
+        let x1 = lhs[0], y1 = lhs[1], z1 = lhs[2], w1 = lhs[3]
+        let x2 = rhs[0], y2 = rhs[1], z2 = rhs[2], w2 = rhs[3]
+        return [
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        ]
+    }
+
+    private static func conjugate(_ quaternion: [Double]) -> [Double] {
+        [-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3]]
+    }
+
+    private static func normalizedDegrees(_ degrees: Double) -> Double {
+        var result = degrees.truncatingRemainder(dividingBy: 360)
+        if result > 180 { result -= 360 }
+        if result < -180 { result += 360 }
+        return result
     }
 }
 
