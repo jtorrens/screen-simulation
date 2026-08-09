@@ -414,10 +414,10 @@ fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
                 }),
         );
     }
-    // Sensor input is explicitly converted from normalized panel ACEScg to
-    // physical illuminance using the resolved white luminance before RAW.
+    // Sensor input restores absolute panel luminance after the lens has
+    // applied its pupil throughput exactly once.
     assert_eq!(
         hashes,
-        [2_197_059_209_231_913_028, 2_598_560_337_631_545_936]
+        [14_388_517_383_653_141_572, 13_374_690_546_901_320_500]
     );
 }

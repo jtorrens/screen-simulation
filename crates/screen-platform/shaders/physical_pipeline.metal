@@ -102,6 +102,23 @@ inline float2 physical_aperture_sample(uint index) {
     return radius * float2(cos(angle), sin(angle));
 }
 
+inline float2 physical_psf_disk_sample(uint index) {
+    constexpr float points[4] = {0.125f, 0.375f, 0.625f, 0.875f};
+    const float2 sample = float2(points[index % 4], points[index / 4]);
+    const float2 centered = 2.0f * sample - 1.0f;
+    if (centered.x == 0.0f && centered.y == 0.0f) return 0.0f;
+    float radius;
+    float angle;
+    if (abs(centered.x) > abs(centered.y)) {
+        radius = centered.x;
+        angle = (PI * 0.25f) * centered.y / centered.x;
+    } else {
+        radius = centered.y;
+        angle = PI * 0.5f - (PI * 0.25f) * centered.x / centered.y;
+    }
+    return radius * float2(cos(angle), sin(angle));
+}
+
 inline PhysicalRayHit physical_trace_ray(float2 observed, float2 lens_sample, uint channel,
                                          constant PhysicalPipelineParams& p) {
     PhysicalRayHit miss;
@@ -431,23 +448,32 @@ kernel void evaluate_physical_pipeline(
     float3 cover_direction = 0.0f;
     float3 cover_irradiance = 0.0f;
     uint cover_samples = 0;
+    const uint psf_samples_per_area = p.lens_softness.z == 0.0f ? 1 : 16 / (side * side);
     for (uint sy = 0; sy < side; ++sy) {
         for (uint sx = 0; sx < side; ++sx) {
-            const float2 minimum_uv = (
+            const float2 base_minimum_uv = (
                 float2(position) + float2(sx, sy) / float(side)
             ) / float2(p.output_tile.xy);
-            const float2 maximum_uv = (
+            const float2 base_maximum_uv = (
                 float2(position) + float2(sx + 1, sy + 1) / float(side)
             ) / float2(p.output_tile.xy);
-            const float2 flat_center = (minimum_uv + maximum_uv) * 0.5f;
-            const float2 observed = flat_center * 2.0f - 1.0f;
-            const float field = clamp(dot(observed, observed) * 0.5f, 0.0f, 1.0f);
+            const float2 base_center = (base_minimum_uv + base_maximum_uv) * 0.5f;
+            const float2 base_observed = base_center * 2.0f - 1.0f;
+            const float field = clamp(dot(base_observed, base_observed) * 0.5f, 0.0f, 1.0f);
             const float softness_mm = mix(p.lens_softness.x, p.lens_softness.y, field) * 0.001f;
             const float sensor_pitch_mm = p.camera_right_sensor_width.w / float(p.output_tile.x);
             const float psf_pixels = ((softness_mm + 1.22f * 0.000550f * p.camera_limits.x)
                 / sensor_pitch_mm) * p.lens_softness.z;
-            const float2 half_extent = (maximum_uv - minimum_uv) * 0.5f * (1.0f + psf_pixels);
-            const float2 lens_sample = physical_aperture_sample((sy * side + sx) % 16);
+            for (uint psf_sample = 0; psf_sample < psf_samples_per_area; ++psf_sample) {
+            const uint sample_index = (sy * side + sx) * psf_samples_per_area + psf_sample;
+            const float2 psf_offset = physical_psf_disk_sample(sample_index)
+                * psf_pixels / float2(p.output_tile.xy);
+            const float2 minimum_uv = base_minimum_uv + psf_offset;
+            const float2 maximum_uv = base_maximum_uv + psf_offset;
+            const float2 flat_center = base_center + psf_offset;
+            const float2 observed = flat_center * 2.0f - 1.0f;
+            const float2 half_extent = (maximum_uv - minimum_uv) * 0.5f;
+            const float2 lens_sample = physical_aperture_sample(sample_index % 16);
             for (uint channel = 0; channel < 3; ++channel) {
                 const PhysicalRayHit hit = physical_trace_ray(observed, lens_sample, channel, p);
                 const float2 target = hit.valid ? hit.uv : float2(-2.0f);
@@ -489,9 +515,10 @@ kernel void evaluate_physical_pipeline(
             ideal += area_sample(source_acescg,
                 exact_flat ? minimum_uv : green_center - half_extent,
                 exact_flat ? maximum_uv : green_center + half_extent, p);
+            }
         }
     }
-    const float reciprocal = 1.0f / float(side * side);
+    const float reciprocal = 1.0f / float(side * side * psf_samples_per_area);
     const float cover_reciprocal = cover_samples == 0 ? 1.0f : 1.0f / float(cover_samples);
     const float3 cover_reflection_direction = length_squared(cover_direction) > 1.0e-12f
         ? normalize(cover_direction) : float3(0.0f, 0.0f, 1.0f);
