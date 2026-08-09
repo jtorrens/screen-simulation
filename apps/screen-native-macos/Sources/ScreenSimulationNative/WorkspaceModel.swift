@@ -9,6 +9,33 @@ import StudioColor
 import StudioMedia
 import SwiftUI
 
+enum NativeRenderButtonState: Equatable {
+    case outdated
+    case rendering(progress: Double)
+    case cancelling
+    case complete
+
+    static func resolve(
+        frameState: PhysicalFrameState,
+        progress: Double,
+        hasActiveTask: Bool,
+        cancellationRequested: Bool
+    ) -> Self {
+        if hasActiveTask, cancellationRequested || frameState != .rendering {
+            return .cancelling
+        }
+        if hasActiveTask {
+            // A worker may finish its kernels before its result texture and
+            // terminal snapshot are available. Reserve 100% for .complete.
+            return .rendering(progress: min(0.99, max(0, progress)))
+        }
+        if frameState == .complete {
+            return .complete
+        }
+        return .outdated
+    }
+}
+
 @MainActor
 final class WorkspaceModel: ObservableObject {
     enum SourcePlacement: String, CaseIterable, Identifiable {
@@ -127,6 +154,8 @@ final class WorkspaceModel: ObservableObject {
     private var physicalInteractiveTask: Task<Void, Never>?
     private var physicalNativeJob: PhysicalMetalFrameJob?
     private var physicalInteractiveJob: PhysicalMetalFrameJob?
+    @Published private var nativeRenderTaskActive = false
+    @Published private var nativeCancellationRequested = false
     private let physicalEngine = PhysicalMetalFrameEngine()
     private var physicalIdentityCounter: UInt64 = 0
     private var modelViewport = CGSize(width: 960, height: 540)
@@ -241,6 +270,24 @@ final class WorkspaceModel: ObservableObject {
         isTestPageActive
             && selectedTestPhysicalIntermediate != nil
             && physicalModel.quality == .native
+    }
+
+    var testNativeRenderButtonState: NativeRenderButtonState {
+        if nativeRenderTaskActive {
+            return .resolve(
+                frameState: physicalModel.frameState,
+                progress: physicalModel.progress,
+                hasActiveTask: true,
+                cancellationRequested: nativeCancellationRequested
+                    || physicalModel.frameState != .rendering
+            )
+        }
+        return .resolve(
+            frameState: physicalModel.frameState,
+            progress: physicalModel.progress,
+            hasActiveTask: false,
+            cancellationRequested: false
+        )
     }
 
     var sourceKindLabel: String {
@@ -459,8 +506,16 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func selectPhysicalIntermediate(_ intermediate: PhysicalIntermediate) {
-        requestedPhysicalIntermediate = intermediate
+        updateRequestedPhysicalIntermediate(intermediate)
         rebuildPhysicalSelectedFrame()
+    }
+
+    private func updateRequestedPhysicalIntermediate(
+        _ intermediate: PhysicalIntermediate
+    ) {
+        guard requestedPhysicalIntermediate != intermediate else { return }
+        requestedPhysicalIntermediate = intermediate
+        physicalModel.invalidateExternalParameters()
     }
 
     func setModelPageActive(_ active: Bool) {
@@ -473,7 +528,7 @@ final class WorkspaceModel: ObservableObject {
         isTestPageActive = active
         if active { pause() }
         if active, let intermediate = selectedTestPhysicalIntermediate {
-            requestedPhysicalIntermediate = intermediate
+            updateRequestedPhysicalIntermediate(intermediate)
             rebuildPhysicalSelectedFrame()
         } else {
             publishSelectedTestPreview()
@@ -498,12 +553,12 @@ final class WorkspaceModel: ObservableObject {
                 if let intermediate = physicalIntermediate(
                     for: snapshot.previewResultByPhaseID[phaseID]
                 ) {
-                    requestedPhysicalIntermediate = intermediate
+                    updateRequestedPhysicalIntermediate(intermediate)
                     rebuildPhysicalSelectedFrame()
                 } else {
                     publishSelectedTestPreview()
                 }
-            case .setChoice, .setScalar:
+            case .setChoice, .setScalar, .setToggle:
                 guard let selection = currentTestAuthoringSelection() else {
                     throw TestAuthoringCoordinatorError.malformedDescriptor(
                         "Test necesita un Device resuelto."
@@ -523,7 +578,7 @@ final class WorkspaceModel: ObservableObject {
                     if let intermediate = physicalIntermediate(
                         for: snapshot.previewResultByPhaseID[phaseToReveal]
                     ) {
-                        requestedPhysicalIntermediate = intermediate
+                        updateRequestedPhysicalIntermediate(intermediate)
                         rebuildPhysicalSelectedFrame()
                     } else {
                         publishSelectedTestPreview()
@@ -540,7 +595,7 @@ final class WorkspaceModel: ObservableObject {
     private func testPhaseToReveal(for intent: TestControlIntent) -> String? {
         let controlID: String
         switch intent {
-        case let .setChoice(id, _), let .setScalar(id, _): controlID = id
+        case let .setChoice(id, _), let .setScalar(id, _), let .setToggle(id, _): controlID = id
         case .selectPhase, .performAction: return nil
         }
         guard let presentation = testPresentation,
@@ -665,18 +720,28 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func renderSelectedPhysicalFrameNative() {
-        guard physicalNativeTask == nil else { return }
+        guard !nativeRenderTaskActive else { return }
         pause()
+        nativeCancellationRequested = false
         do { try physicalModel.beginNative() }
         catch { return }
+        nativeRenderTaskActive = true
         physicalNativeTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let job = try submitPhysicalJob(quality: .native)
                 physicalNativeJob = job
-                try await pollPhysicalJob(job, native: true)
+                if nativeCancellationRequested {
+                    _ = job.cancel()
+                }
+                try await pollPhysicalJob(
+                    job,
+                    native: true
+                )
             } catch is CancellationError {
-                // Explicit cancellation or parameter invalidation owns the state.
+                if physicalModel.frameState == .rendering {
+                    physicalModel.confirmNativeCancellation()
+                }
             } catch {
                 if !Task.isCancelled {
                     physicalModel.failNative()
@@ -687,12 +752,23 @@ final class WorkspaceModel: ObservableObject {
             }
             physicalNativeJob = nil
             physicalNativeTask = nil
+            nativeCancellationRequested = false
+            nativeRenderTaskActive = false
         }
     }
 
     func cancelSelectedPhysicalFrameNative() {
-        physicalModel.cancelNative()
-        physicalNativeTask?.cancel()
+        guard nativeRenderTaskActive else { return }
+        nativeCancellationRequested = true
+        physicalModel.requestNativeCancellation()
+    }
+
+    func performNativeRenderButtonAction() {
+        if !nativeRenderTaskActive {
+            renderSelectedPhysicalFrameNative()
+        } else if !nativeCancellationRequested {
+            cancelSelectedPhysicalFrameNative()
+        }
     }
 
     func changeSourcePlacement(_ placement: SourcePlacement) {
@@ -1363,8 +1439,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func tickPlayback() {
-        if metalDisplay.lastCompletedEndToEndMilliseconds > 0 {
-            decodeToPreviewMilliseconds = metalDisplay.lastCompletedEndToEndMilliseconds
+        let completedMilliseconds = metalDisplay.lastCompletedEndToEndMilliseconds
+        if completedMilliseconds > 0,
+           decodeToPreviewMilliseconds != completedMilliseconds {
+            decodeToPreviewMilliseconds = completedMilliseconds
         }
         guard isPlaying else { return }
         if currentFrame >= activeFrameRange.upperBound {
@@ -1418,6 +1496,7 @@ final class WorkspaceModel: ObservableObject {
                 input: inputTransform, alpha: effectiveAlpha
             )
             sourceACEScgFrame = base
+            physicalModel.invalidateExternalParameters()
             metalFrame = base
             if let metalFrame {
                 monitorOutput.update(frame: metalFrame, display: metalDisplay)
@@ -1450,6 +1529,7 @@ final class WorkspaceModel: ObservableObject {
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
         )
         sourceACEScgFrame = base
+        physicalModel.invalidateExternalParameters()
         metalFrame = base
         if let metalFrame {
             monitorOutput.update(frame: metalFrame, display: metalDisplay)
@@ -1502,7 +1582,10 @@ final class WorkspaceModel: ObservableObject {
                 let job = try submitPhysicalJob(quality: quality)
                 submittedJob = job
                 physicalInteractiveJob = job
-                try await pollPhysicalJob(job, native: false)
+                try await pollPhysicalJob(
+                    job,
+                    native: false
+                )
             } catch is CancellationError {
                 // A newer parameter revision owns the next authoritative result.
             } catch {
@@ -1621,10 +1704,13 @@ final class WorkspaceModel: ObservableObject {
         if testAuthoringSelection == nil {
             testAuthoringSelection = try RustTestAuthoringCoordinator.defaultSelection(
                 inputTransformID: inputTransform.id,
-                deviceID: device.id
+                deviceID: device.id,
+                frameRate: frameRate
             )
         }
-        guard let selection = testAuthoringSelection else { return }
+        guard var selection = testAuthoringSelection else { return }
+        selection.frameRate = frameRate
+        testAuthoringSelection = selection
         let snapshot = try RustTestAuthoringCoordinator.snapshot(
             selection: selection,
             selectedPreviewPhaseID: testPresentation?.selectedPhaseID
@@ -1693,7 +1779,20 @@ final class WorkspaceModel: ObservableObject {
         }
         try apply(capture: capture, lensID: selection.lensPresetID, to: &authored)
         environment.apply(to: &authored)
+        authored.sceneLens.focusPolicy = selection.autofocusEnabled
+            ? "autofocus-screen" : "manual"
         authored.sceneLens.focusDistanceMeters = selection.focusDistanceMeters
+        authored.sceneLens.fStop = selection.fStop
+        authored.sensor.bloomCrosstalkFraction = selection.sensorBloomCrosstalkFraction
+        authored.sensor.bloomOverflowTransferFraction =
+            selection.sensorBloomOverflowTransferFraction
+        let halfExposureNanoseconds = Int64(
+            (selection.exposureTimeSeconds * 0.5 * 1_000_000_000).rounded()
+        )
+        authored.shutterMotion.openOffsetNumerator = -halfExposureNanoseconds
+        authored.shutterMotion.openOffsetDenominator = 1_000_000_000
+        authored.shutterMotion.closeOffsetNumerator = halfExposureNanoseconds
+        authored.shutterMotion.closeOffsetDenominator = 1_000_000_000
         authored.screenPose.position = [
             selection.screenPositionXMeters,
             selection.screenPositionYMeters,
@@ -1819,16 +1918,16 @@ final class WorkspaceModel: ObservableObject {
         let presentationFrame: StudioColorMetalFrame
         switch result {
         case .sourceACEScg:
-            requestedPhysicalIntermediate = .sourceACEScg
+            updateRequestedPhysicalIntermediate(.sourceACEScg)
             presentationFrame = sourceACEScgFrame
         case .feederSignal:
-            requestedPhysicalIntermediate = .deviceSignal
+            updateRequestedPhysicalIntermediate(.deviceSignal)
             rebuildPhysicalSelectedFrame()
             return
         case .deviceInterpretation, .panelStructure, .panelLightSpread,
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
              .shutterExposure, .sensorBloom, .sensorCfa, .sensorNoise, .developDemosaic:
-            requestedPhysicalIntermediate = physicalIntermediate(for: result)!
+            updateRequestedPhysicalIntermediate(physicalIntermediate(for: result)!)
             rebuildPhysicalSelectedFrame()
             return
         }
@@ -1845,16 +1944,26 @@ final class WorkspaceModel: ObservableObject {
         native: Bool
     ) async throws {
         let started = ContinuousClock.now
+        var lastNativePublication: ContinuousClock.Instant?
         while true {
             try Task.checkCancellation()
             let snapshot = try job.snapshot()
             if native {
-                physicalModel.publishNative(snapshot)
+                let now = ContinuousClock.now
+                if snapshot.state != .rendering
+                    || lastNativePublication == nil
+                    || lastNativePublication!.duration(to: now) >= .milliseconds(50) {
+                    physicalModel.publishNative(snapshot)
+                    lastNativePublication = now
+                }
             }
             switch snapshot.state {
             case .idle, .stale, .rendering:
                 try await Task.sleep(for: .milliseconds(8))
             case .cancelled:
+                if native {
+                    physicalModel.confirmNativeCancellation()
+                }
                 throw CancellationError()
             case .failed:
                 physicalPublicationLog.error(

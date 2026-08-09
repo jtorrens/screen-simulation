@@ -28,6 +28,7 @@ struct TestAuthoringResolvedSelection: Equatable, Sendable {
     let whiteLuminanceNits: Double
     let placementID: String
     let previewQualityID: String
+    var frameRate: Double
     let subpixelGeometryAmount: Double
     let panelLightSpreadAmount: Double
     let capturePresetID: String
@@ -54,9 +55,14 @@ struct TestAuthoringResolvedSelection: Equatable, Sendable {
     let coverGlowAmount: Double
     let lensPresetID: String
     let lensAmount: Double
+    let autofocusEnabled: Bool
     let focusDistanceMeters: Double
+    let fStop: Double
+    let exposureTimeSeconds: Double
     let shutterMotionAmount: Double
     let sensorBloomAmount: Double
+    let sensorBloomCrosstalkFraction: Double
+    let sensorBloomOverflowTransferFraction: Double
     let sensorNoiseAmount: Double
 }
 
@@ -83,14 +89,15 @@ enum TestAuthoringCoordinatorError: Error, LocalizedError {
 enum RustTestAuthoringCoordinator {
     static func defaultSelection(
         inputTransformID: String,
-        deviceID: String
+        deviceID: String,
+        frameRate: Double
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV7()
+                var output = ScreenTestAuthoringSelectionV10()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
-                    inputView, deviceView, &output, &error
+                    inputView, deviceView, Float(frameRate), &output, &error
                 ) else {
                     throw TestAuthoringCoordinatorError.bridge(
                         error.map(String.init(cString:))
@@ -123,7 +130,7 @@ enum RustTestAuthoringCoordinator {
             var previewResults: [String: TestPreviewResultKind] = [:]
             phases.reserveCapacity(phaseCount)
             for phaseIndex in 0..<phaseCount {
-                var rawPhase = ScreenTestPhaseDescriptorV2()
+                var rawPhase = ScreenTestPhaseDescriptorV3()
                 guard screen_test_page_phase_descriptor(
                     descriptor, phaseIndex, &rawPhase
                 ) else {
@@ -159,7 +166,8 @@ enum RustTestAuthoringCoordinator {
                 phases.append(TestPhasePresentation(
                     id: phaseID,
                     label: string(rawPhase.label),
-                    characterScaleNote: optionalString(rawPhase.character_scale_note),
+                    effectSummary: string(rawPhase.effect_summary),
+                    headerControlID: optionalString(rawPhase.header_control_id),
                     inputArtifactID: string(rawPhase.input_artifact),
                     outputArtifactID: string(rawPhase.output_artifact),
                     sections: sections
@@ -201,7 +209,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV7()
+                        var output = ScreenTestAuthoringSelectionV10()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -218,7 +226,7 @@ enum RustTestAuthoringCoordinator {
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV7()
+                    var output = ScreenTestAuthoringSelectionV10()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -226,6 +234,22 @@ enum RustTestAuthoringCoordinator {
                         throw TestAuthoringCoordinatorError.bridge(
                             error.map(String.init(cString:))
                                 ?? "Rust rechazó el valor de Test."
+                        )
+                    }
+                    return resolved(output)
+                }
+            }
+        case let .setToggle(controlID, value):
+            return try withRawSelection(selection) { rawSelection in
+                try withUTF8View(controlID) { controlView in
+                    var output = ScreenTestAuthoringSelectionV10()
+                    var error: UnsafePointer<CChar>?
+                    guard screen_test_authoring_apply_toggle(
+                        rawSelection, controlView, value, &output, &error
+                    ) else {
+                        throw TestAuthoringCoordinatorError.bridge(
+                            error.map(String.init(cString:))
+                                ?? "Rust rechazó el interruptor de Test."
                         )
                     }
                     return resolved(output)
@@ -241,7 +265,7 @@ enum RustTestAuthoringCoordinator {
         phaseIndex: Int,
         controlIndex: Int
     ) throws -> TestControlDescriptor {
-        var raw = ScreenTestControlDescriptorV3()
+        var raw = ScreenTestControlDescriptorV5()
         guard screen_test_page_control_descriptor(
             descriptor, phaseIndex, controlIndex, &raw
         ) else {
@@ -281,7 +305,15 @@ enum RustTestAuthoringCoordinator {
                 minimum: Double(raw.minimum),
                 maximum: Double(raw.maximum),
                 step: Double(raw.step),
+                sliderVisible: raw.slider_visible,
                 unit: string(raw.unit)
+            ))
+        case 2:
+            return .toggle(.init(
+                id: string(raw.id),
+                label: string(raw.label),
+                value: raw.value != 0,
+                resetValue: raw.reset_value != 0
             ))
         default:
             throw TestAuthoringCoordinatorError.malformedDescriptor(
@@ -294,7 +326,7 @@ enum RustTestAuthoringCoordinator {
         descriptor: OpaquePointer,
         controlIndex: Int
     ) throws -> TestControlDescriptor {
-        var raw = ScreenTestControlDescriptorV3()
+        var raw = ScreenTestControlDescriptorV5()
         guard screen_test_page_preview_control_descriptor(
             descriptor, controlIndex, &raw
         ) else {
@@ -330,7 +362,7 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV7
+        _ raw: ScreenTestAuthoringSelectionV10
     ) -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
@@ -341,6 +373,7 @@ enum RustTestAuthoringCoordinator {
             whiteLuminanceNits: Double(raw.white_luminance_nits),
             placementID: string(raw.placement_id),
             previewQualityID: string(raw.preview_quality_id),
+            frameRate: Double(raw.frame_rate),
             subpixelGeometryAmount: Double(raw.subpixel_geometry_amount),
             panelLightSpreadAmount: Double(raw.panel_light_spread_amount),
             capturePresetID: string(raw.capture_preset_id),
@@ -367,16 +400,23 @@ enum RustTestAuthoringCoordinator {
             coverGlowAmount: Double(raw.cover_glow_amount),
             lensPresetID: string(raw.lens_preset_id),
             lensAmount: Double(raw.lens_amount),
+            autofocusEnabled: raw.autofocus_enabled,
             focusDistanceMeters: Double(raw.focus_distance_meters),
+            fStop: Double(raw.f_stop),
+            exposureTimeSeconds: Double(raw.exposure_time_seconds),
             shutterMotionAmount: Double(raw.shutter_motion_amount),
             sensorBloomAmount: Double(raw.sensor_bloom_amount),
+            sensorBloomCrosstalkFraction: Double(raw.sensor_bloom_crosstalk_fraction),
+            sensorBloomOverflowTransferFraction: Double(
+                raw.sensor_bloom_overflow_transfer_fraction
+            ),
             sensorNoiseAmount: Double(raw.sensor_noise_amount)
         )
     }
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV7>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV10>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -389,7 +429,7 @@ enum RustTestAuthoringCoordinator {
                                 try withUTF8View(selection.coverGlassPresetID) { coverView in
                                     try withUTF8View(selection.environmentPresetID) { environmentView in
                                         try withUTF8View(selection.lensPresetID) { lensView in
-                                            var raw = ScreenTestAuthoringSelectionV7()
+                                            var raw = ScreenTestAuthoringSelectionV10()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView
@@ -399,6 +439,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.white_luminance_nits = Float(selection.whiteLuminanceNits)
                                             raw.placement_id = placementView
                                             raw.preview_quality_id = qualityView
+                                            raw.frame_rate = Float(selection.frameRate)
                                             raw.subpixel_geometry_amount = Float(selection.subpixelGeometryAmount)
                                             raw.panel_light_spread_amount = Float(selection.panelLightSpreadAmount)
                                             raw.capture_preset_id = captureView
@@ -425,9 +466,18 @@ enum RustTestAuthoringCoordinator {
                                             raw.cover_glow_amount = Float(selection.coverGlowAmount)
                                             raw.lens_preset_id = lensView
                                             raw.lens_amount = Float(selection.lensAmount)
+                                            raw.autofocus_enabled = selection.autofocusEnabled
                                             raw.focus_distance_meters = Float(selection.focusDistanceMeters)
+                                            raw.f_stop = Float(selection.fStop)
+                                            raw.exposure_time_seconds = Float(selection.exposureTimeSeconds)
                                             raw.shutter_motion_amount = Float(selection.shutterMotionAmount)
                                             raw.sensor_bloom_amount = Float(selection.sensorBloomAmount)
+                                            raw.sensor_bloom_crosstalk_fraction = Float(
+                                                selection.sensorBloomCrosstalkFraction
+                                            )
+                                            raw.sensor_bloom_overflow_transfer_fraction = Float(
+                                                selection.sensorBloomOverflowTransferFraction
+                                            )
                                             raw.sensor_noise_amount = Float(selection.sensorNoiseAmount)
                                             return try withUnsafePointer(to: &raw, body)
                                         }

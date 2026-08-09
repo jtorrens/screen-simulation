@@ -8,7 +8,7 @@ use screen_cover::{
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 7;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 9;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -56,10 +56,16 @@ pub const ENVIRONMENT_AMOUNT_CONTROL_ID: &str = "environment-amount";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
 pub const LENS_AMOUNT_CONTROL_ID: &str = "lens-amount";
+pub const AUTOFOCUS_CONTROL_ID: &str = "autofocus";
 pub const FOCUS_DISTANCE_CONTROL_ID: &str = "focus-distance-meters";
+pub const F_STOP_CONTROL_ID: &str = "f-stop";
+pub const SHUTTER_ANGLE_CONTROL_ID: &str = "shutter-angle-degrees";
+pub const SHUTTER_RECIPROCAL_CONTROL_ID: &str = "shutter-reciprocal-seconds";
 pub const SHUTTER_AMOUNT_CONTROL_ID: &str = "shutter-motion-amount";
 pub const SENSOR_NOISE_AMOUNT_CONTROL_ID: &str = "sensor-noise-amount";
 pub const SENSOR_BLOOM_AMOUNT_CONTROL_ID: &str = "sensor-bloom-amount";
+pub const SENSOR_BLOOM_CROSSTALK_CONTROL_ID: &str = "sensor-bloom-crosstalk-fraction";
+pub const SENSOR_BLOOM_OVERFLOW_CONTROL_ID: &str = "sensor-bloom-overflow-transfer-fraction";
 
 const PLACEMENTS: [TestChoiceOption; 4] = [
     TestChoiceOption {
@@ -119,6 +125,7 @@ pub struct TestAuthoringSelection<'a> {
     pub white_luminance_nits: f32,
     pub placement_id: &'a str,
     pub preview_quality_id: &'a str,
+    pub frame_rate: f32,
     pub subpixel_geometry_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'a str,
@@ -145,9 +152,14 @@ pub struct TestAuthoringSelection<'a> {
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'a str,
     pub lens_amount: f32,
+    pub autofocus_enabled: bool,
     pub focus_distance_meters: f32,
+    pub f_stop: f32,
+    pub exposure_time_seconds: f32,
     pub shutter_motion_amount: f32,
     pub sensor_bloom_amount: f32,
+    pub sensor_bloom_crosstalk_fraction: f32,
+    pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
 }
 
@@ -161,6 +173,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub white_luminance_nits: f32,
     pub placement_id: &'static str,
     pub preview_quality_id: &'static str,
+    pub frame_rate: f32,
     pub subpixel_geometry_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'static str,
@@ -187,9 +200,14 @@ pub struct ResolvedTestAuthoringSelection {
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'static str,
     pub lens_amount: f32,
+    pub autofocus_enabled: bool,
     pub focus_distance_meters: f32,
+    pub f_stop: f32,
+    pub exposure_time_seconds: f32,
     pub shutter_motion_amount: f32,
     pub sensor_bloom_amount: f32,
+    pub sensor_bloom_crosstalk_fraction: f32,
+    pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
 }
 
@@ -215,8 +233,15 @@ pub enum TestControlRequirement {
         minimum: f32,
         maximum: f32,
         step: f32,
+        slider_visible: bool,
         reset_value: f32,
         unit: &'static str,
+    },
+    Toggle {
+        id: &'static str,
+        label: &'static str,
+        value: bool,
+        reset_value: bool,
     },
 }
 
@@ -252,8 +277,39 @@ fn scalar_control(
         minimum,
         maximum,
         step: (maximum - minimum) * 0.05,
+        slider_visible: true,
         reset_value,
         unit,
+    }
+}
+
+fn scalar_field_control(
+    id: &'static str,
+    label: &'static str,
+    value: f32,
+    minimum: f32,
+    maximum: f32,
+    reset_value: f32,
+    unit: &'static str,
+) -> TestControlRequirement {
+    let mut control = scalar_control(id, label, value, minimum, maximum, reset_value, unit);
+    if let TestControlRequirement::Scalar { slider_visible, .. } = &mut control {
+        *slider_visible = false;
+    }
+    control
+}
+
+fn toggle_control(
+    id: &'static str,
+    label: &'static str,
+    value: bool,
+    reset_value: bool,
+) -> TestControlRequirement {
+    TestControlRequirement::Toggle {
+        id,
+        label,
+        value,
+        reset_value,
     }
 }
 
@@ -261,7 +317,8 @@ fn scalar_control(
 pub struct TestPhaseDescriptor {
     pub id: &'static str,
     pub label: &'static str,
-    pub character_scale_note: Option<&'static str>,
+    pub effect_summary: &'static str,
+    pub header_control_id: Option<&'static str>,
     pub input_artifact: &'static str,
     pub output_artifact: &'static str,
     pub preview_result: TestPreviewResult,
@@ -317,8 +374,11 @@ pub enum TestAuthoringError {
     InvalidCoverGlowAmount,
     InvalidLensAmount,
     InvalidFocusDistance,
+    InvalidAperture,
+    InvalidExposureTime,
     InvalidShutterMotionAmount,
     InvalidSensorBloomAmount,
+    InvalidSensorBloomProfile,
     InvalidSensorNoiseAmount,
     UnknownPlacement,
     UnknownPreviewQuality,
@@ -348,8 +408,13 @@ impl core::fmt::Display for TestAuthoringError {
             Self::InvalidCoverGlowAmount => "Cover Glow amount is outside 0..=4",
             Self::InvalidLensAmount => "Lens amount is outside 0..=4",
             Self::InvalidFocusDistance => "Focus Distance is invalid",
+            Self::InvalidAperture => "Aperture is outside f/0.7..=f/64",
+            Self::InvalidExposureTime => "Exposure Time is outside 1/32000..=60 seconds",
             Self::InvalidShutterMotionAmount => "Shutter amount is outside 0..=4",
             Self::InvalidSensorBloomAmount => "Sensor Bloom amount is outside 0..=4",
+            Self::InvalidSensorBloomProfile => {
+                "Sensor Bloom profile is outside its physical bounds"
+            }
             Self::InvalidSensorNoiseAmount => "Sensor Noise amount is outside 0..=4",
             Self::UnknownPlacement => "unknown Test placement",
             Self::UnknownPreviewQuality => "unknown Test preview quality",
@@ -405,6 +470,7 @@ fn default_output_for_input(input: OcioInputTransform) -> DeviceColorTarget {
 pub fn default_test_authoring_selection(
     input_transform_id: &str,
     device_id: &str,
+    frame_rate: f32,
 ) -> Result<ResolvedTestAuthoringSelection, TestAuthoringError> {
     let input = OcioInputTransform::from_stable_id(input_transform_id)
         .ok_or(TestAuthoringError::UnknownInputTransform)?;
@@ -421,6 +487,7 @@ pub fn default_test_authoring_selection(
         white_luminance_nits: device.reference_white_nits,
         placement_id: "fit",
         preview_quality_id: "draft",
+        frame_rate,
         subpixel_geometry_amount: 1.0,
         panel_light_spread_amount: device.light_spread.character_strength,
         capture_preset_id: capture.id,
@@ -447,9 +514,14 @@ pub fn default_test_authoring_selection(
         cover_glow_amount: 1.0,
         lens_preset_id: capture.default_lens_preset_id,
         lens_amount: 1.0,
+        autofocus_enabled: true,
         focus_distance_meters: 0.15,
+        f_stop: capture.f_stop,
+        exposure_time_seconds: capture.default_shutter_angle_degrees / 360.0 / frame_rate,
         shutter_motion_amount: 1.0,
         sensor_bloom_amount: 1.0,
+        sensor_bloom_crosstalk_fraction: capture.sensor.bloom.crosstalk_fraction,
+        sensor_bloom_overflow_transfer_fraction: capture.sensor.bloom.overflow_transfer_fraction,
         sensor_noise_amount: 1.0,
     })
 }
@@ -485,6 +557,9 @@ pub fn resolve_test_authoring_selection(
         selection.preview_quality_id,
         TestAuthoringError::UnknownPreviewQuality,
     )?;
+    if !selection.frame_rate.is_finite() || selection.frame_rate <= 0.0 {
+        return Err(TestAuthoringError::InvalidExposureTime);
+    }
     let geometry_mode_id = selected_option(
         &GEOMETRY_MODES,
         selection.geometry_mode_id,
@@ -576,6 +651,23 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidFocusDistance);
     }
+    if !selection.f_stop.is_finite() || !(0.7..=64.0).contains(&selection.f_stop) {
+        return Err(TestAuthoringError::InvalidAperture);
+    }
+    if !selection.exposure_time_seconds.is_finite()
+        || !(1.0 / 32_000.0..=60.0).contains(&selection.exposure_time_seconds)
+    {
+        return Err(TestAuthoringError::InvalidExposureTime);
+    }
+    let resolved_focus_distance_meters = if selection.autofocus_enabled {
+        if geometry_mode_id == "look-at" {
+            selection.camera_distance_meters
+        } else {
+            free_focus_distance(&selection)?
+        }
+    } else {
+        selection.focus_distance_meters
+    };
     if !selection.shutter_motion_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.shutter_motion_amount)
     {
@@ -585,6 +677,17 @@ pub fn resolve_test_authoring_selection(
         || !(0.0..=4.0).contains(&selection.sensor_bloom_amount)
     {
         return Err(TestAuthoringError::InvalidSensorBloomAmount);
+    }
+    if !selection.sensor_bloom_crosstalk_fraction.is_finite()
+        || !(0.0..=0.20).contains(&selection.sensor_bloom_crosstalk_fraction)
+        || !selection
+            .sensor_bloom_overflow_transfer_fraction
+            .is_finite()
+        || !(0.0..=1.0).contains(&selection.sensor_bloom_overflow_transfer_fraction)
+        || selection.sensor_bloom_crosstalk_fraction * selection.sensor_bloom_amount > 0.80
+        || selection.sensor_bloom_overflow_transfer_fraction * selection.sensor_bloom_amount > 1.0
+    {
+        return Err(TestAuthoringError::InvalidSensorBloomProfile);
     }
     if !selection.sensor_noise_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.sensor_noise_amount)
@@ -600,6 +703,7 @@ pub fn resolve_test_authoring_selection(
         white_luminance_nits: selection.white_luminance_nits,
         placement_id,
         preview_quality_id,
+        frame_rate: selection.frame_rate,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: capture.id,
@@ -626,11 +730,72 @@ pub fn resolve_test_authoring_selection(
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: lens.id,
         lens_amount: selection.lens_amount,
-        focus_distance_meters: selection.focus_distance_meters,
+        autofocus_enabled: selection.autofocus_enabled,
+        focus_distance_meters: resolved_focus_distance_meters,
+        f_stop: selection.f_stop,
+        exposure_time_seconds: selection.exposure_time_seconds,
         shutter_motion_amount: selection.shutter_motion_amount,
         sensor_bloom_amount: selection.sensor_bloom_amount,
+        sensor_bloom_crosstalk_fraction: selection.sensor_bloom_crosstalk_fraction,
+        sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
     })
+}
+
+fn free_focus_distance(selection: &TestAuthoringSelection<'_>) -> Result<f32, TestAuthoringError> {
+    let camera = euler_quaternion([
+        selection.camera_rotation_x_degrees,
+        selection.camera_rotation_y_degrees,
+        selection.camera_rotation_z_degrees,
+    ]);
+    let screen = euler_quaternion([
+        selection.screen_rotation_x_degrees,
+        selection.screen_yaw_degrees,
+        selection.screen_rotation_z_degrees,
+    ]);
+    let forward = [
+        -2.0 * (camera[0] * camera[2] + camera[3] * camera[1]),
+        -2.0 * (camera[1] * camera[2] - camera[3] * camera[0]),
+        -(1.0 - 2.0 * (camera[0] * camera[0] + camera[1] * camera[1])),
+    ];
+    let normal = [
+        2.0 * (screen[0] * screen[2] + screen[3] * screen[1]),
+        2.0 * (screen[1] * screen[2] - screen[3] * screen[0]),
+        1.0 - 2.0 * (screen[0] * screen[0] + screen[1] * screen[1]),
+    ];
+    let offset = [
+        selection.screen_position_x_meters - selection.camera_position_x_meters,
+        selection.screen_position_y_meters - selection.camera_position_y_meters,
+        selection.screen_position_z_meters - selection.camera_position_z_meters,
+    ];
+    let denominator = dot3(forward, normal);
+    if denominator.abs() <= 1.0e-6 {
+        return Err(TestAuthoringError::InvalidGeometry);
+    }
+    let distance = dot3(offset, normal) / denominator;
+    if !distance.is_finite() || !(0.01..=100.0).contains(&distance) {
+        return Err(TestAuthoringError::InvalidGeometry);
+    }
+    Ok(distance)
+}
+
+fn euler_quaternion(degrees: [f32; 3]) -> [f32; 4] {
+    let half_x = degrees[0].to_radians() * 0.5;
+    let half_y = degrees[1].to_radians() * 0.5;
+    let half_z = degrees[2].to_radians() * 0.5;
+    let (sx, cx) = half_x.sin_cos();
+    let (sy, cy) = half_y.sin_cos();
+    let (sz, cz) = half_z.sin_cos();
+    [
+        sx * cy * cz - cx * sy * sz,
+        cx * sy * cz + sx * cy * sz,
+        cx * cy * sz - sx * sy * cz,
+        cx * cy * cz + sx * sy * sz,
+    ]
+}
+
+fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
+    lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
 }
 
 pub fn test_page_descriptor(
@@ -905,15 +1070,60 @@ pub fn test_page_descriptor(
             ),
         ]);
     }
+    let mut lens_controls = vec![
+        choice_control(
+            LENS_PRESET_CONTROL_ID,
+            "Objetivo",
+            lens_options,
+            selection.lens_preset_id,
+            capture.default_lens_preset_id,
+        ),
+        scalar_control(
+            LENS_AMOUNT_CONTROL_ID,
+            "Carácter del objetivo",
+            selection.lens_amount,
+            0.0,
+            4.0,
+            1.0,
+            "×",
+        ),
+        toggle_control(
+            AUTOFOCUS_CONTROL_ID,
+            "Autofocus",
+            selection.autofocus_enabled,
+            true,
+        ),
+        scalar_control(
+            F_STOP_CONTROL_ID,
+            "Diafragma",
+            selection.f_stop,
+            0.7,
+            64.0,
+            capture.f_stop,
+            "f/",
+        ),
+    ];
+    if !selection.autofocus_enabled {
+        lens_controls.push(scalar_control(
+            FOCUS_DISTANCE_CONTROL_ID,
+            "Distancia de foco",
+            selection.focus_distance_meters,
+            0.05,
+            5.0,
+            seed_distance,
+            "m",
+        ));
+    }
     Ok(TestPageDescriptor {
         schema_version: TEST_AUTHORING_SCHEMA_VERSION,
-        default_preview_phase_id: ORIGIN_PHASE_ID,
+        default_preview_phase_id: DEVELOP_DEMOSAIC_PHASE_ID,
         selection,
         phases: vec![
             TestPhaseDescriptor {
                 id: ORIGIN_PHASE_ID,
                 label: "Origen",
-                character_scale_note: None,
+                effect_summary: "Interpreta la fuente y establece el raster lineal ACEScg canónico.",
+                header_control_id: None,
                 input_artifact: "encoded-source-raster-v1",
                 output_artifact: "linear-acescg-raster-v1",
                 preview_result: TestPreviewResult::SourceAcesCg,
@@ -922,7 +1132,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: FEEDER_SIGNAL_PHASE_ID,
                 label: "Salida del feeder",
-                character_scale_note: None,
+                effect_summary: "Codifica y coloca la señal que recibe el dispositivo.",
+                header_control_id: None,
                 input_artifact: "linear-acescg-raster-v1",
                 output_artifact: "placed-feeder-signal-v1",
                 preview_result: TestPreviewResult::FeederSignal,
@@ -946,9 +1157,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: DEVICE_INTERPRETATION_PHASE_ID,
                 label: "Mapeo e interpretación del dispositivo",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
+                effect_summary: "Interpreta la señal según el modo de color y luminancia del dispositivo.",
+                header_control_id: None,
                 input_artifact: "placed-feeder-signal-v1",
                 output_artifact: "panel-emission-radiance-v1",
                 preview_result: TestPreviewResult::DeviceInterpretation,
@@ -981,9 +1191,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: PANEL_STRUCTURE_PHASE_ID,
                 label: "Trama del panel",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
+                effect_summary: "Introduce trama RGB/BGR, subpíxeles y matriz negra; determina el moiré espacial.",
+                header_control_id: Some(SUBPIXEL_GEOMETRY_CONTROL_ID),
                 input_artifact: "panel-emission-radiance-v1",
                 output_artifact: "subpixel-radiance-v1",
                 preview_result: TestPreviewResult::PanelStructure,
@@ -1000,9 +1209,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: PANEL_LIGHT_SPREAD_PHASE_ID,
                 label: "Dispersión de luz del panel",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
+                effect_summary: "Difunde la emisión entre celdas y suaviza la estructura fina del panel.",
+                header_control_id: Some(PANEL_LIGHT_SPREAD_CONTROL_ID),
                 input_artifact: "subpixel-radiance-v1",
                 output_artifact: "spread-panel-radiance-v1",
                 preview_result: TestPreviewResult::PanelLightSpread,
@@ -1019,7 +1227,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: RELATIVE_GEOMETRY_PHASE_ID,
                 label: "Geometría relativa",
-                character_scale_note: None,
+                effect_summary: "Sitúa cámara y pantalla y determina perspectiva, encuadre e incidencia.",
+                header_control_id: None,
                 input_artifact: "spread-panel-radiance-v1",
                 output_artifact: "resolved-observation-geometry-v1",
                 preview_result: TestPreviewResult::RelativeGeometry,
@@ -1028,9 +1237,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: COVER_ENVIRONMENT_PHASE_ID,
                 label: "Cristal y entorno",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
+                effect_summary: "Añade transmisión, reflejos, contraste angular y carácter superficial.",
+                header_control_id: Some(COVER_GLASS_AMOUNT_CONTROL_ID),
                 input_artifact: "resolved-observation-geometry-v1",
                 output_artifact: "covered-directional-radiance-v1",
                 preview_result: TestPreviewResult::CoverEnvironment,
@@ -1072,9 +1280,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: COVER_GLOW_PHASE_ID,
                 label: "Resplandor del cristal",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
+                effect_summary: "Redistribuye luz intensa dentro del cristal, incluso fuera del área activa.",
+                header_control_id: Some(COVER_GLOW_AMOUNT_CONTROL_ID),
                 input_artifact: "covered-directional-radiance-v1",
                 output_artifact: "glass-scattered-radiance-v1",
                 preview_result: TestPreviewResult::CoverGlow,
@@ -1091,82 +1298,94 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: LENS_PROJECTION_PHASE_ID,
                 label: "Objetivo y proyección",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
+                effect_summary: "Aplica proyección, foco, distorsión, aberración cromática, viñeteo y PSF.",
+                header_control_id: Some(LENS_AMOUNT_CONTROL_ID),
                 input_artifact: "glass-scattered-radiance-v1",
                 output_artifact: "image-plane-illuminance-acescg-v1",
                 preview_result: TestPreviewResult::LensProjection,
+                controls: lens_controls,
+            },
+            TestPhaseDescriptor {
+                id: SHUTTER_EXPOSURE_PHASE_ID,
+                label: "Exposición y obturador",
+                effect_summary: "Integra diafragma, tiempo de exposición, ND y comportamiento temporal.",
+                header_control_id: Some(SHUTTER_AMOUNT_CONTROL_ID),
+                input_artifact: "image-plane-illuminance-acescg-v1",
+                output_artifact: "integrated-optical-exposure-v1",
+                preview_result: TestPreviewResult::ShutterExposure,
                 controls: vec![
-                    choice_control(
-                        LENS_PRESET_CONTROL_ID,
-                        "Objetivo",
-                        lens_options,
-                        selection.lens_preset_id,
-                        capture.default_lens_preset_id,
-                    ),
                     scalar_control(
-                        LENS_AMOUNT_CONTROL_ID,
-                        "Carácter del objetivo",
-                        selection.lens_amount,
+                        SHUTTER_AMOUNT_CONTROL_ID,
+                        "Carácter del obturador",
+                        selection.shutter_motion_amount,
                         0.0,
                         4.0,
                         1.0,
                         "×",
                     ),
                     scalar_control(
-                        FOCUS_DISTANCE_CONTROL_ID,
-                        "Distancia de foco",
-                        selection.focus_distance_meters,
-                        0.05,
-                        5.0,
-                        seed_distance,
-                        "m",
+                        SHUTTER_ANGLE_CONTROL_ID,
+                        "Ángulo de obturación",
+                        selection.exposure_time_seconds * selection.frame_rate * 360.0,
+                        1.0,
+                        360.0,
+                        capture.default_shutter_angle_degrees,
+                        "°",
+                    ),
+                    scalar_field_control(
+                        SHUTTER_RECIPROCAL_CONTROL_ID,
+                        "Velocidad de obturación",
+                        1.0 / selection.exposure_time_seconds,
+                        1.0 / 60.0,
+                        32_000.0,
+                        360.0 * selection.frame_rate / capture.default_shutter_angle_degrees,
+                        "1/s",
                     ),
                 ],
             },
             TestPhaseDescriptor {
-                id: SHUTTER_EXPOSURE_PHASE_ID,
-                label: "Exposición y obturador",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
-                input_artifact: "image-plane-illuminance-acescg-v1",
-                output_artifact: "integrated-optical-exposure-v1",
-                preview_result: TestPreviewResult::ShutterExposure,
-                controls: vec![scalar_control(
-                    SHUTTER_AMOUNT_CONTROL_ID,
-                    "Carácter del obturador",
-                    selection.shutter_motion_amount,
-                    0.0,
-                    4.0,
-                    1.0,
-                    "×",
-                )],
-            },
-            TestPhaseDescriptor {
                 id: SENSOR_BLOOM_PHASE_ID,
                 label: "Crosstalk y bloom del sensor",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
+                effect_summary: "Transfiere carga entre fotositos y desborda altas luces saturadas.",
+                header_control_id: Some(SENSOR_BLOOM_AMOUNT_CONTROL_ID),
                 input_artifact: "integrated-optical-exposure-v1",
                 output_artifact: "coupled-sensor-charge-v1",
                 preview_result: TestPreviewResult::SensorBloom,
-                controls: vec![scalar_control(
-                    SENSOR_BLOOM_AMOUNT_CONTROL_ID,
-                    "Carácter del bloom",
-                    selection.sensor_bloom_amount,
-                    0.0,
-                    4.0,
-                    capture.sensor.bloom.character_strength,
-                    "×",
-                )],
+                controls: vec![
+                    scalar_control(
+                        SENSOR_BLOOM_AMOUNT_CONTROL_ID,
+                        "Carácter del bloom",
+                        selection.sensor_bloom_amount,
+                        0.0,
+                        4.0,
+                        capture.sensor.bloom.character_strength,
+                        "×",
+                    ),
+                    scalar_control(
+                        SENSOR_BLOOM_CROSSTALK_CONTROL_ID,
+                        "Crosstalk entre fotositos",
+                        selection.sensor_bloom_crosstalk_fraction,
+                        0.0,
+                        0.20,
+                        capture.sensor.bloom.crosstalk_fraction,
+                        "fracción",
+                    ),
+                    scalar_control(
+                        SENSOR_BLOOM_OVERFLOW_CONTROL_ID,
+                        "Transferencia de desborde",
+                        selection.sensor_bloom_overflow_transfer_fraction,
+                        0.0,
+                        1.0,
+                        capture.sensor.bloom.overflow_transfer_fraction,
+                        "fracción",
+                    ),
+                ],
             },
             TestPhaseDescriptor {
                 id: SENSOR_CFA_PHASE_ID,
                 label: "Sensor y CFA",
-                character_scale_note: None,
+                effect_summary: "Convierte la exposición óptica en carga mosaico Bayer limpia.",
+                header_control_id: None,
                 input_artifact: "coupled-sensor-charge-v1",
                 output_artifact: "raw-mosaic-clean-v1",
                 preview_result: TestPreviewResult::SensorCfa,
@@ -1175,9 +1394,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: SENSOR_NOISE_PHASE_ID,
                 label: "Ruido del sensor",
-                character_scale_note: Some(
-                    "0 = sin efecto · 1 = físico calibrado · >1 = carácter creativo",
-                ),
+                effect_summary: "Añade ruido físico de lectura, corriente oscura y cuantización.",
+                header_control_id: Some(SENSOR_NOISE_AMOUNT_CONTROL_ID),
                 input_artifact: "raw-mosaic-clean-v1",
                 output_artifact: "raw-mosaic-noisy-v1",
                 preview_result: TestPreviewResult::SensorNoise,
@@ -1194,7 +1412,8 @@ pub fn test_page_descriptor(
             TestPhaseDescriptor {
                 id: DEVELOP_DEMOSAIC_PHASE_ID,
                 label: "Revelado y demosaico",
-                character_scale_note: None,
+                effect_summary: "Aplica balance, revelado y demosaico para obtener ACEScg de cámara.",
+                header_control_id: None,
                 input_artifact: "raw-mosaic-noisy-v1",
                 output_artifact: "developed-camera-acescg-v1",
                 preview_result: TestPreviewResult::DevelopDemosaic,
@@ -1244,7 +1463,13 @@ pub fn apply_test_choice(
             let capture = capture(option_id)?;
             next.capture_preset_id = capture.id;
             next.lens_preset_id = capture.default_lens_preset_id;
+            next.f_stop = capture.f_stop;
+            next.exposure_time_seconds =
+                capture.default_shutter_angle_degrees / 360.0 / current.frame_rate;
             next.sensor_bloom_amount = capture.sensor.bloom.character_strength;
+            next.sensor_bloom_crosstalk_fraction = capture.sensor.bloom.crosstalk_fraction;
+            next.sensor_bloom_overflow_transfer_fraction =
+                capture.sensor.bloom.overflow_transfer_fraction;
         }
         GEOMETRY_MODE_CONTROL_ID => apply_geometry_mode(&mut next, option_id)?,
         COVER_GLASS_CONTROL_ID => {
@@ -1283,9 +1508,15 @@ pub fn apply_test_choice(
         | ENVIRONMENT_AMOUNT_CONTROL_ID
         | COVER_GLOW_AMOUNT_CONTROL_ID
         | LENS_AMOUNT_CONTROL_ID
+        | AUTOFOCUS_CONTROL_ID
+        | F_STOP_CONTROL_ID
+        | SHUTTER_ANGLE_CONTROL_ID
+        | SHUTTER_RECIPROCAL_CONTROL_ID
         | FOCUS_DISTANCE_CONTROL_ID
         | SHUTTER_AMOUNT_CONTROL_ID
         | SENSOR_BLOOM_AMOUNT_CONTROL_ID
+        | SENSOR_BLOOM_CROSSTALK_CONTROL_ID
+        | SENSOR_BLOOM_OVERFLOW_CONTROL_ID
         | SENSOR_NOISE_AMOUNT_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
         _ => return Err(TestAuthoringError::UnknownControl),
     }
@@ -1303,6 +1534,7 @@ fn unresolved_test_selection(
         white_luminance_nits: current.white_luminance_nits,
         placement_id: current.placement_id,
         preview_quality_id: current.preview_quality_id,
+        frame_rate: current.frame_rate,
         subpixel_geometry_amount: current.subpixel_geometry_amount,
         panel_light_spread_amount: current.panel_light_spread_amount,
         capture_preset_id: current.capture_preset_id,
@@ -1329,9 +1561,14 @@ fn unresolved_test_selection(
         cover_glow_amount: current.cover_glow_amount,
         lens_preset_id: current.lens_preset_id,
         lens_amount: current.lens_amount,
+        autofocus_enabled: current.autofocus_enabled,
         focus_distance_meters: current.focus_distance_meters,
+        f_stop: current.f_stop,
+        exposure_time_seconds: current.exposure_time_seconds,
         shutter_motion_amount: current.shutter_motion_amount,
         sensor_bloom_amount: current.sensor_bloom_amount,
+        sensor_bloom_crosstalk_fraction: current.sensor_bloom_crosstalk_fraction,
+        sensor_bloom_overflow_transfer_fraction: current.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: current.sensor_noise_amount,
     }
 }
@@ -1455,9 +1692,14 @@ pub fn apply_test_scalar(
         ENVIRONMENT_AMOUNT_CONTROL_ID => next.environment_amount = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
+        F_STOP_CONTROL_ID => next.f_stop = value,
+        SHUTTER_ANGLE_CONTROL_ID => next.exposure_time_seconds = value / 360.0 / current.frame_rate,
+        SHUTTER_RECIPROCAL_CONTROL_ID => next.exposure_time_seconds = 1.0 / value,
         FOCUS_DISTANCE_CONTROL_ID => next.focus_distance_meters = value,
         SHUTTER_AMOUNT_CONTROL_ID => next.shutter_motion_amount = value,
         SENSOR_BLOOM_AMOUNT_CONTROL_ID => next.sensor_bloom_amount = value,
+        SENSOR_BLOOM_CROSSTALK_CONTROL_ID => next.sensor_bloom_crosstalk_fraction = value,
+        SENSOR_BLOOM_OVERFLOW_CONTROL_ID => next.sensor_bloom_overflow_transfer_fraction = value,
         SENSOR_NOISE_AMOUNT_CONTROL_ID => next.sensor_noise_amount = value,
         OUTPUT_SIGNAL_CONTROL_ID
         | DEVICE_CONTROL_ID
@@ -1468,8 +1710,23 @@ pub fn apply_test_scalar(
         | GEOMETRY_MODE_CONTROL_ID
         | COVER_GLASS_CONTROL_ID
         | ENVIRONMENT_CONTROL_ID
-        | LENS_PRESET_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
+        | LENS_PRESET_CONTROL_ID
+        | AUTOFOCUS_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
         _ => return Err(TestAuthoringError::UnknownControl),
+    }
+    resolve_test_authoring_selection(next)
+}
+
+pub fn apply_test_toggle(
+    selection: TestAuthoringSelection<'_>,
+    control_id: &str,
+    value: bool,
+) -> Result<ResolvedTestAuthoringSelection, TestAuthoringError> {
+    let current = resolve_test_authoring_selection(selection)?;
+    let mut next = unresolved_test_selection(current);
+    match control_id {
+        AUTOFOCUS_CONTROL_ID => next.autofocus_enabled = value,
+        _ => return Err(TestAuthoringError::WrongControlType),
     }
     resolve_test_authoring_selection(next)
 }
@@ -1487,6 +1744,7 @@ mod tests {
             white_luminance_nits: 350.0,
             placement_id: "fit",
             preview_quality_id: "draft",
+            frame_rate: 24.0,
             subpixel_geometry_amount: 1.0,
             panel_light_spread_amount: 1.0,
             capture_preset_id: "iphone-16e-main-48mp",
@@ -1513,9 +1771,14 @@ mod tests {
             cover_glow_amount: 1.0,
             lens_preset_id: "iphone-16e-main-integrated",
             lens_amount: 1.0,
+            autofocus_enabled: true,
             focus_distance_meters: 0.15,
+            f_stop: 1.64,
+            exposure_time_seconds: 1.0 / 288.0,
             shutter_motion_amount: 1.0,
             sensor_bloom_amount: 1.0,
+            sensor_bloom_crosstalk_fraction: 0.020,
+            sensor_bloom_overflow_transfer_fraction: 0.30,
             sensor_noise_amount: 1.0,
         }
     }
@@ -1523,7 +1786,8 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 7);
+        assert_eq!(page.schema_version, 9);
+        assert_eq!(page.default_preview_phase_id, DEVELOP_DEMOSAIC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
             [
@@ -1610,17 +1874,158 @@ mod tests {
     #[test]
     fn default_output_signal_matches_display_referred_input() {
         assert_eq!(
-            default_test_authoring_selection("srgb-encoded-rec709", "lcd-asus-proart-pa329cv")
-                .unwrap()
-                .output_signal_id,
+            default_test_authoring_selection(
+                "srgb-encoded-rec709",
+                "lcd-asus-proart-pa329cv",
+                24.0
+            )
+            .unwrap()
+            .output_signal_id,
             "srgb"
         );
         assert_eq!(
-            default_test_authoring_selection("display-rec709-gamma24", "lcd-asus-proart-pa329cv")
-                .unwrap()
-                .output_signal_id,
+            default_test_authoring_selection(
+                "display-rec709-gamma24",
+                "lcd-asus-proart-pa329cv",
+                24.0
+            )
+            .unwrap()
+            .output_signal_id,
             "rec709-gamma24"
         );
+    }
+
+    #[test]
+    fn autofocus_tracks_look_at_distance_and_manual_focus_remains_authored() {
+        let mut selection = asus();
+        selection.camera_distance_meters = 0.5;
+        let automatic = resolve_test_authoring_selection(selection).unwrap();
+        assert!((automatic.focus_distance_meters - 0.5).abs() < 1.0e-6);
+
+        selection.autofocus_enabled = false;
+        selection.focus_distance_meters = 0.22;
+        let manual = resolve_test_authoring_selection(selection).unwrap();
+        assert!((manual.focus_distance_meters - 0.22).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn lens_and_exposure_publish_real_aperture_time_and_autofocus_controls() {
+        let page = test_page_descriptor(asus()).unwrap();
+        let lens = &page.phases[8].controls;
+        assert!(matches!(
+            lens.iter().find(|control| matches!(
+                control,
+                TestControlRequirement::Toggle {
+                    id: AUTOFOCUS_CONTROL_ID,
+                    ..
+                }
+            )),
+            Some(_)
+        ));
+        assert!(matches!(
+            lens.iter().find(|control| matches!(
+                control,
+                TestControlRequirement::Scalar {
+                    id: F_STOP_CONTROL_ID,
+                    ..
+                }
+            )),
+            Some(_)
+        ));
+        assert!(!lens.iter().any(|control| matches!(
+            control,
+            TestControlRequirement::Scalar {
+                id: FOCUS_DISTANCE_CONTROL_ID,
+                ..
+            }
+        )));
+        assert!(page.phases[9].controls.iter().any(|control| matches!(
+            control,
+            TestControlRequirement::Scalar {
+                id: SHUTTER_ANGLE_CONTROL_ID,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn shutter_angle_and_reciprocal_are_synchronized_through_one_exposure_time() {
+        let from_angle = apply_test_scalar(asus(), SHUTTER_ANGLE_CONTROL_ID, 180.0).unwrap();
+        assert!((from_angle.exposure_time_seconds - 1.0 / 48.0).abs() < 1.0e-6);
+        let angle_page = test_page_descriptor(unresolved_test_selection(from_angle)).unwrap();
+        assert!(matches!(
+            angle_page.phases[9]
+                .controls
+                .iter()
+                .find(|control| matches!(
+                    control,
+                    TestControlRequirement::Scalar {
+                        id: SHUTTER_RECIPROCAL_CONTROL_ID,
+                        value,
+                        ..
+                    } if (*value - 48.0).abs() < 1.0e-4
+                )),
+            Some(_)
+        ));
+
+        let from_reciprocal =
+            apply_test_scalar(asus(), SHUTTER_RECIPROCAL_CONTROL_ID, 96.0).unwrap();
+        assert!((from_reciprocal.exposure_time_seconds - 1.0 / 96.0).abs() < 1.0e-6);
+        assert!((from_reciprocal.exposure_time_seconds * 24.0 * 360.0 - 90.0).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn sensor_bloom_publishes_and_restores_the_selected_camera_profile() {
+        let page = test_page_descriptor(asus()).unwrap();
+        let ids = page.phases[10]
+            .controls
+            .iter()
+            .map(|control| match control {
+                TestControlRequirement::Choice { id, .. }
+                | TestControlRequirement::Scalar { id, .. }
+                | TestControlRequirement::Toggle { id, .. } => *id,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            [
+                SENSOR_BLOOM_AMOUNT_CONTROL_ID,
+                SENSOR_BLOOM_CROSSTALK_CONTROL_ID,
+                SENSOR_BLOOM_OVERFLOW_CONTROL_ID,
+            ]
+        );
+        let edited = apply_test_scalar(asus(), SENSOR_BLOOM_CROSSTALK_CONTROL_ID, 0.01).unwrap();
+        assert!((edited.sensor_bloom_crosstalk_fraction - 0.01).abs() < f32::EPSILON);
+        let changed_camera = apply_test_choice(
+            unresolved_test_selection(edited),
+            CAPTURE_PRESET_CONTROL_ID,
+            "arri-alexa-35-open-gate",
+        )
+        .unwrap();
+        assert_eq!(
+            changed_camera.sensor_bloom_crosstalk_fraction,
+            capture("arri-alexa-35-open-gate")
+                .unwrap()
+                .sensor
+                .bloom
+                .crosstalk_fraction
+        );
+        assert_eq!(
+            changed_camera.sensor_bloom_overflow_transfer_fraction,
+            capture("arri-alexa-35-open-gate")
+                .unwrap()
+                .sensor
+                .bloom
+                .overflow_transfer_fraction
+        );
+    }
+
+    #[test]
+    fn fit_and_fill_crop_remain_distinct_authored_placement_intents() {
+        let fill = apply_test_choice(asus(), PLACEMENT_CONTROL_ID, "fill-crop").unwrap();
+        assert_eq!(fill.placement_id, "fill-crop");
+        let fit = apply_test_choice(asus(), PLACEMENT_CONTROL_ID, "fit").unwrap();
+        assert_eq!(fit.placement_id, "fit");
     }
 
     #[test]

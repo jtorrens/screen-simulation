@@ -314,7 +314,10 @@ final class PhysicalModelController: ObservableObject {
 
     func updateNativeProgress(_ progress: Double) {
         guard frameState == .rendering else { return }
-        self.progress = min(1, max(0, progress))
+        let next = min(1, max(0, progress))
+        if self.progress != next {
+            self.progress = next
+        }
     }
 
     func publishInteractive(
@@ -328,9 +331,16 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func publishNative(_ snapshot: PhysicalMetalFrameSnapshot) {
-        computedQuality = snapshot.computedQuality
-        effectiveDimensions = snapshot.effectiveDimensions
-        diagnostics = decoratedDiagnostics(snapshot.diagnostics)
+        if computedQuality != snapshot.computedQuality {
+            computedQuality = snapshot.computedQuality
+        }
+        if effectiveDimensions != snapshot.effectiveDimensions {
+            effectiveDimensions = snapshot.effectiveDimensions
+        }
+        let nextDiagnostics = decoratedDiagnostics(snapshot.diagnostics)
+        if diagnostics != nextDiagnostics {
+            diagnostics = nextDiagnostics
+        }
         updateNativeProgress(snapshot.progress)
     }
 
@@ -355,12 +365,15 @@ final class PhysicalModelController: ObservableObject {
         frameState = .complete
     }
 
-    func cancelNative() {
+    func requestNativeCancellation() {
         guard frameState == .rendering else { return }
         cancelNativeWork?()
+    }
+
+    func confirmNativeCancellation() {
         nativeStartedAt = nil
         progress = 0
-        frameState = .cancelled
+        frameState = completedFrame == nil ? .cancelled : .stale
     }
 
     func failNative() {

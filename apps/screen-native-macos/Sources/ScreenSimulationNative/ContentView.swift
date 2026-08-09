@@ -1474,7 +1474,10 @@ struct ContentView: View {
                     )
                     .frame(maxWidth: 150)
                     if model.testRequiresExplicitRender {
-                        Button("Render", action: model.renderSelectedPhysicalFrameNative)
+                        NativeRenderButton(
+                            state: model.testNativeRenderButtonState,
+                            action: model.performNativeRenderButtonAction
+                        )
                     }
                 }
                 Spacer()
@@ -1760,6 +1763,7 @@ final class MetalPreviewContainer: NSView {
     var onZoomChange: ((Double) -> Void)?
     var onFittedZoomChange: ((Double) -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
+    private let frameBorderLayer = CALayer()
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
     private var magnifyAnchor: CGPoint?
@@ -1769,6 +1773,13 @@ final class MetalPreviewContainer: NSView {
         wantsLayer = true
         layer?.masksToBounds = true
         layer?.backgroundColor = NSColor(calibratedWhite: 0.18, alpha: 1).cgColor
+        frameBorderLayer.backgroundColor = NSColor.clear.cgColor
+        frameBorderLayer.borderColor = NSColor(
+            calibratedWhite: 0.72, alpha: 0.55
+        ).cgColor
+        frameBorderLayer.borderWidth = 1
+        frameBorderLayer.zPosition = 100
+        layer?.addSublayer(frameBorderLayer)
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
         metadataLabel.alignment = .right
@@ -1901,11 +1912,16 @@ final class MetalPreviewContainer: NSView {
         metalView.layer?.setAffineTransform(
             CGAffineTransform(scaleX: scale, y: scale)
         )
-        metalView.layer?.borderWidth = 1 / max(0.01, scale)
-        metalView.layer?.borderColor = NSColor(calibratedWhite: 0.72, alpha: 0.45).cgColor
         let displayed = CGSize(width: texture.width * scale, height: texture.height * scale)
         let displayedOriginX = bounds.midX + effectivePan.width - displayed.width / 2
+        let displayedOriginY = contentCenterY() + effectivePan.height - displayed.height / 2
         let displayedTopY = contentCenterY() + effectivePan.height + displayed.height / 2
+        frameBorderLayer.frame = NSRect(
+            x: displayedOriginX,
+            y: displayedOriginY,
+            width: displayed.width,
+            height: displayed.height
+        )
         metadataLabel.frame = NSRect(
             x: min(
                 max(12, displayedOriginX),
@@ -1983,6 +1999,84 @@ struct SplitAutosaveProbe: NSViewRepresentable {
                     view = candidate.superview
                 }
             }
+        }
+    }
+}
+
+private struct NativeRenderButton: View {
+    let state: NativeRenderButtonState
+    let action: () -> Void
+
+    private var color: Color {
+        switch state {
+        case .outdated: .red
+        case .rendering, .cancelling: .orange
+        case .complete: .green
+        }
+    }
+
+    private var statusLabel: String {
+        switch state {
+        case .outdated: "desactualizado"
+        case let .rendering(progress):
+            "renderizando \(Int((progress * 100).rounded())) %, pulsar para cancelar"
+        case .cancelling: "cancelando y esperando a Metal"
+        case .complete: "completo y actualizado"
+        }
+    }
+
+    var body: some View {
+        switch state {
+        case let .rendering(progress):
+            HStack(spacing: 7) {
+                ProgressView(value: progress, total: 1)
+                    .progressViewStyle(.linear)
+                    .frame(width: 120)
+                Text("\(Int((progress * 100).rounded())) %")
+                    .monospacedDigit()
+                    .foregroundStyle(.orange)
+                    .frame(width: 36, alignment: .trailing)
+                Button(action: action) {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
+                .help("Cancelar render nativo")
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .accessibilityLabel("Render nativo, \(statusLabel)")
+        case .cancelling:
+            HStack(spacing: 7) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Cancelando…")
+                    .foregroundStyle(.orange)
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .accessibilityLabel("Render nativo, \(statusLabel)")
+        case .outdated, .complete:
+            Button(action: action) {
+                HStack(spacing: 5) {
+                    Image(systemName: state == .complete
+                        ? "checkmark.circle.fill" : "arrow.clockwise.circle")
+                    Text("Render nativo")
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .foregroundStyle(color)
+                .background {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(color.opacity(0.10))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(color, lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Render nativo: \(statusLabel)")
+            .accessibilityLabel("Render nativo, \(statusLabel)")
         }
     }
 }

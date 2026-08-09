@@ -16,8 +16,8 @@ pub use test_authoring::{
     PREVIEW_QUALITY_CONTROL_ID, ResolvedTestAuthoringSelection, TestAuthoringError,
     TestAuthoringSelection, TestChoiceOption, TestControlRequirement, TestPageDescriptor,
     TestPhaseDescriptor, TestPreviewResult, WHITE_LUMINANCE_CONTROL_ID, apply_test_choice,
-    apply_test_scalar, default_test_authoring_selection, resolve_test_authoring_selection,
-    test_page_descriptor,
+    apply_test_scalar, apply_test_toggle, default_test_authoring_selection,
+    resolve_test_authoring_selection, test_page_descriptor,
 };
 
 use core::fmt;

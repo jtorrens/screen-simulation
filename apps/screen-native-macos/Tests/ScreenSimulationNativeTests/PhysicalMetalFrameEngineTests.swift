@@ -85,6 +85,42 @@ import Testing
     #expect(alpha.allSatisfy { $0 == 1 })
 }
 
+@Test @MainActor func shutterAngleIntegratesPhysicalEnergyAndDevelopsAVisibleFrame() async throws {
+    let fixture = try makePhysicalFixture(width: 64, height: 36)
+    let shutter90 = try await terminalSnapshot(submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(),
+        intermediate: .shutterMotion,
+        identity: 33,
+        exposureSeconds: 1.0 / 96.0
+    ))
+    let shutter180 = try await terminalSnapshot(submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(),
+        intermediate: .shutterMotion,
+        identity: 34,
+        exposureSeconds: 1.0 / 48.0
+    ))
+    let energy90 = positiveRGBMean(try #require(shutter90.frame?.texture))
+    let energy180 = positiveRGBMean(try #require(shutter180.frame?.texture))
+    #expect(energy90 > 0)
+    #expect(abs(energy180 / energy90 - 2) < 0.001)
+
+    let developed180 = try await terminalSnapshot(submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(),
+        intermediate: .developedACEScg,
+        identity: 35,
+        exposureSeconds: 1.0 / 48.0
+    ))
+    #expect(developed180.state == .complete)
+    let developedEnergy = positiveRGBMean(try #require(developed180.frame?.texture))
+    #expect(developedEnergy > 0.001)
+}
+
 @Test @MainActor func authoredSnapshotRoundTripsThroughUnifiedEngineAndRestore() async throws {
     let base = try makePhysicalFixture(width: 32, height: 18)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
@@ -346,6 +382,14 @@ private func readRGBA32(_ texture: MTLTexture) -> [Float] {
     return values
 }
 
+private func positiveRGBMean(_ texture: MTLTexture) -> Float {
+    let values = readRGBA32(texture)
+    let rgb = values.enumerated().compactMap { index, value in
+        index % 4 == 3 ? nil : max(0, value)
+    }
+    return rgb.reduce(0, +) / Float(rgb.count)
+}
+
 private func contributions(
     spreadAmount: Double = 1,
     active: Bool = true
@@ -374,7 +418,8 @@ private func submit(
     identity: UInt64,
     placement: PhysicalRasterPlacement = .fit,
     quality: PhysicalQuality = .draft,
-    dimensions: PhysicalDimensions? = nil
+    dimensions: PhysicalDimensions? = nil,
+    exposureSeconds: Double? = nil
 ) throws -> PhysicalMetalFrameJob {
     let spreadAmount = try #require(contributions.first {
         $0.stage == .screen(.panelLightSpread)
@@ -390,13 +435,36 @@ private func submit(
         device: effectiveDefinition,
         scene: fixture.pipeline.parameters.scene_geometry_lens
     )
+    let baseOrchestration = try PhysicalFrameOrchestration.staticSelectedFrame(
+        frame,
+        cameraDistanceMeters: framing.cameraDistanceMeters
+    )
+    let orchestration: PhysicalFrameOrchestration
+    if let exposureSeconds {
+        let halfNanoseconds = Int64((exposureSeconds * 0.5 * 1_000_000_000).rounded())
+        orchestration = PhysicalFrameOrchestration(
+            frame: frame,
+            shutter: PhysicalShutterInterval(
+                open: try PhysicalRationalTime(
+                    numerator: -halfNanoseconds,
+                    denominator: 1_000_000_000
+                ),
+                close: try PhysicalRationalTime(
+                    numerator: halfNanoseconds,
+                    denominator: 1_000_000_000
+                )
+            ),
+            cameraPose: baseOrchestration.cameraPose,
+            screenPose: baseOrchestration.screenPose,
+            isStaticInput: true
+        )
+    } else {
+        orchestration = baseOrchestration
+    }
     return try PhysicalMetalFrameEngine().submit(
         sourceACEScg: fixture.source,
         deviceSignal: fixture.deviceSignal,
-        orchestration: try .staticSelectedFrame(
-            frame,
-            cameraDistanceMeters: framing.cameraDistanceMeters
-        ),
+        orchestration: orchestration,
         resolvedDevice: try effectiveDefinition.resolved(),
         resolvedPipeline: try fixture.pipeline.resolving(
             contributions: contributions,

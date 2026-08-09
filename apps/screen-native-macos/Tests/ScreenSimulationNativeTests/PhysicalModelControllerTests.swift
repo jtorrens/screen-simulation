@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import Testing
 @testable import ScreenSimulationNative
 
@@ -103,9 +104,53 @@ import Testing
     #expect(model.frameState == .stale)
     #expect(model.completedFrame?.nativeDimensions == dimensions)
     try model.beginNative()
-    model.cancelNative()
-    #expect(model.frameState == .cancelled)
+    model.requestNativeCancellation()
+    #expect(model.frameState == .rendering)
+    model.confirmNativeCancellation()
+    #expect(model.frameState == .stale)
+    #expect(model.completedFrame?.nativeDimensions == dimensions)
     #expect(model.progress == 0)
+}
+
+@Test @MainActor func changingTheSourcePatternInvalidatesTheNativeResult() throws {
+    let workspace = WorkspaceModel()
+    let dimensions = try PhysicalDimensions(width: 8064, height: 6048)
+    try workspace.physicalModel.beginNative()
+    workspace.physicalModel.completeNative(
+        nativeDimensions: dimensions,
+        effectiveDimensions: dimensions
+    )
+    #expect(workspace.testNativeRenderButtonState == .complete)
+
+    workspace.choosePattern(.eyeChart, undoManager: nil)
+
+    #expect(workspace.physicalModel.frameState == .stale)
+    #expect(workspace.testNativeRenderButtonState == .outdated)
+}
+
+@Test @MainActor func identicalNativeProgressDoesNotRepublishObservableState() throws {
+    let model = PhysicalModelController()
+    try model.beginNative()
+    let dimensions = try PhysicalDimensions(width: 8064, height: 6048)
+    let snapshot = PhysicalMetalFrameSnapshot(
+        frame: nil,
+        nativeDimensions: dimensions,
+        effectiveDimensions: dimensions,
+        computedQuality: .native,
+        returnedIntermediate: .developedACEScg,
+        state: .rendering,
+        progress: 0.25,
+        diagnostics: [],
+        parameterRevision: model.parameterRevision,
+        parameterHash: try PhysicalParameterHash(bytes: Array(repeating: 0, count: 32))
+    )
+    var publications = 0
+    let subscription = model.objectWillChange.sink { publications += 1 }
+    model.publishNative(snapshot)
+    publications = 0
+    model.publishNative(snapshot)
+    #expect(publications == 0)
+    _ = subscription
 }
 
 private extension PhysicalModelController.StageValue {

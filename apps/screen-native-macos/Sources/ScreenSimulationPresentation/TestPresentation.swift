@@ -40,6 +40,7 @@ public struct TestScalarControl: Equatable, Identifiable, Sendable {
     public let minimum: Double
     public let maximum: Double
     public let step: Double
+    public let sliderVisible: Bool
     public let unit: String
 
     public init(
@@ -50,6 +51,7 @@ public struct TestScalarControl: Equatable, Identifiable, Sendable {
         minimum: Double,
         maximum: Double,
         step: Double,
+        sliderVisible: Bool = true,
         unit: String
     ) {
         self.id = id
@@ -59,6 +61,7 @@ public struct TestScalarControl: Equatable, Identifiable, Sendable {
         self.minimum = minimum
         self.maximum = maximum
         self.step = step
+        self.sliderVisible = sliderVisible
         self.unit = unit
     }
 }
@@ -85,9 +88,24 @@ public struct TestReadOnlyControl: Equatable, Identifiable, Sendable {
     }
 }
 
+public struct TestToggleControl: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let label: String
+    public let value: Bool
+    public let resetValue: Bool
+
+    public init(id: String, label: String, value: Bool, resetValue: Bool) {
+        self.id = id
+        self.label = label
+        self.value = value
+        self.resetValue = resetValue
+    }
+}
+
 public enum TestControlDescriptor: Equatable, Identifiable, Sendable {
     case choice(TestChoiceControl)
     case scalar(TestScalarControl)
+    case toggle(TestToggleControl)
     case action(TestActionControl)
     case readOnly(TestReadOnlyControl)
 
@@ -95,6 +113,7 @@ public enum TestControlDescriptor: Equatable, Identifiable, Sendable {
         switch self {
         case let .choice(control): control.id
         case let .scalar(control): control.id
+        case let .toggle(control): control.id
         case let .action(control): control.id
         case let .readOnly(control): control.id
         }
@@ -116,7 +135,8 @@ public struct TestControlSection: Equatable, Identifiable, Sendable {
 public struct TestPhasePresentation: Equatable, Identifiable, Sendable {
     public let id: String
     public let label: String
-    public let characterScaleNote: String?
+    public let effectSummary: String
+    public let headerControlID: String?
     public let inputArtifactID: String
     public let outputArtifactID: String
     public let sections: [TestControlSection]
@@ -124,14 +144,16 @@ public struct TestPhasePresentation: Equatable, Identifiable, Sendable {
     public init(
         id: String,
         label: String,
-        characterScaleNote: String? = nil,
+        effectSummary: String,
+        headerControlID: String? = nil,
         inputArtifactID: String,
         outputArtifactID: String,
         sections: [TestControlSection]
     ) {
         self.id = id
         self.label = label
-        self.characterScaleNote = characterScaleNote
+        self.effectSummary = effectSummary
+        self.headerControlID = headerControlID
         self.inputArtifactID = inputArtifactID
         self.outputArtifactID = outputArtifactID
         self.sections = sections
@@ -158,6 +180,7 @@ public struct TestPagePresentation: Equatable, Sendable {
         guard !phases.isEmpty,
               phases.allSatisfy({
                   !$0.id.isEmpty && !$0.label.isEmpty
+                      && !$0.effectSummary.isEmpty
                       && !$0.inputArtifactID.isEmpty && !$0.outputArtifactID.isEmpty
               }),
               Set(phases.map(\.id)).count == phases.count,
@@ -187,6 +210,7 @@ public enum TestControlIntent: Equatable, Sendable {
     case selectPhase(String)
     case setChoice(controlID: String, optionID: String)
     case setScalar(controlID: String, value: Double)
+    case setToggle(controlID: String, value: Bool)
     case performAction(controlID: String)
 }
 
@@ -224,6 +248,10 @@ private extension TestControlDescriptor {
                   control.step > 0,
                   !control.unit.isEmpty
             else { throw TestPresentationError.invalidScalar(control.id) }
+        case let .toggle(control):
+            guard !control.label.isEmpty else {
+                throw TestPresentationError.invalidControls(control.id)
+            }
         case let .action(control):
             guard !control.label.isEmpty else {
                 throw TestPresentationError.invalidControls(control.id)

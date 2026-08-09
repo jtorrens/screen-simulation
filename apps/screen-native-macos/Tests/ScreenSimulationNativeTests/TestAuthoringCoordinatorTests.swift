@@ -13,6 +13,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         whiteLuminanceNits: 350,
         placementID: "fit",
         previewQualityID: "draft",
+        frameRate: 24,
         subpixelGeometryAmount: 1,
         panelLightSpreadAmount: 1,
         capturePresetID: "iphone-16e-main-48mp",
@@ -39,11 +40,49 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         coverGlowAmount: 1,
         lensPresetID: "iphone-16e-main-integrated",
         lensAmount: 1,
+        autofocusEnabled: true,
         focusDistanceMeters: 0.15,
+        fStop: 1.64,
+        exposureTimeSeconds: 1.0 / 288.0,
         shutterMotionAmount: 1,
         sensorBloomAmount: 1,
+        sensorBloomCrosstalkFraction: 0.020,
+        sensorBloomOverflowTransferFraction: 0.30,
         sensorNoiseAmount: 1
     )
+}
+
+@Test func nativeRenderButtonFollowsTheAuthoritativePhysicalFrameState() {
+    #expect(NativeRenderButtonState.resolve(
+        frameState: .complete,
+        progress: 1,
+        hasActiveTask: false,
+        cancellationRequested: false
+    ) == .complete)
+    #expect(NativeRenderButtonState.resolve(
+        frameState: .rendering,
+        progress: 0.42,
+        hasActiveTask: true,
+        cancellationRequested: false
+    ) == .rendering(progress: 0.42))
+    #expect(NativeRenderButtonState.resolve(
+        frameState: .rendering,
+        progress: 1,
+        hasActiveTask: true,
+        cancellationRequested: false
+    ) == .rendering(progress: 0.99))
+    #expect(NativeRenderButtonState.resolve(
+        frameState: .rendering,
+        progress: 0.42,
+        hasActiveTask: true,
+        cancellationRequested: true
+    ) == .cancelling)
+    #expect(NativeRenderButtonState.resolve(
+        frameState: .stale,
+        progress: 0,
+        hasActiveTask: false,
+        cancellationRequested: false
+    ) == .outdated)
 }
 
 @Test func rustPublishesTheCompleteOrderedTestPipeline() throws {
@@ -59,7 +98,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         "Exposición y obturador", "Crosstalk y bloom del sensor",
         "Sensor y CFA", "Ruido del sensor", "Revelado y demosaico",
     ])
-    #expect(snapshot.presentation.selectedPhaseID == snapshot.presentation.phases[0].id)
+    #expect(snapshot.presentation.selectedPhaseID == snapshot.presentation.phases.last?.id)
     for index in 0..<(snapshot.presentation.phases.count - 1) {
         #expect(snapshot.presentation.phases[index].outputArtifactID
             == snapshot.presentation.phases[index + 1].inputArtifactID)
@@ -111,10 +150,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     }
     #expect(colorMode.options.map(\.id) == ["srgb", "rec709-gamma24"])
     #expect(snapshot.presentation.previewControls.count == 1)
-    #expect(snapshot.presentation.phases[0].characterScaleNote == nil)
-    #expect(snapshot.presentation.phases[1].characterScaleNote == nil)
-    #expect(snapshot.presentation.phases[2].characterScaleNote?.contains("1 = físico calibrado") == true)
-    #expect(snapshot.presentation.phases[3].characterScaleNote?.contains("1 = físico calibrado") == true)
+    #expect(snapshot.presentation.phases.allSatisfy { !$0.effectSummary.isEmpty })
+    #expect(snapshot.presentation.phases[3].headerControlID == "subpixel-geometry-amount")
     guard case let .scalar(subpixel) = snapshot.presentation.phases[3].sections
         .flatMap(\.controls).first
     else {
@@ -124,6 +161,12 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(subpixel.value == 1)
     #expect(subpixel.minimum == 0)
     #expect(subpixel.maximum == 4)
+    let bloomControls = snapshot.presentation.phases[10].sections.flatMap(\.controls)
+    #expect(bloomControls.map(\.id) == [
+        "sensor-bloom-amount",
+        "sensor-bloom-crosstalk-fraction",
+        "sensor-bloom-overflow-transfer-fraction",
+    ])
 }
 
 @Test @MainActor func editingAFeederControlRevealsItsCumulativePreview() async throws {
@@ -137,6 +180,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.selectDevice(asus, coverGlass: cover, amount: 0)
     workspace.setTestPageActive(true)
     let presentation = try #require(workspace.testPresentation)
+    workspace.handleTestIntent(.selectPhase(presentation.phases[0].id))
     let feederPhase = presentation.phases[1]
     guard case let .choice(outputSignal) = feederPhase.sections.flatMap(\.controls).first else {
         Issue.record("Output Signal debe ser una selección.")

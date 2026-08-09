@@ -32,6 +32,14 @@ RETIRED_TOKENS = (
     "ScreenTestAuthoringSelectionV4",
     "ScreenTestControlDescriptorV2",
     "SCREEN_TEST_AUTHORING_ABI_VERSION 4",
+    "ScreenTestAuthoringSelectionV7",
+    "ScreenTestControlDescriptorV3",
+    "SCREEN_TEST_AUTHORING_ABI_VERSION 7",
+    "ScreenTestAuthoringSelectionV8",
+    "ScreenTestControlDescriptorV4",
+    "SCREEN_TEST_AUTHORING_ABI_VERSION 8",
+    "SCREEN_TEST_AUTHORING_ABI_VERSION 9",
+    "ScreenTestAuthoringSelectionV9",
 )
 
 
@@ -74,9 +82,9 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 7u",
-        "ScreenTestAuthoringSelectionV7",
-        "ScreenTestControlDescriptorV3",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 10u",
+        "ScreenTestAuthoringSelectionV10",
+        "ScreenTestControlDescriptorV5",
     )
     missing = [token for token in required if token not in header]
     if missing:
@@ -86,9 +94,9 @@ def validate_sources() -> None:
     )
     for token in (
         "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 4",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 7",
-        "ScreenTestAuthoringSelectionV7",
-        "ScreenTestControlDescriptorV3",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 10",
+        "ScreenTestAuthoringSelectionV10",
+        "ScreenTestControlDescriptorV5",
     ):
         if token not in rust_bridge:
             raise RuntimeError(f"current Test ABI Rust contract is incomplete: {token}")

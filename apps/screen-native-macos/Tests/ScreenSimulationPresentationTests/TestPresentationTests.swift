@@ -14,7 +14,7 @@ import Testing
         try TestPagePresentation(
             phases: [
                 .init(
-                    id: "phase", label: "Phase",
+                    id: "phase", label: "Phase", effectSummary: "Effect",
                     inputArtifactID: "input-v1", outputArtifactID: "output-v1",
                     sections: [duplicateControls]
                 ),
@@ -52,6 +52,7 @@ import Testing
                     .init(
                         id: "phase",
                         label: "Phase",
+                        effectSummary: "Effect",
                         inputArtifactID: "input-v1",
                         outputArtifactID: "output-v1",
                         sections: [.init(id: "section", label: "Section", controls: [control])]
@@ -77,7 +78,7 @@ import Testing
     _ = try TestPagePresentation(
         phases: [
             .init(
-                id: "device", label: "Device",
+                id: "device", label: "Device", effectSummary: "Effect",
                 inputArtifactID: "acescg-v1", outputArtifactID: "device-signal-v1",
                 sections: [.init(id: "parameters", label: "Parameters", controls: [fixedWhite])]
             ),

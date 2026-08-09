@@ -21,7 +21,7 @@ use screen_application::{
     RasterPlacement, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
     RollingDirection, SensorReadout, TestAuthoringError, TestAuthoringSelection,
     TestControlRequirement, TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice,
-    apply_test_scalar, default_test_authoring_selection, diagnostic_signal,
+    apply_test_scalar, apply_test_toggle, default_test_authoring_selection, diagnostic_signal,
     physical_shutter_schedule, test_page_descriptor,
 };
 use screen_camera::CameraDevelopment;
@@ -51,13 +51,14 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 7;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 10;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
+pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestAuthoringSelectionV7 {
+pub struct ScreenTestAuthoringSelectionV10 {
     abi_version: u32,
     input_transform_id: ScreenUtf8View,
     output_signal_id: ScreenUtf8View,
@@ -67,6 +68,7 @@ pub struct ScreenTestAuthoringSelectionV7 {
     white_luminance_nits: f32,
     placement_id: ScreenUtf8View,
     preview_quality_id: ScreenUtf8View,
+    frame_rate: f32,
     subpixel_geometry_amount: f32,
     panel_light_spread_amount: f32,
     capture_preset_id: ScreenUtf8View,
@@ -93,19 +95,25 @@ pub struct ScreenTestAuthoringSelectionV7 {
     cover_glow_amount: f32,
     lens_preset_id: ScreenUtf8View,
     lens_amount: f32,
+    autofocus_enabled: bool,
     focus_distance_meters: f32,
+    f_stop: f32,
+    exposure_time_seconds: f32,
     shutter_motion_amount: f32,
     sensor_bloom_amount: f32,
+    sensor_bloom_crosstalk_fraction: f32,
+    sensor_bloom_overflow_transfer_fraction: f32,
     sensor_noise_amount: f32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestPhaseDescriptorV2 {
+pub struct ScreenTestPhaseDescriptorV3 {
     abi_version: u32,
     id: ScreenUtf8View,
     label: ScreenUtf8View,
-    character_scale_note: ScreenUtf8View,
+    effect_summary: ScreenUtf8View,
+    header_control_id: ScreenUtf8View,
     input_artifact: ScreenUtf8View,
     output_artifact: ScreenUtf8View,
     preview_result: u32,
@@ -113,7 +121,7 @@ pub struct ScreenTestPhaseDescriptorV2 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestControlDescriptorV3 {
+pub struct ScreenTestControlDescriptorV5 {
     abi_version: u32,
     kind: u32,
     id: ScreenUtf8View,
@@ -125,6 +133,7 @@ pub struct ScreenTestControlDescriptorV3 {
     minimum: f32,
     maximum: f32,
     step: f32,
+    slider_visible: bool,
     unit: ScreenUtf8View,
 }
 
@@ -1786,7 +1795,7 @@ unsafe fn borrowed_utf8<'a>(view: ScreenUtf8View) -> Option<&'a str> {
 }
 
 unsafe fn test_selection<'a>(
-    selection: *const ScreenTestAuthoringSelectionV7,
+    selection: *const ScreenTestAuthoringSelectionV10,
 ) -> Option<TestAuthoringSelection<'a>> {
     let selection = unsafe { selection.as_ref() }?;
     if selection.abi_version != SCREEN_TEST_AUTHORING_ABI_VERSION {
@@ -1800,6 +1809,7 @@ unsafe fn test_selection<'a>(
         white_luminance_nits: selection.white_luminance_nits,
         placement_id: unsafe { borrowed_utf8(selection.placement_id) }?,
         preview_quality_id: unsafe { borrowed_utf8(selection.preview_quality_id) }?,
+        frame_rate: selection.frame_rate,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: unsafe { borrowed_utf8(selection.capture_preset_id) }?,
@@ -1826,9 +1836,14 @@ unsafe fn test_selection<'a>(
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
         lens_amount: selection.lens_amount,
+        autofocus_enabled: selection.autofocus_enabled,
         focus_distance_meters: selection.focus_distance_meters,
+        f_stop: selection.f_stop,
+        exposure_time_seconds: selection.exposure_time_seconds,
         shutter_motion_amount: selection.shutter_motion_amount,
         sensor_bloom_amount: selection.sensor_bloom_amount,
+        sensor_bloom_crosstalk_fraction: selection.sensor_bloom_crosstalk_fraction,
+        sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
     })
 }
@@ -1864,8 +1879,13 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
         TestAuthoringError::InvalidCoverGlowAmount => b"Cover Glow amount is outside 0..=4\0",
         TestAuthoringError::InvalidLensAmount => b"Lens amount is outside 0..=4\0",
         TestAuthoringError::InvalidFocusDistance => b"invalid Test Focus Distance\0",
+        TestAuthoringError::InvalidAperture => b"invalid Test Aperture\0",
+        TestAuthoringError::InvalidExposureTime => b"invalid Test Exposure Time\0",
         TestAuthoringError::InvalidShutterMotionAmount => b"Shutter amount is outside 0..=4\0",
         TestAuthoringError::InvalidSensorBloomAmount => b"Sensor Bloom amount is outside 0..=4\0",
+        TestAuthoringError::InvalidSensorBloomProfile => {
+            b"Sensor Bloom profile is outside its physical bounds\0"
+        }
         TestAuthoringError::InvalidSensorNoiseAmount => b"Sensor Noise amount is outside 0..=4\0",
         TestAuthoringError::UnknownPlacement => b"unknown Test placement\0",
         TestAuthoringError::UnknownPreviewQuality => b"unknown Test preview quality\0",
@@ -1876,8 +1896,8 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
 
 fn resolved_test_selection(
     selection: screen_application::ResolvedTestAuthoringSelection,
-) -> ScreenTestAuthoringSelectionV7 {
-    ScreenTestAuthoringSelectionV7 {
+) -> ScreenTestAuthoringSelectionV10 {
+    ScreenTestAuthoringSelectionV10 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         input_transform_id: utf8_view(selection.input_transform_id),
         output_signal_id: utf8_view(selection.output_signal_id),
@@ -1887,6 +1907,7 @@ fn resolved_test_selection(
         white_luminance_nits: selection.white_luminance_nits,
         placement_id: utf8_view(selection.placement_id),
         preview_quality_id: utf8_view(selection.preview_quality_id),
+        frame_rate: selection.frame_rate,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: utf8_view(selection.capture_preset_id),
@@ -1913,9 +1934,14 @@ fn resolved_test_selection(
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: utf8_view(selection.lens_preset_id),
         lens_amount: selection.lens_amount,
+        autofocus_enabled: selection.autofocus_enabled,
         focus_distance_meters: selection.focus_distance_meters,
+        f_stop: selection.f_stop,
+        exposure_time_seconds: selection.exposure_time_seconds,
         shutter_motion_amount: selection.shutter_motion_amount,
         sensor_bloom_amount: selection.sensor_bloom_amount,
+        sensor_bloom_crosstalk_fraction: selection.sensor_bloom_crosstalk_fraction,
+        sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
     }
 }
@@ -1924,7 +1950,8 @@ fn resolved_test_selection(
 pub unsafe extern "C" fn screen_test_authoring_default_selection(
     input_transform_id: ScreenUtf8View,
     device_id: ScreenUtf8View,
-    resolved: *mut ScreenTestAuthoringSelectionV7,
+    frame_rate: f32,
+    resolved: *mut ScreenTestAuthoringSelectionV10,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(input_transform_id) = (unsafe { borrowed_utf8(input_transform_id) }) else {
@@ -1944,7 +1971,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
         };
         return false;
     };
-    match default_test_authoring_selection(input_transform_id, device_id) {
+    match default_test_authoring_selection(input_transform_id, device_id, frame_rate) {
         Ok(selection) => {
             *destination = resolved_test_selection(selection);
             unsafe { set_error(error_message, b"\0") };
@@ -1959,7 +1986,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_page_descriptor_create(
-    selection: *const ScreenTestAuthoringSelectionV7,
+    selection: *const ScreenTestAuthoringSelectionV10,
     error_message: *mut *const c_char,
 ) -> *mut ScreenTestPageDescriptor {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2008,7 +2035,7 @@ pub unsafe extern "C" fn screen_test_page_default_preview_phase_id(
 pub unsafe extern "C" fn screen_test_page_phase_descriptor(
     descriptor: *const ScreenTestPageDescriptor,
     phase_index: usize,
-    phase: *mut ScreenTestPhaseDescriptorV2,
+    phase: *mut ScreenTestPhaseDescriptorV3,
 ) -> bool {
     let Some(source) =
         unsafe { descriptor.as_ref() }.and_then(|value| value.page.phases.get(phase_index))
@@ -2018,11 +2045,12 @@ pub unsafe extern "C" fn screen_test_page_phase_descriptor(
     let Some(destination) = (unsafe { phase.as_mut() }) else {
         return false;
     };
-    *destination = ScreenTestPhaseDescriptorV2 {
+    *destination = ScreenTestPhaseDescriptorV3 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         id: utf8_view(source.id),
         label: utf8_view(source.label),
-        character_scale_note: utf8_view(source.character_scale_note.unwrap_or("")),
+        effect_summary: utf8_view(source.effect_summary),
+        header_control_id: utf8_view(source.header_control_id.unwrap_or("")),
         input_artifact: utf8_view(source.input_artifact),
         output_artifact: utf8_view(source.output_artifact),
         preview_result: source.preview_result as u32,
@@ -2045,7 +2073,7 @@ pub unsafe extern "C" fn screen_test_page_control_descriptor(
     descriptor: *const ScreenTestPageDescriptor,
     phase_index: usize,
     control_index: usize,
-    control: *mut ScreenTestControlDescriptorV3,
+    control: *mut ScreenTestControlDescriptorV5,
 ) -> bool {
     let Some(source) = unsafe { descriptor.as_ref() }
         .and_then(|value| value.page.phases.get(phase_index))
@@ -2060,7 +2088,7 @@ pub unsafe extern "C" fn screen_test_page_control_descriptor(
     true
 }
 
-fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControlDescriptorV3 {
+fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControlDescriptorV5 {
     match source {
         TestControlRequirement::Choice {
             id,
@@ -2068,7 +2096,7 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             selected_id,
             reset_id,
             ..
-        } => ScreenTestControlDescriptorV3 {
+        } => ScreenTestControlDescriptorV5 {
             abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
             kind: SCREEN_TEST_CONTROL_CHOICE,
             id: utf8_view(id),
@@ -2080,6 +2108,7 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             minimum: 0.0,
             maximum: 0.0,
             step: 0.0,
+            slider_visible: false,
             unit: utf8_view(""),
         },
         TestControlRequirement::Scalar {
@@ -2089,9 +2118,10 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             minimum,
             maximum,
             step,
+            slider_visible,
             unit,
             reset_value,
-        } => ScreenTestControlDescriptorV3 {
+        } => ScreenTestControlDescriptorV5 {
             abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
             kind: SCREEN_TEST_CONTROL_SCALAR,
             id: utf8_view(id),
@@ -2103,7 +2133,28 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             minimum: *minimum,
             maximum: *maximum,
             step: *step,
+            slider_visible: *slider_visible,
             unit: utf8_view(unit),
+        },
+        TestControlRequirement::Toggle {
+            id,
+            label,
+            value,
+            reset_value,
+        } => ScreenTestControlDescriptorV5 {
+            abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
+            kind: SCREEN_TEST_CONTROL_TOGGLE,
+            id: utf8_view(id),
+            label: utf8_view(label),
+            selected_id: utf8_view(""),
+            reset_id: utf8_view(""),
+            value: if *value { 1.0 } else { 0.0 },
+            reset_value: if *reset_value { 1.0 } else { 0.0 },
+            minimum: 0.0,
+            maximum: 1.0,
+            step: 1.0,
+            slider_visible: false,
+            unit: utf8_view(""),
         },
     }
 }
@@ -2162,7 +2213,7 @@ pub unsafe extern "C" fn screen_test_page_preview_control_count(
 pub unsafe extern "C" fn screen_test_page_preview_control_descriptor(
     descriptor: *const ScreenTestPageDescriptor,
     control_index: usize,
-    control: *mut ScreenTestControlDescriptorV3,
+    control: *mut ScreenTestControlDescriptorV5,
 ) -> bool {
     let Some(source) = (unsafe { descriptor.as_ref() })
         .and_then(|value| value.page.preview_controls.get(control_index))
@@ -2217,10 +2268,10 @@ pub unsafe extern "C" fn screen_test_page_preview_choice_option(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_choice(
-    selection: *const ScreenTestAuthoringSelectionV7,
+    selection: *const ScreenTestAuthoringSelectionV10,
     control_id: ScreenUtf8View,
     option_id: ScreenUtf8View,
-    resolved: *mut ScreenTestAuthoringSelectionV7,
+    resolved: *mut ScreenTestAuthoringSelectionV10,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2254,10 +2305,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_choice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
-    selection: *const ScreenTestAuthoringSelectionV7,
+    selection: *const ScreenTestAuthoringSelectionV10,
     control_id: ScreenUtf8View,
     value: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV7,
+    resolved: *mut ScreenTestAuthoringSelectionV10,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2273,6 +2324,39 @@ pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
         return false;
     };
     match apply_test_scalar(selection, control_id, value) {
+        Ok(selection) => {
+            *destination = resolved_test_selection(selection);
+            unsafe { set_error(error_message, b"\0") };
+            true
+        }
+        Err(error) => {
+            unsafe { set_error(error_message, test_authoring_error(error)) };
+            false
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_authoring_apply_toggle(
+    selection: *const ScreenTestAuthoringSelectionV10,
+    control_id: ScreenUtf8View,
+    value: bool,
+    resolved: *mut ScreenTestAuthoringSelectionV10,
+    error_message: *mut *const c_char,
+) -> bool {
+    let Some(selection) = (unsafe { test_selection(selection) }) else {
+        unsafe { set_error(error_message, b"invalid Test authoring selection ABI\0") };
+        return false;
+    };
+    let Some(control_id) = (unsafe { borrowed_utf8(control_id) }) else {
+        unsafe { set_error(error_message, b"invalid Test control id\0") };
+        return false;
+    };
+    let Some(destination) = (unsafe { resolved.as_mut() }) else {
+        unsafe { set_error(error_message, b"missing resolved Test selection output\0") };
+        return false;
+    };
+    match apply_test_toggle(selection, control_id, value) {
         Ok(selection) => {
             *destination = resolved_test_selection(selection);
             unsafe { set_error(error_message, b"\0") };

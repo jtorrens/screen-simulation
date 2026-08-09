@@ -18,6 +18,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var sensorWidthMillimeters = 36.0
         var sensorHeightMillimeters = 24.0
         var lensShift = [0.0, 0.0]
+        var focusPolicy = "autofocus-screen"
         var focusDistanceMeters = 1.0
         var fStop = 2.8
         var nearClipMeters = 0.01
@@ -253,6 +254,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             sceneLens.focalLengthMillimeters > 0,
             sceneLens.sensorWidthMillimeters > 0,
             sceneLens.sensorHeightMillimeters > 0,
+            ["autofocus-screen", "manual"].contains(sceneLens.focusPolicy),
             sceneLens.focusDistanceMeters > 0,
             sceneLens.fStop > 0,
             sceneLens.nearClipMeters > 0,

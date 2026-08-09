@@ -18,9 +18,16 @@ public struct TestAuthoringView: View {
             ForEach(state.phases.filter { phase in
                 phase.sections.contains { !$0.controls.isEmpty }
             }) { phase in
+                let allControls = phase.sections.flatMap(\.controls)
+                let headerControl = phase.headerControlID.flatMap { id in
+                    allControls.first(where: { $0.id == id })
+                }
                 TestPhaseCard(
                     label: phase.label,
-                    characterScaleNote: phase.characterScaleNote
+                    effectSummary: phase.effectSummary,
+                    headerControl: headerControl.map { descriptor in
+                        AnyView(headerControlView(descriptor))
+                    }
                 ) {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(phase.sections) { section in
@@ -30,12 +37,43 @@ public struct TestAuthoringView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                                ForEach(section.controls) { control in
+                                ForEach(section.controls.filter {
+                                    $0.id != phase.headerControlID
+                                }) { control in
                                     controlView(control)
                                 }
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func headerControlView(_ descriptor: TestControlDescriptor) -> some View {
+        if case let .scalar(control) = descriptor {
+            HStack(spacing: 6) {
+                Text("Carácter").font(.caption)
+                Slider(
+                    value: Binding(
+                        get: { control.value },
+                        set: {
+                            onIntent(.setScalar(
+                                controlID: control.id,
+                                value: snapped($0, for: control)
+                            ))
+                        }
+                    ),
+                    in: control.minimum...control.maximum
+                )
+                .frame(width: 92)
+                DebouncedTestScalarField(control: control) { value in
+                    onIntent(.setScalar(controlID: control.id, value: value))
+                }
+                .frame(width: 58)
+                resetButton(disabled: control.value == control.resetValue) {
+                    onIntent(.setScalar(controlID: control.id, value: control.resetValue))
                 }
             }
         }
@@ -68,16 +106,16 @@ public struct TestAuthoringView: View {
         case let .scalar(control):
             GridRow {
                 controlLabel(control.label)
-                if control.minimum < control.maximum {
+                if control.sliderVisible, control.minimum < control.maximum {
                     Slider(
                         value: Binding(
                             get: { control.value },
-                            set: {
-                                onIntent(.setScalar(controlID: control.id, value: $0))
-                            }
+                            set: { onIntent(.setScalar(
+                                controlID: control.id,
+                                value: snapped($0, for: control)
+                            )) }
                         ),
-                        in: control.minimum...control.maximum,
-                        step: control.step
+                        in: control.minimum...control.maximum
                     )
                     .frame(width: 150)
                 } else {
@@ -92,6 +130,21 @@ public struct TestAuthoringView: View {
                     .frame(width: 52, alignment: .leading)
                 resetButton(disabled: control.value == control.resetValue) {
                     onIntent(.setScalar(controlID: control.id, value: control.resetValue))
+                }
+            }
+        case let .toggle(control):
+            GridRow {
+                controlLabel(control.label)
+                Color.clear.frame(width: 150, height: 1)
+                Toggle("", isOn: Binding(
+                    get: { control.value },
+                    set: { onIntent(.setToggle(controlID: control.id, value: $0)) }
+                ))
+                .labelsHidden()
+                .frame(width: 108, alignment: .leading)
+                Text("").frame(width: 52)
+                resetButton(disabled: control.value == control.resetValue) {
+                    onIntent(.setToggle(controlID: control.id, value: control.resetValue))
                 }
             }
         case let .action(control):
@@ -118,6 +171,11 @@ public struct TestAuthoringView: View {
     private func controlLabel(_ label: String) -> some View {
         Text(label)
             .frame(width: 122, alignment: .leading)
+    }
+
+    private func snapped(_ value: Double, for control: TestScalarControl) -> Double {
+        let steps = ((value - control.minimum) / control.step).rounded()
+        return min(control.maximum, max(control.minimum, control.minimum + steps * control.step))
     }
 
     private func resetButton(
@@ -262,18 +320,21 @@ public struct TestPreviewControls: View {
 
 public struct TestPhaseCard<Content: View>: View {
     private let label: String
-    private let characterScaleNote: String?
+    private let effectSummary: String
+    private let headerControl: AnyView?
     private let content: Content
     @State private var expanded: Bool
 
     public init(
         label: String,
-        characterScaleNote: String? = nil,
+        effectSummary: String = "",
+        headerControl: AnyView? = nil,
         initiallyExpanded: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.label = label
-        self.characterScaleNote = characterScaleNote
+        self.effectSummary = effectSummary
+        self.headerControl = headerControl
         self.content = content()
         _expanded = State(initialValue: initiallyExpanded)
     }
@@ -284,13 +345,15 @@ public struct TestPhaseCard<Content: View>: View {
                 content
                     .padding(.top, 10)
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(label).font(.headline)
-                    if let characterScaleNote {
-                        Text(characterScaleNote)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(label).font(.headline)
+                        Spacer(minLength: 8)
+                        if let headerControl { headerControl }
                     }
+                    Text(effectSummary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
