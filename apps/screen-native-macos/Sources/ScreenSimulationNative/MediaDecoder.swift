@@ -30,6 +30,9 @@ enum NativeMediaDecoder {
     private static let videoExtensions: Set<String> = ["mov", "mp4", "m4v"]
 
     static func decode(url: URL, time: CMTime) async throws -> DecodedNativeFrame {
+        if url.pathExtension.lowercased() == "exr" {
+            return try decodeOpenEXR(url)
+        }
         if videoExtensions.contains(url.pathExtension.lowercased()) {
             let asset = AVURLAsset(url: url)
             let generator = AVAssetImageGenerator(asset: asset)
@@ -46,6 +49,42 @@ enum NativeMediaDecoder {
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { throw NativeMediaError.unreadable(url.lastPathComponent) }
         return try decode(image: image, description: url.lastPathComponent)
+    }
+
+    private static func decodeOpenEXR(_ url: URL) throws -> DecodedNativeFrame {
+        var pixels: UnsafeMutablePointer<Float>?
+        var width: UInt32 = 0
+        var height: UInt32 = 0
+        var declaredColorSpace: UnsafeMutablePointer<CChar>?
+        var message: UnsafeMutablePointer<CChar>?
+        let succeeded = url.withUnsafeFileSystemRepresentation { path in
+            screen_openexr_decode_rgba_float(
+                path, &pixels, &width, &height, &declaredColorSpace, &message
+            )
+        }
+        defer {
+            if let pixels { screen_openexr_free(pixels) }
+            if let declaredColorSpace { screen_openexr_free(declaredColorSpace) }
+            if let message { screen_openexr_free(message) }
+        }
+        guard succeeded, let pixels, width > 0, height > 0 else {
+            throw NativeMediaError.unreadable(
+                message.map { String(cString: $0) } ?? url.lastPathComponent
+            )
+        }
+        let count = Int(width * height) * 4
+        let rgba = Array(UnsafeBufferPointer(start: pixels, count: count))
+        guard rgba.allSatisfy(\.isFinite) else {
+            throw NativeMediaError.unreadable(
+                "\(url.lastPathComponent) contiene muestras no finitas"
+            )
+        }
+        return DecodedNativeFrame(
+            width: Int(width),
+            height: Int(height),
+            rgba: rgba,
+            sourceDescription: url.lastPathComponent
+        )
     }
 
     static func decode(image: CGImage, description: String) throws -> DecodedNativeFrame {

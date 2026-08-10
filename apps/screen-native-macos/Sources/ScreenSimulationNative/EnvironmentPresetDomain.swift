@@ -25,6 +25,11 @@ struct EnvironmentPresetDefinition: Identifiable, Equatable, Sendable {
     }
 
     func apply(to state: inout PhysicalPipelineAuthoringState) {
+        state.environment.sourceKind = parameters.source_kind
+        state.environment.sourceUnitRadianceCandelasPerSquareMeter = Double(
+            parameters.source_unit_radiance_candelas_per_square_meter
+        )
+        state.environment.exposureStops = Double(parameters.exposure_stops)
         state.environment.ambientRadianceACEScg = tuple3(parameters.ambient_radiance_acescg)
         state.environment.keyRadianceACEScg = tuple3(parameters.key_radiance_acescg)
         state.environment.keyDirectionLocal = tuple3(parameters.key_direction_local)

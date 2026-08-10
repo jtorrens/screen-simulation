@@ -28,7 +28,8 @@ use screen_camera::CameraDevelopment;
 use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
-    ENVIRONMENT_PRESETS, EnvironmentPattern, ProceduralEnvironment,
+    ENVIRONMENT_PRESETS, EnvironmentPattern, EquirectangularEnvironment, IncidentEnvironment,
+    ProceduralEnvironment,
 };
 use screen_geometry::{
     KeyframeInterpolation, LENS_PRESETS, LensModel, LensPresetAuthority, Quaternion,
@@ -186,7 +187,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 7;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 8;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 3;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -276,6 +277,7 @@ pub struct ScreenPhysicalFrameRequestV2 {
     abi_version: u32,
     frame_index: i64,
     timed_inputs: *const ScreenPhysicalTimedInputSetV2,
+    environment_acescg: *const ScreenPhysicalTexture,
     camera_pose_track: *const ScreenPhysicalCameraPoseTrackV2,
     screen_pose_track: *const ScreenPhysicalScreenPoseTrackV2,
     shutter_open_numerator: i64,
@@ -900,6 +902,22 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     let screen_track = unsafe { &*request.screen_pose_track };
     let device = unsafe { &*request.resolved_device };
     let pipeline = unsafe { &*request.resolved_pipeline };
+    let environment_texture = match (pipeline.environment, request.environment_acescg.is_null()) {
+        (IncidentEnvironment::Procedural(_), true) => None,
+        (IncidentEnvironment::Equirectangular(_), false) => {
+            let pointer = unsafe { (*request.environment_acescg).metal_texture as *mut MTLTexture };
+            Some(unsafe { TextureRef::from_ptr(pointer) }.to_owned())
+        }
+        _ => {
+            unsafe {
+                set_error(
+                    error_message,
+                    b"resolved environment source and frame texture do not match\0",
+                )
+            };
+            return std::ptr::null_mut();
+        }
+    };
     let Some(placement) = placement(input.raster_placement) else {
         unsafe { set_error(error_message, b"invalid physical raster placement\0") };
         return std::ptr::null_mut();
@@ -1047,7 +1065,10 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     }
     if pipeline.cover.character_strength != amounts.cover
         || pipeline.cover.glow.character_strength != amounts.cover_glow
-        || pipeline.environment.character_strength != amounts.environment
+        || match pipeline.environment {
+            IncidentEnvironment::Procedural(environment) => environment.character_strength,
+            IncidentEnvironment::Equirectangular(environment) => environment.character_strength,
+        } != amounts.environment
         || pipeline.sensor.bloom.character_strength != amounts.sensor_bloom
     {
         unsafe {
@@ -1285,8 +1306,9 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
                     (&**source, &**signal, *plan, *weight, *row)
                 })
                 .collect::<Vec<_>>();
-            backend.evaluate_temporal(
+            backend.evaluate_temporal_with_environment(
                 &borrowed,
+                environment_texture.as_deref(),
                 |progress| {
                     worker_shared
                         .progress_bits
@@ -1686,7 +1708,10 @@ pub struct ScreenCoverGlassParametersV2 {
 #[derive(Clone, Copy)]
 pub struct ScreenEnvironmentParametersV2 {
     abi_version: u32,
+    source_kind: u32,
     character_strength: f32,
+    source_unit_radiance_candelas_per_square_meter: f32,
+    exposure_stops: f32,
     ambient_radiance_acescg: [f32; 3],
     key_radiance_acescg: [f32; 3],
     key_direction_local: [f32; 3],
@@ -1796,7 +1821,7 @@ pub struct ScreenPhysicalPipelineParametersV2 {
 
 pub struct ScreenPhysicalPipelineSnapshot {
     cover: CoverGlassProfile,
-    environment: ProceduralEnvironment,
+    environment: IncidentEnvironment,
     scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
     lens_evaluation_model: screen_application::LensEvaluationModel,
     shutter_motion: ResolvedShutterMotionSnapshot,
@@ -2482,7 +2507,10 @@ pub unsafe extern "C" fn screen_environment_preset_parameters(
     let environment = preset.environment;
     *destination = ScreenEnvironmentParametersV2 {
         abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+        source_kind: 0,
         character_strength: environment.character_strength,
+        source_unit_radiance_candelas_per_square_meter: 0.0,
+        exposure_stops: 0.0,
         ambient_radiance_acescg: [
             environment.ambient_radiance.0.r,
             environment.ambient_radiance.0.g,
@@ -2608,36 +2636,70 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
             tail_fraction: parameters.cover.glow_tail_fraction,
         },
     };
-    let pattern = match parameters.environment.pattern {
-        0 => EnvironmentPattern::UniformNeutral,
-        1 => EnvironmentPattern::StudioSoftboxes,
-        2 => EnvironmentPattern::CalibrationGrid,
-        3 => EnvironmentPattern::OfficeCeiling,
-        4 => EnvironmentPattern::DaylightWindow,
-        5 => EnvironmentPattern::WarmPracticals,
-        6 => EnvironmentPattern::MixedProduction,
+    let environment = match parameters.environment.source_kind {
+        0 => {
+            let pattern = match parameters.environment.pattern {
+                0 => EnvironmentPattern::UniformNeutral,
+                1 => EnvironmentPattern::StudioSoftboxes,
+                2 => EnvironmentPattern::CalibrationGrid,
+                3 => EnvironmentPattern::OfficeCeiling,
+                4 => EnvironmentPattern::DaylightWindow,
+                5 => EnvironmentPattern::WarmPracticals,
+                6 => EnvironmentPattern::MixedProduction,
+                _ => {
+                    unsafe { set_error(error_message, b"unsupported environment pattern\0") };
+                    return std::ptr::null_mut();
+                }
+            };
+            IncidentEnvironment::Procedural(ProceduralEnvironment {
+                character_strength: parameters.environment.character_strength,
+                ambient_radiance: AcesCgRadiance(LinearRgb::new(
+                    parameters.environment.ambient_radiance_acescg[0],
+                    parameters.environment.ambient_radiance_acescg[1],
+                    parameters.environment.ambient_radiance_acescg[2],
+                )),
+                key_radiance: AcesCgRadiance(LinearRgb::new(
+                    parameters.environment.key_radiance_acescg[0],
+                    parameters.environment.key_radiance_acescg[1],
+                    parameters.environment.key_radiance_acescg[2],
+                )),
+                key_direction_local: parameters.environment.key_direction_local,
+                key_angular_radius_degrees: parameters.environment.key_angular_radius_degrees,
+                rotation_degrees: parameters.environment.rotation_degrees,
+                pattern,
+            })
+        }
+        1 => {
+            if parameters.environment.ambient_radiance_acescg != [0.0; 3]
+                || parameters.environment.key_radiance_acescg != [0.0; 3]
+                || parameters.environment.pattern != 0
+            {
+                unsafe {
+                    set_error(
+                        error_message,
+                        b"image-backed environment contains procedural parameters\0",
+                    )
+                };
+                return std::ptr::null_mut();
+            }
+            IncidentEnvironment::Equirectangular(EquirectangularEnvironment {
+                character_strength: parameters.environment.character_strength,
+                source_unit_radiance_candelas_per_square_meter: parameters
+                    .environment
+                    .source_unit_radiance_candelas_per_square_meter,
+                exposure_stops: parameters.environment.exposure_stops,
+                rotation_degrees: parameters.environment.rotation_degrees,
+            })
+        }
         _ => {
-            unsafe { set_error(error_message, b"unsupported environment pattern\0") };
+            unsafe { set_error(error_message, b"unsupported environment source kind\0") };
             return std::ptr::null_mut();
         }
     };
-    let environment = ProceduralEnvironment {
-        character_strength: parameters.environment.character_strength,
-        ambient_radiance: AcesCgRadiance(LinearRgb::new(
-            parameters.environment.ambient_radiance_acescg[0],
-            parameters.environment.ambient_radiance_acescg[1],
-            parameters.environment.ambient_radiance_acescg[2],
-        )),
-        key_radiance: AcesCgRadiance(LinearRgb::new(
-            parameters.environment.key_radiance_acescg[0],
-            parameters.environment.key_radiance_acescg[1],
-            parameters.environment.key_radiance_acescg[2],
-        )),
-        key_direction_local: parameters.environment.key_direction_local,
-        key_angular_radius_degrees: parameters.environment.key_angular_radius_degrees,
-        rotation_degrees: parameters.environment.rotation_degrees,
-        pattern,
-    };
+    if environment.validate().is_err() {
+        unsafe { set_error(error_message, b"invalid resolved environment\0") };
+        return std::ptr::null_mut();
+    }
     let scene = parameters.scene_geometry_lens;
     let lens_evaluation_model = match scene.lens_evaluation_model {
         0 => screen_application::LensEvaluationModel::ThinLens,
@@ -3685,7 +3747,10 @@ mod tests {
             },
             environment: ScreenEnvironmentParametersV2 {
                 abi_version: version,
+                source_kind: 0,
                 character_strength: 0.0,
+                source_unit_radiance_candelas_per_square_meter: 0.0,
+                exposure_stops: 0.0,
                 ambient_radiance_acescg: [0.0; 3],
                 key_radiance_acescg: [0.0; 3],
                 key_direction_local: [0.0, 0.0, 1.0],
@@ -3948,6 +4013,7 @@ mod tests {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             frame_index: 0,
             timed_inputs: input,
+            environment_acescg: std::ptr::null(),
             camera_pose_track: camera_track,
             screen_pose_track: screen_track,
             shutter_open_numerator: -1,

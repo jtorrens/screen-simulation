@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 temporal_emission_amount: 1.0,
                 temporal_emission_gain: 1.0,
                 cover: screen_cover::CoverGlassProfile::NEUTRAL,
-                environment: screen_cover::ProceduralEnvironment::NONE,
+                environment: screen_cover::IncidentEnvironment::NONE,
                 scene_geometry_lens:
                     screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
                 camera_position: screen_contracts::Vec3 {
@@ -118,6 +118,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     noise_seed: 0,
                 },
                 shutter_motion_amount: 0.0,
+                computational_capture: screen_sensor::ComputationalCaptureProfile::SINGLE_EXPOSURE,
+                computational_character_strength: 0.0,
                 sensor: screen_sensor::SensorProfile::REFERENCE,
                 radiometric_calibration:
                     screen_application::CameraRadiometricCalibration::REFERENCE,

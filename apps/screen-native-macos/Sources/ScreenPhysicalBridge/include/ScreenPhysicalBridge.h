@@ -15,7 +15,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 7u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 8u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 3u
 
@@ -317,6 +317,7 @@ typedef struct {
     uint32_t abi_version;
     int64_t frame_index;
     ScreenPhysicalTimedInputSetV2Ref timed_inputs;
+    ScreenPhysicalTextureRef environment_acescg;
     ScreenPhysicalCameraPoseTrackV2Ref camera_pose_track;
     ScreenPhysicalScreenPoseTrackV2Ref screen_pose_track;
     int64_t shutter_open_numerator;
@@ -418,7 +419,10 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
+    uint32_t source_kind;
     float character_strength;
+    float source_unit_radiance_candelas_per_square_meter;
+    float exposure_stops;
     float ambient_radiance_acescg[3];
     float key_radiance_acescg[3];
     float key_direction_local[3];

@@ -108,6 +108,7 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
         ),
         .init(id: "input-rec709", label: "Camera · Rec.709", referenceDomain: .sceneReferred, processor: .colorSpace("Input - Rec.709")),
         .init(id: "srgb-encoded-rec709", label: "sRGB encoded Rec.709", referenceDomain: .displayReferred, processor: .colorSpace("sRGB Encoded Rec.709 (sRGB)")),
+        .init(id: "linear-rec709", label: "Linear Rec.709 (sRGB)", referenceDomain: .sceneReferred, processor: .colorSpace("Linear Rec.709 (sRGB)")),
         .init(id: "acescg", label: "ACEScg (identity)", referenceDomain: .sceneReferred, processor: .colorSpace("ACEScg")),
         .init(id: "arri-logc3-ei800", label: "ARRI LogC3 (EI800)", referenceDomain: .sceneReferred, processor: .colorSpace("ARRI LogC3 (EI800)")),
         .init(id: "arri-logc4", label: "ARRI LogC4", referenceDomain: .sceneReferred, processor: .colorSpace("ARRI LogC4")),

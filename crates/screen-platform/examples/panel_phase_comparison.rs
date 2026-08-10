@@ -157,6 +157,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             height: arguments.input_height,
             pixels,
         },
+        environment_acescg: None,
     };
 
     let metal_device = metal::Device::system_default().ok_or("Metal Device unavailable")?;
@@ -345,7 +346,7 @@ fn plan(
         temporal_emission_amount: 0.0,
         temporal_emission_gain: 1.0,
         cover,
-        environment,
+        environment: screen_cover::IncidentEnvironment::Procedural(environment),
         scene_geometry_lens,
         camera_position,
         camera_rotation,
@@ -368,6 +369,8 @@ fn plan(
             noise_seed: 7,
         },
         shutter_motion_amount: 1.0,
+        computational_capture: screen_sensor::ComputationalCaptureProfile::SINGLE_EXPOSURE,
+        computational_character_strength: 0.0,
         sensor,
         radiometric_calibration,
         sensor_enabled: true,

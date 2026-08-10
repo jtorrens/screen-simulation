@@ -18,6 +18,9 @@ import Testing
         (document["hashes"] as? [String: String])?["pixelRGBA8SHA256"]
     )
     let deviceID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_ID"]
+    let environmentSourcePath = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_ENVIRONMENT_SOURCE_PATH"
+    ]
     var imported: PhysicalSettingsExchange.Imported
     if let deviceID {
         var device = try #require(try RustDeviceCatalog.builtIns().first { $0.id == deviceID })
@@ -73,10 +76,36 @@ import Testing
         if let environmentID = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_ENVIRONMENT_ID"
         ] {
+            guard environmentSourcePath == nil else {
+                Issue.record(
+                    "SCREEN_MOIRE_ENVIRONMENT_ID y SCREEN_MOIRE_ENVIRONMENT_SOURCE_PATH son excluyentes"
+                )
+                return
+            }
             let environment = try #require(
                 try EnvironmentPresetDefinition.catalog().first { $0.id == environmentID }
             )
             environment.apply(to: &pipeline)
+        }
+        if environmentSourcePath != nil {
+            guard let unitRadiance = ProcessInfo.processInfo.environment[
+                "SCREEN_MOIRE_ENVIRONMENT_UNIT_RADIANCE_CDM2"
+            ].flatMap(Double.init),
+                unitRadiance > 0,
+                ProcessInfo.processInfo.environment[
+                    "SCREEN_MOIRE_ENVIRONMENT_INPUT_TRANSFORM_ID"
+                ] != nil
+            else {
+                Issue.record(
+                    "El entorno HDR requiere Input Transform y radiancia cd/m² por unidad explícitos"
+                )
+                return
+            }
+            pipeline.environment.sourceKind = 1
+            pipeline.environment.sourceUnitRadianceCandelasPerSquareMeter = unitRadiance
+            pipeline.environment.ambientRadianceACEScg = [0, 0, 0]
+            pipeline.environment.keyRadianceACEScg = [0, 0, 0]
+            pipeline.environment.pattern = 0
         }
         if let rotation = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_ENVIRONMENT_ROTATION_DEGREES"
@@ -86,11 +115,15 @@ import Testing
         if let exposureStops = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_ENVIRONMENT_EXPOSURE_STOPS"
         ].flatMap(Double.init) {
-            let scale = pow(2, exposureStops)
-            pipeline.environment.ambientRadianceACEScg = pipeline.environment
-                .ambientRadianceACEScg.map { $0 * scale }
-            pipeline.environment.keyRadianceACEScg = pipeline.environment
-                .keyRadianceACEScg.map { $0 * scale }
+            if pipeline.environment.sourceKind == 1 {
+                pipeline.environment.exposureStops = exposureStops
+            } else {
+                let scale = pow(2, exposureStops)
+                pipeline.environment.ambientRadianceACEScg = pipeline.environment
+                    .ambientRadianceACEScg.map { $0 * scale }
+                pipeline.environment.keyRadianceACEScg = pipeline.environment
+                    .keyRadianceACEScg.map { $0 * scale }
+            }
         }
         if let keyRadius = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_ENVIRONMENT_KEY_RADIUS_DEGREES"
@@ -292,6 +325,29 @@ import Testing
         alphaInterpretation: "ignore",
         display: display
     )
+    let environmentFrame: StudioColorMetalFrame?
+    if let environmentSourcePath {
+        let inputID = try #require(ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ENVIRONMENT_INPUT_TRANSFORM_ID"
+        ])
+        let environmentInput = try #require(StudioColorInputTransform.catalog.first {
+            $0.id == inputID
+        })
+        let decodedEnvironment = try await NativeMediaDecoder.decode(
+            url: URL(fileURLWithPath: environmentSourcePath),
+            time: .zero
+        )
+        let resolved = try display.makeACEScgFrame(
+            width: decodedEnvironment.width,
+            height: decodedEnvironment.height,
+            encodedRGBA: decodedEnvironment.rgba,
+            input: environmentInput,
+            alpha: .ignore
+        )
+        environmentFrame = try EnvironmentRadianceFrame.mipmapped(from: resolved)
+    } else {
+        environmentFrame = nil
+    }
 
     let output = try #require(StudioColorOutputTransform.catalog.first {
         $0.id == "aces2-srgb-sdr-100"
@@ -299,6 +355,7 @@ import Testing
     let context = MoireRenderContext(
         source: source,
         deviceSignal: checkpoint.deviceSignal,
+        environment: environmentFrame,
         imported: imported,
         display: display,
         output: output
@@ -539,6 +596,7 @@ private func compensatedApertureVariant(
 private struct MoireRenderContext {
     let source: StudioColorMetalFrame
     let deviceSignal: StudioColorMetalFrame
+    let environment: StudioColorMetalFrame?
     let imported: PhysicalSettingsExchange.Imported
     let display: StudioColorMetalDisplay
     let output: StudioColorOutputTransform
@@ -633,6 +691,7 @@ private func renderMoireVariant(
     let job = try PhysicalMetalFrameEngine().submit(
         sourceACEScg: context.source,
         deviceSignal: context.deviceSignal,
+        environmentACEScg: context.environment,
         orchestration: try pipeline.orchestration(for: frame),
         resolvedDevice: try effectiveDevice.resolved(),
         resolvedPipeline: try pipeline.resolvedPipeline().resolving(

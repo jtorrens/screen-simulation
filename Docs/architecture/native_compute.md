@@ -55,11 +55,11 @@ post-sensor path.
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and
-colorimetry, cover, its physical-radius core/tail glow approximation and complete rotated synthetic-HDR environment, globally selected 16–512 aperture sample count, and either the
+colorimetry, cover, its physical-radius core/tail glow approximation and exactly one rotated analytic or mipmapped equirectangular HDR environment, globally selected 16–512 aperture sample count, and either the
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
 represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
 and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
-Fresnel/transmission/reflection, centered cover-glow area filtering, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
+Fresnel/transmission/reflection, centered cover-glow area filtering, spherical analytic or equirectangular-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
 Lens veiling glare uses deterministic panel-emission reduction before tiled optical evaluation.

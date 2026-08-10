@@ -183,6 +183,28 @@ pub struct ProceduralEnvironment {
     pub pattern: EnvironmentPattern,
 }
 
+/// Parameters for an equirectangular incident-radiance map that has already
+/// been decoded and transformed to scene-linear ACEScg by the owning adapters.
+/// The map pixels remain dimensionless source units until the explicit
+/// radiometric scale is applied at this boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EquirectangularEnvironment {
+    /// Zero emits no incident environment radiance, one is the authored calibration.
+    pub character_strength: f32,
+    /// Physical radiance represented by one linear map unit, in cd/m².
+    pub source_unit_radiance_candelas_per_square_meter: f32,
+    /// Photometric adjustment applied before reflection, in stops.
+    pub exposure_stops: f32,
+    /// Horizontal rotation of the latitude-longitude map around panel-local Y.
+    pub rotation_degrees: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IncidentEnvironment {
+    Procedural(ProceduralEnvironment),
+    Equirectangular(EquirectangularEnvironment),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EnvironmentPreset {
     pub id: &'static str,
@@ -544,6 +566,45 @@ impl ProceduralEnvironment {
     }
 }
 
+impl EquirectangularEnvironment {
+    pub fn validate(self) -> Result<Self, CoverError> {
+        if !self.character_strength.is_finite() || !(0.0..=4.0).contains(&self.character_strength) {
+            return Err(CoverError::InvalidEnvironmentStrength);
+        }
+        if !self
+            .source_unit_radiance_candelas_per_square_meter
+            .is_finite()
+            || !(0.001..=100_000.0).contains(&self.source_unit_radiance_candelas_per_square_meter)
+            || !self.exposure_stops.is_finite()
+            || !(-16.0..=16.0).contains(&self.exposure_stops)
+        {
+            return Err(CoverError::InvalidEnvironmentRadiance);
+        }
+        if !self.rotation_degrees.is_finite() || !(-180.0..=180.0).contains(&self.rotation_degrees)
+        {
+            return Err(CoverError::InvalidEnvironmentRotation);
+        }
+        Ok(self)
+    }
+
+    pub fn radiance_scale(self) -> f32 {
+        self.character_strength
+            * self.source_unit_radiance_candelas_per_square_meter
+            * self.exposure_stops.exp2()
+    }
+}
+
+impl IncidentEnvironment {
+    pub const NONE: Self = Self::Procedural(ProceduralEnvironment::NONE);
+
+    pub fn validate(self) -> Result<Self, CoverError> {
+        match self {
+            Self::Procedural(environment) => environment.validate().map(Self::Procedural),
+            Self::Equirectangular(environment) => environment.validate().map(Self::Equirectangular),
+        }
+    }
+}
+
 impl ValidatedCoverEvaluator {
     pub fn glow_samples(self) -> [CoverGlowSample; 9] {
         self.cover
@@ -594,6 +655,24 @@ impl ValidatedCoverEvaluator {
         )
     }
 
+    /// Applies the cover interface to incident radiance sampled by an external,
+    /// explicitly typed environment source. This preserves one Fresnel owner for
+    /// procedural and image-backed environments.
+    pub fn evaluate_with_incident_radiance(
+        self,
+        emitted_illuminance: LinearRgb,
+        incident_radiance: AcesCgRadiance,
+        sample: CoverSurfaceSample,
+    ) -> LinearRgb {
+        let transmission = self.transmission(sample.view_cosine);
+        let reflected = self.reflected_illuminance_from_radiance(incident_radiance, sample);
+        LinearRgb::new(
+            emitted_illuminance.r * transmission.r + reflected.r,
+            emitted_illuminance.g * transmission.g + reflected.g,
+            emitted_illuminance.b * transmission.b + reflected.b,
+        )
+    }
+
     pub fn transmission(self, view_cosine: f32) -> LinearRgb {
         let (reflection, transmitted_cosine) = self.interface(view_cosine);
         let absorption_scale = self.cover.thickness_millimeters / transmitted_cosine.max(0.01)
@@ -632,8 +711,17 @@ impl ValidatedCoverEvaluator {
     }
 
     pub fn reflected_illuminance(self, sample: CoverSurfaceSample) -> LinearRgb {
-        let (reflection, _) = self.interface(sample.view_cosine);
         let environment = self.environment_radiance(sample.reflection_direction_local);
+        self.reflected_illuminance_from_radiance(AcesCgRadiance(environment), sample)
+    }
+
+    pub fn reflected_illuminance_from_radiance(
+        self,
+        incident_radiance: AcesCgRadiance,
+        sample: CoverSurfaceSample,
+    ) -> LinearRgb {
+        let (reflection, _) = self.interface(sample.view_cosine);
+        let environment = incident_radiance.0;
         LinearRgb::new(
             environment.r * reflection * sample.lens_irradiance_weight.r,
             environment.g * reflection * sample.lens_irradiance_weight.g,
@@ -1074,5 +1162,40 @@ mod tests {
             neutral.transmitted_lateral_offset_meters([0.6, 0.0, 0.8]),
             [0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn equirectangular_environment_has_explicit_bounded_radiometric_scale() {
+        let environment = EquirectangularEnvironment {
+            character_strength: 1.0,
+            source_unit_radiance_candelas_per_square_meter: 100.0,
+            exposure_stops: -2.0,
+            rotation_degrees: 15.0,
+        };
+        assert_eq!(environment.validate(), Ok(environment));
+        assert_eq!(environment.radiance_scale(), 25.0);
+        assert!(
+            IncidentEnvironment::Equirectangular(EquirectangularEnvironment {
+                source_unit_radiance_candelas_per_square_meter: 0.0,
+                ..environment
+            })
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn externally_sampled_radiance_uses_the_same_cover_interface() {
+        let cover = COVER_GLASS_PRESETS[1]
+            .profile
+            .evaluator(ProceduralEnvironment::NONE)
+            .expect("valid cover");
+        let reflected = cover.evaluate_with_incident_radiance(
+            rgb(0.0),
+            AcesCgRadiance(LinearRgb::new(100.0, 20.0, 5.0)),
+            sample(1.0),
+        );
+        assert!(reflected.r > reflected.g && reflected.g > reflected.b);
+        assert!(reflected.r > 0.0);
     }
 }

@@ -6,7 +6,7 @@
 use crate::{RollingDirection, SensorReadout};
 use screen_camera::CameraDevelopment;
 use screen_contracts::{Meters, Millimeters, RationalTime, Vec2, Vec3};
-use screen_cover::{CoverGlassProfile, ProceduralEnvironment};
+use screen_cover::{CoverGlassProfile, IncidentEnvironment};
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, CameraSample, GeometryError,
     KeyframeInterpolation, LensModel, Quaternion, ScreenSample, TransformKeyframe, TransformTrack,
@@ -201,7 +201,7 @@ pub struct PhysicalPipelineSnapshot {
     pub panel: LcdProfile,
     pub panel_light_spread: PanelLightSpreadProfile,
     pub cover: CoverGlassProfile,
-    pub environment: ProceduralEnvironment,
+    pub environment: IncidentEnvironment,
     pub scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
     pub shutter_motion: ResolvedShutterMotionSnapshot,
     pub computational_capture: ComputationalCaptureProfile,

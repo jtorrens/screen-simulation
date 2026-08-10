@@ -465,6 +465,7 @@ private func submit(
     return try PhysicalMetalFrameEngine().submit(
         sourceACEScg: fixture.source,
         deviceSignal: fixture.deviceSignal,
+        environmentACEScg: nil,
         orchestration: orchestration,
         resolvedDevice: try effectiveDefinition.resolved(),
         resolvedPipeline: try fixture.pipeline.resolving(

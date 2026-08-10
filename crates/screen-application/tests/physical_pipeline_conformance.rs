@@ -29,6 +29,7 @@ fn request(
                     .map(|value| DeviceRgb::new(value[0], value[1], value[2]))
                     .collect(),
             },
+            environment_acescg: None,
             acescg,
         },
         plan: PhysicalPipelineExecutionPlan {
@@ -47,7 +48,7 @@ fn request(
             temporal_emission_amount: 0.0,
             temporal_emission_gain: 1.0,
             cover: screen_cover::CoverGlassProfile::NEUTRAL,
-            environment: screen_cover::ProceduralEnvironment::NONE,
+            environment: screen_cover::IncidentEnvironment::NONE,
             scene_geometry_lens: screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
             camera_position: screen_contracts::Vec3 {
                 x: 0.0,
@@ -248,10 +249,11 @@ fn requested_checkpoint_neutralizes_every_later_physical_stage() {
         .lens
         .radial_distortion = [0.2, -0.05, 0.01];
     later_stages_enabled.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
-    later_stages_enabled.plan.environment =
+    later_stages_enabled.plan.environment = screen_cover::IncidentEnvironment::Procedural(
         screen_cover::environment_preset("environment-studio-softboxes")
             .expect("current environment")
-            .environment;
+            .environment,
+    );
     let stopped = evaluate_physical_pipeline_cpu_oracle(later_stages_enabled)
         .expect("stopped panel-spread checkpoint");
     assert_eq!(stopped.acescg, expected.acescg);
@@ -265,9 +267,11 @@ fn requested_checkpoint_neutralizes_every_later_physical_stage() {
     geometry.plan.lens_amount = 1.0;
     geometry.plan.scene_geometry_lens.lens.radial_distortion = [0.2, -0.05, 0.01];
     geometry.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
-    geometry.plan.environment = screen_cover::environment_preset("environment-studio-softboxes")
-        .expect("current environment")
-        .environment;
+    geometry.plan.environment = screen_cover::IncidentEnvironment::Procedural(
+        screen_cover::environment_preset("environment-studio-softboxes")
+            .expect("current environment")
+            .environment,
+    );
     let stopped_geometry = evaluate_physical_pipeline_cpu_oracle(geometry)
         .expect("geometry checkpoint with later stages enabled");
     assert_eq!(stopped_geometry.acescg, expected_geometry.acescg);
@@ -425,5 +429,40 @@ fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
     assert_eq!(
         hashes,
         [14_388_517_383_653_141_572, 13_374_690_546_901_320_500]
+    );
+}
+
+#[test]
+fn image_environment_requires_its_exact_typed_raster_and_changes_cover_output() {
+    let mut missing = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+    missing.plan.environment = screen_cover::IncidentEnvironment::Equirectangular(
+        screen_cover::EquirectangularEnvironment {
+            character_strength: 1.0,
+            source_unit_radiance_candelas_per_square_meter: 100.0,
+            exposure_stops: 0.0,
+            rotation_degrees: 0.0,
+        },
+    );
+    assert!(evaluate_physical_pipeline_cpu_oracle(missing.clone()).is_err());
+
+    missing.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
+    missing.plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
+    missing.input.environment_acescg = Some(screen_application::EnvironmentRadianceRaster {
+        width: 4,
+        height: 2,
+        rgba: vec![[1.0, 0.2, 0.05, 1.0]; 8],
+    });
+    let reflected = evaluate_physical_pipeline_cpu_oracle(missing).expect("typed HDR environment");
+
+    let mut absent = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
+    absent.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
+    absent.plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
+    let clean = evaluate_physical_pipeline_cpu_oracle(absent).expect("absent environment");
+    assert!(
+        reflected
+            .acescg
+            .iter()
+            .zip(clean.acescg)
+            .any(|(left, right)| { left[0] > right[0] && left[0] - right[0] > left[1] - right[1] })
     );
 }

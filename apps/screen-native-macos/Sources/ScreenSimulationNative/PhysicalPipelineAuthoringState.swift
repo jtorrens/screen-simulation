@@ -5,6 +5,9 @@ import ScreenPhysicalBridge
 /// value once; subsequent edits never mutate the global library entity.
 struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
     struct Environment: Codable, Equatable, Sendable {
+        var sourceKind: UInt32 = 0
+        var sourceUnitRadianceCandelasPerSquareMeter = 0.0
+        var exposureStops = 0.0
         var ambientRadianceACEScg = [0.0, 0.0, 0.0]
         var keyRadianceACEScg = [0.0, 0.0, 0.0]
         var keyDirectionLocal = [0.0, 0.0, 1.0]
@@ -136,7 +139,12 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         let version = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
         var environmentABI = ScreenEnvironmentParametersV2()
         environmentABI.abi_version = version
+        environmentABI.source_kind = environment.sourceKind
         environmentABI.character_strength = 1
+        environmentABI.source_unit_radiance_candelas_per_square_meter = Float(
+            environment.sourceUnitRadianceCandelasPerSquareMeter
+        )
+        environmentABI.exposure_stops = Float(environment.exposureStops)
         environmentABI.ambient_radiance_acescg = tuple3(environment.ambientRadianceACEScg)
         environmentABI.key_radiance_acescg = tuple3(environment.keyRadianceACEScg)
         environmentABI.key_direction_local = tuple3(environment.keyDirectionLocal)
@@ -292,6 +300,22 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         else {
             throw DeviceDomainError.invalidPhysicalProfile(
                 "Los overrides físicos no cumplen el dominio seguro del snapshot ABI v3."
+            )
+        }
+        let proceduralEnvironmentIsValid = environment.sourceKind == 0
+            && environment.sourceUnitRadianceCandelasPerSquareMeter == 0
+            && environment.exposureStops == 0
+        let imageEnvironmentIsValid = environment.sourceKind == 1
+            && (0.001 ... 100_000).contains(
+                environment.sourceUnitRadianceCandelasPerSquareMeter
+            )
+            && (-16 ... 16).contains(environment.exposureStops)
+            && environment.ambientRadianceACEScg == [0, 0, 0]
+            && environment.keyRadianceACEScg == [0, 0, 0]
+            && environment.pattern == 0
+        guard proceduralEnvironmentIsValid || imageEnvironmentIsValid else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "La fuente de entorno y sus parámetros no forman un contrato exclusivo válido."
             )
         }
     }

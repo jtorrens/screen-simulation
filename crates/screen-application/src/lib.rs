@@ -31,8 +31,8 @@ use screen_contracts::{
     ContractError, DeviceRgb, FrameRate, LinearRgb, Millimeters, RationalTime, Vec2, Vec3,
 };
 use screen_cover::{
-    CoverError, CoverGlassProfile, CoverSurfaceSample, ProceduralEnvironment,
-    ValidatedCoverEvaluator,
+    AcesCgRadiance, CoverError, CoverGlassProfile, CoverSurfaceSample, IncidentEnvironment,
+    ProceduralEnvironment, ValidatedCoverEvaluator,
 };
 #[cfg(test)]
 use screen_geometry::APERTURE_SAMPLE_COUNT;
@@ -470,6 +470,17 @@ pub struct PhysicalPipelineInput {
     pub acescg: Vec<[f32; 4]>,
     /// The explicitly color-resolved device code for the same source samples.
     pub device_signal: DeviceSignalRaster,
+    /// Explicit scene-linear ACEScg equirectangular incident-radiance map.
+    /// It must be present exactly when the resolved environment selects the
+    /// image-backed source.
+    pub environment_acescg: Option<EnvironmentRadianceRaster>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnvironmentRadianceRaster {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<[f32; 4]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -496,7 +507,7 @@ pub struct PhysicalPipelineExecutionPlan {
     /// timing by the Rust executor. Metal only evaluates this materialized value.
     pub temporal_emission_gain: f32,
     pub cover: CoverGlassProfile,
-    pub environment: ProceduralEnvironment,
+    pub environment: IncidentEnvironment,
     pub scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
     pub camera_position: Vec3,
     pub camera_rotation: screen_geometry::Quaternion,
@@ -775,6 +786,82 @@ impl PhysicalPipelineInput {
     }
 }
 
+impl EnvironmentRadianceRaster {
+    fn validate(&self) -> Result<(), ApplicationError> {
+        if self.width < 2 || self.height < 2 || self.width != self.height.saturating_mul(2) {
+            return Err(ApplicationError::OpticalSampleRasterMismatch);
+        }
+        let expected = u64::from(self.width) * u64::from(self.height);
+        if self.rgba.len() as u64 != expected {
+            return Err(ApplicationError::DecodedPixelCountMismatch {
+                expected,
+                actual: self.rgba.len() as u64,
+            });
+        }
+        if self.rgba.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(ApplicationError::NonFiniteDeviceSignal);
+        }
+        Ok(())
+    }
+
+    fn sample_equirectangular(
+        &self,
+        direction: [f32; 3],
+        rotation_degrees: f32,
+        roughness: f32,
+        haze: f32,
+    ) -> LinearRgb {
+        let length = direction
+            .into_iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        let mut direction = direction.map(|value| value / length.max(1.0e-8));
+        let (sine, cosine) = rotation_degrees.to_radians().sin_cos();
+        direction = [
+            direction[0] * cosine + direction[2] * sine,
+            direction[1],
+            -direction[0] * sine + direction[2] * cosine,
+        ];
+        let u = (direction[0].atan2(direction[2]) / core::f32::consts::TAU + 0.5).rem_euclid(1.0);
+        let v =
+            (0.5 - direction[1].clamp(-1.0, 1.0).asin() / core::f32::consts::PI).clamp(0.0, 1.0);
+        // Box footprint equivalent to the GPU mip choice. Roughness broadens
+        // the reflection lobe quadratically; haze contributes a smaller,
+        // independent broadening term.
+        let blur = (roughness * roughness + haze * 0.25).clamp(0.0, 1.0);
+        let footprint_x = 1.0 + blur * (self.width as f32 * 0.25 - 1.0);
+        let footprint_y = 1.0 + blur * (self.height as f32 * 0.25 - 1.0);
+        let taps = 4_u32;
+        let mut sum = [0.0_f32; 3];
+        for y in 0..taps {
+            for x in 0..taps {
+                let offset_x = (x as f32 + 0.5) / taps as f32 - 0.5;
+                let offset_y = (y as f32 + 0.5) / taps as f32 - 0.5;
+                let sample_u = (u + offset_x * footprint_x / self.width as f32).rem_euclid(1.0);
+                let sample_v = (v + offset_y * footprint_y / self.height as f32).clamp(0.0, 1.0);
+                let px = (sample_u * self.width as f32)
+                    .floor()
+                    .rem_euclid(self.width as f32) as u32;
+                let py = (sample_v * self.height as f32)
+                    .floor()
+                    .clamp(0.0, self.height.saturating_sub(1) as f32)
+                    as u32;
+                let pixel = self.rgba[(py * self.width + px) as usize];
+                sum[0] += pixel[0];
+                sum[1] += pixel[1];
+                sum[2] += pixel[2];
+            }
+        }
+        let reciprocal = 1.0 / (taps * taps) as f32;
+        LinearRgb::new(
+            sum[0] * reciprocal,
+            sum[1] * reciprocal,
+            sum[2] * reciprocal,
+        )
+    }
+}
+
 fn sample_placed_acescg_area(
     source_width: u32,
     source_height: u32,
@@ -828,6 +915,14 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
 ) -> Result<PhysicalPipelineCpuResult, ApplicationError> {
     request.input.validate()?;
     let plan = request.plan.stopped_at_requested_intermediate();
+    plan.environment
+        .validate()
+        .map_err(ApplicationError::Cover)?;
+    match (plan.environment, request.input.environment_acescg.as_ref()) {
+        (IncidentEnvironment::Procedural(_), None) => {}
+        (IncidentEnvironment::Equirectangular(_), Some(raster)) => raster.validate()?,
+        _ => return Err(ApplicationError::OpticalSampleRasterMismatch),
+    }
     if [
         plan.screen_amount,
         plan.emission_amount,
@@ -849,7 +944,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         .map_err(ApplicationError::Panel)?;
     let cover = plan
         .cover
-        .evaluator(plan.environment)
+        .evaluator(match plan.environment {
+            IncidentEnvironment::Procedural(environment) => environment,
+            IncidentEnvironment::Equirectangular(_) => ProceduralEnvironment::NONE,
+        })
         .map_err(ApplicationError::Cover)?;
     let resolved_scene = plan
         .scene_geometry_lens
@@ -1567,22 +1665,46 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             } else {
                 [0.0, 0.0, 1.0]
             };
-            let covered = cover.evaluate(
-                LinearRgb::new(
-                    temporally_integrated[0],
-                    temporally_integrated[1],
-                    temporally_integrated[2],
-                ),
-                CoverSurfaceSample {
-                    view_cosine: (cover_cosine * reciprocal_cover).clamp(0.0, 1.0),
-                    reflection_direction_local,
-                    lens_irradiance_weight: LinearRgb::new(
-                        cover_irradiance[0] * reciprocal_cover / parameters.white_level_nits,
-                        cover_irradiance[1] * reciprocal_cover / parameters.white_level_nits,
-                        cover_irradiance[2] * reciprocal_cover / parameters.white_level_nits,
-                    ),
-                },
+            let emitted = LinearRgb::new(
+                temporally_integrated[0],
+                temporally_integrated[1],
+                temporally_integrated[2],
             );
+            let cover_sample = CoverSurfaceSample {
+                view_cosine: (cover_cosine * reciprocal_cover).clamp(0.0, 1.0),
+                reflection_direction_local,
+                lens_irradiance_weight: LinearRgb::new(
+                    cover_irradiance[0] * reciprocal_cover / parameters.white_level_nits,
+                    cover_irradiance[1] * reciprocal_cover / parameters.white_level_nits,
+                    cover_irradiance[2] * reciprocal_cover / parameters.white_level_nits,
+                ),
+            };
+            let covered = match plan.environment {
+                IncidentEnvironment::Procedural(_) => cover.evaluate(emitted, cover_sample),
+                IncidentEnvironment::Equirectangular(environment) => {
+                    let raster = request
+                        .input
+                        .environment_acescg
+                        .as_ref()
+                        .expect("validated image-backed environment owns its raster");
+                    let sampled = raster.sample_equirectangular(
+                        reflection_direction_local,
+                        environment.rotation_degrees,
+                        plan.cover.roughness,
+                        plan.cover.haze,
+                    );
+                    let scale = environment.radiance_scale();
+                    cover.evaluate_with_incident_radiance(
+                        emitted,
+                        AcesCgRadiance(LinearRgb::new(
+                            sampled.r * scale,
+                            sampled.g * scale,
+                            sampled.b * scale,
+                        )),
+                        cover_sample,
+                    )
+                }
+            };
             let glare_fraction = resolved_scene.0.lens.veiling_glare_fraction;
             let temporal_gate_average = LinearRgb::new(
                 veiling_glare_gate_average.r * temporal_gain,
@@ -7343,6 +7465,7 @@ mod tests {
                         DeviceRgb::new(0.0, 0.5, 2.0),
                     ],
                 },
+                environment_acescg: None,
             },
             plan: PhysicalPipelineExecutionPlan {
                 panel,
@@ -7360,7 +7483,7 @@ mod tests {
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
                 cover: CoverGlassProfile::NEUTRAL,
-                environment: ProceduralEnvironment::NONE,
+                environment: IncidentEnvironment::NONE,
                 scene_geometry_lens: ResolvedSceneGeometryLensSnapshot::REFERENCE,
                 camera_position: Vec3 {
                     x: 0.0,
@@ -7422,6 +7545,7 @@ mod tests {
                 height: 2,
                 pixels: vec![DeviceRgb::WHITE; 4],
             },
+            environment_acescg: None,
         };
         request.plan.panel.white_level_nits = white_level_nits;
         request.plan.panel_light_spread.character_strength = 0.0;
@@ -7508,6 +7632,7 @@ mod tests {
                 height: 8,
                 pixels: vec![DeviceRgb::WHITE; 64],
             },
+            environment_acescg: None,
         };
 
         let mut panel = display.profile();
@@ -7524,7 +7649,7 @@ mod tests {
         request.plan.panel_light_spread.character_strength = 0.0;
         request.plan.temporal_emission_amount = 0.0;
         request.plan.cover = CoverGlassProfile::NEUTRAL;
-        request.plan.environment = ProceduralEnvironment::NONE;
+        request.plan.environment = IncidentEnvironment::NONE;
         request.plan.scene_geometry_amount = 1.0;
         request.plan.lens_amount = 1.0;
         request.plan.camera_position = Vec3 {
@@ -8350,10 +8475,11 @@ mod tests {
             .expect("cover transmission");
         assert_ne!(covered.acescg, baseline.acescg);
 
-        covered_request.plan.environment =
+        covered_request.plan.environment = screen_cover::IncidentEnvironment::Procedural(
             screen_cover::environment_preset("environment-studio-softboxes")
                 .unwrap()
-                .environment;
+                .environment,
+        );
         let composite = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
             .expect("cover plus environment");
         assert_ne!(composite.acescg, covered.acescg);
@@ -8361,7 +8487,7 @@ mod tests {
         covered_request.plan.temporal_emission_gain = 0.8;
         let temporal_composite = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
             .expect("temporal emission with stable reflection");
-        covered_request.plan.environment = screen_cover::ProceduralEnvironment::NONE;
+        covered_request.plan.environment = screen_cover::IncidentEnvironment::NONE;
         let temporal_covered = evaluate_physical_pipeline_cpu_oracle(covered_request)
             .expect("temporal cover without environment");
         for (((composite, covered), temporal_composite), temporal_covered) in composite

@@ -1693,6 +1693,7 @@ final class WorkspaceModel: ObservableObject {
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
+            environmentACEScg: nil,
             orchestration: try physicalAuthoringState.orchestration(for: selection),
             resolvedDevice: effectiveDevice,
             resolvedPipeline: effectivePipeline,

@@ -12,7 +12,7 @@ use screen_application::{
     expose_physical_pipeline_raw, physical_pipeline_aperture_sample_count,
     physical_row_temporal_gain, placed_signal_area_fraction,
 };
-use screen_cover::EnvironmentPattern;
+use screen_cover::{EnvironmentPattern, IncidentEnvironment};
 use screen_geometry::{project_screen, projected_screen_gate_coverage};
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
 
@@ -546,6 +546,22 @@ impl MetalPhysicalPipeline {
             f32,
             Option<u32>,
         )],
+        report_progress: impl FnMut(f32),
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        self.evaluate_temporal_with_environment(samples, None, report_progress, is_cancelled)
+    }
+
+    pub fn evaluate_temporal_with_environment(
+        &self,
+        samples: &[(
+            &TextureRef,
+            &TextureRef,
+            PhysicalPipelineExecutionPlan,
+            f32,
+            Option<u32>,
+        )],
+        environment_acescg: Option<&TextureRef>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -599,6 +615,7 @@ impl MetalPhysicalPipeline {
             let evaluated = self.evaluate_rows(
                 source,
                 signal,
+                environment_acescg,
                 physical_plan,
                 row_range,
                 Some((&prefix_cache[prefix_index].2, &prefix_cache[prefix_index].3)),
@@ -695,6 +712,25 @@ impl MetalPhysicalPipeline {
         source_acescg: &TextureRef,
         device_signal: &TextureRef,
         plan: PhysicalPipelineExecutionPlan,
+        report_progress: impl FnMut(f32),
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        self.evaluate_with_environment(
+            source_acescg,
+            device_signal,
+            None,
+            plan,
+            report_progress,
+            is_cancelled,
+        )
+    }
+
+    pub fn evaluate_with_environment(
+        &self,
+        source_acescg: &TextureRef,
+        device_signal: &TextureRef,
+        environment_acescg: Option<&TextureRef>,
+        plan: PhysicalPipelineExecutionPlan,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -711,6 +747,7 @@ impl MetalPhysicalPipeline {
         let physical = self.evaluate_rows(
             source_acescg,
             device_signal,
+            environment_acescg,
             physical_plan,
             None,
             None,
@@ -737,6 +774,7 @@ impl MetalPhysicalPipeline {
         &self,
         source_acescg: &TextureRef,
         device_signal: &TextureRef,
+        environment_acescg: Option<&TextureRef>,
         plan: PhysicalPipelineExecutionPlan,
         row_range: Option<(u32, u32)>,
         row_prefixes: Option<(&TextureRef, &TextureRef)>,
@@ -761,6 +799,26 @@ impl MetalPhysicalPipeline {
         };
         if !supported(source_acescg) || !supported(device_signal) {
             return Err(MetalPhysicalPipelineError::UnsupportedTexture);
+        }
+        plan.environment
+            .validate()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        match (plan.environment, environment_acescg) {
+            (IncidentEnvironment::Procedural(_), None) => {}
+            (IncidentEnvironment::Equirectangular(_), Some(texture))
+                if supported(texture)
+                    && texture.width() == texture.height().saturating_mul(2)
+                    && texture.mipmap_level_count() > 1 => {}
+            (IncidentEnvironment::Equirectangular(_), Some(_)) => {
+                return Err(MetalPhysicalPipelineError::InvalidPlan(
+                    "equirectangular environment must be a mipmapped 2:1 float texture".to_owned(),
+                ));
+            }
+            _ => {
+                return Err(MetalPhysicalPipelineError::InvalidPlan(
+                    "resolved environment source and texture do not match".to_owned(),
+                ));
+            }
         }
         let geometry = plan
             .panel
@@ -898,14 +956,17 @@ impl MetalPhysicalPipeline {
                     StripeLayout::Bgr => 1,
                 },
                 plan.requested_intermediate as u32,
-                match plan.environment.pattern {
-                    EnvironmentPattern::UniformNeutral => 0,
-                    EnvironmentPattern::StudioSoftboxes => 1,
-                    EnvironmentPattern::CalibrationGrid => 2,
-                    EnvironmentPattern::OfficeCeiling => 3,
-                    EnvironmentPattern::DaylightWindow => 4,
-                    EnvironmentPattern::WarmPracticals => 5,
-                    EnvironmentPattern::MixedProduction => 6,
+                match plan.environment {
+                    IncidentEnvironment::Procedural(environment) => match environment.pattern {
+                        EnvironmentPattern::UniformNeutral => 0,
+                        EnvironmentPattern::StudioSoftboxes => 1,
+                        EnvironmentPattern::CalibrationGrid => 2,
+                        EnvironmentPattern::OfficeCeiling => 3,
+                        EnvironmentPattern::DaylightWindow => 4,
+                        EnvironmentPattern::WarmPracticals => 5,
+                        EnvironmentPattern::MixedProduction => 6,
+                    },
+                    IncidentEnvironment::Equirectangular(_) => 0,
                 },
             ],
             levels: [
@@ -921,7 +982,10 @@ impl MetalPhysicalPipeline {
                     LensEvaluationModel::ThinLens => 0.0,
                     LensEvaluationModel::VfxDepthBlur => 1.0,
                 },
-                0.0,
+                match plan.environment {
+                    IncidentEnvironment::Procedural(_) => 0.0,
+                    IncidentEnvironment::Equirectangular(_) => 1.0,
+                },
             ],
             strengths: [
                 plan.screen_amount,
@@ -981,24 +1045,41 @@ impl MetalPhysicalPipeline {
                 plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength,
                 plan.cover.glow.tail_fraction,
             ],
-            environment_ambient_strength: [
-                plan.environment.ambient_radiance.0.r,
-                plan.environment.ambient_radiance.0.g,
-                plan.environment.ambient_radiance.0.b,
-                plan.environment.character_strength,
-            ],
-            environment_key_radius: [
-                plan.environment.key_radiance.0.r,
-                plan.environment.key_radiance.0.g,
-                plan.environment.key_radiance.0.b,
-                plan.environment.key_angular_radius_degrees.to_radians(),
-            ],
-            environment_direction_rotation: [
-                plan.environment.key_direction_local[0],
-                plan.environment.key_direction_local[1],
-                plan.environment.key_direction_local[2],
-                plan.environment.rotation_degrees.to_radians(),
-            ],
+            environment_ambient_strength: match plan.environment {
+                IncidentEnvironment::Procedural(environment) => [
+                    environment.ambient_radiance.0.r,
+                    environment.ambient_radiance.0.g,
+                    environment.ambient_radiance.0.b,
+                    environment.character_strength,
+                ],
+                IncidentEnvironment::Equirectangular(environment) => [
+                    environment.source_unit_radiance_candelas_per_square_meter
+                        * environment.exposure_stops.exp2(),
+                    0.0,
+                    0.0,
+                    environment.character_strength,
+                ],
+            },
+            environment_key_radius: match plan.environment {
+                IncidentEnvironment::Procedural(environment) => [
+                    environment.key_radiance.0.r,
+                    environment.key_radiance.0.g,
+                    environment.key_radiance.0.b,
+                    environment.key_angular_radius_degrees.to_radians(),
+                ],
+                IncidentEnvironment::Equirectangular(_) => [0.0; 4],
+            },
+            environment_direction_rotation: match plan.environment {
+                IncidentEnvironment::Procedural(environment) => [
+                    environment.key_direction_local[0],
+                    environment.key_direction_local[1],
+                    environment.key_direction_local[2],
+                    environment.rotation_degrees.to_radians(),
+                ],
+                IncidentEnvironment::Equirectangular(environment) => {
+                    [0.0, 0.0, 1.0, environment.rotation_degrees.to_radians()]
+                }
+            },
             camera_position_focal: [
                 camera.position.x,
                 camera.position.y,
@@ -1203,6 +1284,7 @@ impl MetalPhysicalPipeline {
             encoder.set_texture(2, Some(&output));
             encoder.set_texture(3, Some(&source_row_prefix));
             encoder.set_texture(4, Some(&device_row_prefix));
+            encoder.set_texture(5, environment_acescg);
             encoder.set_bytes(
                 0,
                 size_of::<PhysicalPipelineParams>() as u64,
@@ -1340,6 +1422,7 @@ mod tests {
                     height: 2,
                     pixels: device_signal,
                 },
+                environment_acescg: None,
             },
             PhysicalPipelineExecutionPlan {
                 panel,
@@ -1354,7 +1437,7 @@ mod tests {
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
                 cover: screen_cover::CoverGlassProfile::NEUTRAL,
-                environment: screen_cover::ProceduralEnvironment::NONE,
+                environment: screen_cover::IncidentEnvironment::NONE,
                 scene_geometry_lens:
                     screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
                 camera_position: screen_contracts::Vec3 {
@@ -1382,6 +1465,8 @@ mod tests {
                     noise_seed: 0,
                 },
                 shutter_motion_amount: 0.0,
+                computational_capture: screen_sensor::ComputationalCaptureProfile::SINGLE_EXPOSURE,
+                computational_character_strength: 0.0,
                 sensor: screen_sensor::SensorProfile::REFERENCE,
                 radiometric_calibration:
                     screen_application::CameraRadiometricCalibration::REFERENCE,
@@ -1557,7 +1642,7 @@ mod tests {
                     1.0,
                 );
                 plan.cover = cover;
-                plan.environment = environment;
+                plan.environment = screen_cover::IncidentEnvironment::Procedural(environment);
                 plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
                 let source = texture(&device, input.width, input.height, &input.acescg);
                 let signal_values = input

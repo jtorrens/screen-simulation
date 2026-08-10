@@ -215,12 +215,32 @@ inline float flat_environment_circle(float3 direction, float3 center,
 }
 
 inline float3 flat_environment_radiance(float3 reflection_direction_local,
+    texture2d<float, access::sample> environment_acescg,
     constant PhysicalPipelineParams& p) {
     float3 direction = normalize(reflection_direction_local);
     const float sine = sin(p.environment_direction_rotation.w);
     const float cosine = cos(p.environment_direction_rotation.w);
     direction = float3(direction.x * cosine + direction.z * sine, direction.y,
         -direction.x * sine + direction.z * cosine);
+    if (p.geometry.w == 1.0f) {
+        constexpr sampler environment_sampler(
+            coord::normalized,
+            s_address::repeat,
+            t_address::clamp_to_edge,
+            filter::linear,
+            mip_filter::linear
+        );
+        const float2 uv = float2(
+            fract(atan2(direction.x, direction.z) / (2.0f * PI) + 0.5f),
+            clamp(0.5f - asin(clamp(direction.y, -1.0f, 1.0f)) / PI, 0.0f, 1.0f)
+        );
+        const float blur = clamp(p.cover_absorption_roughness.w
+            * p.cover_absorption_roughness.w + p.cover_haze.x * 0.25f, 0.0f, 1.0f);
+        const float mip_level = blur
+            * float(max(environment_acescg.get_num_mip_levels(), 1u) - 1u);
+        return environment_acescg.sample(environment_sampler, uv, level(mip_level)).rgb
+            * p.environment_ambient_strength.x * p.environment_ambient_strength.w;
+    }
     const float alignment = clamp(dot(direction, p.environment_direction_rotation.xyz), -1.0f, 1.0f);
     const float edge = cos(p.environment_key_radius.w);
     const float softness = 0.005f + p.cover_absorption_roughness.w * 0.35f;
@@ -282,6 +302,7 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
 
 inline float3 apply_flat_cover(float3 emitted, float view_cosine,
     float3 reflection_direction_local, float3 lens_irradiance_weight,
+    texture2d<float, access::sample> environment_acescg,
     constant PhysicalPipelineParams& p) {
     const float cosine_i = clamp(view_cosine, 0.0f, 1.0f);
     const float reflection = cover_interface(cosine_i, p);
@@ -297,7 +318,7 @@ inline float3 apply_flat_cover(float3 emitted, float view_cosine,
     const float3 transmission = (1.0f - reflection)
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
     return emitted * transmission
-        + flat_environment_radiance(reflection_direction_local, p) * reflection
+        + flat_environment_radiance(reflection_direction_local, environment_acescg, p) * reflection
             * lens_irradiance_weight / p.levels.z;
 }
 
@@ -598,6 +619,7 @@ kernel void evaluate_physical_pipeline(
     texture2d<float, access::write> output [[texture(2)]],
     texture2d<float, access::read> source_row_prefix [[texture(3)]],
     texture2d<float, access::read> device_row_prefix [[texture(4)]],
+    texture2d<float, access::sample> environment_acescg [[texture(5)]],
     constant PhysicalPipelineParams& p [[buffer(0)]],
     device const float* row_temporal_gains [[buffer(1)]],
     device const float4* veiling_gate_average [[buffer(2)]],
@@ -893,7 +915,7 @@ kernel void evaluate_physical_pipeline(
     const float3 temporally_integrated = glass_scattered * temporal_gain;
     const float3 covered = apply_flat_cover(temporally_integrated,
         cover_cosine * cover_reciprocal, cover_reflection_direction,
-        cover_irradiance * cover_reciprocal, p);
+        cover_irradiance * cover_reciprocal, environment_acescg, p);
     const float3 glared = mix(covered, veiling_gate_average[0].xyz * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);

@@ -66,6 +66,7 @@ impl CameraOutputTransform {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OcioInputTransform {
     SrgbEncodedRec709,
+    LinearRec709,
     Rec709Gamma24Display,
     CameraRec709,
     ArriLogC3Ei800,
@@ -79,8 +80,9 @@ pub enum OcioInputTransform {
 }
 
 impl OcioInputTransform {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::SrgbEncodedRec709,
+        Self::LinearRec709,
         Self::Rec709Gamma24Display,
         Self::CameraRec709,
         Self::ArriLogC3Ei800,
@@ -96,6 +98,7 @@ impl OcioInputTransform {
     pub const fn label(self) -> &'static str {
         match self {
             Self::SrgbEncodedRec709 => "sRGB encoded Rec.709",
+            Self::LinearRec709 => "Linear Rec.709 (sRGB)",
             Self::Rec709Gamma24Display => "Display Rec.709 Gamma 2.4",
             Self::CameraRec709 => "Camera Rec.709",
             Self::ArriLogC3Ei800 => "ARRI LogC3 (EI800)",
@@ -112,6 +115,7 @@ impl OcioInputTransform {
     pub const fn stable_id(self) -> &'static str {
         match self {
             Self::SrgbEncodedRec709 => "srgb-encoded-rec709",
+            Self::LinearRec709 => "linear-rec709",
             Self::Rec709Gamma24Display => "display-rec709-gamma24",
             Self::CameraRec709 => "camera-rec709",
             Self::ArriLogC3Ei800 => "arri-logc3-ei800",
@@ -134,6 +138,7 @@ impl OcioInputTransform {
     const fn ocio_color_space(self) -> &'static str {
         match self {
             Self::SrgbEncodedRec709 => "sRGB Encoded Rec.709 (sRGB)",
+            Self::LinearRec709 => "Linear Rec.709 (sRGB)",
             Self::Rec709Gamma24Display => "Gamma 2.4 Encoded Rec.709",
             Self::CameraRec709 => "Camera Rec.709",
             Self::ArriLogC3Ei800 => "ARRI LogC3 (EI800)",
@@ -152,7 +157,8 @@ impl OcioInputTransform {
             Self::SrgbEncodedRec709 | Self::Rec709Gamma24Display => {
                 SourceReferenceDomain::DisplayReferred
             }
-            Self::CameraRec709
+            Self::LinearRec709
+            | Self::CameraRec709
             | Self::ArriLogC3Ei800
             | Self::ArriLogC4
             | Self::BmdFilmWideGamutGen5
