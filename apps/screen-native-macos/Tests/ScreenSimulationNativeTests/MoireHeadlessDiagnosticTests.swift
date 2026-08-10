@@ -99,21 +99,29 @@ import Testing
         let orbitY = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_ORBIT_Y_DEGREES"
         ].flatMap(Double.init) ?? 0
-        if authoredDistance != nil || orbitX != 0 || orbitY != 0 {
+        let lookAtTargetWorldX = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_LOOK_AT_TARGET_WORLD_X_METERS"
+        ].flatMap(Double.init) ?? 0
+        if authoredDistance != nil || orbitX != 0 || orbitY != 0 || lookAtTargetWorldX != 0 {
             let distance = authoredDistance ?? PoseRotationProjection.distance(
                 pipeline.cameraPose.position,
                 pipeline.screenPose.position
             )
+            let lookAtTarget = [
+                pipeline.screenPose.position[0] + lookAtTargetWorldX,
+                pipeline.screenPose.position[1],
+                pipeline.screenPose.position[2],
+            ]
             pipeline.cameraPose.position = PoseRotationProjection.orbitPosition(
-                around: pipeline.screenPose.position,
+                around: lookAtTarget,
                 distance: distance,
                 rotationDegrees: [orbitX, orbitY, 0]
             )
             pipeline.sceneLens.focusDistanceMeters = distance
-            pipeline.cameraLookAt = .init(target: pipeline.screenPose.position)
+            pipeline.cameraLookAt = .init(target: lookAtTarget)
             pipeline.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(
                 from: pipeline.cameraPose.position,
-                to: pipeline.screenPose.position
+                to: lookAtTarget
             )
         }
         switch ProcessInfo.processInfo.environment["SCREEN_MOIRE_CA_MODE"] {
