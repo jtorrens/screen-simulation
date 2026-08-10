@@ -40,6 +40,7 @@ enum CapturePhysicalSection: UInt32, PhysicalSectionID {
     case noise = 0x205
     case developDemosaic = 0x206
     case sensorBloom = 0x207
+    case computationalCapture = 0x208
 
     var id: UInt32 { rawValue }
 }
@@ -73,6 +74,7 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         .screen(.coverGlow),
         .capture(.lens),
         .capture(.exposureShutter),
+        .capture(.computationalCapture),
         .capture(.sensorBloom),
         .capture(.sensorCFA),
         .capture(.noise),
@@ -88,14 +90,20 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         .screen(.coverGlow),
         .capture(.lens),
         .capture(.exposureShutter),
+        .capture(.computationalCapture),
         .capture(.sensorBloom),
         .capture(.noise),
     ]
 
     var contributionLimits: PhysicalContributionLimits {
-        self == .screen(.coverGlass)
-            ? .init(visualRange: 0 ... 2, safeRange: 0 ... 2)
-            : .standard
+        switch self {
+        case .screen(.coverGlass):
+            .init(visualRange: 0 ... 2, safeRange: 0 ... 2)
+        case .capture(.computationalCapture):
+            .init(visualRange: 0 ... 1.5, safeRange: 0 ... 1.5)
+        default:
+            .standard
+        }
     }
 }
 
@@ -207,10 +215,11 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case coverGlow = 7
     case lensProjection = 8
     case shutterMotion = 9
-    case sensorBloom = 10
-    case sensorNoise = 11
-    case rawMosaic = 12
-    case developedACEScg = 13
+    case computationalCapture = 10
+    case sensorBloom = 11
+    case sensorNoise = 12
+    case rawMosaic = 13
+    case developedACEScg = 14
 
     var id: UInt32 { rawValue }
 
@@ -225,6 +234,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         .coverGlow,
         .lensProjection,
         .shutterMotion,
+        .computationalCapture,
         .sensorBloom,
         .sensorNoise,
         .rawMosaic,
@@ -244,6 +254,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         case .coverGlow: "Cover Glow"
         case .lensProjection: "Lens / Projection"
         case .shutterMotion: "Shutter / Motion"
+        case .computationalCapture: "Computational Capture"
         case .sensorBloom: "Sensor Bloom"
         case .sensorNoise: "Sensor / Noise"
         case .rawMosaic: "RAW Mosaic"

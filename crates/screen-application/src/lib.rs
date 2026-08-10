@@ -50,9 +50,9 @@ use screen_panel::{
     PanelLightSpreadProfile, ValidatedPanelEvaluator,
 };
 use screen_sensor::{
-    BayerPattern, CaptureIdentity, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
-    SensorBloomProfile, SensorError, SensorProfile, SensorRegion, expose_raw, expose_raw_region,
-    expose_raw_with_noise_amount,
+    BayerPattern, CaptureIdentity, ComputationalCaptureProfile, IntegratedOpticalExposure,
+    RawSensorRaster, RawSensorRegion, SensorBloomProfile, SensorError, SensorProfile, SensorRegion,
+    expose_raw, expose_raw_region, expose_raw_with_noise_amount,
 };
 use std::time::{Duration, Instant};
 
@@ -173,6 +173,7 @@ pub struct CaptureDevicePreset {
     pub label: &'static str,
     pub calibration: &'static str,
     pub sensor: SensorProfile,
+    pub computational_capture: ComputationalCaptureProfile,
     pub gate_width: Millimeters,
     pub gate_height: Millimeters,
     pub default_lens_preset_id: &'static str,
@@ -205,6 +206,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 14,
             bloom: SensorBloomProfile::LARGE_CAMERA,
         },
+        computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         gate_width: Millimeters(27.99),
         gate_height: Millimeters(19.22),
         default_lens_preset_id: "generic-prime-50mm",
@@ -254,6 +256,10 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 12,
             bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
         },
+        computational_capture: ComputationalCaptureProfile {
+            exposure_count: 3,
+            bracket_spacing_stops: 1.0,
+        },
         gate_width: Millimeters(5.815_385),
         gate_height: Millimeters(4.361_539),
         default_lens_preset_id: "iphone-16e-main-integrated",
@@ -296,6 +302,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 12,
             bloom: SensorBloomProfile::REFERENCE,
         },
+        computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         gate_width: Millimeters(5.76),
         gate_height: Millimeters(4.32),
         default_lens_preset_id: "canon-a470-wide-reference",
@@ -334,6 +341,10 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 12,
             bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
         },
+        computational_capture: ComputationalCaptureProfile {
+            exposure_count: 3,
+            bracket_spacing_stops: 1.0,
+        },
         gate_width: Millimeters(9.8),
         gate_height: Millimeters(7.35),
         default_lens_preset_id: "iphone-14-pro-main-reference",
@@ -371,6 +382,10 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             analog_gain: 1.0,
             adc_bits: 12,
             bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
+        },
+        computational_capture: ComputationalCaptureProfile {
+            exposure_count: 3,
+            bracket_spacing_stops: 1.0,
         },
         gate_width: Millimeters(5.6),
         gate_height: Millimeters(4.2),
@@ -495,6 +510,8 @@ pub struct PhysicalPipelineExecutionPlan {
     pub shutter_close: RationalTime,
     pub shutter_motion: ResolvedShutterMotionSnapshot,
     pub shutter_motion_amount: f32,
+    pub computational_capture: ComputationalCaptureProfile,
+    pub computational_character_strength: f32,
     pub sensor: SensorProfile,
     pub radiometric_calibration: CameraRadiometricCalibration,
     pub sensor_enabled: bool,
@@ -548,6 +565,7 @@ impl PhysicalPipelineExecutionPlan {
             }
             PhysicalIntermediate::LensProjection
             | PhysicalIntermediate::ShutterMotion
+            | PhysicalIntermediate::ComputationalCapture
             | PhysicalIntermediate::RawMosaic
             | PhysicalIntermediate::DevelopedAcesCg => {}
             PhysicalIntermediate::SensorBloom | PhysicalIntermediate::SensorNoise => {
@@ -637,7 +655,10 @@ pub fn expose_physical_pipeline_raw(
     {
         return Err(ApplicationError::OpticalSampleRasterMismatch);
     }
-    let sensor = plan.sensor.validate().map_err(ApplicationError::Sensor)?;
+    let sensor = plan
+        .computational_capture
+        .effective_sensor(plan.sensor, plan.computational_character_strength)
+        .map_err(ApplicationError::Sensor)?;
     plan.radiometric_calibration
         .validate()
         .map_err(ApplicationError::InvalidRadiometricCalibration)?;
@@ -1599,7 +1620,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::CoverGlow => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::LensProjection => [glared.r, glared.g, glared.b],
-                PhysicalIntermediate::ShutterMotion => [shuttered.r, shuttered.g, shuttered.b],
+                PhysicalIntermediate::ShutterMotion
+                | PhysicalIntermediate::ComputationalCapture => {
+                    [shuttered.r, shuttered.g, shuttered.b]
+                }
                 PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
@@ -7363,6 +7387,8 @@ mod tests {
                     noise_seed: 0,
                 },
                 shutter_motion_amount: 0.0,
+                computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
+                computational_character_strength: 0.0,
                 sensor: SensorProfile::REFERENCE,
                 radiometric_calibration: CameraRadiometricCalibration::REFERENCE,
                 sensor_enabled: false,
@@ -7803,6 +7829,49 @@ mod tests {
         assert_eq!(iphone_shorter_exposure.adc_clipped_fraction, 0.0);
         assert!(iphone_shorter_exposure.raw_mean > 0.6);
         assert!(iphone_shorter_exposure.raw_mean < 0.7);
+    }
+
+    #[test]
+    fn computational_capture_protects_phone_highlights_and_is_exact_for_single_exposure_cameras() {
+        let clipped_fraction = |request: PhysicalPipelineRequest| {
+            let raw = evaluate_physical_pipeline_cpu_oracle(request).expect("RAW patch");
+            raw.acescg.iter().map(|pixel| pixel[1]).sum::<f32>() / raw.acescg.len() as f32
+        };
+        let mut iphone_single = production_patch_request(
+            "iphone-16e-main-48mp",
+            "lcd-asus-proart-pa329cv",
+            120.0,
+            1.0 / 25.0,
+            150.0,
+            0.0,
+            PhysicalIntermediate::RawMosaic,
+        );
+        iphone_single.plan.computational_capture = ComputationalCaptureProfile::SINGLE_EXPOSURE;
+        iphone_single.plan.computational_character_strength = 1.0;
+        let mut iphone_bracket = iphone_single.clone();
+        iphone_bracket.plan.computational_capture = capture_device_preset("iphone-16e-main-48mp")
+            .expect("iPhone preset")
+            .computational_capture;
+        assert!(clipped_fraction(iphone_bracket) < clipped_fraction(iphone_single));
+
+        let mut arri = production_patch_request(
+            "arri-alexa-35-open-gate",
+            "lcd-asus-proart-pa329cv",
+            120.0,
+            1.0 / 25.0,
+            800.0,
+            0.0,
+            PhysicalIntermediate::RawMosaic,
+        );
+        let baseline = evaluate_physical_pipeline_cpu_oracle(arri.clone()).expect("ARRI baseline");
+        arri.plan.computational_capture = capture_device_preset("arri-alexa-35-open-gate")
+            .expect("ARRI preset")
+            .computational_capture;
+        arri.plan.computational_character_strength = 1.0;
+        assert_eq!(
+            evaluate_physical_pipeline_cpu_oracle(arri).expect("ARRI computational"),
+            baseline
+        );
     }
 
     #[test]

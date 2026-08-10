@@ -42,6 +42,8 @@ RETIRED_TOKENS = (
     "SCREEN_TEST_AUTHORING_ABI_VERSION 8",
     "SCREEN_TEST_AUTHORING_ABI_VERSION 9",
     "ScreenTestAuthoringSelectionV9",
+    "ScreenCapturePresetParametersV1",
+    "SCREEN_AUTHORING_CATALOG_ABI_VERSION 2",
 )
 
 
@@ -75,7 +77,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 6u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 7u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
         "screen_physical_frame_submit",
@@ -84,9 +86,11 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 10u",
-        "ScreenTestAuthoringSelectionV10",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 11u",
+        "ScreenTestAuthoringSelectionV11",
         "ScreenTestControlDescriptorV5",
+        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 3u",
+        "ScreenCapturePresetParametersV2",
     )
     missing = [token for token in required if token not in header]
     if missing:
@@ -95,10 +99,12 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 6",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 10",
-        "ScreenTestAuthoringSelectionV10",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 7",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 11",
+        "ScreenTestAuthoringSelectionV11",
         "ScreenTestControlDescriptorV5",
+        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 3",
+        "ScreenCapturePresetParametersV2",
     ):
         if token not in rust_bridge:
             raise RuntimeError(f"current Test ABI Rust contract is incomplete: {token}")
@@ -123,7 +129,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v6 source/header/symbol gate passed")
+    print("native macOS physical ABI v7 source/header/symbol gate passed")
     return 0
 
 

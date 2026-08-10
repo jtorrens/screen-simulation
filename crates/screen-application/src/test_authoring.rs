@@ -8,7 +8,7 @@ use screen_cover::{
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 10;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 11;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -20,6 +20,7 @@ pub const COVER_ENVIRONMENT_PHASE_ID: &str = "cover-environment";
 pub const COVER_GLOW_PHASE_ID: &str = "cover-glow";
 pub const LENS_PROJECTION_PHASE_ID: &str = "lens-projection";
 pub const SHUTTER_EXPOSURE_PHASE_ID: &str = "shutter-exposure";
+pub const COMPUTATIONAL_CAPTURE_PHASE_ID: &str = "computational-capture";
 pub const SENSOR_BLOOM_PHASE_ID: &str = "sensor-bloom";
 pub const SENSOR_CFA_PHASE_ID: &str = "sensor-cfa";
 pub const SENSOR_NOISE_PHASE_ID: &str = "sensor-noise";
@@ -62,6 +63,9 @@ pub const F_STOP_CONTROL_ID: &str = "f-stop";
 pub const SHUTTER_ANGLE_CONTROL_ID: &str = "shutter-angle-degrees";
 pub const SHUTTER_RECIPROCAL_CONTROL_ID: &str = "shutter-reciprocal-seconds";
 pub const SHUTTER_AMOUNT_CONTROL_ID: &str = "shutter-motion-amount";
+pub const COMPUTATIONAL_CAPTURE_AMOUNT_CONTROL_ID: &str = "computational-capture-amount";
+pub const COMPUTATIONAL_EXPOSURE_COUNT_CONTROL_ID: &str = "computational-exposure-count";
+pub const COMPUTATIONAL_BRACKET_SPACING_CONTROL_ID: &str = "computational-bracket-spacing-stops";
 pub const SENSOR_NOISE_AMOUNT_CONTROL_ID: &str = "sensor-noise-amount";
 pub const SENSOR_BLOOM_AMOUNT_CONTROL_ID: &str = "sensor-bloom-amount";
 pub const SENSOR_BLOOM_CROSSTALK_CONTROL_ID: &str = "sensor-bloom-crosstalk-fraction";
@@ -157,6 +161,9 @@ pub struct TestAuthoringSelection<'a> {
     pub f_stop: f32,
     pub exposure_time_seconds: f32,
     pub shutter_motion_amount: f32,
+    pub computational_character_strength: f32,
+    pub computational_exposure_count: f32,
+    pub computational_bracket_spacing_stops: f32,
     pub sensor_bloom_amount: f32,
     pub sensor_bloom_crosstalk_fraction: f32,
     pub sensor_bloom_overflow_transfer_fraction: f32,
@@ -205,6 +212,9 @@ pub struct ResolvedTestAuthoringSelection {
     pub f_stop: f32,
     pub exposure_time_seconds: f32,
     pub shutter_motion_amount: f32,
+    pub computational_character_strength: f32,
+    pub computational_exposure_count: f32,
+    pub computational_bracket_spacing_stops: f32,
     pub sensor_bloom_amount: f32,
     pub sensor_bloom_crosstalk_fraction: f32,
     pub sensor_bloom_overflow_transfer_fraction: f32,
@@ -338,10 +348,11 @@ pub enum TestPreviewResult {
     CoverGlow = 7,
     LensProjection = 8,
     ShutterExposure = 9,
-    SensorBloom = 10,
-    SensorCfa = 11,
-    SensorNoise = 12,
-    DevelopDemosaic = 13,
+    ComputationalCapture = 10,
+    SensorBloom = 11,
+    SensorCfa = 12,
+    SensorNoise = 13,
+    DevelopDemosaic = 14,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -377,6 +388,7 @@ pub enum TestAuthoringError {
     InvalidAperture,
     InvalidExposureTime,
     InvalidShutterMotionAmount,
+    InvalidComputationalCapture,
     InvalidSensorBloomAmount,
     InvalidSensorBloomProfile,
     InvalidSensorNoiseAmount,
@@ -411,6 +423,9 @@ impl core::fmt::Display for TestAuthoringError {
             Self::InvalidAperture => "Aperture is outside f/0.7..=f/64",
             Self::InvalidExposureTime => "Exposure Time is outside 1/32000..=60 seconds",
             Self::InvalidShutterMotionAmount => "Shutter amount is outside 0..=4",
+            Self::InvalidComputationalCapture => {
+                "Computational Capture requires 1-8 exposures and a valid EV bracket"
+            }
             Self::InvalidSensorBloomAmount => "Sensor Bloom amount is outside 0..=4",
             Self::InvalidSensorBloomProfile => {
                 "Sensor Bloom profile is outside its physical bounds"
@@ -519,6 +534,9 @@ pub fn default_test_authoring_selection(
         f_stop: capture.f_stop,
         exposure_time_seconds: capture.default_shutter_angle_degrees / 360.0 / frame_rate,
         shutter_motion_amount: 1.0,
+        computational_character_strength: 1.0,
+        computational_exposure_count: f32::from(capture.computational_capture.exposure_count),
+        computational_bracket_spacing_stops: capture.computational_capture.bracket_spacing_stops,
         sensor_bloom_amount: 1.0,
         sensor_bloom_crosstalk_fraction: capture.sensor.bloom.crosstalk_fraction,
         sensor_bloom_overflow_transfer_fraction: capture.sensor.bloom.overflow_transfer_fraction,
@@ -673,6 +691,16 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidShutterMotionAmount);
     }
+    if !selection.computational_character_strength.is_finite()
+        || !(0.0..=1.5).contains(&selection.computational_character_strength)
+        || !selection.computational_exposure_count.is_finite()
+        || !(1.0..=8.0).contains(&selection.computational_exposure_count)
+        || selection.computational_exposure_count.fract() != 0.0
+        || !selection.computational_bracket_spacing_stops.is_finite()
+        || !(0.0..=1.0).contains(&selection.computational_bracket_spacing_stops)
+    {
+        return Err(TestAuthoringError::InvalidComputationalCapture);
+    }
     if !selection.sensor_bloom_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.sensor_bloom_amount)
     {
@@ -735,6 +763,9 @@ pub fn resolve_test_authoring_selection(
         f_stop: selection.f_stop,
         exposure_time_seconds: selection.exposure_time_seconds,
         shutter_motion_amount: selection.shutter_motion_amount,
+        computational_character_strength: selection.computational_character_strength,
+        computational_exposure_count: selection.computational_exposure_count,
+        computational_bracket_spacing_stops: selection.computational_bracket_spacing_stops,
         sensor_bloom_amount: selection.sensor_bloom_amount,
         sensor_bloom_crosstalk_fraction: selection.sensor_bloom_crosstalk_fraction,
         sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
@@ -1271,7 +1302,7 @@ pub fn test_page_descriptor(
                         "Carácter del entorno",
                         selection.environment_amount,
                         0.0,
-                        4.0,
+                        1.5,
                         selected_environment.environment.character_strength,
                         "×",
                     ),
@@ -1319,7 +1350,7 @@ pub fn test_page_descriptor(
                         "Carácter del obturador",
                         selection.shutter_motion_amount,
                         0.0,
-                        4.0,
+                        1.0,
                         1.0,
                         "×",
                     ),
@@ -1344,11 +1375,49 @@ pub fn test_page_descriptor(
                 ],
             },
             TestPhaseDescriptor {
+                id: COMPUTATIONAL_CAPTURE_PHASE_ID,
+                label: "Captura computacional",
+                effect_summary: "Combina analíticamente una horquilla de exposiciones sin repetir la óptica.",
+                header_control_id: Some(COMPUTATIONAL_CAPTURE_AMOUNT_CONTROL_ID),
+                input_artifact: "integrated-optical-exposure-v1",
+                output_artifact: "computational-capture-exposure-v1",
+                preview_result: TestPreviewResult::ComputationalCapture,
+                controls: vec![
+                    scalar_control(
+                        COMPUTATIONAL_CAPTURE_AMOUNT_CONTROL_ID,
+                        "Carácter de captura computacional",
+                        selection.computational_character_strength,
+                        0.0,
+                        4.0,
+                        1.0,
+                        "×",
+                    ),
+                    scalar_field_control(
+                        COMPUTATIONAL_EXPOSURE_COUNT_CONTROL_ID,
+                        "Número de exposiciones",
+                        selection.computational_exposure_count,
+                        1.0,
+                        8.0,
+                        f32::from(capture.computational_capture.exposure_count),
+                        "exposiciones",
+                    ),
+                    scalar_control(
+                        COMPUTATIONAL_BRACKET_SPACING_CONTROL_ID,
+                        "Separación de la horquilla",
+                        selection.computational_bracket_spacing_stops,
+                        0.0,
+                        4.0,
+                        capture.computational_capture.bracket_spacing_stops,
+                        "EV",
+                    ),
+                ],
+            },
+            TestPhaseDescriptor {
                 id: SENSOR_BLOOM_PHASE_ID,
                 label: "Crosstalk y bloom del sensor",
                 effect_summary: "Transfiere carga entre fotositos y desborda altas luces saturadas.",
                 header_control_id: Some(SENSOR_BLOOM_AMOUNT_CONTROL_ID),
-                input_artifact: "integrated-optical-exposure-v1",
+                input_artifact: "computational-capture-exposure-v1",
                 output_artifact: "coupled-sensor-charge-v1",
                 preview_result: TestPreviewResult::SensorBloom,
                 controls: vec![
@@ -1466,6 +1535,11 @@ pub fn apply_test_choice(
             next.f_stop = capture.f_stop;
             next.exposure_time_seconds =
                 capture.default_shutter_angle_degrees / 360.0 / current.frame_rate;
+            next.computational_character_strength = 1.0;
+            next.computational_exposure_count =
+                f32::from(capture.computational_capture.exposure_count);
+            next.computational_bracket_spacing_stops =
+                capture.computational_capture.bracket_spacing_stops;
             next.sensor_bloom_amount = capture.sensor.bloom.character_strength;
             next.sensor_bloom_crosstalk_fraction = capture.sensor.bloom.crosstalk_fraction;
             next.sensor_bloom_overflow_transfer_fraction =
@@ -1514,6 +1588,9 @@ pub fn apply_test_choice(
         | SHUTTER_RECIPROCAL_CONTROL_ID
         | FOCUS_DISTANCE_CONTROL_ID
         | SHUTTER_AMOUNT_CONTROL_ID
+        | COMPUTATIONAL_CAPTURE_AMOUNT_CONTROL_ID
+        | COMPUTATIONAL_EXPOSURE_COUNT_CONTROL_ID
+        | COMPUTATIONAL_BRACKET_SPACING_CONTROL_ID
         | SENSOR_BLOOM_AMOUNT_CONTROL_ID
         | SENSOR_BLOOM_CROSSTALK_CONTROL_ID
         | SENSOR_BLOOM_OVERFLOW_CONTROL_ID
@@ -1566,6 +1643,9 @@ fn unresolved_test_selection(
         f_stop: current.f_stop,
         exposure_time_seconds: current.exposure_time_seconds,
         shutter_motion_amount: current.shutter_motion_amount,
+        computational_character_strength: current.computational_character_strength,
+        computational_exposure_count: current.computational_exposure_count,
+        computational_bracket_spacing_stops: current.computational_bracket_spacing_stops,
         sensor_bloom_amount: current.sensor_bloom_amount,
         sensor_bloom_crosstalk_fraction: current.sensor_bloom_crosstalk_fraction,
         sensor_bloom_overflow_transfer_fraction: current.sensor_bloom_overflow_transfer_fraction,
@@ -1697,6 +1777,11 @@ pub fn apply_test_scalar(
         SHUTTER_RECIPROCAL_CONTROL_ID => next.exposure_time_seconds = 1.0 / value,
         FOCUS_DISTANCE_CONTROL_ID => next.focus_distance_meters = value,
         SHUTTER_AMOUNT_CONTROL_ID => next.shutter_motion_amount = value,
+        COMPUTATIONAL_CAPTURE_AMOUNT_CONTROL_ID => next.computational_character_strength = value,
+        COMPUTATIONAL_EXPOSURE_COUNT_CONTROL_ID => next.computational_exposure_count = value,
+        COMPUTATIONAL_BRACKET_SPACING_CONTROL_ID => {
+            next.computational_bracket_spacing_stops = value
+        }
         SENSOR_BLOOM_AMOUNT_CONTROL_ID => next.sensor_bloom_amount = value,
         SENSOR_BLOOM_CROSSTALK_CONTROL_ID => next.sensor_bloom_crosstalk_fraction = value,
         SENSOR_BLOOM_OVERFLOW_CONTROL_ID => next.sensor_bloom_overflow_transfer_fraction = value,
@@ -1776,6 +1861,9 @@ mod tests {
             f_stop: 1.64,
             exposure_time_seconds: 1.0 / 288.0,
             shutter_motion_amount: 1.0,
+            computational_character_strength: 1.0,
+            computational_exposure_count: 3.0,
+            computational_bracket_spacing_stops: 1.0,
             sensor_bloom_amount: 1.0,
             sensor_bloom_crosstalk_fraction: 0.020,
             sensor_bloom_overflow_transfer_fraction: 0.30,
@@ -1786,7 +1874,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 10);
+        assert_eq!(page.schema_version, 11);
         assert_eq!(page.default_preview_phase_id, DEVELOP_DEMOSAIC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
@@ -1801,6 +1889,7 @@ mod tests {
                 COVER_GLOW_PHASE_ID,
                 LENS_PROJECTION_PHASE_ID,
                 SHUTTER_EXPOSURE_PHASE_ID,
+                COMPUTATIONAL_CAPTURE_PHASE_ID,
                 SENSOR_BLOOM_PHASE_ID,
                 SENSOR_CFA_PHASE_ID,
                 SENSOR_NOISE_PHASE_ID,
@@ -1977,7 +2066,7 @@ mod tests {
     #[test]
     fn sensor_bloom_publishes_and_restores_the_selected_camera_profile() {
         let page = test_page_descriptor(asus()).unwrap();
-        let ids = page.phases[10]
+        let ids = page.phases[11]
             .controls
             .iter()
             .map(|control| match control {

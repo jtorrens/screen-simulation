@@ -10,6 +10,7 @@ import Testing
         .screen(.coverGlow),
         .capture(.lens),
         .capture(.exposureShutter),
+        .capture(.computationalCapture),
         .capture(.sensorBloom),
         .capture(.noise),
     ])
@@ -27,6 +28,8 @@ import Testing
         SCREEN_PHYSICAL_STAGE_SCREEN_EMISSION.rawValue)
     #expect(CapturePhysicalSection.developDemosaic.rawValue ==
         SCREEN_PHYSICAL_STAGE_CAPTURE_DEVELOP_DEMOSAIC.rawValue)
+    #expect(CapturePhysicalSection.computationalCapture.rawValue ==
+        SCREEN_PHYSICAL_STAGE_CAPTURE_COMPUTATIONAL_CAPTURE.rawValue)
     #expect(PhysicalRasterPlacement.allCases.map(\.rawValue) == [0, 1, 2, 3])
     #expect(PhysicalRasterPlacement.fit.rawValue == SCREEN_PHYSICAL_RASTER_FIT.rawValue)
     #expect(PhysicalRasterPlacement.fillCrop.rawValue ==
@@ -39,11 +42,11 @@ import Testing
     #expect(PhysicalDomainID.allCases.map(\.rawValue) == [0x100, 0x200])
     #expect(PhysicalStageID.ordered.map(\.id) == [
         0x101, 0x102, 0x103, 0x104, 0x201, 0x105,
-        0x106, 0x107, 0x202, 0x203, 0x207, 0x204, 0x205, 0x206,
+        0x106, 0x107, 0x202, 0x203, 0x208, 0x207, 0x204, 0x205, 0x206,
     ])
     #expect(PhysicalStageID.ordered.map(\.domain) == [
         .screen, .screen, .screen, .screen, .capture, .screen,
-        .screen, .screen, .capture, .capture, .capture, .capture, .capture, .capture,
+        .screen, .screen, .capture, .capture, .capture, .capture, .capture, .capture, .capture,
     ])
 }
 

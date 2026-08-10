@@ -196,7 +196,7 @@ final class WorkspaceModel: ObservableObject {
             // viewport. Do not retain the aspect of the previously published frame
             // while the replacement physical job is being evaluated.
             return Double(sensor.nativeWidth) / Double(sensor.nativeHeight)
-        case .sourceACEScg, .deviceSignal, .shutterMotion:
+        case .sourceACEScg, .deviceSignal, .shutterMotion, .computationalCapture:
             guard let metalFrame, metalFrame.height > 0 else { return nil }
             return Double(metalFrame.width) / Double(metalFrame.height)
         }
@@ -209,6 +209,9 @@ final class WorkspaceModel: ObservableObject {
             return "Captura \(sensor.nativeWidth)×\(sensor.nativeHeight)"
         case .panelEmission, .subpixelRadiance, .panelLightSpread, .relativeGeometry,
              .coverEnvironment, .coverGlow, .lensProjection, .shutterMotion:
+            guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
+            return "Panel \(device.nativeWidth * 3)×\(device.nativeHeight * 3)"
+        case .computationalCapture:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return "Panel \(device.nativeWidth * 3)×\(device.nativeHeight * 3)"
         case .sourceACEScg, .deviceSignal:
@@ -1895,6 +1898,12 @@ final class WorkspaceModel: ObservableObject {
             selection.shutterMotionAmount,
             stage: .capture(.exposureShutter)
         )
+        authored.computationalCapture.exposureCount = UInt32(selection.computationalExposureCount)
+        authored.computationalCapture.bracketSpacingStops = selection.computationalBracketSpacingStops
+        try physicalModel.setContinuousAmount(
+            selection.computationalCharacterStrength,
+            stage: .capture(.computationalCapture)
+        )
         try physicalModel.setContinuousAmount(
             selection.sensorBloomAmount,
             stage: .capture(.sensorBloom)
@@ -1935,6 +1944,7 @@ final class WorkspaceModel: ObservableObject {
         case .coverGlow: .coverGlow
         case .lensProjection: .lensProjection
         case .shutterExposure: .shutterMotion
+        case .computationalCapture: .computationalCapture
         case .sensorBloom: .sensorBloom
         case .sensorCfa: .sensorNoise
         case .sensorNoise: .rawMosaic
@@ -1964,7 +1974,8 @@ final class WorkspaceModel: ObservableObject {
             return
         case .deviceInterpretation, .panelStructure, .panelLightSpread,
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
-             .shutterExposure, .sensorBloom, .sensorCfa, .sensorNoise, .developDemosaic:
+             .shutterExposure, .computationalCapture, .sensorBloom, .sensorCfa, .sensorNoise,
+             .developDemosaic:
             updateRequestedPhysicalIntermediate(physicalIntermediate(for: result)!)
             rebuildPhysicalSelectedFrame()
             return

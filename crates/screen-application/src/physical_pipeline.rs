@@ -12,7 +12,7 @@ use screen_geometry::{
     KeyframeInterpolation, LensModel, Quaternion, ScreenSample, TransformKeyframe, TransformTrack,
 };
 use screen_panel::{LcdProfile, PanelLightSpreadProfile};
-use screen_sensor::SensorProfile;
+use screen_sensor::{ComputationalCaptureProfile, SensorProfile};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -31,9 +31,10 @@ pub enum PhysicalStage {
     SensorNoise = 0x205,
     RawDevelop = 0x206,
     SensorBloom = 0x207,
+    ComputationalCapture = 0x208,
 }
 
-pub const PHYSICAL_STAGE_ORDER: [PhysicalStage; 14] = [
+pub const PHYSICAL_STAGE_ORDER: [PhysicalStage; 15] = [
     PhysicalStage::PanelEmission,
     PhysicalStage::SubpixelGeometry,
     PhysicalStage::PanelLightSpread,
@@ -44,6 +45,7 @@ pub const PHYSICAL_STAGE_ORDER: [PhysicalStage; 14] = [
     PhysicalStage::CoverGlow,
     PhysicalStage::Lens,
     PhysicalStage::ShutterMotion,
+    PhysicalStage::ComputationalCapture,
     PhysicalStage::SensorBloom,
     PhysicalStage::SensorCfa,
     PhysicalStage::SensorNoise,
@@ -63,10 +65,11 @@ pub enum PhysicalIntermediate {
     CoverGlow = 7,
     LensProjection = 8,
     ShutterMotion = 9,
-    SensorBloom = 10,
-    SensorNoise = 11,
-    RawMosaic = 12,
-    DevelopedAcesCg = 13,
+    ComputationalCapture = 10,
+    SensorBloom = 11,
+    SensorNoise = 12,
+    RawMosaic = 13,
+    DevelopedAcesCg = 14,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -201,6 +204,7 @@ pub struct PhysicalPipelineSnapshot {
     pub environment: ProceduralEnvironment,
     pub scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
     pub shutter_motion: ResolvedShutterMotionSnapshot,
+    pub computational_capture: ComputationalCaptureProfile,
     pub sensor: SensorProfile,
     pub development: CameraDevelopment,
 }

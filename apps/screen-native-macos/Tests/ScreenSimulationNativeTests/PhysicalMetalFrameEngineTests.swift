@@ -48,13 +48,14 @@ import Testing
     )
     let result = try await terminalSnapshot(job)
     #expect(result.state == .complete)
-    #expect(result.diagnostics.count == 14)
+    #expect(result.diagnostics.count == 15)
     #expect(result.diagnostics[9].message.contains("STATIC_INPUT"))
     #expect(result.diagnostics.prefix(10).allSatisfy {
         $0.elapsedNanoseconds == result.diagnostics[0].elapsedNanoseconds
     })
-    #expect(result.diagnostics[10..<13].allSatisfy {
-        $0.elapsedNanoseconds == result.diagnostics[10].elapsedNanoseconds
+    #expect(result.diagnostics[10].elapsedNanoseconds == 0)
+    #expect(result.diagnostics[11..<15].allSatisfy {
+        $0.elapsedNanoseconds == result.diagnostics[11].elapsedNanoseconds
     })
 }
 
@@ -177,7 +178,7 @@ import Testing
                 #expect(result.state == .complete)
                 #expect(result.frame != nil)
                 #expect(result.progress == 1)
-                #expect(result.diagnostics.count == 14)
+                #expect(result.diagnostics.count == 15)
             }
         }
     }

@@ -65,6 +65,11 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var bloomOverflowTransferFraction = 0.22
     }
 
+    struct ComputationalCapture: Codable, Equatable, Sendable {
+        var exposureCount: UInt32 = 1
+        var bracketSpacingStops = 0.0
+    }
+
     /// Camera-preset owned calibration data for the physical sensor boundary.
     /// This is never a display/preview gain.
     struct RadiometricCalibration: Codable, Equatable, Sendable {
@@ -97,6 +102,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
     var environment = Environment()
     var sceneLens = SceneLens()
     var shutterMotion = ShutterMotion()
+    var computationalCapture = ComputationalCapture()
     var sensor = Sensor()
     var radiometricCalibration = RadiometricCalibration()
     var develop = Develop()
@@ -192,6 +198,11 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         sensorABI.bloom_crosstalk_fraction = Float(sensor.bloomCrosstalkFraction)
         sensorABI.bloom_overflow_transfer_fraction = Float(sensor.bloomOverflowTransferFraction)
 
+        var computationalABI = ScreenComputationalCaptureParametersV3()
+        computationalABI.abi_version = version
+        computationalABI.exposure_count = computationalCapture.exposureCount
+        computationalABI.bracket_spacing_stops = Float(computationalCapture.bracketSpacingStops)
+
         var developABI = ScreenRawDevelopParametersV2()
         developABI.abi_version = version
         developABI.white_balance = tuple3(develop.whiteBalance)
@@ -213,6 +224,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         parameters.environment = environmentABI
         parameters.scene_geometry_lens = scene
         parameters.shutter_motion = shutter
+        parameters.computational_capture = computationalABI
         parameters.sensor_noise = sensorABI
         parameters.raw_develop = developABI
         parameters.radiometric_calibration = radiometricABI
@@ -257,6 +269,9 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         }), sceneLens.lensShift.count == 2,
             sceneLens.tangentialDistortion.count == 2,
             sensor.acescgToSensor.count == 9,
+            (1 ... 8).contains(computationalCapture.exposureCount),
+            computationalCapture.bracketSpacingStops.isFinite,
+            (0 ... 1).contains(computationalCapture.bracketSpacingStops),
             shutterMotion.readoutDurationDenominator > 0,
             shutterMotion.openOffsetDenominator > 0,
             shutterMotion.closeOffsetDenominator > 0,
@@ -360,6 +375,8 @@ extension PhysicalPipelineAuthoringState {
             sceneLens = base.sceneLens
         case .exposureShutter:
             shutterMotion = base.shutterMotion
+        case .computationalCapture:
+            computationalCapture = base.computationalCapture
         case .sensorCFA:
             sensor.nativeWidth = base.sensor.nativeWidth
             sensor.nativeHeight = base.sensor.nativeHeight

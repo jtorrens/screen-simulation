@@ -216,6 +216,16 @@ import Testing
         ].flatMap(Double.init) {
             pipeline.sensor.fullWellElectrons = fullWell
         }
+        if let exposureCount = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_COMPUTATIONAL_EXPOSURE_COUNT"
+        ].flatMap(UInt32.init) {
+            pipeline.computationalCapture.exposureCount = exposureCount
+        }
+        if let bracketSpacing = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_COMPUTATIONAL_BRACKET_SPACING_STOPS"
+        ].flatMap(Double.init) {
+            pipeline.computationalCapture.bracketSpacingStops = bracketSpacing
+        }
         if let crosstalk = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_BLOOM_CROSSTALK_FRACTION"
         ].flatMap(Double.init) {
@@ -495,6 +505,7 @@ private func moireBaselineIntermediate() throws -> PhysicalIntermediate {
         "cover-glow": .coverGlow,
         "lens-projection": .lensProjection,
         "shutter-motion": .shutterMotion,
+        "computational-capture": .computationalCapture,
         "sensor-bloom": .sensorBloom,
         "sensor-noise": .sensorNoise,
         "raw-mosaic": .rawMosaic,
@@ -595,6 +606,14 @@ private func renderMoireVariant(
         try controller.setContinuousAmount(
             lensAmount,
             stage: .capture(.lens)
+        )
+    }
+    if let computationalCharacter = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_COMPUTATIONAL_CHARACTER_STRENGTH"
+    ].flatMap(Double.init) {
+        try controller.setContinuousAmount(
+            computationalCharacter,
+            stage: .capture(.computationalCapture)
         )
     }
     try editModel(controller)

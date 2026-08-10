@@ -29,6 +29,17 @@ pub struct SensorProfile {
     pub bloom: SensorBloomProfile,
 }
 
+/// Analytic approximation of a bracketed computational capture. The optical
+/// image is evaluated once; additional shorter exposures extend highlight
+/// capacity before the canonical sensor/RAW boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ComputationalCaptureProfile {
+    /// Total captures in the bracket. One is a single-exposure identity.
+    pub exposure_count: u8,
+    /// Exposure-value separation between adjacent captures.
+    pub bracket_spacing_stops: f32,
+}
+
 /// Lateral charge coupling and non-recursive full-well overflow transfer.
 /// Both operations are defined on global photosite coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -108,6 +119,55 @@ pub enum SensorError {
     InvalidAdcBits,
     InvalidBloom,
     InvalidSensorRegion,
+    InvalidComputationalCapture,
+}
+
+impl ComputationalCaptureProfile {
+    pub const SINGLE_EXPOSURE: Self = Self {
+        exposure_count: 1,
+        bracket_spacing_stops: 0.0,
+    };
+
+    pub fn validate(self) -> Result<Self, SensorError> {
+        if !(1..=8).contains(&self.exposure_count)
+            || !self.bracket_spacing_stops.is_finite()
+            || !(0.0..=1.0).contains(&self.bracket_spacing_stops)
+        {
+            return Err(SensorError::InvalidComputationalCapture);
+        }
+        Ok(self)
+    }
+
+    /// Materializes the aggregate clipping/noise capacity used by the one-pass
+    /// sensor approximation. Zero is disabled, one is the authored bracket,
+    /// and values above one exaggerate its highlight headroom.
+    pub fn effective_sensor(
+        self,
+        sensor: SensorProfile,
+        amount: f32,
+    ) -> Result<SensorProfile, SensorError> {
+        self.validate()?;
+        sensor.validate()?;
+        if !amount.is_finite() || !(0.0..=1.5).contains(&amount) {
+            return Err(SensorError::InvalidComputationalCapture);
+        }
+        if amount == 0.0 || self.exposure_count == 1 {
+            return Ok(sensor);
+        }
+        let headroom_stops =
+            f32::from(self.exposure_count - 1) * self.bracket_spacing_stops * amount;
+        let capacity = headroom_stops.exp2();
+        SensorProfile {
+            saturation_illuminance_seconds: LinearRgb::new(
+                sensor.saturation_illuminance_seconds.r * capacity,
+                sensor.saturation_illuminance_seconds.g * capacity,
+                sensor.saturation_illuminance_seconds.b * capacity,
+            ),
+            full_well_electrons: sensor.full_well_electrons * capacity,
+            ..sensor
+        }
+        .validate()
+    }
 }
 
 impl SensorProfile {
@@ -648,6 +708,9 @@ impl fmt::Display for SensorError {
             Self::InvalidAdcBits => "sensor ADC precision must be between 8 and 16 bits",
             Self::InvalidBloom => "sensor crosstalk/bloom profile is outside its physical bounds",
             Self::InvalidSensorRegion => "sensor region must lie inside the authored native raster",
+            Self::InvalidComputationalCapture => {
+                "computational capture requires 1-8 exposures and a valid EV bracket"
+            }
         };
         formatter.write_str(message)
     }
@@ -1031,6 +1094,64 @@ mod tests {
         assert!((i64::from(raw.codes[0]) - i64::from(half_scale)).abs() <= 1);
         assert_eq!(raw.full_well_clipped, vec![true]);
         assert_eq!(raw.adc_clipped, vec![false]);
+    }
+
+    #[test]
+    fn computational_capture_is_identity_for_one_exposure_and_scales_constant_time_capacity() {
+        let sensor = SensorProfile::REFERENCE;
+        assert_eq!(
+            ComputationalCaptureProfile::SINGLE_EXPOSURE
+                .effective_sensor(sensor, 1.0)
+                .unwrap(),
+            sensor
+        );
+        let bracket = ComputationalCaptureProfile {
+            exposure_count: 3,
+            bracket_spacing_stops: 1.0,
+        };
+        let effective = bracket.effective_sensor(sensor, 1.0).unwrap();
+        assert_eq!(
+            effective.full_well_electrons,
+            sensor.full_well_electrons * 4.0
+        );
+        assert_eq!(
+            effective.saturation_illuminance_seconds,
+            LinearRgb::new(
+                sensor.saturation_illuminance_seconds.r * 4.0,
+                sensor.saturation_illuminance_seconds.g * 4.0,
+                sensor.saturation_illuminance_seconds.b * 4.0,
+            )
+        );
+        assert_eq!(bracket.effective_sensor(sensor, 0.0).unwrap(), sensor);
+        assert!(
+            ComputationalCaptureProfile {
+                exposure_count: 8,
+                bracket_spacing_stops: 1.0,
+            }
+            .effective_sensor(sensor, 1.5)
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn computational_capture_rejects_malformed_brackets() {
+        assert_eq!(
+            ComputationalCaptureProfile {
+                exposure_count: 0,
+                bracket_spacing_stops: 1.0,
+            }
+            .validate(),
+            Err(SensorError::InvalidComputationalCapture)
+        );
+        assert_eq!(
+            ComputationalCaptureProfile {
+                exposure_count: 1,
+                bracket_spacing_stops: 1.0,
+            }
+            .effective_sensor(SensorProfile::REFERENCE, 1.0)
+            .unwrap(),
+            SensorProfile::REFERENCE
+        );
     }
 
     #[test]

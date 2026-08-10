@@ -73,6 +73,11 @@ struct PhysicalPipelineResolvedState {
         sensor.bloom_crosstalk_fraction = 0.012
         sensor.bloom_overflow_transfer_fraction = 0.22
 
+        var computational = ScreenComputationalCaptureParametersV3()
+        computational.abi_version = version
+        computational.exposure_count = 1
+        computational.bracket_spacing_stops = 0
+
         var develop = ScreenRawDevelopParametersV2()
         develop.abi_version = version
         develop.white_balance = (1, 1, 1)
@@ -94,6 +99,7 @@ struct PhysicalPipelineResolvedState {
         parameters.environment = environment
         parameters.scene_geometry_lens = scene
         parameters.shutter_motion = shutter
+        parameters.computational_capture = computational
         parameters.sensor_noise = sensor
         parameters.raw_develop = develop
         parameters.radiometric_calibration = radiometric

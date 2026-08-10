@@ -74,6 +74,8 @@ fn request(
                 noise_seed: 0,
             },
             shutter_motion_amount: 0.0,
+            computational_capture: screen_sensor::ComputationalCaptureProfile::SINGLE_EXPOSURE,
+            computational_character_strength: 0.0,
             sensor: screen_sensor::SensorProfile::REFERENCE,
             radiometric_calibration: screen_application::CameraRadiometricCalibration::REFERENCE,
             sensor_enabled: false,

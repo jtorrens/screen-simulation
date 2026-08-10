@@ -15,16 +15,16 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 6u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 7u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
-#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 2u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 3u
 
 typedef struct {
     const uint8_t *bytes;
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 10u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 11u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -73,11 +73,14 @@ typedef struct {
     float f_stop;
     float exposure_time_seconds;
     float shutter_motion_amount;
+    float computational_character_strength;
+    float computational_exposure_count;
+    float computational_bracket_spacing_stops;
     float sensor_bloom_amount;
     float sensor_bloom_crosstalk_fraction;
     float sensor_bloom_overflow_transfer_fraction;
     float sensor_noise_amount;
-} ScreenTestAuthoringSelectionV10;
+} ScreenTestAuthoringSelectionV11;
 
 typedef struct {
     uint32_t abi_version;
@@ -116,12 +119,12 @@ bool screen_test_authoring_default_selection(
     ScreenUTF8View input_transform_id,
     ScreenUTF8View device_id,
     float frame_rate,
-    ScreenTestAuthoringSelectionV10 *resolved,
+    ScreenTestAuthoringSelectionV11 *resolved,
     const char **error_message
 );
 
 ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
-    const ScreenTestAuthoringSelectionV10 *selection,
+    const ScreenTestAuthoringSelectionV11 *selection,
     const char **error_message
 );
 void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
@@ -173,24 +176,24 @@ bool screen_test_page_preview_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 bool screen_test_authoring_apply_choice(
-    const ScreenTestAuthoringSelectionV10 *selection,
+    const ScreenTestAuthoringSelectionV11 *selection,
     ScreenUTF8View control_id,
     ScreenUTF8View option_id,
-    ScreenTestAuthoringSelectionV10 *resolved,
+    ScreenTestAuthoringSelectionV11 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_scalar(
-    const ScreenTestAuthoringSelectionV10 *selection,
+    const ScreenTestAuthoringSelectionV11 *selection,
     ScreenUTF8View control_id,
     float value,
-    ScreenTestAuthoringSelectionV10 *resolved,
+    ScreenTestAuthoringSelectionV11 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_toggle(
-    const ScreenTestAuthoringSelectionV10 *selection,
+    const ScreenTestAuthoringSelectionV11 *selection,
     ScreenUTF8View control_id,
     bool value,
-    ScreenTestAuthoringSelectionV10 *resolved,
+    ScreenTestAuthoringSelectionV11 *resolved,
     const char **error_message
 );
 
@@ -221,6 +224,7 @@ typedef enum {
     SCREEN_PHYSICAL_STAGE_CAPTURE_NOISE = 0x205,
     SCREEN_PHYSICAL_STAGE_CAPTURE_DEVELOP_DEMOSAIC = 0x206,
     SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_BLOOM = 0x207,
+    SCREEN_PHYSICAL_STAGE_CAPTURE_COMPUTATIONAL_CAPTURE = 0x208,
 } ScreenPhysicalStageID;
 
 typedef enum {
@@ -267,10 +271,11 @@ typedef enum {
     SCREEN_PHYSICAL_INTERMEDIATE_COVER_GLOW = 7,
     SCREEN_PHYSICAL_INTERMEDIATE_LENS_PROJECTION = 8,
     SCREEN_PHYSICAL_INTERMEDIATE_SHUTTER_MOTION = 9,
-    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_BLOOM = 10,
-    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_NOISE = 11,
-    SCREEN_PHYSICAL_INTERMEDIATE_RAW_MOSAIC = 12,
-    SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 13,
+    SCREEN_PHYSICAL_INTERMEDIATE_COMPUTATIONAL_CAPTURE = 10,
+    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_BLOOM = 11,
+    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_NOISE = 12,
+    SCREEN_PHYSICAL_INTERMEDIATE_RAW_MOSAIC = 13,
+    SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 14,
 } ScreenPhysicalIntermediate;
 
 typedef struct {
@@ -472,6 +477,12 @@ typedef struct {
     float bloom_overflow_transfer_fraction;
 } ScreenSensorNoiseParametersV2;
 
+typedef struct {
+    uint32_t abi_version;
+    uint32_t exposure_count;
+    float bracket_spacing_stops;
+} ScreenComputationalCaptureParametersV3;
+
 // Explicit conversion between panel/scene photometry and the effective
 // exposure domain of the selected sensor profile. It is calibration data, not
 // a display or preview gain.
@@ -495,6 +506,7 @@ typedef struct {
 typedef struct {
     uint32_t abi_version;
     ScreenSensorNoiseParametersV2 sensor;
+    ScreenComputationalCaptureParametersV3 computational_capture;
     float gate_width_millimeters;
     float gate_height_millimeters;
     float default_f_stop;
@@ -505,7 +517,7 @@ typedef struct {
     uint16_t lens_association_policy;
     float default_readout_duration_milliseconds;
     ScreenCameraRadiometricCalibrationV2 radiometric_calibration;
-} ScreenCapturePresetParametersV1;
+} ScreenCapturePresetParametersV2;
 
 typedef struct {
     uint32_t abi_version;
@@ -527,6 +539,7 @@ typedef struct {
     ScreenEnvironmentParametersV2 environment;
     ScreenSceneGeometryLensParametersV2 scene_geometry_lens;
     ScreenShutterMotionParametersV2 shutter_motion;
+    ScreenComputationalCaptureParametersV3 computational_capture;
     ScreenSensorNoiseParametersV2 sensor_noise;
     ScreenRawDevelopParametersV2 raw_develop;
     ScreenCameraRadiometricCalibrationV2 radiometric_calibration;
@@ -593,7 +606,7 @@ ScreenUTF8View screen_capture_preset_compatible_lens_id(
 );
 bool screen_capture_preset_parameters(
     size_t index,
-    ScreenCapturePresetParametersV1 *parameters
+    ScreenCapturePresetParametersV2 *parameters
 );
 size_t screen_lens_preset_count(void);
 ScreenUTF8View screen_lens_preset_id(size_t index);

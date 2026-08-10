@@ -13,11 +13,11 @@ struct CapturePresetDefinition: Identifiable {
     let defaultLensID: String
     let compatibleLensIDs: [String]
     let lensAssociationPolicy: LensAssociationPolicy
-    let parameters: ScreenCapturePresetParametersV1
+    let parameters: ScreenCapturePresetParametersV2
 
     static func catalog() throws -> [Self] {
         try (0..<screen_capture_preset_count()).map { index in
-            var parameters = ScreenCapturePresetParametersV1()
+            var parameters = ScreenCapturePresetParametersV2()
             guard screen_capture_preset_parameters(index, &parameters),
                   parameters.abi_version == SCREEN_AUTHORING_CATALOG_ABI_VERSION,
                   let policy = LensAssociationPolicy(
@@ -70,6 +70,10 @@ struct CapturePresetDefinition: Identifiable {
         state.sensor.bloomCrosstalkFraction = Double(sensor.bloom_crosstalk_fraction)
         state.sensor.bloomOverflowTransferFraction = Double(
             sensor.bloom_overflow_transfer_fraction
+        )
+        state.computationalCapture = .init(
+            exposureCount: parameters.computational_capture.exposure_count,
+            bracketSpacingStops: Double(parameters.computational_capture.bracket_spacing_stops)
         )
         let radiometric = parameters.radiometric_calibration
         state.radiometricCalibration = .init(

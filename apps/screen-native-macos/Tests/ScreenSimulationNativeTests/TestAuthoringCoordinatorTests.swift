@@ -45,6 +45,9 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         fStop: 1.64,
         exposureTimeSeconds: 1.0 / 288.0,
         shutterMotionAmount: 1,
+        computationalCharacterStrength: 1,
+        computationalExposureCount: 3,
+        computationalBracketSpacingStops: 1,
         sensorBloomAmount: 1,
         sensorBloomCrosstalkFraction: 0.020,
         sensorBloomOverflowTransferFraction: 0.30,
@@ -95,7 +98,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         "Origen", "Salida del feeder", "Mapeo e interpretación del dispositivo",
         "Trama del panel", "Dispersión de luz del panel", "Geometría relativa",
         "Cristal y entorno", "Resplandor del cristal", "Objetivo y proyección",
-        "Exposición y obturador", "Crosstalk y bloom del sensor",
+        "Exposición y obturador", "Captura computacional", "Crosstalk y bloom del sensor",
         "Sensor y CFA", "Ruido del sensor", "Revelado y demosaico",
     ])
     #expect(snapshot.presentation.selectedPhaseID == snapshot.presentation.phases.last?.id)
@@ -124,12 +127,14 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[9].id]
         == .shutterExposure)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[10].id]
-        == .sensorBloom)
+        == .computationalCapture)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[11].id]
-        == .sensorCfa)
+        == .sensorBloom)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[12].id]
-        == .sensorNoise)
+        == .sensorCfa)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[13].id]
+        == .sensorNoise)
+    #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[14].id]
         == .developDemosaic)
 
     let controls = snapshot.presentation.phases[1].sections.flatMap(\.controls)
@@ -161,7 +166,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(subpixel.value == 1)
     #expect(subpixel.minimum == 0)
     #expect(subpixel.maximum == 4)
-    let bloomControls = snapshot.presentation.phases[10].sections.flatMap(\.controls)
+    let bloomControls = snapshot.presentation.phases[11].sections.flatMap(\.controls)
     #expect(bloomControls.map(\.id) == [
         "sensor-bloom-amount",
         "sensor-bloom-crosstalk-fraction",
@@ -383,6 +388,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         .coverGlow,
         .lensProjection,
         .shutterMotion,
+        .computationalCapture,
         .sensorBloom,
         .sensorNoise,
         .rawMosaic,

@@ -132,7 +132,7 @@ pub struct MetalPhysicalPipelineResult {
     pub texture: Texture,
     pub geometry: FlatPanelGeometry,
     pub sampling: FlatPanelSampling,
-    pub stage_elapsed_nanoseconds: [u64; 14],
+    pub stage_elapsed_nanoseconds: [u64; 15],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -328,7 +328,6 @@ impl MetalPhysicalPipeline {
             return Err(MetalPhysicalPipelineError::Cancelled);
         }
         let capture_started = Instant::now();
-        let sensor = plan.sensor;
         let physical_values = Self::read_physical_raster(&physical.texture)?;
         let raw = expose_physical_pipeline_raw(
             &physical_values,
@@ -337,6 +336,7 @@ impl MetalPhysicalPipeline {
             plan,
         )
         .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        let sensor = raw.sensor_profile;
         if is_cancelled() {
             return Err(MetalPhysicalPipelineError::Cancelled);
         }
@@ -521,11 +521,11 @@ impl MetalPhysicalPipeline {
             .elapsed()
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        stage_elapsed_nanoseconds[10] = capture_elapsed;
         stage_elapsed_nanoseconds[11] = capture_elapsed;
         stage_elapsed_nanoseconds[12] = capture_elapsed;
+        stage_elapsed_nanoseconds[13] = capture_elapsed;
         if plan.development_enabled {
-            stage_elapsed_nanoseconds[13] = capture_elapsed;
+            stage_elapsed_nanoseconds[14] = capture_elapsed;
         }
         Ok(MetalPhysicalPipelineResult {
             texture: output,
@@ -563,7 +563,7 @@ impl MetalPhysicalPipeline {
         let mut accumulated: Option<Texture> = None;
         let mut final_geometry = None;
         let mut final_sampling = None;
-        let mut stage_elapsed_nanoseconds = [0_u64; 14];
+        let mut stage_elapsed_nanoseconds = [0_u64; 15];
         let mut prefix_cache: Vec<(*const TextureRef, *const TextureRef, Texture, Texture)> =
             Vec::new();
         for (index, (source, signal, plan, weight, row)) in samples.iter().enumerate() {
@@ -777,6 +777,8 @@ impl MetalPhysicalPipeline {
             plan.temporal_emission_amount,
             plan.scene_geometry_amount,
             plan.lens_amount,
+            plan.shutter_motion_amount,
+            plan.sensor_noise_amount,
         ]
         .into_iter()
         .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
@@ -785,7 +787,17 @@ impl MetalPhysicalPipeline {
                 "amount must be finite and inside 0..=4".to_owned(),
             ));
         }
+        if !plan.computational_character_strength.is_finite()
+            || !(0.0..=1.5).contains(&plan.computational_character_strength)
+        {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "computational capture character must be inside 0..=1.5".to_owned(),
+            ));
+        }
         plan.panel_light_spread
+            .validate()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        plan.computational_capture
             .validate()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let (camera, screen) = plan
@@ -813,6 +825,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::CoverGlow
                 | PhysicalIntermediate::LensProjection
                 | PhysicalIntermediate::ShutterMotion
+                | PhysicalIntermediate::ComputationalCapture
                 | PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::DevelopedAcesCg
         ) {
@@ -831,7 +844,7 @@ impl MetalPhysicalPipeline {
                 texture: source_acescg.to_owned(),
                 geometry,
                 sampling,
-                stage_elapsed_nanoseconds: [0; 14],
+                stage_elapsed_nanoseconds: [0; 15],
             });
         }
 
@@ -1218,7 +1231,7 @@ impl MetalPhysicalPipeline {
             .elapsed()
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        let mut stage_elapsed_nanoseconds = [0_u64; 14];
+        let mut stage_elapsed_nanoseconds = [0_u64; 15];
         stage_elapsed_nanoseconds[..10].fill(elapsed);
         Ok(MetalPhysicalPipelineResult {
             texture: output,

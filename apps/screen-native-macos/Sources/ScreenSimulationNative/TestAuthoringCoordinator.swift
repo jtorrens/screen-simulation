@@ -13,10 +13,11 @@ enum TestPreviewResultKind: UInt32, Sendable {
     case coverGlow = 7
     case lensProjection = 8
     case shutterExposure = 9
-    case sensorBloom = 10
-    case sensorCfa = 11
-    case sensorNoise = 12
-    case developDemosaic = 13
+    case computationalCapture = 10
+    case sensorBloom = 11
+    case sensorCfa = 12
+    case sensorNoise = 13
+    case developDemosaic = 14
 }
 
 struct TestAuthoringResolvedSelection: Equatable, Sendable {
@@ -60,6 +61,9 @@ struct TestAuthoringResolvedSelection: Equatable, Sendable {
     let fStop: Double
     let exposureTimeSeconds: Double
     let shutterMotionAmount: Double
+    let computationalCharacterStrength: Double
+    let computationalExposureCount: Double
+    let computationalBracketSpacingStops: Double
     let sensorBloomAmount: Double
     let sensorBloomCrosstalkFraction: Double
     let sensorBloomOverflowTransferFraction: Double
@@ -94,7 +98,7 @@ enum RustTestAuthoringCoordinator {
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV10()
+                var output = ScreenTestAuthoringSelectionV11()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
                     inputView, deviceView, Float(frameRate), &output, &error
@@ -209,7 +213,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV10()
+                        var output = ScreenTestAuthoringSelectionV11()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -226,7 +230,7 @@ enum RustTestAuthoringCoordinator {
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV10()
+                    var output = ScreenTestAuthoringSelectionV11()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -242,7 +246,7 @@ enum RustTestAuthoringCoordinator {
         case let .setToggle(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV10()
+                    var output = ScreenTestAuthoringSelectionV11()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_toggle(
                         rawSelection, controlView, value, &output, &error
@@ -362,7 +366,7 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV10
+        _ raw: ScreenTestAuthoringSelectionV11
     ) -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
@@ -405,6 +409,9 @@ enum RustTestAuthoringCoordinator {
             fStop: Double(raw.f_stop),
             exposureTimeSeconds: Double(raw.exposure_time_seconds),
             shutterMotionAmount: Double(raw.shutter_motion_amount),
+            computationalCharacterStrength: Double(raw.computational_character_strength),
+            computationalExposureCount: Double(raw.computational_exposure_count),
+            computationalBracketSpacingStops: Double(raw.computational_bracket_spacing_stops),
             sensorBloomAmount: Double(raw.sensor_bloom_amount),
             sensorBloomCrosstalkFraction: Double(raw.sensor_bloom_crosstalk_fraction),
             sensorBloomOverflowTransferFraction: Double(
@@ -416,7 +423,7 @@ enum RustTestAuthoringCoordinator {
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV10>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV11>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -429,7 +436,7 @@ enum RustTestAuthoringCoordinator {
                                 try withUTF8View(selection.coverGlassPresetID) { coverView in
                                     try withUTF8View(selection.environmentPresetID) { environmentView in
                                         try withUTF8View(selection.lensPresetID) { lensView in
-                                            var raw = ScreenTestAuthoringSelectionV10()
+                                            var raw = ScreenTestAuthoringSelectionV11()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView
@@ -471,6 +478,9 @@ enum RustTestAuthoringCoordinator {
                                             raw.f_stop = Float(selection.fStop)
                                             raw.exposure_time_seconds = Float(selection.exposureTimeSeconds)
                                             raw.shutter_motion_amount = Float(selection.shutterMotionAmount)
+                                            raw.computational_character_strength = Float(selection.computationalCharacterStrength)
+                                            raw.computational_exposure_count = Float(selection.computationalExposureCount)
+                                            raw.computational_bracket_spacing_stops = Float(selection.computationalBracketSpacingStops)
                                             raw.sensor_bloom_amount = Float(selection.sensorBloomAmount)
                                             raw.sensor_bloom_crosstalk_fraction = Float(
                                                 selection.sensorBloomCrosstalkFraction
