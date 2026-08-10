@@ -1862,6 +1862,68 @@ mod tests {
     }
 
     #[test]
+    fn vfx_depth_footprint_is_centered_coherent_and_collapses_at_focus() {
+        let focused = rig()
+            .sample(RationalTime::new(0, 24).expect("valid time"))
+            .expect("camera sample");
+        let focused_center = panel_uv_continuous_pupil_footprint(
+            focused,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let focused_green_extent = focused_center.panel_half_extent[1];
+        assert!(focused_green_extent.x < 1.0e-5 && focused_green_extent.y < 1.0e-5);
+
+        let viewport = Vec2 { x: 0.42, y: -0.18 };
+        let focused_footprint = panel_uv_continuous_pupil_footprint(
+            focused,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            viewport,
+        );
+        assert_eq!(
+            focused_footprint,
+            panel_uv_continuous_pupil_footprint(
+                focused,
+                ScreenSample::IDENTITY,
+                Meters(0.6),
+                Meters(0.34),
+                viewport,
+            )
+        );
+        let focused_red = focused_footprint.optical.panel_uv[0].expect("red reaches panel");
+        let focused_blue = focused_footprint.optical.panel_uv[2].expect("blue reaches panel");
+        assert!(
+            (focused_red.x - focused_blue.x).abs() > 1.0e-5
+                || (focused_red.y - focused_blue.y).abs() > 1.0e-5
+        );
+
+        let mut defocused_rig = rig();
+        defocused_rig.intrinsics.keyframes[0].focus_distance = Meters(0.4);
+        defocused_rig.intrinsics.keyframes[0].f_stop = 1.4;
+        let defocused = defocused_rig
+            .sample(RationalTime::new(0, 24).expect("valid time"))
+            .expect("defocused camera sample");
+        let defocused_footprint = panel_uv_continuous_pupil_footprint(
+            defocused,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            viewport,
+        );
+        for (focused_extent, defocused_extent) in focused_footprint
+            .panel_half_extent
+            .into_iter()
+            .zip(defocused_footprint.panel_half_extent)
+        {
+            assert!(defocused_extent.x > focused_extent.x || defocused_extent.y > focused_extent.y);
+        }
+    }
+
+    #[test]
     fn aperture_quality_levels_are_nested_and_deterministic() {
         let camera = rig()
             .sample(RationalTime::new(0, 24).expect("valid time"))
