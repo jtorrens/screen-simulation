@@ -234,10 +234,20 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
             fract(atan2(direction.x, direction.z) / (2.0f * PI) + 0.5f),
             clamp(0.5f - asin(clamp(direction.y, -1.0f, 1.0f)) / PI, 0.0f, 1.0f)
         );
-        const float blur = clamp(p.cover_absorption_roughness.w
-            * p.cover_absorption_roughness.w + p.cover_haze.x * 0.25f, 0.0f, 1.0f);
-        const float mip_level = blur
-            * float(max(environment_acescg.get_num_mip_levels(), 1u) - 1u);
+        const float perceptual_roughness = p.cover_absorption_roughness.w;
+        const float microfacet_slope = perceptual_roughness * perceptual_roughness;
+        const float microfacet_radius = atan(microfacet_slope);
+        const float haze_radius = p.cover_haze.x * (PI * 0.5f);
+        const float lobe_radius = clamp(microfacet_radius + haze_radius, 0.0f, PI * 0.5f);
+        const float footprint_texels = max(
+            1.0f,
+            float(environment_acescg.get_width()) * lobe_radius / PI
+        );
+        const float mip_level = clamp(
+            log2(footprint_texels),
+            0.0f,
+            float(max(environment_acescg.get_num_mip_levels(), 1u) - 1u)
+        );
         return environment_acescg.sample(environment_sampler, uv, level(mip_level)).rgb
             * p.environment_ambient_strength.x * p.environment_ambient_strength.w;
     }

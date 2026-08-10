@@ -826,20 +826,20 @@ impl EnvironmentRadianceRaster {
         let u = (direction[0].atan2(direction[2]) / core::f32::consts::TAU + 0.5).rem_euclid(1.0);
         let v =
             (0.5 - direction[1].clamp(-1.0, 1.0).asin() / core::f32::consts::PI).clamp(0.0, 1.0);
-        // Box footprint equivalent to the GPU mip choice. Roughness broadens
-        // the reflection lobe quadratically; haze contributes a smaller,
-        // independent broadening term.
-        let blur = (roughness * roughness + haze * 0.25).clamp(0.0, 1.0);
-        let footprint_x = 1.0 + blur * (self.width as f32 * 0.25 - 1.0);
-        let footprint_y = 1.0 + blur * (self.height as f32 * 0.25 - 1.0);
+        // Box footprint equivalent to the GPU mip choice. The authored
+        // perceptual roughness becomes the conventional squared microfacet
+        // slope. Its angular reflection radius, plus the independent haze
+        // lobe, is then converted through the equirectangular texel density.
+        // This keeps the response independent from the HDR raster resolution.
+        let footprint = environment_reflection_footprint_texels(self.width, roughness, haze);
         let taps = 4_u32;
         let mut sum = [0.0_f32; 3];
         for y in 0..taps {
             for x in 0..taps {
                 let offset_x = (x as f32 + 0.5) / taps as f32 - 0.5;
                 let offset_y = (y as f32 + 0.5) / taps as f32 - 0.5;
-                let sample_u = (u + offset_x * footprint_x / self.width as f32).rem_euclid(1.0);
-                let sample_v = (v + offset_y * footprint_y / self.height as f32).clamp(0.0, 1.0);
+                let sample_u = (u + offset_x * footprint / self.width as f32).rem_euclid(1.0);
+                let sample_v = (v + offset_y * footprint / self.height as f32).clamp(0.0, 1.0);
                 let px = (sample_u * self.width as f32)
                     .floor()
                     .rem_euclid(self.width as f32) as u32;
@@ -860,6 +860,16 @@ impl EnvironmentRadianceRaster {
             sum[2] * reciprocal,
         )
     }
+}
+
+fn environment_reflection_footprint_texels(width: u32, roughness: f32, haze: f32) -> f32 {
+    let microfacet_slope = roughness * roughness;
+    let microfacet_radius = microfacet_slope.atan();
+    let haze_radius = haze * core::f32::consts::FRAC_PI_2;
+    let lobe_radius = (microfacet_radius + haze_radius).clamp(0.0, core::f32::consts::FRAC_PI_2);
+    // A lobe with angular radius r has diameter 2r. A 2:1 panorama has
+    // width / 2pi texels per radian, hence width * r / pi texels.
+    (width as f32 * lobe_radius / core::f32::consts::PI).max(1.0)
 }
 
 fn sample_placed_acescg_area(
@@ -6019,6 +6029,36 @@ mod tests {
     use std::collections::HashSet;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn image_environment_roughness_owns_a_resolution_independent_angular_footprint() {
+        assert_eq!(environment_reflection_footprint_texels(4096, 0.0, 0.0), 1.0);
+
+        let semigloss = environment_reflection_footprint_texels(4096, 0.20, 0.0);
+        let matte = environment_reflection_footprint_texels(4096, 0.46, 0.0);
+        let matte_haze = environment_reflection_footprint_texels(4096, 0.46, 0.03);
+        assert!(semigloss > 1.0);
+        assert!(matte > semigloss);
+        assert!(matte_haze > matte);
+
+        let half_resolution = environment_reflection_footprint_texels(2048, 0.46, 0.03);
+        assert!((half_resolution / 2048.0 - matte_haze / 4096.0).abs() < 1.0e-7);
+    }
+
+    #[test]
+    fn image_environment_roughness_preserves_uniform_incident_radiance() {
+        let raster = EnvironmentRadianceRaster {
+            width: 8,
+            height: 4,
+            rgba: vec![[4.0, 2.0, 0.5, 1.0]; 32],
+        };
+        for (roughness, haze) in [(0.0, 0.0), (0.46, 0.03), (1.0, 1.0)] {
+            assert_eq!(
+                raster.sample_equirectangular([0.3, -0.2, 0.9], 37.0, roughness, haze),
+                LinearRgb::new(4.0, 2.0, 0.5)
+            );
+        }
+    }
 
     #[test]
     fn complete_physical_pipeline_uses_one_coherent_direct_32_ray_pupil_policy() {

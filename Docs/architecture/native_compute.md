@@ -55,7 +55,7 @@ post-sensor path.
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and
-colorimetry, cover, its physical-radius core/tail glow approximation and exactly one rotated analytic or mipmapped equirectangular HDR environment, globally selected 16–512 aperture sample count, and either the
+colorimetry, cover, its physical-radius core/tail glow approximation and exactly one rotated analytic or mipmapped equirectangular HDR environment, whose rough-surface level is selected from a resolution-independent microfacet/haze angular footprint, globally selected 16–512 aperture sample count, and either the
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
 represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
 and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
