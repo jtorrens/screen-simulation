@@ -34,6 +34,13 @@ import Testing
         {
             device.whiteLevelNits = white
         }
+        if let authoredBlackMatrix = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_BLACK_MATRIX_FRACTION"
+        ] {
+            let blackMatrix = try #require(Double(authoredBlackMatrix))
+            try #require(blackMatrix >= 0 && blackMatrix < 1)
+            device.blackMatrixFraction = blackMatrix
+        }
         let coverID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_COVER_ID"]
             ?? device.defaultCoverGlassPresetID
         let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
