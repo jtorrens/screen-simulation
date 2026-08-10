@@ -7,3 +7,5 @@
 All bundled PNGs are explicit bounded `[0,1]` device signals. They enter the same prepared-device-signal and physical panel pipeline as an explicitly interpreted sRGB raster; they are not display-transform references and never replace an authored media source.
 
 `frequency-moire-reference.svg` is the deterministic editable authority for the bundled 3840×2160 frequency reference. Its PNG contains a Siemens star, authored 1–8-pixel line pairs, slanted edges, concentric detail, RGB/CMY stripe frequencies, channel ramps, fine text and exact pixel marks. It is intended to expose MTF, aliasing, moire, device-pixel phase and chromatic sampling.
+
+`vfx-comparison-reference.png` is the exact 2108×1220 sRGB raster photographed in the controlled iPhone/ASUS VFX comparison. Its stable test-pattern identity prevents diagnostic runs from substituting another crop or revision. It is decoded at its authored dimensions and requires an explicit feeder placement like every non-native raster.

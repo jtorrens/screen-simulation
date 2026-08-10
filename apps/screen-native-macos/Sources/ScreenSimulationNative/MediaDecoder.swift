@@ -86,6 +86,7 @@ enum SyntheticPattern: UInt32, Codable, CaseIterable, Identifiable, Sendable {
     case cameraColorReference = 3
     case frequencyMoireReference = 4
     case photometricDeviceScale = 5
+    case vfxComparisonReference = 6
 
     var id: UInt32 { rawValue }
 
@@ -97,6 +98,7 @@ enum SyntheticPattern: UInt32, Codable, CaseIterable, Identifiable, Sendable {
         case .cameraColorReference: "Referencia color cámara 4K"
         case .frequencyMoireReference: "Frecuencia / moiré 4K"
         case .photometricDeviceScale: "Escala fotométrica"
+        case .vfxComparisonReference: "Referencia VFX fotografiada"
         }
     }
 

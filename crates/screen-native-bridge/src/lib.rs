@@ -3399,6 +3399,8 @@ const CAMERA_REFERENCE: &[u8] =
     include_bytes!("../../../apps/screen-desktop/assets/camera-color-reference.png");
 const FREQUENCY_REFERENCE: &[u8] =
     include_bytes!("../../../apps/screen-desktop/assets/frequency-moire-reference.png");
+const VFX_COMPARISON_REFERENCE: &[u8] =
+    include_bytes!("../../../apps/screen-desktop/assets/vfx-comparison-reference.png");
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_pattern_dimensions(
@@ -3406,13 +3408,13 @@ pub unsafe extern "C" fn screen_test_pattern_dimensions(
     width: *mut u32,
     height: *mut u32,
 ) -> bool {
-    if width.is_null() || height.is_null() || pattern > 5 {
+    if width.is_null() || height.is_null() || pattern > 6 {
         return false;
     }
-    let (resolved_width, resolved_height) = if (2..=4).contains(&pattern) {
-        (EMBEDDED_WIDTH, EMBEDDED_HEIGHT)
-    } else {
-        (PROCEDURAL_WIDTH, PROCEDURAL_HEIGHT)
+    let (resolved_width, resolved_height) = match pattern {
+        2..=4 => (EMBEDDED_WIDTH, EMBEDDED_HEIGHT),
+        6 => (2_108, 1_220),
+        _ => (PROCEDURAL_WIDTH, PROCEDURAL_HEIGHT),
     };
     // SAFETY: both output pointers were validated and belong to the caller.
     unsafe {
@@ -3422,7 +3424,7 @@ pub unsafe extern "C" fn screen_test_pattern_dimensions(
     true
 }
 
-/// Renders the exact six test-pattern choices exposed by the current Slint shell.
+/// Renders the exact seven test-pattern choices exposed by the current Slint shell.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_pattern_render_rgba32f(
     pattern: u32,
@@ -3448,6 +3450,7 @@ pub unsafe extern "C" fn screen_test_pattern_render_rgba32f(
         2 => Some(EDITORIAL_REFERENCE),
         3 => Some(CAMERA_REFERENCE),
         4 => Some(FREQUENCY_REFERENCE),
+        6 => Some(VFX_COMPARISON_REFERENCE),
         _ => None,
     } {
         let Ok(decoded) = image::load_from_memory_with_format(encoded, image::ImageFormat::Png)
@@ -3628,6 +3631,7 @@ mod tests {
             },
             scene_geometry_lens: ScreenSceneGeometryLensParametersV2 {
                 abi_version: version,
+                lens_evaluation_model: 0,
                 focal_length_millimeters: 50.0,
                 sensor_width_millimeters: 36.0,
                 sensor_height_millimeters: 24.0,
@@ -4027,6 +4031,9 @@ mod tests {
             assert!(unsafe { screen_test_pattern_dimensions(pattern, &mut width, &mut height) });
             assert_eq!((width, height), (EMBEDDED_WIDTH, EMBEDDED_HEIGHT));
         }
+        let (mut width, mut height) = (0, 0);
+        assert!(unsafe { screen_test_pattern_dimensions(6, &mut width, &mut height) });
+        assert_eq!((width, height), (2_108, 1_220));
     }
 
     #[test]

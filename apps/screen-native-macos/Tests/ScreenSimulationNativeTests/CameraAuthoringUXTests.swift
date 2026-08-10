@@ -159,6 +159,13 @@ import Testing
     }
 }
 
+@Test func vfxComparisonPatternPreservesThePhotographedRaster() throws {
+    let frame = try SyntheticPattern.vfxComparisonReference.frame()
+    #expect(frame.width == 2_108)
+    #expect(frame.height == 1_220)
+    #expect(frame.rgba.count == 2_108 * 1_220 * 4)
+}
+
 @Test @MainActor func capturePresetAndCameraPoseInvalidateTheInteractivePreview() throws {
     let workspace = WorkspaceModel()
     let device = try #require(try RustDeviceCatalog.builtIns().first)

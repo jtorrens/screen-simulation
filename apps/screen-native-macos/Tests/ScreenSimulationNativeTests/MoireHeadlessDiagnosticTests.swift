@@ -234,11 +234,26 @@ import Testing
         imported = try PhysicalSettingsExchange.decode(from: document)
     }
 
-    let sourceURL = ProcessInfo.processInfo.environment["SCREEN_MOIRE_SOURCE_PATH"]
-        .map(URL.init(fileURLWithPath:))
-        ?? moireRepositoryRoot()
-            .appendingPathComponent("apps/screen-desktop/assets/frequency-moire-reference.png")
-    let decoded = try await NativeMediaDecoder.decode(url: sourceURL, time: .zero)
+    let sourcePath = ProcessInfo.processInfo.environment["SCREEN_MOIRE_SOURCE_PATH"]
+    let patternID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_PATTERN_ID"]
+        .flatMap(UInt32.init)
+    if sourcePath != nil && patternID != nil {
+        Issue.record("SCREEN_MOIRE_SOURCE_PATH y SCREEN_MOIRE_PATTERN_ID son excluyentes")
+        return
+    }
+    let decoded: DecodedNativeFrame
+    if let patternID {
+        let pattern = try #require(SyntheticPattern(rawValue: patternID))
+        decoded = try pattern.frame()
+    } else {
+        let sourceURL = sourcePath
+            .map(URL.init(fileURLWithPath:))
+            ?? moireRepositoryRoot()
+                .appendingPathComponent(
+                    "apps/screen-desktop/assets/frequency-moire-reference.png"
+                )
+        decoded = try await NativeMediaDecoder.decode(url: sourceURL, time: .zero)
+    }
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
         $0.id == "srgb-encoded-rec709"

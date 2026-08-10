@@ -1087,6 +1087,7 @@ fn embedded_test_signal(
         2 => include_bytes!("../assets/editorial-text-reference.png").as_slice(),
         3 => include_bytes!("../assets/camera-color-reference.png").as_slice(),
         4 => include_bytes!("../assets/frequency-moire-reference.png").as_slice(),
+        6 => include_bytes!("../assets/vfx-comparison-reference.png").as_slice(),
         _ => {
             state.embedded_source = None;
             return Ok(None);
@@ -1102,9 +1103,14 @@ fn embedded_test_signal(
         .into_rgb8();
     let width = decoded.width();
     let height = decoded.height();
-    if [width, height] != [3_840, 2_160] {
+    let expected_dimensions = match pattern_index {
+        6 => [2_108, 1_220],
+        _ => [3_840, 2_160],
+    };
+    if [width, height] != expected_dimensions {
         return Err(format!(
-            "bundled test image must be 3840 × 2160, got {width} × {height}"
+            "bundled test image must be {} × {}, got {width} × {height}",
+            expected_dimensions[0], expected_dimensions[1]
         ));
     }
     let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
@@ -1747,6 +1753,13 @@ fn present_procedural_source(window: &MainWindow) {
             window.set_source_interpretation(
                 "Explicit device signal · panel EOTF and physical nits remain authoritative".into(),
             );
+        }
+        6 => {
+            window.set_source_title("VFX photographed-screen comparison".into());
+            window.set_source_details(
+                "2108 × 1220 · exact fixed raster photographed in the iPhone references".into(),
+            );
+            window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
         }
         _ => {
             window.set_source_title("Procedural diagnostic".into());
@@ -3355,7 +3368,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn bundled_raster_test_sources_are_authored_4k_rgb_images() {
+    fn bundled_raster_test_sources_keep_their_authored_rgb_dimensions() {
         for encoded in [
             include_bytes!("../assets/editorial-text-reference.png").as_slice(),
             include_bytes!("../assets/camera-color-reference.png").as_slice(),
@@ -3366,6 +3379,13 @@ mod interaction_tests {
             assert_eq!([image.width(), image.height()], [3_840, 2_160]);
             assert!(image.to_rgba8().pixels().all(|pixel| pixel[3] == 255));
         }
+        let comparison = image::load_from_memory_with_format(
+            include_bytes!("../assets/vfx-comparison-reference.png"),
+            image::ImageFormat::Png,
+        )
+        .expect("bundled VFX comparison PNG must decode");
+        assert_eq!([comparison.width(), comparison.height()], [2_108, 1_220]);
+        assert!(comparison.to_rgba8().pixels().all(|pixel| pixel[3] == 255));
     }
 
     #[test]
