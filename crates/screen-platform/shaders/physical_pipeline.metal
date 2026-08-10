@@ -720,7 +720,7 @@ kernel void evaluate_physical_pipeline(
                     half_extent, projected_sensor_half_extent, p.panel_angular_scene.w);
                 const float2 reconstructed_half_extent =
                     sensor_half_extent + continuous_half_extent;
-                const float2 carrier_half_extent = sensor_half_extent * 0.25f;
+                const float2 carrier_half_extent = sensor_half_extent * float2(0.25f, 0.0f);
                 const float2 channel_minimum = exact_flat
                     ? minimum_uv : center - reconstructed_half_extent;
                 const float2 channel_maximum = exact_flat
