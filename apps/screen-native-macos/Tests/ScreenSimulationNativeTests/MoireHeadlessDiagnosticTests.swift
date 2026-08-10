@@ -548,6 +548,14 @@ private func renderMoireVariant(
             stage: .capture(.noise)
         )
     }
+    if let lensAmount = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_LENS_AMOUNT"
+    ].flatMap(Double.init) {
+        try controller.setContinuousAmount(
+            lensAmount,
+            stage: .capture(.lens)
+        )
+    }
     try editModel(controller)
     let contributions = controller.orderedContributions
     let spread = try #require(contributions.first {
