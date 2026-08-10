@@ -626,6 +626,7 @@ private func writeMoireVariant(_ variant: MoireVariant, to directory: URL) throw
     let metadata: [String: Any] = [
         "schema": FrameCheckPNG.metadataKeyword,
         "diagnosticVariant": variant.name,
+        "metalSubmitToResultMilliseconds": variant.metalSubmitToResultMilliseconds,
         "hashes": ["pixelRGBA8SHA256": variant.hash],
     ]
     let metadataData = try JSONSerialization.data(
