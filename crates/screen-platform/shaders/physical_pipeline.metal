@@ -105,16 +105,6 @@ inline float physical_radical_inverse(uint value) {
     return float(reverse_bits(value)) * (1.0f / 4294967296.0f);
 }
 
-inline float physical_aperture_rotation_turns(uint2 pixel) {
-    uint value = pixel.x * 0x9E3779B9u ^ pixel.y * 0x85EBCA6Bu;
-    value ^= value >> 16;
-    value *= 0x7FEB352Du;
-    value ^= value >> 15;
-    value *= 0x846CA68Bu;
-    value ^= value >> 16;
-    return float(value >> 8) * (1.0f / 16777216.0f);
-}
-
 inline float2 physical_aperture_sample(uint index, float rotation_turns) {
     const float radius = sqrt(physical_radical_inverse(index + 1));
     const float angle = float(index) * GOLDEN_ANGLE + rotation_turns * 2.0f * PI;
@@ -664,7 +654,7 @@ kernel void evaluate_physical_pipeline(
             const float2 observed = flat_center * 2.0f - 1.0f;
             const float2 half_extent = (maximum_uv - minimum_uv) * 0.5f;
             const uint aperture_sample_count = 32;
-            const float aperture_rotation = physical_aperture_rotation_turns(position);
+            const float aperture_rotation = 0.0f;
             for (uint aperture = 0; aperture < aperture_sample_count; ++aperture) {
             const float2 lens_sample = physical_aperture_sample(aperture, aperture_rotation);
             const float layer_weight = 1.0f;

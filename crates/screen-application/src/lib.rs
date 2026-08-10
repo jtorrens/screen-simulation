@@ -514,16 +514,6 @@ pub fn physical_pipeline_aperture_sample_count(quality: FlatPanelQuality) -> usi
     }
 }
 
-fn physical_pipeline_aperture_rotation_turns(x: u32, y: u32) -> f32 {
-    let mut value = x.wrapping_mul(0x9E37_79B9) ^ y.wrapping_mul(0x85EB_CA6B);
-    value ^= value >> 16;
-    value = value.wrapping_mul(0x7FEB_352D);
-    value ^= value >> 15;
-    value = value.wrapping_mul(0x846C_A68B);
-    value ^= value >> 16;
-    ((value >> 8) as f32) * (1.0 / 16_777_216.0)
-}
-
 impl PhysicalPipelineExecutionPlan {
     /// Returns the current immutable request with every stage after the requested
     /// diagnostic boundary neutralized. Geometry is a data checkpoint: it becomes
@@ -1044,15 +1034,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                             y: flat_center.y * 2.0 - 1.0,
                         };
                         debug_assert_eq!(physical_aperture_samples, 32);
-                        let aperture_rotation_turns =
-                            physical_pipeline_aperture_rotation_turns(x, y);
                         let optical_samples = panel_uv_aperture_samples_with_count::<32>(
                             resolved_scene.0,
                             resolved_scene.1,
                             plan.panel.active_width,
                             plan.panel.active_height,
                             viewport_ndc,
-                            aperture_rotation_turns,
+                            0.0,
                         );
                         for optical in optical_samples.iter().copied() {
                             let layer_weight = 1.0;
@@ -5746,7 +5734,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn complete_physical_pipeline_uses_one_direct_32_ray_pupil_policy() {
+    fn complete_physical_pipeline_uses_one_coherent_direct_32_ray_pupil_policy() {
         for quality in [
             FlatPanelQuality::Draft,
             FlatPanelQuality::Medium,
@@ -5755,11 +5743,6 @@ mod tests {
         ] {
             assert_eq!(physical_pipeline_aperture_sample_count(quality), 32);
         }
-        assert_eq!(physical_pipeline_aperture_rotation_turns(0, 0), 0.0);
-        assert_eq!(
-            physical_pipeline_aperture_rotation_turns(8063, 6047),
-            physical_pipeline_aperture_rotation_turns(8063, 6047)
-        );
     }
 
     struct UnitSpatialBackend {
