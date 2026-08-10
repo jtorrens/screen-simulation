@@ -671,7 +671,35 @@ kernel void evaluate_physical_pipeline(
                 const PhysicalRayHit hit = physical_trace_ray(
                     observed, lens_sample, channel, p);
                 float2 continuous_half_extent = 0.0f;
+                float2 projected_sensor_half_extent = half_extent;
                 if (vfx_depth_blur && hit.valid) {
+                    const float2 sensor_ndc_half_extent = half_extent * 2.0f;
+                    const PhysicalRayHit sensor_positive_x = physical_trace_ray(
+                        observed + float2(sensor_ndc_half_extent.x, 0.0f),
+                        float2(0.0f), channel, p);
+                    const PhysicalRayHit sensor_negative_x = physical_trace_ray(
+                        observed - float2(sensor_ndc_half_extent.x, 0.0f),
+                        float2(0.0f), channel, p);
+                    const PhysicalRayHit sensor_positive_y = physical_trace_ray(
+                        observed + float2(0.0f, sensor_ndc_half_extent.y),
+                        float2(0.0f), channel, p);
+                    const PhysicalRayHit sensor_negative_y = physical_trace_ray(
+                        observed - float2(0.0f, sensor_ndc_half_extent.y),
+                        float2(0.0f), channel, p);
+                    const float2 sensor_px = sensor_positive_x.valid
+                        ? sensor_positive_x.uv - hit.uv : float2(0.0f);
+                    const float2 sensor_nx = sensor_negative_x.valid
+                        ? sensor_negative_x.uv - hit.uv : float2(0.0f);
+                    const float2 sensor_py = sensor_positive_y.valid
+                        ? sensor_positive_y.uv - hit.uv : float2(0.0f);
+                    const float2 sensor_ny = sensor_negative_y.valid
+                        ? sensor_negative_y.uv - hit.uv : float2(0.0f);
+                    projected_sensor_half_extent = float2(
+                        max(abs(sensor_px.x), abs(sensor_nx.x))
+                            + max(abs(sensor_py.x), abs(sensor_ny.x)),
+                        max(abs(sensor_px.y), abs(sensor_nx.y))
+                            + max(abs(sensor_py.y), abs(sensor_ny.y))
+                    );
                     constexpr float disk_to_box_variance_scale = 0.8660254f;
                     const PhysicalRayHit rim_x = physical_trace_ray(
                         observed, float2(1.0f, 0.0f), channel, p);
@@ -688,9 +716,11 @@ kernel void evaluate_physical_pipeline(
                 const float2 target = hit.valid ? hit.uv : float2(-2.0f);
                 const float2 center = mix(flat_center, target, p.panel_angular_scene.w);
                 const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
+                const float2 sensor_half_extent = mix(
+                    half_extent, projected_sensor_half_extent, p.panel_angular_scene.w);
                 const float2 reconstructed_half_extent =
-                    half_extent + continuous_half_extent;
-                const float2 carrier_half_extent = half_extent * 0.25f;
+                    sensor_half_extent + continuous_half_extent;
+                const float2 carrier_half_extent = sensor_half_extent * 0.25f;
                 const float2 channel_minimum = exact_flat
                     ? minimum_uv : center - reconstructed_half_extent;
                 const float2 channel_maximum = exact_flat
@@ -749,7 +779,35 @@ kernel void evaluate_physical_pipeline(
             const PhysicalRayHit green_hit = physical_trace_ray(
                 observed, lens_sample, 1, p);
             float2 green_continuous_half_extent = 0.0f;
+            float2 green_projected_sensor_half_extent = half_extent;
             if (vfx_depth_blur && green_hit.valid) {
+                const float2 sensor_ndc_half_extent = half_extent * 2.0f;
+                const PhysicalRayHit sensor_positive_x = physical_trace_ray(
+                    observed + float2(sensor_ndc_half_extent.x, 0.0f),
+                    float2(0.0f), 1, p);
+                const PhysicalRayHit sensor_negative_x = physical_trace_ray(
+                    observed - float2(sensor_ndc_half_extent.x, 0.0f),
+                    float2(0.0f), 1, p);
+                const PhysicalRayHit sensor_positive_y = physical_trace_ray(
+                    observed + float2(0.0f, sensor_ndc_half_extent.y),
+                    float2(0.0f), 1, p);
+                const PhysicalRayHit sensor_negative_y = physical_trace_ray(
+                    observed - float2(0.0f, sensor_ndc_half_extent.y),
+                    float2(0.0f), 1, p);
+                const float2 sensor_px = sensor_positive_x.valid
+                    ? sensor_positive_x.uv - green_hit.uv : float2(0.0f);
+                const float2 sensor_nx = sensor_negative_x.valid
+                    ? sensor_negative_x.uv - green_hit.uv : float2(0.0f);
+                const float2 sensor_py = sensor_positive_y.valid
+                    ? sensor_positive_y.uv - green_hit.uv : float2(0.0f);
+                const float2 sensor_ny = sensor_negative_y.valid
+                    ? sensor_negative_y.uv - green_hit.uv : float2(0.0f);
+                green_projected_sensor_half_extent = float2(
+                    max(abs(sensor_px.x), abs(sensor_nx.x))
+                        + max(abs(sensor_py.x), abs(sensor_ny.x)),
+                    max(abs(sensor_px.y), abs(sensor_nx.y))
+                        + max(abs(sensor_py.y), abs(sensor_ny.y))
+                );
                 constexpr float disk_to_box_variance_scale = 0.8660254f;
                 const PhysicalRayHit rim_x = physical_trace_ray(
                     observed, float2(1.0f, 0.0f), 1, p);
@@ -776,10 +834,10 @@ kernel void evaluate_physical_pipeline(
             const float2 green_target = green_hit.valid ? green_hit.uv : float2(-2.0f);
             const float2 green_center = mix(flat_center, green_target, p.panel_angular_scene.w);
             const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
-            const float2 green_reconstructed_half_extent = sqrt(
-                half_extent * half_extent
-                + green_continuous_half_extent * green_continuous_half_extent
-            );
+            const float2 green_sensor_half_extent = mix(
+                half_extent, green_projected_sensor_half_extent, p.panel_angular_scene.w);
+            const float2 green_reconstructed_half_extent =
+                green_sensor_half_extent + green_continuous_half_extent;
             const float4 ideal_sample = area_sample(source_acescg, source_row_prefix,
                 exact_flat ? minimum_uv : green_center - green_reconstructed_half_extent,
                 exact_flat ? maximum_uv : green_center + green_reconstructed_half_extent, p);

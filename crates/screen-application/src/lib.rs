@@ -1075,13 +1075,24 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     plan.panel.active_width,
                                     plan.panel.active_height,
                                     viewport_ndc,
+                                    Vec2 {
+                                        x: maximum_uv.x - minimum_uv.x,
+                                        y: maximum_uv.y - minimum_uv.y,
+                                    },
                                 )
                             });
                         let aperture_count = if optical_samples.is_some() { 32 } else { 1 };
                         for aperture_index in 0..aperture_count {
-                            let (optical, aperture_cell_half_extent) =
+                            let (optical, aperture_cell_half_extent, sensor_panel_half_extent) =
                                 if let Some(samples) = optical_samples.as_ref() {
-                                    (samples[aperture_index], [Vec2 { x: 0.0, y: 0.0 }; 3])
+                                    (
+                                        samples[aperture_index],
+                                        [Vec2 { x: 0.0, y: 0.0 }; 3],
+                                        [Vec2 {
+                                            x: (maximum_uv.x - minimum_uv.x) * 0.5,
+                                            y: (maximum_uv.y - minimum_uv.y) * 0.5,
+                                        }; 3],
+                                    )
                                 } else {
                                     let footprint = continuous_footprint
                                         .expect("the resolved VFX lens footprint exists");
@@ -1091,6 +1102,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                             x: extent.x * plan.scene_geometry_amount,
                                             y: extent.y * plan.scene_geometry_amount,
                                         }),
+                                        footprint.sensor_panel_half_extent,
                                     )
                                 };
                             let layer_weight = 1.0;
@@ -1124,18 +1136,28 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 } else {
                                     0.0
                                 };
+                                let flat_sensor_half_extent = Vec2 {
+                                    x: (maximum_uv.x - minimum_uv.x) * 0.5,
+                                    y: (maximum_uv.y - minimum_uv.y) * 0.5,
+                                };
+                                let projected_sensor_half_extent =
+                                    sensor_panel_half_extent[channel];
+                                let sensor_half_extent = Vec2 {
+                                    x: flat_sensor_half_extent.x
+                                        + plan.scene_geometry_amount
+                                            * (projected_sensor_half_extent.x
+                                                - flat_sensor_half_extent.x),
+                                    y: flat_sensor_half_extent.y
+                                        + plan.scene_geometry_amount
+                                            * (projected_sensor_half_extent.y
+                                                - flat_sensor_half_extent.y),
+                                };
                                 let reconstructed_half_extent = vfx_rectangular_support_half_extent(
-                                    Vec2 {
-                                        x: (maximum_uv.x - minimum_uv.x) * 0.5,
-                                        y: (maximum_uv.y - minimum_uv.y) * 0.5,
-                                    },
+                                    sensor_half_extent,
                                     aperture_cell_half_extent[channel],
                                 );
                                 let carrier_half_extent = vfx_carrier_half_extent(
-                                    Vec2 {
-                                        x: (maximum_uv.x - minimum_uv.x) * 0.5,
-                                        y: (maximum_uv.y - minimum_uv.y) * 0.5,
-                                    },
+                                    sensor_half_extent,
                                     aperture_cell_half_extent[channel],
                                 );
                                 (

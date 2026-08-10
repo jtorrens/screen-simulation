@@ -1104,6 +1104,7 @@ pub struct OpticalSample {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContinuousOpticalFootprint {
     pub optical: OpticalSample,
+    pub sensor_panel_half_extent: [Vec2; 3],
     pub panel_half_extent: [Vec2; 3],
 }
 
@@ -1168,6 +1169,7 @@ pub fn panel_uv_continuous_pupil_footprint(
     active_width: Meters,
     active_height: Meters,
     viewport_ndc: Vec2,
+    viewport_half_extent_ndc: Vec2,
 ) -> ContinuousOpticalFootprint {
     let Some(ideal) = inverse_distortion(
         Vec2 {
@@ -1183,6 +1185,7 @@ pub fn panel_uv_continuous_pupil_footprint(
                 reflection_direction_local: [None; 3],
                 irradiance_weight: [0.0; 3],
             },
+            sensor_panel_half_extent: [Vec2 { x: 0.0, y: 0.0 }; 3],
             panel_half_extent: [Vec2 { x: 0.0, y: 0.0 }; 3],
         };
     };
@@ -1219,6 +1222,65 @@ pub fn panel_uv_continuous_pupil_footprint(
             channel,
         )
     });
+    let chief_hits = |offset: Vec2| -> [Option<(Vec2, f32, Vec3)>; 3] {
+        let Some(offset_ideal) = inverse_distortion(
+            Vec2 {
+                x: viewport_ndc.x + offset.x + 2.0 * camera.lens_shift.x,
+                y: -(viewport_ndc.y + offset.y) - 2.0 * camera.lens_shift.y,
+            },
+            camera.lens,
+        ) else {
+            return [None; 3];
+        };
+        core::array::from_fn(|channel| {
+            panel_uv_for_lens_sample(
+                camera,
+                screen,
+                active_width,
+                active_height,
+                offset_ideal,
+                Vec2 { x: 0.0, y: 0.0 },
+                channel,
+            )
+        })
+    };
+    let sensor_positive_x = chief_hits(Vec2 {
+        x: viewport_half_extent_ndc.x,
+        y: 0.0,
+    });
+    let sensor_negative_x = chief_hits(Vec2 {
+        x: -viewport_half_extent_ndc.x,
+        y: 0.0,
+    });
+    let sensor_positive_y = chief_hits(Vec2 {
+        x: 0.0,
+        y: viewport_half_extent_ndc.y,
+    });
+    let sensor_negative_y = chief_hits(Vec2 {
+        x: 0.0,
+        y: -viewport_half_extent_ndc.y,
+    });
+    let sensor_panel_half_extent = core::array::from_fn(|channel| {
+        let Some(center) = center_hits[channel].map(|value| value.0) else {
+            return Vec2 { x: 0.0, y: 0.0 };
+        };
+        let displacement = |hit: Option<(Vec2, f32, Vec3)>| {
+            hit.map_or(Vec2 { x: 0.0, y: 0.0 }, |value| Vec2 {
+                x: value.0.x - center.x,
+                y: value.0.y - center.y,
+            })
+        };
+        let positive_x = displacement(sensor_positive_x[channel]);
+        let negative_x = displacement(sensor_negative_x[channel]);
+        let positive_y = displacement(sensor_positive_y[channel]);
+        let negative_y = displacement(sensor_negative_y[channel]);
+        Vec2 {
+            x: positive_x.x.abs().max(negative_x.x.abs())
+                + positive_y.x.abs().max(negative_y.x.abs()),
+            y: positive_x.y.abs().max(negative_x.y.abs())
+                + positive_y.y.abs().max(negative_y.y.abs()),
+        }
+    });
     let panel_half_extent = core::array::from_fn(|channel| {
         let Some(center) = center_hits[channel].map(|value| value.0) else {
             return Vec2 { x: 0.0, y: 0.0 };
@@ -1243,6 +1305,7 @@ pub fn panel_uv_continuous_pupil_footprint(
             reflection_direction_local: center_hits.map(|hit| hit.map(|value| value.2)),
             irradiance_weight: lens_irradiance_weight(camera, ideal),
         },
+        sensor_panel_half_extent,
         panel_half_extent,
     }
 }
@@ -1927,6 +1990,7 @@ mod tests {
             Meters(0.6),
             Meters(0.34),
             Vec2 { x: 0.0, y: 0.0 },
+            Vec2 { x: 0.0, y: 0.0 },
         );
         let focused_green_extent = focused_center.panel_half_extent[1];
         assert!(focused_green_extent.x < 1.0e-5 && focused_green_extent.y < 1.0e-5);
@@ -1938,6 +2002,7 @@ mod tests {
             Meters(0.6),
             Meters(0.34),
             viewport,
+            Vec2 { x: 0.0, y: 0.0 },
         );
         assert_eq!(
             focused_footprint,
@@ -1947,6 +2012,7 @@ mod tests {
                 Meters(0.6),
                 Meters(0.34),
                 viewport,
+                Vec2 { x: 0.0, y: 0.0 },
             )
         );
         let focused_red = focused_footprint.optical.panel_uv[0].expect("red reaches panel");
@@ -1968,6 +2034,7 @@ mod tests {
             Meters(0.6),
             Meters(0.34),
             viewport,
+            Vec2 { x: 0.0, y: 0.0 },
         );
         for (focused_extent, defocused_extent) in focused_footprint
             .panel_half_extent
@@ -1975,6 +2042,28 @@ mod tests {
             .zip(defocused_footprint.panel_half_extent)
         {
             assert!(defocused_extent.x > focused_extent.x || defocused_extent.y > focused_extent.y);
+        }
+    }
+
+    #[test]
+    fn vfx_sensor_footprint_is_projected_into_panel_coordinates() {
+        let focused = rig()
+            .sample(RationalTime::new(0, 24).expect("valid time"))
+            .expect("camera sample");
+        let footprint = panel_uv_continuous_pupil_footprint(
+            focused,
+            ScreenSample::IDENTITY,
+            Meters(0.6),
+            Meters(0.34),
+            Vec2 { x: 0.24, y: -0.18 },
+            Vec2 {
+                x: 1.0 / 1920.0,
+                y: 1.0 / 1080.0,
+            },
+        );
+        for extent in footprint.sensor_panel_half_extent {
+            assert!(extent.x > 0.0);
+            assert!(extent.y > 0.0);
         }
     }
 
