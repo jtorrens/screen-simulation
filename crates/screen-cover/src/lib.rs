@@ -126,7 +126,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             refractive_index: 1.50,
             anti_reflective_efficiency: 0.62,
             absorption_per_millimeter: rgb(0.012),
-            roughness: 0.46,
+            roughness: 0.40,
             haze: 0.030,
             glow: CoverGlowProfile::MATTE_AR,
         },
