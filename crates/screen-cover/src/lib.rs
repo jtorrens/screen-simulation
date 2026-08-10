@@ -287,6 +287,19 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             pattern: EnvironmentPattern::MixedProduction,
         },
     },
+    EnvironmentPreset {
+        id: "environment-warm-interior-cool-doorway",
+        label: "HDR · warm interior + cool doorway",
+        environment: ProceduralEnvironment {
+            character_strength: 1.0,
+            ambient_radiance: AcesCgRadiance(LinearRgb::new(1.3, 2.1, 4.8)),
+            key_radiance: AcesCgRadiance(LinearRgb::new(1_480.0, 690.0, 235.0)),
+            key_direction_local: [-0.52, 0.16, 0.839_047],
+            key_angular_radius_degrees: 12.0,
+            rotation_degrees: 0.0,
+            pattern: EnvironmentPattern::MixedProduction,
+        },
+    },
 ];
 
 pub fn environment_preset(id: &str) -> Option<EnvironmentPreset> {
