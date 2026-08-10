@@ -144,6 +144,26 @@ import Testing
         {
             pipeline.shutterMotion.neutralDensityStops = ndStops
         }
+        if let shutterSeconds = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_SHUTTER_SECONDS"
+        ].flatMap(Double.init), shutterSeconds > 0 {
+            let halfNanoseconds = Int64((shutterSeconds * 0.5 * 1_000_000_000).rounded())
+            pipeline.shutterMotion.openOffsetNumerator = -halfNanoseconds
+            pipeline.shutterMotion.openOffsetDenominator = 1_000_000_000
+            pipeline.shutterMotion.closeOffsetNumerator = halfNanoseconds
+            pipeline.shutterMotion.closeOffsetDenominator = 1_000_000_000
+        }
+        if let exposureIndex = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_EXPOSURE_INDEX"
+        ].flatMap(Double.init), exposureIndex > 0 {
+            pipeline.sensor.analogGain = exposureIndex
+                / pipeline.radiometricCalibration.baseExposureIndex
+        }
+        if let developExposureEV = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_DEVELOP_EXPOSURE_EV"
+        ].flatMap(Double.init) {
+            pipeline.develop.exposureEV = developExposureEV
+        }
         if let veilingGlare = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_VEILING_GLARE_FRACTION"
         ].flatMap(Double.init) {
