@@ -179,10 +179,11 @@ pub struct ScreenLensPresetParametersV1 {
     transmission_rgb: [f32; 3],
     center_softness_micrometers: f32,
     edge_softness_micrometers: f32,
+    veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 4;
-pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 1;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 5;
+pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 2;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
 pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;
@@ -1696,6 +1697,7 @@ pub struct ScreenSceneGeometryLensParametersV2 {
     lens_transmission_rgb: [f32; 3],
     lens_center_softness_micrometers: f32,
     lens_edge_softness_micrometers: f32,
+    lens_veiling_glare_fraction: f32,
 }
 
 #[repr(C)]
@@ -2459,6 +2461,10 @@ pub unsafe extern "C" fn screen_environment_preset_parameters(
             EnvironmentPattern::UniformNeutral => 0,
             EnvironmentPattern::StudioSoftboxes => 1,
             EnvironmentPattern::CalibrationGrid => 2,
+            EnvironmentPattern::OfficeCeiling => 3,
+            EnvironmentPattern::DaylightWindow => 4,
+            EnvironmentPattern::WarmPracticals => 5,
+            EnvironmentPattern::MixedProduction => 6,
         },
     };
     true
@@ -2566,6 +2572,10 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         0 => EnvironmentPattern::UniformNeutral,
         1 => EnvironmentPattern::StudioSoftboxes,
         2 => EnvironmentPattern::CalibrationGrid,
+        3 => EnvironmentPattern::OfficeCeiling,
+        4 => EnvironmentPattern::DaylightWindow,
+        5 => EnvironmentPattern::WarmPracticals,
+        6 => EnvironmentPattern::MixedProduction,
         _ => {
             unsafe { set_error(error_message, b"unsupported environment pattern\0") };
             return std::ptr::null_mut();
@@ -2610,6 +2620,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
             transmission_rgb: scene.lens_transmission_rgb,
             center_softness_micrometers: scene.lens_center_softness_micrometers,
             edge_softness_micrometers: scene.lens_edge_softness_micrometers,
+            veiling_glare_fraction: scene.lens_veiling_glare_fraction,
         },
     };
     let finite_scene = [scene.focal_length_millimeters]
@@ -2630,6 +2641,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         .chain([
             scene.lens_center_softness_micrometers,
             scene.lens_edge_softness_micrometers,
+            scene.lens_veiling_glare_fraction,
         ])
         .all(f32::is_finite);
     if !finite_scene
@@ -2640,6 +2652,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         || scene.f_stop <= 0.0
         || scene.near_clip_meters <= 0.0
         || scene.far_clip_meters <= scene.near_clip_meters
+        || !(0.0..=0.25).contains(&scene.lens_veiling_glare_fraction)
     {
         unsafe { set_error(error_message, b"invalid scene/geometry/lens snapshot\0") };
         return std::ptr::null_mut();
@@ -3021,6 +3034,7 @@ pub unsafe extern "C" fn screen_lens_preset_parameters(
         transmission_rgb: preset.lens.transmission_rgb,
         center_softness_micrometers: preset.lens.center_softness_micrometers,
         edge_softness_micrometers: preset.lens.edge_softness_micrometers,
+        veiling_glare_fraction: preset.lens.veiling_glare_fraction,
     };
     true
 }
@@ -3618,6 +3632,7 @@ mod tests {
                 lens_transmission_rgb: [1.0; 3],
                 lens_center_softness_micrometers: 0.0,
                 lens_edge_softness_micrometers: 0.0,
+                lens_veiling_glare_fraction: 0.0,
             },
             shutter_motion: ScreenShutterMotionParametersV2 {
                 abi_version: version,
@@ -4071,7 +4086,7 @@ mod tests {
     #[test]
     fn capture_catalog_exposes_the_two_authoritative_camera_presets() {
         assert_eq!(screen_capture_preset_count(), CAPTURE_DEVICE_PRESETS.len());
-        assert_eq!(screen_capture_preset_count(), 2);
+        assert_eq!(screen_capture_preset_count(), 5);
         for index in 0..screen_capture_preset_count() {
             let mut parameters: ScreenCapturePresetParametersV1 = unsafe { std::mem::zeroed() };
             assert!(unsafe { screen_capture_preset_parameters(index, &mut parameters) });

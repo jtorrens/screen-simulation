@@ -8,7 +8,7 @@ use screen_cover::{
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 9;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 10;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -1786,7 +1786,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 9);
+        assert_eq!(page.schema_version, 10);
         assert_eq!(page.default_preview_phase_id, DEVELOP_DEMOSAIC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),

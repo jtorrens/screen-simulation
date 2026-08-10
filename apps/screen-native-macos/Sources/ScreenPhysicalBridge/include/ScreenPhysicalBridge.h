@@ -15,9 +15,9 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 4u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 5u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
-#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 1u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 2u
 
 typedef struct {
     const uint8_t *bytes;
@@ -440,6 +440,7 @@ typedef struct {
     float lens_transmission_rgb[3];
     float lens_center_softness_micrometers;
     float lens_edge_softness_micrometers;
+    float lens_veiling_glare_fraction;
 } ScreenSceneGeometryLensParametersV2;
 
 typedef struct {
@@ -516,6 +517,7 @@ typedef struct {
     float transmission_rgb[3];
     float center_softness_micrometers;
     float edge_softness_micrometers;
+    float veiling_glare_fraction;
 } ScreenLensPresetParametersV1;
 
 typedef struct {

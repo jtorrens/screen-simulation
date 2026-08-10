@@ -150,6 +150,7 @@ struct LensPresetDefinition: Identifiable, Equatable, Sendable {
         state.sceneLens.edgeSoftnessMicrometers = Double(
             parameters.edge_softness_micrometers
         )
+        state.sceneLens.veilingGlareFraction = Double(parameters.veiling_glare_fraction)
     }
 
     private func tuple3(_ value: (Float, Float, Float)) -> [Double] {

@@ -58,6 +58,7 @@ mean one native control per named component, not a summary-only display.
 | `scene.lens_vignetting_strength` | slider + input | 0–4 | Project base → override |
 | `scene.lens_transmission_rgb[0..2]` | RGB sliders + inputs | scale / 0–4 | Project base → override |
 | `scene.lens_center/edge_softness_micrometers` | sliders + inputs | µm / 0–10000 | Project base → override |
+| `scene.lens_veiling_glare_fraction` | slider + input | fraction / 0–0.25 | Lens preset → project override; wide-field gate-average approximation |
 | `camera_pose.position[0..2]`, `screen_pose.position[0..2]` | XYZ sliders + inputs | m / −100–100 | Explicit project tracks, constant for this phase |
 | `camera_pose.quaternion[0..3]`, `screen_pose.quaternion[0..3]` | XYZW sliders + inputs | −1–1, normalized at boundary | Explicit project tracks; no target/yaw/screen-scale state |
 | `shutter.temporal_samples` | integer stepper + input | 1–256 | Project base → override |
@@ -79,8 +80,8 @@ mean one native control per named component, not a summary-only display.
 | `develop.white_balance[0..2]` | RGB sliders + inputs | gain / 0.001–32 | Project base → override |
 | `develop.middle_gray_illuminance_seconds` | slider + input | lux·s / 0.000001–1000000 | Project base → override |
 | `develop.develop_exposure_ev` | slider + input | EV / −32–32 | Project base → override |
-| demosaic mode | read-only, **Derivado** | Edge-directed | ABI v3 exposes no selectable demosaic field; no fake state is stored |
-| lens/sensor preset reference | read-only, **Derivado** | resolved values | ABI v3 stores values, not dynamic preset references; no lookup/fallback |
+| demosaic mode | read-only, **Derivado** | Edge-directed | ABI v5 exposes no selectable demosaic field; no fake state is stored |
+| lens/sensor preset reference | read-only, **Derivado** | resolved values | ABI v5 stores values, not dynamic preset references; no lookup/fallback |
 
 Continuous contribution bypass is persisted separately from stored amount.
 OFF emits effective amount zero at the request boundary and diagnostics append

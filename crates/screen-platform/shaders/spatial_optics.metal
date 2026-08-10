@@ -21,6 +21,7 @@ struct SpatialParams {
     float4 lens_lateral;
     float4 lens_transmission_vignette;
     float4 lens_softness;
+    float4 lens_veiling_glare; // gate-average ACEScg irradiance, fraction
     float4 screen_translation;
     float4 screen_quaternion;
     float4 panel_geometry; // active width, active height, black matrix, gamma
@@ -32,7 +33,7 @@ struct SpatialParams {
     float4 cover_geometry; // strength, thickness mm, ior, AR efficiency
     float4 cover_absorption_roughness; // absorption rgb, roughness
     float4 cover_haze;
-    float4 cover_glow; // core m, diagonal tail component m, scattered fraction, tail fraction
+    float4 cover_glow; // core support m, tail support m, scattered fraction, tail fraction
     float4 environment_ambient_strength; // ambient rgb, strength
     float4 environment_key_radius; // key rgb, angular radius radians
     float4 environment_direction; // key direction xyz, environment rotation radians
@@ -47,16 +48,33 @@ struct RayHit {
     bool valid;
 };
 
-inline float2 cover_glow_offset(uint sample, constant SpatialParams& p) {
-    if (sample == 1) return float2(p.cover_glow.x, 0.0f);
-    if (sample == 2) return float2(-p.cover_glow.x, 0.0f);
-    if (sample == 3) return float2(0.0f, p.cover_glow.x);
-    if (sample == 4) return float2(0.0f, -p.cover_glow.x);
-    if (sample == 5) return float2(p.cover_glow.y, p.cover_glow.y);
-    if (sample == 6) return float2(-p.cover_glow.y, p.cover_glow.y);
-    if (sample == 7) return float2(p.cover_glow.y, -p.cover_glow.y);
-    if (sample == 8) return float2(-p.cover_glow.y, -p.cover_glow.y);
-    return 0.0f;
+inline float cover_glow_radial_scale(float unit) {
+    return sqrt(-2.0f * log(1.0f - unit * 0.988891f)) / 3.0f;
+}
+
+inline float2 cover_glow_offset(uint sample, uint aperture, constant SpatialParams& p) {
+    const float turns = float(aperture) * 0.38196602f;
+    const float phase = fract(turns);
+    const float angle = turns * 2.0f * PI;
+    const float sine = sin(angle);
+    const float cosine = cos(angle);
+    const float2 axis_x = float2(cosine, sine);
+    const float2 axis_y = float2(-sine, cosine);
+    const float2 diagonal = (axis_x + axis_y) * 0.7071067811865475f;
+    const float2 cross = (axis_x - axis_y) * 0.7071067811865475f;
+    const float core_a = p.cover_glow.x * cover_glow_radial_scale(fract(phase + 0.125f));
+    const float core_b = p.cover_glow.x * cover_glow_radial_scale(fract(phase + 0.625f));
+    const float tail_a = p.cover_glow.y * cover_glow_radial_scale(fract(phase + 0.375f));
+    const float tail_b = p.cover_glow.y * cover_glow_radial_scale(fract(phase + 0.875f));
+    if (sample == 1) return axis_x * core_a;
+    if (sample == 2) return -axis_x * core_a;
+    if (sample == 3) return axis_y * core_b;
+    if (sample == 4) return -axis_y * core_b;
+    if (sample == 5) return diagonal * tail_a;
+    if (sample == 6) return -diagonal * tail_a;
+    if (sample == 7) return cross * tail_b;
+    if (sample == 8) return -cross * tail_b;
+    return float2(0.0f);
 }
 
 inline float cover_glow_weight(uint sample, constant SpatialParams& p) {
@@ -94,17 +112,25 @@ inline float2 distort_point(float2 point, constant SpatialParams& p) {
 
 inline bool inverse_distortion(float2 observed, constant SpatialParams& p, thread float2& ideal) {
     ideal = observed;
-    constexpr float epsilon = 1.0e-4f;
     for (uint iteration = 0; iteration < 12; ++iteration) {
         float2 projected = distort_point(ideal, p);
         float2 residual = observed - projected;
         if (max(abs(residual.x), abs(residual.y)) < 1.0e-6f) return true;
-        float2 dx = distort_point(ideal + float2(epsilon, 0.0f), p);
-        float2 dy = distort_point(ideal + float2(0.0f, epsilon), p);
-        float j00 = (dx.x - projected.x) / epsilon;
-        float j10 = (dx.y - projected.y) / epsilon;
-        float j01 = (dy.x - projected.x) / epsilon;
-        float j11 = (dy.y - projected.y) / epsilon;
+        float radius2 = dot(ideal, ideal);
+        float radius4 = radius2 * radius2;
+        float k1 = p.lens_shift_radial01.z;
+        float k2 = p.lens_shift_radial01.w;
+        float k3 = p.lens_radial2_tangential.x;
+        float p1 = p.lens_radial2_tangential.y;
+        float p2 = p.lens_radial2_tangential.z;
+        float radial = 1.0f + k1 * radius2 + k2 * radius4 + k3 * radius4 * radius2;
+        float radial_slope = k1 + 2.0f * k2 * radius2 + 3.0f * k3 * radius4;
+        float radial_dx = 2.0f * ideal.x * radial_slope;
+        float radial_dy = 2.0f * ideal.y * radial_slope;
+        float j00 = radial + ideal.x * radial_dx + 2.0f * p1 * ideal.y + 6.0f * p2 * ideal.x;
+        float j01 = ideal.x * radial_dy + 2.0f * p1 * ideal.x + 2.0f * p2 * ideal.y;
+        float j10 = ideal.y * radial_dx + 2.0f * p1 * ideal.x + 2.0f * p2 * ideal.y;
+        float j11 = radial + ideal.y * radial_dy + 6.0f * p1 * ideal.y + 2.0f * p2 * ideal.x;
         float determinant = j00 * j11 - j01 * j10;
         if (!isfinite(determinant) || determinant <= 1.0e-8f) return false;
         ideal += float2(j11 * residual.x - j01 * residual.y,
@@ -119,9 +145,19 @@ inline float radical_inverse(uint value) {
     return float(reverse_bits(value)) * (1.0f / 4294967296.0f);
 }
 
-inline float2 aperture_sample(uint index) {
+inline float aperture_rotation_turns(uint row, uint column) {
+    uint value = column * 0x9E3779B9u ^ row * 0x85EBCA6Bu;
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    value *= 0x846CA68Bu;
+    value ^= value >> 16;
+    return float(value >> 8) * (1.0f / 16777216.0f);
+}
+
+inline float2 aperture_sample(uint index, float rotation_turns) {
     float radius = sqrt(radical_inverse(index + 1));
-    float angle = float(index) * GOLDEN_ANGLE;
+    float angle = float(index) * GOLDEN_ANGLE + rotation_turns * 2.0f * PI;
     return radius * float2(cos(angle), sin(angle));
 }
 
@@ -211,6 +247,22 @@ inline float2 transmitted_uv(RayHit hit, constant SpatialParams& p) {
     return hit.uv + float2(offset.x / p.panel_geometry.x, -offset.y / p.panel_geometry.y);
 }
 
+inline float environment_rectangle(float3 direction, float2 center,
+                                    float2 half_extent, float softness) {
+    return (1.0f - smoothstep(half_extent.x - softness, half_extent.x + softness,
+                abs(direction.x - center.x)))
+        * (1.0f - smoothstep(half_extent.y - softness, half_extent.y + softness,
+                abs(direction.y - center.y)))
+        * smoothstep(0.0f, 0.12f, direction.z);
+}
+
+inline float environment_circle(float3 direction, float3 center,
+                                 float radius_degrees, float softness) {
+    float alignment = clamp(dot(direction, normalize(center)), -1.0f, 1.0f);
+    float edge = cos(radius_degrees * PI / 180.0f);
+    return smoothstep(edge - softness, edge + softness, alignment);
+}
+
 inline float3 environment_radiance(float3 direction, constant SpatialParams& p) {
     direction = normalize(direction);
     float rotation_sine = sin(p.environment_direction.w);
@@ -225,14 +277,14 @@ inline float3 environment_radiance(float3 direction, constant SpatialParams& p) 
     float softness = 0.005f + p.cover_absorption_roughness.w * 0.35f;
     float key_amount = smoothstep(edge - softness, edge + softness, alignment);
     float pattern_amount = 0.0f;
+    float pattern_mean = 0.0f;
     if (p.panel_meta.w == 1) {
-        float large_x = 1.0f - smoothstep(0.30f - softness, 0.30f + softness, abs(direction.x + 0.48f));
-        float large_y = 1.0f - smoothstep(0.42f - softness, 0.42f + softness, abs(direction.y - 0.02f));
-        float large = large_x * large_y * smoothstep(0.0f, 0.12f, direction.z);
-        float top_x = 1.0f - smoothstep(0.46f - softness, 0.46f + softness, abs(direction.x - 0.18f));
-        float top_y = 1.0f - smoothstep(0.16f - softness, 0.16f + softness, abs(direction.y - 0.68f));
-        float top = top_x * top_y * smoothstep(0.0f, 0.12f, direction.z);
+        float large = environment_rectangle(direction, float2(-0.48f, 0.02f),
+            float2(0.30f, 0.42f), softness);
+        float top = environment_rectangle(direction, float2(0.18f, 0.68f),
+            float2(0.46f, 0.16f), softness);
         pattern_amount = min(1.0f, large + top * 0.55f + key_amount * 0.08f);
+        pattern_mean = 0.14f;
     } else if (p.panel_meta.w == 2) {
         float u = atan2(direction.x, direction.z) / (2.0f * PI) + 0.5f;
         float v = asin(direction.y) / PI + 0.5f;
@@ -242,9 +294,40 @@ inline float3 environment_radiance(float3 direction, constant SpatialParams& p) 
         float stop_band = clamp(floor(u * 8.0f), 0.0f, 7.0f);
         float calibrated = pow(2.0f, stop_band - 7.0f);
         pattern_amount = max(lines, calibrated);
+        pattern_mean = 0.19f;
+    } else if (p.panel_meta.w == 3) {
+        float left = environment_rectangle(direction, float2(-0.56f, 0.72f),
+            float2(0.18f, 0.055f), softness);
+        float center = environment_rectangle(direction, float2(0.0f, 0.72f),
+            float2(0.18f, 0.055f), softness);
+        float right = environment_rectangle(direction, float2(0.56f, 0.72f),
+            float2(0.18f, 0.055f), softness);
+        pattern_amount = min(1.0f, left + center + right + key_amount * 0.12f);
+        pattern_mean = 0.045f;
+    } else if (p.panel_meta.w == 4) {
+        float window = environment_rectangle(direction, float2(-0.58f, 0.12f),
+            float2(0.28f, 0.52f), softness);
+        float sky = environment_rectangle(direction, float2(0.18f, 0.78f),
+            float2(0.68f, 0.08f), softness);
+        pattern_amount = min(1.0f, window + sky * 0.12f + key_amount * 0.18f);
+        pattern_mean = 0.12f;
+    } else if (p.panel_meta.w == 5) {
+        float upper = environment_circle(direction, float3(-0.34f, 0.46f, 0.82f),
+            5.0f, softness);
+        float side = environment_circle(direction, float3(0.64f, 0.10f, 0.76f),
+            4.0f, softness);
+        pattern_amount = min(1.0f, key_amount + upper * 0.62f + side * 0.45f);
+        pattern_mean = 0.025f;
+    } else if (p.panel_meta.w == 6) {
+        float softbox = environment_rectangle(direction, float2(-0.50f, 0.16f),
+            float2(0.30f, 0.38f), softness);
+        float ceiling = environment_rectangle(direction, float2(0.12f, 0.76f),
+            float2(0.58f, 0.08f), softness);
+        pattern_amount = min(1.0f, softbox * 0.72f + ceiling * 0.18f + key_amount);
+        pattern_mean = 0.11f;
     }
     float redistribution = clamp(p.cover_absorption_roughness.w * 0.75f + p.cover_haze.x * 0.25f, 0.0f, 1.0f);
-    pattern_amount = mix(pattern_amount, 0.5f, redistribution);
+    pattern_amount = mix(pattern_amount, pattern_mean, redistribution);
     return (p.environment_ambient_strength.xyz + p.environment_key_radius.xyz * pattern_amount)
         * p.environment_ambient_strength.w;
 }
@@ -441,6 +524,7 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
     if (index >= pixel_count) return;
     uint local_x = index % p.window.x; uint local_y = index / p.window.x;
     uint column = p.raster.z + local_x; uint row = p.raster.w + local_y;
+    float aperture_rotation = 0.0f;
     float2 center_ndc = float2((float(column) + 0.5f) / float(p.raster.x) * 2.0f - 1.0f,
                                (float(row) + 0.5f) / float(p.raster.y) * 2.0f - 1.0f);
     float pitch_mm = p.camera_right_sensor_width.w / float(p.raster.x);
@@ -465,7 +549,9 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
         for (uint spatial = 0; spatial < 4; ++spatial) if (ideal_valid[spatial]) {
             float3 weights = irradiance_weight(ideal_corners[spatial], p);
             for (uint aperture = 0; aperture < p.window.z; ++aperture) {
-                RayHit hit = trace_ray(ideal_corners[spatial], aperture_sample(aperture), channel, p);
+                RayHit hit = trace_ray(ideal_corners[spatial], aperture_sample(
+                    aperture, aperture_rotation
+                ), channel, p);
                 if (!hit.valid) continue;
                 float2 uv = transmitted_uv(hit, p);
                 uv_min = min(uv_min, uv); uv_max = max(uv_max, uv); count++;
@@ -483,7 +569,9 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
         for (uint aperture = 0; aperture < p.window.z; ++aperture) for (uint channel = 0; channel < 3; ++channel) {
             float2 uv_min = INFINITY; float2 uv_max = -INFINITY; float weight_sum = 0.0f; uint count = 0;
             for (uint spatial = 0; spatial < 4; ++spatial) if (ideal_valid[spatial]) {
-                RayHit hit = trace_ray(ideal_corners[spatial], aperture_sample(aperture), channel, p);
+                RayHit hit = trace_ray(ideal_corners[spatial], aperture_sample(
+                    aperture, aperture_rotation
+                ), channel, p);
                 if (!hit.valid) continue;
                 float2 uv = transmitted_uv(hit, p);
                 uv_min = min(uv_min, uv); uv_max = max(uv_max, uv);
@@ -493,7 +581,7 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
             }
             if (count == 0) continue;
             for (uint glow = 0; glow < 9; ++glow) {
-                float2 meters = cover_glow_offset(glow, p);
+                float2 meters = cover_glow_offset(glow, aperture, p);
                 float2 uv_offset = meters / p.panel_geometry.xy;
                 float2 shifted_min = clamp(uv_min + uv_offset, 0.0f, 1.0f);
                 float2 shifted_max = clamp(uv_max + uv_offset, 0.0f, 1.0f);
@@ -517,11 +605,14 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
                                            -ndc.y - 2.0f * p.lens_shift_radial01.y), p, ideal)) continue;
             float3 weights = irradiance_weight(ideal, p);
             for (uint aperture = 0; aperture < p.window.z; ++aperture) for (uint channel = 0; channel < 3; ++channel) {
-                RayHit hit = trace_ray(ideal, aperture_sample(aperture), channel, p);
+                RayHit hit = trace_ray(ideal, aperture_sample(
+                    aperture, aperture_rotation
+                ), channel, p);
                 if (!hit.valid) continue;
                 float2 uv = transmitted_uv(hit, p);
                 for (uint glow = 0; glow < 9; ++glow) {
-                    float2 shifted_uv = uv + cover_glow_offset(glow, p) / p.panel_geometry.xy;
+                    float2 shifted_uv = uv + cover_glow_offset(glow, aperture, p)
+                        / p.panel_geometry.xy;
                     if (!all(shifted_uv >= 0.0f) || !all(shifted_uv <= 1.0f)) continue;
                     on_panel = true;
                     float3 code = point_signal(shifted_uv, signal, p);
@@ -539,6 +630,7 @@ inline void evaluate_spatial_optics_pixel(device const float4* signal,
     }
     float3 acescg = float3(dot(p.panel_matrix_0.xyz, native), dot(p.panel_matrix_1.xyz, native),
                            dot(p.panel_matrix_2.xyz, native)) + reflected;
+    acescg = acescg + p.lens_veiling_glare.w * (p.lens_veiling_glare.xyz - acescg);
     output[index] = float4(acescg, on_panel ? 1.0f : 0.0f);
 }
 

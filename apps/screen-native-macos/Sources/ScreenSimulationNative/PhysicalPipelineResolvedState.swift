@@ -41,6 +41,7 @@ struct PhysicalPipelineResolvedState {
         scene.lens_transmission_rgb = (1, 1, 1)
         scene.lens_center_softness_micrometers = 0
         scene.lens_edge_softness_micrometers = 0
+        scene.lens_veiling_glare_fraction = 0
 
         var shutter = ScreenShutterMotionParametersV2()
         shutter.abi_version = version

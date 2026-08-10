@@ -38,8 +38,9 @@ use screen_cover::{
 use screen_geometry::APERTURE_SAMPLE_COUNT;
 use screen_geometry::{
     CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion, ProjectedScreen,
-    ScreenSample, ScreenTrack, panel_uv_aperture_samples, panel_uv_aperture_samples_with_count,
-    panel_uv_at_viewport, project_scene_point, project_screen,
+    ScreenSample, ScreenTrack, panel_uv_aperture_samples,
+    panel_uv_aperture_samples_boxed_with_count, panel_uv_aperture_samples_with_count,
+    panel_uv_at_viewport, project_scene_point, project_screen, projected_screen_gate_coverage,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{
@@ -237,7 +238,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
     CaptureDevicePreset {
         id: "iphone-16e-main-48mp",
         label: "iPhone 16e Main · 48 MP",
-        calibration: "Calibrated approximation · 4.2 mm EXIF / 26 mm equivalent",
+        calibration: "Developed-image approximation · 4.2 mm EXIF / 26 mm equivalent · residual post-GDC distortion",
         sensor: SensorProfile {
             native_width: 8_064,
             native_height: 6_048,
@@ -276,6 +277,120 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         default_temporal_samples: 1,
         default_readout_duration_milliseconds: 12.0,
     },
+    CaptureDevicePreset {
+        id: "canon-powershot-a470-reference",
+        label: "Canon PowerShot A470 · ECU-02 reference approximation",
+        calibration: "ECU-02 developed-image camera/lens · residual distortion, sensor and radiometry approximated",
+        sensor: SensorProfile {
+            native_width: 3_072,
+            native_height: 2_304,
+            bayer_pattern: BayerPattern::Rggb,
+            acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
+            saturation_illuminance_seconds: LinearRgb::new(0.9, 0.9, 0.9),
+            full_well_electrons: 18_000.0,
+            dark_current_electrons_per_second: 0.12,
+            read_noise_electrons_rms: 3.0,
+            analog_gain: 1.0,
+            adc_bits: 12,
+            bloom: SensorBloomProfile::REFERENCE,
+        },
+        gate_width: Millimeters(5.76),
+        gate_height: Millimeters(4.32),
+        default_lens_preset_id: "canon-a470-wide-reference",
+        compatible_lens_preset_ids: &["canon-a470-wide-reference"],
+        lens_association_policy: LensAssociationPolicy::Fixed,
+        f_stop: 3.0,
+        reference_exposure_index: 200.0,
+        middle_gray_illuminance_seconds_at_reference_ei: 0.1,
+        radiometric_calibration: CameraRadiometricCalibration {
+            base_exposure_index: 200.0,
+            reference_lambertian_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_t_stop: 3.0,
+            reference_shutter_seconds: 1.0 / 60.0,
+            effective_sensor_exposure_scale: 12.0,
+            provenance: "ECU-02 identifies Canon A470, 6.3 mm, f/3 and ISO 200; gate, full well and effective sensor-chain constant are reference approximations.",
+        },
+        default_shutter_angle_degrees: 144.0,
+        default_temporal_samples: 1,
+        default_readout_duration_milliseconds: 20.0,
+    },
+    CaptureDevicePreset {
+        id: "iphone-14-pro-main-reference",
+        label: "iPhone 14 Pro main · DCID reference approximation",
+        calibration: "DCID developed-image capture family · residual distortion and sensor/radiometry approximated",
+        sensor: SensorProfile {
+            native_width: 8_064,
+            native_height: 6_048,
+            bayer_pattern: BayerPattern::Rggb,
+            acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
+            saturation_illuminance_seconds: LinearRgb::new(0.8, 0.8, 0.8),
+            full_well_electrons: 12_000.0,
+            dark_current_electrons_per_second: 0.05,
+            read_noise_electrons_rms: 1.4,
+            analog_gain: 1.0,
+            adc_bits: 12,
+            bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
+        },
+        gate_width: Millimeters(9.8),
+        gate_height: Millimeters(7.35),
+        default_lens_preset_id: "iphone-14-pro-main-reference",
+        compatible_lens_preset_ids: &["iphone-14-pro-main-reference"],
+        lens_association_policy: LensAssociationPolicy::Fixed,
+        f_stop: 1.78,
+        reference_exposure_index: 100.0,
+        middle_gray_illuminance_seconds_at_reference_ei: 0.1,
+        radiometric_calibration: CameraRadiometricCalibration {
+            base_exposure_index: 100.0,
+            reference_lambertian_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_t_stop: 1.78,
+            reference_shutter_seconds: 1.0 / 60.0,
+            effective_sensor_exposure_scale: 4.224_533_6,
+            provenance: "DCID identifies the iPhone 14 Pro capture family; physical gate, full well and effective sensor-chain constant are explicit reference approximations.",
+        },
+        default_shutter_angle_degrees: 144.0,
+        default_temporal_samples: 1,
+        default_readout_duration_milliseconds: 12.0,
+    },
+    CaptureDevicePreset {
+        id: "iphone-14-pro-ultrawide-reference",
+        label: "iPhone 14 Pro ultra-wide · DCID reference approximation",
+        calibration: "DCID developed-image capture family · residual distortion and sensor/radiometry approximated",
+        sensor: SensorProfile {
+            native_width: 4_032,
+            native_height: 3_024,
+            bayer_pattern: BayerPattern::Rggb,
+            acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
+            saturation_illuminance_seconds: LinearRgb::new(0.8, 0.8, 0.8),
+            full_well_electrons: 8_000.0,
+            dark_current_electrons_per_second: 0.05,
+            read_noise_electrons_rms: 1.7,
+            analog_gain: 1.0,
+            adc_bits: 12,
+            bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
+        },
+        gate_width: Millimeters(5.6),
+        gate_height: Millimeters(4.2),
+        default_lens_preset_id: "iphone-14-pro-ultrawide-reference",
+        compatible_lens_preset_ids: &["iphone-14-pro-ultrawide-reference"],
+        lens_association_policy: LensAssociationPolicy::Fixed,
+        f_stop: 2.2,
+        reference_exposure_index: 100.0,
+        middle_gray_illuminance_seconds_at_reference_ei: 0.1,
+        radiometric_calibration: CameraRadiometricCalibration {
+            base_exposure_index: 100.0,
+            reference_lambertian_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_t_stop: 2.2,
+            reference_shutter_seconds: 1.0 / 60.0,
+            effective_sensor_exposure_scale: 6.453_333,
+            provenance: "DCID identifies the iPhone 14 Pro capture family; physical gate, full well and effective sensor-chain constant are explicit reference approximations.",
+        },
+        default_shutter_angle_degrees: 144.0,
+        default_temporal_samples: 1,
+        default_readout_duration_milliseconds: 14.0,
+    },
 ];
 
 pub fn capture_device_preset(id: &str) -> Option<CaptureDevicePreset> {
@@ -292,6 +407,29 @@ pub enum RasterPlacement {
     FillCrop,
     Stretch,
     OneToOne,
+}
+
+/// Fraction of the active device raster occupied by authored source samples.
+/// Fit and One-to-One may leave an explicitly black feeder surround; Fill/Crop
+/// and Stretch occupy the complete active raster.
+pub fn placed_signal_area_fraction(
+    placement: RasterPlacement,
+    source_width: u32,
+    source_height: u32,
+    device_width: u32,
+    device_height: u32,
+) -> f32 {
+    let source_aspect = source_width as f32 / source_height as f32;
+    let device_aspect = device_width as f32 / device_height as f32;
+    match placement {
+        RasterPlacement::Fit => (source_aspect / device_aspect)
+            .min(device_aspect / source_aspect)
+            .clamp(0.0, 1.0),
+        RasterPlacement::FillCrop | RasterPlacement::Stretch => 1.0,
+        RasterPlacement::OneToOne => ((source_width as f32 / device_width as f32).min(1.0)
+            * (source_height as f32 / device_height as f32).min(1.0))
+        .clamp(0.0, 1.0),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -362,6 +500,28 @@ pub struct PhysicalPipelineExecutionPlan {
     pub development_enabled: bool,
     pub frame_index: i64,
     pub requested_intermediate: PhysicalIntermediate,
+}
+
+/// Direct full-pipeline aperture integration policy. Aperture and sensor-footprint
+/// samples are independent axes. The complete physical-frame evaluator uses this
+/// one deterministic point-pupil policy at every quality level.
+pub fn physical_pipeline_aperture_sample_count(quality: FlatPanelQuality) -> usize {
+    match quality {
+        FlatPanelQuality::Draft
+        | FlatPanelQuality::Medium
+        | FlatPanelQuality::High
+        | FlatPanelQuality::Native => 32,
+    }
+}
+
+fn physical_pipeline_aperture_rotation_turns(x: u32, y: u32) -> f32 {
+    let mut value = x.wrapping_mul(0x9E37_79B9) ^ y.wrapping_mul(0x85EB_CA6B);
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7FEB_352D);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846C_A68B);
+    value ^= value >> 16;
+    ((value >> 8) as f32) * (1.0 / 16_777_216.0)
 }
 
 impl PhysicalPipelineExecutionPlan {
@@ -721,6 +881,76 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             evaluator.native_channel(value, 2),
         )
     });
+    let veiling_glare_gate_average =
+        {
+            let camera = resolved_scene.0;
+            let screen = resolved_scene.1;
+            let fraction = camera.lens.veiling_glare_fraction;
+            if fraction == 0.0 {
+                LinearRgb::new(0.0, 0.0, 0.0)
+            } else {
+                let reciprocal = 1.0 / prepared.source.pixels.len() as f32;
+                let mean_native = prepared.source.pixels.iter().fold(
+                    LinearRgb::new(0.0, 0.0, 0.0),
+                    |sum, pixel| {
+                        LinearRgb::new(
+                            sum.r + evaluator.native_channel(*pixel, 0),
+                            sum.g + evaluator.native_channel(*pixel, 1),
+                            sum.b + evaluator.native_channel(*pixel, 2),
+                        )
+                    },
+                );
+                let mean_native = LinearRgb::new(
+                    mean_native.r * reciprocal,
+                    mean_native.g * reciprocal,
+                    mean_native.b * reciprocal,
+                );
+                let projected = project_screen(
+                    camera,
+                    screen,
+                    plan.panel.active_width,
+                    plan.panel.active_height,
+                    sampling.effective_width as f32 / sampling.effective_height as f32,
+                );
+                let coverage = projected.map_or(0.0, projected_screen_gate_coverage)
+                    * placed_signal_area_fraction(
+                        plan.placement,
+                        source_width,
+                        source_height,
+                        plan.panel.native_width,
+                        plan.panel.native_height,
+                    );
+                let facing = projected.map_or(0.0, |value| value.facing_ratio);
+                let transmission = cover.transmission(facing);
+                let pupil = core::f32::consts::PI * 0.25 / (camera.f_stop * camera.f_stop);
+                let weighted_native = LinearRgb::new(
+                    mean_native.r
+                        * evaluator.angular_channel(facing, 0)
+                        * camera.lens.transmission_rgb[0]
+                        * transmission.r
+                        * pupil
+                        * coverage,
+                    mean_native.g
+                        * evaluator.angular_channel(facing, 1)
+                        * camera.lens.transmission_rgb[1]
+                        * transmission.g
+                        * pupil
+                        * coverage,
+                    mean_native.b
+                        * evaluator.angular_channel(facing, 2)
+                        * camera.lens.transmission_rgb[2]
+                        * transmission.b
+                        * pupil
+                        * coverage,
+                );
+                let converted = evaluator.native_to_acescg(weighted_native);
+                LinearRgb::new(
+                    converted.r / parameters.white_level_nits,
+                    converted.g / parameters.white_level_nits,
+                    converted.b / parameters.white_level_nits,
+                )
+            }
+        };
     let source_raster = [source_width, source_height];
     let device_raster = [plan.panel.native_width, plan.panel.native_height];
     let side = match sampling.samples_per_output_pixel {
@@ -729,6 +959,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         16 => 4,
         _ => return Err(ApplicationError::InvalidCharacterStrength),
     };
+    let physical_aperture_samples = physical_pipeline_aperture_sample_count(plan.quality);
     let output_count = u64::from(sampling.effective_width)
         .checked_mul(u64::from(sampling.effective_height))
         .and_then(|value| usize::try_from(value).ok())
@@ -748,13 +979,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             let mut cover_cosine = 0.0_f32;
             let mut cover_direction = [0.0_f32; 3];
             let mut cover_irradiance = [0.0_f32; 3];
-            let mut cover_samples = 0_u32;
+            let mut cover_weight = 0.0_f32;
+            let mut aperture_weight = 0.0_f32;
             let psf_samples_per_area = if plan.lens_amount == 0.0 {
                 1
             } else {
                 16 / (side * side)
             };
-            let total_spatial_samples = side * side * psf_samples_per_area;
             for sy in 0..side {
                 for sx in 0..side {
                     let base_minimum_uv = Vec2 {
@@ -812,188 +1043,263 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                             x: flat_center.x * 2.0 - 1.0,
                             y: flat_center.y * 2.0 - 1.0,
                         };
-                        let optical = panel_uv_aperture_samples(
+                        debug_assert_eq!(physical_aperture_samples, 32);
+                        let aperture_rotation_turns =
+                            physical_pipeline_aperture_rotation_turns(x, y);
+                        let optical_samples = panel_uv_aperture_samples_with_count::<32>(
                             resolved_scene.0,
                             resolved_scene.1,
                             plan.panel.active_width,
                             plan.panel.active_height,
                             viewport_ndc,
-                        )[sample_index as usize % screen_geometry::APERTURE_SAMPLE_COUNT];
-                        if let Some(direction) = optical.reflection_direction_local[1] {
-                            cover_cosine += optical.emission_cosine[1];
-                            cover_direction[0] += direction.x;
-                            cover_direction[1] += direction.y;
-                            cover_direction[2] += direction.z;
-                            cover_irradiance[0] += optical.irradiance_weight[0];
-                            cover_irradiance[1] += optical.irradiance_weight[1];
-                            cover_irradiance[2] += optical.irradiance_weight[2];
-                            cover_samples += 1;
-                        }
-                        let mapped_bounds = |channel: usize| {
-                            if plan.scene_geometry_amount == 0.0 && plan.lens_amount == 0.0 {
-                                return (minimum_uv, maximum_uv, 1.0);
+                            aperture_rotation_turns,
+                        );
+                        for optical in optical_samples.iter().copied() {
+                            let layer_weight = 1.0;
+                            aperture_weight += layer_weight;
+                            let aperture_cell_half_extent = [Vec2 { x: 0.0, y: 0.0 }; 3];
+                            if let Some(direction) = optical.reflection_direction_local[1] {
+                                cover_cosine += optical.emission_cosine[1] * layer_weight;
+                                cover_direction[0] += direction.x * layer_weight;
+                                cover_direction[1] += direction.y * layer_weight;
+                                cover_direction[2] += direction.z * layer_weight;
+                                cover_irradiance[0] += optical.irradiance_weight[0] * layer_weight;
+                                cover_irradiance[1] += optical.irradiance_weight[1] * layer_weight;
+                                cover_irradiance[2] += optical.irradiance_weight[2] * layer_weight;
+                                cover_weight += layer_weight;
                             }
-                            let hit = optical.panel_uv[channel];
-                            let target = hit.unwrap_or(Vec2 { x: -2.0, y: -2.0 });
-                            let center = Vec2 {
-                                x: flat_center.x
-                                    + plan.scene_geometry_amount * (target.x - flat_center.x),
-                                y: flat_center.y
-                                    + plan.scene_geometry_amount * (target.y - flat_center.y),
+                            let mapped_bounds = |channel: usize| {
+                                if plan.scene_geometry_amount == 0.0 && plan.lens_amount == 0.0 {
+                                    return (minimum_uv, maximum_uv, 1.0);
+                                }
+                                let hit = optical.panel_uv[channel];
+                                let target = hit.unwrap_or(Vec2 { x: -2.0, y: -2.0 });
+                                let center = Vec2 {
+                                    x: flat_center.x
+                                        + plan.scene_geometry_amount * (target.x - flat_center.x),
+                                    y: flat_center.y
+                                        + plan.scene_geometry_amount * (target.y - flat_center.y),
+                                };
+                                let angular = if hit.is_some() {
+                                    evaluator
+                                        .angular_channel(optical.emission_cosine[channel], channel)
+                                        * optical.irradiance_weight[channel]
+                                } else {
+                                    0.0
+                                };
+                                (
+                                    Vec2 {
+                                        x: center.x
+                                            - (maximum_uv.x - minimum_uv.x) * 0.5
+                                            - aperture_cell_half_extent[channel].x,
+                                        y: center.y
+                                            - (maximum_uv.y - minimum_uv.y) * 0.5
+                                            - aperture_cell_half_extent[channel].y,
+                                    },
+                                    Vec2 {
+                                        x: center.x
+                                            + (maximum_uv.x - minimum_uv.x) * 0.5
+                                            + aperture_cell_half_extent[channel].x,
+                                        y: center.y
+                                            + (maximum_uv.y - minimum_uv.y) * 0.5
+                                            + aperture_cell_half_extent[channel].y,
+                                    },
+                                    1.0 + plan.scene_geometry_amount * (angular - 1.0),
+                                )
                             };
-                            let angular = if hit.is_some() {
-                                evaluator.angular_channel(optical.emission_cosine[channel], channel)
-                                    * optical.irradiance_weight[channel]
-                            } else {
-                                0.0
-                            };
-                            (
-                                Vec2 {
-                                    x: center.x - (maximum_uv.x - minimum_uv.x) * 0.5,
-                                    y: center.y - (maximum_uv.y - minimum_uv.y) * 0.5,
-                                },
-                                Vec2 {
-                                    x: center.x + (maximum_uv.x - minimum_uv.x) * 0.5,
-                                    y: center.y + (maximum_uv.y - minimum_uv.y) * 0.5,
-                                },
-                                1.0 + plan.scene_geometry_amount * (angular - 1.0),
-                            )
-                        };
-                        for channel in 0..3 {
-                            let (channel_minimum, channel_maximum, optical_weight) =
-                                mapped_bounds(channel);
-                            let area = sample_placed_area(
-                                &prepared.integral,
-                                &emission_integral,
-                                source_raster,
+                            for channel in 0..3 {
+                                let (channel_minimum, channel_maximum, optical_weight) =
+                                    mapped_bounds(channel);
+                                let optical_weight = optical_weight * layer_weight;
+                                let area = sample_placed_area(
+                                    &prepared.integral,
+                                    &emission_integral,
+                                    source_raster,
+                                    device_raster,
+                                    plan.placement,
+                                    channel_minimum,
+                                    channel_maximum,
+                                );
+                                let device_minimum = Vec2 {
+                                    x: channel_minimum.x * plan.panel.native_width as f32,
+                                    y: channel_minimum.y * plan.panel.native_height as f32,
+                                };
+                                let device_maximum = Vec2 {
+                                    x: channel_maximum.x * plan.panel.native_width as f32,
+                                    y: channel_maximum.y * plan.panel.native_height as f32,
+                                };
+                                let base = evaluator.native_channel_over_device_rect(
+                                    area.device_code,
+                                    device_minimum,
+                                    device_maximum,
+                                    channel,
+                                );
+                                let spread_at = |cover_offset_meters: [f32; 2]| {
+                                    plan.panel_light_spread
+                                        .samples_for_channel(channel)
+                                        .into_iter()
+                                        .map(|sample| {
+                                            let offset = Vec2 {
+                                                x: (sample.offset_meters.x
+                                                    + cover_offset_meters[0])
+                                                    / plan.panel.active_width.0,
+                                                y: (sample.offset_meters.y
+                                                    + cover_offset_meters[1])
+                                                    / plan.panel.active_height.0,
+                                            };
+                                            let shifted_minimum = Vec2 {
+                                                x: channel_minimum.x + offset.x,
+                                                y: channel_minimum.y + offset.y,
+                                            };
+                                            let shifted_maximum = Vec2 {
+                                                x: channel_maximum.x + offset.x,
+                                                y: channel_maximum.y + offset.y,
+                                            };
+                                            let shifted = sample_placed_area(
+                                                &prepared.integral,
+                                                &emission_integral,
+                                                source_raster,
+                                                device_raster,
+                                                plan.placement,
+                                                shifted_minimum,
+                                                shifted_maximum,
+                                            );
+                                            evaluator.native_channel_over_device_rect(
+                                                shifted.device_code,
+                                                Vec2 {
+                                                    x: shifted_minimum.x
+                                                        * plan.panel.native_width as f32,
+                                                    y: shifted_minimum.y
+                                                        * plan.panel.native_height as f32,
+                                                },
+                                                Vec2 {
+                                                    x: shifted_maximum.x
+                                                        * plan.panel.native_width as f32,
+                                                    y: shifted_maximum.y
+                                                        * plan.panel.native_height as f32,
+                                                },
+                                                channel,
+                                            ) * sample.weight
+                                        })
+                                        .sum::<f32>()
+                                };
+                                let native_over_bounds = |minimum: Vec2, maximum: Vec2| {
+                                    let sampled = sample_placed_area(
+                                        &prepared.integral,
+                                        &emission_integral,
+                                        source_raster,
+                                        device_raster,
+                                        plan.placement,
+                                        minimum,
+                                        maximum,
+                                    );
+                                    evaluator.native_channel_over_device_rect(
+                                        sampled.device_code,
+                                        Vec2 {
+                                            x: minimum.x * plan.panel.native_width as f32,
+                                            y: minimum.y * plan.panel.native_height as f32,
+                                        },
+                                        Vec2 {
+                                            x: maximum.x * plan.panel.native_width as f32,
+                                            y: maximum.y * plan.panel.native_height as f32,
+                                        },
+                                        channel,
+                                    )
+                                };
+                                let value = if plan.panel_light_spread.character_strength == 0.0 {
+                                    base * optical_weight
+                                } else {
+                                    spread_at([0.0, 0.0]) * optical_weight
+                                };
+                                let glow_value = if plan.cover.glow.character_strength == 0.0 {
+                                    value
+                                } else {
+                                    let glow = plan.cover.glow;
+                                    let scattered = glow.scatter_fraction * glow.character_strength;
+                                    let extent = |radius_millimeters: f32| Vec2 {
+                                        x: radius_millimeters * (0.001 / 3.0)
+                                            / plan.panel.active_width.0,
+                                        y: radius_millimeters * (0.001 / 3.0)
+                                            / plan.panel.active_height.0,
+                                    };
+                                    let core = extent(glow.core_radius_millimeters);
+                                    let tail = extent(glow.tail_radius_millimeters);
+                                    let core_blur = native_over_bounds(
+                                        Vec2 {
+                                            x: channel_minimum.x - core.x,
+                                            y: channel_minimum.y - core.y,
+                                        },
+                                        Vec2 {
+                                            x: channel_maximum.x + core.x,
+                                            y: channel_maximum.y + core.y,
+                                        },
+                                    );
+                                    let tail_blur = native_over_bounds(
+                                        Vec2 {
+                                            x: channel_minimum.x - tail.x,
+                                            y: channel_minimum.y - tail.y,
+                                        },
+                                        Vec2 {
+                                            x: channel_maximum.x + tail.x,
+                                            y: channel_maximum.y + tail.y,
+                                        },
+                                    );
+                                    value * (1.0 - scattered)
+                                        + core_blur
+                                            * scattered
+                                            * (1.0 - glow.tail_fraction)
+                                            * optical_weight
+                                        + tail_blur
+                                            * scattered
+                                            * glow.tail_fraction
+                                            * optical_weight
+                                };
+                                let base = base * optical_weight;
+                                match channel {
+                                    0 => {
+                                        physical_native.r += base;
+                                        spread_native.r += value;
+                                        glow_native.r += glow_value;
+                                        continuous_native.r +=
+                                            area.linear_native_emission.r * optical_weight;
+                                        average_device_code.r += area.device_code.r * layer_weight;
+                                    }
+                                    1 => {
+                                        physical_native.g += base;
+                                        spread_native.g += value;
+                                        glow_native.g += glow_value;
+                                        continuous_native.g +=
+                                            area.linear_native_emission.g * optical_weight;
+                                        average_device_code.g += area.device_code.g * layer_weight;
+                                    }
+                                    _ => {
+                                        physical_native.b += base;
+                                        spread_native.b += value;
+                                        glow_native.b += glow_value;
+                                        continuous_native.b +=
+                                            area.linear_native_emission.b * optical_weight;
+                                        average_device_code.b += area.device_code.b * layer_weight;
+                                    }
+                                }
+                            }
+                            let (ideal_minimum, ideal_maximum, _) = mapped_bounds(1);
+                            let value = sample_placed_acescg_area(
+                                source_width,
+                                source_height,
+                                &source_acescg,
                                 device_raster,
                                 plan.placement,
-                                channel_minimum,
-                                channel_maximum,
+                                ideal_minimum,
+                                ideal_maximum,
                             );
-                            let device_minimum = Vec2 {
-                                x: channel_minimum.x * plan.panel.native_width as f32,
-                                y: channel_minimum.y * plan.panel.native_height as f32,
-                            };
-                            let device_maximum = Vec2 {
-                                x: channel_maximum.x * plan.panel.native_width as f32,
-                                y: channel_maximum.y * plan.panel.native_height as f32,
-                            };
-                            let base = evaluator.native_channel_over_device_rect(
-                                area.device_code,
-                                device_minimum,
-                                device_maximum,
-                                channel,
-                            );
-                            let spread_at = |cover_offset_meters: [f32; 2]| {
-                                plan.panel_light_spread
-                                    .samples_for_channel(channel)
-                                    .into_iter()
-                                    .map(|sample| {
-                                        let offset = Vec2 {
-                                            x: (sample.offset_meters.x + cover_offset_meters[0])
-                                                / plan.panel.active_width.0,
-                                            y: (sample.offset_meters.y + cover_offset_meters[1])
-                                                / plan.panel.active_height.0,
-                                        };
-                                        let shifted_minimum = Vec2 {
-                                            x: channel_minimum.x + offset.x,
-                                            y: channel_minimum.y + offset.y,
-                                        };
-                                        let shifted_maximum = Vec2 {
-                                            x: channel_maximum.x + offset.x,
-                                            y: channel_maximum.y + offset.y,
-                                        };
-                                        let shifted = sample_placed_area(
-                                            &prepared.integral,
-                                            &emission_integral,
-                                            source_raster,
-                                            device_raster,
-                                            plan.placement,
-                                            shifted_minimum,
-                                            shifted_maximum,
-                                        );
-                                        evaluator.native_channel_over_device_rect(
-                                            shifted.device_code,
-                                            Vec2 {
-                                                x: shifted_minimum.x
-                                                    * plan.panel.native_width as f32,
-                                                y: shifted_minimum.y
-                                                    * plan.panel.native_height as f32,
-                                            },
-                                            Vec2 {
-                                                x: shifted_maximum.x
-                                                    * plan.panel.native_width as f32,
-                                                y: shifted_maximum.y
-                                                    * plan.panel.native_height as f32,
-                                            },
-                                            channel,
-                                        ) * sample.weight
-                                    })
-                                    .sum::<f32>()
-                            };
-                            let value = if plan.panel_light_spread.character_strength == 0.0 {
-                                base * optical_weight
-                            } else {
-                                spread_at([0.0, 0.0]) * optical_weight
-                            };
-                            let glow_value = if plan.cover.glow.character_strength == 0.0 {
-                                value
-                            } else {
-                                plan.cover
-                                    .glow
-                                    .samples()
-                                    .map_err(ApplicationError::Cover)?
-                                    .into_iter()
-                                    .map(|sample| spread_at(sample.offset_meters) * sample.weight)
-                                    .sum::<f32>()
-                                    * optical_weight
-                            };
-                            let base = base * optical_weight;
-                            match channel {
-                                0 => {
-                                    physical_native.r += base;
-                                    spread_native.r += value;
-                                    glow_native.r += glow_value;
-                                    continuous_native.r +=
-                                        area.linear_native_emission.r * optical_weight;
-                                    average_device_code.r += area.device_code.r;
-                                }
-                                1 => {
-                                    physical_native.g += base;
-                                    spread_native.g += value;
-                                    glow_native.g += glow_value;
-                                    continuous_native.g +=
-                                        area.linear_native_emission.g * optical_weight;
-                                    average_device_code.g += area.device_code.g;
-                                }
-                                _ => {
-                                    physical_native.b += base;
-                                    spread_native.b += value;
-                                    glow_native.b += glow_value;
-                                    continuous_native.b +=
-                                        area.linear_native_emission.b * optical_weight;
-                                    average_device_code.b += area.device_code.b;
-                                }
+                            for channel in 0..4 {
+                                ideal[channel] += value[channel] * layer_weight;
                             }
-                        }
-                        let (ideal_minimum, ideal_maximum, _) = mapped_bounds(1);
-                        let value = sample_placed_acescg_area(
-                            source_width,
-                            source_height,
-                            &source_acescg,
-                            device_raster,
-                            plan.placement,
-                            ideal_minimum,
-                            ideal_maximum,
-                        );
-                        for channel in 0..4 {
-                            ideal[channel] += value[channel];
                         }
                     }
                 }
             }
-            let reciprocal = 1.0 / total_spatial_samples as f32;
+            let reciprocal = 1.0 / aperture_weight;
             physical_native.r *= reciprocal;
             physical_native.g *= reciprocal;
             physical_native.b *= reciprocal;
@@ -1093,10 +1399,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             let temporal_gain =
                 1.0 + plan.temporal_emission_amount * (resolved_temporal_gain - 1.0);
             let temporally_integrated = staged.map(|value| value * temporal_gain);
-            let reciprocal_cover = if cover_samples == 0 {
+            let reciprocal_cover = if cover_weight == 0.0 {
                 1.0
             } else {
-                1.0 / cover_samples as f32
+                1.0 / cover_weight
             };
             let direction_length = (cover_direction[0] * cover_direction[0]
                 + cover_direction[1] * cover_direction[1]
@@ -1127,6 +1433,17 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     ),
                 },
             );
+            let glare_fraction = resolved_scene.0.lens.veiling_glare_fraction;
+            let temporal_gate_average = LinearRgb::new(
+                veiling_glare_gate_average.r * temporal_gain,
+                veiling_glare_gate_average.g * temporal_gain,
+                veiling_glare_gate_average.b * temporal_gain,
+            );
+            let glared = LinearRgb::new(
+                covered.r + glare_fraction * (temporal_gate_average.r - covered.r),
+                covered.g + glare_fraction * (temporal_gate_average.g - covered.g),
+                covered.b + glare_fraction * (temporal_gate_average.b - covered.b),
+            );
             let exposure_duration = plan
                 .shutter_close
                 .checked_sub(plan.shutter_open)
@@ -1135,9 +1452,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 * 2.0_f32.powf(-plan.shutter_motion.neutral_density_stops))
             .powf(plan.shutter_motion_amount);
             let shuttered = LinearRgb::new(
-                covered.r * shutter_scale,
-                covered.g * shutter_scale,
-                covered.b * shutter_scale,
+                glared.r * shutter_scale,
+                glared.g * shutter_scale,
+                glared.b * shutter_scale,
             );
             let selected = match plan.requested_intermediate {
                 PhysicalIntermediate::SourceAcesCg => ideal[0..3].try_into().expect("RGB"),
@@ -1152,7 +1469,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::RelativeGeometry => temporally_integrated,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::CoverGlow => [covered.r, covered.g, covered.b],
-                PhysicalIntermediate::LensProjection => [covered.r, covered.g, covered.b],
+                PhysicalIntermediate::LensProjection => [glared.r, glared.g, glared.b],
                 PhysicalIntermediate::ShutterMotion => [shuttered.r, shuttered.g, shuttered.b],
                 PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::SensorNoise
@@ -1863,6 +2180,8 @@ pub struct SpatialOpticalPlan {
     pub cover: CoverGlassProfile,
     pub environment: ProceduralEnvironment,
     pub aperture_sample_count: u16,
+    /// Gate-average lens stray-light term in linear ACEScg irradiance.
+    pub veiling_glare_gate_average: LinearRgb,
     pub signal: SpatialSignalPlan,
 }
 
@@ -1878,6 +2197,7 @@ impl SpatialOpticalPlan {
             && self.cover == other.cover
             && self.environment == other.environment
             && self.aperture_sample_count == other.aperture_sample_count
+            && self.veiling_glare_gate_average == other.veiling_glare_gate_average
             && self.signal.has_identical_spatial_evaluation(&other.signal)
     }
 
@@ -1914,6 +2234,7 @@ impl SpatialOpticalPlan {
             matrix[1][0] * native.r + matrix[1][1] * native.g + matrix[1][2] * native.b,
             matrix[2][0] * native.r + matrix[2][1] * native.g + matrix[2][2] * native.b,
         );
+        plan.refresh_procedural_veiling_glare();
         Some(plan)
     }
 
@@ -1926,8 +2247,81 @@ impl SpatialOpticalPlan {
         plan.raster.height = region.height;
         if let SpatialSignalPlan::Procedural { time_seconds, .. } = &mut plan.signal {
             *time_seconds = time.as_seconds() as f32;
+            plan.refresh_procedural_veiling_glare();
         }
         plan
+    }
+
+    fn refresh_procedural_veiling_glare(&mut self) {
+        let SpatialSignalPlan::Procedural { pattern, .. } = self.signal else {
+            return;
+        };
+        if self.frame.camera.lens.veiling_glare_fraction == 0.0 {
+            self.veiling_glare_gate_average = LinearRgb::new(0.0, 0.0, 0.0);
+            return;
+        }
+        const OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
+        let mut mean = LinearRgb::new(0.0, 0.0, 0.0);
+        let span = self.panel.white_level_nits - self.panel.black_level_nits;
+        for y in OFFSETS {
+            for x in OFFSETS {
+                let code = diagnostic_signal(pattern, Vec2 { x, y }, self.frame.time);
+                let channel = |value: f32| {
+                    self.panel.black_level_nits
+                        + span * value.abs().powf(self.panel.eotf_gamma).copysign(value)
+                };
+                mean.r += channel(code.r);
+                mean.g += channel(code.g);
+                mean.b += channel(code.b);
+            }
+        }
+        let reciprocal = 1.0 / 16.0;
+        mean = LinearRgb::new(
+            mean.r * reciprocal,
+            mean.g * reciprocal,
+            mean.b * reciprocal,
+        );
+        let coverage = self
+            .frame
+            .projected_screen
+            .map_or(0.0, projected_screen_gate_coverage);
+        let facing = self
+            .frame
+            .projected_screen
+            .map_or(0.0, |value| value.facing_ratio);
+        let transmission = self
+            .cover
+            .evaluator(self.environment)
+            .expect("prepared cover remains valid")
+            .transmission(facing);
+        let pupil =
+            core::f32::consts::PI * 0.25 / (self.frame.camera.f_stop * self.frame.camera.f_stop);
+        let weighted = LinearRgb::new(
+            mean.r
+                * facing.powf(self.panel.angular_emission_power.r)
+                * self.frame.camera.lens.transmission_rgb[0]
+                * transmission.r
+                * pupil
+                * coverage,
+            mean.g
+                * facing.powf(self.panel.angular_emission_power.g)
+                * self.frame.camera.lens.transmission_rgb[1]
+                * transmission.g
+                * pupil
+                * coverage,
+            mean.b
+                * facing.powf(self.panel.angular_emission_power.b)
+                * self.frame.camera.lens.transmission_rgb[2]
+                * transmission.b
+                * pupil
+                * coverage,
+        );
+        let matrix = self.panel_native_to_acescg;
+        self.veiling_glare_gate_average = LinearRgb::new(
+            matrix[0][0] * weighted.r + matrix[0][1] * weighted.g + matrix[0][2] * weighted.b,
+            matrix[1][0] * weighted.r + matrix[1][1] * weighted.g + matrix[1][2] * weighted.b,
+            matrix[2][0] * weighted.r + matrix[2][1] * weighted.g + matrix[2][2] * weighted.b,
+        );
     }
 }
 
@@ -2135,6 +2529,49 @@ fn prepare_spatial_plan(
         panel_evaluator.native_to_acescg(LinearRgb::new(0.0, 1.0, 0.0)),
         panel_evaluator.native_to_acescg(LinearRgb::new(0.0, 0.0, 1.0)),
     ];
+    let mean_native = match &signal {
+        SpatialSignalPlan::Raster {
+            linear_native_emission,
+            placement,
+            width,
+            height,
+            ..
+        } => {
+            let scale = placed_signal_area_fraction(
+                *placement,
+                *width,
+                *height,
+                request.panel.native_width,
+                request.panel.native_height,
+            ) / linear_native_emission.len() as f32;
+            linear_native_emission
+                .iter()
+                .fold(LinearRgb::new(0.0, 0.0, 0.0), |sum, value| {
+                    LinearRgb::new(
+                        sum.r + value.r * scale,
+                        sum.g + value.g * scale,
+                        sum.b + value.b * scale,
+                    )
+                })
+        }
+        SpatialSignalPlan::Procedural { pattern, .. } => {
+            diagnostic_area_signal(
+                *pattern,
+                Vec2 { x: 0.0, y: 0.0 },
+                Vec2 { x: 1.0, y: 1.0 },
+                request.time,
+                panel_evaluator,
+            )
+            .linear_native_emission
+        }
+    };
+    let veiling_glare_gate_average = lens_veiling_gate_average(
+        &request,
+        frame,
+        mean_native,
+        raster.full_width as f32 / raster.full_height as f32,
+        1.0,
+    )?;
     Ok(SpatialOpticalPlan {
         frame,
         raster: raster.into(),
@@ -2165,8 +2602,61 @@ fn prepare_spatial_plan(
             request.panel,
             raster.full_width,
         ) as u16,
+        veiling_glare_gate_average,
         signal,
     })
+}
+
+fn lens_veiling_gate_average(
+    request: &OpticalRequest,
+    frame: PreparedFrame,
+    mean_native: LinearRgb,
+    viewport_aspect: f32,
+    temporal_gain: f32,
+) -> Result<LinearRgb, ApplicationError> {
+    if frame.camera.lens.veiling_glare_fraction == 0.0 {
+        return Ok(LinearRgb::new(0.0, 0.0, 0.0));
+    }
+    let evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let cover = request
+        .cover
+        .evaluator(request.environment)
+        .map_err(ApplicationError::Cover)?;
+    let projected = project_screen(
+        frame.camera,
+        frame.screen,
+        request.panel.active_width,
+        request.panel.active_height,
+        viewport_aspect,
+    );
+    let coverage = projected.map_or(0.0, projected_screen_gate_coverage);
+    let facing = projected.map_or(0.0, |value| value.facing_ratio);
+    let transmission = cover.transmission(facing);
+    let pupil = core::f32::consts::PI * 0.25 / (frame.camera.f_stop * frame.camera.f_stop);
+    let native = LinearRgb::new(
+        mean_native.r
+            * temporal_gain
+            * evaluator.angular_channel(facing, 0)
+            * frame.camera.lens.transmission_rgb[0]
+            * transmission.r
+            * pupil
+            * coverage,
+        mean_native.g
+            * temporal_gain
+            * evaluator.angular_channel(facing, 1)
+            * frame.camera.lens.transmission_rgb[1]
+            * transmission.g
+            * pupil
+            * coverage,
+        mean_native.b
+            * temporal_gain
+            * evaluator.angular_channel(facing, 2)
+            * frame.camera.lens.transmission_rgb[2]
+            * transmission.b
+            * pupil
+            * coverage,
+    );
+    Ok(evaluator.native_to_acescg(native))
 }
 
 fn validate_character_strength(strength: f32) -> Result<(), ApplicationError> {
@@ -3958,6 +4448,14 @@ fn evaluate_optical_row_with_signal(
         .evaluator(request.environment)
         .map_err(ApplicationError::Cover)?;
     let temporal_gain = panel_temporal_gain(&request, evaluator)?;
+    let full_signal = signal_area(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
+    let veiling_glare_gate_average = lens_veiling_gate_average(
+        &request,
+        frame,
+        full_signal.linear_native_emission,
+        raster_aspect,
+        temporal_gain,
+    )?;
     macro_rules! evaluate_row {
         ($sample_count:literal) => {
             (0..usize::from(width))
@@ -3980,15 +4478,30 @@ fn evaluate_optical_row_with_signal(
                 .collect()
         };
     }
-    Ok(
+    let mut pixels: Vec<LinearOpticalPixel> =
         match aperture_sample_count(frame.camera, frame.screen, request.panel, width) {
             16 => evaluate_row!(16),
             32 => evaluate_row!(32),
             64 => evaluate_row!(64),
             128 => evaluate_row!(128),
+            256 => evaluate_row!(256),
+            512 => evaluate_row!(512),
             _ => unreachable!("aperture sample policy only emits supported quality levels"),
-        },
-    )
+        };
+    let fraction = frame.camera.lens.veiling_glare_fraction;
+    if fraction != 0.0 {
+        for pixel in &mut pixels {
+            pixel.acescg_irradiance = LinearRgb::new(
+                pixel.acescg_irradiance.r
+                    + fraction * (veiling_glare_gate_average.r - pixel.acescg_irradiance.r),
+                pixel.acescg_irradiance.g
+                    + fraction * (veiling_glare_gate_average.g - pixel.acescg_irradiance.g),
+                pixel.acescg_irradiance.b
+                    + fraction * (veiling_glare_gate_average.b - pixel.acescg_irradiance.b),
+            );
+        }
+    }
+    Ok(pixels)
 }
 
 fn prepare_raster_with_signal(
@@ -4099,6 +4612,14 @@ fn evaluate_optical_window_with_signal(
         representative.g * panel_temporal_gain,
         representative.b * panel_temporal_gain,
     );
+    let full_signal = signal_area(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
+    let veiling_glare_gate_average = lens_veiling_gate_average(
+        &request,
+        frame,
+        full_signal.linear_native_emission,
+        raster_aspect,
+        panel_temporal_gain,
+    )?;
     let preview_scale_percent =
         projected_device_pixel_width(&frame, request.panel, raster.full_width)
             .ok_or(ApplicationError::ViewRayMissesPanel)?
@@ -4166,7 +4687,46 @@ fn evaluate_optical_window_with_signal(
             signal_at,
             signal_area,
         ),
+        256 => evaluate_optical_pixels::<256>(
+            &mut pixels,
+            &frame,
+            &request,
+            raster,
+            view,
+            panel_evaluator,
+            panel_temporal_gain,
+            cover_evaluator,
+            signal_at,
+            signal_area,
+        ),
+        512 => evaluate_optical_pixels::<512>(
+            &mut pixels,
+            &frame,
+            &request,
+            raster,
+            view,
+            panel_evaluator,
+            panel_temporal_gain,
+            cover_evaluator,
+            signal_at,
+            signal_area,
+        ),
         _ => unreachable!("aperture sample policy only emits supported quality levels"),
+    }
+    if view == DiagnosticView::Composite {
+        let fraction = frame.camera.lens.veiling_glare_fraction;
+        if fraction != 0.0 {
+            for pixel in &mut pixels {
+                pixel.acescg_irradiance = LinearRgb::new(
+                    pixel.acescg_irradiance.r
+                        + fraction * (veiling_glare_gate_average.r - pixel.acescg_irradiance.r),
+                    pixel.acescg_irradiance.g
+                        + fraction * (veiling_glare_gate_average.g - pixel.acescg_irradiance.g),
+                    pixel.acescg_irradiance.b
+                        + fraction * (veiling_glare_gate_average.b - pixel.acescg_irradiance.b),
+                );
+            }
+        }
     }
     let inspection_field_meters = request.inspection.map(|region| {
         [
@@ -4241,7 +4801,7 @@ fn evaluate_optical_pixels<const SAMPLE_COUNT: usize>(
         });
 }
 
-fn aperture_sample_count(
+pub fn aperture_sample_count(
     camera: CameraSample,
     screen: ScreenSample,
     panel: LcdProfile,
@@ -4307,8 +4867,12 @@ fn aperture_sample_count(
         32
     } else if blur_radius_pixels < 4.0 {
         64
-    } else {
+    } else if blur_radius_pixels < 8.0 {
         128
+    } else if blur_radius_pixels < 16.0 {
+        256
+    } else {
+        512
     }
 }
 
@@ -4350,12 +4914,13 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
             x: (column as f32 + offset.x) / f32::from(width) * 2.0 - 1.0,
             y: (row as f32 + offset.y) / f32::from(height) * 2.0 - 1.0,
         };
-        panel_uv_aperture_samples_with_count::<SAMPLE_COUNT>(
+        panel_uv_aperture_samples_boxed_with_count::<SAMPLE_COUNT>(
             frame.camera,
             frame.screen,
             request.panel.active_width,
             request.panel.active_height,
             viewport_ndc,
+            0.0,
         )
     };
     let pixel_center_ndc = Vec2 {
@@ -4366,7 +4931,7 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
         * request.lens_character_strength;
     let minimum = 0.001 - psf_radius;
     let maximum = 0.999 + psf_radius;
-    let footprint = [
+    let footprint_offsets = [
         Vec2 {
             x: minimum,
             y: minimum,
@@ -4383,8 +4948,8 @@ fn evaluate_optical_pixel<const SAMPLE_COUNT: usize>(
             x: maximum,
             y: maximum,
         },
-    ]
-    .map(trace);
+    ];
+    let footprint = footprint_offsets.map(trace);
     if !subpixels_resolved_for_samples(&footprint, request.panel, cover_evaluator, view) {
         let integrated = integrate_aperture_samples(
             &footprint,
@@ -4469,8 +5034,8 @@ fn approximate_psf_radius_pixels(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
-    spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
+fn integrate_aperture_samples(
+    spatial_samples: &[Box<[OpticalSample]>],
     view: DiagnosticView,
     panel: LcdProfile,
     panel_character_strength: f32,
@@ -4480,19 +5045,23 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
     signal_area: &(dyn Fn(Vec2, Vec2) -> AreaSignalSample + Sync),
     cover: ValidatedCoverEvaluator,
 ) -> LinearOpticalPixel {
+    let sample_count = spatial_samples.first().map_or(0, |samples| samples.len());
+    debug_assert!(
+        sample_count > 0
+            && spatial_samples
+                .iter()
+                .all(|samples| samples.len() == sample_count)
+    );
     let subpixels_resolved = subpixels_resolved_for_samples(spatial_samples, panel, cover, view);
-    let glow_samples = if view == DiagnosticView::Composite {
-        cover.glow_samples()
-    } else {
-        screen_cover::CoverGlowProfile::NEUTRAL
-            .samples()
-            .expect("neutral cover glow is valid")
-    };
+    const GLOW_ROTATION_TURNS: f32 = 0.381_966_02;
+    let neutral_glow_samples = screen_cover::CoverGlowProfile::NEUTRAL
+        .samples()
+        .expect("neutral cover glow is valid");
     let mut sum = LinearRgb::new(0.0, 0.0, 0.0);
     let mut on_panel = false;
     let reflected = reflected_environment_average(spatial_samples, view, cover);
     if !subpixels_resolved {
-        for aperture in 0..SAMPLE_COUNT {
+        for aperture in 0..sample_count {
             for channel in 0..3 {
                 let mut minimum = Vec2 {
                     x: f32::INFINITY,
@@ -4526,6 +5095,11 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                 if count == 0 {
                     continue;
                 }
+                let glow_samples = if view == DiagnosticView::Composite {
+                    cover.glow_samples_rotated(aperture as f32 * GLOW_ROTATION_TURNS)
+                } else {
+                    neutral_glow_samples
+                };
                 for glow in glow_samples {
                     let offset = Vec2 {
                         x: glow.offset_meters[0] / panel.active_width.0,
@@ -4582,7 +5156,7 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
                 }
             }
         }
-        let scale = 1.0 / SAMPLE_COUNT as f32;
+        let scale = 1.0 / sample_count as f32;
         let native_average = LinearRgb::new(sum.r * scale, sum.g * scale, sum.b * scale);
         return LinearOpticalPixel {
             acescg_irradiance: if view == DiagnosticView::DeviceSignal {
@@ -4598,7 +5172,17 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
             on_panel,
         };
     }
-    for optical_sample in spatial_samples.iter().flatten() {
+    for (optical_index, optical_sample) in spatial_samples
+        .iter()
+        .flat_map(|samples| samples.iter())
+        .enumerate()
+    {
+        let aperture = optical_index % sample_count;
+        let glow_samples = if view == DiagnosticView::Composite {
+            cover.glow_samples_rotated(aperture as f32 * GLOW_ROTATION_TURNS)
+        } else {
+            neutral_glow_samples
+        };
         for channel in 0..3 {
             let Some(uv) = transmitted_panel_uv(cover, *optical_sample, panel, view, channel)
             else {
@@ -4650,7 +5234,7 @@ fn integrate_aperture_samples<const SAMPLE_COUNT: usize>(
             }
         }
     }
-    let scale = 1.0 / (SAMPLE_COUNT * spatial_samples.len()) as f32;
+    let scale = 1.0 / (sample_count * spatial_samples.len()) as f32;
     let native_average = LinearRgb::new(sum.r * scale, sum.g * scale, sum.b * scale);
     let average = if view == DiagnosticView::DeviceSignal {
         native_average
@@ -4700,8 +5284,8 @@ fn transmitted_panel_uv(
     })
 }
 
-fn reflected_environment_average<const SAMPLE_COUNT: usize>(
-    spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
+fn reflected_environment_average(
+    spatial_samples: &[Box<[OpticalSample]>],
     view: DiagnosticView,
     cover: ValidatedCoverEvaluator,
 ) -> LinearRgb {
@@ -4709,7 +5293,7 @@ fn reflected_environment_average<const SAMPLE_COUNT: usize>(
         return LinearRgb::new(0.0, 0.0, 0.0);
     }
     let mut sum = [0.0_f32; 3];
-    for optical in spatial_samples.iter().flatten() {
+    for optical in spatial_samples.iter().flat_map(|samples| samples.iter()) {
         for channel in 0..3 {
             let Some(_uv) = optical.panel_uv[channel]
                 .filter(|uv| (0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y))
@@ -4731,7 +5315,8 @@ fn reflected_environment_average<const SAMPLE_COUNT: usize>(
             sum[channel] += [reflected.r, reflected.g, reflected.b][channel];
         }
     }
-    let scale = 1.0 / (SAMPLE_COUNT * spatial_samples.len()) as f32;
+    let sample_count = spatial_samples.first().map_or(0, |samples| samples.len());
+    let scale = 1.0 / (sample_count * spatial_samples.len()) as f32;
     LinearRgb::new(sum[0] * scale, sum[1] * scale, sum[2] * scale)
 }
 
@@ -4750,8 +5335,8 @@ fn optical_channel_weight(
         * panel_temporal_gain
 }
 
-fn subpixels_resolved_for_samples<const SAMPLE_COUNT: usize>(
-    spatial_samples: &[[OpticalSample; SAMPLE_COUNT]],
+fn subpixels_resolved_for_samples(
+    spatial_samples: &[Box<[OpticalSample]>],
     panel: LcdProfile,
     cover: ValidatedCoverEvaluator,
     view: DiagnosticView,
@@ -4768,7 +5353,7 @@ fn subpixels_resolved_for_samples<const SAMPLE_COUNT: usize>(
         let mut count = 0;
         for uv in spatial_samples
             .iter()
-            .flatten()
+            .flat_map(|samples| samples.iter())
             .filter_map(|sample| transmitted_panel_uv(cover, *sample, panel, view, channel))
         {
             minimum.x = minimum.x.min(uv.x);
@@ -4881,6 +5466,7 @@ fn optical_footprint_device_pixels(
             panel.active_width,
             panel.active_height,
             position,
+            0.0,
         )
     }) {
         for (channel, uv) in sample.panel_uv.into_iter().enumerate() {
@@ -5159,6 +5745,23 @@ mod tests {
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn complete_physical_pipeline_uses_one_direct_32_ray_pupil_policy() {
+        for quality in [
+            FlatPanelQuality::Draft,
+            FlatPanelQuality::Medium,
+            FlatPanelQuality::High,
+            FlatPanelQuality::Native,
+        ] {
+            assert_eq!(physical_pipeline_aperture_sample_count(quality), 32);
+        }
+        assert_eq!(physical_pipeline_aperture_rotation_turns(0, 0), 0.0);
+        assert_eq!(
+            physical_pipeline_aperture_rotation_turns(8063, 6047),
+            physical_pipeline_aperture_rotation_turns(8063, 6047)
+        );
+    }
+
     struct UnitSpatialBackend {
         last_batch_size: AtomicUsize,
     }
@@ -5297,7 +5900,10 @@ mod tests {
             .expect("valid spatial plan");
         assert_eq!(plan.raster.width, 8);
         assert_eq!(plan.raster.height, 8);
-        assert!(matches!(plan.aperture_sample_count, 16 | 32 | 64 | 128));
+        assert!(matches!(
+            plan.aperture_sample_count,
+            16 | 32 | 64 | 128 | 256 | 512
+        ));
         assert!(matches!(
             plan.signal,
             SpatialSignalPlan::Procedural {
@@ -5992,7 +6598,7 @@ mod tests {
         camera.f_stop = 1.2;
         assert_eq!(
             aperture_sample_count(camera, ScreenSample::IDENTITY, request().optics.panel, 960),
-            128
+            512
         );
     }
 
@@ -6345,27 +6951,46 @@ mod tests {
             })
             .unwrap(),
         );
-        let exposure = integrate_shutter_from_device_signal_sequence(
-            ShutterRequest {
-                optics,
-                duration: RationalTime::new(1, 100_000).unwrap(),
-                temporal_samples: 1,
-                readout: SensorReadout::Rolling {
-                    duration: RationalTime::new(1, 100).unwrap(),
-                    direction: RollingDirection::TopToBottom,
-                },
-                neutral_density_stops: 0.0,
+        let shutter_request = ShutterRequest {
+            optics,
+            duration: RationalTime::new(1, 100_000).unwrap(),
+            temporal_samples: 1,
+            readout: SensorReadout::Rolling {
+                duration: RationalTime::new(1, 100).unwrap(),
+                direction: RollingDirection::TopToBottom,
             },
+            neutral_density_stops: 0.0,
+        };
+        let exposure = integrate_shutter_from_device_signal_sequence(
+            shutter_request.clone(),
             32,
             18,
             RasterPlacement::Stretch,
             |_| Ok(Arc::clone(&prepared)),
         )
         .expect("rolling exposure");
+        let black = Arc::new(
+            PreparedDeviceSignalRaster::new(DeviceSignalRaster {
+                width: 1,
+                height: 1,
+                pixels: vec![DeviceRgb::BLACK],
+            })
+            .unwrap(),
+        );
+        let black_exposure = integrate_shutter_from_device_signal_sequence(
+            shutter_request,
+            32,
+            18,
+            RasterPlacement::Stretch,
+            |_| Ok(Arc::clone(&black)),
+        )
+        .expect("black rolling exposure");
         let top = exposure.acescg_illuminance_seconds[2 * 32 + 16].g;
         let bottom = exposure.acescg_illuminance_seconds[15 * 32 + 16].g;
-        assert_eq!(top, 0.0);
-        assert!(bottom > 0.0);
+        let black_top = black_exposure.acescg_illuminance_seconds[2 * 32 + 16].g;
+        let black_bottom = black_exposure.acescg_illuminance_seconds[15 * 32 + 16].g;
+        assert_eq!(top, black_top);
+        assert!(bottom > black_bottom);
     }
 
     #[test]
@@ -6445,7 +7070,7 @@ mod tests {
         let neutral_cover = CoverGlassProfile::NEUTRAL
             .evaluator(ProceduralEnvironment::NONE)
             .expect("valid neutral cover");
-        let resolved_spatial = [[optical; APERTURE_SAMPLE_COUNT]];
+        let resolved_spatial = [vec![optical; APERTURE_SAMPLE_COUNT].into_boxed_slice()];
         let white_area = AreaSignalSample {
             device_code: DeviceRgb::WHITE,
             linear_native_emission: LinearRgb::new(500.0, 500.0, 500.0),
@@ -6464,8 +7089,8 @@ mod tests {
         let mut offset = optical;
         offset.panel_uv = [Some(Vec2 { x: 0.51, y: 0.51 }); 3];
         let unresolved_spatial = [
-            [optical; APERTURE_SAMPLE_COUNT],
-            [offset; APERTURE_SAMPLE_COUNT],
+            vec![optical; APERTURE_SAMPLE_COUNT].into_boxed_slice(),
+            vec![offset; APERTURE_SAMPLE_COUNT].into_boxed_slice(),
         ];
         let unresolved = integrate_aperture_samples(
             &unresolved_spatial,
@@ -7927,6 +8552,62 @@ mod tests {
             half.pixels[center].acescg_irradiance.g / white.pixels[center].acescg_irradiance.g;
         let expected = 0.5_f32.powf(optics.panel.eotf_gamma);
         assert!((measured - expected).abs() < 1.0e-5);
+
+        optics.camera.intrinsics.keyframes[0].focus_distance = Meters(0.4);
+        let defocused_white = evaluate_linear_optics_from_device_signal(
+            optics,
+            16,
+            9,
+            &uniform(1.0),
+            RasterPlacement::Stretch,
+        )
+        .expect("defocused uniform optical reference");
+        let focused_energy = white.pixels[center].acescg_irradiance.g;
+        let defocused_energy = defocused_white.pixels[center].acescg_irradiance.g;
+        let energy_ratio = defocused_energy / focused_energy;
+        assert!(
+            (energy_ratio - 1.0).abs() < 5.0e-4,
+            "uniform defocus energy ratio {energy_ratio}"
+        );
+    }
+
+    #[test]
+    fn cover_glow_multiscale_scatter_preserves_uniform_linear_energy() {
+        let mut glowed = request().optical_request();
+        glowed.panel.black_level_nits = 0.0;
+        glowed.cover = screen_cover::cover_glass_preset("cover-matte-ar")
+            .expect("matte cover")
+            .profile;
+        let mut clean = glowed.clone();
+        clean.cover.glow.character_strength = 0.0;
+        let uniform = DeviceSignalRaster {
+            width: 1,
+            height: 1,
+            pixels: vec![DeviceRgb::WHITE],
+        };
+        let clean = evaluate_linear_optics_from_device_signal(
+            clean,
+            16,
+            9,
+            &uniform,
+            RasterPlacement::Stretch,
+        )
+        .expect("clean uniform optical reference");
+        let glowed = evaluate_linear_optics_from_device_signal(
+            glowed,
+            16,
+            9,
+            &uniform,
+            RasterPlacement::Stretch,
+        )
+        .expect("glowed uniform optical reference");
+        let center = 4 * 16 + 8;
+        let ratio =
+            glowed.pixels[center].acescg_irradiance.g / clean.pixels[center].acescg_irradiance.g;
+        assert!(
+            (ratio - 1.0).abs() < 5.0e-4,
+            "uniform glow energy ratio {ratio}"
+        );
     }
 
     #[test]
@@ -7956,7 +8637,7 @@ mod tests {
             }); 3],
             irradiance_weight: [1.0; 3],
         };
-        let samples = [[ray; 16]; 1];
+        let samples = [vec![ray; 16].into_boxed_slice()];
         let output = integrate_aperture_samples(
             &samples,
             DiagnosticView::Composite,
@@ -7975,5 +8656,48 @@ mod tests {
         assert!(output.acescg_irradiance.r > 0.0);
         assert!(output.acescg_irradiance.g > 0.0);
         assert!(output.acescg_irradiance.b > 0.0);
+    }
+
+    #[test]
+    fn lens_veiling_glare_reaches_black_gate_pixels_outside_the_panel_projection() {
+        let mut clean = request().optical_request();
+        clean.panel.black_level_nits = 0.0;
+        clean.cover = CoverGlassProfile::NEUTRAL;
+        clean.environment = ProceduralEnvironment::NONE;
+        clean.camera.intrinsics.keyframes[0]
+            .lens
+            .veiling_glare_fraction = 0.0;
+        let mut glared = clean.clone();
+        glared.camera.intrinsics.keyframes[0]
+            .lens
+            .veiling_glare_fraction = 0.05;
+        let white = DeviceSignalRaster {
+            width: 1,
+            height: 1,
+            pixels: vec![DeviceRgb::WHITE],
+        };
+        let clean = evaluate_linear_optics_from_device_signal(
+            clean,
+            32,
+            18,
+            &white,
+            RasterPlacement::Stretch,
+        )
+        .expect("clean optical reference");
+        let glared = evaluate_linear_optics_from_device_signal(
+            glared,
+            32,
+            18,
+            &white,
+            RasterPlacement::Stretch,
+        )
+        .expect("glared optical reference");
+        let (clean_outside, glared_outside) = clean
+            .pixels
+            .iter()
+            .zip(&glared.pixels)
+            .find(|(clean, glared)| !clean.on_panel && !glared.on_panel)
+            .expect("camera gate includes support outside the panel projection");
+        assert!(glared_outside.acescg_irradiance.g > clean_outside.acescg_irradiance.g);
     }
 }

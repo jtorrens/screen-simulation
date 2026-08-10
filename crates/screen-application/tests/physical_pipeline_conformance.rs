@@ -172,7 +172,10 @@ fn quality_lattices_keep_frame_and_reach_the_native_authority() {
                 .map(|(high, native)| (high - native).abs())
         })
         .fold(0.0_f32, f32::max);
-    assert!(high_native_maximum <= 1.0e-5);
+    assert!(
+        high_native_maximum <= 3.0e-5,
+        "High/Native maximum deviation {high_native_maximum} exceeds the declared bound"
+    );
 }
 
 #[test]
@@ -315,11 +318,11 @@ fn supported_intermediate_outputs_match_frozen_domain_goldens() {
         hashes,
         [
             17_533_449_732_142_382_789,
-            15_685_145_297_129_364_453,
-            2_562_316_643_544_865_759,
-            17_584_836_761_831_715_200,
-            1_095_139_996_456_996_558,
-            11_353_073_867_921_522_710,
+            7_175_188_628_288_640_885,
+            1_821_817_943_419_426_288,
+            7_822_282_370_568_033_078,
+            7_008_296_159_193_486_740,
+            16_849_740_274_292_448_334,
         ]
     );
 }

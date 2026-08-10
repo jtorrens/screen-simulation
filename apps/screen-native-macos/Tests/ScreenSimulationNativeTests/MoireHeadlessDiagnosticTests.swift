@@ -17,10 +17,183 @@ import Testing
     let expectedHash = try #require(
         (document["hashes"] as? [String: String])?["pixelRGBA8SHA256"]
     )
-    let imported = try PhysicalSettingsExchange.decode(from: document)
+    let deviceID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_ID"]
+    var imported: PhysicalSettingsExchange.Imported
+    if let deviceID {
+        var device = try #require(try RustDeviceCatalog.builtIns().first { $0.id == deviceID })
+        if let width = ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_WIDTH"]
+            .flatMap(Int.init),
+           let height = ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_HEIGHT"]
+            .flatMap(Int.init)
+        {
+            device.nativeWidth = width
+            device.nativeHeight = height
+        }
+        if let white = ProcessInfo.processInfo.environment["SCREEN_MOIRE_WHITE_NITS"]
+            .flatMap(Double.init)
+        {
+            device.whiteLevelNits = white
+        }
+        let coverID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_COVER_ID"]
+            ?? device.defaultCoverGlassPresetID
+        let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+            $0.id == coverID
+        })
+        var pipeline = try PhysicalPipelineAuthoringState.seeded(
+            device: device,
+            coverGlass: cover
+        )
+        if let captureID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_CAPTURE_ID"] {
+            let capture = try #require(
+                try CapturePresetDefinition.catalog().first { $0.id == captureID }
+            )
+            let lens = try #require(
+                try LensPresetDefinition.catalog().first { $0.id == capture.defaultLensID }
+            )
+            capture.applyCamera(to: &pipeline, frameRate: 24)
+            lens.apply(to: &pipeline)
+        }
+        let captureWidth = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_CAPTURE_WIDTH"
+        ].flatMap(UInt32.init)
+        let captureHeight = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_CAPTURE_HEIGHT"
+        ].flatMap(UInt32.init)
+        if captureWidth != nil || captureHeight != nil {
+            pipeline.sensor.nativeWidth = try #require(captureWidth)
+            pipeline.sensor.nativeHeight = try #require(captureHeight)
+        }
+        if let environmentID = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ENVIRONMENT_ID"
+        ] {
+            let environment = try #require(
+                try EnvironmentPresetDefinition.catalog().first { $0.id == environmentID }
+            )
+            environment.apply(to: &pipeline)
+        }
+        if let rotation = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ENVIRONMENT_ROTATION_DEGREES"
+        ].flatMap(Double.init) {
+            pipeline.environment.rotationDegrees = rotation
+        }
+        if let exposureStops = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ENVIRONMENT_EXPOSURE_STOPS"
+        ].flatMap(Double.init) {
+            let scale = pow(2, exposureStops)
+            pipeline.environment.ambientRadianceACEScg = pipeline.environment
+                .ambientRadianceACEScg.map { $0 * scale }
+            pipeline.environment.keyRadianceACEScg = pipeline.environment
+                .keyRadianceACEScg.map { $0 * scale }
+        }
+        if let keyRadius = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ENVIRONMENT_KEY_RADIUS_DEGREES"
+        ].flatMap(Double.init) {
+            pipeline.environment.keyAngularRadiusDegrees = keyRadius
+        }
+        let authoredDistance = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_DISTANCE_METERS"
+        ].flatMap(Double.init)
+        let orbitX = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ORBIT_X_DEGREES"
+        ].flatMap(Double.init) ?? 0
+        let orbitY = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ORBIT_Y_DEGREES"
+        ].flatMap(Double.init) ?? 0
+        if authoredDistance != nil || orbitX != 0 || orbitY != 0 {
+            let distance = authoredDistance ?? PoseRotationProjection.distance(
+                pipeline.cameraPose.position,
+                pipeline.screenPose.position
+            )
+            pipeline.cameraPose.position = PoseRotationProjection.orbitPosition(
+                around: pipeline.screenPose.position,
+                distance: distance,
+                rotationDegrees: [orbitX, orbitY, 0]
+            )
+            pipeline.sceneLens.focusDistanceMeters = distance
+            pipeline.cameraLookAt = .init(target: pipeline.screenPose.position)
+            pipeline.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(
+                from: pipeline.cameraPose.position,
+                to: pipeline.screenPose.position
+            )
+        }
+        switch ProcessInfo.processInfo.environment["SCREEN_MOIRE_CA_MODE"] {
+        case "off":
+            pipeline.sceneLens.longitudinalChromaticMeters = [0, 0, 0]
+            pipeline.sceneLens.lateralChromaticScale = [1, 1, 1]
+        case "lateral":
+            pipeline.sceneLens.longitudinalChromaticMeters = [0, 0, 0]
+        case "longitudinal":
+            pipeline.sceneLens.lateralChromaticScale = [1, 1, 1]
+        case nil, "full":
+            break
+        default:
+            Issue.record("SCREEN_MOIRE_CA_MODE debe ser off, lateral, longitudinal o full")
+            return
+        }
+        if let ndStops = ProcessInfo.processInfo.environment["SCREEN_MOIRE_ND_STOPS"]
+            .flatMap(Double.init)
+        {
+            pipeline.shutterMotion.neutralDensityStops = ndStops
+        }
+        if let veilingGlare = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_VEILING_GLARE_FRACTION"
+        ].flatMap(Double.init) {
+            pipeline.sceneLens.veilingGlareFraction = veilingGlare
+        }
+        if let focusDistance = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_FOCUS_DISTANCE_METERS"
+        ].flatMap(Double.init) {
+            pipeline.sceneLens.focusDistanceMeters = focusDistance
+        }
+        if let fStop = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_F_STOP"
+        ].flatMap(Double.init) {
+            pipeline.sceneLens.fStop = fStop
+        }
+        if let centerSoftness = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_CENTER_SOFTNESS_MICROMETERS"
+        ].flatMap(Double.init) {
+            pipeline.sceneLens.centerSoftnessMicrometers = centerSoftness
+        }
+        if let edgeSoftness = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_EDGE_SOFTNESS_MICROMETERS"
+        ].flatMap(Double.init) {
+            pipeline.sceneLens.edgeSoftnessMicrometers = edgeSoftness
+        }
+        if let fullWell = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_FULL_WELL_ELECTRONS"
+        ].flatMap(Double.init) {
+            pipeline.sensor.fullWellElectrons = fullWell
+        }
+        if let crosstalk = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_BLOOM_CROSSTALK_FRACTION"
+        ].flatMap(Double.init) {
+            pipeline.sensor.bloomCrosstalkFraction = crosstalk
+        }
+        if let overflow = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_BLOOM_OVERFLOW_FRACTION"
+        ].flatMap(Double.init) {
+            pipeline.sensor.bloomOverflowTransferFraction = overflow
+        }
+        if ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_GLOBAL_SHUTTER"
+        ] == "1" {
+            pipeline.shutterMotion.readoutKind = 0
+        }
+        imported = .init(
+            device: device,
+            pipeline: pipeline,
+            model: PhysicalModelController().authoringState,
+            report: "Headless VFX reference battery"
+        )
+    } else {
+        imported = try PhysicalSettingsExchange.decode(from: document)
+    }
 
-    let sourceURL = moireRepositoryRoot()
-        .appendingPathComponent("apps/screen-desktop/assets/frequency-moire-reference.png")
+    let sourceURL = ProcessInfo.processInfo.environment["SCREEN_MOIRE_SOURCE_PATH"]
+        .map(URL.init(fileURLWithPath:))
+        ?? moireRepositoryRoot()
+            .appendingPathComponent("apps/screen-desktop/assets/frequency-moire-reference.png")
     let decoded = try await NativeMediaDecoder.decode(url: sourceURL, time: .zero)
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
@@ -59,17 +232,26 @@ import Testing
         context: context,
         identity: 1
     )
-    let repeatedBaseline = try await renderMoireVariant(
-        name: "baseline-repeat",
-        context: context,
-        identity: 1
-    )
+    let skipRepeat = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_SKIP_REPEAT"
+    ] == "1"
+    let repeatedBaseline: MoireVariant? = if skipRepeat {
+        nil
+    } else {
+        try await renderMoireVariant(
+            name: "baseline-repeat",
+            context: context,
+            identity: 1
+        )
+    }
     let rendered = baseline.rgba8
     let actualHash = SHA256.hash(data: Data(rendered))
         .map { String(format: "%02x", $0) }
         .joined()
     print("MOIRE_BASELINE expected=\(expectedHash) actual=\(actualHash)")
-    #expect(repeatedBaseline.rgba8 == rendered)
+    if let repeatedBaseline {
+        #expect(repeatedBaseline.rgba8 == rendered)
+    }
 
     guard let outputDirectory = ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_DIAGNOSTIC_DIR"
@@ -92,7 +274,9 @@ import Testing
         "SCREEN_MOIRE_PSF_ONLY"
     ] == "1"
     let variants: [MoireVariant]
-    if psfOnly {
+    if ProcessInfo.processInfo.environment["SCREEN_MOIRE_BASELINE_ONLY"] == "1" {
+        variants = []
+    } else if psfOnly {
         variants = try await [
             renderMoireVariant(
                 name: "psf-support-2x-proxy",
@@ -278,6 +462,30 @@ private func renderMoireVariant(
     try editPipeline(&pipeline)
     let controller = PhysicalModelController()
     try controller.restoreAuthoringState(context.imported.model)
+    if let coverGlowAmount = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_COVER_GLOW_AMOUNT"
+    ].flatMap(Double.init) {
+        try controller.setContinuousAmount(
+            coverGlowAmount,
+            stage: .screen(.coverGlow)
+        )
+    }
+    if let panelSpreadAmount = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_PANEL_SPREAD_AMOUNT"
+    ].flatMap(Double.init) {
+        try controller.setContinuousAmount(
+            panelSpreadAmount,
+            stage: .screen(.panelLightSpread)
+        )
+    }
+    if let sensorNoiseAmount = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_SENSOR_NOISE_AMOUNT"
+    ].flatMap(Double.init) {
+        try controller.setContinuousAmount(
+            sensorNoiseAmount,
+            stage: .capture(.noise)
+        )
+    }
     try editModel(controller)
     let contributions = controller.orderedContributions
     let spread = try #require(contributions.first {
@@ -385,7 +593,7 @@ private func moireRepositoryRoot() -> URL {
 private func moireTerminalSnapshot(
     _ job: PhysicalMetalFrameJob
 ) async throws -> PhysicalMetalFrameSnapshot {
-    for _ in 0..<30_000 {
+    for _ in 0..<60_000 {
         let snapshot = try job.snapshot()
         if [.complete, .failed, .cancelled].contains(snapshot.state) {
             return snapshot

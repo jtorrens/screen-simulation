@@ -381,20 +381,26 @@ pub fn expose_raw_region_with_noise_amount(
         ][channel];
         let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
             * f64::from(profile.full_well_electrons);
-        let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
-        let key = pixel_noise_key(identity, global_index);
-        let sampled_photoelectrons = sample_poisson(ideal_photoelectrons, key);
-        let photoelectrons = ideal_photoelectrons
-            + f64::from(noise_amount) * (sampled_photoelectrons - ideal_photoelectrons);
-        let dark_electrons = f64::from(noise_amount)
-            * sample_poisson(
-                f64::from(profile.dark_current_electrons_per_second)
-                    * f64::from(exposure.duration_seconds),
-                key ^ 0xA076_1D64_78BD_642F,
-            );
-        let read_electrons = f64::from(noise_amount)
-            * f64::from(profile.read_noise_electrons_rms)
-            * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB);
+        let (photoelectrons, dark_electrons, read_electrons) = if noise_amount == 0.0 {
+            (ideal_photoelectrons, 0.0, 0.0)
+        } else {
+            let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
+            let key = pixel_noise_key(identity, global_index);
+            let sampled_photoelectrons = sample_poisson(ideal_photoelectrons, key);
+            (
+                ideal_photoelectrons
+                    + f64::from(noise_amount) * (sampled_photoelectrons - ideal_photoelectrons),
+                f64::from(noise_amount)
+                    * sample_poisson(
+                        f64::from(profile.dark_current_electrons_per_second)
+                            * f64::from(exposure.duration_seconds),
+                        key ^ 0xA076_1D64_78BD_642F,
+                    ),
+                f64::from(noise_amount)
+                    * f64::from(profile.read_noise_electrons_rms)
+                    * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB),
+            )
+        };
         collected.push((photoelectrons + dark_electrons).max(0.0));
         read.push(read_electrons);
     }

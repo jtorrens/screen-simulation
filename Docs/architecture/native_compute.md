@@ -34,14 +34,45 @@ calls `screen-sensor`; only the resulting immutable integer RAW may be uploaded
 for Metal camera development. No Metal kernel owns area-to-photosite resampling, sensor noise,
 full-well state, ADC clipping or RAW quantization.
 
+The complete physical-frame optical kernel evaluates 32 direct equal-weight pupil rays independently
+for every sensor-footprint and PSF sample. CPU and Metal rotate the same nested pupil pattern with
+the same deterministic per-pixel integer hash, retain identical ray order and preserve the separate
+per-channel focus and chromatic geometry before shutter and Sensor/CFA. This route deliberately
+keeps resolved panel phase, RGB fringe and defocus in the same thin-lens integration. Exact
+rectangular source integration uses one `f32`
+horizontal prefix per source row. Fractional left and right texels remain explicit and only the
+integer interior span is obtained by prefix subtraction, so accumulation error is bounded by source
+width rather than total raster area. This changes lookup cost without changing placement, EOTF,
+panel phase or any physical checkpoint. The kernel also evaluates only the
+checkpoint terms whose algebraic coefficients are nonzero. In the final optical result, ideal,
+continuous, physical and spread contributions are combined by their exact authored coefficients;
+terms that cancel identically are not sampled merely to subtract them later. Alpha retains its
+complete aperture-integrated source evaluation. Cover glow reuses the same exact area sampler for
+two centered physical-radius filters instead of nesting a shifted nine-tap cover lattice over the
+nine-tap panel-spread lattice. Its positive core/tail mixture preserves uniform linear energy,
+keeps support outside the active outline and is materially cheaper without introducing a second
+post-sensor path.
+
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and
-colorimetry, cover, its physical core/tail glow kernel and complete rotated synthetic-HDR environment, globally selected 16–128 aperture sample count, and either the
+colorimetry, cover, its physical-radius core/tail glow approximation and complete rotated synthetic-HDR environment, globally selected 16–512 aperture sample count, and either the
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
 represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
 and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
-Fresnel/transmission/reflection, cover-glow shifted sampling, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
+Fresnel/transmission/reflection, centered cover-glow area filtering, spherical synthetic-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
+
+Lens veiling glare uses deterministic panel-emission reduction before tiled optical evaluation.
+The reduction converts post-EOTF native emission into one projected, covered gate-average ACEScg
+irradiance. Every tile receives that immutable value and mixes the authored lens fraction after
+local cover evaluation and before shutter integration. CPU and Metal must agree within the optical
+tolerance. Zero is exact identity and bypasses the reduction rather than evaluating a value that
+would later be multiplied away.
+
+Within one temporal evaluation, source and Device row-prefix textures are reused only when both
+borrowed Metal texture identities are exactly the same. A distinct source or Device texture builds
+its own prefixes; dimensions, filenames and pixel similarity never imply reuse. The cache lifetime
+ends with that immutable temporal request and cannot cross into another frame identity.
 
 The native-shell physical-frame ABI has one earlier flat-panel compute slice with no camera,
 lens, sensor, temporal, cover or environment operation. Application prepares one immutable

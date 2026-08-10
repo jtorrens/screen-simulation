@@ -14,6 +14,10 @@ pub enum EnvironmentPattern {
     UniformNeutral,
     StudioSoftboxes,
     CalibrationGrid,
+    OfficeCeiling,
+    DaylightWindow,
+    WarmPracticals,
+    MixedProduction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -229,6 +233,58 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             key_angular_radius_degrees: 10.0,
             rotation_degrees: 0.0,
             pattern: EnvironmentPattern::CalibrationGrid,
+        },
+    },
+    EnvironmentPreset {
+        id: "environment-office-ceiling",
+        label: "HDR · office ceiling",
+        environment: ProceduralEnvironment {
+            character_strength: 1.0,
+            ambient_radiance: AcesCgRadiance(LinearRgb::new(7.0, 8.0, 9.5)),
+            key_radiance: AcesCgRadiance(LinearRgb::new(420.0, 455.0, 500.0)),
+            key_direction_local: [0.0, 0.8, 0.6],
+            key_angular_radius_degrees: 16.0,
+            rotation_degrees: 0.0,
+            pattern: EnvironmentPattern::OfficeCeiling,
+        },
+    },
+    EnvironmentPreset {
+        id: "environment-daylight-window",
+        label: "HDR · daylight window",
+        environment: ProceduralEnvironment {
+            character_strength: 1.0,
+            ambient_radiance: AcesCgRadiance(LinearRgb::new(18.0, 22.0, 30.0)),
+            key_radiance: AcesCgRadiance(LinearRgb::new(2_800.0, 3_250.0, 4_000.0)),
+            key_direction_local: [-0.58, 0.12, 0.805_977],
+            key_angular_radius_degrees: 24.0,
+            rotation_degrees: 0.0,
+            pattern: EnvironmentPattern::DaylightWindow,
+        },
+    },
+    EnvironmentPreset {
+        id: "environment-warm-practicals",
+        label: "HDR · warm practicals",
+        environment: ProceduralEnvironment {
+            character_strength: 1.0,
+            ambient_radiance: AcesCgRadiance(LinearRgb::new(0.55, 0.75, 1.35)),
+            key_radiance: AcesCgRadiance(LinearRgb::new(780.0, 315.0, 92.0)),
+            key_direction_local: [0.52, -0.18, 0.834_985],
+            key_angular_radius_degrees: 7.0,
+            rotation_degrees: 0.0,
+            pattern: EnvironmentPattern::WarmPracticals,
+        },
+    },
+    EnvironmentPreset {
+        id: "environment-mixed-production",
+        label: "HDR · mixed production set",
+        environment: ProceduralEnvironment {
+            character_strength: 1.0,
+            ambient_radiance: AcesCgRadiance(LinearRgb::new(2.0, 3.5, 7.0)),
+            key_radiance: AcesCgRadiance(LinearRgb::new(1_150.0, 560.0, 210.0)),
+            key_direction_local: [0.56, -0.08, 0.824_621],
+            key_angular_radius_degrees: 10.0,
+            rotation_degrees: 0.0,
+            pattern: EnvironmentPattern::MixedProduction,
         },
     },
 ];
@@ -496,6 +552,38 @@ impl ValidatedCoverEvaluator {
             .expect("validated cover owns a validated glow profile")
     }
 
+    /// Stratifies the unit-sum core/tail quadrature over angle and radius. Every invocation
+    /// remains exactly centered through opposite pairs, while optical integration varies the
+    /// radii deterministically so neither fixed displaced copies nor a fixed-radius ring can
+    /// survive as a coherent image feature.
+    pub fn glow_samples_rotated(self, turns: f32) -> [CoverGlowSample; 9] {
+        let mut samples = self.glow_samples();
+        let angle = turns * 2.0 * core::f32::consts::PI;
+        let (sine, cosine) = angle.sin_cos();
+        let axis_x = [cosine, sine];
+        let axis_y = [-sine, cosine];
+        let diagonal_x = core::f32::consts::FRAC_1_SQRT_2 * (axis_x[0] + axis_y[0]);
+        let diagonal_y = core::f32::consts::FRAC_1_SQRT_2 * (axis_x[1] + axis_y[1]);
+        let cross_x = core::f32::consts::FRAC_1_SQRT_2 * (axis_x[0] - axis_y[0]);
+        let cross_y = core::f32::consts::FRAC_1_SQRT_2 * (axis_x[1] - axis_y[1]);
+        let core_radius = self.cover.glow.core_radius_millimeters * 0.001;
+        let tail_radius = self.cover.glow.tail_radius_millimeters * 0.001;
+        let phase = turns.rem_euclid(1.0);
+        let core_a = core_radius * smooth_radial_scale((phase + 0.125).fract());
+        let core_b = core_radius * smooth_radial_scale((phase + 0.625).fract());
+        let tail_a = tail_radius * smooth_radial_scale((phase + 0.375).fract());
+        let tail_b = tail_radius * smooth_radial_scale((phase + 0.875).fract());
+        samples[1].offset_meters = [axis_x[0] * core_a, axis_x[1] * core_a];
+        samples[2].offset_meters = [-axis_x[0] * core_a, -axis_x[1] * core_a];
+        samples[3].offset_meters = [axis_y[0] * core_b, axis_y[1] * core_b];
+        samples[4].offset_meters = [-axis_y[0] * core_b, -axis_y[1] * core_b];
+        samples[5].offset_meters = [diagonal_x * tail_a, diagonal_y * tail_a];
+        samples[6].offset_meters = [-diagonal_x * tail_a, -diagonal_y * tail_a];
+        samples[7].offset_meters = [cross_x * tail_b, cross_y * tail_b];
+        samples[8].offset_meters = [-cross_x * tail_b, -cross_y * tail_b];
+        samples
+    }
+
     pub fn evaluate(self, emitted_illuminance: LinearRgb, sample: CoverSurfaceSample) -> LinearRgb {
         let transmission = self.transmission(sample.view_cosine);
         let reflected = self.reflected_illuminance(sample);
@@ -581,20 +669,45 @@ impl ValidatedCoverEvaluator {
         let edge = radius.cos();
         let softness = 0.005 + self.cover.roughness * 0.35;
         let key_amount = smoothstep(edge - softness, edge + softness, alignment);
-        let pattern_amount = match self.environment.pattern {
-            EnvironmentPattern::UniformNeutral => 0.0,
+        let (pattern_amount, pattern_mean) = match self.environment.pattern {
+            EnvironmentPattern::UniformNeutral => (0.0, 0.0),
             EnvironmentPattern::StudioSoftboxes => {
                 let large = rectangular_source(direction, [-0.48, 0.02], [0.30, 0.42], softness);
                 let top = rectangular_source(direction, [0.18, 0.68], [0.46, 0.16], softness);
-                (large + top * 0.55 + key_amount * 0.08).min(1.0)
+                ((large + top * 0.55 + key_amount * 0.08).min(1.0), 0.14)
             }
-            EnvironmentPattern::CalibrationGrid => calibration_grid(direction),
+            EnvironmentPattern::CalibrationGrid => (calibration_grid(direction), 0.19),
+            EnvironmentPattern::OfficeCeiling => {
+                let left = rectangular_source(direction, [-0.56, 0.72], [0.18, 0.055], softness);
+                let center = rectangular_source(direction, [0.0, 0.72], [0.18, 0.055], softness);
+                let right = rectangular_source(direction, [0.56, 0.72], [0.18, 0.055], softness);
+                ((left + center + right + key_amount * 0.12).min(1.0), 0.045)
+            }
+            EnvironmentPattern::DaylightWindow => {
+                let window = rectangular_source(direction, [-0.58, 0.12], [0.28, 0.52], softness);
+                let sky = rectangular_source(direction, [0.18, 0.78], [0.68, 0.08], softness);
+                ((window + sky * 0.12 + key_amount * 0.18).min(1.0), 0.12)
+            }
+            EnvironmentPattern::WarmPracticals => {
+                let upper = circular_source(direction, [-0.34, 0.46, 0.82], 5.0, softness);
+                let side = circular_source(direction, [0.64, 0.10, 0.76], 4.0, softness);
+                ((key_amount + upper * 0.62 + side * 0.45).min(1.0), 0.025)
+            }
+            EnvironmentPattern::MixedProduction => {
+                let softbox = rectangular_source(direction, [-0.50, 0.16], [0.30, 0.38], softness);
+                let ceiling = rectangular_source(direction, [0.12, 0.76], [0.58, 0.08], softness);
+                (
+                    (softbox * 0.72 + ceiling * 0.18 + key_amount).min(1.0),
+                    0.11,
+                )
+            }
         };
         let strength = self.environment.character_strength;
         // Roughness and haze redistribute the authored key lobe toward its mean instead of
         // inventing radiance. This keeps the procedural approximation energy bounded.
         let redistribution = (self.cover.roughness * 0.75 + self.cover.haze * 0.25).clamp(0.0, 1.0);
-        let pattern_amount = pattern_amount * (1.0 - redistribution) + 0.5 * redistribution;
+        let pattern_amount =
+            pattern_amount * (1.0 - redistribution) + pattern_mean * redistribution;
         LinearRgb::new(
             (self.environment.ambient_radiance.0.r
                 + self.environment.key_radiance.0.r * pattern_amount)
@@ -607,6 +720,13 @@ impl ValidatedCoverEvaluator {
                 * strength,
         )
     }
+}
+
+fn smooth_radial_scale(unit: f32) -> f32 {
+    // Inverse CDF of a two-dimensional Gaussian truncated at three sigma.
+    // The authored radius is therefore finite support, not a bright sampling ring.
+    const TRUNCATED_MASS: f32 = 0.988_891;
+    (-2.0 * (1.0 - unit * TRUNCATED_MASS).ln()).sqrt() / 3.0
 }
 
 fn normalize(value: [f32; 3]) -> [f32; 3] {
@@ -645,6 +765,23 @@ fn rectangular_source(
             (direction[1] - center[1]).abs(),
         );
     x * y * smoothstep(0.0, 0.12, direction[2])
+}
+
+fn circular_source(
+    direction: [f32; 3],
+    center: [f32; 3],
+    radius_degrees: f32,
+    softness: f32,
+) -> f32 {
+    let center = normalize(center);
+    let alignment = direction
+        .into_iter()
+        .zip(center)
+        .map(|(left, right)| left * right)
+        .sum::<f32>()
+        .clamp(-1.0, 1.0);
+    let edge = radius_degrees.to_radians().cos();
+    smoothstep(edge - softness, edge + softness, alignment)
 }
 
 fn calibration_grid(direction: [f32; 3]) -> f32 {
@@ -774,6 +911,36 @@ mod tests {
                     .any(|sample| sample.offset_meters != [0.0, 0.0])
             );
         }
+    }
+
+    #[test]
+    fn rotated_glow_quadrature_preserves_energy_center_and_breaks_fixed_radii() {
+        let evaluator = COVER_GLASS_PRESETS[2]
+            .profile
+            .evaluator(ProceduralEnvironment::NONE)
+            .expect("valid semi-gloss evaluator");
+        let reference = evaluator.glow_samples_rotated(0.0);
+        let rotated = evaluator.glow_samples_rotated(0.381_966_02);
+        assert_eq!(
+            reference.iter().map(|sample| sample.weight).sum::<f32>(),
+            rotated.iter().map(|sample| sample.weight).sum::<f32>()
+        );
+        for samples in [reference, rotated] {
+            let center = samples.iter().fold([0.0_f32; 2], |center, sample| {
+                [
+                    center[0] + sample.offset_meters[0] * sample.weight,
+                    center[1] + sample.offset_meters[1] * sample.weight,
+                ]
+            });
+            assert!(center[0].abs() <= f32::EPSILON);
+            assert!(center[1].abs() <= f32::EPSILON);
+        }
+        assert_ne!(reference[1].offset_meters, rotated[1].offset_meters);
+        let reference_radius = reference[1].offset_meters[0].hypot(reference[1].offset_meters[1]);
+        let rotated_radius = rotated[1].offset_meters[0].hypot(rotated[1].offset_meters[1]);
+        assert_ne!(reference_radius, rotated_radius);
+        assert!(reference[5].offset_meters[0].hypot(reference[5].offset_meters[1]) <= 0.0025);
+        assert!(rotated[5].offset_meters[0].hypot(rotated[5].offset_meters[1]) <= 0.0025);
     }
 
     #[test]

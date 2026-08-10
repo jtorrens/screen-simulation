@@ -7,7 +7,7 @@ Date: 2026-08-07. Host: Apple M3 Ultra, macOS 15.6.
 The native shell contains the complete authorized physical range
 `c852ca86573b73a7b72c75e457e6f2b5d1b09950^..de2e04d7de0a7db6bc9bef74431be107756e036d`.
 The sole product entry point is `screen_physical_frame_submit` with
-`SCREEN_PHYSICAL_FRAME_ABI_VERSION 3`. There is no earlier-ABI adapter, Swift
+`SCREEN_PHYSICAL_FRAME_ABI_VERSION 5`. There is no earlier-ABI adapter, Swift
 physics, CPU product fallback or alternate shader path.
 
 Swift creates and retains an immutable v2 snapshot for each resolved state and

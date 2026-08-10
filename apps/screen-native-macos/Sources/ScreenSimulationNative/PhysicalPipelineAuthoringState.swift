@@ -31,6 +31,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var transmissionRGB = [1.0, 1.0, 1.0]
         var centerSoftnessMicrometers = 0.0
         var edgeSoftnessMicrometers = 0.0
+        var veilingGlareFraction = 0.0
     }
 
     struct ShutterMotion: Codable, Equatable, Sendable {
@@ -154,6 +155,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         scene.lens_transmission_rgb = tuple3(sceneLens.transmissionRGB)
         scene.lens_center_softness_micrometers = Float(sceneLens.centerSoftnessMicrometers)
         scene.lens_edge_softness_micrometers = Float(sceneLens.edgeSoftnessMicrometers)
+        scene.lens_veiling_glare_fraction = Float(sceneLens.veilingGlareFraction)
 
         var shutter = ScreenShutterMotionParametersV2()
         shutter.abi_version = version

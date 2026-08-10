@@ -9,9 +9,11 @@ use metal::{
 };
 use screen_application::{
     PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
-    expose_physical_pipeline_raw, physical_row_temporal_gain,
+    expose_physical_pipeline_raw, physical_pipeline_aperture_sample_count,
+    physical_row_temporal_gain, placed_signal_area_fraction,
 };
 use screen_cover::EnvironmentPattern;
+use screen_geometry::{project_screen, projected_screen_gate_coverage};
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
 
 const SHADER_LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native_camera.metallib"));
@@ -79,6 +81,7 @@ struct PhysicalPipelineParams {
     lens_lateral: [f32; 4],
     lens_transmission_vignette: [f32; 4],
     lens_softness: [f32; 4],
+    lens_veiling_glare: [f32; 4],
     screen_translation: [f32; 4],
     screen_quaternion: [f32; 4],
     panel_angular_scene: [f32; 4],
@@ -115,6 +118,9 @@ struct CameraDevelopmentParams {
 pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
     pipeline: ComputePipelineState,
+    row_prefix_pipeline: ComputePipelineState,
+    veiling_reduce_pipeline: ComputePipelineState,
+    veiling_finalize_pipeline: ComputePipelineState,
     accumulator: ComputePipelineState,
     publish_raw_pipeline: ComputePipelineState,
     reconstruct_green_pipeline: ComputePipelineState,
@@ -177,6 +183,24 @@ impl MetalPhysicalPipeline {
         let pipeline = device
             .new_compute_pipeline_state_with_function(&function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let row_prefix_function = library
+            .get_function("build_physical_row_prefix", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let row_prefix_pipeline = device
+            .new_compute_pipeline_state_with_function(&row_prefix_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let veiling_reduce_function = library
+            .get_function("reduce_physical_veiling_source", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let veiling_reduce_pipeline = device
+            .new_compute_pipeline_state_with_function(&veiling_reduce_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let veiling_finalize_function = library
+            .get_function("finalize_physical_veiling_source", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let veiling_finalize_pipeline = device
+            .new_compute_pipeline_state_with_function(&veiling_finalize_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let accumulator_function = library
             .get_function("accumulate_physical_pipeline", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -210,12 +234,58 @@ impl MetalPhysicalPipeline {
         Ok(Self {
             queue: device.new_command_queue(),
             pipeline,
+            row_prefix_pipeline,
+            veiling_reduce_pipeline,
+            veiling_finalize_pipeline,
             accumulator,
             publish_raw_pipeline,
             reconstruct_green_pipeline,
             develop_pipeline,
             publish_developed_pipeline,
         })
+    }
+
+    fn row_prefix_textures(
+        &self,
+        source_acescg: &TextureRef,
+        device_signal: &TextureRef,
+    ) -> Result<(Texture, Texture), MetalPhysicalPipelineError> {
+        let device = source_acescg.device();
+        let descriptor_for = |source: &TextureRef| {
+            let descriptor = TextureDescriptor::new();
+            descriptor.set_texture_type(MTLTextureType::D2);
+            descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+            descriptor.set_width(source.width() + 1);
+            descriptor.set_height(source.height());
+            descriptor.set_storage_mode(MTLStorageMode::Private);
+            descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+            descriptor
+        };
+        let source_prefix = device.new_texture(&descriptor_for(source_acescg));
+        let device_prefix = device.new_texture(&descriptor_for(device_signal));
+        let command = self.queue.new_command_buffer();
+        let encoder = command.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.row_prefix_pipeline);
+        let dispatch = |source: &TextureRef, destination: &TextureRef| {
+            encoder.set_texture(0, Some(source));
+            encoder.set_texture(1, Some(destination));
+            let width = self.row_prefix_pipeline.thread_execution_width().max(1);
+            encoder.dispatch_threads(
+                MTLSize::new(source.height(), 1, 1),
+                MTLSize::new(width, 1, 1),
+            );
+        };
+        dispatch(source_acescg, &source_prefix);
+        dispatch(device_signal, &device_prefix);
+        encoder.end_encoding();
+        command.commit();
+        command.wait_until_completed();
+        if command.status() != MTLCommandBufferStatus::Completed {
+            return Err(MetalPhysicalPipelineError::Backend(
+                "physical row-prefix construction did not complete".to_owned(),
+            ));
+        }
+        Ok((source_prefix, device_prefix))
     }
 
     fn read_physical_raster(
@@ -494,6 +564,8 @@ impl MetalPhysicalPipeline {
         let mut final_geometry = None;
         let mut final_sampling = None;
         let mut stage_elapsed_nanoseconds = [0_u64; 14];
+        let mut prefix_cache: Vec<(*const TextureRef, *const TextureRef, Texture, Texture)> =
+            Vec::new();
         for (index, (source, signal, plan, weight, row)) in samples.iter().enumerate() {
             if is_cancelled() {
                 return Err(MetalPhysicalPipelineError::Cancelled);
@@ -510,11 +582,26 @@ impl MetalPhysicalPipeline {
             } else {
                 physical_plan.sensor_enabled = false;
             }
+            let source_key = core::ptr::from_ref(*source);
+            let signal_key = core::ptr::from_ref(*signal);
+            let prefix_index = if let Some(index) =
+                prefix_cache
+                    .iter()
+                    .position(|(cached_source, cached_signal, _, _)| {
+                        *cached_source == source_key && *cached_signal == signal_key
+                    }) {
+                index
+            } else {
+                let (source_prefix, signal_prefix) = self.row_prefix_textures(source, signal)?;
+                prefix_cache.push((source_key, signal_key, source_prefix, signal_prefix));
+                prefix_cache.len() - 1
+            };
             let evaluated = self.evaluate_rows(
                 source,
                 signal,
                 physical_plan,
                 row_range,
+                Some((&prefix_cache[prefix_index].2, &prefix_cache[prefix_index].3)),
                 |progress| report_progress(base + progress * span),
                 &is_cancelled,
             )?;
@@ -626,6 +713,7 @@ impl MetalPhysicalPipeline {
             device_signal,
             physical_plan,
             None,
+            None,
             |progress| {
                 report_progress(if plan.sensor_enabled {
                     progress * 0.9
@@ -651,6 +739,7 @@ impl MetalPhysicalPipeline {
         device_signal: &TextureRef,
         plan: PhysicalPipelineExecutionPlan,
         row_range: Option<(u32, u32)>,
+        row_prefixes: Option<(&TextureRef, &TextureRef)>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -800,6 +889,10 @@ impl MetalPhysicalPipeline {
                     EnvironmentPattern::UniformNeutral => 0,
                     EnvironmentPattern::StudioSoftboxes => 1,
                     EnvironmentPattern::CalibrationGrid => 2,
+                    EnvironmentPattern::OfficeCeiling => 3,
+                    EnvironmentPattern::DaylightWindow => 4,
+                    EnvironmentPattern::WarmPracticals => 5,
+                    EnvironmentPattern::MixedProduction => 6,
                 },
             ],
             levels: [
@@ -808,7 +901,12 @@ impl MetalPhysicalPipeline {
                 plan.panel.white_level_nits,
                 0.0,
             ],
-            geometry: [plan.panel.black_matrix_fraction, 0.0, 0.0, 0.0],
+            geometry: [
+                plan.panel.black_matrix_fraction,
+                physical_pipeline_aperture_sample_count(plan.quality) as f32,
+                0.0,
+                0.0,
+            ],
             strengths: [
                 plan.screen_amount,
                 plan.emission_amount,
@@ -946,6 +1044,33 @@ impl MetalPhysicalPipeline {
                 plan.lens_amount,
                 0.0,
             ],
+            lens_veiling_glare: [
+                camera.lens.veiling_glare_fraction,
+                project_screen(
+                    camera,
+                    screen,
+                    plan.panel.active_width,
+                    plan.panel.active_height,
+                    sampling.effective_width as f32 / sampling.effective_height as f32,
+                )
+                .map_or(0.0, projected_screen_gate_coverage)
+                    * placed_signal_area_fraction(
+                        plan.placement,
+                        source_acescg.width() as u32,
+                        source_acescg.height() as u32,
+                        plan.panel.native_width,
+                        plan.panel.native_height,
+                    ),
+                project_screen(
+                    camera,
+                    screen,
+                    plan.panel.active_width,
+                    plan.panel.active_height,
+                    sampling.effective_width as f32 / sampling.effective_height as f32,
+                )
+                .map_or(0.0, |projected| projected.facing_ratio),
+                0.0,
+            ],
             screen_translation: [
                 screen.translation.x,
                 screen.translation.y,
@@ -986,6 +1111,59 @@ impl MetalPhysicalPipeline {
             (row_temporal_gains.len() * size_of::<f32>()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
+        let generated_row_prefixes;
+        let (source_row_prefix, device_row_prefix) = if let Some(prefixes) = row_prefixes {
+            prefixes
+        } else {
+            generated_row_prefixes = self.row_prefix_textures(source_acescg, device_signal)?;
+            (&*generated_row_prefixes.0, &*generated_row_prefixes.1)
+        };
+        let zero_veiling = [0.0_f32; 4];
+        let veiling_gate_average = device.new_buffer_with_data(
+            zero_veiling.as_ptr().cast(),
+            size_of::<[f32; 4]>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        if params.lens_veiling_glare[0] != 0.0 {
+            let veiling_partials = device.new_buffer(
+                (256 * size_of::<[f32; 4]>()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+            let command = self.queue.new_command_buffer();
+            let encoder = command.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&self.veiling_reduce_pipeline);
+            encoder.set_texture(0, Some(device_signal));
+            encoder.set_buffer(0, Some(&veiling_partials), 0);
+            encoder.set_bytes(
+                1,
+                size_of::<PhysicalPipelineParams>() as u64,
+                (&raw const params).cast(),
+            );
+            let width = self
+                .veiling_reduce_pipeline
+                .thread_execution_width()
+                .min(256)
+                .max(1);
+            encoder.dispatch_threads(MTLSize::new(256, 1, 1), MTLSize::new(width, 1, 1));
+            encoder.memory_barrier_with_resources(&[&veiling_partials]);
+            encoder.set_compute_pipeline_state(&self.veiling_finalize_pipeline);
+            encoder.set_buffer(0, Some(&veiling_partials), 0);
+            encoder.set_buffer(1, Some(&veiling_gate_average), 0);
+            encoder.set_bytes(
+                2,
+                size_of::<PhysicalPipelineParams>() as u64,
+                (&raw const params).cast(),
+            );
+            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            encoder.end_encoding();
+            command.commit();
+            command.wait_until_completed();
+            if command.status() != MTLCommandBufferStatus::Completed {
+                return Err(MetalPhysicalPipelineError::Backend(
+                    "veiling-glare source reduction did not complete".to_owned(),
+                ));
+            }
+        }
 
         let (work_origin, work_height) = row_range.unwrap_or((0, sampling.effective_height));
         if work_height == 0 || work_origin.saturating_add(work_height) > sampling.effective_height {
@@ -1007,12 +1185,15 @@ impl MetalPhysicalPipeline {
             encoder.set_texture(0, Some(source_acescg));
             encoder.set_texture(1, Some(device_signal));
             encoder.set_texture(2, Some(&output));
+            encoder.set_texture(3, Some(&source_row_prefix));
+            encoder.set_texture(4, Some(&device_row_prefix));
             encoder.set_bytes(
                 0,
                 size_of::<PhysicalPipelineParams>() as u64,
                 (&raw const params).cast(),
             );
             encoder.set_buffer(1, Some(&row_temporal_buffer), 0);
+            encoder.set_buffer(2, Some(&veiling_gate_average), 0);
             let thread_width = self.pipeline.thread_execution_width();
             let thread_height =
                 (self.pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);

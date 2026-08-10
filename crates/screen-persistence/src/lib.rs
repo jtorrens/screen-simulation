@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 9;
+pub const CURRENT_VERSION: u32 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -253,6 +253,7 @@ pub struct LensDocument {
     pub transmission_rgb: [f32; 3],
     pub center_softness_micrometers: f32,
     pub edge_softness_micrometers: f32,
+    pub veiling_glare_fraction: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -371,6 +372,10 @@ pub enum EnvironmentPatternDocument {
     UniformNeutral,
     StudioSoftboxes,
     CalibrationGrid,
+    OfficeCeiling,
+    DaylightWindow,
+    WarmPracticals,
+    MixedProduction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -750,6 +755,7 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
             .chain([
                 keyframe.lens.center_softness_micrometers,
                 keyframe.lens.edge_softness_micrometers,
+                keyframe.lens.veiling_glare_fraction,
             ]);
         if !lens_values.clone().all(f32::is_finite) {
             return Err(PersistenceError::NonFiniteNumber);
@@ -776,6 +782,7 @@ fn validate_intrinsics(keyframes: &[CameraIntrinsicsKeyframe]) -> Result<(), Per
                 .any(|value| !(0.0..=1.0).contains(&value))
             || !(0.0..=100.0).contains(&keyframe.lens.center_softness_micrometers)
             || !(0.0..=100.0).contains(&keyframe.lens.edge_softness_micrometers)
+            || !(0.0..=0.25).contains(&keyframe.lens.veiling_glare_fraction)
         {
             return Err(PersistenceError::InvalidCameraIntrinsics);
         }
@@ -1230,6 +1237,7 @@ mod tests {
                         transmission_rgb: [0.92, 0.94, 0.95],
                         center_softness_micrometers: 1.8,
                         edge_softness_micrometers: 2.2,
+                        veiling_glare_fraction: 0.006,
                     },
                     interpolation: InterpolationSelection::Linear,
                 }],

@@ -32,6 +32,10 @@ pub struct LensModel {
     pub transmission_rgb: [f32; 3],
     pub center_softness_micrometers: f32,
     pub edge_softness_micrometers: f32,
+    /// Fraction of image-plane irradiance redistributed into the wide-field
+    /// gate-average veiling-glare tail. This is distinct from the micrometric
+    /// PSF core, cover-glass scatter and sensor charge bloom.
+    pub veiling_glare_fraction: f32,
 }
 
 impl LensModel {
@@ -44,6 +48,7 @@ impl LensModel {
         transmission_rgb: [0.92, 0.94, 0.95],
         center_softness_micrometers: 1.8,
         edge_softness_micrometers: 2.2,
+        veiling_glare_fraction: 0.006,
     };
 
     /// Interpolates the authored lens from an ideal thin lens. One preserves the calibrated
@@ -67,6 +72,7 @@ impl LensModel {
             // Keep the authored softness here to avoid applying the diagnostic amount twice.
             center_softness_micrometers: self.center_softness_micrometers,
             edge_softness_micrometers: self.edge_softness_micrometers,
+            veiling_glare_fraction: self.veiling_glare_fraction * strength,
         };
         lens_values_are_finite(scaled).then_some(scaled)
     }
@@ -83,6 +89,7 @@ fn lens_values_are_finite(lens: LensModel) -> bool {
         .chain([
             lens.center_softness_micrometers,
             lens.edge_softness_micrometers,
+            lens.veiling_glare_fraction,
         ])
         .all(f32::is_finite)
 }
@@ -117,6 +124,7 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             transmission_rgb: [0.88, 0.9, 0.91],
             center_softness_micrometers: 2.4,
             edge_softness_micrometers: 4.0,
+            veiling_glare_fraction: 0.010,
         },
     },
     LensPreset {
@@ -133,6 +141,7 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             transmission_rgb: [0.9, 0.92, 0.93],
             center_softness_micrometers: 2.2,
             edge_softness_micrometers: 3.4,
+            veiling_glare_fraction: 0.008,
         },
     },
     LensPreset {
@@ -149,6 +158,7 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             transmission_rgb: [0.92, 0.94, 0.95],
             center_softness_micrometers: 2.0,
             edge_softness_micrometers: 2.8,
+            veiling_glare_fraction: 0.007,
         },
     },
     LensPreset {
@@ -172,6 +182,7 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             transmission_rgb: [0.93, 0.95, 0.96],
             center_softness_micrometers: 2.0,
             edge_softness_micrometers: 2.6,
+            veiling_glare_fraction: 0.005,
         },
     },
     LensPreset {
@@ -188,6 +199,7 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             transmission_rgb: [0.93, 0.95, 0.96],
             center_softness_micrometers: 2.3,
             edge_softness_micrometers: 3.2,
+            veiling_glare_fraction: 0.005,
         },
     },
     LensPreset {
@@ -196,7 +208,7 @@ pub const LENS_PRESETS: &[LensPreset] = &[
         authority: LensPresetAuthority::CalibratedApproximation,
         nominal_focal_length: Millimeters(4.2),
         lens: LensModel {
-            radial_distortion: [-0.14, 0.045, -0.006],
+            radial_distortion: [-0.025, 0.005, 0.0],
             tangential_distortion: [0.000_8, -0.000_6],
             longitudinal_chromatic_meters: [0.000_16, 0.0, -0.000_2],
             lateral_chromatic_scale: [1.001_8, 1.0, 0.998],
@@ -204,6 +216,58 @@ pub const LENS_PRESETS: &[LensPreset] = &[
             transmission_rgb: [0.86, 0.89, 0.9],
             center_softness_micrometers: 0.75,
             edge_softness_micrometers: 1.1,
+            veiling_glare_fraction: 0.012,
+        },
+    },
+    LensPreset {
+        id: "canon-a470-wide-reference",
+        label: "Canon PowerShot A470 · 6.3 mm reference approximation",
+        authority: LensPresetAuthority::CalibratedApproximation,
+        nominal_focal_length: Millimeters(6.3),
+        lens: LensModel {
+            radial_distortion: [-0.035, 0.007, -0.000_5],
+            tangential_distortion: [0.000_7, -0.000_5],
+            longitudinal_chromatic_meters: [0.000_04, 0.0, -0.000_05],
+            lateral_chromatic_scale: [1.001_6, 1.0, 0.998_2],
+            vignetting_strength: 0.82,
+            transmission_rgb: [0.84, 0.87, 0.89],
+            center_softness_micrometers: 1.9,
+            edge_softness_micrometers: 3.0,
+            veiling_glare_fraction: 0.016,
+        },
+    },
+    LensPreset {
+        id: "iphone-14-pro-main-reference",
+        label: "iPhone 14 Pro main · reference approximation",
+        authority: LensPresetAuthority::CalibratedApproximation,
+        nominal_focal_length: Millimeters(6.86),
+        lens: LensModel {
+            radial_distortion: [-0.02, 0.004, 0.0],
+            tangential_distortion: [0.000_7, -0.000_5],
+            longitudinal_chromatic_meters: [0.000_14, 0.0, -0.000_18],
+            lateral_chromatic_scale: [1.001_5, 1.0, 0.998_3],
+            vignetting_strength: 0.84,
+            transmission_rgb: [0.87, 0.9, 0.91],
+            center_softness_micrometers: 0.8,
+            edge_softness_micrometers: 1.2,
+            veiling_glare_fraction: 0.012,
+        },
+    },
+    LensPreset {
+        id: "iphone-14-pro-ultrawide-reference",
+        label: "iPhone 14 Pro ultra-wide · reference approximation",
+        authority: LensPresetAuthority::CalibratedApproximation,
+        nominal_focal_length: Millimeters(2.22),
+        lens: LensModel {
+            radial_distortion: [-0.045, 0.010, -0.000_5],
+            tangential_distortion: [0.001, -0.000_8],
+            longitudinal_chromatic_meters: [0.000_2, 0.0, -0.000_26],
+            lateral_chromatic_scale: [1.002_3, 1.0, 0.997_4],
+            vignetting_strength: 1.05,
+            transmission_rgb: [0.82, 0.86, 0.88],
+            center_softness_micrometers: 1.0,
+            edge_softness_micrometers: 1.65,
+            veiling_glare_fraction: 0.018,
         },
     },
 ];
@@ -808,6 +872,7 @@ fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
         .chain([
             lens.center_softness_micrometers,
             lens.edge_softness_micrometers,
+            lens.veiling_glare_fraction,
         ])
         .all(f32::is_finite)
         && (0.0..=4.0).contains(&lens.vignetting_strength)
@@ -821,6 +886,7 @@ fn lens_is_valid_for_gate(lens: LensModel, lens_shift: Vec2) -> bool {
             .all(|value| (0.0..=1.0).contains(&value))
         && (0.0..=100.0).contains(&lens.center_softness_micrometers)
         && (0.0..=100.0).contains(&lens.edge_softness_micrometers)
+        && (0.0..=0.25).contains(&lens.veiling_glare_fraction)
         && distortion_is_certified_family(lens)
         && distortion_is_invertible(lens, lens_shift)
 }
@@ -865,6 +931,7 @@ fn interpolate_lens(
             left.edge_softness_micrometers,
             right.edge_softness_micrometers,
         ),
+        veiling_glare_fraction: lerp(left.veiling_glare_fraction, right.veiling_glare_fraction),
     }
 }
 
@@ -872,6 +939,71 @@ fn interpolate_lens(
 pub struct ProjectedScreen {
     pub corners: [Vec2; 4],
     pub facing_ratio: f32,
+}
+
+/// Fraction of the canonical sensor gate covered by the projected active panel.
+/// The projected quadrilateral is clipped against NDC `[-1, 1]²`; no bounding-box
+/// approximation is used, so oblique screens retain their authored perspective area.
+pub fn projected_screen_gate_coverage(projected: ProjectedScreen) -> f32 {
+    #[derive(Clone, Copy)]
+    enum Edge {
+        Left,
+        Right,
+        Bottom,
+        Top,
+    }
+    let inside = |point: Vec2, edge: Edge| match edge {
+        Edge::Left => point.x >= -1.0,
+        Edge::Right => point.x <= 1.0,
+        Edge::Bottom => point.y >= -1.0,
+        Edge::Top => point.y <= 1.0,
+    };
+    let intersection = |start: Vec2, end: Vec2, edge: Edge| {
+        let (axis_start, axis_end, boundary) = match edge {
+            Edge::Left => (start.x, end.x, -1.0),
+            Edge::Right => (start.x, end.x, 1.0),
+            Edge::Bottom => (start.y, end.y, -1.0),
+            Edge::Top => (start.y, end.y, 1.0),
+        };
+        let denominator = axis_end - axis_start;
+        let amount = if denominator.abs() <= f32::EPSILON {
+            0.0
+        } else {
+            ((boundary - axis_start) / denominator).clamp(0.0, 1.0)
+        };
+        Vec2 {
+            x: start.x + (end.x - start.x) * amount,
+            y: start.y + (end.y - start.y) * amount,
+        }
+    };
+    let mut polygon = projected.corners.to_vec();
+    for edge in [Edge::Left, Edge::Right, Edge::Bottom, Edge::Top] {
+        if polygon.is_empty() {
+            return 0.0;
+        }
+        let input = core::mem::take(&mut polygon);
+        let mut start = *input.last().expect("nonempty clipped polygon");
+        for end in input {
+            match (inside(start, edge), inside(end, edge)) {
+                (true, true) => polygon.push(end),
+                (true, false) => polygon.push(intersection(start, end, edge)),
+                (false, true) => {
+                    polygon.push(intersection(start, end, edge));
+                    polygon.push(end);
+                }
+                (false, false) => {}
+            }
+            start = end;
+        }
+    }
+    let twice_area = polygon
+        .iter()
+        .zip(polygon.iter().cycle().skip(1))
+        .take(polygon.len())
+        .map(|(first, second)| first.x * second.y - first.y * second.x)
+        .sum::<f32>()
+        .abs();
+    (twice_area * 0.5 / 4.0).clamp(0.0, 1.0)
 }
 
 pub fn project_screen(
@@ -959,7 +1091,7 @@ pub fn panel_uv_at_viewport(
 }
 
 pub const APERTURE_SAMPLE_COUNT: usize = 16;
-pub const MAX_APERTURE_SAMPLE_COUNT: usize = 128;
+pub const MAX_APERTURE_SAMPLE_COUNT: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OpticalSample {
@@ -975,6 +1107,7 @@ pub fn panel_uv_aperture_samples(
     active_width: Meters,
     active_height: Meters,
     viewport_ndc: Vec2,
+    aperture_rotation_turns: f32,
 ) -> [OpticalSample; APERTURE_SAMPLE_COUNT] {
     panel_uv_aperture_samples_with_count::<APERTURE_SAMPLE_COUNT>(
         camera,
@@ -982,6 +1115,7 @@ pub fn panel_uv_aperture_samples(
         active_width,
         active_height,
         viewport_ndc,
+        aperture_rotation_turns,
     )
 }
 
@@ -993,8 +1127,9 @@ pub fn panel_uv_aperture_samples_with_count<const SAMPLE_COUNT: usize>(
     active_width: Meters,
     active_height: Meters,
     viewport_ndc: Vec2,
+    aperture_rotation_turns: f32,
 ) -> [OpticalSample; SAMPLE_COUNT] {
-    assert!(matches!(SAMPLE_COUNT, 16 | 32 | 64 | 128));
+    assert!(matches!(SAMPLE_COUNT, 16 | 32 | 64 | 128 | 256 | 512));
     let disk = aperture_disk_samples();
     let Some(ideal) = inverse_distortion(
         Vec2 {
@@ -1010,8 +1145,9 @@ pub fn panel_uv_aperture_samples_with_count<const SAMPLE_COUNT: usize>(
             irradiance_weight: [0.0; 3],
         }; SAMPLE_COUNT];
     };
+    let rotation = aperture_rotation(aperture_rotation_turns);
     core::array::from_fn(|sample_index| {
-        let lens_sample = disk[sample_index];
+        let lens_sample = rotate_aperture_sample(disk[sample_index], rotation);
         let hits = core::array::from_fn(|channel| {
             panel_uv_for_lens_sample(
                 camera,
@@ -1030,6 +1166,76 @@ pub fn panel_uv_aperture_samples_with_count<const SAMPLE_COUNT: usize>(
             irradiance_weight: lens_irradiance_weight(camera, ideal),
         }
     })
+}
+
+/// Heap-backed variant for the high-convergence optical evaluator. Keeping the complete
+/// 256/512-ray footprint off worker stacks is part of the sampling contract rather than a
+/// reduced-quality fallback.
+pub fn panel_uv_aperture_samples_boxed_with_count<const SAMPLE_COUNT: usize>(
+    camera: CameraSample,
+    screen: ScreenSample,
+    active_width: Meters,
+    active_height: Meters,
+    viewport_ndc: Vec2,
+    aperture_rotation_turns: f32,
+) -> Box<[OpticalSample]> {
+    assert!(matches!(SAMPLE_COUNT, 16 | 32 | 64 | 128 | 256 | 512));
+    let disk = aperture_disk_samples();
+    let Some(ideal) = inverse_distortion(
+        Vec2 {
+            x: viewport_ndc.x + 2.0 * camera.lens_shift.x,
+            y: -viewport_ndc.y - 2.0 * camera.lens_shift.y,
+        },
+        camera.lens,
+    ) else {
+        return vec![
+            OpticalSample {
+                panel_uv: [None; 3],
+                emission_cosine: [0.0; 3],
+                reflection_direction_local: [None; 3],
+                irradiance_weight: [0.0; 3],
+            };
+            SAMPLE_COUNT
+        ]
+        .into_boxed_slice();
+    };
+    let rotation = aperture_rotation(aperture_rotation_turns);
+    (0..SAMPLE_COUNT)
+        .map(|sample_index| {
+            let lens_sample = rotate_aperture_sample(disk[sample_index], rotation);
+            let hits = core::array::from_fn(|channel| {
+                panel_uv_for_lens_sample(
+                    camera,
+                    screen,
+                    active_width,
+                    active_height,
+                    ideal,
+                    lens_sample,
+                    channel,
+                )
+            });
+            OpticalSample {
+                panel_uv: hits.map(|hit| hit.map(|value| value.0)),
+                emission_cosine: hits.map(|hit| hit.map_or(0.0, |value| value.1)),
+                reflection_direction_local: hits.map(|hit| hit.map(|value| value.2)),
+                irradiance_weight: lens_irradiance_weight(camera, ideal),
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+fn aperture_rotation(turns: f32) -> (f32, f32) {
+    let angle = turns.rem_euclid(1.0) * core::f32::consts::TAU;
+    angle.sin_cos()
+}
+
+fn rotate_aperture_sample(sample: Vec2, rotation: (f32, f32)) -> Vec2 {
+    let (sin, cos) = rotation;
+    Vec2 {
+        x: sample.x * cos - sample.y * sin,
+        y: sample.x * sin + sample.y * cos,
+    }
 }
 
 fn aperture_disk_samples() -> &'static [Vec2; MAX_APERTURE_SAMPLE_COUNT] {
@@ -1154,7 +1360,6 @@ fn distort(point: Vec2, lens: LensModel) -> Vec2 {
 
 fn inverse_distortion(observed: Vec2, lens: LensModel) -> Option<Vec2> {
     let mut ideal = observed;
-    const EPSILON: f32 = 1.0e-4;
     for _ in 0..12 {
         let projected = distort(ideal, lens);
         let residual = Vec2 {
@@ -1164,24 +1369,23 @@ fn inverse_distortion(observed: Vec2, lens: LensModel) -> Option<Vec2> {
         if residual.x.abs().max(residual.y.abs()) < 1.0e-6 {
             return Some(ideal);
         }
-        let dx = distort(
-            Vec2 {
-                x: ideal.x + EPSILON,
-                y: ideal.y,
-            },
-            lens,
-        );
-        let dy = distort(
-            Vec2 {
-                x: ideal.x,
-                y: ideal.y + EPSILON,
-            },
-            lens,
-        );
-        let j00 = (dx.x - projected.x) / EPSILON;
-        let j10 = (dx.y - projected.y) / EPSILON;
-        let j01 = (dy.x - projected.x) / EPSILON;
-        let j11 = (dy.y - projected.y) / EPSILON;
+        let radius2 = ideal.x * ideal.x + ideal.y * ideal.y;
+        let radius4 = radius2 * radius2;
+        let radial = 1.0
+            + lens.radial_distortion[0] * radius2
+            + lens.radial_distortion[1] * radius4
+            + lens.radial_distortion[2] * radius4 * radius2;
+        let radial_slope = lens.radial_distortion[0]
+            + 2.0 * lens.radial_distortion[1] * radius2
+            + 3.0 * lens.radial_distortion[2] * radius4;
+        let radial_dx = 2.0 * ideal.x * radial_slope;
+        let radial_dy = 2.0 * ideal.y * radial_slope;
+        let p1 = lens.tangential_distortion[0];
+        let p2 = lens.tangential_distortion[1];
+        let j00 = radial + ideal.x * radial_dx + 2.0 * p1 * ideal.y + 6.0 * p2 * ideal.x;
+        let j01 = ideal.x * radial_dy + 2.0 * p1 * ideal.x + 2.0 * p2 * ideal.y;
+        let j10 = ideal.y * radial_dx + 2.0 * p1 * ideal.x + 2.0 * p2 * ideal.y;
+        let j11 = radial + ideal.y * radial_dy + 6.0 * p1 * ideal.y + 2.0 * p2 * ideal.x;
         let determinant = j00 * j11 - j01 * j10;
         if !determinant.is_finite() || determinant <= 1.0e-8 {
             return None;
@@ -1557,6 +1761,7 @@ mod tests {
             Meters(0.6),
             Meters(0.34),
             Vec2 { x: 0.0, y: 0.0 },
+            0.0,
         );
         let center = samples[0].panel_uv[1].expect("chief ray reaches panel");
         for sample in samples.into_iter().filter_map(|sample| sample.panel_uv[1]) {
@@ -1576,13 +1781,15 @@ mod tests {
             Meters(0.6),
             Meters(0.34),
             Vec2 { x: 0.2, y: -0.1 },
+            0.0,
         );
-        let high = panel_uv_aperture_samples_with_count::<128>(
+        let high = panel_uv_aperture_samples_with_count::<512>(
             camera,
             ScreenSample::IDENTITY,
             Meters(0.6),
             Meters(0.34),
             Vec2 { x: 0.2, y: -0.1 },
+            0.0,
         );
         assert_eq!(low.as_slice(), &high[..16]);
     }
@@ -1601,6 +1808,7 @@ mod tests {
             Meters(0.6),
             Meters(0.34),
             Vec2 { x: 0.0, y: 0.0 },
+            0.0,
         );
         let center = samples[0].panel_uv[1].expect("chief ray reaches panel");
         assert!(
@@ -1622,7 +1830,8 @@ mod tests {
                 ScreenSample::IDENTITY,
                 Meters(0.6),
                 Meters(0.34),
-                Vec2 { x: 0.0, y: 0.0 }
+                Vec2 { x: 0.0, y: 0.0 },
+                0.0,
             )
             .iter()
             .all(|sample| sample.panel_uv.iter().all(Option::is_none))
@@ -1640,6 +1849,7 @@ mod tests {
             Meters(0.6),
             Meters(0.34),
             Vec2 { x: 0.0, y: 0.0 },
+            0.0,
         );
         let edge = panel_uv_aperture_samples(
             camera,
@@ -1647,6 +1857,7 @@ mod tests {
             Meters(0.6),
             Meters(0.34),
             Vec2 { x: 0.75, y: 0.6 },
+            0.0,
         );
         let edge_sample = edge[0];
         let red = edge_sample.panel_uv[0].expect("red reaches panel");
@@ -1673,6 +1884,7 @@ mod tests {
                 Meters(0.6),
                 Meters(0.34),
                 Vec2 { x: 0.0, y: 0.0 },
+                0.0,
             )[0]
             .irradiance_weight[1]
         };
@@ -1742,6 +1954,85 @@ mod tests {
                 (left + right) * 0.5
             });
             assert!(lens_is_valid_for_gate(midpoint, Vec2 { x: 0.0, y: 0.0 }));
+        }
+    }
+
+    #[test]
+    fn projected_screen_gate_coverage_clips_oblique_support_exactly() {
+        let full = ProjectedScreen {
+            corners: [
+                Vec2 { x: -1.0, y: -1.0 },
+                Vec2 { x: 1.0, y: -1.0 },
+                Vec2 { x: 1.0, y: 1.0 },
+                Vec2 { x: -1.0, y: 1.0 },
+            ],
+            facing_ratio: 1.0,
+        };
+        assert_eq!(projected_screen_gate_coverage(full), 1.0);
+
+        let half = ProjectedScreen {
+            corners: [
+                Vec2 { x: -2.0, y: -1.0 },
+                Vec2 { x: 0.0, y: -1.0 },
+                Vec2 { x: 0.0, y: 1.0 },
+                Vec2 { x: -2.0, y: 1.0 },
+            ],
+            facing_ratio: 1.0,
+        };
+        assert!((projected_screen_gate_coverage(half) - 0.5).abs() < 1.0e-6);
+
+        let outside = ProjectedScreen {
+            corners: [
+                Vec2 { x: 2.0, y: 2.0 },
+                Vec2 { x: 3.0, y: 2.0 },
+                Vec2 { x: 3.0, y: 3.0 },
+                Vec2 { x: 2.0, y: 3.0 },
+            ],
+            facing_ratio: 1.0,
+        };
+        assert_eq!(projected_screen_gate_coverage(outside), 0.0);
+    }
+
+    #[test]
+    fn lens_character_scales_veiling_glare_from_exact_identity() {
+        let lens = LensModel::REFERENCE_PHOTOGRAPHIC;
+        assert_eq!(
+            lens.with_character_strength(0.0)
+                .unwrap()
+                .veiling_glare_fraction,
+            0.0
+        );
+        assert_eq!(lens.with_character_strength(1.0).unwrap(), lens);
+        assert!(
+            (lens
+                .with_character_strength(2.0)
+                .unwrap()
+                .veiling_glare_fraction
+                - 2.0 * lens.veiling_glare_fraction)
+                .abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn developed_reference_lenses_apply_only_residual_geometric_distortion() {
+        for id in [
+            "iphone-16e-main-integrated",
+            "canon-a470-wide-reference",
+            "iphone-14-pro-main-reference",
+            "iphone-14-pro-ultrawide-reference",
+        ] {
+            let lens = lens_preset(id).expect("developed reference lens").lens;
+            let edge = distort(Vec2 { x: 1.0, y: 0.0 }, lens);
+            let corner = distort(Vec2 { x: 1.0, y: 1.0 }, lens);
+            assert!(
+                (edge.x - 1.0).abs() <= 0.04,
+                "{id} exceeds the residual developed-image edge budget"
+            );
+            assert!(
+                (corner.x - 1.0).abs() <= 0.07 && (corner.y - 1.0).abs() <= 0.07,
+                "{id} exceeds the residual developed-image corner budget"
+            );
         }
     }
 }

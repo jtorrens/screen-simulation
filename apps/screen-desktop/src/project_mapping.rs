@@ -195,6 +195,18 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 screen_persistence::EnvironmentPatternDocument::CalibrationGrid => {
                     EnvironmentPattern::CalibrationGrid
                 }
+                screen_persistence::EnvironmentPatternDocument::OfficeCeiling => {
+                    EnvironmentPattern::OfficeCeiling
+                }
+                screen_persistence::EnvironmentPatternDocument::DaylightWindow => {
+                    EnvironmentPattern::DaylightWindow
+                }
+                screen_persistence::EnvironmentPatternDocument::WarmPracticals => {
+                    EnvironmentPattern::WarmPracticals
+                }
+                screen_persistence::EnvironmentPatternDocument::MixedProduction => {
+                    EnvironmentPattern::MixedProduction
+                }
             },
         }
         .validate()
@@ -343,6 +355,7 @@ fn map_intrinsics(key: &StoredIntrinsics) -> Result<CameraIntrinsicsKeyframe, St
             transmission_rgb: key.lens.transmission_rgb,
             center_softness_micrometers: key.lens.center_softness_micrometers,
             edge_softness_micrometers: key.lens.edge_softness_micrometers,
+            veiling_glare_fraction: key.lens.veiling_glare_fraction,
         },
         interpolation: map_interpolation(key.interpolation),
     })
@@ -499,6 +512,7 @@ mod tests {
                         transmission_rgb: [0.92, 0.94, 0.95],
                         center_softness_micrometers: 1.8,
                         edge_softness_micrometers: 2.2,
+                        veiling_glare_fraction: 0.006,
                     },
                     interpolation: InterpolationSelection::Linear,
                 }],
