@@ -1120,6 +1120,14 @@ pub fn variance_matched_rectangular_convolution_half_extent(
     }
 }
 
+fn variance_matched_projected_disk_half_extent(x_axis: Vec2, y_axis: Vec2) -> Vec2 {
+    const DISK_TO_BOX_VARIANCE_SCALE: f32 = 0.866_025_4;
+    Vec2 {
+        x: x_axis.x.hypot(y_axis.x) * DISK_TO_BOX_VARIANCE_SCALE,
+        y: x_axis.y.hypot(y_axis.y) * DISK_TO_BOX_VARIANCE_SCALE,
+    }
+}
+
 /// Returns the variance-matched micrometric lens core in millimetres. The
 /// authored aberration softness and diffraction radius are independent blur
 /// contributions, so their radii combine in quadrature rather than by support.
@@ -1142,7 +1150,6 @@ pub fn panel_uv_continuous_pupil_footprint(
     active_height: Meters,
     viewport_ndc: Vec2,
 ) -> ContinuousOpticalFootprint {
-    const DISK_TO_BOX_VARIANCE_SCALE: f32 = 0.866_025_4;
     let Some(ideal) = inverse_distortion(
         Vec2 {
             x: viewport_ndc.x + 2.0 * camera.lens_shift.x,
@@ -1199,10 +1206,16 @@ pub fn panel_uv_continuous_pupil_footprint(
         };
         let x = x_hits[channel].map_or(center, |value| value.0);
         let y = y_hits[channel].map_or(center, |value| value.0);
-        Vec2 {
-            x: ((x.x - center.x).abs() + (y.x - center.x).abs()) * DISK_TO_BOX_VARIANCE_SCALE,
-            y: ((x.y - center.y).abs() + (y.y - center.y).abs()) * DISK_TO_BOX_VARIANCE_SCALE,
-        }
+        variance_matched_projected_disk_half_extent(
+            Vec2 {
+                x: x.x - center.x,
+                y: x.y - center.y,
+            },
+            Vec2 {
+                x: y.x - center.x,
+                y: y.y - center.y,
+            },
+        )
     });
     ContinuousOpticalFootprint {
         optical: OpticalSample {
@@ -1959,6 +1972,18 @@ mod tests {
             variance_matched_rectangular_convolution_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 },),
             sensor
         );
+    }
+
+    #[test]
+    fn projected_disk_uses_quadratic_axis_variance_instead_of_bounding_support() {
+        let extent = variance_matched_projected_disk_half_extent(
+            Vec2 { x: 0.4, y: 0.3 },
+            Vec2 { x: -0.3, y: 0.4 },
+        );
+        let expected = 0.5 * 0.866_025_4;
+        assert!((extent.x - expected).abs() < f32::EPSILON);
+        assert!((extent.y - expected).abs() < f32::EPSILON);
+        assert!(extent.x < (0.4_f32.abs() + (-0.3_f32).abs()) * 0.866_025_4);
     }
 
     #[test]

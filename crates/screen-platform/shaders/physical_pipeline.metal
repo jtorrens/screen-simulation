@@ -676,8 +676,10 @@ kernel void evaluate_physical_pipeline(
                         observed, float2(0.0f, 1.0f), channel, p);
                     const float2 x_uv = rim_x.valid ? rim_x.uv : hit.uv;
                     const float2 y_uv = rim_y.valid ? rim_y.uv : hit.uv;
-                    continuous_half_extent = (
-                        abs(x_uv - hit.uv) + abs(y_uv - hit.uv)
+                    const float2 x_axis = x_uv - hit.uv;
+                    const float2 y_axis = y_uv - hit.uv;
+                    continuous_half_extent = sqrt(
+                        x_axis * x_axis + y_axis * y_axis
                     ) * disk_to_box_variance_scale * p.panel_angular_scene.w;
                 }
                 const float2 target = hit.valid ? hit.uv : float2(-2.0f);
@@ -736,8 +738,10 @@ kernel void evaluate_physical_pipeline(
                     observed, float2(0.0f, 1.0f), 1, p);
                 const float2 x_uv = rim_x.valid ? rim_x.uv : green_hit.uv;
                 const float2 y_uv = rim_y.valid ? rim_y.uv : green_hit.uv;
-                green_continuous_half_extent = (
-                    abs(x_uv - green_hit.uv) + abs(y_uv - green_hit.uv)
+                const float2 x_axis = x_uv - green_hit.uv;
+                const float2 y_axis = y_uv - green_hit.uv;
+                green_continuous_half_extent = sqrt(
+                    x_axis * x_axis + y_axis * y_axis
                 ) * disk_to_box_variance_scale * p.panel_angular_scene.w;
             }
             if (green_hit.valid) {
