@@ -642,8 +642,12 @@ kernel void evaluate_physical_pipeline(
             const float field = clamp(dot(base_observed, base_observed) * 0.5f, 0.0f, 1.0f);
             const float softness_mm = mix(p.lens_softness.x, p.lens_softness.y, field) * 0.001f;
             const float sensor_pitch_mm = p.camera_right_sensor_width.w / float(p.output_tile.x);
-            const float psf_pixels = ((softness_mm + 1.22f * 0.000550f * p.camera_limits.x)
-                / sensor_pitch_mm) * p.lens_softness.z;
+            const float airy_radius_mm = 1.22f * 0.000550f * p.camera_limits.x;
+            const bool vfx_depth_blur = p.geometry.z == 1.0f;
+            const float psf_radius_mm = vfx_depth_blur
+                ? length(float2(softness_mm, airy_radius_mm))
+                : softness_mm + airy_radius_mm;
+            const float psf_pixels = (psf_radius_mm / sensor_pitch_mm) * p.lens_softness.z;
             for (uint psf_sample = 0; psf_sample < psf_samples_per_area; ++psf_sample) {
             const uint sample_index = (sy * side + sx) * psf_samples_per_area + psf_sample;
             const float2 psf_offset = physical_psf_disk_sample(sample_index)
@@ -653,7 +657,6 @@ kernel void evaluate_physical_pipeline(
             const float2 flat_center = base_center + psf_offset;
             const float2 observed = flat_center * 2.0f - 1.0f;
             const float2 half_extent = (maximum_uv - minimum_uv) * 0.5f;
-            const bool vfx_depth_blur = p.geometry.z == 1.0f;
             const uint aperture_sample_count = vfx_depth_blur ? 1 : 32;
             const float aperture_rotation = 0.0f;
             for (uint aperture = 0; aperture < aperture_sample_count; ++aperture) {
@@ -680,7 +683,10 @@ kernel void evaluate_physical_pipeline(
                 const float2 target = hit.valid ? hit.uv : float2(-2.0f);
                 const float2 center = mix(flat_center, target, p.panel_angular_scene.w);
                 const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
-                const float2 reconstructed_half_extent = half_extent + continuous_half_extent;
+                const float2 reconstructed_half_extent = sqrt(
+                    half_extent * half_extent
+                    + continuous_half_extent * continuous_half_extent
+                );
                 const float2 channel_minimum = exact_flat
                     ? minimum_uv : center - reconstructed_half_extent;
                 const float2 channel_maximum = exact_flat
@@ -747,8 +753,10 @@ kernel void evaluate_physical_pipeline(
             const float2 green_target = green_hit.valid ? green_hit.uv : float2(-2.0f);
             const float2 green_center = mix(flat_center, green_target, p.panel_angular_scene.w);
             const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
-            const float2 green_reconstructed_half_extent =
-                half_extent + green_continuous_half_extent;
+            const float2 green_reconstructed_half_extent = sqrt(
+                half_extent * half_extent
+                + green_continuous_half_extent * green_continuous_half_extent
+            );
             const float4 ideal_sample = area_sample(source_acescg, source_row_prefix,
                 exact_flat ? minimum_uv : green_center - green_reconstructed_half_extent,
                 exact_flat ? maximum_uv : green_center + green_reconstructed_half_extent, p);

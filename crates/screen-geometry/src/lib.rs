@@ -1107,6 +1107,29 @@ pub struct ContinuousOpticalFootprint {
     pub panel_half_extent: [Vec2; 3],
 }
 
+/// Combines independent rectangular sampling footprints by matching their
+/// per-axis variance. Adding half-extents would add support radii and
+/// over-broaden small circles of confusion near the authored focus plane.
+pub fn variance_matched_rectangular_convolution_half_extent(
+    sensor_half_extent: Vec2,
+    pupil_half_extent: Vec2,
+) -> Vec2 {
+    Vec2 {
+        x: sensor_half_extent.x.hypot(pupil_half_extent.x),
+        y: sensor_half_extent.y.hypot(pupil_half_extent.y),
+    }
+}
+
+/// Returns the variance-matched micrometric lens core in millimetres. The
+/// authored aberration softness and diffraction radius are independent blur
+/// contributions, so their radii combine in quadrature rather than by support.
+pub fn variance_matched_lens_psf_radius_millimeters(softness_micrometers: f32, f_stop: f32) -> f32 {
+    const GREEN_WAVELENGTH_MILLIMETERS: f32 = 0.000_550;
+    let softness_millimeters = softness_micrometers * 0.001;
+    let airy_radius_millimeters = 1.22 * GREEN_WAVELENGTH_MILLIMETERS * f_stop;
+    softness_millimeters.hypot(airy_radius_millimeters)
+}
+
 /// Approximates the projected circular pupil by one centered continuous area
 /// footprint. The center ray preserves the authored chromatic projection and
 /// angular response; two orthogonal rim rays provide the local panel-plane
@@ -1921,6 +1944,36 @@ mod tests {
         {
             assert!(defocused_extent.x > focused_extent.x || defocused_extent.y > focused_extent.y);
         }
+    }
+
+    #[test]
+    fn vfx_footprint_convolution_matches_variance_without_adding_support() {
+        let sensor = Vec2 { x: 0.5, y: 0.25 };
+        let pupil = Vec2 { x: 0.3, y: 0.4 };
+        let combined = variance_matched_rectangular_convolution_half_extent(sensor, pupil);
+        assert!((combined.x - 0.5_f32.hypot(0.3)).abs() < f32::EPSILON);
+        assert!((combined.y - 0.25_f32.hypot(0.4)).abs() < f32::EPSILON);
+        assert!(combined.x < sensor.x + pupil.x);
+        assert!(combined.y < sensor.y + pupil.y);
+        assert_eq!(
+            variance_matched_rectangular_convolution_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 },),
+            sensor
+        );
+    }
+
+    #[test]
+    fn lens_psf_combines_softness_and_diffraction_by_variance() {
+        let softness_micrometers = 0.75;
+        let f_stop = 1.64;
+        let airy_millimeters = 1.22 * 0.000_550 * f_stop;
+        let expected = (softness_micrometers * 0.001_f32).hypot(airy_millimeters);
+        let combined = variance_matched_lens_psf_radius_millimeters(softness_micrometers, f_stop);
+        assert!((combined - expected).abs() < f32::EPSILON);
+        assert!(combined < softness_micrometers * 0.001 + airy_millimeters);
+        assert_eq!(
+            variance_matched_lens_psf_radius_millimeters(0.0, f_stop),
+            airy_millimeters
+        );
     }
 
     #[test]

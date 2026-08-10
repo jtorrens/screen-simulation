@@ -41,7 +41,8 @@ use screen_geometry::{
     ScreenSample, ScreenTrack, panel_uv_aperture_samples,
     panel_uv_aperture_samples_boxed_with_count, panel_uv_aperture_samples_with_count,
     panel_uv_at_viewport, panel_uv_continuous_pupil_footprint, project_scene_point, project_screen,
-    projected_screen_gate_coverage,
+    projected_screen_gate_coverage, variance_matched_lens_psf_radius_millimeters,
+    variance_matched_rectangular_convolution_half_extent,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{
@@ -1014,10 +1015,20 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                             * field;
                     let sensor_pitch_millimeters =
                         resolved_scene.0.sensor_width.0 / sampling.effective_width as f32;
-                    let psf_pixels = ((softness_micrometers * 0.001
-                        + 1.22 * 0.000_550 * resolved_scene.0.f_stop)
-                        / sensor_pitch_millimeters)
-                        * plan.lens_amount;
+                    let airy_radius_millimeters = 1.22 * 0.000_550 * resolved_scene.0.f_stop;
+                    let psf_radius_millimeters = match plan.lens_evaluation_model {
+                        LensEvaluationModel::ThinLens => {
+                            softness_micrometers * 0.001 + airy_radius_millimeters
+                        }
+                        LensEvaluationModel::VfxDepthBlur => {
+                            variance_matched_lens_psf_radius_millimeters(
+                                softness_micrometers,
+                                resolved_scene.0.f_stop,
+                            )
+                        }
+                    };
+                    let psf_pixels =
+                        (psf_radius_millimeters / sensor_pitch_millimeters) * plan.lens_amount;
                     for psf_sample in 0..psf_samples_per_area {
                         let sample_index = (sy * side + sx) * psf_samples_per_area + psf_sample;
                         let disk = physical_psf_disk_sample(sample_index as usize);
@@ -1112,22 +1123,22 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 } else {
                                     0.0
                                 };
+                                let reconstructed_half_extent =
+                                    variance_matched_rectangular_convolution_half_extent(
+                                        Vec2 {
+                                            x: (maximum_uv.x - minimum_uv.x) * 0.5,
+                                            y: (maximum_uv.y - minimum_uv.y) * 0.5,
+                                        },
+                                        aperture_cell_half_extent[channel],
+                                    );
                                 (
                                     Vec2 {
-                                        x: center.x
-                                            - (maximum_uv.x - minimum_uv.x) * 0.5
-                                            - aperture_cell_half_extent[channel].x,
-                                        y: center.y
-                                            - (maximum_uv.y - minimum_uv.y) * 0.5
-                                            - aperture_cell_half_extent[channel].y,
+                                        x: center.x - reconstructed_half_extent.x,
+                                        y: center.y - reconstructed_half_extent.y,
                                     },
                                     Vec2 {
-                                        x: center.x
-                                            + (maximum_uv.x - minimum_uv.x) * 0.5
-                                            + aperture_cell_half_extent[channel].x,
-                                        y: center.y
-                                            + (maximum_uv.y - minimum_uv.y) * 0.5
-                                            + aperture_cell_half_extent[channel].y,
+                                        x: center.x + reconstructed_half_extent.x,
+                                        y: center.y + reconstructed_half_extent.y,
                                     },
                                     1.0 + plan.scene_geometry_amount * (angular - 1.0),
                                 )
