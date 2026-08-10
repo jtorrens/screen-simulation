@@ -42,7 +42,7 @@ use screen_geometry::{
     panel_uv_aperture_samples_boxed_with_count, panel_uv_aperture_samples_with_count,
     panel_uv_at_viewport, panel_uv_continuous_pupil_footprint, project_scene_point, project_screen,
     projected_screen_gate_coverage, variance_matched_lens_psf_radius_millimeters,
-    variance_matched_rectangular_convolution_half_extent, vfx_carrier_half_extent,
+    vfx_carrier_half_extent, vfx_rectangular_support_half_extent,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{
@@ -1124,14 +1124,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 } else {
                                     0.0
                                 };
-                                let reconstructed_half_extent =
-                                    variance_matched_rectangular_convolution_half_extent(
-                                        Vec2 {
-                                            x: (maximum_uv.x - minimum_uv.x) * 0.5,
-                                            y: (maximum_uv.y - minimum_uv.y) * 0.5,
-                                        },
-                                        aperture_cell_half_extent[channel],
-                                    );
+                                let reconstructed_half_extent = vfx_rectangular_support_half_extent(
+                                    Vec2 {
+                                        x: (maximum_uv.x - minimum_uv.x) * 0.5,
+                                        y: (maximum_uv.y - minimum_uv.y) * 0.5,
+                                    },
+                                    aperture_cell_half_extent[channel],
+                                );
                                 let carrier_half_extent = vfx_carrier_half_extent(
                                     Vec2 {
                                         x: (maximum_uv.x - minimum_uv.x) * 0.5,

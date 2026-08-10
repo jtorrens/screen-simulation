@@ -1120,6 +1120,16 @@ pub fn variance_matched_rectangular_convolution_half_extent(
     }
 }
 
+pub fn vfx_rectangular_support_half_extent(
+    sensor_half_extent: Vec2,
+    pupil_half_extent: Vec2,
+) -> Vec2 {
+    Vec2 {
+        x: sensor_half_extent.x + pupil_half_extent.x,
+        y: sensor_half_extent.y + pupil_half_extent.y,
+    }
+}
+
 pub const VFX_CARRIER_SENSOR_SCALE: f32 = 0.25;
 
 pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, _pupil_half_extent: Vec2) -> Vec2 {
@@ -1979,6 +1989,20 @@ mod tests {
         assert!(combined.y < sensor.y + pupil.y);
         assert_eq!(
             variance_matched_rectangular_convolution_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 },),
+            sensor
+        );
+    }
+
+    #[test]
+    fn vfx_content_support_accumulates_sensor_and_pupil_radii() {
+        let sensor = Vec2 { x: 0.5, y: 0.25 };
+        let pupil = Vec2 { x: 0.3, y: 0.4 };
+        assert_eq!(
+            vfx_rectangular_support_half_extent(sensor, pupil),
+            Vec2 { x: 0.8, y: 0.65 }
+        );
+        assert_eq!(
+            vfx_rectangular_support_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 }),
             sensor
         );
     }

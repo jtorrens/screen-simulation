@@ -688,10 +688,8 @@ kernel void evaluate_physical_pipeline(
                 const float2 target = hit.valid ? hit.uv : float2(-2.0f);
                 const float2 center = mix(flat_center, target, p.panel_angular_scene.w);
                 const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
-                const float2 reconstructed_half_extent = sqrt(
-                    half_extent * half_extent
-                    + continuous_half_extent * continuous_half_extent
-                );
+                const float2 reconstructed_half_extent =
+                    half_extent + continuous_half_extent;
                 const float2 carrier_half_extent = half_extent * 0.25f;
                 const float2 channel_minimum = exact_flat
                     ? minimum_uv : center - reconstructed_half_extent;
