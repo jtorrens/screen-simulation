@@ -1120,7 +1120,7 @@ pub fn variance_matched_rectangular_convolution_half_extent(
     }
 }
 
-pub const VFX_CARRIER_PUPIL_SCALE: f32 = 0.25;
+pub const VFX_CARRIER_PUPIL_SCALE: f32 = 0.0;
 
 pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, pupil_half_extent: Vec2) -> Vec2 {
     variance_matched_rectangular_convolution_half_extent(
@@ -1999,17 +1999,15 @@ mod tests {
     }
 
     #[test]
-    fn vfx_carrier_core_preserves_sensor_footprint_and_reduces_only_pupil_support() {
+    fn vfx_carrier_core_uses_the_exact_sensor_footprint() {
         let sensor = Vec2 { x: 0.5, y: 0.25 };
         let pupil = Vec2 { x: 0.8, y: 0.4 };
         let carrier = vfx_carrier_half_extent(sensor, pupil);
-        let full = variance_matched_rectangular_convolution_half_extent(sensor, pupil);
+        assert_eq!(carrier, sensor);
         assert_eq!(
             vfx_carrier_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 }),
             sensor
         );
-        assert!(carrier.x > sensor.x && carrier.x < full.x);
-        assert!(carrier.y > sensor.y && carrier.y < full.y);
     }
 
     #[test]

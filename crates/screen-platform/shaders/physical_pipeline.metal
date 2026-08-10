@@ -694,7 +694,6 @@ kernel void evaluate_physical_pipeline(
                 );
                 const float2 carrier_half_extent = sqrt(
                     half_extent * half_extent
-                    + continuous_half_extent * continuous_half_extent * 0.0625f
                 );
                 const float2 channel_minimum = exact_flat
                     ? minimum_uv : center - reconstructed_half_extent;
