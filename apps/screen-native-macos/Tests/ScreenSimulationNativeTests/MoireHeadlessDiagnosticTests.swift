@@ -286,10 +286,12 @@ import Testing
         display: display,
         output: output
     )
+    let baselineIntermediate = try moireBaselineIntermediate()
     let baseline = try await renderMoireVariant(
         name: "baseline",
         context: context,
-        identity: 1
+        identity: 1,
+        intermediate: baselineIntermediate
     )
     let skipRepeat = ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_SKIP_REPEAT"
@@ -300,7 +302,8 @@ import Testing
         try await renderMoireVariant(
             name: "baseline-repeat",
             context: context,
-            identity: 1
+            identity: 1,
+            intermediate: baselineIntermediate
         )
     }
     let rendered = baseline.rgba8
@@ -467,6 +470,29 @@ import Testing
                 + "metalSubmitToResultMs=\(variant.metalSubmitToResultMilliseconds)"
         )
     }
+}
+
+private func moireBaselineIntermediate() throws -> PhysicalIntermediate {
+    guard let authored = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_BASELINE_INTERMEDIATE"
+    ] else {
+        return .developedACEScg
+    }
+    return try #require([
+        "device-signal": PhysicalIntermediate.deviceSignal,
+        "panel-emission": .panelEmission,
+        "subpixel-radiance": .subpixelRadiance,
+        "panel-light-spread": .panelLightSpread,
+        "relative-geometry": .relativeGeometry,
+        "cover-environment": .coverEnvironment,
+        "cover-glow": .coverGlow,
+        "lens-projection": .lensProjection,
+        "shutter-motion": .shutterMotion,
+        "sensor-bloom": .sensorBloom,
+        "sensor-noise": .sensorNoise,
+        "raw-mosaic": .rawMosaic,
+        "developed-acescg": .developedACEScg,
+    ][authored])
 }
 
 @MainActor
