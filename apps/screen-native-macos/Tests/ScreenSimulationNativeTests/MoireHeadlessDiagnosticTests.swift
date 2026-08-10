@@ -102,14 +102,19 @@ import Testing
         let lookAtTargetWorldX = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_LOOK_AT_TARGET_WORLD_X_METERS"
         ].flatMap(Double.init) ?? 0
-        if authoredDistance != nil || orbitX != 0 || orbitY != 0 || lookAtTargetWorldX != 0 {
+        let lookAtTargetWorldY = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_LOOK_AT_TARGET_WORLD_Y_METERS"
+        ].flatMap(Double.init) ?? 0
+        if authoredDistance != nil || orbitX != 0 || orbitY != 0
+            || lookAtTargetWorldX != 0 || lookAtTargetWorldY != 0
+        {
             let distance = authoredDistance ?? PoseRotationProjection.distance(
                 pipeline.cameraPose.position,
                 pipeline.screenPose.position
             )
             let lookAtTarget = [
                 pipeline.screenPose.position[0] + lookAtTargetWorldX,
-                pipeline.screenPose.position[1],
+                pipeline.screenPose.position[1] + lookAtTargetWorldY,
                 pipeline.screenPose.position[2],
             ]
             pipeline.cameraPose.position = PoseRotationProjection.orbitPosition(
@@ -164,8 +169,10 @@ import Testing
         if let exposureIndex = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_EXPOSURE_INDEX"
         ].flatMap(Double.init), exposureIndex > 0 {
-            pipeline.sensor.analogGain = exposureIndex
+            let analogGain = exposureIndex
                 / pipeline.radiometricCalibration.baseExposureIndex
+            pipeline.sensor.analogGain = analogGain
+            pipeline.develop.middleGrayIlluminanceSeconds /= analogGain
         }
         if let developExposureEV = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_DEVELOP_EXPOSURE_EV"
