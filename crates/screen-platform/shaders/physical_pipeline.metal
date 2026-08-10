@@ -722,8 +722,11 @@ kernel void evaluate_physical_pipeline(
                 if (needs_carrier) {
                     const float full_carrier = native_channel(
                         code[channel], channel, device_minimum, device_maximum, p);
+                    const float4 carrier_code = area_sample(
+                        device_signal, device_row_prefix,
+                        carrier_minimum, carrier_maximum, p);
                     const float preserved_carrier = native_channel(
-                        code[channel], channel,
+                        carrier_code[channel], channel,
                         carrier_minimum * float2(p.source_panel.zw),
                         carrier_maximum * float2(p.source_panel.zw), p);
                     carrier_detail_native[channel] +=

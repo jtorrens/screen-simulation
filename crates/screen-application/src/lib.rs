@@ -1191,8 +1191,17 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     device_maximum,
                                     channel,
                                 );
+                                let carrier_area = sample_placed_area(
+                                    &prepared.integral,
+                                    &emission_integral,
+                                    source_raster,
+                                    device_raster,
+                                    plan.placement,
+                                    carrier_minimum,
+                                    carrier_maximum,
+                                );
                                 let carrier = evaluator.native_channel_over_device_rect(
-                                    area.device_code,
+                                    carrier_area.device_code,
                                     Vec2 {
                                         x: carrier_minimum.x * plan.panel.native_width as f32,
                                         y: carrier_minimum.y * plan.panel.native_height as f32,
