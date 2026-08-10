@@ -573,6 +573,14 @@ private func renderMoireVariant(
             stage: .screen(.panelLightSpread)
         )
     }
+    if let panelStructureAmount = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_PANEL_STRUCTURE_AMOUNT"
+    ].flatMap(Double.init) {
+        try controller.setContinuousAmount(
+            panelStructureAmount,
+            stage: .screen(.subpixelGeometry)
+        )
+    }
     if let sensorNoiseAmount = ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_SENSOR_NOISE_AMOUNT"
     ].flatMap(Double.init) {
