@@ -118,6 +118,13 @@ enum SyntheticPattern: UInt32, Codable, CaseIterable, Identifiable, Sendable {
         )
     }
 
+    var authoredPlacementID: String {
+        switch self {
+        case .vfxComparisonReference: "one-to-one"
+        default: "fit"
+        }
+    }
+
     func frame(time: Double = 0) throws -> DecodedNativeFrame {
         var width: UInt32 = 0
         var height: UInt32 = 0

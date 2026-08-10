@@ -245,16 +245,16 @@ import Testing
             documentURL: root.appendingPathComponent("library.json")
         )
     )
-    #expect(controller.document.patterns.count == 6)
+    #expect(controller.document.patterns.count == 7)
     #expect(controller.document.patterns.allSatisfy { $0.isLocked })
     controller.selectedPatternID = controller.document.patterns.first?.id
     controller.duplicateSelectedPattern()
-    #expect(controller.document.patterns.count == 7)
+    #expect(controller.document.patterns.count == 8)
     #expect(controller.selectedPatternItem?.isLocked == false)
     controller.updateSelectedPattern { $0.name = "Patrón usuario" }
     #expect(controller.selectedPatternItem?.name == "Patrón usuario")
     controller.removeSelectedPattern()
-    #expect(controller.document.patterns.count == 6)
+    #expect(controller.document.patterns.count == 7)
 }
 
 @Test @MainActor func invalidDeviceEditIsRejectedWithoutMutatingTheResolvedEntry() throws {

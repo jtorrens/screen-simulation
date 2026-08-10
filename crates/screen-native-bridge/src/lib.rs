@@ -3412,8 +3412,7 @@ pub unsafe extern "C" fn screen_test_pattern_dimensions(
         return false;
     }
     let (resolved_width, resolved_height) = match pattern {
-        2..=4 => (EMBEDDED_WIDTH, EMBEDDED_HEIGHT),
-        6 => (2_108, 1_220),
+        2..=4 | 6 => (EMBEDDED_WIDTH, EMBEDDED_HEIGHT),
         _ => (PROCEDURAL_WIDTH, PROCEDURAL_HEIGHT),
     };
     // SAFETY: both output pointers were validated and belong to the caller.
@@ -4033,7 +4032,7 @@ mod tests {
         }
         let (mut width, mut height) = (0, 0);
         assert!(unsafe { screen_test_pattern_dimensions(6, &mut width, &mut height) });
-        assert_eq!((width, height), (2_108, 1_220));
+        assert_eq!((width, height), (EMBEDDED_WIDTH, EMBEDDED_HEIGHT));
     }
 
     #[test]

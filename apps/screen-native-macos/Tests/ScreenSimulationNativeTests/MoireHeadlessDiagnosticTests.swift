@@ -632,7 +632,7 @@ private func renderMoireVariant(
         parameterHash: try PhysicalParameterHash(
             bytes: [UInt8](repeating: UInt8(truncatingIfNeeded: identity), count: 32)
         ),
-        rasterPlacement: .fit,
+        rasterPlacement: .oneToOne,
         requestedIntermediate: intermediate
     )
     let snapshot = try await moireTerminalSnapshot(job)

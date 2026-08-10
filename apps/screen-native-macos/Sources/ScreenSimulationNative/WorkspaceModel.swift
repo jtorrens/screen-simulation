@@ -890,6 +890,35 @@ final class WorkspaceModel: ObservableObject {
         frameRate = 24
         frameCount = pattern == .animatedCheckerboard ? 240 : 1
         outFrame = frameCount - 1
+        do {
+            if let selection = currentTestAuthoringSelection() {
+                let resolved = try RustTestAuthoringCoordinator.apply(
+                    .setChoice(
+                        controlID: "placement",
+                        optionID: pattern.authoredPlacementID
+                    ),
+                    to: selection
+                )
+                guard let placement = SourcePlacement(stableID: resolved.placementID) else {
+                    throw TestAuthoringCoordinatorError.malformedDescriptor(
+                        "Application/Rust devolvió una colocación desconocida para el patrón."
+                    )
+                }
+                testAuthoringSelection = resolved
+                sourcePlacement = placement
+                try refreshTestAuthoringDescriptor()
+            } else {
+                guard let placement = SourcePlacement(stableID: pattern.authoredPlacementID) else {
+                    throw TestAuthoringCoordinatorError.malformedDescriptor(
+                        "El patrón declara una colocación desconocida."
+                    )
+                }
+                sourcePlacement = placement
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         renderPattern()
     }
 
@@ -1702,11 +1731,20 @@ final class WorkspaceModel: ObservableObject {
     private func refreshTestAuthoringDescriptor() throws {
         guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return }
         if testAuthoringSelection == nil {
-            testAuthoringSelection = try RustTestAuthoringCoordinator.defaultSelection(
+            let initial = try RustTestAuthoringCoordinator.defaultSelection(
                 inputTransformID: inputTransform.id,
                 deviceID: device.id,
                 frameRate: frameRate
             )
+            testAuthoringSelection = sourceIsPattern
+                ? try RustTestAuthoringCoordinator.apply(
+                    .setChoice(
+                        controlID: "placement",
+                        optionID: selectedPattern.authoredPlacementID
+                    ),
+                    to: initial
+                )
+                : initial
         }
         guard var selection = testAuthoringSelection else { return }
         selection.frameRate = frameRate

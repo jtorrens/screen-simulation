@@ -1103,10 +1103,7 @@ fn embedded_test_signal(
         .into_rgb8();
     let width = decoded.width();
     let height = decoded.height();
-    let expected_dimensions = match pattern_index {
-        6 => [2_108, 1_220],
-        _ => [3_840, 2_160],
-    };
+    let expected_dimensions = [3_840, 2_160];
     if [width, height] != expected_dimensions {
         return Err(format!(
             "bundled test image must be {} × {}, got {width} × {height}",
@@ -1253,16 +1250,19 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
         None
     };
     let color_engine = &state.color_engine;
+    let placement = match window.get_placement_index() {
+        1 => RasterPlacement::FillCrop,
+        2 => RasterPlacement::Stretch,
+        3 => RasterPlacement::OneToOne,
+        _ => RasterPlacement::Fit,
+    };
     if window.get_view_index() == 4 && native_quality && state.source.is_none() {
         let (sensor, region, cancel) = capture_selection.expect("capture selection resolved above");
         render_camera_result(
             window,
             request,
             embedded_signal.map_or(NativeCaptureSource::Procedural, |signal| {
-                NativeCaptureSource::Static {
-                    signal,
-                    placement: RasterPlacement::Fit,
-                }
+                NativeCaptureSource::Static { signal, placement }
             }),
             CapturePhotometricProfile {
                 sensor,
@@ -1282,7 +1282,7 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
     }
     let preview_source = match &mut state.source {
         None => embedded_signal.map_or(PreviewJobSource::Procedural, |signal| {
-            PreviewJobSource::PreparedDeviceSignal(signal, RasterPlacement::Fit)
+            PreviewJobSource::PreparedDeviceSignal(signal, placement)
         }),
         Some(source) => {
             let decode_interpretation = match source
@@ -1346,12 +1346,6 @@ fn render_preview(window: &MainWindow, state: &mut InteractionState) {
                 .device_signal
                 .as_ref()
                 .expect("source interpretation was prepared before raster evaluation");
-            let placement = match window.get_placement_index() {
-                1 => RasterPlacement::FillCrop,
-                2 => RasterPlacement::Stretch,
-                3 => RasterPlacement::OneToOne,
-                _ => RasterPlacement::Fit,
-            };
             if window.get_view_index() == 4 && native_quality {
                 let (sensor, region, cancel) =
                     capture_selection.expect("capture selection resolved above");
@@ -1757,7 +1751,7 @@ fn present_procedural_source(window: &MainWindow) {
         6 => {
             window.set_source_title("VFX photographed-screen comparison".into());
             window.set_source_details(
-                "2108 × 1220 · exact fixed raster photographed in the iPhone references".into(),
+                "3840 × 2160 · exact ASUS framebuffer photographed in the iPhone references".into(),
             );
             window.set_source_interpretation("Explicit sRGB device signal · bounded 0–1".into());
         }
@@ -3384,7 +3378,7 @@ mod interaction_tests {
             image::ImageFormat::Png,
         )
         .expect("bundled VFX comparison PNG must decode");
-        assert_eq!([comparison.width(), comparison.height()], [2_108, 1_220]);
+        assert_eq!([comparison.width(), comparison.height()], [3_840, 2_160]);
         assert!(comparison.to_rgba8().pixels().all(|pixel| pixel[3] == 255));
     }
 

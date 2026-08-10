@@ -161,9 +161,21 @@ import Testing
 
 @Test func vfxComparisonPatternPreservesThePhotographedRaster() throws {
     let frame = try SyntheticPattern.vfxComparisonReference.frame()
-    #expect(frame.width == 2_108)
-    #expect(frame.height == 1_220)
-    #expect(frame.rgba.count == 2_108 * 1_220 * 4)
+    #expect(frame.width == 3_840)
+    #expect(frame.height == 2_160)
+    #expect(frame.rgba.count == 3_840 * 2_160 * 4)
+    #expect(SyntheticPattern.vfxComparisonReference.authoredPlacementID == "one-to-one")
+}
+
+@Test @MainActor func choosingTheVfxReferenceAppliesItsAuthoredOneToOnePlacement() {
+    let workspace = WorkspaceModel()
+
+    workspace.choosePattern(.vfxComparisonReference, undoManager: nil)
+    #expect(workspace.sourcePlacement == .oneToOne)
+    #expect(workspace.sourceDetail.contains("3840 × 2160"))
+
+    workspace.choosePattern(.editorialTextReference, undoManager: nil)
+    #expect(workspace.sourcePlacement == .fit)
 }
 
 @Test @MainActor func capturePresetAndCameraPoseInvalidateTheInteractivePreview() throws {
