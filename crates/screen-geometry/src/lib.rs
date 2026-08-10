@@ -1132,7 +1132,7 @@ pub fn vfx_rectangular_support_half_extent(
 }
 
 pub const VFX_CARRIER_SENSOR_SCALE_X: f32 = 0.25;
-pub const VFX_CARRIER_SENSOR_SCALE_Y: f32 = 0.0;
+pub const VFX_CARRIER_SENSOR_SCALE_Y: f32 = 1.0 / 1024.0;
 
 pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, _pupil_half_extent: Vec2) -> Vec2 {
     Vec2 {
@@ -2114,7 +2114,13 @@ mod tests {
         let sensor = Vec2 { x: 0.5, y: 0.25 };
         let pupil = Vec2 { x: 0.8, y: 0.4 };
         let carrier = vfx_carrier_half_extent(sensor, pupil);
-        assert_eq!(carrier, Vec2 { x: 0.125, y: 0.0 });
+        assert_eq!(
+            carrier,
+            Vec2 {
+                x: 0.125,
+                y: 0.000_244_140_63,
+            }
+        );
         assert_eq!(
             vfx_carrier_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 }),
             carrier
