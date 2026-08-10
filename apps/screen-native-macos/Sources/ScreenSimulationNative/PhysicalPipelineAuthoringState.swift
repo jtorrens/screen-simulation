@@ -14,6 +14,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
     }
 
     struct SceneLens: Codable, Equatable, Sendable {
+        var evaluationModel = "thin-lens"
         var focalLengthMillimeters = 50.0
         var sensorWidthMillimeters = 36.0
         var sensorHeightMillimeters = 24.0
@@ -139,6 +140,14 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
 
         var scene = ScreenSceneGeometryLensParametersV2()
         scene.abi_version = version
+        switch sceneLens.evaluationModel {
+        case "thin-lens": scene.lens_evaluation_model = 0
+        case "vfx-2d-dof": scene.lens_evaluation_model = 1
+        default:
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "El modelo de evaluación de lente no pertenece al contrato actual."
+            )
+        }
         scene.focal_length_millimeters = Float(sceneLens.focalLengthMillimeters)
         scene.sensor_width_millimeters = Float(sceneLens.sensorWidthMillimeters)
         scene.sensor_height_millimeters = Float(sceneLens.sensorHeightMillimeters)
@@ -256,6 +265,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             sceneLens.focalLengthMillimeters > 0,
             sceneLens.sensorWidthMillimeters > 0,
             sceneLens.sensorHeightMillimeters > 0,
+            ["thin-lens", "vfx-2d-dof"].contains(sceneLens.evaluationModel),
             ["autofocus-screen", "manual"].contains(sceneLens.focusPolicy),
             sceneLens.focusDistanceMeters > 0,
             sceneLens.fStop > 0,

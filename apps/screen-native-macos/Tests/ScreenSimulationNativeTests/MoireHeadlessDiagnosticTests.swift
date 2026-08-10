@@ -130,6 +130,15 @@ import Testing
             Issue.record("SCREEN_MOIRE_CA_MODE debe ser off, lateral, longitudinal o full")
             return
         }
+        switch ProcessInfo.processInfo.environment["SCREEN_MOIRE_LENS_EVALUATION_MODEL"] {
+        case nil, "thin-lens": pipeline.sceneLens.evaluationModel = "thin-lens"
+        case "vfx-2d-dof": pipeline.sceneLens.evaluationModel = "vfx-2d-dof"
+        default:
+            Issue.record(
+                "SCREEN_MOIRE_LENS_EVALUATION_MODEL debe ser thin-lens o vfx-2d-dof"
+            )
+            return
+        }
         if let ndStops = ProcessInfo.processInfo.environment["SCREEN_MOIRE_ND_STOPS"]
             .flatMap(Double.init)
         {
@@ -264,7 +273,8 @@ import Testing
     try writeMoireVariant(baseline, to: directory)
     print(
         "MOIRE_VARIANT name=baseline hash=\(baseline.hash) "
-            + "meanChroma=\(baseline.meanChroma) p95Chroma=\(baseline.p95Chroma)"
+            + "meanChroma=\(baseline.meanChroma) p95Chroma=\(baseline.p95Chroma) "
+            + "metalSubmitToResultMs=\(baseline.metalSubmitToResultMilliseconds)"
     )
 
     let apertureOnly = ProcessInfo.processInfo.environment[
@@ -403,7 +413,8 @@ import Testing
         print(
             "MOIRE_VARIANT name=\(variant.name) hash=\(variant.hash) "
                 + "meanChroma=\(variant.meanChroma) p95Chroma=\(variant.p95Chroma) "
-                + "meanAbsRGBDiffVsBaseline=\(difference)"
+                + "meanAbsRGBDiffVsBaseline=\(difference) "
+                + "metalSubmitToResultMs=\(variant.metalSubmitToResultMilliseconds)"
         )
     }
 }
@@ -447,6 +458,7 @@ private struct MoireVariant {
     let hash: String
     let meanChroma: Double
     let p95Chroma: Double
+    let metalSubmitToResultMilliseconds: Double
 }
 
 @MainActor
@@ -499,6 +511,7 @@ private func renderMoireVariant(
         timeDenominator: 24
     )
     let frameIdentity = PhysicalFrameIdentity(high: 0x4D4F4952, low: identity)
+    let metalStarted = DispatchTime.now().uptimeNanoseconds
     let job = try PhysicalMetalFrameEngine().submit(
         sourceACEScg: context.source,
         deviceSignal: context.deviceSignal,
@@ -524,6 +537,7 @@ private func renderMoireVariant(
         requestedIntermediate: intermediate
     )
     let snapshot = try await moireTerminalSnapshot(job)
+    let metalElapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - metalStarted
     #expect(snapshot.state == .complete)
     let frameResult = try #require(snapshot.frame)
     let rgba8 = try context.display.renderRGBA8(frameResult, output: context.output)
@@ -545,7 +559,8 @@ private func renderMoireVariant(
         rgba8: rgba8,
         hash: hash,
         meanChroma: chroma.reduce(0, +) / Double(chroma.count),
-        p95Chroma: chroma[min(chroma.count - 1, Int(Double(chroma.count) * 0.95))]
+        p95Chroma: chroma[min(chroma.count - 1, Int(Double(chroma.count) * 0.95))],
+        metalSubmitToResultMilliseconds: Double(metalElapsedNanoseconds) / 1_000_000
     )
 }
 

@@ -1101,6 +1101,97 @@ pub struct OpticalSample {
     pub irradiance_weight: [f32; 3],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContinuousOpticalFootprint {
+    pub optical: OpticalSample,
+    pub panel_half_extent: [Vec2; 3],
+}
+
+/// Approximates the projected circular pupil by one centered continuous area
+/// footprint. The center ray preserves the authored chromatic projection and
+/// angular response; two orthogonal rim rays provide the local panel-plane
+/// Jacobian. The box extent is scaled to match the per-axis variance of a
+/// uniform disk rather than its larger bounding rectangle.
+pub fn panel_uv_continuous_pupil_footprint(
+    camera: CameraSample,
+    screen: ScreenSample,
+    active_width: Meters,
+    active_height: Meters,
+    viewport_ndc: Vec2,
+) -> ContinuousOpticalFootprint {
+    const DISK_TO_BOX_VARIANCE_SCALE: f32 = 0.866_025_4;
+    let Some(ideal) = inverse_distortion(
+        Vec2 {
+            x: viewport_ndc.x + 2.0 * camera.lens_shift.x,
+            y: -viewport_ndc.y - 2.0 * camera.lens_shift.y,
+        },
+        camera.lens,
+    ) else {
+        return ContinuousOpticalFootprint {
+            optical: OpticalSample {
+                panel_uv: [None; 3],
+                emission_cosine: [0.0; 3],
+                reflection_direction_local: [None; 3],
+                irradiance_weight: [0.0; 3],
+            },
+            panel_half_extent: [Vec2 { x: 0.0, y: 0.0 }; 3],
+        };
+    };
+    let center_hits: [Option<(Vec2, f32, Vec3)>; 3] = core::array::from_fn(|channel| {
+        panel_uv_for_lens_sample(
+            camera,
+            screen,
+            active_width,
+            active_height,
+            ideal,
+            Vec2 { x: 0.0, y: 0.0 },
+            channel,
+        )
+    });
+    let x_hits: [Option<(Vec2, f32, Vec3)>; 3] = core::array::from_fn(|channel| {
+        panel_uv_for_lens_sample(
+            camera,
+            screen,
+            active_width,
+            active_height,
+            ideal,
+            Vec2 { x: 1.0, y: 0.0 },
+            channel,
+        )
+    });
+    let y_hits: [Option<(Vec2, f32, Vec3)>; 3] = core::array::from_fn(|channel| {
+        panel_uv_for_lens_sample(
+            camera,
+            screen,
+            active_width,
+            active_height,
+            ideal,
+            Vec2 { x: 0.0, y: 1.0 },
+            channel,
+        )
+    });
+    let panel_half_extent = core::array::from_fn(|channel| {
+        let Some(center) = center_hits[channel].map(|value| value.0) else {
+            return Vec2 { x: 0.0, y: 0.0 };
+        };
+        let x = x_hits[channel].map_or(center, |value| value.0);
+        let y = y_hits[channel].map_or(center, |value| value.0);
+        Vec2 {
+            x: ((x.x - center.x).abs() + (y.x - center.x).abs()) * DISK_TO_BOX_VARIANCE_SCALE,
+            y: ((x.y - center.y).abs() + (y.y - center.y).abs()) * DISK_TO_BOX_VARIANCE_SCALE,
+        }
+    });
+    ContinuousOpticalFootprint {
+        optical: OpticalSample {
+            panel_uv: center_hits.map(|hit| hit.map(|value| value.0)),
+            emission_cosine: center_hits.map(|hit| hit.map_or(0.0, |value| value.1)),
+            reflection_direction_local: center_hits.map(|hit| hit.map(|value| value.2)),
+            irradiance_weight: lens_irradiance_weight(camera, ideal),
+        },
+        panel_half_extent,
+    }
+}
+
 pub fn panel_uv_aperture_samples(
     camera: CameraSample,
     screen: ScreenSample,

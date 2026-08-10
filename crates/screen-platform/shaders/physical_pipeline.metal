@@ -6,7 +6,7 @@ struct PhysicalPipelineParams {
     uint4 output_tile;  // output width, output height, tile origin y, sample side
     uint4 semantics;    // placement, stripe layout, reserved, reserved
     float4 levels;      // gamma, black nits, white nits, temporal calibrated gain
-    float4 geometry;    // black matrix fraction, direct aperture sample count, reserved...
+    float4 geometry;    // black matrix fraction, direct aperture sample count, lens evaluator, reserved
     float4 strengths;   // screen, emission, subpixel geometry, temporal emission
     float4 matrix0;
     float4 matrix1;
@@ -653,19 +653,34 @@ kernel void evaluate_physical_pipeline(
             const float2 flat_center = base_center + psf_offset;
             const float2 observed = flat_center * 2.0f - 1.0f;
             const float2 half_extent = (maximum_uv - minimum_uv) * 0.5f;
-            const uint aperture_sample_count = 32;
+            const bool vfx_depth_blur = p.geometry.z == 1.0f;
+            const uint aperture_sample_count = vfx_depth_blur ? 1 : 32;
             const float aperture_rotation = 0.0f;
             for (uint aperture = 0; aperture < aperture_sample_count; ++aperture) {
-            const float2 lens_sample = physical_aperture_sample(aperture, aperture_rotation);
+            const float2 lens_sample = vfx_depth_blur
+                ? float2(0.0f) : physical_aperture_sample(aperture, aperture_rotation);
             const float layer_weight = 1.0f;
             aperture_weight += layer_weight;
             for (uint channel = 0; channel < 3; ++channel) {
                 const PhysicalRayHit hit = physical_trace_ray(
                     observed, lens_sample, channel, p);
+                float2 continuous_half_extent = 0.0f;
+                if (vfx_depth_blur && hit.valid) {
+                    constexpr float disk_to_box_variance_scale = 0.8660254f;
+                    const PhysicalRayHit rim_x = physical_trace_ray(
+                        observed, float2(1.0f, 0.0f), channel, p);
+                    const PhysicalRayHit rim_y = physical_trace_ray(
+                        observed, float2(0.0f, 1.0f), channel, p);
+                    const float2 x_uv = rim_x.valid ? rim_x.uv : hit.uv;
+                    const float2 y_uv = rim_y.valid ? rim_y.uv : hit.uv;
+                    continuous_half_extent = (
+                        abs(x_uv - hit.uv) + abs(y_uv - hit.uv)
+                    ) * disk_to_box_variance_scale * p.panel_angular_scene.w;
+                }
                 const float2 target = hit.valid ? hit.uv : float2(-2.0f);
                 const float2 center = mix(flat_center, target, p.panel_angular_scene.w);
                 const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
-                const float2 reconstructed_half_extent = half_extent;
+                const float2 reconstructed_half_extent = half_extent + continuous_half_extent;
                 const float2 channel_minimum = exact_flat
                     ? minimum_uv : center - reconstructed_half_extent;
                 const float2 channel_maximum = exact_flat
@@ -706,6 +721,19 @@ kernel void evaluate_physical_pipeline(
             }
             const PhysicalRayHit green_hit = physical_trace_ray(
                 observed, lens_sample, 1, p);
+            float2 green_continuous_half_extent = 0.0f;
+            if (vfx_depth_blur && green_hit.valid) {
+                constexpr float disk_to_box_variance_scale = 0.8660254f;
+                const PhysicalRayHit rim_x = physical_trace_ray(
+                    observed, float2(1.0f, 0.0f), 1, p);
+                const PhysicalRayHit rim_y = physical_trace_ray(
+                    observed, float2(0.0f, 1.0f), 1, p);
+                const float2 x_uv = rim_x.valid ? rim_x.uv : green_hit.uv;
+                const float2 y_uv = rim_y.valid ? rim_y.uv : green_hit.uv;
+                green_continuous_half_extent = (
+                    abs(x_uv - green_hit.uv) + abs(y_uv - green_hit.uv)
+                ) * disk_to_box_variance_scale * p.panel_angular_scene.w;
+            }
             if (green_hit.valid) {
                 cover_cosine += green_hit.cosine * layer_weight;
                 cover_direction += green_hit.reflection_direction * layer_weight;
@@ -719,7 +747,8 @@ kernel void evaluate_physical_pipeline(
             const float2 green_target = green_hit.valid ? green_hit.uv : float2(-2.0f);
             const float2 green_center = mix(flat_center, green_target, p.panel_angular_scene.w);
             const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
-            const float2 green_reconstructed_half_extent = half_extent;
+            const float2 green_reconstructed_half_extent =
+                half_extent + green_continuous_half_extent;
             const float4 ideal_sample = area_sample(source_acescg, source_row_prefix,
                 exact_flat ? minimum_uv : green_center - green_reconstructed_half_extent,
                 exact_flat ? maximum_uv : green_center + green_reconstructed_half_extent, p);

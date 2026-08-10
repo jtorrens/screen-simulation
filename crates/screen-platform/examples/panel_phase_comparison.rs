@@ -357,6 +357,7 @@ fn plan(
         screen_rotation: Quaternion::from_yaw_degrees(0.0),
         scene_geometry_amount: 1.0,
         lens_amount: 1.0,
+        lens_evaluation_model: screen_application::LensEvaluationModel::ThinLens,
         frame_time: RationalTime::new(0, 1).expect("constant valid time"),
         shutter_open,
         shutter_close,

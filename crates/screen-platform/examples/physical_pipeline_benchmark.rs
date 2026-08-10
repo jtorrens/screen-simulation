@@ -104,6 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 screen_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
                 scene_geometry_amount: 0.0,
                 lens_amount: 0.0,
+                lens_evaluation_model: screen_application::LensEvaluationModel::ThinLens,
                 frame_time: screen_contracts::RationalTime::new(0, 1)
                     .expect("valid benchmark time"),
                 shutter_open: screen_contracts::RationalTime::new(-1, 96)

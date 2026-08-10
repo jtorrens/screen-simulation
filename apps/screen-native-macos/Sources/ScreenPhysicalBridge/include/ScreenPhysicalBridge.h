@@ -15,7 +15,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 5u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 6u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 2u
 
@@ -424,6 +424,7 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
+    uint32_t lens_evaluation_model;
     float focal_length_millimeters;
     float sensor_width_millimeters;
     float sensor_height_millimeters;

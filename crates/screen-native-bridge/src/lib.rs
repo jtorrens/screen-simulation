@@ -182,7 +182,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 5;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 6;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 2;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -1099,6 +1099,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         screen_rotation: screen_pose.rotation,
         scene_geometry_amount: amounts.scene_geometry,
         lens_amount: amounts.lens,
+        lens_evaluation_model: pipeline.lens_evaluation_model,
         frame_time,
         shutter_open,
         shutter_close,
@@ -1681,6 +1682,7 @@ pub struct ScreenEnvironmentParametersV2 {
 #[derive(Clone, Copy)]
 pub struct ScreenSceneGeometryLensParametersV2 {
     abi_version: u32,
+    lens_evaluation_model: u32,
     focal_length_millimeters: f32,
     sensor_width_millimeters: f32,
     sensor_height_millimeters: f32,
@@ -1770,6 +1772,7 @@ pub struct ScreenPhysicalPipelineSnapshot {
     cover: CoverGlassProfile,
     environment: ProceduralEnvironment,
     scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
+    lens_evaluation_model: screen_application::LensEvaluationModel,
     shutter_motion: ResolvedShutterMotionSnapshot,
     sensor: SensorProfile,
     development: CameraDevelopment,
@@ -2599,6 +2602,14 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         pattern,
     };
     let scene = parameters.scene_geometry_lens;
+    let lens_evaluation_model = match scene.lens_evaluation_model {
+        0 => screen_application::LensEvaluationModel::ThinLens,
+        1 => screen_application::LensEvaluationModel::VfxDepthBlur,
+        _ => {
+            unsafe { set_error(error_message, b"unknown lens evaluation model\0") };
+            return std::ptr::null_mut();
+        }
+    };
     let scene_geometry_lens = ResolvedSceneGeometryLensSnapshot {
         focal_length_millimeters: scene.focal_length_millimeters,
         sensor_width_millimeters: scene.sensor_width_millimeters,
@@ -2799,6 +2810,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         cover,
         environment,
         scene_geometry_lens,
+        lens_evaluation_model,
         shutter_motion,
         sensor,
         development,

@@ -8,7 +8,7 @@ use metal::{
     TextureRef,
 };
 use screen_application::{
-    PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
+    LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
     expose_physical_pipeline_raw, physical_pipeline_aperture_sample_count,
     physical_row_temporal_gain, placed_signal_area_fraction,
 };
@@ -904,7 +904,10 @@ impl MetalPhysicalPipeline {
             geometry: [
                 plan.panel.black_matrix_fraction,
                 physical_pipeline_aperture_sample_count(plan.quality) as f32,
-                0.0,
+                match plan.lens_evaluation_model {
+                    LensEvaluationModel::ThinLens => 0.0,
+                    LensEvaluationModel::VfxDepthBlur => 1.0,
+                },
                 0.0,
             ],
             strengths: [
@@ -1355,6 +1358,7 @@ mod tests {
                 screen_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
                 scene_geometry_amount: 0.0,
                 lens_amount: 0.0,
+                lens_evaluation_model: screen_application::LensEvaluationModel::ThinLens,
                 frame_time: screen_contracts::RationalTime::new(0, 1).expect("valid fixture time"),
                 shutter_open: screen_contracts::RationalTime::new(-1, 96).expect("valid open"),
                 shutter_close: screen_contracts::RationalTime::new(1, 96).expect("valid close"),

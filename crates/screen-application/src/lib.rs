@@ -40,7 +40,8 @@ use screen_geometry::{
     CameraRig, CameraSample, GeometryError, OpticalSample, PanelRegion, ProjectedScreen,
     ScreenSample, ScreenTrack, panel_uv_aperture_samples,
     panel_uv_aperture_samples_boxed_with_count, panel_uv_aperture_samples_with_count,
-    panel_uv_at_viewport, project_scene_point, project_screen, projected_screen_gate_coverage,
+    panel_uv_at_viewport, panel_uv_continuous_pupil_footprint, project_scene_point, project_screen,
+    projected_screen_gate_coverage,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{
@@ -487,6 +488,7 @@ pub struct PhysicalPipelineExecutionPlan {
     pub screen_rotation: screen_geometry::Quaternion,
     pub scene_geometry_amount: f32,
     pub lens_amount: f32,
+    pub lens_evaluation_model: LensEvaluationModel,
     pub frame_time: RationalTime,
     pub shutter_open: RationalTime,
     pub shutter_close: RationalTime,
@@ -500,6 +502,12 @@ pub struct PhysicalPipelineExecutionPlan {
     pub development_enabled: bool,
     pub frame_index: i64,
     pub requested_intermediate: PhysicalIntermediate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LensEvaluationModel {
+    ThinLens,
+    VfxDepthBlur,
 }
 
 /// Direct full-pipeline aperture integration policy. Aperture and sensor-footprint
@@ -1034,18 +1042,47 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                             y: flat_center.y * 2.0 - 1.0,
                         };
                         debug_assert_eq!(physical_aperture_samples, 32);
-                        let optical_samples = panel_uv_aperture_samples_with_count::<32>(
-                            resolved_scene.0,
-                            resolved_scene.1,
-                            plan.panel.active_width,
-                            plan.panel.active_height,
-                            viewport_ndc,
-                            0.0,
-                        );
-                        for optical in optical_samples.iter().copied() {
+                        let optical_samples = (plan.lens_evaluation_model
+                            == LensEvaluationModel::ThinLens)
+                            .then(|| {
+                                panel_uv_aperture_samples_with_count::<32>(
+                                    resolved_scene.0,
+                                    resolved_scene.1,
+                                    plan.panel.active_width,
+                                    plan.panel.active_height,
+                                    viewport_ndc,
+                                    0.0,
+                                )
+                            });
+                        let continuous_footprint = (plan.lens_evaluation_model
+                            == LensEvaluationModel::VfxDepthBlur)
+                            .then(|| {
+                                panel_uv_continuous_pupil_footprint(
+                                    resolved_scene.0,
+                                    resolved_scene.1,
+                                    plan.panel.active_width,
+                                    plan.panel.active_height,
+                                    viewport_ndc,
+                                )
+                            });
+                        let aperture_count = if optical_samples.is_some() { 32 } else { 1 };
+                        for aperture_index in 0..aperture_count {
+                            let (optical, aperture_cell_half_extent) =
+                                if let Some(samples) = optical_samples.as_ref() {
+                                    (samples[aperture_index], [Vec2 { x: 0.0, y: 0.0 }; 3])
+                                } else {
+                                    let footprint = continuous_footprint
+                                        .expect("the resolved VFX lens footprint exists");
+                                    (
+                                        footprint.optical,
+                                        footprint.panel_half_extent.map(|extent| Vec2 {
+                                            x: extent.x * plan.scene_geometry_amount,
+                                            y: extent.y * plan.scene_geometry_amount,
+                                        }),
+                                    )
+                                };
                             let layer_weight = 1.0;
                             aperture_weight += layer_weight;
-                            let aperture_cell_half_extent = [Vec2 { x: 0.0, y: 0.0 }; 3];
                             if let Some(direction) = optical.reflection_direction_local[1] {
                                 cover_cosine += optical.emission_cosine[1] * layer_weight;
                                 cover_direction[0] += direction.x * layer_weight;
@@ -7211,6 +7248,7 @@ mod tests {
                 screen_rotation: screen_geometry::Quaternion::from_yaw_degrees(0.0),
                 scene_geometry_amount: 0.0,
                 lens_amount: 0.0,
+                lens_evaluation_model: LensEvaluationModel::ThinLens,
                 frame_time: RationalTime::new(0, 1).expect("valid fixture time"),
                 shutter_open: RationalTime::new(-1, 96).expect("valid shutter open"),
                 shutter_close: RationalTime::new(1, 96).expect("valid shutter close"),
