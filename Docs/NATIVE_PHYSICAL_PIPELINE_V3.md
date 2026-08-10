@@ -6,7 +6,7 @@ Evidence date: 2026-08-06. Branch: `feature/physical-panel-spatial-v1`.
 
 ## One contract and one product route
 
-ABI v5 is the only live physical-frame ABI. One coarse request carries ordered,
+ABI v6 is the only live physical-frame ABI. One coarse request carries ordered,
 immutable Source ACEScg and nonlinear Device Signal samples at exact rational
 times, explicit raster placement, retained Metal texture handles, camera and
 screen pose tracks, the exact shutter interval, an explicit source-sampling

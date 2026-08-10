@@ -80,8 +80,8 @@ mean one native control per named component, not a summary-only display.
 | `develop.white_balance[0..2]` | RGB sliders + inputs | gain / 0.001–32 | Project base → override |
 | `develop.middle_gray_illuminance_seconds` | slider + input | lux·s / 0.000001–1000000 | Project base → override |
 | `develop.develop_exposure_ev` | slider + input | EV / −32–32 | Project base → override |
-| demosaic mode | read-only, **Derivado** | Edge-directed | ABI v5 exposes no selectable demosaic field; no fake state is stored |
-| lens/sensor preset reference | read-only, **Derivado** | resolved values | ABI v5 stores values, not dynamic preset references; no lookup/fallback |
+| demosaic mode | read-only, **Derivado** | Edge-directed | ABI v6 exposes no selectable demosaic field; no fake state is stored |
+| lens/sensor preset reference | read-only, **Derivado** | resolved values | ABI v6 stores values, not dynamic preset references; no lookup/fallback |
 
 Continuous contribution bypass is persisted separately from stored amount.
 OFF emits effective amount zero at the request boundary and diagnostics append

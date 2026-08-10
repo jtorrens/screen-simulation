@@ -27,6 +27,7 @@ RETIRED_TOKENS = (
     "screen_physical_pipeline_process_rgba32f",
     "SCREEN_PHYSICAL_FRAME_ABI_VERSION 1",
     "SCREEN_PHYSICAL_FRAME_ABI_VERSION 4",
+    "SCREEN_PHYSICAL_FRAME_ABI_VERSION 5",
     "ScreenPhysicalFrameInputRef",
     "screen_physical_frame_input_create",
     "capture_amount",
@@ -74,7 +75,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 5u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 6u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
         "screen_physical_frame_submit",
@@ -94,7 +95,7 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 5",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 6",
         "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 10",
         "ScreenTestAuthoringSelectionV10",
         "ScreenTestControlDescriptorV5",
@@ -122,7 +123,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v5 source/header/symbol gate passed")
+    print("native macOS physical ABI v6 source/header/symbol gate passed")
     return 0
 
 
