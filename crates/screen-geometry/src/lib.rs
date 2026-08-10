@@ -1120,6 +1120,18 @@ pub fn variance_matched_rectangular_convolution_half_extent(
     }
 }
 
+pub const VFX_CARRIER_PUPIL_SCALE: f32 = 0.25;
+
+pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, pupil_half_extent: Vec2) -> Vec2 {
+    variance_matched_rectangular_convolution_half_extent(
+        sensor_half_extent,
+        Vec2 {
+            x: pupil_half_extent.x * VFX_CARRIER_PUPIL_SCALE,
+            y: pupil_half_extent.y * VFX_CARRIER_PUPIL_SCALE,
+        },
+    )
+}
+
 fn variance_matched_projected_disk_half_extent(x_axis: Vec2, y_axis: Vec2) -> Vec2 {
     const DISK_TO_BOX_VARIANCE_SCALE: f32 = 0.866_025_4;
     Vec2 {
@@ -1984,6 +1996,20 @@ mod tests {
         assert!((extent.x - expected).abs() < f32::EPSILON);
         assert!((extent.y - expected).abs() < f32::EPSILON);
         assert!(extent.x < (0.4_f32.abs() + (-0.3_f32).abs()) * 0.866_025_4);
+    }
+
+    #[test]
+    fn vfx_carrier_core_preserves_sensor_footprint_and_reduces_only_pupil_support() {
+        let sensor = Vec2 { x: 0.5, y: 0.25 };
+        let pupil = Vec2 { x: 0.8, y: 0.4 };
+        let carrier = vfx_carrier_half_extent(sensor, pupil);
+        let full = variance_matched_rectangular_convolution_half_extent(sensor, pupil);
+        assert_eq!(
+            vfx_carrier_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 }),
+            sensor
+        );
+        assert!(carrier.x > sensor.x && carrier.x < full.x);
+        assert!(carrier.y > sensor.y && carrier.y < full.y);
     }
 
     #[test]

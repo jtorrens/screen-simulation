@@ -42,7 +42,7 @@ use screen_geometry::{
     panel_uv_aperture_samples_boxed_with_count, panel_uv_aperture_samples_with_count,
     panel_uv_at_viewport, panel_uv_continuous_pupil_footprint, project_scene_point, project_screen,
     projected_screen_gate_coverage, variance_matched_lens_psf_radius_millimeters,
-    variance_matched_rectangular_convolution_half_extent,
+    variance_matched_rectangular_convolution_half_extent, vfx_carrier_half_extent,
 };
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{
@@ -970,6 +970,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             let mut spread_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut glow_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut continuous_native = LinearRgb::new(0.0, 0.0, 0.0);
+            let mut carrier_detail_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut average_device_code = DeviceRgb::BLACK;
             let mut ideal = [0.0_f32; 4];
             // The cover is evaluated after aperture integration. Preserve the
@@ -1106,7 +1107,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                             }
                             let mapped_bounds = |channel: usize| {
                                 if plan.scene_geometry_amount == 0.0 && plan.lens_amount == 0.0 {
-                                    return (minimum_uv, maximum_uv, 1.0);
+                                    return (minimum_uv, maximum_uv, minimum_uv, maximum_uv, 1.0);
                                 }
                                 let hit = optical.panel_uv[channel];
                                 let target = hit.unwrap_or(Vec2 { x: -2.0, y: -2.0 });
@@ -1131,6 +1132,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         },
                                         aperture_cell_half_extent[channel],
                                     );
+                                let carrier_half_extent = vfx_carrier_half_extent(
+                                    Vec2 {
+                                        x: (maximum_uv.x - minimum_uv.x) * 0.5,
+                                        y: (maximum_uv.y - minimum_uv.y) * 0.5,
+                                    },
+                                    aperture_cell_half_extent[channel],
+                                );
                                 (
                                     Vec2 {
                                         x: center.x - reconstructed_half_extent.x,
@@ -1140,12 +1148,25 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         x: center.x + reconstructed_half_extent.x,
                                         y: center.y + reconstructed_half_extent.y,
                                     },
+                                    Vec2 {
+                                        x: center.x - carrier_half_extent.x,
+                                        y: center.y - carrier_half_extent.y,
+                                    },
+                                    Vec2 {
+                                        x: center.x + carrier_half_extent.x,
+                                        y: center.y + carrier_half_extent.y,
+                                    },
                                     1.0 + plan.scene_geometry_amount * (angular - 1.0),
                                 )
                             };
                             for channel in 0..3 {
-                                let (channel_minimum, channel_maximum, optical_weight) =
-                                    mapped_bounds(channel);
+                                let (
+                                    channel_minimum,
+                                    channel_maximum,
+                                    carrier_minimum,
+                                    carrier_maximum,
+                                    optical_weight,
+                                ) = mapped_bounds(channel);
                                 let optical_weight = optical_weight * layer_weight;
                                 let area = sample_placed_area(
                                     &prepared.integral,
@@ -1170,6 +1191,19 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     device_maximum,
                                     channel,
                                 );
+                                let carrier = evaluator.native_channel_over_device_rect(
+                                    area.device_code,
+                                    Vec2 {
+                                        x: carrier_minimum.x * plan.panel.native_width as f32,
+                                        y: carrier_minimum.y * plan.panel.native_height as f32,
+                                    },
+                                    Vec2 {
+                                        x: carrier_maximum.x * plan.panel.native_width as f32,
+                                        y: carrier_maximum.y * plan.panel.native_height as f32,
+                                    },
+                                    channel,
+                                );
+                                let carrier_detail = (carrier - base) * optical_weight;
                                 let spread_at = |cover_offset_meters: [f32; 2]| {
                                     plan.panel_light_spread
                                         .samples_for_channel(channel)
@@ -1299,6 +1333,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         continuous_native.r +=
                                             area.linear_native_emission.r * optical_weight;
                                         average_device_code.r += area.device_code.r * layer_weight;
+                                        carrier_detail_native.r += carrier_detail;
                                     }
                                     1 => {
                                         physical_native.g += base;
@@ -1307,6 +1342,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         continuous_native.g +=
                                             area.linear_native_emission.g * optical_weight;
                                         average_device_code.g += area.device_code.g * layer_weight;
+                                        carrier_detail_native.g += carrier_detail;
                                     }
                                     _ => {
                                         physical_native.b += base;
@@ -1315,10 +1351,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         continuous_native.b +=
                                             area.linear_native_emission.b * optical_weight;
                                         average_device_code.b += area.device_code.b * layer_weight;
+                                        carrier_detail_native.b += carrier_detail;
                                     }
                                 }
                             }
-                            let (ideal_minimum, ideal_maximum, _) = mapped_bounds(1);
+                            let (ideal_minimum, ideal_maximum, _, _, _) = mapped_bounds(1);
                             let value = sample_placed_acescg_area(
                                 source_width,
                                 source_height,
@@ -1348,6 +1385,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             continuous_native.r *= reciprocal;
             continuous_native.g *= reciprocal;
             continuous_native.b *= reciprocal;
+            carrier_detail_native.r *= reciprocal;
+            carrier_detail_native.g *= reciprocal;
+            carrier_detail_native.b *= reciprocal;
             average_device_code.r *= reciprocal;
             average_device_code.g *= reciprocal;
             average_device_code.b *= reciprocal;
@@ -1411,6 +1451,29 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * glow_native.b)
                     / parameters.white_level_nits,
             ];
+            let carrier_detail = [
+                (matrix[0][0] * carrier_detail_native.r
+                    + matrix[0][1] * carrier_detail_native.g
+                    + matrix[0][2] * carrier_detail_native.b)
+                    / parameters.white_level_nits,
+                (matrix[1][0] * carrier_detail_native.r
+                    + matrix[1][1] * carrier_detail_native.g
+                    + matrix[1][2] * carrier_detail_native.b)
+                    / parameters.white_level_nits,
+                (matrix[2][0] * carrier_detail_native.r
+                    + matrix[2][1] * carrier_detail_native.g
+                    + matrix[2][2] * carrier_detail_native.b)
+                    / parameters.white_level_nits,
+            ];
+            let glowed = if plan.lens_evaluation_model == LensEvaluationModel::VfxDepthBlur {
+                [
+                    glowed[0] + plan.subpixel_geometry_amount * carrier_detail[0],
+                    glowed[1] + plan.subpixel_geometry_amount * carrier_detail[1],
+                    glowed[2] + plan.subpixel_geometry_amount * carrier_detail[2],
+                ]
+            } else {
+                glowed
+            };
             let staged = [
                 ideal[0]
                     + plan.emission_amount * (continuous[0] - ideal[0])

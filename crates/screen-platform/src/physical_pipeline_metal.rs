@@ -1577,49 +1577,55 @@ mod tests {
     fn scene_geometry_and_generalized_lens_match_cpu_for_zero_one_and_artistic_amounts() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
-        for lens_amount in [0.0, 1.0, 2.0] {
-            let (input, mut plan) = fixture(
-                RasterPlacement::Stretch,
-                FlatPanelQuality::High,
-                StripeLayout::Rgb,
-                0.12,
-                1.0,
-            );
-            plan.scene_geometry_amount = 1.0;
-            plan.lens_amount = lens_amount;
-            plan.camera_position = screen_contracts::Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.01,
-            };
-            plan.scene_geometry_lens.focus_distance_meters = 0.01;
-            plan.scene_geometry_lens.focal_length_millimeters = 10.0;
-            plan.scene_geometry_lens.sensor_width_millimeters = 4.0;
-            plan.scene_geometry_lens.sensor_height_millimeters = 2.0;
-            plan.requested_intermediate = PhysicalIntermediate::LensProjection;
-            let source = texture(&device, input.width, input.height, &input.acescg);
-            let signal_values = input
-                .device_signal
-                .pixels
-                .iter()
-                .map(|value| [value.r, value.g, value.b, 1.0])
-                .collect::<Vec<_>>();
-            let signal = texture(&device, input.width, input.height, &signal_values);
-            let cpu =
-                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-                    .expect("CPU scene oracle");
-            let gpu = backend
-                .evaluate(&source, &signal, plan, |_| {}, || false)
-                .expect("Metal scene result");
-            let maximum = read(&gpu.texture)
-                .iter()
-                .zip(&cpu.acescg)
-                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
-                .fold(0.0_f32, f32::max);
-            assert!(
-                maximum <= 3.0e-3,
-                "scene/lens CPU/Metal deviation {maximum}"
-            );
+        for lens_evaluation_model in [
+            screen_application::LensEvaluationModel::ThinLens,
+            screen_application::LensEvaluationModel::VfxDepthBlur,
+        ] {
+            for lens_amount in [0.0, 1.0, 2.0] {
+                let (input, mut plan) = fixture(
+                    RasterPlacement::Stretch,
+                    FlatPanelQuality::High,
+                    StripeLayout::Rgb,
+                    0.12,
+                    1.0,
+                );
+                plan.scene_geometry_amount = 1.0;
+                plan.lens_amount = lens_amount;
+                plan.lens_evaluation_model = lens_evaluation_model;
+                plan.camera_position = screen_contracts::Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.01,
+                };
+                plan.scene_geometry_lens.focus_distance_meters = 0.01;
+                plan.scene_geometry_lens.focal_length_millimeters = 10.0;
+                plan.scene_geometry_lens.sensor_width_millimeters = 4.0;
+                plan.scene_geometry_lens.sensor_height_millimeters = 2.0;
+                plan.requested_intermediate = PhysicalIntermediate::LensProjection;
+                let source = texture(&device, input.width, input.height, &input.acescg);
+                let signal_values = input
+                    .device_signal
+                    .pixels
+                    .iter()
+                    .map(|value| [value.r, value.g, value.b, 1.0])
+                    .collect::<Vec<_>>();
+                let signal = texture(&device, input.width, input.height, &signal_values);
+                let cpu =
+                    evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+                        .expect("CPU scene oracle");
+                let gpu = backend
+                    .evaluate(&source, &signal, plan, |_| {}, || false)
+                    .expect("Metal scene result");
+                let maximum = read(&gpu.texture)
+                    .iter()
+                    .zip(&cpu.acescg)
+                    .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    maximum <= 3.0e-3,
+                    "scene/lens CPU/Metal deviation {maximum}; model={lens_evaluation_model:?}; amount={lens_amount}"
+                );
+            }
         }
     }
 

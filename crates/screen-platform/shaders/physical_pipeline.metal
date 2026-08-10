@@ -610,6 +610,7 @@ kernel void evaluate_physical_pipeline(
     float3 native = 0.0f;
     float3 spread_native = 0.0f;
     float3 glow_native = 0.0f;
+    float3 carrier_detail_native = 0.0f;
     float3 continuous_native = 0.0f;
     float3 average_device_code = 0.0f;
     float cover_cosine = 0.0f;
@@ -628,6 +629,8 @@ kernel void evaluate_physical_pipeline(
         || (final_optical && p.strengths.z != 1.0f);
     const bool needs_spread = requested_stage == 4;
     const bool needs_glow = final_optical;
+    const bool needs_carrier = final_optical && p.geometry.z == 1.0f
+        && p.strengths.z != 0.0f;
     const uint psf_samples_per_area = p.lens_softness.z == 0.0f ? 1 : 16 / (side * side);
     for (uint sy = 0; sy < side; ++sy) {
         for (uint sx = 0; sx < side; ++sx) {
@@ -689,10 +692,18 @@ kernel void evaluate_physical_pipeline(
                     half_extent * half_extent
                     + continuous_half_extent * continuous_half_extent
                 );
+                const float2 carrier_half_extent = sqrt(
+                    half_extent * half_extent
+                    + continuous_half_extent * continuous_half_extent * 0.0625f
+                );
                 const float2 channel_minimum = exact_flat
                     ? minimum_uv : center - reconstructed_half_extent;
                 const float2 channel_maximum = exact_flat
                     ? maximum_uv : center + reconstructed_half_extent;
+                const float2 carrier_minimum = exact_flat
+                    ? minimum_uv : center - carrier_half_extent;
+                const float2 carrier_maximum = exact_flat
+                    ? maximum_uv : center + carrier_half_extent;
                 const float angular = hit.valid && hit.cosine != 0.0f
                     ? pow(clamp(hit.cosine, 0.0f, 1.0f), p.panel_angular_scene[channel])
                         * physical_irradiance_weight(observed, channel, p)
@@ -700,7 +711,7 @@ kernel void evaluate_physical_pipeline(
                 const float optical_weight = mix(1.0f, angular, p.panel_angular_scene.w)
                     * layer_weight;
                 float4 code = 0.0f;
-                if (needs_average_code || needs_continuous || needs_physical) {
+                if (needs_average_code || needs_continuous || needs_physical || needs_carrier) {
                     code = area_sample(
                         device_signal, device_row_prefix,
                         channel_minimum, channel_maximum, p);
@@ -708,6 +719,16 @@ kernel void evaluate_physical_pipeline(
                 if (needs_average_code) average_device_code[channel] += code[channel];
                 const float2 device_minimum = channel_minimum * float2(p.source_panel.zw);
                 const float2 device_maximum = channel_maximum * float2(p.source_panel.zw);
+                if (needs_carrier) {
+                    const float full_carrier = native_channel(
+                        code[channel], channel, device_minimum, device_maximum, p);
+                    const float preserved_carrier = native_channel(
+                        code[channel], channel,
+                        carrier_minimum * float2(p.source_panel.zw),
+                        carrier_maximum * float2(p.source_panel.zw), p);
+                    carrier_detail_native[channel] +=
+                        (preserved_carrier - full_carrier) * optical_weight;
+                }
                 if (needs_physical) {
                     native[channel] += native_channel(code[channel], channel, device_minimum,
                         device_maximum, p) * optical_weight;
@@ -778,6 +799,7 @@ kernel void evaluate_physical_pipeline(
     native *= reciprocal;
     spread_native *= reciprocal;
     glow_native *= reciprocal;
+    carrier_detail_native *= reciprocal;
     continuous_native *= reciprocal;
     average_device_code *= reciprocal;
     const float3 physical = float3(
@@ -800,10 +822,16 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix1.xyz, glow_native),
         dot(p.matrix2.xyz, glow_native)
     ) / p.levels.z;
+    const float3 carrier_detail = float3(
+        dot(p.matrix0.xyz, carrier_detail_native),
+        dot(p.matrix1.xyz, carrier_detail_native),
+        dot(p.matrix2.xyz, carrier_detail_native)
+    ) / p.levels.z;
     const float3 glass_scattered = ideal.rgb * (1.0f - p.strengths.y)
         + continuous * (p.strengths.y - p.strengths.z)
         + physical * (p.strengths.z - 1.0f)
-        + glow;
+        + glow
+        + carrier_detail * p.strengths.z;
     const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
     const float3 temporally_integrated = glass_scattered * temporal_gain;
     const float3 covered = apply_flat_cover(temporally_integrated,
