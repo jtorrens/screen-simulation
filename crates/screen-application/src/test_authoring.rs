@@ -1862,7 +1862,7 @@ mod tests {
             exposure_time_seconds: 1.0 / 288.0,
             shutter_motion_amount: 1.0,
             computational_character_strength: 1.0,
-            computational_exposure_count: 3.0,
+            computational_exposure_count: 8.0,
             computational_bracket_spacing_stops: 1.0,
             sensor_bloom_amount: 1.0,
             sensor_bloom_crosstalk_fraction: 0.020,

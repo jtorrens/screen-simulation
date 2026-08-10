@@ -242,7 +242,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
     CaptureDevicePreset {
         id: "iphone-16e-main-48mp",
         label: "iPhone 16e Main · 48 MP",
-        calibration: "Developed-image approximation · 4.2 mm EXIF / 26 mm equivalent · residual post-GDC distortion",
+        calibration: "Developed-image approximation · 4.2 mm EXIF / 26 mm equivalent · residual post-GDC distortion · eight-exposure effective bracket",
         sensor: SensorProfile {
             native_width: 8_064,
             native_height: 6_048,
@@ -257,7 +257,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
         },
         computational_capture: ComputationalCaptureProfile {
-            exposure_count: 3,
+            exposure_count: 8,
             bracket_spacing_stops: 1.0,
         },
         gate_width: Millimeters(5.815_385),
