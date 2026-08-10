@@ -1120,7 +1120,7 @@ pub fn variance_matched_rectangular_convolution_half_extent(
     }
 }
 
-pub const VFX_CARRIER_SENSOR_SCALE: f32 = 0.001;
+pub const VFX_CARRIER_SENSOR_SCALE: f32 = 0.5;
 
 pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, _pupil_half_extent: Vec2) -> Vec2 {
     Vec2 {
@@ -2000,13 +2000,7 @@ mod tests {
         let sensor = Vec2 { x: 0.5, y: 0.25 };
         let pupil = Vec2 { x: 0.8, y: 0.4 };
         let carrier = vfx_carrier_half_extent(sensor, pupil);
-        assert_eq!(
-            carrier,
-            Vec2 {
-                x: 0.0005,
-                y: 0.00025
-            }
-        );
+        assert_eq!(carrier, Vec2 { x: 0.25, y: 0.125 });
         assert_eq!(
             vfx_carrier_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 }),
             carrier
