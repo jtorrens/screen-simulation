@@ -1120,16 +1120,13 @@ pub fn variance_matched_rectangular_convolution_half_extent(
     }
 }
 
-pub const VFX_CARRIER_PUPIL_SCALE: f32 = 0.0;
+pub const VFX_CARRIER_SENSOR_SCALE: f32 = 0.001;
 
-pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, pupil_half_extent: Vec2) -> Vec2 {
-    variance_matched_rectangular_convolution_half_extent(
-        sensor_half_extent,
-        Vec2 {
-            x: pupil_half_extent.x * VFX_CARRIER_PUPIL_SCALE,
-            y: pupil_half_extent.y * VFX_CARRIER_PUPIL_SCALE,
-        },
-    )
+pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, _pupil_half_extent: Vec2) -> Vec2 {
+    Vec2 {
+        x: sensor_half_extent.x * VFX_CARRIER_SENSOR_SCALE,
+        y: sensor_half_extent.y * VFX_CARRIER_SENSOR_SCALE,
+    }
 }
 
 fn variance_matched_projected_disk_half_extent(x_axis: Vec2, y_axis: Vec2) -> Vec2 {
@@ -1999,14 +1996,20 @@ mod tests {
     }
 
     #[test]
-    fn vfx_carrier_core_uses_the_exact_sensor_footprint() {
+    fn vfx_carrier_core_is_a_chief_ray_point_sample() {
         let sensor = Vec2 { x: 0.5, y: 0.25 };
         let pupil = Vec2 { x: 0.8, y: 0.4 };
         let carrier = vfx_carrier_half_extent(sensor, pupil);
-        assert_eq!(carrier, sensor);
+        assert_eq!(
+            carrier,
+            Vec2 {
+                x: 0.0005,
+                y: 0.00025
+            }
+        );
         assert_eq!(
             vfx_carrier_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 }),
-            sensor
+            carrier
         );
     }
 
