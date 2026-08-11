@@ -46,11 +46,13 @@ for every sensor-footprint and PSF sample. CPU and Metal rotate the same nested 
 the same deterministic per-pixel integer hash, retain identical ray order and preserve the separate
 per-channel focus and chromatic geometry before shutter and Sensor/CFA. This route deliberately
 keeps resolved panel phase, RGB fringe and defocus in the same thin-lens integration.
-The one owned Metal source is specialized at backend creation by the resolved lens evaluator:
-Thin Lens and VFX 2D each own one fixed function-constant pipeline. The immutable execution plan
-selects that pipeline before dispatch; the parameter buffer carries no second evaluator selector.
-Specialization may remove unreachable aperture loops and branches but cannot change either
-evaluator's samples, ordering, inputs or output artifact.
+The one owned Metal source is specialized at backend creation by the resolved lens evaluator and
+incident-environment source kind. Thin Lens and VFX 2D are each combined with procedural and
+equirectangular environments to form four fixed function-constant pipelines. The immutable typed
+execution plan selects exactly one pipeline before dispatch; the parameter buffer carries neither
+an evaluator selector nor an environment-source selector. Specialization may remove unreachable
+aperture loops, texture paths and branches but cannot change either evaluator's samples, ordering,
+inputs or output artifact, or either environment source's owned response.
 Exact
 rectangular source integration uses one `f32`
 horizontal prefix per source row. Fractional left and right texels remain explicit and only the

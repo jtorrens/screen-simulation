@@ -6,7 +6,7 @@ struct PhysicalPipelineParams {
     uint4 output_tile;  // output width, output height, tile origin y, sample side
     uint4 semantics;    // placement, stripe layout, reserved, reserved
     float4 levels;      // gamma, black nits, white nits, temporal calibrated gain
-    float4 geometry;    // black matrix fraction, reserved, reserved, environment source kind
+    float4 geometry;    // black matrix fraction, reserved, reserved, reserved
     float4 strengths;   // screen, emission, subpixel geometry, temporal emission
     float4 matrix0;
     float4 matrix1;
@@ -43,6 +43,7 @@ struct PhysicalPipelineParams {
 
 constant float PI = 3.14159265358979323846f;
 constant bool VFX_DEPTH_BLUR [[function_constant(0)]];
+constant bool IMAGE_ENVIRONMENT [[function_constant(1)]];
 
 struct EnvironmentPrefilterParams {
     uint axis;
@@ -450,15 +451,15 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
     float view_cosine,
     constant PhysicalPipelineParams& p) {
     float3 direction = normalize(reflection_direction_local);
-    const float sine = p.geometry.w == 1.0f
+    const float sine = IMAGE_ENVIRONMENT
         ? p.environment_direction_rotation.x
         : sin(p.environment_direction_rotation.w);
-    const float cosine = p.geometry.w == 1.0f
+    const float cosine = IMAGE_ENVIRONMENT
         ? p.environment_direction_rotation.y
         : cos(p.environment_direction_rotation.w);
     direction = float3(direction.x * cosine + direction.z * sine, direction.y,
         -direction.x * sine + direction.z * cosine);
-    if (p.geometry.w == 1.0f) {
+    if (IMAGE_ENVIRONMENT) {
         const float2 uv = physical_environment_uv(direction);
         // The plan prepares these material/texture invariants once: core mip,
         // tail mip and normalized tail weight.

@@ -125,8 +125,10 @@ struct CameraDevelopmentParams {
 
 pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
-    thin_lens_pipeline: ComputePipelineState,
-    vfx_depth_blur_pipeline: ComputePipelineState,
+    thin_lens_procedural_pipeline: ComputePipelineState,
+    thin_lens_image_pipeline: ComputePipelineState,
+    vfx_depth_blur_procedural_pipeline: ComputePipelineState,
+    vfx_depth_blur_image_pipeline: ComputePipelineState,
     environment_prefilter_pipeline: ComputePipelineState,
     row_prefix_pipeline: ComputePipelineState,
     veiling_reduce_pipeline: ComputePipelineState,
@@ -186,12 +188,17 @@ impl MetalPhysicalPipeline {
         let library = device
             .new_library_with_data(SHADER_LIBRARY)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let specialized_pipeline = |vfx_depth_blur: bool| {
+        let specialized_pipeline = |vfx_depth_blur: bool, image_environment: bool| {
             let constants = FunctionConstantValues::new();
             constants.set_constant_value_at_index(
                 (&raw const vfx_depth_blur).cast(),
                 MTLDataType::Bool,
                 0,
+            );
+            constants.set_constant_value_at_index(
+                (&raw const image_environment).cast(),
+                MTLDataType::Bool,
+                1,
             );
             let function = library
                 .get_function("evaluate_physical_pipeline", Some(constants))
@@ -200,8 +207,10 @@ impl MetalPhysicalPipeline {
                 .new_compute_pipeline_state_with_function(&function)
                 .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))
         };
-        let thin_lens_pipeline = specialized_pipeline(false)?;
-        let vfx_depth_blur_pipeline = specialized_pipeline(true)?;
+        let thin_lens_procedural_pipeline = specialized_pipeline(false, false)?;
+        let thin_lens_image_pipeline = specialized_pipeline(false, true)?;
+        let vfx_depth_blur_procedural_pipeline = specialized_pipeline(true, false)?;
+        let vfx_depth_blur_image_pipeline = specialized_pipeline(true, true)?;
         let environment_prefilter_function = library
             .get_function("prefilter_equirectangular_environment", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -252,8 +261,10 @@ impl MetalPhysicalPipeline {
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         Ok(Self {
             queue: device.new_command_queue(),
-            thin_lens_pipeline,
-            vfx_depth_blur_pipeline,
+            thin_lens_procedural_pipeline,
+            thin_lens_image_pipeline,
+            vfx_depth_blur_procedural_pipeline,
+            vfx_depth_blur_image_pipeline,
             environment_prefilter_pipeline,
             row_prefix_pipeline,
             veiling_reduce_pipeline,
@@ -1169,15 +1180,7 @@ impl MetalPhysicalPipeline {
                 plan.panel.white_level_nits,
                 0.0,
             ],
-            geometry: [
-                plan.panel.black_matrix_fraction,
-                0.0,
-                0.0,
-                match plan.environment {
-                    IncidentEnvironment::Procedural(_) => 0.0,
-                    IncidentEnvironment::Equirectangular(_) => 1.0,
-                },
-            ],
+            geometry: [plan.panel.black_matrix_fraction, 0.0, 0.0, 0.0],
             strengths: [
                 plan.screen_amount,
                 plan.emission_amount,
@@ -1464,9 +1467,19 @@ impl MetalPhysicalPipeline {
             ));
         }
         let tile_count = work_height.div_ceil(TILE_ROWS);
-        let physical_pipeline = match plan.lens_evaluation_model {
-            LensEvaluationModel::ThinLens => &self.thin_lens_pipeline,
-            LensEvaluationModel::VfxDepthBlur => &self.vfx_depth_blur_pipeline,
+        let physical_pipeline = match (plan.lens_evaluation_model, plan.environment) {
+            (LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
+                &self.thin_lens_procedural_pipeline
+            }
+            (LensEvaluationModel::ThinLens, IncidentEnvironment::Equirectangular(_)) => {
+                &self.thin_lens_image_pipeline
+            }
+            (LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Procedural(_)) => {
+                &self.vfx_depth_blur_procedural_pipeline
+            }
+            (LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Equirectangular(_)) => {
+                &self.vfx_depth_blur_image_pipeline
+            }
         };
         for tile in 0..tile_count {
             if is_cancelled() {
@@ -1528,8 +1541,8 @@ mod tests {
     use super::*;
     use metal::{MTLPixelFormat, MTLRegion};
     use screen_application::{
-        DeviceSignalRaster, PhysicalPipelineInput, PhysicalPipelineRequest,
-        evaluate_physical_pipeline_cpu_oracle,
+        DeviceSignalRaster, EnvironmentRadianceRaster, PhysicalPipelineInput,
+        PhysicalPipelineRequest, evaluate_physical_pipeline_cpu_oracle,
     };
     use screen_contracts::{DeviceRgb, Meters};
     use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile};
@@ -1899,7 +1912,7 @@ mod tests {
     }
 
     #[test]
-    fn cover_and_hdr_environment_match_the_existing_cpu_authority() {
+    fn cover_and_procedural_environment_match_the_existing_cpu_authority() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
         for cover in [
@@ -1953,6 +1966,82 @@ mod tests {
                     "cover CPU/Metal deviation {maximum}; cover={cover:?}; environment={environment:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn equirectangular_environment_matches_cpu_for_both_lens_specializations() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let environment_values = (0..32)
+            .map(|index| {
+                let x = (index % 8) as f32 / 7.0;
+                let y = (index / 8) as f32 / 3.0;
+                [0.1 + 1.7 * x, 0.2 + 0.8 * y, 1.1 - 0.6 * x, 1.0]
+            })
+            .collect::<Vec<_>>();
+        let environment_source = texture(&device, 8, 4, &environment_values);
+        let filtered_environment = backend
+            .prefilter_equirectangular_environment(&environment_source)
+            .expect("angular environment prefilter");
+
+        for lens_evaluation_model in [
+            screen_application::LensEvaluationModel::ThinLens,
+            screen_application::LensEvaluationModel::VfxDepthBlur,
+        ] {
+            let (mut input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Bgr,
+                0.2,
+                1.0,
+            );
+            input.environment_acescg = Some(EnvironmentRadianceRaster {
+                width: 8,
+                height: 4,
+                rgba: environment_values.clone(),
+            });
+            plan.cover = screen_cover::COVER_GLASS_PRESETS[0].profile;
+            plan.environment = screen_cover::IncidentEnvironment::Equirectangular(
+                screen_cover::EquirectangularEnvironment {
+                    character_strength: 1.0,
+                    source_unit_radiance_candelas_per_square_meter: 100.0,
+                    exposure_stops: 0.0,
+                    rotation_degrees: 17.0,
+                },
+            );
+            plan.lens_evaluation_model = lens_evaluation_model;
+            plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .map(|value| [value.r, value.g, value.b, 1.0])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let cpu =
+                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+                    .expect("CPU image-environment oracle");
+            let gpu = backend
+                .evaluate_with_environment(
+                    &source,
+                    &signal,
+                    Some(&filtered_environment),
+                    plan,
+                    |_| {},
+                    || false,
+                )
+                .expect("Metal image-environment result");
+            let maximum = read(&gpu.texture)
+                .iter()
+                .zip(&cpu.acescg)
+                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(
+                maximum <= 2.0e-3,
+                "image-environment CPU/Metal deviation {maximum}; lens={lens_evaluation_model:?}"
+            );
         }
     }
 
