@@ -641,6 +641,50 @@ fn resample_physical_rgba_area(
     output
 }
 
+fn sensor_exposure_pixels(
+    source: &[[f32; 4]],
+    source_width: u32,
+    source_height: u32,
+    sensor_width: u32,
+    sensor_height: u32,
+    exposure_scale: f32,
+) -> Vec<LinearRgb> {
+    let scaled = |pixel: &[f32; 4]| {
+        LinearRgb::new(
+            pixel[0] * exposure_scale,
+            pixel[1] * exposure_scale,
+            pixel[2] * exposure_scale,
+        )
+    };
+    if source_width == sensor_width && source_height == sensor_height {
+        source
+            .iter()
+            .map(|pixel| {
+                // The general one-to-one area path accumulates into +0.0 f64,
+                // so it canonicalizes either signed input zero before the f32
+                // exposure multiplication. Preserve that exact artifact here.
+                let canonical_zero = |value: f32| if value == 0.0 { 0.0 } else { value };
+                LinearRgb::new(
+                    canonical_zero(pixel[0]) * exposure_scale,
+                    canonical_zero(pixel[1]) * exposure_scale,
+                    canonical_zero(pixel[2]) * exposure_scale,
+                )
+            })
+            .collect()
+    } else {
+        resample_physical_rgba_area(
+            source,
+            source_width,
+            source_height,
+            sensor_width,
+            sensor_height,
+        )
+        .iter()
+        .map(scaled)
+        .collect()
+    }
+}
+
 /// Canonical Application-owned transition from the shutter-integrated physical
 /// raster into the Sensor-owned integer RAW boundary. Platform adapters may
 /// accelerate the optical work before this call and camera development after
@@ -678,13 +722,6 @@ pub fn expose_physical_pipeline_raw(
         .evaluator()
         .map_err(ApplicationError::Panel)?
         .device_stage_parameters();
-    let sensor_pixels = resample_physical_rgba_area(
-        shuttered,
-        shuttered_width,
-        shuttered_height,
-        u32::from(sensor.native_width),
-        u32::from(sensor.native_height),
-    );
     let duration = plan
         .shutter_close
         .checked_sub(plan.shutter_open)
@@ -695,20 +732,20 @@ pub fn expose_physical_pipeline_raw(
     // conversion; reevaluating the pupil here would apply the aperture twice.
     let exposure_scale =
         parameters.white_level_nits * plan.radiometric_calibration.effective_sensor_exposure_scale;
+    let sensor_width = u32::from(sensor.native_width);
+    let sensor_height = u32::from(sensor.native_height);
     let exposure = IntegratedOpticalExposure {
-        width: u32::from(sensor.native_width),
-        height: u32::from(sensor.native_height),
+        width: sensor_width,
+        height: sensor_height,
         duration_seconds: duration.as_seconds() as f32,
-        acescg_illuminance_seconds: sensor_pixels
-            .iter()
-            .map(|pixel| {
-                LinearRgb::new(
-                    pixel[0] * exposure_scale,
-                    pixel[1] * exposure_scale,
-                    pixel[2] * exposure_scale,
-                )
-            })
-            .collect(),
+        acescg_illuminance_seconds: sensor_exposure_pixels(
+            shuttered,
+            shuttered_width,
+            shuttered_height,
+            sensor_width,
+            sensor_height,
+            exposure_scale,
+        ),
     };
     expose_raw_with_noise_amount(
         sensor,
@@ -6151,6 +6188,80 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    fn sensor_exposure_identity_specialization_matches_general_area_resampling_exactly() {
+        let source = [
+            [-0.0, f32::from_bits(1), 1.5, 0.2],
+            [2.0, 0.125, -0.5, 0.4],
+            [0.0, 1.0, 0.75, 0.6],
+            [0.33, 0.66, 0.99, 0.8],
+        ];
+        let exposure_scale = 117.25_f32;
+        let expected = resample_physical_rgba_area(&source, 2, 2, 2, 2)
+            .iter()
+            .map(|pixel| {
+                LinearRgb::new(
+                    pixel[0] * exposure_scale,
+                    pixel[1] * exposure_scale,
+                    pixel[2] * exposure_scale,
+                )
+            })
+            .collect::<Vec<_>>();
+        let bits = |pixels: &[LinearRgb]| {
+            pixels
+                .iter()
+                .map(|pixel| [pixel.r.to_bits(), pixel.g.to_bits(), pixel.b.to_bits()])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bits(&sensor_exposure_pixels(&source, 2, 2, 2, 2, exposure_scale)),
+            bits(&expected)
+        );
+
+        let expected_resampled = resample_physical_rgba_area(&source, 2, 2, 1, 1)
+            .iter()
+            .map(|pixel| {
+                LinearRgb::new(
+                    pixel[0] * exposure_scale,
+                    pixel[1] * exposure_scale,
+                    pixel[2] * exposure_scale,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bits(&sensor_exposure_pixels(&source, 2, 2, 1, 1, exposure_scale)),
+            bits(&expected_resampled)
+        );
+
+        let fractional_source = (0..12)
+            .map(|index| {
+                let value = index as f32 * 0.125 - 0.25;
+                [value, value * 0.5, 1.25 - value, 1.0]
+            })
+            .collect::<Vec<_>>();
+        let expected_fractional = resample_physical_rgba_area(&fractional_source, 4, 3, 3, 2)
+            .iter()
+            .map(|pixel| {
+                LinearRgb::new(
+                    pixel[0] * exposure_scale,
+                    pixel[1] * exposure_scale,
+                    pixel[2] * exposure_scale,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bits(&sensor_exposure_pixels(
+                &fractional_source,
+                4,
+                3,
+                3,
+                2,
+                exposure_scale
+            )),
+            bits(&expected_fractional)
+        );
+    }
+
+    #[test]
     fn image_environment_roughness_owns_resolution_independent_core_and_tail_lobes() {
         assert_eq!(
             environment_reflection_lobes(4096, 0.0, 0.0),
@@ -8045,6 +8156,79 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!((raw.width, raw.height), (expected.width, expected.height));
         assert_eq!(published, expected.acescg);
+    }
+
+    #[test]
+    fn identity_sensor_transition_matches_general_resampling_for_every_cfa() {
+        let shuttered = [
+            [0.0001, 0.0002, 0.0003, 1.0],
+            [0.0010, 0.0004, 0.0002, 1.0],
+            [0.0003, 0.0012, 0.0005, 1.0],
+            [0.0020, 0.0010, 0.0030, 1.0],
+        ];
+        for bayer_pattern in [
+            BayerPattern::Rggb,
+            BayerPattern::Bggr,
+            BayerPattern::Grbg,
+            BayerPattern::Gbrg,
+        ] {
+            let mut request = radiometric_request(
+                350.0,
+                RationalTime::new(-1, 96).expect("open"),
+                RationalTime::new(1, 96).expect("close"),
+                0.0,
+                1.0,
+                PhysicalIntermediate::RawMosaic,
+            );
+            request.plan.sensor.bayer_pattern = bayer_pattern;
+            request.plan.sensor_noise_amount = 1.0;
+            request.plan.shutter_motion.noise_seed = 0x5EED;
+            let plan = request.plan.stopped_at_requested_intermediate();
+            let sensor = plan
+                .computational_capture
+                .effective_sensor(plan.sensor, plan.computational_character_strength)
+                .expect("effective sensor");
+            let parameters = plan
+                .panel
+                .evaluator()
+                .expect("panel evaluator")
+                .device_stage_parameters();
+            let exposure_scale = parameters.white_level_nits
+                * plan.radiometric_calibration.effective_sensor_exposure_scale;
+            let reference_pixels = resample_physical_rgba_area(&shuttered, 2, 2, 2, 2);
+            let reference_exposure = IntegratedOpticalExposure {
+                width: 2,
+                height: 2,
+                duration_seconds: plan
+                    .shutter_close
+                    .checked_sub(plan.shutter_open)
+                    .expect("duration")
+                    .as_seconds() as f32,
+                acescg_illuminance_seconds: reference_pixels
+                    .iter()
+                    .map(|pixel| {
+                        LinearRgb::new(
+                            pixel[0] * exposure_scale,
+                            pixel[1] * exposure_scale,
+                            pixel[2] * exposure_scale,
+                        )
+                    })
+                    .collect(),
+            };
+            let expected = expose_raw_with_noise_amount(
+                sensor,
+                &reference_exposure,
+                CaptureIdentity {
+                    noise_seed: plan.shutter_motion.noise_seed,
+                    frame_index: plan.frame_index,
+                },
+                plan.sensor_noise_amount,
+            )
+            .expect("general resampling RAW");
+            let actual = expose_physical_pipeline_raw(&shuttered, 2, 2, plan)
+                .expect("identity specialization RAW");
+            assert_eq!(actual, expected, "CFA {bayer_pattern:?}");
+        }
     }
 
     #[test]
