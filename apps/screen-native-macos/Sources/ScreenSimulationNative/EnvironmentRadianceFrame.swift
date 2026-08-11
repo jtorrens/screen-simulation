@@ -17,7 +17,7 @@ enum EnvironmentRadianceFrameError: Error, LocalizedError {
     }
 }
 
-/// Immutable Cover/Environment artifact. Rust owns its angular-diffusion semantics;
+/// Immutable Cover/Environment artifact. Rust owns its rough-interface semantics;
 /// Swift retains the prepared Metal resource and passes only its opaque physical texture view.
 final class EnvironmentRadianceFrame: @unchecked Sendable {
     let physicalTexture: ScreenPhysicalTextureRef
@@ -35,7 +35,7 @@ final class EnvironmentRadianceFrame: @unchecked Sendable {
         screen_environment_radiance_texture_release(owner)
     }
 
-    /// Builds the energy-normalized angular-diffusion pyramid consumed by Cover/Environment.
+    /// Copies the exact single-level radiance source consumed by Cover/Environment.
     /// Decoding and the explicit IDT have already completed before this boundary.
     static func prefiltered(from source: StudioColorMetalFrame) throws -> EnvironmentRadianceFrame {
         guard source.width >= 2, source.height >= 2, source.width == source.height * 2 else {

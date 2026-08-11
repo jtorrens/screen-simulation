@@ -450,7 +450,7 @@ pub unsafe extern "C" fn screen_environment_radiance_texture_create_metal(
     }
     let source = unsafe { TextureRef::from_ptr(source_metal_texture as *mut MTLTexture) };
     let result = MetalPhysicalPipeline::new(source.device())
-        .and_then(|backend| backend.prefilter_equirectangular_environment(source));
+        .and_then(|backend| backend.prepare_equirectangular_environment(source));
     match result {
         Ok(texture) => {
             let view = ScreenPhysicalTexture {
@@ -463,7 +463,7 @@ pub unsafe extern "C" fn screen_environment_radiance_texture_create_metal(
             }))
         }
         Err(_error) => {
-            unsafe { set_error(error_message, b"environment angular diffusion failed\0") };
+            unsafe { set_error(error_message, b"environment radiance preparation failed\0") };
             std::ptr::null_mut()
         }
     }

@@ -48,48 +48,6 @@ constant float PI = 3.14159265358979323846f;
 constant bool VFX_DEPTH_BLUR [[function_constant(0)]];
 constant bool IMAGE_ENVIRONMENT [[function_constant(1)]];
 
-struct EnvironmentPrefilterParams {
-    uint axis;
-    float step_scale;
-    uint source_width;
-    uint source_height;
-};
-
-kernel void prefilter_equirectangular_environment(
-    texture2d<float, access::sample> source [[texture(0)]],
-    texture2d<float, access::write> destination [[texture(1)]],
-    constant EnvironmentPrefilterParams& params [[buffer(0)]],
-    uint2 position [[thread_position_in_grid]]) {
-    if (position.x >= destination.get_width() || position.y >= destination.get_height()) return;
-    constexpr sampler environment_sampler(
-        coord::normalized, s_address::repeat, t_address::clamp_to_edge,
-        filter::linear, mip_filter::linear
-    );
-    const float2 center_uv = (float2(position) + 0.5f)
-        / float2(destination.get_width(), destination.get_height());
-    const float latitude = (0.5f - center_uv.y) * PI;
-    const float latitude_scale = max(abs(cos(latitude)),
-                                     1.0f / float(params.source_height));
-    constexpr float weights[9] = {
-        1.0f / 256.0f, 8.0f / 256.0f, 28.0f / 256.0f, 56.0f / 256.0f,
-        70.0f / 256.0f,
-        56.0f / 256.0f, 28.0f / 256.0f, 8.0f / 256.0f, 1.0f / 256.0f
-    };
-    float3 radiance = float3(0.0f);
-    for (int tap = -4; tap <= 4; ++tap) {
-        float2 offset = float2(0.0f);
-        if (params.axis == 0u) {
-            offset.x = float(tap) * params.step_scale
-                / (float(params.source_width) * latitude_scale);
-        } else {
-            offset.y = float(tap) * params.step_scale / float(params.source_height);
-        }
-        radiance += source.sample(environment_sampler, center_uv + offset, level(0.0f)).rgb
-            * weights[tap + 4];
-    }
-    destination.write(float4(radiance, 1.0f), position);
-}
-
 struct PhysicalRayHit {
     float2 uv;
     float cosine;
@@ -407,51 +365,118 @@ inline float2 physical_environment_uv(float3 direction) {
     );
 }
 
-inline float3 physical_environment_linear(
-    texture2d<float, access::sample> environment,
-    float2 uv,
-    float mip_level
-) {
-    constexpr sampler environment_sampler(
-        coord::normalized, s_address::repeat, t_address::clamp_to_edge,
-        filter::linear, mip_filter::linear
-    );
-    return environment.sample(environment_sampler, uv, level(mip_level)).rgb;
+inline float physical_radical_inverse_vdc(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10f;
 }
 
-inline float3 physical_environment_lobe(
+inline uint physical_hash_uint(uint value) {
+    value ^= value >> 16u;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15u;
+    value *= 0x846CA68Bu;
+    value ^= value >> 16u;
+    return value;
+}
+
+inline float3 physical_sample_visible_ggx(float3 outgoing, float alpha, float2 sample) {
+    const float3 stretched = normalize(float3(alpha * outgoing.xy, outgoing.z));
+    const float lensq = dot(stretched.xy, stretched.xy);
+    const float3 tangent1 = lensq > 0.0f
+        ? float3(-stretched.y, stretched.x, 0.0f) * rsqrt(lensq)
+        : float3(1.0f, 0.0f, 0.0f);
+    const float3 tangent2 = cross(stretched, tangent1);
+    const float radius = sqrt(sample.x);
+    const float phi = 2.0f * PI * sample.y;
+    const float t1 = radius * cos(phi);
+    float t2 = radius * sin(phi);
+    const float blend = 0.5f * (1.0f + stretched.z);
+    t2 = (1.0f - blend) * sqrt(max(0.0f, 1.0f - t1 * t1)) + blend * t2;
+    const float3 normal = t1 * tangent1 + t2 * tangent2
+        + sqrt(max(0.0f, 1.0f - t1 * t1 - t2 * t2)) * stretched;
+    return normalize(float3(alpha * normal.xy, max(0.0f, normal.z)));
+}
+
+inline float physical_smith_ggx_lambda(float3 direction, float alpha) {
+    const float cosine_squared = direction.z * direction.z;
+    if (cosine_squared <= 1.0e-12f) return INFINITY;
+    const float tangent_squared = max(0.0f, 1.0f - cosine_squared) / cosine_squared;
+    return 0.5f * (sqrt(1.0f + alpha * alpha * tangent_squared) - 1.0f);
+}
+
+inline float physical_dielectric_fresnel(float cosine_i, float eta) {
+    if (eta == 1.0f) return 0.0f;
+    cosine_i = clamp(cosine_i, 0.0f, 1.0f);
+    const float sine_t2 = (1.0f - cosine_i * cosine_i) / (eta * eta);
+    const float cosine_t = sqrt(max(0.0f, 1.0f - sine_t2));
+    const float rs = (cosine_i - eta * cosine_t)
+        / max(1.0e-8f, cosine_i + eta * cosine_t);
+    const float rp = (eta * cosine_i - cosine_t)
+        / max(1.0e-8f, eta * cosine_i + cosine_t);
+    return 0.5f * (rs * rs + rp * rp);
+}
+
+inline float3 physical_reference_ggx_environment(
+    float3 reflection_direction,
     texture2d<float, access::sample> environment,
-    float2 uv,
-    float2 anisotropy_axis,
-    float extra_sigma_texels,
-    float anisotropy_onset,
-    float mip_level
+    float sine,
+    float cosine,
+    float view_cosine,
+    uint2 sample_seed,
+    constant PhysicalPipelineParams& p
 ) {
-    const float3 center = physical_environment_linear(environment, uv, mip_level);
-    // Sub-quarter-texel anisotropy cannot change the represented coarse
-    // lobe materially. Avoid four additional samples until the stretch has
-    // resolvable support in this level. Its smooth onset prevents a contour.
-    if (anisotropy_onset <= 0.0f) return center;
-    const float2 size = max(
-        float2(environment.get_width(), environment.get_height()) / exp2(mip_level),
-        float2(1.0f)
-    );
-    const float2 offset_uv = anisotropy_axis / size * extra_sigma_texels;
     constexpr sampler environment_sampler(
         coord::normalized, s_address::repeat, t_address::clamp_to_edge,
-        filter::linear, mip_filter::linear
+        filter::linear, mip_filter::none
     );
-    const float3 negative = environment.sample(
-        environment_sampler, uv - offset_uv, level(mip_level)).rgb;
-    const float3 positive = environment.sample(
-        environment_sampler, uv + offset_uv, level(mip_level)).rgb;
-    const float3 stretched = center * 0.5f + (negative + positive) * 0.25f;
-    return mix(center, stretched, anisotropy_onset);
+    const float roughness = p.cover_absorption_roughness.w;
+    float3 mirror = normalize(reflection_direction);
+    if (roughness <= 0.0f || p.cover_geometry.z == 1.0f) {
+        mirror = float3(mirror.x * cosine + mirror.z * sine, mirror.y,
+            -mirror.x * sine + mirror.z * cosine);
+        return environment.sample(
+            environment_sampler, physical_environment_uv(mirror), level(0.0f)).rgb;
+    }
+    const float3 outgoing = float3(-mirror.x, -mirror.y, mirror.z);
+    const float alpha = max(roughness * roughness, 1.0e-4f);
+    const float smooth_fresnel = max(
+        physical_dielectric_fresnel(view_cosine, p.cover_geometry.z), 1.0e-8f);
+    const float lambda_outgoing = physical_smith_ggx_lambda(outgoing, alpha);
+    const uint sample_count = max(1u, uint(p.environment_key_radius.w));
+    const float2 shift = float2(
+        physical_hash_uint(sample_seed.x ^ (sample_seed.y * 0x9E3779B9u)),
+        physical_hash_uint(sample_seed.y ^ (sample_seed.x * 0x85EBCA6Bu)))
+        * 2.3283064365386963e-10f;
+    float3 sum = float3(0.0f);
+    for (uint index = 0u; index < sample_count; ++index) {
+        const float2 sample = fract(float2(
+            (float(index) + 0.5f) / float(sample_count),
+            physical_radical_inverse_vdc(index)) + shift);
+        const float3 micro_normal = physical_sample_visible_ggx(outgoing, alpha, sample);
+        const float outgoing_dot_micro = max(0.0f, dot(outgoing, micro_normal));
+        float3 incident = reflect(-outgoing, micro_normal);
+        if (incident.z <= 0.0f || outgoing_dot_micro <= 0.0f) continue;
+        const float lambda_incident = physical_smith_ggx_lambda(incident, alpha);
+        const float masking_ratio = (1.0f + lambda_outgoing)
+            / (1.0f + lambda_outgoing + lambda_incident);
+        const float weight = physical_dielectric_fresnel(
+            outgoing_dot_micro, p.cover_geometry.z) * masking_ratio / smooth_fresnel;
+        incident = float3(incident.x * cosine + incident.z * sine, incident.y,
+            -incident.x * sine + incident.z * cosine);
+        sum += environment.sample(
+            environment_sampler, physical_environment_uv(incident), level(0.0f)).rgb * weight;
+    }
+    return sum / float(sample_count);
 }
 
 inline float3 flat_environment_radiance(float3 reflection_direction_local,
     texture2d<float, access::sample> environment_acescg,
     float view_cosine,
+    uint2 sample_seed,
     constant PhysicalPipelineParams& p) {
     float3 direction = normalize(reflection_direction_local);
     const float sine = IMAGE_ENVIRONMENT
@@ -460,47 +485,13 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
     const float cosine = IMAGE_ENVIRONMENT
         ? p.environment_direction_rotation.y
         : cos(p.environment_direction_rotation.w);
-    direction = float3(direction.x * cosine + direction.z * sine, direction.y,
-        -direction.x * sine + direction.z * cosine);
     if (IMAGE_ENVIRONMENT) {
-        const float2 uv = physical_environment_uv(direction);
-        // The plan prepares these material/texture invariants once: core mip,
-        // tail mip and normalized tail weight.
-        const float core_mip_level = p.environment_key_radius.x;
-        const float tail_mip_level = p.environment_key_radius.y;
-        const float tail_weight = p.environment_key_radius.z;
-        const float3 surface_normal = normalize(float3(sine, 0.0f, cosine));
-        const float stretch = clamp(1.0f / max(view_cosine, 0.25f), 1.0f, 4.0f);
-        const float extra_sigma_texels = 1.15f
-            * sqrt(max(stretch * stretch - 1.0f, 0.0f));
-        const float anisotropy_onset = smoothstep(0.25f, 0.75f, extra_sigma_texels);
-        float2 anisotropy_axis = float2(0.0f);
-        const float3 tangent = surface_normal - dot(surface_normal, direction) * direction;
-        const float tangent_length = length(tangent);
-        if (anisotropy_onset > 0.0f && tangent_length >= 1.0e-6f) {
-            const float2 next_uv = physical_environment_uv(
-                normalize(direction + tangent / tangent_length * 1.0e-3f)
-            );
-            float2 delta_uv = next_uv - uv;
-            delta_uv.x -= round(delta_uv.x);
-            const float2 metric = delta_uv * float2(
-                environment_acescg.get_width(), environment_acescg.get_height());
-            const float metric_length = length(metric);
-            if (metric_length >= 1.0e-6f) {
-                anisotropy_axis = metric / metric_length;
-            }
-        }
-        const float represented_onset = length(anisotropy_axis) > 0.0f
-            ? anisotropy_onset : 0.0f;
-        const float3 core = physical_environment_lobe(
-            environment_acescg, uv, anisotropy_axis, extra_sigma_texels,
-            represented_onset, core_mip_level);
-        const float3 tail = physical_environment_lobe(
-            environment_acescg, uv, anisotropy_axis, extra_sigma_texels,
-            represented_onset, tail_mip_level);
-        return mix(core, tail, tail_weight)
+        return physical_reference_ggx_environment(
+            direction, environment_acescg, sine, cosine, view_cosine, sample_seed, p)
             * p.environment_ambient_strength.x * p.environment_ambient_strength.w;
     }
+    direction = float3(direction.x * cosine + direction.z * sine, direction.y,
+        -direction.x * sine + direction.z * cosine);
     const float alignment = clamp(dot(direction, p.environment_direction_rotation.xyz), -1.0f, 1.0f);
     const float edge = cos(p.environment_key_radius.w);
     const float softness = 0.005f + p.cover_absorption_roughness.w * 0.35f;
@@ -563,6 +554,7 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
 inline float3 apply_flat_cover(float3 emitted, float view_cosine,
     float3 reflection_direction_local, float3 lens_irradiance_weight,
     texture2d<float, access::sample> environment_acescg,
+    uint2 sample_seed,
     constant PhysicalPipelineParams& p) {
     const float cosine_i = clamp(view_cosine, 0.0f, 1.0f);
     const float reflection = cover_interface(cosine_i, p);
@@ -579,7 +571,7 @@ inline float3 apply_flat_cover(float3 emitted, float view_cosine,
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
     return emitted * transmission
         + flat_environment_radiance(
-            reflection_direction_local, environment_acescg, cosine_i, p) * reflection
+            reflection_direction_local, environment_acescg, cosine_i, sample_seed, p) * reflection
             * lens_irradiance_weight / p.levels.z;
 }
 
@@ -1291,7 +1283,7 @@ kernel void evaluate_physical_pipeline(
     const float3 temporally_integrated = glass_scattered * temporal_gain;
     const float3 covered = apply_flat_cover(temporally_integrated,
         cover_cosine * cover_reciprocal, cover_reflection_direction,
-        cover_irradiance * cover_reciprocal, environment_acescg, p);
+        cover_irradiance * cover_reciprocal, environment_acescg, position, p);
     const float3 glared = mix(covered, veiling_gate_average[0].xyz * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);

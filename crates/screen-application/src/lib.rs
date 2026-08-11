@@ -552,6 +552,15 @@ pub fn physical_pipeline_aperture_sample_count(quality: FlatPanelQuality) -> usi
     }
 }
 
+pub fn physical_environment_reference_sample_count(quality: FlatPanelQuality) -> u32 {
+    match quality {
+        FlatPanelQuality::Draft => 16,
+        FlatPanelQuality::Medium => 32,
+        FlatPanelQuality::High => 64,
+        FlatPanelQuality::Native => 256,
+    }
+}
+
 impl PhysicalPipelineExecutionPlan {
     /// Returns the current immutable request with every stage after the requested
     /// diagnostic boundary neutralized. Geometry is a data checkpoint: it becomes
@@ -848,15 +857,65 @@ impl EnvironmentRadianceRaster {
         direction: [f32; 3],
         rotation_degrees: f32,
         roughness: f32,
-        haze: f32,
         view_cosine: f32,
+        refractive_index: f32,
+        sample_count: u32,
+        sample_seed: [u32; 2],
     ) -> LinearRgb {
         let length = direction
             .into_iter()
             .map(|value| value * value)
             .sum::<f32>()
             .sqrt();
-        let mut direction = direction.map(|value| value / length.max(1.0e-8));
+        let reflected = direction.map(|value| value / length.max(1.0e-8));
+        if roughness <= 0.0 || refractive_index == 1.0 {
+            return self.sample_equirectangular_direction(reflected, rotation_degrees);
+        }
+        let outgoing = [-reflected[0], -reflected[1], reflected[2]];
+        let alpha = (roughness * roughness).max(1.0e-4);
+        let smooth_fresnel = dielectric_fresnel(view_cosine, refractive_index).max(1.0e-8);
+        let lambda_outgoing = smith_ggx_lambda(outgoing, alpha);
+        let shift = [
+            hash_uint(sample_seed[0] ^ sample_seed[1].wrapping_mul(0x9E37_79B9)) as f32
+                * 2.328_306_4e-10,
+            hash_uint(sample_seed[1] ^ sample_seed[0].wrapping_mul(0x85EB_CA6B)) as f32
+                * 2.328_306_4e-10,
+        ];
+        let mut sum = [0.0_f32; 3];
+        let count = sample_count.max(1);
+        for index in 0..count {
+            let sample = [
+                ((index as f32 + 0.5) / count as f32 + shift[0]).fract(),
+                (radical_inverse_vdc(index) + shift[1]).fract(),
+            ];
+            let micro_normal = sample_visible_ggx(outgoing, alpha, sample);
+            let outgoing_dot_micro = dot3(outgoing, micro_normal).max(0.0);
+            let incident = reflect3(outgoing.map(|value| -value), micro_normal);
+            if incident[2] <= 0.0 || outgoing_dot_micro <= 0.0 {
+                continue;
+            }
+            let lambda_incident = smith_ggx_lambda(incident, alpha);
+            let masking_ratio = (1.0 + lambda_outgoing) / (1.0 + lambda_outgoing + lambda_incident);
+            let weight = dielectric_fresnel(outgoing_dot_micro, refractive_index) * masking_ratio
+                / smooth_fresnel;
+            let radiance = self.sample_equirectangular_direction(incident, rotation_degrees);
+            sum[0] += radiance.r * weight;
+            sum[1] += radiance.g * weight;
+            sum[2] += radiance.b * weight;
+        }
+        let reciprocal = 1.0 / count as f32;
+        LinearRgb::new(
+            sum[0] * reciprocal,
+            sum[1] * reciprocal,
+            sum[2] * reciprocal,
+        )
+    }
+
+    fn sample_equirectangular_direction(
+        &self,
+        mut direction: [f32; 3],
+        rotation_degrees: f32,
+    ) -> LinearRgb {
         let (sine, cosine) = rotation_degrees.to_radians().sin_cos();
         direction = [
             direction[0] * cosine + direction[2] * sine,
@@ -866,110 +925,7 @@ impl EnvironmentRadianceRaster {
         let u = (direction[0].atan2(direction[2]) / core::f32::consts::TAU + 0.5).rem_euclid(1.0);
         let v =
             (0.5 - direction[1].clamp(-1.0, 1.0).asin() / core::f32::consts::PI).clamp(0.0, 1.0);
-        let lobes = environment_reflection_lobes(self.width, roughness, haze);
-        let surface_normal = [sine, 0.0, cosine];
-        let core = self.sample_equirectangular_diffusion(
-            u,
-            v,
-            direction,
-            surface_normal,
-            view_cosine,
-            lobes.core_footprint_texels,
-        );
-        let tail = self.sample_equirectangular_diffusion(
-            u,
-            v,
-            direction,
-            surface_normal,
-            view_cosine,
-            lobes.tail_footprint_texels,
-        );
-        LinearRgb::new(
-            core.r + (tail.r - core.r) * lobes.tail_weight,
-            core.g + (tail.g - core.g) * lobes.tail_weight,
-            core.b + (tail.b - core.b) * lobes.tail_weight,
-        )
-    }
-
-    fn sample_equirectangular_diffusion(
-        &self,
-        u: f32,
-        v: f32,
-        direction: [f32; 3],
-        surface_normal: [f32; 3],
-        view_cosine: f32,
-        footprint: f32,
-    ) -> LinearRgb {
-        if footprint <= 1.0 {
-            return self.sample_equirectangular_linear(u, v);
-        }
-        let latitude = (0.5 - v) * core::f32::consts::PI;
-        let latitude_scale = latitude.cos().abs().max(1.0 / self.height as f32);
-        let weights = [1.0_f32, 8.0, 28.0, 56.0, 70.0, 56.0, 28.0, 8.0, 1.0];
-        let step = footprint * (1.0 / 3.0_f32).sqrt();
-        let direction_dot_normal = direction[0] * surface_normal[0]
-            + direction[1] * surface_normal[1]
-            + direction[2] * surface_normal[2];
-        let tangent = [
-            surface_normal[0] - direction_dot_normal * direction[0],
-            surface_normal[1] - direction_dot_normal * direction[1],
-            surface_normal[2] - direction_dot_normal * direction[2],
-        ];
-        let tangent_length =
-            (tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2]).sqrt();
-        let axis = if tangent_length > 1.0e-6 {
-            let next = [
-                direction[0] + tangent[0] / tangent_length * 1.0e-3,
-                direction[1] + tangent[1] / tangent_length * 1.0e-3,
-                direction[2] + tangent[2] / tangent_length * 1.0e-3,
-            ];
-            let next_length = (next[0] * next[0] + next[1] * next[1] + next[2] * next[2]).sqrt();
-            let next = next.map(|value| value / next_length.max(1.0e-8));
-            let next_u = (next[0].atan2(next[2]) / core::f32::consts::TAU + 0.5).rem_euclid(1.0);
-            let next_v =
-                (0.5 - next[1].clamp(-1.0, 1.0).asin() / core::f32::consts::PI).clamp(0.0, 1.0);
-            let metric = [
-                ((next_u - u + 0.5).rem_euclid(1.0) - 0.5) * self.width as f32 * latitude_scale,
-                (next_v - v) * self.height as f32,
-            ];
-            let length = (metric[0] * metric[0] + metric[1] * metric[1]).sqrt();
-            [
-                metric[0] / length.max(1.0e-8),
-                metric[1] / length.max(1.0e-8),
-            ]
-        } else {
-            [1.0, 0.0]
-        };
-        let represented_stretch = (1.0 / view_cosine.max(0.25)).clamp(1.0, 4.0);
-        let extra_sigma_texels = 1.15
-            * (represented_stretch * represented_stretch - 1.0)
-                .max(0.0)
-                .sqrt();
-        let onset = ((extra_sigma_texels - 0.25) / 0.5).clamp(0.0, 1.0);
-        let onset = onset * onset * (3.0 - 2.0 * onset);
-        let stretch = 1.0 + (represented_stretch - 1.0) * onset;
-        let mut sum = [0.0_f32; 3];
-        for (y_index, y_weight) in weights.into_iter().enumerate() {
-            let y = y_index as f32 - 4.0;
-            for (x_index, x_weight) in weights.into_iter().enumerate() {
-                let x = x_index as f32 - 4.0;
-                let base = [x * step, y * step];
-                let parallel = base[0] * axis[0] + base[1] * axis[1];
-                let offset = [
-                    base[0] + axis[0] * parallel * (stretch - 1.0),
-                    base[1] + axis[1] * parallel * (stretch - 1.0),
-                ];
-                let sample = self.sample_equirectangular_linear(
-                    u + offset[0] / (self.width as f32 * latitude_scale),
-                    v + offset[1] / self.height as f32,
-                );
-                let weight = x_weight * y_weight / (256.0 * 256.0);
-                sum[0] += sample.r * weight;
-                sum[1] += sample.g * weight;
-                sum[2] += sample.b * weight;
-            }
-        }
-        LinearRgb::new(sum[0], sum[1], sum[2])
+        self.sample_equirectangular_linear(u, v)
     }
 
     fn sample_equirectangular_linear(&self, u: f32, v: f32) -> LinearRgb {
@@ -997,37 +953,98 @@ impl EnvironmentRadianceRaster {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct EnvironmentReflectionLobes {
-    core_footprint_texels: f32,
-    tail_footprint_texels: f32,
-    tail_weight: f32,
+fn dot3(first: [f32; 3], second: [f32; 3]) -> f32 {
+    first[0] * second[0] + first[1] * second[1] + first[2] * second[2]
 }
 
-fn environment_reflection_lobes(
-    width: u32,
-    roughness: f32,
-    haze: f32,
-) -> EnvironmentReflectionLobes {
-    let microfacet_slope = roughness * roughness;
-    // Perceptual material controls distribute useful resolution roughly
-    // logarithmically. A 0.05 degree reference width maps that control into
-    // the peaked core while retaining an exact delta at authored zero.
-    let minimum_core_radius = 0.05_f32.to_radians();
-    let core_radius = minimum_core_radius
-        * (((1.0 + core::f32::consts::FRAC_PI_2 / minimum_core_radius).ln() * microfacet_slope)
-            .exp()
-            - 1.0);
-    let microfacet_radius = microfacet_slope.atan();
-    let haze_radius = haze * core::f32::consts::FRAC_PI_2;
-    let tail_radius = (microfacet_radius + haze_radius).clamp(0.0, core::f32::consts::FRAC_PI_2);
-    // A lobe with angular radius r has diameter 2r. A 2:1 panorama has
-    // width / 2pi texels per radian, hence width * r / pi texels.
-    EnvironmentReflectionLobes {
-        core_footprint_texels: (width as f32 * core_radius / core::f32::consts::PI).max(1.0),
-        tail_footprint_texels: (width as f32 * tail_radius / core::f32::consts::PI).max(1.0),
-        tail_weight: 1.0 - (1.0 - microfacet_slope) * (1.0 - haze),
+fn reflect3(incident: [f32; 3], normal: [f32; 3]) -> [f32; 3] {
+    let scale = 2.0 * dot3(incident, normal);
+    [
+        incident[0] - scale * normal[0],
+        incident[1] - scale * normal[1],
+        incident[2] - scale * normal[2],
+    ]
+}
+
+fn radical_inverse_vdc(value: u32) -> f32 {
+    (value.reverse_bits() as f32) * 2.328_306_4e-10
+}
+
+fn hash_uint(mut value: u32) -> u32 {
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7FEB_352D);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846C_A68B);
+    value ^ (value >> 16)
+}
+
+fn sample_visible_ggx(outgoing: [f32; 3], alpha: f32, sample: [f32; 2]) -> [f32; 3] {
+    let stretched = normalize3([alpha * outgoing[0], alpha * outgoing[1], outgoing[2]]);
+    let lensq = stretched[0] * stretched[0] + stretched[1] * stretched[1];
+    let tangent1 = if lensq > 0.0 {
+        let reciprocal = lensq.sqrt().recip();
+        [-stretched[1] * reciprocal, stretched[0] * reciprocal, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let tangent2 = cross3(stretched, tangent1);
+    let radius = sample[0].sqrt();
+    let phi = core::f32::consts::TAU * sample[1];
+    let t1 = radius * phi.cos();
+    let mut t2 = radius * phi.sin();
+    let blend = 0.5 * (1.0 + stretched[2]);
+    t2 = (1.0 - blend) * (1.0 - t1 * t1).max(0.0).sqrt() + blend * t2;
+    let normal = add3(
+        add3(scale3(tangent1, t1), scale3(tangent2, t2)),
+        scale3(stretched, (1.0 - t1 * t1 - t2 * t2).max(0.0).sqrt()),
+    );
+    normalize3([alpha * normal[0], alpha * normal[1], normal[2].max(0.0)])
+}
+
+fn smith_ggx_lambda(direction: [f32; 3], alpha: f32) -> f32 {
+    let cosine_squared = direction[2] * direction[2];
+    if cosine_squared <= 1.0e-12 {
+        return f32::INFINITY;
     }
+    let tangent_squared = (1.0 - cosine_squared).max(0.0) / cosine_squared;
+    ((1.0 + alpha * alpha * tangent_squared).sqrt() - 1.0) * 0.5
+}
+
+fn dielectric_fresnel(cosine_i: f32, eta: f32) -> f32 {
+    if eta == 1.0 {
+        return 0.0;
+    }
+    let cosine_i = cosine_i.clamp(0.0, 1.0);
+    let sine_t2 = (1.0 - cosine_i * cosine_i) / (eta * eta);
+    let cosine_t = (1.0 - sine_t2).max(0.0).sqrt();
+    let rs = (cosine_i - eta * cosine_t) / (cosine_i + eta * cosine_t).max(1.0e-8);
+    let rp = (eta * cosine_i - cosine_t) / (eta * cosine_i + cosine_t).max(1.0e-8);
+    0.5 * (rs * rs + rp * rp)
+}
+
+fn normalize3(value: [f32; 3]) -> [f32; 3] {
+    let reciprocal = dot3(value, value).sqrt().max(1.0e-8).recip();
+    scale3(value, reciprocal)
+}
+
+fn cross3(first: [f32; 3], second: [f32; 3]) -> [f32; 3] {
+    [
+        first[1] * second[2] - first[2] * second[1],
+        first[2] * second[0] - first[0] * second[2],
+        first[0] * second[1] - first[1] * second[0],
+    ]
+}
+
+fn scale3(value: [f32; 3], scale: f32) -> [f32; 3] {
+    [value[0] * scale, value[1] * scale, value[2] * scale]
+}
+
+fn add3(first: [f32; 3], second: [f32; 3]) -> [f32; 3] {
+    [
+        first[0] + second[0],
+        first[1] + second[1],
+        first[2] + second[2],
+    ]
 }
 
 fn sample_placed_acescg_area(
@@ -1960,8 +1977,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         reflection_direction_local,
                         environment.rotation_degrees,
                         plan.cover.roughness,
-                        plan.cover.haze,
                         cover_sample.view_cosine,
+                        plan.cover.refractive_index,
+                        physical_environment_reference_sample_count(plan.quality),
+                        [x, y],
                     );
                     let scale = environment.radiance_scale();
                     cover.evaluate_with_incident_radiance(
@@ -6366,84 +6385,65 @@ mod tests {
     }
 
     #[test]
-    fn image_environment_roughness_owns_resolution_independent_core_and_tail_lobes() {
+    fn image_environment_quality_changes_only_ggx_reference_sample_count() {
         assert_eq!(
-            environment_reflection_lobes(4096, 0.0, 0.0),
-            EnvironmentReflectionLobes {
-                core_footprint_texels: 1.0,
-                tail_footprint_texels: 1.0,
-                tail_weight: 0.0,
-            }
+            [
+                FlatPanelQuality::Draft,
+                FlatPanelQuality::Medium,
+                FlatPanelQuality::High,
+                FlatPanelQuality::Native,
+            ]
+            .map(physical_environment_reference_sample_count),
+            [16, 32, 64, 256]
         );
-
-        let semigloss = environment_reflection_lobes(4096, 0.20, 0.0);
-        let matte = environment_reflection_lobes(4096, 0.46, 0.0);
-        let matte_haze = environment_reflection_lobes(4096, 0.46, 0.03);
-        assert!(semigloss.core_footprint_texels >= 1.0);
-        assert!(matte.core_footprint_texels > semigloss.core_footprint_texels);
-        assert!(matte.tail_footprint_texels > semigloss.tail_footprint_texels);
-        assert!(matte_haze.tail_footprint_texels > matte.tail_footprint_texels);
-        assert!(matte_haze.tail_weight > matte.tail_weight);
-        assert!(matte.tail_footprint_texels > matte.core_footprint_texels);
-
-        let half_resolution = environment_reflection_lobes(2048, 0.46, 0.03);
-        assert!(
-            (half_resolution.core_footprint_texels / 2048.0
-                - matte_haze.core_footprint_texels / 4096.0)
-                .abs()
-                < 1.0e-7
-        );
-        assert!(
-            (half_resolution.tail_footprint_texels / 2048.0
-                - matte_haze.tail_footprint_texels / 4096.0)
-                .abs()
-                < 1.0e-7
-        );
-        assert_eq!(half_resolution.tail_weight, matte_haze.tail_weight);
     }
 
     #[test]
-    fn image_environment_roughness_preserves_uniform_incident_radiance() {
+    fn image_environment_ggx_reference_is_neutral_finite_and_deterministic() {
         let raster = EnvironmentRadianceRaster {
             width: 8,
             height: 4,
             rgba: vec![[4.0, 2.0, 0.5, 1.0]; 32],
         };
-        for (roughness, haze) in [(0.0, 0.0), (0.46, 0.03), (1.0, 1.0)] {
-            assert_eq!(
-                raster.sample_equirectangular([0.3, -0.2, 0.9], 37.0, roughness, haze, 1.0),
-                LinearRgb::new(4.0, 2.0, 0.5)
+        for roughness in [0.0, 0.46, 1.0] {
+            let first = raster.sample_equirectangular(
+                [0.3, -0.2, 0.9],
+                37.0,
+                roughness,
+                0.9,
+                1.5,
+                256,
+                [17, 29],
             );
+            let second = raster.sample_equirectangular(
+                [0.3, -0.2, 0.9],
+                37.0,
+                roughness,
+                0.9,
+                1.5,
+                256,
+                [17, 29],
+            );
+            assert_eq!(first, second);
+            assert!(first.r.is_finite() && first.r >= 0.0);
+            assert!((first.g / first.r - 0.5).abs() < 1.0e-6);
+            assert!((first.b / first.r - 0.125).abs() < 1.0e-6);
         }
     }
 
     #[test]
-    fn image_environment_oblique_incidence_broadens_the_incidence_plane_axis() {
-        let width = 64;
-        let height = 32;
-        let mut rgba = vec![[0.0, 0.0, 0.0, 1.0]; width * height];
-        let direction = [0.5_f32, 0.0, 0.866_025_4];
-        let u = direction[0].atan2(direction[2]) / core::f32::consts::TAU + 0.5;
-        let center_x = u * width as f32 - 0.5;
-        for y in 0..height {
-            for x in 0..width {
-                let distance = x as f32 - center_x;
-                let value = (-0.5 * distance * distance).exp();
-                rgba[y * width + x] = [value, value, value, 1.0];
-            }
+    fn visible_ggx_samples_are_upper_hemisphere_unit_normals() {
+        let outgoing = normalize3([-0.35, 0.1, 0.93]);
+        for index in 0..256 {
+            let normal = sample_visible_ggx(
+                outgoing,
+                0.65 * 0.65,
+                [(index as f32 + 0.5) / 256.0, radical_inverse_vdc(index)],
+            );
+            assert!(normal[2] >= 0.0);
+            assert!((dot3(normal, normal) - 1.0).abs() < 2.0e-6);
+            assert!(dot3(outgoing, normal) > 0.0);
         }
-        let raster = EnvironmentRadianceRaster {
-            width: width as u32,
-            height: height as u32,
-            rgba,
-        };
-        let normal =
-            raster.sample_equirectangular_diffusion(u, 0.5, direction, [0.0, 0.0, 1.0], 1.0, 3.0);
-        let oblique =
-            raster.sample_equirectangular_diffusion(u, 0.5, direction, [0.0, 0.0, 1.0], 0.25, 3.0);
-        assert!(oblique.r < normal.r);
-        assert_eq!(oblique.r, oblique.g);
-        assert_eq!(oblique.g, oblique.b);
     }
 
     #[test]
