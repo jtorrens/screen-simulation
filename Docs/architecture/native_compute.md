@@ -45,7 +45,13 @@ The complete physical-frame optical kernel evaluates 32 direct equal-weight pupi
 for every sensor-footprint and PSF sample. CPU and Metal rotate the same nested pupil pattern with
 the same deterministic per-pixel integer hash, retain identical ray order and preserve the separate
 per-channel focus and chromatic geometry before shutter and Sensor/CFA. This route deliberately
-keeps resolved panel phase, RGB fringe and defocus in the same thin-lens integration. Exact
+keeps resolved panel phase, RGB fringe and defocus in the same thin-lens integration.
+The one owned Metal source is specialized at backend creation by the resolved lens evaluator:
+Thin Lens and VFX 2D each own one fixed function-constant pipeline. The immutable execution plan
+selects that pipeline before dispatch; the parameter buffer carries no second evaluator selector.
+Specialization may remove unreachable aperture loops and branches but cannot change either
+evaluator's samples, ordering, inputs or output artifact.
+Exact
 rectangular source integration uses one `f32`
 horizontal prefix per source row. Fractional left and right texels remain explicit and only the
 integer interior span is obtained by prefix subtraction, so accumulation error is bounded by source

@@ -3,14 +3,13 @@ use core::mem::size_of;
 use std::time::Instant;
 
 use metal::{
-    ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLOrigin, MTLRegion,
-    MTLResourceOptions, MTLSize, MTLStorageMode, MTLTextureType, MTLTextureUsage, NSRange, Texture,
-    TextureDescriptor, TextureRef,
+    ComputePipelineState, DeviceRef, FunctionConstantValues, MTLCommandBufferStatus, MTLDataType,
+    MTLOrigin, MTLRegion, MTLResourceOptions, MTLSize, MTLStorageMode, MTLTextureType,
+    MTLTextureUsage, NSRange, Texture, TextureDescriptor, TextureRef,
 };
 use screen_application::{
     LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
-    expose_physical_pipeline_raw, physical_pipeline_aperture_sample_count,
-    physical_row_temporal_gain, placed_signal_area_fraction,
+    expose_physical_pipeline_raw, physical_row_temporal_gain, placed_signal_area_fraction,
 };
 use screen_cover::{EnvironmentPattern, IncidentEnvironment};
 use screen_geometry::{project_screen, projected_screen_gate_coverage};
@@ -126,7 +125,8 @@ struct CameraDevelopmentParams {
 
 pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
-    pipeline: ComputePipelineState,
+    thin_lens_pipeline: ComputePipelineState,
+    vfx_depth_blur_pipeline: ComputePipelineState,
     environment_prefilter_pipeline: ComputePipelineState,
     row_prefix_pipeline: ComputePipelineState,
     veiling_reduce_pipeline: ComputePipelineState,
@@ -186,12 +186,22 @@ impl MetalPhysicalPipeline {
         let library = device
             .new_library_with_data(SHADER_LIBRARY)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let function = library
-            .get_function("evaluate_physical_pipeline", None)
-            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let pipeline = device
-            .new_compute_pipeline_state_with_function(&function)
-            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let specialized_pipeline = |vfx_depth_blur: bool| {
+            let constants = FunctionConstantValues::new();
+            constants.set_constant_value_at_index(
+                (&raw const vfx_depth_blur).cast(),
+                MTLDataType::Bool,
+                0,
+            );
+            let function = library
+                .get_function("evaluate_physical_pipeline", Some(constants))
+                .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+            device
+                .new_compute_pipeline_state_with_function(&function)
+                .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))
+        };
+        let thin_lens_pipeline = specialized_pipeline(false)?;
+        let vfx_depth_blur_pipeline = specialized_pipeline(true)?;
         let environment_prefilter_function = library
             .get_function("prefilter_equirectangular_environment", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -242,7 +252,8 @@ impl MetalPhysicalPipeline {
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         Ok(Self {
             queue: device.new_command_queue(),
-            pipeline,
+            thin_lens_pipeline,
+            vfx_depth_blur_pipeline,
             environment_prefilter_pipeline,
             row_prefix_pipeline,
             veiling_reduce_pipeline,
@@ -1160,11 +1171,8 @@ impl MetalPhysicalPipeline {
             ],
             geometry: [
                 plan.panel.black_matrix_fraction,
-                physical_pipeline_aperture_sample_count(plan.quality) as f32,
-                match plan.lens_evaluation_model {
-                    LensEvaluationModel::ThinLens => 0.0,
-                    LensEvaluationModel::VfxDepthBlur => 1.0,
-                },
+                0.0,
+                0.0,
                 match plan.environment {
                     IncidentEnvironment::Procedural(_) => 0.0,
                     IncidentEnvironment::Equirectangular(_) => 1.0,
@@ -1456,6 +1464,10 @@ impl MetalPhysicalPipeline {
             ));
         }
         let tile_count = work_height.div_ceil(TILE_ROWS);
+        let physical_pipeline = match plan.lens_evaluation_model {
+            LensEvaluationModel::ThinLens => &self.thin_lens_pipeline,
+            LensEvaluationModel::VfxDepthBlur => &self.vfx_depth_blur_pipeline,
+        };
         for tile in 0..tile_count {
             if is_cancelled() {
                 return Err(MetalPhysicalPipelineError::Cancelled);
@@ -1465,7 +1477,7 @@ impl MetalPhysicalPipeline {
             params.output_tile[2] = origin_y;
             let command = self.queue.new_command_buffer();
             let encoder = command.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&self.pipeline);
+            encoder.set_compute_pipeline_state(physical_pipeline);
             encoder.set_texture(0, Some(source_acescg));
             encoder.set_texture(1, Some(device_signal));
             encoder.set_texture(2, Some(&output));
@@ -1479,9 +1491,9 @@ impl MetalPhysicalPipeline {
             );
             encoder.set_buffer(1, Some(&row_temporal_buffer), 0);
             encoder.set_buffer(2, Some(&veiling_gate_average), 0);
-            let thread_width = self.pipeline.thread_execution_width();
+            let thread_width = physical_pipeline.thread_execution_width();
             let thread_height =
-                (self.pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
+                (physical_pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
             encoder.dispatch_threads(
                 MTLSize::new(u64::from(sampling.effective_width), u64::from(height), 1),
                 MTLSize::new(thread_width, thread_height, 1),

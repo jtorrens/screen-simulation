@@ -6,7 +6,7 @@ struct PhysicalPipelineParams {
     uint4 output_tile;  // output width, output height, tile origin y, sample side
     uint4 semantics;    // placement, stripe layout, reserved, reserved
     float4 levels;      // gamma, black nits, white nits, temporal calibrated gain
-    float4 geometry;    // black matrix fraction, direct aperture sample count, lens evaluator, reserved
+    float4 geometry;    // black matrix fraction, reserved, reserved, environment source kind
     float4 strengths;   // screen, emission, subpixel geometry, temporal emission
     float4 matrix0;
     float4 matrix1;
@@ -42,6 +42,7 @@ struct PhysicalPipelineParams {
 };
 
 constant float PI = 3.14159265358979323846f;
+constant bool VFX_DEPTH_BLUR [[function_constant(0)]];
 
 struct EnvironmentPrefilterParams {
     uint axis;
@@ -930,11 +931,11 @@ kernel void evaluate_physical_pipeline(
         || (final_optical && p.strengths.z != 1.0f);
     const bool needs_spread = requested_stage == 4;
     const bool needs_glow = final_optical;
-    const bool needs_carrier = final_optical && p.geometry.z == 1.0f
+    const bool needs_carrier = final_optical && VFX_DEPTH_BLUR
         && p.strengths.z != 0.0f;
     const float2 prepared_placement_scale = placement_scale(p);
     const uint psf_samples_per_area = p.lens_softness.z == 0.0f ? 1 : 16 / (side * side);
-    const bool vfx_depth_blur = p.geometry.z == 1.0f;
+    const bool vfx_depth_blur = VFX_DEPTH_BLUR;
     const float sensor_pitch_mm = p.camera_right_sensor_width.w / float(p.output_tile.x);
     const float airy_radius_mm = 1.22f * 0.000550f * p.camera_limits.x;
     const float4 inverse_screen_quaternion = float4(
