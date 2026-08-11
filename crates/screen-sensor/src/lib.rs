@@ -323,14 +323,14 @@ pub fn expose_raw_with_noise_amount(
 }
 
 fn redistribute_sensor_charge(
-    input: &[f64],
+    input: Vec<f64>,
     width: u32,
     height: u32,
     full_well_electrons: f32,
     profile: SensorBloomProfile,
 ) -> Vec<f64> {
     if profile.character_strength == 0.0 {
-        return input.to_vec();
+        return input;
     }
     let coupling = f64::from(profile.crosstalk_fraction * profile.character_strength) / 4.0;
     let transfer = f64::from(profile.overflow_transfer_fraction * profile.character_strength);
@@ -377,9 +377,11 @@ fn redistribute_sensor_charge(
             overflow / f64::from(neighbour_count)
         }
     };
-    (0..coupled.len())
-        .into_par_iter()
-        .map(|index| {
+    let mut output = input;
+    output
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, output_charge)| {
             let x = index as u32 % width;
             let y = index as u32 / width;
             let mut charge = coupled[index].min(full_well);
@@ -396,9 +398,9 @@ fn redistribute_sensor_charge(
             if y + 1 < height {
                 charge += overflow_from(index + width as usize);
             }
-            charge
-        })
-        .collect()
+            *output_charge = charge;
+        });
+    output
 }
 
 pub fn expose_raw_region(
@@ -485,7 +487,7 @@ pub fn expose_raw_region_with_noise_amount(
         })
         .unzip();
     let collected = redistribute_sensor_charge(
-        &collected,
+        collected,
         u32::from(exposure_region.width),
         u32::from(exposure_region.height),
         profile.full_well_electrons,
@@ -1087,7 +1089,8 @@ mod tests {
                 .collect::<Vec<_>>();
             for profile in profiles {
                 let expected = serial_charge_reference(&input, width, height, 8_000.0, profile);
-                let actual = redistribute_sensor_charge(&input, width, height, 8_000.0, profile);
+                let actual =
+                    redistribute_sensor_charge(input.clone(), width, height, 8_000.0, profile);
                 assert_eq!(
                     actual
                         .iter()
