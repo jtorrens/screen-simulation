@@ -439,52 +439,51 @@ pub fn expose_raw_region_with_noise_amount(
     {
         return Err(SensorError::RasterProfileMismatch);
     }
-    let support_count = exposure.acescg_illuminance_seconds.len();
-    let mut collected = Vec::with_capacity(support_count);
-    let mut read = Vec::with_capacity(support_count);
-    for (local_index, acescg) in exposure
+    let support_width = usize::from(exposure_region.width);
+    let saturation = [
+        profile.saturation_illuminance_seconds.r,
+        profile.saturation_illuminance_seconds.g,
+        profile.saturation_illuminance_seconds.b,
+    ];
+    let (collected, read): (Vec<_>, Vec<_>) = exposure
         .acescg_illuminance_seconds
-        .iter()
+        .par_iter()
         .copied()
         .enumerate()
-    {
-        let local_x = local_index % usize::from(exposure_region.width);
-        let local_y = local_index / usize::from(exposure_region.width);
-        let x = u32::from(exposure_region.origin_x) + local_x as u32;
-        let y = u32::from(exposure_region.origin_y) + local_y as u32;
-        let channel = profile.bayer_pattern.channel_at(x, y);
-        let sensor_rgb = mat_vec(profile.acescg_to_sensor, acescg);
-        let native_exposure = [sensor_rgb.r, sensor_rgb.g, sensor_rgb.b][channel].max(0.0);
-        let saturation = [
-            profile.saturation_illuminance_seconds.r,
-            profile.saturation_illuminance_seconds.g,
-            profile.saturation_illuminance_seconds.b,
-        ][channel];
-        let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation)
-            * f64::from(profile.full_well_electrons);
-        let (photoelectrons, dark_electrons, read_electrons) = if noise_amount == 0.0 {
-            (ideal_photoelectrons, 0.0, 0.0)
-        } else {
-            let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
-            let key = pixel_noise_key(identity, global_index);
-            let sampled_photoelectrons = sample_poisson(ideal_photoelectrons, key);
-            (
-                ideal_photoelectrons
-                    + f64::from(noise_amount) * (sampled_photoelectrons - ideal_photoelectrons),
-                f64::from(noise_amount)
-                    * sample_poisson(
-                        f64::from(profile.dark_current_electrons_per_second)
-                            * f64::from(exposure.duration_seconds),
-                        key ^ 0xA076_1D64_78BD_642F,
-                    ),
-                f64::from(noise_amount)
-                    * f64::from(profile.read_noise_electrons_rms)
-                    * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB),
-            )
-        };
-        collected.push((photoelectrons + dark_electrons).max(0.0));
-        read.push(read_electrons);
-    }
+        .map(|(local_index, acescg)| {
+            let local_x = local_index % support_width;
+            let local_y = local_index / support_width;
+            let x = u32::from(exposure_region.origin_x) + local_x as u32;
+            let y = u32::from(exposure_region.origin_y) + local_y as u32;
+            let channel = profile.bayer_pattern.channel_at(x, y);
+            let row = profile.acescg_to_sensor[channel];
+            let native_exposure =
+                (row[0] * acescg.r + row[1] * acescg.g + row[2] * acescg.b).max(0.0);
+            let ideal_photoelectrons = f64::from(native_exposure) / f64::from(saturation[channel])
+                * f64::from(profile.full_well_electrons);
+            let (photoelectrons, dark_electrons, read_electrons) = if noise_amount == 0.0 {
+                (ideal_photoelectrons, 0.0, 0.0)
+            } else {
+                let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
+                let key = pixel_noise_key(identity, global_index);
+                let sampled_photoelectrons = sample_poisson(ideal_photoelectrons, key);
+                (
+                    ideal_photoelectrons
+                        + f64::from(noise_amount) * (sampled_photoelectrons - ideal_photoelectrons),
+                    f64::from(noise_amount)
+                        * sample_poisson(
+                            f64::from(profile.dark_current_electrons_per_second)
+                                * f64::from(exposure.duration_seconds),
+                            key ^ 0xA076_1D64_78BD_642F,
+                        ),
+                    f64::from(noise_amount)
+                        * f64::from(profile.read_noise_electrons_rms)
+                        * gaussian_approximation(key ^ 0xE703_7ED1_A0B4_28DB),
+                )
+            };
+            ((photoelectrons + dark_electrons).max(0.0), read_electrons)
+        })
+        .unzip();
     let collected = redistribute_sensor_charge(
         &collected,
         u32::from(exposure_region.width),
@@ -1023,11 +1022,6 @@ mod tests {
 
     #[test]
     fn parallel_region_exposure_is_thread_count_invariant() {
-        let profile = SensorProfile {
-            native_width: 64,
-            native_height: 48,
-            ..SensorProfile::REFERENCE
-        };
         let region = SensorRegion {
             origin_x: 7,
             origin_y: 5,
@@ -1049,16 +1043,29 @@ mod tests {
             noise_seed: 0x5A17,
             frame_index: 43,
         };
-        let expose_with_threads = |threads| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .unwrap()
-                .install(|| {
-                    expose_raw_region(profile, &exposure, identity, region, region).unwrap()
-                })
-        };
-        assert_eq!(expose_with_threads(1), expose_with_threads(4));
+        for bayer_pattern in [
+            BayerPattern::Rggb,
+            BayerPattern::Bggr,
+            BayerPattern::Grbg,
+            BayerPattern::Gbrg,
+        ] {
+            let profile = SensorProfile {
+                native_width: 64,
+                native_height: 48,
+                bayer_pattern,
+                ..SensorProfile::REFERENCE
+            };
+            let expose_with_threads = |threads| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap()
+                    .install(|| {
+                        expose_raw_region(profile, &exposure, identity, region, region).unwrap()
+                    })
+            };
+            assert_eq!(expose_with_threads(1), expose_with_threads(4));
+        }
     }
 
     #[test]
