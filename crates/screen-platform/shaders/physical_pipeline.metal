@@ -679,15 +679,18 @@ inline float periodic_coverage(float minimum, float maximum, float start, float 
         - periodic_integral(minimum, start, end);
 }
 
-inline float native_channel(
-    float code,
+inline float panel_linear_channel(float code, constant PhysicalPipelineParams& p) {
+    const float span = p.levels.z - p.levels.y;
+    return p.levels.y + span * sign(code) * pow(abs(code), p.levels.x);
+}
+
+inline float native_channel_from_linear(
+    float linear,
     uint channel,
     float2 device_minimum,
     float2 device_maximum,
     constant PhysicalPipelineParams& p
 ) {
-    const float span = p.levels.z - p.levels.y;
-    const float linear = p.levels.y + span * sign(code) * pow(abs(code), p.levels.x);
     const float margin = p.geometry.x * 0.5f;
     const float active = 1.0f - 2.0f * margin;
     const uint emitter = p.semantics.y == 0 ? channel : 2 - channel;
@@ -707,9 +710,19 @@ inline float native_channel(
     return linear * (covered_x * covered_y / area) * 3.0f / (active * active);
 }
 
+inline float native_channel(
+    float code,
+    uint channel,
+    float2 device_minimum,
+    float2 device_maximum,
+    constant PhysicalPipelineParams& p
+) {
+    return native_channel_from_linear(
+        panel_linear_channel(code, p), channel, device_minimum, device_maximum, p);
+}
+
 inline float continuous_channel(float code, constant PhysicalPipelineParams& p) {
-    const float span = p.levels.z - p.levels.y;
-    return p.levels.y + span * sign(code) * pow(abs(code), p.levels.x);
+    return panel_linear_channel(code, p);
 }
 
 inline float native_channel_at_offset(
@@ -740,24 +753,19 @@ inline float spread_native_channel(
     uint channel,
     float2 device_minimum,
     float2 device_maximum,
+    float base_native,
     constant PhysicalPipelineParams& p
 ) {
     const float strength = p.spread_core_radius.w;
     if (strength == 0.0f) {
-        return native_channel_at_offset(
-            device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-            float2(0.0f), p
-        );
+        return base_native;
     }
     const float core_weight = p.spread_core_weight[channel];
     const float tail_weight = p.spread_tail_weight[channel];
     const float2 inverse_panel = 1.0f / p.panel_size_meters.xy;
     const float core = p.spread_core_radius[channel] * strength * 1.0e-6f;
     const float tail = p.spread_tail_radius[channel] * strength * 0.7071067811865475f * 1.0e-6f;
-    float value = native_channel_at_offset(
-        device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-        float2(0.0f), p
-    ) * (1.0f - core_weight - tail_weight);
+    float value = base_native * (1.0f - core_weight - tail_weight);
     const float core_sample = core_weight * 0.25f;
     const float tail_sample = tail_weight * 0.25f;
     value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(core, 0.0f) * inverse_panel, p) * core_sample;
@@ -777,18 +785,21 @@ inline float cover_glow_native_channel(
     uint channel,
     float2 device_minimum,
     float2 device_maximum,
+    float base_native,
     constant PhysicalPipelineParams& p
 ) {
     const float scattered = p.cover_glow.z;
     if (scattered == 0.0f) {
         return spread_native_channel(
-            device_signal, device_row_prefix, channel, device_minimum, device_maximum, p);
+            device_signal, device_row_prefix, channel, device_minimum, device_maximum,
+            base_native, p);
     }
     const float2 inverse_panel = 1.0f / p.panel_size_meters.xy;
     const float2 core_extent = p.cover_glow.x * (0.001f / 3.0f) * inverse_panel;
     const float2 tail_extent = p.cover_glow.y * (0.001f / 3.0f) * inverse_panel;
     const float base = spread_native_channel(
-        device_signal, device_row_prefix, channel, device_minimum, device_maximum, p);
+        device_signal, device_row_prefix, channel, device_minimum, device_maximum,
+        base_native, p);
     const float core_blur = native_channel_at_offset(
         device_signal, device_row_prefix, channel,
         device_minimum - core_extent, device_maximum + core_extent, float2(0.0f), p);
@@ -1022,7 +1033,8 @@ kernel void evaluate_physical_pipeline(
                 const float optical_weight = mix(1.0f, angular, p.panel_angular_scene.w)
                     * layer_weight;
                 float4 code = 0.0f;
-                if (needs_average_code || needs_continuous || needs_physical || needs_carrier) {
+                if (needs_average_code || needs_continuous || needs_physical
+                    || needs_spread || needs_glow || needs_carrier) {
                     code = area_sample(
                         device_signal, device_row_prefix,
                         channel_minimum, channel_maximum, p);
@@ -1030,9 +1042,12 @@ kernel void evaluate_physical_pipeline(
                 if (needs_average_code) average_device_code[channel] += code[channel];
                 const float2 device_minimum = channel_minimum * float2(p.source_panel.zw);
                 const float2 device_maximum = channel_maximum * float2(p.source_panel.zw);
+                // Every Panel branch consumes the same central integral and EOTF.
+                // Only displaced spread/glow taps and the narrow carrier remain distinct.
+                const float base_linear = panel_linear_channel(code[channel], p);
+                const float base_native = native_channel_from_linear(
+                    base_linear, channel, device_minimum, device_maximum, p);
                 if (needs_carrier) {
-                    const float full_carrier = native_channel(
-                        code[channel], channel, device_minimum, device_maximum, p);
                     const float4 carrier_code = area_sample(
                         device_signal, device_row_prefix,
                         carrier_minimum, carrier_maximum, p);
@@ -1041,25 +1056,23 @@ kernel void evaluate_physical_pipeline(
                         carrier_minimum * float2(p.source_panel.zw),
                         carrier_maximum * float2(p.source_panel.zw), p);
                     carrier_detail_native[channel] +=
-                        (preserved_carrier - full_carrier) * optical_weight;
+                        (preserved_carrier - base_native) * optical_weight;
                 }
                 if (needs_physical) {
-                    native[channel] += native_channel(code[channel], channel, device_minimum,
-                        device_maximum, p) * optical_weight;
+                    native[channel] += base_native * optical_weight;
                 }
                 if (needs_spread) {
                     spread_native[channel] += spread_native_channel(
                         device_signal, device_row_prefix, channel,
-                        channel_minimum, channel_maximum, p) * optical_weight;
+                        channel_minimum, channel_maximum, base_native, p) * optical_weight;
                 }
                 if (needs_glow) {
                     glow_native[channel] += cover_glow_native_channel(
                         device_signal, device_row_prefix, channel,
-                        channel_minimum, channel_maximum, p) * optical_weight;
+                        channel_minimum, channel_maximum, base_native, p) * optical_weight;
                 }
                 if (needs_continuous) {
-                    continuous_native[channel] +=
-                        continuous_channel(code[channel], p) * optical_weight;
+                    continuous_native[channel] += base_linear * optical_weight;
                 }
             }
             const PhysicalRayHit green_hit = green_footprint.hit;
