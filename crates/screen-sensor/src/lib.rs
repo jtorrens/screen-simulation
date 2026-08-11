@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
+use rayon::prelude::*;
 use screen_contracts::LinearRgb;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,51 +334,71 @@ fn redistribute_sensor_charge(
     }
     let coupling = f64::from(profile.crosstalk_fraction * profile.character_strength) / 4.0;
     let transfer = f64::from(profile.overflow_transfer_fraction * profile.character_strength);
-    let mut coupled = input.to_vec();
-    // Pairwise exchange across each undirected edge conserves charge exactly
-    // apart from normal floating-point addition.
-    for y in 0..height {
-        for x in 0..width {
-            let index = (y * width + x) as usize;
+    // Each photosite gathers the same pairwise edge exchanges in their
+    // original row-major order: top, left, own-right, own-bottom. Independent
+    // destinations can therefore run in parallel without changing any sum.
+    let coupled = (0..input.len())
+        .into_par_iter()
+        .map(|index| {
+            let x = index as u32 % width;
+            let y = index as u32 / width;
+            let mut charge = input[index];
+            if y > 0 {
+                let other = index - width as usize;
+                charge += (input[other] - input[index]) * coupling;
+            }
+            if x > 0 {
+                let other = index - 1;
+                charge += (input[other] - input[index]) * coupling;
+            }
             if x + 1 < width {
-                let other = (y * width + x + 1) as usize;
-                let delta = (input[index] - input[other]) * coupling;
-                coupled[index] -= delta;
-                coupled[other] += delta;
+                let other = index + 1;
+                charge -= (input[index] - input[other]) * coupling;
             }
             if y + 1 < height {
-                let other = ((y + 1) * width + x) as usize;
-                let delta = (input[index] - input[other]) * coupling;
-                coupled[index] -= delta;
-                coupled[other] += delta;
+                let other = index + width as usize;
+                charge -= (input[index] - input[other]) * coupling;
             }
-        }
-    }
-    let full_well = f64::from(full_well_electrons);
-    let mut bloomed = coupled
-        .iter()
-        .map(|charge| charge.min(full_well))
+            charge
+        })
         .collect::<Vec<_>>();
-    for y in 0..height {
-        for x in 0..width {
-            let index = (y * width + x) as usize;
-            let overflow = (coupled[index] - full_well).max(0.0) * transfer;
-            if overflow == 0.0 {
-                continue;
-            }
-            let neighbours = [
-                x.checked_sub(1).map(|nx| (nx, y)),
-                (x + 1 < width).then_some((x + 1, y)),
-                y.checked_sub(1).map(|ny| (x, ny)),
-                (y + 1 < height).then_some((x, y + 1)),
-            ];
-            let count = neighbours.iter().flatten().count() as f64;
-            for (nx, ny) in neighbours.into_iter().flatten() {
-                bloomed[(ny * width + nx) as usize] += overflow / count;
-            }
+    let full_well = f64::from(full_well_electrons);
+    let overflow_from = |source: usize| {
+        let source_x = source as u32 % width;
+        let source_y = source as u32 / width;
+        let neighbour_count = u32::from(source_x > 0)
+            + u32::from(source_x + 1 < width)
+            + u32::from(source_y > 0)
+            + u32::from(source_y + 1 < height);
+        let overflow = (coupled[source] - full_well).max(0.0) * transfer;
+        if overflow == 0.0 || neighbour_count == 0 {
+            0.0
+        } else {
+            overflow / f64::from(neighbour_count)
         }
-    }
-    bloomed
+    };
+    (0..coupled.len())
+        .into_par_iter()
+        .map(|index| {
+            let x = index as u32 % width;
+            let y = index as u32 / width;
+            let mut charge = coupled[index].min(full_well);
+            // Incoming sources are gathered in their original row-major order.
+            if y > 0 {
+                charge += overflow_from(index - width as usize);
+            }
+            if x > 0 {
+                charge += overflow_from(index - 1);
+            }
+            if x + 1 < width {
+                charge += overflow_from(index + 1);
+            }
+            if y + 1 < height {
+                charge += overflow_from(index + width as usize);
+            }
+            charge
+        })
+        .collect()
 }
 
 pub fn expose_raw_region(
@@ -722,6 +743,63 @@ impl std::error::Error for SensorError {}
 mod tests {
     use super::*;
 
+    fn serial_charge_reference(
+        input: &[f64],
+        width: u32,
+        height: u32,
+        full_well_electrons: f32,
+        profile: SensorBloomProfile,
+    ) -> Vec<f64> {
+        if profile.character_strength == 0.0 {
+            return input.to_vec();
+        }
+        let coupling = f64::from(profile.crosstalk_fraction * profile.character_strength) / 4.0;
+        let transfer = f64::from(profile.overflow_transfer_fraction * profile.character_strength);
+        let mut coupled = input.to_vec();
+        for y in 0..height {
+            for x in 0..width {
+                let index = (y * width + x) as usize;
+                if x + 1 < width {
+                    let other = (y * width + x + 1) as usize;
+                    let delta = (input[index] - input[other]) * coupling;
+                    coupled[index] -= delta;
+                    coupled[other] += delta;
+                }
+                if y + 1 < height {
+                    let other = ((y + 1) * width + x) as usize;
+                    let delta = (input[index] - input[other]) * coupling;
+                    coupled[index] -= delta;
+                    coupled[other] += delta;
+                }
+            }
+        }
+        let full_well = f64::from(full_well_electrons);
+        let mut bloomed = coupled
+            .iter()
+            .map(|charge| charge.min(full_well))
+            .collect::<Vec<_>>();
+        for y in 0..height {
+            for x in 0..width {
+                let index = (y * width + x) as usize;
+                let overflow = (coupled[index] - full_well).max(0.0) * transfer;
+                if overflow == 0.0 {
+                    continue;
+                }
+                let neighbours = [
+                    x.checked_sub(1).map(|nx| (nx, y)),
+                    (x + 1 < width).then_some((x + 1, y)),
+                    y.checked_sub(1).map(|ny| (x, ny)),
+                    (y + 1 < height).then_some((x, y + 1)),
+                ];
+                let count = neighbours.iter().flatten().count() as f64;
+                for (nx, ny) in neighbours.into_iter().flatten() {
+                    bloomed[(ny * width + nx) as usize] += overflow / count;
+                }
+            }
+        }
+        bloomed
+    }
+
     fn noiseless_profile(native_width: u16, native_height: u16) -> SensorProfile {
         SensorProfile {
             native_width,
@@ -981,6 +1059,40 @@ mod tests {
                 })
         };
         assert_eq!(expose_with_threads(1), expose_with_threads(4));
+    }
+
+    #[test]
+    fn parallel_charge_gather_is_bit_exact_to_the_serial_sensor_model() {
+        let profiles = [
+            SensorBloomProfile::REFERENCE,
+            SensorBloomProfile {
+                character_strength: 2.0,
+                crosstalk_fraction: 0.02,
+                overflow_transfer_fraction: 0.30,
+            },
+        ];
+        for (width, height) in [(1, 1), (2, 3), (5, 4), (9, 7)] {
+            let input = (0..width * height)
+                .map(|index| {
+                    let level = [0.0, 2_500.25, 7_999.5, 8_000.0, 12_500.75][index as usize % 5];
+                    level + f64::from(index % 3) * 0.125
+                })
+                .collect::<Vec<_>>();
+            for profile in profiles {
+                let expected = serial_charge_reference(&input, width, height, 8_000.0, profile);
+                let actual = redistribute_sensor_charge(&input, width, height, 8_000.0, profile);
+                assert_eq!(
+                    actual
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>(),
+                    expected
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
     }
 
     #[test]
