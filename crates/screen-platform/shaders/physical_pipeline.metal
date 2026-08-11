@@ -98,6 +98,11 @@ struct PhysicalIdealPoint {
     bool valid;
 };
 
+struct PhysicalLensOrigin {
+    float3 world;
+    float3 screen_local;
+};
+
 struct PhysicalRayFootprint {
     PhysicalRayHit hit;
     float2 projected_sensor_half_extent;
@@ -208,9 +213,28 @@ inline PhysicalIdealPoint physical_invalid_ideal_point() {
     return result;
 }
 
+inline PhysicalLensOrigin physical_lens_origin(
+    float2 lens_sample,
+    float4 inverse_screen_quaternion,
+    constant PhysicalPipelineParams& p
+) {
+    const float aperture_radius = p.camera_position_focal.w * 0.001f
+        / (2.0f * p.camera_limits.x);
+    PhysicalLensOrigin result;
+    result.world = p.camera_position_focal.xyz
+        + p.camera_right_sensor_width.xyz * (lens_sample.x * aperture_radius)
+        + p.camera_up_sensor_height.xyz * (lens_sample.y * aperture_radius);
+    result.screen_local = physical_quaternion_rotate(
+        inverse_screen_quaternion,
+        result.world - p.screen_translation.xyz
+    );
+    return result;
+}
+
 inline PhysicalRayHit physical_trace_ray_from_ideal(
     float2 ideal,
-    float2 lens_sample,
+    PhysicalLensOrigin lens_origin,
+    float4 inverse_screen_quaternion,
     uint channel,
     constant PhysicalPipelineParams& p
 ) {
@@ -224,15 +248,9 @@ inline PhysicalRayHit physical_trace_ray_from_ideal(
     const float channel_focus = p.camera_forward_focus.w + p.lens_longitudinal[channel];
     const float3 focus_point = p.camera_position_focal.xyz
         + pinhole * (channel_focus / dot(pinhole, p.camera_forward_focus.xyz));
-    const float aperture_radius = p.camera_position_focal.w * 0.001f / (2.0f * p.camera_limits.x);
-    const float3 lens_origin = p.camera_position_focal.xyz
-        + p.camera_right_sensor_width.xyz * (lens_sample.x * aperture_radius)
-        + p.camera_up_sensor_height.xyz * (lens_sample.y * aperture_radius);
-    const float3 ray = normalize(focus_point - lens_origin);
-    const float4 inverse = float4(-p.screen_quaternion.xyz, p.screen_quaternion.w);
-    const float3 local_origin = physical_quaternion_rotate(inverse,
-        lens_origin - p.screen_translation.xyz);
-    const float3 local_ray = physical_quaternion_rotate(inverse, ray);
+    const float3 ray = normalize(focus_point - lens_origin.world);
+    const float3 local_origin = lens_origin.screen_local;
+    const float3 local_ray = physical_quaternion_rotate(inverse_screen_quaternion, ray);
     if (abs(local_ray.z) < 1.0e-8f) return miss;
     const float distance = -local_origin.z / local_ray.z;
     if (distance <= 0.0f) return miss;
@@ -273,7 +291,11 @@ inline PhysicalRayFootprint physical_ray_footprint(
     PhysicalIdealPoint sensor_negative_x,
     PhysicalIdealPoint sensor_positive_y,
     PhysicalIdealPoint sensor_negative_y,
-    float2 lens_sample,
+    PhysicalLensOrigin lens_origin,
+    PhysicalLensOrigin sensor_origin,
+    PhysicalLensOrigin rim_x_origin,
+    PhysicalLensOrigin rim_y_origin,
+    float4 inverse_screen_quaternion,
     uint channel,
     float2 half_extent,
     bool vfx_depth_blur,
@@ -281,23 +303,28 @@ inline PhysicalRayFootprint physical_ray_footprint(
 ) {
     PhysicalRayFootprint footprint;
     footprint.hit = center.valid
-        ? physical_trace_ray_from_ideal(center.point, lens_sample, channel, p)
+        ? physical_trace_ray_from_ideal(
+            center.point, lens_origin, inverse_screen_quaternion, channel, p)
         : physical_ray_miss();
     footprint.projected_sensor_half_extent = half_extent;
     footprint.continuous_half_extent = 0.0f;
     if (!vfx_depth_blur || !footprint.hit.valid) return footprint;
 
     const PhysicalRayHit positive_x = sensor_positive_x.valid
-        ? physical_trace_ray_from_ideal(sensor_positive_x.point, 0.0f, channel, p)
+        ? physical_trace_ray_from_ideal(
+            sensor_positive_x.point, sensor_origin, inverse_screen_quaternion, channel, p)
         : physical_ray_miss();
     const PhysicalRayHit negative_x = sensor_negative_x.valid
-        ? physical_trace_ray_from_ideal(sensor_negative_x.point, 0.0f, channel, p)
+        ? physical_trace_ray_from_ideal(
+            sensor_negative_x.point, sensor_origin, inverse_screen_quaternion, channel, p)
         : physical_ray_miss();
     const PhysicalRayHit positive_y = sensor_positive_y.valid
-        ? physical_trace_ray_from_ideal(sensor_positive_y.point, 0.0f, channel, p)
+        ? physical_trace_ray_from_ideal(
+            sensor_positive_y.point, sensor_origin, inverse_screen_quaternion, channel, p)
         : physical_ray_miss();
     const PhysicalRayHit negative_y = sensor_negative_y.valid
-        ? physical_trace_ray_from_ideal(sensor_negative_y.point, 0.0f, channel, p)
+        ? physical_trace_ray_from_ideal(
+            sensor_negative_y.point, sensor_origin, inverse_screen_quaternion, channel, p)
         : physical_ray_miss();
     const float2 sensor_px = positive_x.valid
         ? positive_x.uv - footprint.hit.uv : float2(0.0f);
@@ -315,9 +342,9 @@ inline PhysicalRayFootprint physical_ray_footprint(
     );
     constexpr float disk_to_box_variance_scale = 0.8660254f;
     const PhysicalRayHit rim_x = physical_trace_ray_from_ideal(
-        center.point, float2(1.0f, 0.0f), channel, p);
+        center.point, rim_x_origin, inverse_screen_quaternion, channel, p);
     const PhysicalRayHit rim_y = physical_trace_ray_from_ideal(
-        center.point, float2(0.0f, 1.0f), channel, p);
+        center.point, rim_y_origin, inverse_screen_quaternion, channel, p);
     const float2 x_uv = rim_x.valid ? rim_x.uv : footprint.hit.uv;
     const float2 y_uv = rim_y.valid ? rim_y.uv : footprint.hit.uv;
     const float2 x_axis = x_uv - footprint.hit.uv;
@@ -874,6 +901,17 @@ kernel void evaluate_physical_pipeline(
     const bool needs_carrier = final_optical && p.geometry.z == 1.0f
         && p.strengths.z != 0.0f;
     const uint psf_samples_per_area = p.lens_softness.z == 0.0f ? 1 : 16 / (side * side);
+    const bool vfx_depth_blur = p.geometry.z == 1.0f;
+    const float sensor_pitch_mm = p.camera_right_sensor_width.w / float(p.output_tile.x);
+    const float airy_radius_mm = 1.22f * 0.000550f * p.camera_limits.x;
+    const float4 inverse_screen_quaternion = float4(
+        -p.screen_quaternion.xyz, p.screen_quaternion.w);
+    const PhysicalLensOrigin sensor_origin = physical_lens_origin(
+        float2(0.0f), inverse_screen_quaternion, p);
+    const PhysicalLensOrigin rim_x_origin = physical_lens_origin(
+        float2(1.0f, 0.0f), inverse_screen_quaternion, p);
+    const PhysicalLensOrigin rim_y_origin = physical_lens_origin(
+        float2(0.0f, 1.0f), inverse_screen_quaternion, p);
     for (uint sy = 0; sy < side; ++sy) {
         for (uint sx = 0; sx < side; ++sx) {
             const float2 base_minimum_uv = (
@@ -886,9 +924,6 @@ kernel void evaluate_physical_pipeline(
             const float2 base_observed = base_center * 2.0f - 1.0f;
             const float field = clamp(dot(base_observed, base_observed) * 0.5f, 0.0f, 1.0f);
             const float softness_mm = mix(p.lens_softness.x, p.lens_softness.y, field) * 0.001f;
-            const float sensor_pitch_mm = p.camera_right_sensor_width.w / float(p.output_tile.x);
-            const float airy_radius_mm = 1.22f * 0.000550f * p.camera_limits.x;
-            const bool vfx_depth_blur = p.geometry.z == 1.0f;
             const float psf_radius_mm = vfx_depth_blur
                 ? length(float2(softness_mm, airy_radius_mm))
                 : softness_mm + airy_radius_mm;
@@ -923,6 +958,11 @@ kernel void evaluate_physical_pipeline(
             for (uint aperture = 0; aperture < aperture_sample_count; ++aperture) {
             const float2 lens_sample = vfx_depth_blur
                 ? float2(0.0f) : physical_aperture_sample(aperture, aperture_rotation);
+            PhysicalLensOrigin lens_origin = sensor_origin;
+            if (!vfx_depth_blur) {
+                lens_origin = physical_lens_origin(
+                    lens_sample, inverse_screen_quaternion, p);
+            }
             const float layer_weight = 1.0f;
             aperture_weight += layer_weight;
             const float3 sample_irradiance = center_ideal.valid
@@ -943,7 +983,11 @@ kernel void evaluate_physical_pipeline(
                     sensor_negative_x_ideal,
                     sensor_positive_y_ideal,
                     sensor_negative_y_ideal,
-                    lens_sample,
+                    lens_origin,
+                    sensor_origin,
+                    rim_x_origin,
+                    rim_y_origin,
+                    inverse_screen_quaternion,
                     channel,
                     half_extent,
                     vfx_depth_blur,
