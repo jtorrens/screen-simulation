@@ -70,6 +70,45 @@ enum FrameCheckPNG {
         return try insertingITXt(metadata, into: encoded as Data)
     }
 
+    static func encode(
+        rgba16: [UInt16], width: Int, height: Int,
+        colorSpace: CGColorSpace?, metadata: Data
+    ) throws -> Data {
+        guard rgba16.count == width * height * 4,
+              let provider = rgba16.withUnsafeBytes({
+                  CGDataProvider(data: Data($0) as CFData)
+              }),
+              let image = CGImage(
+                width: width, height: height, bitsPerComponent: 16, bitsPerPixel: 64,
+                bytesPerRow: width * 4 * MemoryLayout<UInt16>.size,
+                space: colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue)
+                    .union(.byteOrder16Little),
+                provider: provider, decode: nil, shouldInterpolate: false,
+                intent: .defaultIntent
+              )
+        else { throw NativeOutputError.invalidFrame }
+
+        let encoded = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            encoded, UTType.png.identifier as CFString, 1, nil
+        ) else { throw NativeOutputError.invalidFrame }
+        let properties: [CFString: Any] = [
+            kCGImagePropertyPNGDictionary: [
+                kCGImagePropertyPNGDescription: "SCREEN Simulation 16-bit diagnostic",
+            ],
+            kCGImagePropertyTIFFDictionary: [
+                kCGImagePropertyTIFFSoftware: "SCREEN Simulation",
+                kCGImagePropertyTIFFDateTime: ISO8601DateFormatter().string(from: Date()),
+            ],
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            throw NativeOutputError.invalidFrame
+        }
+        return try insertingITXt(metadata, into: encoded as Data)
+    }
+
     static func metadata(in png: Data) -> Data? {
         internationalText(in: png, keyword: metadataKeyword)
     }

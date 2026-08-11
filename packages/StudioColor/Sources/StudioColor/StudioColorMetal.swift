@@ -317,6 +317,45 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         return bytes
     }
 
+    /// Applies the selected display transform into a 16-bit integer RGBA
+    /// raster so diagnostic gradients are not reduced to 8 bits before PNG
+    /// encoding.
+    public func renderRGBA16(
+        _ frame: StudioColorMetalFrame,
+        output: StudioColorOutputTransform
+    ) throws -> [UInt16] {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Unorm,
+            width: frame.width,
+            height: frame.height,
+            mipmapped: false
+        )
+        descriptor.usage = [.renderTarget]
+        descriptor.storageMode = .shared
+        guard let target = device.makeTexture(descriptor: descriptor),
+              let command = queue.makeCommandBuffer()
+        else { throw StudioColorMetalError.textureCreation }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        try encode(
+            input: frame.texture, output: target, pass: pass,
+            transform: output, command: command, fitInputAspect: false
+        )
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
+        var words = [UInt16](repeating: 0, count: frame.width * frame.height * 4)
+        words.withUnsafeMutableBytes {
+            target.getBytes(
+                $0.baseAddress!, bytesPerRow: frame.width * 4 * MemoryLayout<UInt16>.size,
+                from: MTLRegionMake2D(0, 0, frame.width, frame.height), mipmapLevel: 0
+            )
+        }
+        return words
+    }
+
     /// Encodes the selected ODT directly into an IOSurface-backed writer buffer.
     public func render(
         _ frame: StudioColorMetalFrame,

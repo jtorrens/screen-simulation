@@ -55,11 +55,11 @@ post-sensor path.
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and
-colorimetry, cover, its physical-radius core/tail glow approximation and exactly one rotated analytic or mipmapped equirectangular HDR environment, whose rough-surface response is a normalized peaked-core/broad-tail approximation with resolution-independent microfacet/haze angular footprints, globally selected 16–512 aperture sample count, and either the
+colorimetry, cover, its physical-radius core/tail glow approximation and exactly one rotated analytic or angular-diffusion-prefiltered equirectangular HDR environment, whose rough-surface response is a normalized defined-core/broad-scatter approximation with resolution-independent roughness/haze angular footprints, globally selected 16–512 aperture sample count, and either the
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
-represent panel temporal modulation. The macOS adapter executes Brown-Conrady inversion, aperture
+represent panel temporal modulation. The macOS adapter inverts each distinct Brown-Conrady observed coordinate once and reuses that immutable unscaled ideal coordinate across RGB channels, aperture rays, irradiance and the VFX sensor footprint; channel-specific lateral chromatic scaling remains on a private copy. It then executes aperture
 and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
-Fresnel/transmission/reflection, centered cover-glow area filtering, spherical analytic or equirectangular-HDR sampling and native-to-ACEScg conversion in one Metal kernel. Physical
+Fresnel/transmission/reflection, centered cover-glow area filtering, spherical analytic or equirectangular-HDR sampling and native-to-ACEScg conversion in one Metal kernel. The Metal execution plan prepares HDR rotation, core/tail pyramid levels and normalized tail weight once because they are invariant across the complete frame. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
 Lens veiling glare uses deterministic panel-emission reduction before tiled optical evaluation.

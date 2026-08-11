@@ -44,11 +44,64 @@ struct PhysicalPipelineParams {
 constant float PI = 3.14159265358979323846f;
 constant float GOLDEN_ANGLE = 2.3999631f;
 
+struct EnvironmentPrefilterParams {
+    uint axis;
+    float step_scale;
+    uint source_width;
+    uint source_height;
+};
+
+kernel void prefilter_equirectangular_environment(
+    texture2d<float, access::sample> source [[texture(0)]],
+    texture2d<float, access::write> destination [[texture(1)]],
+    constant EnvironmentPrefilterParams& params [[buffer(0)]],
+    uint2 position [[thread_position_in_grid]]) {
+    if (position.x >= destination.get_width() || position.y >= destination.get_height()) return;
+    constexpr sampler environment_sampler(
+        coord::normalized, s_address::repeat, t_address::clamp_to_edge,
+        filter::linear, mip_filter::linear
+    );
+    const float2 center_uv = (float2(position) + 0.5f)
+        / float2(destination.get_width(), destination.get_height());
+    const float latitude = (0.5f - center_uv.y) * PI;
+    const float latitude_scale = max(abs(cos(latitude)),
+                                     1.0f / float(params.source_height));
+    constexpr float weights[9] = {
+        1.0f / 256.0f, 8.0f / 256.0f, 28.0f / 256.0f, 56.0f / 256.0f,
+        70.0f / 256.0f,
+        56.0f / 256.0f, 28.0f / 256.0f, 8.0f / 256.0f, 1.0f / 256.0f
+    };
+    float3 radiance = float3(0.0f);
+    for (int tap = -4; tap <= 4; ++tap) {
+        float2 offset = float2(0.0f);
+        if (params.axis == 0u) {
+            offset.x = float(tap) * params.step_scale
+                / (float(params.source_width) * latitude_scale);
+        } else {
+            offset.y = float(tap) * params.step_scale / float(params.source_height);
+        }
+        radiance += source.sample(environment_sampler, center_uv + offset, level(0.0f)).rgb
+            * weights[tap + 4];
+    }
+    destination.write(float4(radiance, 1.0f), position);
+}
+
 struct PhysicalRayHit {
     float2 uv;
     float cosine;
     float3 reflection_direction;
     bool valid;
+};
+
+struct PhysicalIdealPoint {
+    float2 point;
+    bool valid;
+};
+
+struct PhysicalRayFootprint {
+    PhysicalRayHit hit;
+    float2 projected_sensor_half_extent;
+    float2 continuous_half_extent;
 };
 
 inline float3 physical_quaternion_rotate(float4 quaternion, float3 value) {
@@ -128,13 +181,40 @@ inline float2 physical_psf_disk_sample(uint index) {
     return radius * float2(cos(angle), sin(angle));
 }
 
-inline PhysicalRayHit physical_trace_ray(float2 observed, float2 lens_sample, uint channel,
-                                         constant PhysicalPipelineParams& p) {
+inline PhysicalRayHit physical_ray_miss() {
     PhysicalRayHit miss;
     miss.uv = 0.0f; miss.cosine = 0.0f; miss.reflection_direction = 0.0f; miss.valid = false;
-    float2 ideal;
-    if (!physical_inverse_distortion(float2(observed.x + 2.0f * p.lens_shift_radial01.x,
-        -observed.y - 2.0f * p.lens_shift_radial01.y), p, ideal)) return miss;
+    return miss;
+}
+
+inline PhysicalIdealPoint physical_ideal_point(
+    float2 observed,
+    constant PhysicalPipelineParams& p
+) {
+    PhysicalIdealPoint result;
+    result.valid = physical_inverse_distortion(
+        float2(observed.x + 2.0f * p.lens_shift_radial01.x,
+            -observed.y - 2.0f * p.lens_shift_radial01.y),
+        p,
+        result.point
+    );
+    return result;
+}
+
+inline PhysicalIdealPoint physical_invalid_ideal_point() {
+    PhysicalIdealPoint result;
+    result.point = 0.0f;
+    result.valid = false;
+    return result;
+}
+
+inline PhysicalRayHit physical_trace_ray_from_ideal(
+    float2 ideal,
+    float2 lens_sample,
+    uint channel,
+    constant PhysicalPipelineParams& p
+) {
+    PhysicalRayHit miss = physical_ray_miss();
     ideal *= p.lens_lateral[channel];
     const float3 pinhole = normalize(p.camera_forward_focus.xyz
         + p.camera_right_sensor_width.xyz * (ideal.x * p.camera_right_sensor_width.w
@@ -170,11 +250,11 @@ inline PhysicalRayHit physical_trace_ray(float2 observed, float2 lens_sample, ui
     return hit;
 }
 
-inline float physical_irradiance_weight(float2 observed, uint channel,
-                                        constant PhysicalPipelineParams& p) {
-    float2 ideal;
-    if (!physical_inverse_distortion(float2(observed.x + 2.0f * p.lens_shift_radial01.x,
-        -observed.y - 2.0f * p.lens_shift_radial01.y), p, ideal)) return 0.0f;
+inline float physical_irradiance_weight_from_ideal(
+    float2 ideal,
+    uint channel,
+    constant PhysicalPipelineParams& p
+) {
     const float scale = p.lens_lateral[channel];
     const float tangent_x = ideal.x * scale * p.camera_right_sensor_width.w
         / (2.0f * p.camera_position_focal.w);
@@ -185,6 +265,66 @@ inline float physical_irradiance_weight(float2 observed, uint channel,
     const float vignette = 1.0f + (natural - 1.0f) * p.lens_transmission_vignette.w;
     return (PI * 0.25f) / (p.camera_limits.x * p.camera_limits.x)
         * vignette * p.lens_transmission_vignette[channel];
+}
+
+inline PhysicalRayFootprint physical_ray_footprint(
+    PhysicalIdealPoint center,
+    PhysicalIdealPoint sensor_positive_x,
+    PhysicalIdealPoint sensor_negative_x,
+    PhysicalIdealPoint sensor_positive_y,
+    PhysicalIdealPoint sensor_negative_y,
+    float2 lens_sample,
+    uint channel,
+    float2 half_extent,
+    bool vfx_depth_blur,
+    constant PhysicalPipelineParams& p
+) {
+    PhysicalRayFootprint footprint;
+    footprint.hit = center.valid
+        ? physical_trace_ray_from_ideal(center.point, lens_sample, channel, p)
+        : physical_ray_miss();
+    footprint.projected_sensor_half_extent = half_extent;
+    footprint.continuous_half_extent = 0.0f;
+    if (!vfx_depth_blur || !footprint.hit.valid) return footprint;
+
+    const PhysicalRayHit positive_x = sensor_positive_x.valid
+        ? physical_trace_ray_from_ideal(sensor_positive_x.point, 0.0f, channel, p)
+        : physical_ray_miss();
+    const PhysicalRayHit negative_x = sensor_negative_x.valid
+        ? physical_trace_ray_from_ideal(sensor_negative_x.point, 0.0f, channel, p)
+        : physical_ray_miss();
+    const PhysicalRayHit positive_y = sensor_positive_y.valid
+        ? physical_trace_ray_from_ideal(sensor_positive_y.point, 0.0f, channel, p)
+        : physical_ray_miss();
+    const PhysicalRayHit negative_y = sensor_negative_y.valid
+        ? physical_trace_ray_from_ideal(sensor_negative_y.point, 0.0f, channel, p)
+        : physical_ray_miss();
+    const float2 sensor_px = positive_x.valid
+        ? positive_x.uv - footprint.hit.uv : float2(0.0f);
+    const float2 sensor_nx = negative_x.valid
+        ? negative_x.uv - footprint.hit.uv : float2(0.0f);
+    const float2 sensor_py = positive_y.valid
+        ? positive_y.uv - footprint.hit.uv : float2(0.0f);
+    const float2 sensor_ny = negative_y.valid
+        ? negative_y.uv - footprint.hit.uv : float2(0.0f);
+    footprint.projected_sensor_half_extent = float2(
+        max(abs(sensor_px.x), abs(sensor_nx.x))
+            + max(abs(sensor_py.x), abs(sensor_ny.x)),
+        max(abs(sensor_px.y), abs(sensor_nx.y))
+            + max(abs(sensor_py.y), abs(sensor_ny.y))
+    );
+    constexpr float disk_to_box_variance_scale = 0.8660254f;
+    const PhysicalRayHit rim_x = physical_trace_ray_from_ideal(
+        center.point, float2(1.0f, 0.0f), channel, p);
+    const PhysicalRayHit rim_y = physical_trace_ray_from_ideal(
+        center.point, float2(0.0f, 1.0f), channel, p);
+    const float2 x_uv = rim_x.valid ? rim_x.uv : footprint.hit.uv;
+    const float2 y_uv = rim_y.valid ? rim_y.uv : footprint.hit.uv;
+    const float2 x_axis = x_uv - footprint.hit.uv;
+    const float2 y_axis = y_uv - footprint.hit.uv;
+    footprint.continuous_half_extent = sqrt(x_axis * x_axis + y_axis * y_axis)
+        * disk_to_box_variance_scale * p.panel_angular_scene.w;
+    return footprint;
 }
 
 inline float cover_interface(float cosine_i, constant PhysicalPipelineParams& p) {
@@ -214,64 +354,105 @@ inline float flat_environment_circle(float3 direction, float3 center,
     return smoothstep(edge - softness, edge + softness, alignment);
 }
 
+inline float2 physical_environment_uv(float3 direction) {
+    direction = normalize(direction);
+    return float2(
+        fract(atan2(direction.x, direction.z) / (2.0f * PI) + 0.5f),
+        clamp(0.5f - asin(clamp(direction.y, -1.0f, 1.0f)) / PI, 0.0f, 1.0f)
+    );
+}
+
+inline float3 physical_environment_linear(
+    texture2d<float, access::sample> environment,
+    float2 uv,
+    float mip_level
+) {
+    constexpr sampler environment_sampler(
+        coord::normalized, s_address::repeat, t_address::clamp_to_edge,
+        filter::linear, mip_filter::linear
+    );
+    return environment.sample(environment_sampler, uv, level(mip_level)).rgb;
+}
+
+inline float3 physical_environment_lobe(
+    texture2d<float, access::sample> environment,
+    float2 uv,
+    float2 anisotropy_axis,
+    float extra_sigma_texels,
+    float anisotropy_onset,
+    float mip_level
+) {
+    const float3 center = physical_environment_linear(environment, uv, mip_level);
+    // Sub-quarter-texel anisotropy cannot change the represented coarse
+    // lobe materially. Avoid four additional samples until the stretch has
+    // resolvable support in this level. Its smooth onset prevents a contour.
+    if (anisotropy_onset <= 0.0f) return center;
+    const float2 size = max(
+        float2(environment.get_width(), environment.get_height()) / exp2(mip_level),
+        float2(1.0f)
+    );
+    const float2 offset_uv = anisotropy_axis / size * extra_sigma_texels;
+    constexpr sampler environment_sampler(
+        coord::normalized, s_address::repeat, t_address::clamp_to_edge,
+        filter::linear, mip_filter::linear
+    );
+    const float3 negative = environment.sample(
+        environment_sampler, uv - offset_uv, level(mip_level)).rgb;
+    const float3 positive = environment.sample(
+        environment_sampler, uv + offset_uv, level(mip_level)).rgb;
+    const float3 stretched = center * 0.5f + (negative + positive) * 0.25f;
+    return mix(center, stretched, anisotropy_onset);
+}
+
 inline float3 flat_environment_radiance(float3 reflection_direction_local,
     texture2d<float, access::sample> environment_acescg,
+    float view_cosine,
     constant PhysicalPipelineParams& p) {
     float3 direction = normalize(reflection_direction_local);
-    const float sine = sin(p.environment_direction_rotation.w);
-    const float cosine = cos(p.environment_direction_rotation.w);
+    const float sine = p.geometry.w == 1.0f
+        ? p.environment_direction_rotation.x
+        : sin(p.environment_direction_rotation.w);
+    const float cosine = p.geometry.w == 1.0f
+        ? p.environment_direction_rotation.y
+        : cos(p.environment_direction_rotation.w);
     direction = float3(direction.x * cosine + direction.z * sine, direction.y,
         -direction.x * sine + direction.z * cosine);
     if (p.geometry.w == 1.0f) {
-        constexpr sampler environment_sampler(
-            coord::normalized,
-            s_address::repeat,
-            t_address::clamp_to_edge,
-            filter::linear,
-            mip_filter::linear
-        );
-        const float2 uv = float2(
-            fract(atan2(direction.x, direction.z) / (2.0f * PI) + 0.5f),
-            clamp(0.5f - asin(clamp(direction.y, -1.0f, 1.0f)) / PI, 0.0f, 1.0f)
-        );
-        const float perceptual_roughness = p.cover_absorption_roughness.w;
-        const float microfacet_slope = perceptual_roughness * perceptual_roughness;
-        // An ordinary box-filtered mip cannot reproduce the narrow peak and
-        // long tail of a microfacet distribution. Approximate that profile
-        // with two normalized lobes: a perceptually spaced core and the full
-        // microfacet/haze angular support. Their weights sum to one, so a
-        // constant incident field keeps exactly the same radiance.
-        const float minimum_core_radius = 0.05f * PI / 180.0f;
-        const float core_radius = minimum_core_radius * (
-            exp(log(1.0f + (PI * 0.5f) / minimum_core_radius) * microfacet_slope) - 1.0f
-        );
-        const float core_footprint_texels = max(
-            1.0f,
-            float(environment_acescg.get_width()) * core_radius / PI
-        );
-        const float core_mip_level = clamp(
-            log2(core_footprint_texels),
-            0.0f,
-            float(max(environment_acescg.get_num_mip_levels(), 1u) - 1u)
-        );
-        const float microfacet_radius = atan(microfacet_slope);
-        const float haze_radius = p.cover_haze.x * (PI * 0.5f);
-        const float tail_radius = clamp(microfacet_radius + haze_radius, 0.0f, PI * 0.5f);
-        const float tail_footprint_texels = max(
-            1.0f,
-            float(environment_acescg.get_width()) * tail_radius / PI
-        );
-        const float tail_mip_level = clamp(
-            log2(tail_footprint_texels),
-            0.0f,
-            float(max(environment_acescg.get_num_mip_levels(), 1u) - 1u)
-        );
-        const float tail_weight = 1.0f
-            - (1.0f - microfacet_slope) * (1.0f - p.cover_haze.x);
-        const float3 core = environment_acescg.sample(
-            environment_sampler, uv, level(core_mip_level)).rgb;
-        const float3 tail = environment_acescg.sample(
-            environment_sampler, uv, level(tail_mip_level)).rgb;
+        const float2 uv = physical_environment_uv(direction);
+        // The plan prepares these material/texture invariants once: core mip,
+        // tail mip and normalized tail weight.
+        const float core_mip_level = p.environment_key_radius.x;
+        const float tail_mip_level = p.environment_key_radius.y;
+        const float tail_weight = p.environment_key_radius.z;
+        const float3 surface_normal = normalize(float3(sine, 0.0f, cosine));
+        const float stretch = clamp(1.0f / max(view_cosine, 0.25f), 1.0f, 4.0f);
+        const float extra_sigma_texels = 1.15f
+            * sqrt(max(stretch * stretch - 1.0f, 0.0f));
+        const float anisotropy_onset = smoothstep(0.25f, 0.75f, extra_sigma_texels);
+        float2 anisotropy_axis = float2(0.0f);
+        const float3 tangent = surface_normal - dot(surface_normal, direction) * direction;
+        const float tangent_length = length(tangent);
+        if (anisotropy_onset > 0.0f && tangent_length >= 1.0e-6f) {
+            const float2 next_uv = physical_environment_uv(
+                normalize(direction + tangent / tangent_length * 1.0e-3f)
+            );
+            float2 delta_uv = next_uv - uv;
+            delta_uv.x -= round(delta_uv.x);
+            const float2 metric = delta_uv * float2(
+                environment_acescg.get_width(), environment_acescg.get_height());
+            const float metric_length = length(metric);
+            if (metric_length >= 1.0e-6f) {
+                anisotropy_axis = metric / metric_length;
+            }
+        }
+        const float represented_onset = length(anisotropy_axis) > 0.0f
+            ? anisotropy_onset : 0.0f;
+        const float3 core = physical_environment_lobe(
+            environment_acescg, uv, anisotropy_axis, extra_sigma_texels,
+            represented_onset, core_mip_level);
+        const float3 tail = physical_environment_lobe(
+            environment_acescg, uv, anisotropy_axis, extra_sigma_texels,
+            represented_onset, tail_mip_level);
         return mix(core, tail, tail_weight)
             * p.environment_ambient_strength.x * p.environment_ambient_strength.w;
     }
@@ -352,7 +533,8 @@ inline float3 apply_flat_cover(float3 emitted, float view_cosine,
     const float3 transmission = (1.0f - reflection)
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
     return emitted * transmission
-        + flat_environment_radiance(reflection_direction_local, environment_acescg, p) * reflection
+        + flat_environment_radiance(
+            reflection_direction_local, environment_acescg, cosine_i, p) * reflection
             * lens_irradiance_weight / p.levels.z;
 }
 
@@ -632,12 +814,16 @@ kernel void finalize_physical_veiling_source(
         pow(clamp(facing, 0.0f, 1.0f), p.panel_angular_scene.y),
         pow(clamp(facing, 0.0f, 1.0f), p.panel_angular_scene.z)
     );
-    const float3 weighted_native = mean_native * angular
-        * float3(
-            physical_irradiance_weight(0.0f, 0, p),
-            physical_irradiance_weight(0.0f, 1, p),
-            physical_irradiance_weight(0.0f, 2, p)
+    const PhysicalIdealPoint gate_center = physical_ideal_point(0.0f, p);
+    const float3 irradiance = gate_center.valid
+        ? float3(
+            physical_irradiance_weight_from_ideal(gate_center.point, 0, p),
+            physical_irradiance_weight_from_ideal(gate_center.point, 1, p),
+            physical_irradiance_weight_from_ideal(gate_center.point, 2, p)
         )
+        : float3(0.0f);
+    const float3 weighted_native = mean_native * angular
+        * irradiance
         * flat_cover_transmission(facing, p) * p.lens_veiling_glare.y;
     const float3 acescg = float3(
         dot(p.matrix0.xyz, weighted_native),
@@ -716,6 +902,22 @@ kernel void evaluate_physical_pipeline(
             const float2 flat_center = base_center + psf_offset;
             const float2 observed = flat_center * 2.0f - 1.0f;
             const float2 half_extent = (maximum_uv - minimum_uv) * 0.5f;
+            const PhysicalIdealPoint center_ideal = physical_ideal_point(observed, p);
+            PhysicalIdealPoint sensor_positive_x_ideal = physical_invalid_ideal_point();
+            PhysicalIdealPoint sensor_negative_x_ideal = physical_invalid_ideal_point();
+            PhysicalIdealPoint sensor_positive_y_ideal = physical_invalid_ideal_point();
+            PhysicalIdealPoint sensor_negative_y_ideal = physical_invalid_ideal_point();
+            if (vfx_depth_blur) {
+                const float2 sensor_ndc_half_extent = half_extent * 2.0f;
+                sensor_positive_x_ideal = physical_ideal_point(
+                    observed + float2(sensor_ndc_half_extent.x, 0.0f), p);
+                sensor_negative_x_ideal = physical_ideal_point(
+                    observed - float2(sensor_ndc_half_extent.x, 0.0f), p);
+                sensor_positive_y_ideal = physical_ideal_point(
+                    observed + float2(0.0f, sensor_ndc_half_extent.y), p);
+                sensor_negative_y_ideal = physical_ideal_point(
+                    observed - float2(0.0f, sensor_ndc_half_extent.y), p);
+            }
             const uint aperture_sample_count = vfx_depth_blur ? 1 : 32;
             const float aperture_rotation = 0.0f;
             for (uint aperture = 0; aperture < aperture_sample_count; ++aperture) {
@@ -723,52 +925,35 @@ kernel void evaluate_physical_pipeline(
                 ? float2(0.0f) : physical_aperture_sample(aperture, aperture_rotation);
             const float layer_weight = 1.0f;
             aperture_weight += layer_weight;
+            const float3 sample_irradiance = center_ideal.valid
+                ? float3(
+                    physical_irradiance_weight_from_ideal(center_ideal.point, 0, p),
+                    physical_irradiance_weight_from_ideal(center_ideal.point, 1, p),
+                    physical_irradiance_weight_from_ideal(center_ideal.point, 2, p)
+                )
+                : float3(0.0f);
+            PhysicalRayFootprint green_footprint;
+            green_footprint.hit = physical_ray_miss();
+            green_footprint.projected_sensor_half_extent = half_extent;
+            green_footprint.continuous_half_extent = 0.0f;
             for (uint channel = 0; channel < 3; ++channel) {
-                const PhysicalRayHit hit = physical_trace_ray(
-                    observed, lens_sample, channel, p);
-                float2 continuous_half_extent = 0.0f;
-                float2 projected_sensor_half_extent = half_extent;
-                if (vfx_depth_blur && hit.valid) {
-                    const float2 sensor_ndc_half_extent = half_extent * 2.0f;
-                    const PhysicalRayHit sensor_positive_x = physical_trace_ray(
-                        observed + float2(sensor_ndc_half_extent.x, 0.0f),
-                        float2(0.0f), channel, p);
-                    const PhysicalRayHit sensor_negative_x = physical_trace_ray(
-                        observed - float2(sensor_ndc_half_extent.x, 0.0f),
-                        float2(0.0f), channel, p);
-                    const PhysicalRayHit sensor_positive_y = physical_trace_ray(
-                        observed + float2(0.0f, sensor_ndc_half_extent.y),
-                        float2(0.0f), channel, p);
-                    const PhysicalRayHit sensor_negative_y = physical_trace_ray(
-                        observed - float2(0.0f, sensor_ndc_half_extent.y),
-                        float2(0.0f), channel, p);
-                    const float2 sensor_px = sensor_positive_x.valid
-                        ? sensor_positive_x.uv - hit.uv : float2(0.0f);
-                    const float2 sensor_nx = sensor_negative_x.valid
-                        ? sensor_negative_x.uv - hit.uv : float2(0.0f);
-                    const float2 sensor_py = sensor_positive_y.valid
-                        ? sensor_positive_y.uv - hit.uv : float2(0.0f);
-                    const float2 sensor_ny = sensor_negative_y.valid
-                        ? sensor_negative_y.uv - hit.uv : float2(0.0f);
-                    projected_sensor_half_extent = float2(
-                        max(abs(sensor_px.x), abs(sensor_nx.x))
-                            + max(abs(sensor_py.x), abs(sensor_ny.x)),
-                        max(abs(sensor_px.y), abs(sensor_nx.y))
-                            + max(abs(sensor_py.y), abs(sensor_ny.y))
-                    );
-                    constexpr float disk_to_box_variance_scale = 0.8660254f;
-                    const PhysicalRayHit rim_x = physical_trace_ray(
-                        observed, float2(1.0f, 0.0f), channel, p);
-                    const PhysicalRayHit rim_y = physical_trace_ray(
-                        observed, float2(0.0f, 1.0f), channel, p);
-                    const float2 x_uv = rim_x.valid ? rim_x.uv : hit.uv;
-                    const float2 y_uv = rim_y.valid ? rim_y.uv : hit.uv;
-                    const float2 x_axis = x_uv - hit.uv;
-                    const float2 y_axis = y_uv - hit.uv;
-                    continuous_half_extent = sqrt(
-                        x_axis * x_axis + y_axis * y_axis
-                    ) * disk_to_box_variance_scale * p.panel_angular_scene.w;
-                }
+                const PhysicalRayFootprint footprint = physical_ray_footprint(
+                    center_ideal,
+                    sensor_positive_x_ideal,
+                    sensor_negative_x_ideal,
+                    sensor_positive_y_ideal,
+                    sensor_negative_y_ideal,
+                    lens_sample,
+                    channel,
+                    half_extent,
+                    vfx_depth_blur,
+                    p
+                );
+                if (channel == 1) green_footprint = footprint;
+                const PhysicalRayHit hit = footprint.hit;
+                const float2 continuous_half_extent = footprint.continuous_half_extent;
+                const float2 projected_sensor_half_extent =
+                    footprint.projected_sensor_half_extent;
                 const float2 target = hit.valid ? hit.uv : float2(-2.0f);
                 const float2 center = mix(flat_center, target, p.panel_angular_scene.w);
                 const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
@@ -788,7 +973,7 @@ kernel void evaluate_physical_pipeline(
                     ? maximum_uv : center + carrier_half_extent;
                 const float angular = hit.valid && hit.cosine != 0.0f
                     ? pow(clamp(hit.cosine, 0.0f, 1.0f), p.panel_angular_scene[channel])
-                        * physical_irradiance_weight(observed, channel, p)
+                        * sample_irradiance[channel]
                     : 0.0f;
                 const float optical_weight = mix(1.0f, angular, p.panel_angular_scene.w)
                     * layer_weight;
@@ -833,59 +1018,15 @@ kernel void evaluate_physical_pipeline(
                         continuous_channel(code[channel], p) * optical_weight;
                 }
             }
-            const PhysicalRayHit green_hit = physical_trace_ray(
-                observed, lens_sample, 1, p);
-            float2 green_continuous_half_extent = 0.0f;
-            float2 green_projected_sensor_half_extent = half_extent;
-            if (vfx_depth_blur && green_hit.valid) {
-                const float2 sensor_ndc_half_extent = half_extent * 2.0f;
-                const PhysicalRayHit sensor_positive_x = physical_trace_ray(
-                    observed + float2(sensor_ndc_half_extent.x, 0.0f),
-                    float2(0.0f), 1, p);
-                const PhysicalRayHit sensor_negative_x = physical_trace_ray(
-                    observed - float2(sensor_ndc_half_extent.x, 0.0f),
-                    float2(0.0f), 1, p);
-                const PhysicalRayHit sensor_positive_y = physical_trace_ray(
-                    observed + float2(0.0f, sensor_ndc_half_extent.y),
-                    float2(0.0f), 1, p);
-                const PhysicalRayHit sensor_negative_y = physical_trace_ray(
-                    observed - float2(0.0f, sensor_ndc_half_extent.y),
-                    float2(0.0f), 1, p);
-                const float2 sensor_px = sensor_positive_x.valid
-                    ? sensor_positive_x.uv - green_hit.uv : float2(0.0f);
-                const float2 sensor_nx = sensor_negative_x.valid
-                    ? sensor_negative_x.uv - green_hit.uv : float2(0.0f);
-                const float2 sensor_py = sensor_positive_y.valid
-                    ? sensor_positive_y.uv - green_hit.uv : float2(0.0f);
-                const float2 sensor_ny = sensor_negative_y.valid
-                    ? sensor_negative_y.uv - green_hit.uv : float2(0.0f);
-                green_projected_sensor_half_extent = float2(
-                    max(abs(sensor_px.x), abs(sensor_nx.x))
-                        + max(abs(sensor_py.x), abs(sensor_ny.x)),
-                    max(abs(sensor_px.y), abs(sensor_nx.y))
-                        + max(abs(sensor_py.y), abs(sensor_ny.y))
-                );
-                constexpr float disk_to_box_variance_scale = 0.8660254f;
-                const PhysicalRayHit rim_x = physical_trace_ray(
-                    observed, float2(1.0f, 0.0f), 1, p);
-                const PhysicalRayHit rim_y = physical_trace_ray(
-                    observed, float2(0.0f, 1.0f), 1, p);
-                const float2 x_uv = rim_x.valid ? rim_x.uv : green_hit.uv;
-                const float2 y_uv = rim_y.valid ? rim_y.uv : green_hit.uv;
-                const float2 x_axis = x_uv - green_hit.uv;
-                const float2 y_axis = y_uv - green_hit.uv;
-                green_continuous_half_extent = sqrt(
-                    x_axis * x_axis + y_axis * y_axis
-                ) * disk_to_box_variance_scale * p.panel_angular_scene.w;
-            }
+            const PhysicalRayHit green_hit = green_footprint.hit;
+            const float2 green_continuous_half_extent =
+                green_footprint.continuous_half_extent;
+            const float2 green_projected_sensor_half_extent =
+                green_footprint.projected_sensor_half_extent;
             if (green_hit.valid) {
                 cover_cosine += green_hit.cosine * layer_weight;
                 cover_direction += green_hit.reflection_direction * layer_weight;
-                cover_irradiance += float3(
-                    physical_irradiance_weight(observed, 0, p),
-                    physical_irradiance_weight(observed, 1, p),
-                    physical_irradiance_weight(observed, 2, p)
-                ) * layer_weight;
+                cover_irradiance += sample_irradiance * layer_weight;
                 cover_weight += layer_weight;
             }
             const float2 green_target = green_hit.valid ? green_hit.uv : float2(-2.0f);

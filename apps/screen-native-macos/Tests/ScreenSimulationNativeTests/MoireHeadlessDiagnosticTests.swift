@@ -325,7 +325,7 @@ import Testing
         alphaInterpretation: "ignore",
         display: display
     )
-    let environmentFrame: StudioColorMetalFrame?
+    let environmentFrame: EnvironmentRadianceFrame?
     if let environmentSourcePath {
         let inputID = try #require(ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_ENVIRONMENT_INPUT_TRANSFORM_ID"
@@ -344,7 +344,7 @@ import Testing
             input: environmentInput,
             alpha: .ignore
         )
-        environmentFrame = try EnvironmentRadianceFrame.mipmapped(from: resolved)
+        environmentFrame = try EnvironmentRadianceFrame.prefiltered(from: resolved)
     } else {
         environmentFrame = nil
     }
@@ -596,7 +596,7 @@ private func compensatedApertureVariant(
 private struct MoireRenderContext {
     let source: StudioColorMetalFrame
     let deviceSignal: StudioColorMetalFrame
-    let environment: StudioColorMetalFrame?
+    let environment: EnvironmentRadianceFrame?
     let imported: PhysicalSettingsExchange.Imported
     let display: StudioColorMetalDisplay
     let output: StudioColorOutputTransform
@@ -607,6 +607,7 @@ private struct MoireVariant {
     let width: Int
     let height: Int
     let rgba8: [UInt8]
+    let rgba16: [UInt16]?
     let hash: String
     let meanChroma: Double
     let p95Chroma: Double
@@ -718,6 +719,13 @@ private func renderMoireVariant(
     #expect(snapshot.state == .complete)
     let frameResult = try #require(snapshot.frame)
     let rgba8 = try context.display.renderRGBA8(frameResult, output: context.output)
+    let rgba16: [UInt16]? = if ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_DIAGNOSTIC_DIR"
+    ] != nil, name != "baseline-repeat" {
+        try context.display.renderRGBA16(frameResult, output: context.output)
+    } else {
+        nil
+    }
     let hash = SHA256.hash(data: Data(rgba8))
         .map { String(format: "%02x", $0) }
         .joined()
@@ -734,6 +742,7 @@ private func renderMoireVariant(
         width: frameResult.width,
         height: frameResult.height,
         rgba8: rgba8,
+        rgba16: rgba16,
         hash: hash,
         meanChroma: chroma.reduce(0, +) / Double(chroma.count),
         p95Chroma: chroma[min(chroma.count - 1, Int(Double(chroma.count) * 0.95))],
@@ -742,18 +751,25 @@ private func renderMoireVariant(
 }
 
 private func writeMoireVariant(_ variant: MoireVariant, to directory: URL) throws {
+    let rgba16 = try #require(variant.rgba16)
+    let rgba16Data = rgba16.withUnsafeBytes { Data($0) }
     let metadata: [String: Any] = [
         "schema": FrameCheckPNG.metadataKeyword,
         "diagnosticVariant": variant.name,
         "metalSubmitToResultMilliseconds": variant.metalSubmitToResultMilliseconds,
-        "hashes": ["pixelRGBA8SHA256": variant.hash],
+        "hashes": [
+            "pixelRGBA8SHA256": variant.hash,
+            "pixelRGBA16SHA256": SHA256.hash(data: rgba16Data)
+                .map { String(format: "%02x", $0) }
+                .joined(),
+        ],
     ]
     let metadataData = try JSONSerialization.data(
         withJSONObject: metadata,
         options: [.sortedKeys]
     )
     let png = try FrameCheckPNG.encode(
-        rgba8: variant.rgba8,
+        rgba16: rgba16,
         width: variant.width,
         height: variant.height,
         colorSpace: CGColorSpace(name: CGColorSpace.sRGB),

@@ -7,6 +7,21 @@ import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
 
+@Test func diagnosticPNGPreservesSixteenBitSamplesAndMetadata() throws {
+    let metadata = Data("{\"precision\":16}".utf8)
+    let png = try FrameCheckPNG.encode(
+        rgba16: [0, 1, 32_768, 65_535, 65_535, 32_768, 1, 65_535],
+        width: 2,
+        height: 1,
+        colorSpace: nil,
+        metadata: metadata
+    )
+    // PNG IHDR stores the sample bit depth immediately after width and height.
+    #expect(png.count > 24)
+    #expect(png[png.startIndex + 24] == 16)
+    #expect(FrameCheckPNG.metadata(in: png) == metadata)
+}
+
 @Test @MainActor func rangeRenderWritesMovieAndCompleteImageSequences() async throws {
     let display = try StudioColorMetalDisplay()
     let width = 64
@@ -17,6 +32,11 @@ import Testing
         width: width, height: height, encodedRGBA: values,
         input: StudioColorInputTransform.catalog[2], alpha: .straight
     )
+    let rgba16 = try display.renderRGBA16(
+        frame,
+        output: StudioColorOutputTransform.catalog[0]
+    )
+    #expect(rgba16.count == width * height * 4)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-native-output-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

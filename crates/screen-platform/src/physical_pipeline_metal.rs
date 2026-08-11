@@ -3,9 +3,9 @@ use core::mem::size_of;
 use std::time::Instant;
 
 use metal::{
-    ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLRegion, MTLResourceOptions,
-    MTLSize, MTLStorageMode, MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor,
-    TextureRef,
+    ComputePipelineState, DeviceRef, MTLCommandBufferStatus, MTLOrigin, MTLRegion,
+    MTLResourceOptions, MTLSize, MTLStorageMode, MTLTextureType, MTLTextureUsage, NSRange, Texture,
+    TextureDescriptor, TextureRef,
 };
 use screen_application::{
     LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
@@ -99,6 +99,15 @@ struct RawPublicationParams {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct EnvironmentPrefilterParams {
+    axis: u32,
+    step_scale: f32,
+    source_width: u32,
+    source_height: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct CameraDevelopmentParams {
     width: u32,
     height: u32,
@@ -118,6 +127,7 @@ struct CameraDevelopmentParams {
 pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
     pipeline: ComputePipelineState,
+    environment_prefilter_pipeline: ComputePipelineState,
     row_prefix_pipeline: ComputePipelineState,
     veiling_reduce_pipeline: ComputePipelineState,
     veiling_finalize_pipeline: ComputePipelineState,
@@ -183,6 +193,12 @@ impl MetalPhysicalPipeline {
         let pipeline = device
             .new_compute_pipeline_state_with_function(&function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let environment_prefilter_function = library
+            .get_function("prefilter_equirectangular_environment", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let environment_prefilter_pipeline = device
+            .new_compute_pipeline_state_with_function(&environment_prefilter_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let row_prefix_function = library
             .get_function("build_physical_row_prefix", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -234,6 +250,7 @@ impl MetalPhysicalPipeline {
         Ok(Self {
             queue: device.new_command_queue(),
             pipeline,
+            environment_prefilter_pipeline,
             row_prefix_pipeline,
             veiling_reduce_pipeline,
             veiling_finalize_pipeline,
@@ -243,6 +260,139 @@ impl MetalPhysicalPipeline {
             develop_pipeline,
             publish_developed_pipeline,
         })
+    }
+
+    /// Builds the Cover-owned angular diffusion pyramid once at the image-resource boundary.
+    /// Level zero is exact. Each following level accumulates a normalized separable Gaussian
+    /// whose horizontal step is corrected for equirectangular latitude.
+    pub fn prefilter_equirectangular_environment(
+        &self,
+        source: &TextureRef,
+    ) -> Result<Texture, MetalPhysicalPipelineError> {
+        if source.texture_type() != MTLTextureType::D2
+            || source.width() < 2
+            || source.height() < 2
+            || source.width() != source.height().saturating_mul(2)
+            || !matches!(
+                source.pixel_format(),
+                metal::MTLPixelFormat::RGBA16Float | metal::MTLPixelFormat::RGBA32Float
+            )
+        {
+            return Err(MetalPhysicalPipelineError::UnsupportedTexture);
+        }
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(source.pixel_format());
+        descriptor.set_width(source.width());
+        descriptor.set_height(source.height());
+        descriptor.set_mipmap_level_count_for_size(MTLSize::new(
+            source.width(),
+            source.height(),
+            1,
+        ));
+        descriptor.set_storage_mode(MTLStorageMode::Private);
+        descriptor.set_usage(
+            MTLTextureUsage::ShaderRead
+                | MTLTextureUsage::ShaderWrite
+                | MTLTextureUsage::PixelFormatView,
+        );
+        let destination = source.device().new_texture(&descriptor);
+        let copy_command = self.queue.new_command_buffer();
+        let blit = copy_command.new_blit_command_encoder();
+        blit.copy_from_texture(
+            source,
+            0,
+            0,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+            MTLSize::new(source.width(), source.height(), 1),
+            &destination,
+            0,
+            0,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+        );
+        blit.end_encoding();
+        copy_command.commit();
+        copy_command.wait_until_completed();
+        if copy_command.status() != MTLCommandBufferStatus::Completed {
+            return Err(MetalPhysicalPipelineError::Backend(
+                "environment level-zero copy did not complete".to_owned(),
+            ));
+        }
+        for level in 1..destination.mipmap_level_count() {
+            let input = destination.new_texture_view_from_slice(
+                destination.pixel_format(),
+                MTLTextureType::D2,
+                NSRange::new(level - 1, 1),
+                NSRange::new(0, 1),
+            );
+            let output = destination.new_texture_view_from_slice(
+                destination.pixel_format(),
+                MTLTextureType::D2,
+                NSRange::new(level, 1),
+                NSRange::new(0, 1),
+            );
+            let temporary_descriptor = TextureDescriptor::new();
+            temporary_descriptor.set_texture_type(MTLTextureType::D2);
+            temporary_descriptor.set_pixel_format(destination.pixel_format());
+            temporary_descriptor.set_width(output.width());
+            temporary_descriptor.set_height(output.height());
+            temporary_descriptor.set_storage_mode(MTLStorageMode::Private);
+            temporary_descriptor
+                .set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+            let temporary = source.device().new_texture(&temporary_descriptor);
+            let command = self.queue.new_command_buffer();
+            let thread_width = self.environment_prefilter_pipeline.thread_execution_width();
+            let thread_height = (self
+                .environment_prefilter_pipeline
+                .max_total_threads_per_threadgroup()
+                / thread_width)
+                .max(1);
+            let dispatch =
+                |input: &TextureRef, output: &TextureRef, params: EnvironmentPrefilterParams| {
+                    let encoder = command.new_compute_command_encoder();
+                    encoder.set_compute_pipeline_state(&self.environment_prefilter_pipeline);
+                    encoder.set_texture(0, Some(input));
+                    encoder.set_texture(1, Some(output));
+                    encoder.set_bytes(
+                        0,
+                        size_of::<EnvironmentPrefilterParams>() as u64,
+                        (&params as *const EnvironmentPrefilterParams).cast(),
+                    );
+                    encoder.dispatch_threads(
+                        MTLSize::new(output.width(), output.height(), 1),
+                        MTLSize::new(thread_width, thread_height, 1),
+                    );
+                    encoder.end_encoding();
+                };
+            dispatch(
+                &input,
+                &temporary,
+                EnvironmentPrefilterParams {
+                    axis: 0,
+                    step_scale: 1.0,
+                    source_width: input.width() as u32,
+                    source_height: input.height() as u32,
+                },
+            );
+            dispatch(
+                &temporary,
+                &output,
+                EnvironmentPrefilterParams {
+                    axis: 1,
+                    step_scale: 0.5,
+                    source_width: temporary.width() as u32,
+                    source_height: temporary.height() as u32,
+                },
+            );
+            command.commit();
+            command.wait_until_completed();
+            if command.status() != MTLCommandBufferStatus::Completed {
+                return Err(MetalPhysicalPipelineError::Backend(format!(
+                    "environment angular diffusion level {level} did not complete"
+                )));
+            }
+        }
+        Ok(destination)
     }
 
     fn row_prefix_textures(
@@ -936,6 +1086,34 @@ impl MetalPhysicalPipeline {
             }
         };
         let pad = |row: [f32; 3]| [row[0], row[1], row[2], 0.0];
+        let image_environment_lobes = match plan.environment {
+            IncidentEnvironment::Procedural(_) => None,
+            IncidentEnvironment::Equirectangular(_) => {
+                let texture = environment_acescg.expect("validated image environment texture");
+                let roughness = plan.cover.roughness;
+                let microfacet_slope = roughness * roughness;
+                let minimum_core_radius = 0.05_f32.to_radians();
+                let core_radius = minimum_core_radius
+                    * (((1.0 + core::f32::consts::FRAC_PI_2 / minimum_core_radius).ln()
+                        * microfacet_slope)
+                        .exp()
+                        - 1.0);
+                let maximum_mip = texture.mipmap_level_count().saturating_sub(1) as f32;
+                let core_mip = ((texture.width() as f32 * core_radius / core::f32::consts::PI)
+                    .max(1.0))
+                .log2()
+                .clamp(0.0, maximum_mip);
+                let tail_radius = (microfacet_slope.atan()
+                    + plan.cover.haze * core::f32::consts::FRAC_PI_2)
+                    .clamp(0.0, core::f32::consts::FRAC_PI_2);
+                let tail_mip = ((texture.width() as f32 * tail_radius / core::f32::consts::PI)
+                    .max(1.0))
+                .log2()
+                .clamp(0.0, maximum_mip);
+                let tail_weight = 1.0 - (1.0 - microfacet_slope) * (1.0 - plan.cover.haze);
+                Some([core_mip, tail_mip, tail_weight, 0.0])
+            }
+        };
         let mut params = PhysicalPipelineParams {
             source_panel: [
                 source_acescg.width() as u32,
@@ -1067,7 +1245,9 @@ impl MetalPhysicalPipeline {
                     environment.key_radiance.0.b,
                     environment.key_angular_radius_degrees.to_radians(),
                 ],
-                IncidentEnvironment::Equirectangular(_) => [0.0; 4],
+                IncidentEnvironment::Equirectangular(_) => {
+                    image_environment_lobes.expect("prepared image environment lobes")
+                }
             },
             environment_direction_rotation: match plan.environment {
                 IncidentEnvironment::Procedural(environment) => [
@@ -1077,7 +1257,9 @@ impl MetalPhysicalPipeline {
                     environment.rotation_degrees.to_radians(),
                 ],
                 IncidentEnvironment::Equirectangular(environment) => {
-                    [0.0, 0.0, 1.0, environment.rotation_degrees.to_radians()]
+                    let radians = environment.rotation_degrees.to_radians();
+                    let (sine, cosine) = radians.sin_cos();
+                    [sine, cosine, 0.0, radians]
                 }
             },
             camera_position_focal: [
@@ -1384,6 +1566,75 @@ mod tests {
             0,
         );
         values
+    }
+
+    fn read_mip_level(
+        device: &DeviceRef,
+        queue: &metal::CommandQueueRef,
+        texture: &TextureRef,
+        level: u64,
+    ) -> Vec<[f32; 4]> {
+        let width = (texture.width() >> level).max(1);
+        let height = (texture.height() >> level).max(1);
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(MTLPixelFormat::RGBA32Float);
+        descriptor.set_width(width);
+        descriptor.set_height(height);
+        descriptor.set_storage_mode(MTLStorageMode::Shared);
+        descriptor.set_usage(MTLTextureUsage::ShaderRead);
+        let staging = device.new_texture(&descriptor);
+        let command = queue.new_command_buffer();
+        let blit = command.new_blit_command_encoder();
+        blit.copy_from_texture(
+            texture,
+            0,
+            level,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+            MTLSize::new(width, height, 1),
+            &staging,
+            0,
+            0,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+        );
+        blit.end_encoding();
+        command.commit();
+        command.wait_until_completed();
+        assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
+        read(&staging)
+    }
+
+    #[test]
+    fn angular_environment_diffusion_preserves_level_zero_and_uniform_radiance() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let source_values = (0..32)
+            .map(|index| {
+                let value = index as f32 / 31.0;
+                [value, value * 2.0, 1.0 - value, 1.0]
+            })
+            .collect::<Vec<_>>();
+        let source = texture(&device, 8, 4, &source_values);
+        let filtered = backend
+            .prefilter_equirectangular_environment(&source)
+            .expect("angular environment prefilter");
+        assert_eq!(
+            read_mip_level(&device, &backend.queue, &filtered, 0),
+            source_values
+        );
+
+        let uniform_values = vec![[4.0, 2.0, 0.5, 1.0]; 32];
+        let uniform = texture(&device, 8, 4, &uniform_values);
+        let filtered_uniform = backend
+            .prefilter_equirectangular_environment(&uniform)
+            .expect("uniform angular environment prefilter");
+        for level in 0..filtered_uniform.mipmap_level_count() {
+            for pixel in read_mip_level(&device, &backend.queue, &filtered_uniform, level) {
+                for (actual, expected) in pixel[..3].iter().zip([4.0, 2.0, 0.5]) {
+                    assert!((actual - expected).abs() <= 2.0e-5);
+                }
+            }
+        }
     }
 
     fn fixture(

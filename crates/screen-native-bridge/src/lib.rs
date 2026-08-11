@@ -201,6 +201,12 @@ pub struct ScreenPhysicalTexture {
     metal_texture: usize,
 }
 
+#[cfg(target_os = "macos")]
+pub struct ScreenEnvironmentRadianceTexture {
+    _texture: Texture,
+    view: ScreenPhysicalTexture,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ScreenPhysicalTimedInputSampleV2 {
@@ -426,6 +432,58 @@ pub unsafe extern "C" fn screen_physical_texture_borrow_metal(
 pub unsafe extern "C" fn screen_physical_texture_release(texture: *mut ScreenPhysicalTexture) {
     if !texture.is_null() {
         // SAFETY: the ABI requires the uniquely owned wrapper returned by create.
+        unsafe { drop(Box::from_raw(texture)) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_environment_radiance_texture_create_metal(
+    source_metal_texture: *const c_void,
+    error_message: *mut *const c_char,
+) -> *mut ScreenEnvironmentRadianceTexture {
+    if source_metal_texture.is_null() {
+        unsafe { set_error(error_message, b"missing environment Metal texture\0") };
+        return std::ptr::null_mut();
+    }
+    let source = unsafe { TextureRef::from_ptr(source_metal_texture as *mut MTLTexture) };
+    let result = MetalPhysicalPipeline::new(source.device())
+        .and_then(|backend| backend.prefilter_equirectangular_environment(source));
+    match result {
+        Ok(texture) => {
+            let view = ScreenPhysicalTexture {
+                metal_texture: texture.as_ptr() as usize,
+            };
+            unsafe { set_error(error_message, b"\0") };
+            Box::into_raw(Box::new(ScreenEnvironmentRadianceTexture {
+                _texture: texture,
+                view,
+            }))
+        }
+        Err(_error) => {
+            unsafe { set_error(error_message, b"environment angular diffusion failed\0") };
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_environment_radiance_texture_borrow_physical(
+    texture: *const ScreenEnvironmentRadianceTexture,
+) -> *const ScreenPhysicalTexture {
+    if texture.is_null() {
+        return std::ptr::null();
+    }
+    unsafe { &(*texture).view }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_environment_radiance_texture_release(
+    texture: *mut ScreenEnvironmentRadianceTexture,
+) {
+    if !texture.is_null() {
         unsafe { drop(Box::from_raw(texture)) };
     }
 }

@@ -9,6 +9,7 @@ typedef struct ScreenDeviceProfile *ScreenDeviceProfileRef;
 typedef struct ScreenCoverGlassProfile *ScreenCoverGlassProfileRef;
 typedef struct ScreenPhysicalPipelineSnapshot *ScreenPhysicalPipelineSnapshotRef;
 typedef struct ScreenPhysicalTexture *ScreenPhysicalTextureRef;
+typedef struct ScreenEnvironmentRadianceTexture *ScreenEnvironmentRadianceTextureRef;
 typedef struct ScreenPhysicalTimedInputSetV2 *ScreenPhysicalTimedInputSetV2Ref;
 typedef struct ScreenPhysicalCameraPoseTrackV2 *ScreenPhysicalCameraPoseTrackV2Ref;
 typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2Ref;
@@ -638,6 +639,16 @@ ScreenPhysicalTextureRef screen_physical_texture_create_borrowed_metal(
 );
 const void *screen_physical_texture_borrow_metal(ScreenPhysicalTextureRef texture);
 void screen_physical_texture_release(ScreenPhysicalTextureRef texture);
+ScreenEnvironmentRadianceTextureRef screen_environment_radiance_texture_create_metal(
+    const void *source_metal_texture,
+    const char **error_message
+);
+ScreenPhysicalTextureRef screen_environment_radiance_texture_borrow_physical(
+    ScreenEnvironmentRadianceTextureRef texture
+);
+void screen_environment_radiance_texture_release(
+    ScreenEnvironmentRadianceTextureRef texture
+);
 ScreenPhysicalTimedInputSetV2Ref screen_physical_timed_input_set_v2_create(
     const ScreenPhysicalTimedInputSampleV2 *samples,
     size_t sample_count,

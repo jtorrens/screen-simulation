@@ -810,6 +810,7 @@ impl EnvironmentRadianceRaster {
         rotation_degrees: f32,
         roughness: f32,
         haze: f32,
+        view_cosine: f32,
     ) -> LinearRgb {
         let length = direction
             .into_iter()
@@ -827,8 +828,23 @@ impl EnvironmentRadianceRaster {
         let v =
             (0.5 - direction[1].clamp(-1.0, 1.0).asin() / core::f32::consts::PI).clamp(0.0, 1.0);
         let lobes = environment_reflection_lobes(self.width, roughness, haze);
-        let core = self.sample_equirectangular_box(u, v, lobes.core_footprint_texels);
-        let tail = self.sample_equirectangular_box(u, v, lobes.tail_footprint_texels);
+        let surface_normal = [sine, 0.0, cosine];
+        let core = self.sample_equirectangular_diffusion(
+            u,
+            v,
+            direction,
+            surface_normal,
+            view_cosine,
+            lobes.core_footprint_texels,
+        );
+        let tail = self.sample_equirectangular_diffusion(
+            u,
+            v,
+            direction,
+            surface_normal,
+            view_cosine,
+            lobes.tail_footprint_texels,
+        );
         LinearRgb::new(
             core.r + (tail.r - core.r) * lobes.tail_weight,
             core.g + (tail.g - core.g) * lobes.tail_weight,
@@ -836,34 +852,109 @@ impl EnvironmentRadianceRaster {
         )
     }
 
-    fn sample_equirectangular_box(&self, u: f32, v: f32, footprint: f32) -> LinearRgb {
-        let taps = 4_u32;
+    fn sample_equirectangular_diffusion(
+        &self,
+        u: f32,
+        v: f32,
+        direction: [f32; 3],
+        surface_normal: [f32; 3],
+        view_cosine: f32,
+        footprint: f32,
+    ) -> LinearRgb {
+        if footprint <= 1.0 {
+            return self.sample_equirectangular_linear(u, v);
+        }
+        let latitude = (0.5 - v) * core::f32::consts::PI;
+        let latitude_scale = latitude.cos().abs().max(1.0 / self.height as f32);
+        let weights = [1.0_f32, 8.0, 28.0, 56.0, 70.0, 56.0, 28.0, 8.0, 1.0];
+        let step = footprint * (1.0 / 3.0_f32).sqrt();
+        let direction_dot_normal = direction[0] * surface_normal[0]
+            + direction[1] * surface_normal[1]
+            + direction[2] * surface_normal[2];
+        let tangent = [
+            surface_normal[0] - direction_dot_normal * direction[0],
+            surface_normal[1] - direction_dot_normal * direction[1],
+            surface_normal[2] - direction_dot_normal * direction[2],
+        ];
+        let tangent_length =
+            (tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2]).sqrt();
+        let axis = if tangent_length > 1.0e-6 {
+            let next = [
+                direction[0] + tangent[0] / tangent_length * 1.0e-3,
+                direction[1] + tangent[1] / tangent_length * 1.0e-3,
+                direction[2] + tangent[2] / tangent_length * 1.0e-3,
+            ];
+            let next_length = (next[0] * next[0] + next[1] * next[1] + next[2] * next[2]).sqrt();
+            let next = next.map(|value| value / next_length.max(1.0e-8));
+            let next_u = (next[0].atan2(next[2]) / core::f32::consts::TAU + 0.5).rem_euclid(1.0);
+            let next_v =
+                (0.5 - next[1].clamp(-1.0, 1.0).asin() / core::f32::consts::PI).clamp(0.0, 1.0);
+            let metric = [
+                ((next_u - u + 0.5).rem_euclid(1.0) - 0.5) * self.width as f32 * latitude_scale,
+                (next_v - v) * self.height as f32,
+            ];
+            let length = (metric[0] * metric[0] + metric[1] * metric[1]).sqrt();
+            [
+                metric[0] / length.max(1.0e-8),
+                metric[1] / length.max(1.0e-8),
+            ]
+        } else {
+            [1.0, 0.0]
+        };
+        let represented_stretch = (1.0 / view_cosine.max(0.25)).clamp(1.0, 4.0);
+        let extra_sigma_texels = 1.15
+            * (represented_stretch * represented_stretch - 1.0)
+                .max(0.0)
+                .sqrt();
+        let onset = ((extra_sigma_texels - 0.25) / 0.5).clamp(0.0, 1.0);
+        let onset = onset * onset * (3.0 - 2.0 * onset);
+        let stretch = 1.0 + (represented_stretch - 1.0) * onset;
         let mut sum = [0.0_f32; 3];
-        for y in 0..taps {
-            for x in 0..taps {
-                let offset_x = (x as f32 + 0.5) / taps as f32 - 0.5;
-                let offset_y = (y as f32 + 0.5) / taps as f32 - 0.5;
-                let sample_u = (u + offset_x * footprint / self.width as f32).rem_euclid(1.0);
-                let sample_v = (v + offset_y * footprint / self.height as f32).clamp(0.0, 1.0);
-                let px = (sample_u * self.width as f32)
-                    .floor()
-                    .rem_euclid(self.width as f32) as u32;
-                let py = (sample_v * self.height as f32)
-                    .floor()
-                    .clamp(0.0, self.height.saturating_sub(1) as f32)
-                    as u32;
-                let pixel = self.rgba[(py * self.width + px) as usize];
-                sum[0] += pixel[0];
-                sum[1] += pixel[1];
-                sum[2] += pixel[2];
+        for (y_index, y_weight) in weights.into_iter().enumerate() {
+            let y = y_index as f32 - 4.0;
+            for (x_index, x_weight) in weights.into_iter().enumerate() {
+                let x = x_index as f32 - 4.0;
+                let base = [x * step, y * step];
+                let parallel = base[0] * axis[0] + base[1] * axis[1];
+                let offset = [
+                    base[0] + axis[0] * parallel * (stretch - 1.0),
+                    base[1] + axis[1] * parallel * (stretch - 1.0),
+                ];
+                let sample = self.sample_equirectangular_linear(
+                    u + offset[0] / (self.width as f32 * latitude_scale),
+                    v + offset[1] / self.height as f32,
+                );
+                let weight = x_weight * y_weight / (256.0 * 256.0);
+                sum[0] += sample.r * weight;
+                sum[1] += sample.g * weight;
+                sum[2] += sample.b * weight;
             }
         }
-        let reciprocal = 1.0 / (taps * taps) as f32;
-        LinearRgb::new(
-            sum[0] * reciprocal,
-            sum[1] * reciprocal,
-            sum[2] * reciprocal,
-        )
+        LinearRgb::new(sum[0], sum[1], sum[2])
+    }
+
+    fn sample_equirectangular_linear(&self, u: f32, v: f32) -> LinearRgb {
+        let x = u.rem_euclid(1.0) * self.width as f32 - 0.5;
+        let y = v.clamp(0.0, 1.0) * self.height as f32 - 0.5;
+        let x0 = x.floor() as i64;
+        let y0 = y.floor() as i64;
+        let tx = x - x.floor();
+        let ty = y - y.floor();
+        let pixel = |px: i64, py: i64| {
+            let px = px.rem_euclid(i64::from(self.width)) as u32;
+            let py = py.clamp(0, i64::from(self.height) - 1) as u32;
+            self.rgba[(py * self.width + px) as usize]
+        };
+        let p00 = pixel(x0, y0);
+        let p10 = pixel(x0 + 1, y0);
+        let p01 = pixel(x0, y0 + 1);
+        let p11 = pixel(x0 + 1, y0 + 1);
+        let interpolate = |channel: usize| {
+            let top = p00[channel] + (p10[channel] - p00[channel]) * tx;
+            let bottom = p01[channel] + (p11[channel] - p01[channel]) * tx;
+            top + (bottom - top) * ty
+        };
+        LinearRgb::new(interpolate(0), interpolate(1), interpolate(2))
     }
 }
 
@@ -1730,6 +1821,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         environment.rotation_degrees,
                         plan.cover.roughness,
                         plan.cover.haze,
+                        cover_sample.view_cosine,
                     );
                     let scale = environment.radiance_scale();
                     cover.evaluate_with_incident_radiance(
@@ -6104,10 +6196,39 @@ mod tests {
         };
         for (roughness, haze) in [(0.0, 0.0), (0.46, 0.03), (1.0, 1.0)] {
             assert_eq!(
-                raster.sample_equirectangular([0.3, -0.2, 0.9], 37.0, roughness, haze),
+                raster.sample_equirectangular([0.3, -0.2, 0.9], 37.0, roughness, haze, 1.0),
                 LinearRgb::new(4.0, 2.0, 0.5)
             );
         }
+    }
+
+    #[test]
+    fn image_environment_oblique_incidence_broadens_the_incidence_plane_axis() {
+        let width = 64;
+        let height = 32;
+        let mut rgba = vec![[0.0, 0.0, 0.0, 1.0]; width * height];
+        let direction = [0.5_f32, 0.0, 0.866_025_4];
+        let u = direction[0].atan2(direction[2]) / core::f32::consts::TAU + 0.5;
+        let center_x = u * width as f32 - 0.5;
+        for y in 0..height {
+            for x in 0..width {
+                let distance = x as f32 - center_x;
+                let value = (-0.5 * distance * distance).exp();
+                rgba[y * width + x] = [value, value, value, 1.0];
+            }
+        }
+        let raster = EnvironmentRadianceRaster {
+            width: width as u32,
+            height: height as u32,
+            rgba,
+        };
+        let normal =
+            raster.sample_equirectangular_diffusion(u, 0.5, direction, [0.0, 0.0, 1.0], 1.0, 3.0);
+        let oblique =
+            raster.sample_equirectangular_diffusion(u, 0.5, direction, [0.0, 0.0, 1.0], 0.25, 3.0);
+        assert!(oblique.r < normal.r);
+        assert_eq!(oblique.r, oblique.g);
+        assert_eq!(oblique.g, oblique.b);
     }
 
     #[test]

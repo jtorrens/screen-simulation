@@ -30,7 +30,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     private let pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef
     private let sourceFrame: StudioColorMetalFrame
     private let deviceSignalFrame: StudioColorMetalFrame
-    private let environmentFrame: StudioColorMetalFrame?
+    private let environmentFrame: EnvironmentRadianceFrame?
 
     init(
         handle: ScreenPhysicalFrameJobRef,
@@ -44,7 +44,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
         pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef,
         sourceFrame: StudioColorMetalFrame,
         deviceSignalFrame: StudioColorMetalFrame,
-        environmentFrame: StudioColorMetalFrame?,
+        environmentFrame: EnvironmentRadianceFrame?,
         cancellationIdentity: PhysicalFrameIdentity
     ) {
         self.handle = handle
@@ -68,7 +68,6 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
         screen_physical_camera_pose_track_v2_release(cameraPoseTrack)
         screen_physical_screen_pose_track_v2_release(screenPoseTrack)
         screen_physical_texture_release(deviceSignalTexture)
-        if let environmentTexture { screen_physical_texture_release(environmentTexture) }
         screen_physical_texture_release(sourceTexture)
         screen_device_profile_release(deviceProfile)
         screen_physical_pipeline_snapshot_release(pipelineSnapshot)
@@ -182,7 +181,7 @@ final class PhysicalMetalFrameEngine {
     func submit(
         sourceACEScg: StudioColorMetalFrame,
         deviceSignal: StudioColorMetalFrame,
-        environmentACEScg: StudioColorMetalFrame?,
+        environmentACEScg: EnvironmentRadianceFrame?,
         orchestration: PhysicalFrameOrchestration,
         resolvedDevice: ResolvedDevice,
         resolvedPipeline: PhysicalPipelineResolvedState,
@@ -225,9 +224,6 @@ final class PhysicalMetalFrameEngine {
                 if let deviceSignalTexture {
                     screen_physical_texture_release(deviceSignalTexture)
                 }
-                if let environmentTexture {
-                    screen_physical_texture_release(environmentTexture)
-                }
                 screen_physical_texture_release(sourceTexture)
                 if let deviceProfile { screen_device_profile_release(deviceProfile) }
                 if let pipelineSnapshot {
@@ -244,16 +240,7 @@ final class PhysicalMetalFrameEngine {
             throw bridgeError(error, fallback: "No se ha creado la vista Device RGB.")
         }
         if let environmentACEScg {
-            let pointer = Unmanaged.passUnretained(
-                environmentACEScg.texture as AnyObject
-            ).toOpaque()
-            environmentTexture = screen_physical_texture_create_borrowed_metal(
-                pointer,
-                &error
-            )
-            guard environmentTexture != nil else {
-                throw bridgeError(error, fallback: "No se ha creado la vista del entorno ACEScg.")
-            }
+            environmentTexture = environmentACEScg.physicalTexture
         }
         var timedSample = ScreenPhysicalTimedInputSampleV2()
         timedSample.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
