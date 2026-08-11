@@ -42,7 +42,6 @@ struct PhysicalPipelineParams {
 };
 
 constant float PI = 3.14159265358979323846f;
-constant float GOLDEN_ANGLE = 2.3999631f;
 
 struct EnvironmentPrefilterParams {
     uint axis;
@@ -159,31 +158,45 @@ inline bool physical_inverse_distortion(float2 observed, constant PhysicalPipeli
     return max(abs(residual.x), abs(residual.y)) < 1.0e-5f;
 }
 
-inline float physical_radical_inverse(uint value) {
-    return float(reverse_bits(value)) * (1.0f / 4294967296.0f);
-}
+// These immutable bit patterns are the exact results of the former Metal
+// quadrature formulas. Keeping the GPU-authored values avoids repeating
+// trigonometry per pixel without moving optical sample ownership to the CPU.
+constant uint2 PHYSICAL_APERTURE_SAMPLE_BITS[32] = {
+    uint2(0x3f3504f3, 0x00000000), uint2(0xbebcc434, 0x3eacecf0),
+    uint2(0x3d9b0f48, 0xbf5cda86), uint2(0x3e5c474e, 0x3e8fa833),
+    uint2(0xbf474ac1, 0xbe0d01ed), uint2(0x3f0445f4, 0xbea8486d),
+    uint2(0xbe78aa2d, 0x3f67418c), uint2(0xbdebfc1b, 0xbe632fcb),
+    uint2(0x3f345989, 0x3e83ba01), uint2(0xbf044813, 0x3e5a6a7b),
+    uint2(0x3ec39bf6, 0xbf5100c5), uint2(0x3e04b43e, 0x3ed38a62),
+    uint2(0xbf37a745, 0xbed4dc5e), uint2(0x3f2560e9, 0xbe116ef0),
+    uint2(0xbf0e8eb9, 0x3f4ac62e), uint2(0xbcba1b09, 0xbe3384b0),
+    uint2(0x3f0ead27, 0x3ef07eb2), uint2(0xbf07a608, 0x3cb38264),
+    uint2(0x3f2063be, 0xbf1f9c05), uint2(0xbc95929c, 0x3eca2b75),
+    uint2(0xbf04df6f, 0xbf1f39c9), uint2(0x3f21b621, 0x3dae1041),
+    uint2(0xbf480c09, 0x3f0b3009), uint2(0x3d89a13b, 0xbe98f1e1),
+    uint2(0x3ec42682, 0x3f2b2718), uint2(0xbf0efe35, 0xbe3678e1),
+    uint2(0x3f5577b7, 0xbec541c3), uint2(0xbe38e53e, 0x3edce6bf),
+    uint2(0xbe92e9c1, 0xbf4c39c8), uint2(0x3f1b2604, 0x3ea31503),
+    uint2(0xbf73a542, 0x3e807334), uint2(0x3d8a742d, 0xbdd75433),
+};
 
-inline float2 physical_aperture_sample(uint index, float rotation_turns) {
-    const float radius = sqrt(physical_radical_inverse(index + 1));
-    const float angle = float(index) * GOLDEN_ANGLE + rotation_turns * 2.0f * PI;
-    return radius * float2(cos(angle), sin(angle));
+constant uint2 PHYSICAL_PSF_SAMPLE_BITS[16] = {
+    uint2(0xbf07c3b6, 0xbf07c3b6), uint2(0xbe46c5e6, 0xbf397530),
+    uint2(0x3e46c5ea, 0xbf39752f), uint2(0x3f07c3b6, 0xbf07c3b6),
+    uint2(0xbf397530, 0xbe46c5e5), uint2(0xbe3504f3, 0xbe3504f3),
+    uint2(0x3e3504f3, 0xbe3504f3), uint2(0x3f397530, 0xbe46c5e5),
+    uint2(0xbf397530, 0x3e46c5e5), uint2(0xbe3504f3, 0x3e3504f3),
+    uint2(0x3e3504f3, 0x3e3504f3), uint2(0x3f397530, 0x3e46c5e5),
+    uint2(0xbf07c3b6, 0x3f07c3b6), uint2(0xbe46c5ea, 0x3f39752f),
+    uint2(0x3e46c5e6, 0x3f397530), uint2(0x3f07c3b6, 0x3f07c3b6),
+};
+
+inline float2 physical_aperture_sample(uint index) {
+    return as_type<float2>(PHYSICAL_APERTURE_SAMPLE_BITS[index]);
 }
 
 inline float2 physical_psf_disk_sample(uint index) {
-    constexpr float points[4] = {0.125f, 0.375f, 0.625f, 0.875f};
-    const float2 sample = float2(points[index % 4], points[index / 4]);
-    const float2 centered = 2.0f * sample - 1.0f;
-    if (centered.x == 0.0f && centered.y == 0.0f) return 0.0f;
-    float radius;
-    float angle;
-    if (abs(centered.x) > abs(centered.y)) {
-        radius = centered.x;
-        angle = (PI * 0.25f) * centered.y / centered.x;
-    } else {
-        radius = centered.y;
-        angle = PI * 0.5f - (PI * 0.25f) * centered.x / centered.y;
-    }
-    return radius * float2(cos(angle), sin(angle));
+    return as_type<float2>(PHYSICAL_PSF_SAMPLE_BITS[index]);
 }
 
 inline PhysicalRayHit physical_ray_miss() {
@@ -974,10 +987,9 @@ kernel void evaluate_physical_pipeline(
                     observed - float2(0.0f, sensor_ndc_half_extent.y), p);
             }
             const uint aperture_sample_count = vfx_depth_blur ? 1 : 32;
-            const float aperture_rotation = 0.0f;
             for (uint aperture = 0; aperture < aperture_sample_count; ++aperture) {
             const float2 lens_sample = vfx_depth_blur
-                ? float2(0.0f) : physical_aperture_sample(aperture, aperture_rotation);
+                ? float2(0.0f) : physical_aperture_sample(aperture);
             PhysicalLensOrigin lens_origin = sensor_origin;
             if (!vfx_depth_blur) {
                 lens_origin = physical_lens_origin(
