@@ -607,12 +607,14 @@ inline float4 area_sample(
     texture2d<float, access::read> row_prefix,
     float2 device_minimum,
     float2 device_maximum,
+    float2 prepared_placement_scale,
     constant PhysicalPipelineParams& p
 ) {
-    const float2 scale = placement_scale(p);
     const float2 source_size = float2(p.source_panel.xy);
-    float2 minimum = ((device_minimum - 0.5f) * scale + 0.5f) * source_size;
-    float2 maximum = ((device_maximum - 0.5f) * scale + 0.5f) * source_size;
+    float2 minimum = ((device_minimum - 0.5f) * prepared_placement_scale + 0.5f)
+        * source_size;
+    float2 maximum = ((device_maximum - 0.5f) * prepared_placement_scale + 0.5f)
+        * source_size;
     minimum = min(minimum, maximum);
     maximum = max(minimum, maximum);
     const float area = max((maximum.x - minimum.x) * (maximum.y - minimum.y), 1.0e-12f);
@@ -732,12 +734,14 @@ inline float native_channel_at_offset(
     float2 device_minimum,
     float2 device_maximum,
     float2 offset_uv,
+    float2 prepared_placement_scale,
     constant PhysicalPipelineParams& p
 ) {
     const float2 shifted_minimum = device_minimum + offset_uv;
     const float2 shifted_maximum = device_maximum + offset_uv;
     const float4 code = area_sample(
-        device_signal, device_row_prefix, shifted_minimum, shifted_maximum, p);
+        device_signal, device_row_prefix, shifted_minimum, shifted_maximum,
+        prepared_placement_scale, p);
     return native_channel(
         code[channel],
         channel,
@@ -754,6 +758,7 @@ inline float spread_native_channel(
     float2 device_minimum,
     float2 device_maximum,
     float base_native,
+    float2 prepared_placement_scale,
     constant PhysicalPipelineParams& p
 ) {
     const float strength = p.spread_core_radius.w;
@@ -768,14 +773,14 @@ inline float spread_native_channel(
     float value = base_native * (1.0f - core_weight - tail_weight);
     const float core_sample = core_weight * 0.25f;
     const float tail_sample = tail_weight * 0.25f;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(core, 0.0f) * inverse_panel, p) * core_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-core, 0.0f) * inverse_panel, p) * core_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(0.0f, core) * inverse_panel, p) * core_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(0.0f, -core) * inverse_panel, p) * core_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(tail, tail) * inverse_panel, p) * tail_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-tail, tail) * inverse_panel, p) * tail_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(tail, -tail) * inverse_panel, p) * tail_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-tail, -tail) * inverse_panel, p) * tail_sample;
+    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(core, 0.0f) * inverse_panel, prepared_placement_scale, p) * core_sample;
+    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-core, 0.0f) * inverse_panel, prepared_placement_scale, p) * core_sample;
+    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(0.0f, core) * inverse_panel, prepared_placement_scale, p) * core_sample;
+    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(0.0f, -core) * inverse_panel, prepared_placement_scale, p) * core_sample;
+    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(tail, tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
+    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-tail, tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
+    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(tail, -tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
+    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-tail, -tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
     return value;
 }
 
@@ -786,26 +791,29 @@ inline float cover_glow_native_channel(
     float2 device_minimum,
     float2 device_maximum,
     float base_native,
+    float2 prepared_placement_scale,
     constant PhysicalPipelineParams& p
 ) {
     const float scattered = p.cover_glow.z;
     if (scattered == 0.0f) {
         return spread_native_channel(
             device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-            base_native, p);
+            base_native, prepared_placement_scale, p);
     }
     const float2 inverse_panel = 1.0f / p.panel_size_meters.xy;
     const float2 core_extent = p.cover_glow.x * (0.001f / 3.0f) * inverse_panel;
     const float2 tail_extent = p.cover_glow.y * (0.001f / 3.0f) * inverse_panel;
     const float base = spread_native_channel(
         device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-        base_native, p);
+        base_native, prepared_placement_scale, p);
     const float core_blur = native_channel_at_offset(
         device_signal, device_row_prefix, channel,
-        device_minimum - core_extent, device_maximum + core_extent, float2(0.0f), p);
+        device_minimum - core_extent, device_maximum + core_extent, float2(0.0f),
+        prepared_placement_scale, p);
     const float tail_blur = native_channel_at_offset(
         device_signal, device_row_prefix, channel,
-        device_minimum - tail_extent, device_maximum + tail_extent, float2(0.0f), p);
+        device_minimum - tail_extent, device_maximum + tail_extent, float2(0.0f),
+        prepared_placement_scale, p);
     return base * (1.0f - scattered)
         + core_blur * scattered * (1.0f - p.cover_glow.w)
         + tail_blur * scattered * p.cover_glow.w;
@@ -911,6 +919,7 @@ kernel void evaluate_physical_pipeline(
     const bool needs_glow = final_optical;
     const bool needs_carrier = final_optical && p.geometry.z == 1.0f
         && p.strengths.z != 0.0f;
+    const float2 prepared_placement_scale = placement_scale(p);
     const uint psf_samples_per_area = p.lens_softness.z == 0.0f ? 1 : 16 / (side * side);
     const bool vfx_depth_blur = p.geometry.z == 1.0f;
     const float sensor_pitch_mm = p.camera_right_sensor_width.w / float(p.output_tile.x);
@@ -1037,7 +1046,7 @@ kernel void evaluate_physical_pipeline(
                     || needs_spread || needs_glow || needs_carrier) {
                     code = area_sample(
                         device_signal, device_row_prefix,
-                        channel_minimum, channel_maximum, p);
+                        channel_minimum, channel_maximum, prepared_placement_scale, p);
                 }
                 if (needs_average_code) average_device_code[channel] += code[channel];
                 const float2 device_minimum = channel_minimum * float2(p.source_panel.zw);
@@ -1050,7 +1059,7 @@ kernel void evaluate_physical_pipeline(
                 if (needs_carrier) {
                     const float4 carrier_code = area_sample(
                         device_signal, device_row_prefix,
-                        carrier_minimum, carrier_maximum, p);
+                        carrier_minimum, carrier_maximum, prepared_placement_scale, p);
                     const float preserved_carrier = native_channel(
                         carrier_code[channel], channel,
                         carrier_minimum * float2(p.source_panel.zw),
@@ -1064,12 +1073,14 @@ kernel void evaluate_physical_pipeline(
                 if (needs_spread) {
                     spread_native[channel] += spread_native_channel(
                         device_signal, device_row_prefix, channel,
-                        channel_minimum, channel_maximum, base_native, p) * optical_weight;
+                        channel_minimum, channel_maximum, base_native,
+                        prepared_placement_scale, p) * optical_weight;
                 }
                 if (needs_glow) {
                     glow_native[channel] += cover_glow_native_channel(
                         device_signal, device_row_prefix, channel,
-                        channel_minimum, channel_maximum, base_native, p) * optical_weight;
+                        channel_minimum, channel_maximum, base_native,
+                        prepared_placement_scale, p) * optical_weight;
                 }
                 if (needs_continuous) {
                     continuous_native[channel] += base_linear * optical_weight;
@@ -1095,7 +1106,8 @@ kernel void evaluate_physical_pipeline(
                 green_sensor_half_extent + green_continuous_half_extent;
             const float4 ideal_sample = area_sample(source_acescg, source_row_prefix,
                 exact_flat ? minimum_uv : green_center - green_reconstructed_half_extent,
-                exact_flat ? maximum_uv : green_center + green_reconstructed_half_extent, p);
+                exact_flat ? maximum_uv : green_center + green_reconstructed_half_extent,
+                prepared_placement_scale, p);
             ideal.a += ideal_sample.a * layer_weight;
             if (needs_ideal_rgb) ideal.rgb += ideal_sample.rgb * layer_weight;
             }
