@@ -26,7 +26,10 @@ tolerance may compare independently evaluated CPU and Metal exposure rasters, bu
 converted into a RAW tolerance or used to authorize a second GPU sensor evaluator.
 RAW publication coverage requires both clipping masks to be uploaded and published exactly;
 Developed ACEScg coverage proves development consumes the same authoritative codes without
-requiring an unobservable platform copy of either mask.
+requiring an unobservable platform copy of either mask. Complete-route direct texture publication
+retains the two ordered reconstruction/development passes, the documented CPU/Metal tolerance and
+regional behavior, and must preserve the exact final presentation hash without an intermediate
+complete developed buffer or a third publication pass.
 
 The architecture guard also verifies that active documentation does not link into the sealed historical archive and that exact retired paths do not return. It uses Cargo metadata for real package edges rather than accepting source-text conventions.
 

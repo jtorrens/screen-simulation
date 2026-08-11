@@ -16,11 +16,15 @@ fails the requested capture explicitly if it is unavailable. It has no runtime C
 `CpuRawDevelopment` remains the deterministic oracle for parity tests.
 
 The current Metal slice uses two ordered compute passes: edge-directed green reconstruction, then
-red/blue color-difference reconstruction plus camera development. Its embedded metallib is compiled
-from the owned `.metal` source at build time and is also copied into the macOS bundle resources for
-packaging inspection. The only platform unsafe operation maps a completed shared Metal output buffer
-into an immutable Rust copy; the allocation size, completion ordering and lifetime are audited at
-that boundary.
+red/blue color-difference reconstruction plus camera development. In the complete physical route,
+the second pass publishes directly into the final RGBA32Float texture; it does not allocate a
+complete developed float4 buffer or dispatch a third publication pass. The standalone development
+parity adapter evaluates the same development function into a shared output buffer because its
+host-neutral Rust result requires an immutable CPU copy. Its embedded metallib is compiled from the
+owned `.metal` source at build time and is also copied into the macOS bundle resources for packaging
+inspection. The standalone adapter's only platform unsafe operation maps that completed shared
+Metal output buffer into an immutable Rust copy; the allocation size, completion ordering and
+lifetime are audited at that boundary.
 
 Metal/CPU parity for developed linear ACEScg uses a maximum absolute channel tolerance of `2e-5`
 over all four Bayer patterns, odd global CFA origins, edge support and aggressive white balance and

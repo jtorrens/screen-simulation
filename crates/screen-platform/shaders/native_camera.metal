@@ -148,13 +148,10 @@ inline float interpolate_difference(device const ushort* codes, device const flo
     return center_green + sum / count;
 }
 
-kernel void develop_acescg(device const ushort* codes [[buffer(0)]],
-                           device const float* green [[buffer(1)]],
-                           device float4* output [[buffer(2)]],
-                           constant CameraParams& p [[buffer(3)]],
-                           uint index [[thread_position_in_grid]]) {
-    uint count = p.width * p.height;
-    if (index >= count) return;
+inline float4 developed_acescg_at(device const ushort* codes,
+                                  device const float* green,
+                                  constant CameraParams& p,
+                                  uint index) {
     int x = int(p.origin_x + index % p.width);
     int y = int(p.origin_y + index / p.width);
     uint own = cfa_channel(p.pattern, x, y);
@@ -171,14 +168,28 @@ kernel void develop_acescg(device const ushort* codes [[buffer(0)]],
     float3 acescg = float3(dot(p.sensor_to_acescg_0.xyz, sensor_rgb),
                            dot(p.sensor_to_acescg_1.xyz, sensor_rgb),
                            dot(p.sensor_to_acescg_2.xyz, sensor_rgb)) * p.linear_scale;
-    output[index] = float4(acescg, 1.0f);
+    return float4(acescg, 1.0f);
 }
 
-kernel void publish_developed_acescg(
-    device const float4* input [[buffer(0)]],
+kernel void develop_acescg(device const ushort* codes [[buffer(0)]],
+                           device const float* green [[buffer(1)]],
+                           device float4* output [[buffer(2)]],
+                           constant CameraParams& p [[buffer(3)]],
+                           uint index [[thread_position_in_grid]]) {
+    uint count = p.width * p.height;
+    if (index >= count) return;
+    output[index] = developed_acescg_at(codes, green, p, index);
+}
+
+kernel void develop_acescg_texture(
+    device const ushort* codes [[buffer(0)]],
+    device const float* green [[buffer(1)]],
     texture2d<float, access::write> output [[texture(0)]],
-    constant CameraParams& p [[buffer(1)]],
+    constant CameraParams& p [[buffer(2)]],
     uint2 position [[thread_position_in_grid]]) {
     if (position.x >= p.width || position.y >= p.height) return;
-    output.write(input[position.y * p.width + position.x], position);
+    output.write(
+        developed_acescg_at(codes, green, p, position.y * p.width + position.x),
+        position
+    );
 }

@@ -135,7 +135,6 @@ pub struct MetalPhysicalPipeline {
     publish_raw_pipeline: ComputePipelineState,
     reconstruct_green_pipeline: ComputePipelineState,
     develop_pipeline: ComputePipelineState,
-    publish_developed_pipeline: ComputePipelineState,
 }
 
 pub struct MetalPhysicalPipelineResult {
@@ -236,16 +235,10 @@ impl MetalPhysicalPipeline {
             .new_compute_pipeline_state_with_function(&reconstruct_green_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let develop_function = library
-            .get_function("develop_acescg", None)
+            .get_function("develop_acescg_texture", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let develop_pipeline = device
             .new_compute_pipeline_state_with_function(&develop_function)
-            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let publish_developed_function = library
-            .get_function("publish_developed_acescg", None)
-            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let publish_developed_pipeline = device
-            .new_compute_pipeline_state_with_function(&publish_developed_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         Ok(Self {
             queue: device.new_command_queue(),
@@ -258,7 +251,6 @@ impl MetalPhysicalPipeline {
             publish_raw_pipeline,
             reconstruct_green_pipeline,
             develop_pipeline,
-            publish_developed_pipeline,
         })
     }
 
@@ -601,12 +593,6 @@ impl MetalPhysicalPipeline {
                 MTLResourceOptions::StorageModeShared,
             )
         });
-        let developed = development_parameters.as_ref().map(|_| {
-            device.new_buffer(
-                (count * size_of::<[f32; 4]>()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            )
-        });
         let descriptor = TextureDescriptor::new();
         descriptor.set_texture_type(MTLTextureType::D2);
         descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
@@ -617,9 +603,7 @@ impl MetalPhysicalPipeline {
         let output = device.new_texture(&descriptor);
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
-        if let (Some(development), Some(green), Some(developed)) =
-            (development_parameters, green.as_ref(), developed.as_ref())
-        {
+        if let (Some(development), Some(green)) = (development_parameters, green.as_ref()) {
             encoder.set_compute_pipeline_state(&self.reconstruct_green_pipeline);
             encoder.set_buffer(0, Some(&codes), 0);
             encoder.set_buffer(1, Some(green), 0);
@@ -641,22 +625,9 @@ impl MetalPhysicalPipeline {
             encoder.set_compute_pipeline_state(&self.develop_pipeline);
             encoder.set_buffer(0, Some(&codes), 0);
             encoder.set_buffer(1, Some(green), 0);
-            encoder.set_buffer(2, Some(developed), 0);
-            encoder.set_bytes(
-                3,
-                size_of::<CameraDevelopmentParams>() as u64,
-                (&raw const development).cast(),
-            );
-            encoder.dispatch_threads(
-                MTLSize::new(count as u64, 1, 1),
-                MTLSize::new(one_dimensional_width, 1, 1),
-            );
-            encoder.memory_barrier_with_resources(&[developed]);
-            encoder.set_compute_pipeline_state(&self.publish_developed_pipeline);
-            encoder.set_buffer(0, Some(developed), 0);
             encoder.set_texture(0, Some(&output));
             encoder.set_bytes(
-                1,
+                2,
                 size_of::<CameraDevelopmentParams>() as u64,
                 (&raw const development).cast(),
             );
@@ -680,7 +651,7 @@ impl MetalPhysicalPipeline {
             );
         }
         let publication_pipeline = if development_parameters.is_some() {
-            &self.publish_developed_pipeline
+            &self.develop_pipeline
         } else {
             &self.publish_raw_pipeline
         };
