@@ -24,6 +24,9 @@ reference route and the native macOS adapter and requires bit-identical integer 
 full-well masks and ADC-clipping masks for clean and noisy capture. A separate pre-sensor optical
 tolerance may compare independently evaluated CPU and Metal exposure rasters, but it cannot be
 converted into a RAW tolerance or used to authorize a second GPU sensor evaluator.
+RAW publication coverage requires both clipping masks to be uploaded and published exactly;
+Developed ACEScg coverage proves development consumes the same authoritative codes without
+requiring an unobservable platform copy of either mask.
 
 The architecture guard also verifies that active documentation does not link into the sealed historical archive and that exact retired paths do not return. It uses Cargo metadata for real package edges rather than accepting source-text conventions.
 

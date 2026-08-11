@@ -534,17 +534,6 @@ impl MetalPhysicalPipeline {
             size_of_val(raw.codes.as_slice()) as u64,
             MTLResourceOptions::StorageModeShared,
         );
-        let clipping_values = raw
-            .full_well_clipped
-            .iter()
-            .zip(&raw.adc_clipped)
-            .map(|(&well, &adc)| [u8::from(well), u8::from(adc)])
-            .collect::<Vec<_>>();
-        let clipping = device.new_buffer_with_data(
-            clipping_values.as_ptr().cast(),
-            size_of_val(clipping_values.as_slice()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
         let development_parameters = if plan.development_enabled
             && plan.requested_intermediate == PhysicalIntermediate::DevelopedAcesCg
         {
@@ -593,6 +582,19 @@ impl MetalPhysicalPipeline {
                 "developed output requires the explicit development stage".to_owned(),
             ));
         }
+        let clipping = development_parameters.is_none().then(|| {
+            let values = raw
+                .full_well_clipped
+                .iter()
+                .zip(&raw.adc_clipped)
+                .map(|(&well, &adc)| [u8::from(well), u8::from(adc)])
+                .collect::<Vec<_>>();
+            device.new_buffer_with_data(
+                values.as_ptr().cast(),
+                size_of_val(values.as_slice()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            )
+        });
         let green = development_parameters.as_ref().map(|_| {
             device.new_buffer(
                 (count * size_of::<f32>()) as u64,
@@ -661,7 +663,15 @@ impl MetalPhysicalPipeline {
         } else {
             encoder.set_compute_pipeline_state(&self.publish_raw_pipeline);
             encoder.set_buffer(0, Some(&codes), 0);
-            encoder.set_buffer(1, Some(&clipping), 0);
+            encoder.set_buffer(
+                1,
+                Some(
+                    clipping
+                        .as_ref()
+                        .expect("RAW publication prepares its clipping buffer"),
+                ),
+                0,
+            );
             encoder.set_texture(0, Some(&output));
             encoder.set_bytes(
                 2,

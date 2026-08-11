@@ -33,6 +33,9 @@ integration, expands regional work by the sensor bloom model's complete two-phot
 calls `screen-sensor`; only the resulting immutable integer RAW may be uploaded
 for Metal camera development. No Metal kernel owns area-to-photosite resampling, sensor noise,
 full-well state, ADC clipping or RAW quantization.
+The authoritative CPU RAW always retains both clipping masks. Platform publication packs and
+uploads those masks only when the requested checkpoint exposes RAW; Developed ACEScg uploads the
+codes required by demosaic and does not allocate an unobservable duplicate clipping buffer.
 
 The complete physical-frame optical kernel evaluates 32 direct equal-weight pupil rays independently
 for every sensor-footprint and PSF sample. CPU and Metal rotate the same nested pupil pattern with
