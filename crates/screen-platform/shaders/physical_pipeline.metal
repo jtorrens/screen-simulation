@@ -236,19 +236,43 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
         );
         const float perceptual_roughness = p.cover_absorption_roughness.w;
         const float microfacet_slope = perceptual_roughness * perceptual_roughness;
-        const float microfacet_radius = atan(microfacet_slope);
-        const float haze_radius = p.cover_haze.x * (PI * 0.5f);
-        const float lobe_radius = clamp(microfacet_radius + haze_radius, 0.0f, PI * 0.5f);
-        const float footprint_texels = max(
-            1.0f,
-            float(environment_acescg.get_width()) * lobe_radius / PI
+        // An ordinary box-filtered mip cannot reproduce the narrow peak and
+        // long tail of a microfacet distribution. Approximate that profile
+        // with two normalized lobes: a perceptually spaced core and the full
+        // microfacet/haze angular support. Their weights sum to one, so a
+        // constant incident field keeps exactly the same radiance.
+        const float minimum_core_radius = 0.05f * PI / 180.0f;
+        const float core_radius = minimum_core_radius * (
+            exp(log(1.0f + (PI * 0.5f) / minimum_core_radius) * microfacet_slope) - 1.0f
         );
-        const float mip_level = clamp(
-            log2(footprint_texels),
+        const float core_footprint_texels = max(
+            1.0f,
+            float(environment_acescg.get_width()) * core_radius / PI
+        );
+        const float core_mip_level = clamp(
+            log2(core_footprint_texels),
             0.0f,
             float(max(environment_acescg.get_num_mip_levels(), 1u) - 1u)
         );
-        return environment_acescg.sample(environment_sampler, uv, level(mip_level)).rgb
+        const float microfacet_radius = atan(microfacet_slope);
+        const float haze_radius = p.cover_haze.x * (PI * 0.5f);
+        const float tail_radius = clamp(microfacet_radius + haze_radius, 0.0f, PI * 0.5f);
+        const float tail_footprint_texels = max(
+            1.0f,
+            float(environment_acescg.get_width()) * tail_radius / PI
+        );
+        const float tail_mip_level = clamp(
+            log2(tail_footprint_texels),
+            0.0f,
+            float(max(environment_acescg.get_num_mip_levels(), 1u) - 1u)
+        );
+        const float tail_weight = 1.0f
+            - (1.0f - microfacet_slope) * (1.0f - p.cover_haze.x);
+        const float3 core = environment_acescg.sample(
+            environment_sampler, uv, level(core_mip_level)).rgb;
+        const float3 tail = environment_acescg.sample(
+            environment_sampler, uv, level(tail_mip_level)).rgb;
+        return mix(core, tail, tail_weight)
             * p.environment_ambient_strength.x * p.environment_ambient_strength.w;
     }
     const float alignment = clamp(dot(direction, p.environment_direction_rotation.xyz), -1.0f, 1.0f);

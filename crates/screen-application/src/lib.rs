@@ -826,12 +826,17 @@ impl EnvironmentRadianceRaster {
         let u = (direction[0].atan2(direction[2]) / core::f32::consts::TAU + 0.5).rem_euclid(1.0);
         let v =
             (0.5 - direction[1].clamp(-1.0, 1.0).asin() / core::f32::consts::PI).clamp(0.0, 1.0);
-        // Box footprint equivalent to the GPU mip choice. The authored
-        // perceptual roughness becomes the conventional squared microfacet
-        // slope. Its angular reflection radius, plus the independent haze
-        // lobe, is then converted through the equirectangular texel density.
-        // This keeps the response independent from the HDR raster resolution.
-        let footprint = environment_reflection_footprint_texels(self.width, roughness, haze);
+        let lobes = environment_reflection_lobes(self.width, roughness, haze);
+        let core = self.sample_equirectangular_box(u, v, lobes.core_footprint_texels);
+        let tail = self.sample_equirectangular_box(u, v, lobes.tail_footprint_texels);
+        LinearRgb::new(
+            core.r + (tail.r - core.r) * lobes.tail_weight,
+            core.g + (tail.g - core.g) * lobes.tail_weight,
+            core.b + (tail.b - core.b) * lobes.tail_weight,
+        )
+    }
+
+    fn sample_equirectangular_box(&self, u: f32, v: f32, footprint: f32) -> LinearRgb {
         let taps = 4_u32;
         let mut sum = [0.0_f32; 3];
         for y in 0..taps {
@@ -862,14 +867,37 @@ impl EnvironmentRadianceRaster {
     }
 }
 
-fn environment_reflection_footprint_texels(width: u32, roughness: f32, haze: f32) -> f32 {
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EnvironmentReflectionLobes {
+    core_footprint_texels: f32,
+    tail_footprint_texels: f32,
+    tail_weight: f32,
+}
+
+fn environment_reflection_lobes(
+    width: u32,
+    roughness: f32,
+    haze: f32,
+) -> EnvironmentReflectionLobes {
     let microfacet_slope = roughness * roughness;
+    // Perceptual material controls distribute useful resolution roughly
+    // logarithmically. A 0.05 degree reference width maps that control into
+    // the peaked core while retaining an exact delta at authored zero.
+    let minimum_core_radius = 0.05_f32.to_radians();
+    let core_radius = minimum_core_radius
+        * (((1.0 + core::f32::consts::FRAC_PI_2 / minimum_core_radius).ln() * microfacet_slope)
+            .exp()
+            - 1.0);
     let microfacet_radius = microfacet_slope.atan();
     let haze_radius = haze * core::f32::consts::FRAC_PI_2;
-    let lobe_radius = (microfacet_radius + haze_radius).clamp(0.0, core::f32::consts::FRAC_PI_2);
+    let tail_radius = (microfacet_radius + haze_radius).clamp(0.0, core::f32::consts::FRAC_PI_2);
     // A lobe with angular radius r has diameter 2r. A 2:1 panorama has
     // width / 2pi texels per radian, hence width * r / pi texels.
-    (width as f32 * lobe_radius / core::f32::consts::PI).max(1.0)
+    EnvironmentReflectionLobes {
+        core_footprint_texels: (width as f32 * core_radius / core::f32::consts::PI).max(1.0),
+        tail_footprint_texels: (width as f32 * tail_radius / core::f32::consts::PI).max(1.0),
+        tail_weight: 1.0 - (1.0 - microfacet_slope) * (1.0 - haze),
+    }
 }
 
 fn sample_placed_acescg_area(
@@ -6031,18 +6059,40 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn image_environment_roughness_owns_a_resolution_independent_angular_footprint() {
-        assert_eq!(environment_reflection_footprint_texels(4096, 0.0, 0.0), 1.0);
+    fn image_environment_roughness_owns_resolution_independent_core_and_tail_lobes() {
+        assert_eq!(
+            environment_reflection_lobes(4096, 0.0, 0.0),
+            EnvironmentReflectionLobes {
+                core_footprint_texels: 1.0,
+                tail_footprint_texels: 1.0,
+                tail_weight: 0.0,
+            }
+        );
 
-        let semigloss = environment_reflection_footprint_texels(4096, 0.20, 0.0);
-        let matte = environment_reflection_footprint_texels(4096, 0.46, 0.0);
-        let matte_haze = environment_reflection_footprint_texels(4096, 0.46, 0.03);
-        assert!(semigloss > 1.0);
-        assert!(matte > semigloss);
-        assert!(matte_haze > matte);
+        let semigloss = environment_reflection_lobes(4096, 0.20, 0.0);
+        let matte = environment_reflection_lobes(4096, 0.46, 0.0);
+        let matte_haze = environment_reflection_lobes(4096, 0.46, 0.03);
+        assert!(semigloss.core_footprint_texels >= 1.0);
+        assert!(matte.core_footprint_texels > semigloss.core_footprint_texels);
+        assert!(matte.tail_footprint_texels > semigloss.tail_footprint_texels);
+        assert!(matte_haze.tail_footprint_texels > matte.tail_footprint_texels);
+        assert!(matte_haze.tail_weight > matte.tail_weight);
+        assert!(matte.tail_footprint_texels > matte.core_footprint_texels);
 
-        let half_resolution = environment_reflection_footprint_texels(2048, 0.46, 0.03);
-        assert!((half_resolution / 2048.0 - matte_haze / 4096.0).abs() < 1.0e-7);
+        let half_resolution = environment_reflection_lobes(2048, 0.46, 0.03);
+        assert!(
+            (half_resolution.core_footprint_texels / 2048.0
+                - matte_haze.core_footprint_texels / 4096.0)
+                .abs()
+                < 1.0e-7
+        );
+        assert!(
+            (half_resolution.tail_footprint_texels / 2048.0
+                - matte_haze.tail_footprint_texels / 4096.0)
+                .abs()
+                < 1.0e-7
+        );
+        assert_eq!(half_resolution.tail_weight, matte_haze.tail_weight);
     }
 
     #[test]

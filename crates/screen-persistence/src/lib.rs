@@ -1198,7 +1198,7 @@ mod tests {
                     refractive_index: 1.5,
                     anti_reflective_efficiency: 0.62,
                     absorption_per_millimeter: [0.012; 3],
-                    roughness: 0.45,
+                    roughness: 0.46,
                     haze: 0.03,
                     glow: CoverGlowDocument {
                         character_strength: 1.0,
