@@ -384,6 +384,30 @@ impl MetalPhysicalPipeline {
                     source_height: temporary.height() as u32,
                 },
             );
+            // A small second Gaussian finishes the rough-surface scatter at
+            // the represented angular scale. Both passes are positive and
+            // unit-normalized, so the cleanup cannot create or remove energy.
+            const RESIDUAL_SCATTER_STEP: f32 = 0.5;
+            dispatch(
+                &output,
+                &temporary,
+                EnvironmentPrefilterParams {
+                    axis: 0,
+                    step_scale: RESIDUAL_SCATTER_STEP,
+                    source_width: output.width() as u32,
+                    source_height: output.height() as u32,
+                },
+            );
+            dispatch(
+                &temporary,
+                &output,
+                EnvironmentPrefilterParams {
+                    axis: 1,
+                    step_scale: RESIDUAL_SCATTER_STEP,
+                    source_width: temporary.width() as u32,
+                    source_height: temporary.height() as u32,
+                },
+            );
             command.commit();
             command.wait_until_completed();
             if command.status() != MTLCommandBufferStatus::Completed {
@@ -1635,6 +1659,23 @@ mod tests {
                 }
             }
         }
+
+        let mut impulse_values = vec![[0.0, 0.0, 0.0, 1.0]; 64 * 32];
+        impulse_values[16 * 64 + 32] = [16.0, 16.0, 16.0, 1.0];
+        let impulse = texture(&device, 64, 32, &impulse_values);
+        let filtered_impulse = backend
+            .prefilter_equirectangular_environment(&impulse)
+            .expect("impulse angular environment prefilter");
+        let level_one = read_mip_level(&device, &backend.queue, &filtered_impulse, 1);
+        let positive_columns = (0..32)
+            .filter(|x| level_one[8 * 32 + *x].first().copied().unwrap_or_default() > 1.0e-7)
+            .collect::<Vec<_>>();
+        assert!(positive_columns.len() >= 3);
+        assert!(
+            positive_columns
+                .windows(2)
+                .all(|pair| pair[1] == pair[0] + 1)
+        );
     }
 
     fn fixture(
