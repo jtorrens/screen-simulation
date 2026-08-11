@@ -986,6 +986,15 @@ kernel void evaluate_physical_pipeline(
                 sensor_negative_y_ideal = physical_ideal_point(
                     observed - float2(0.0f, sensor_ndc_half_extent.y), p);
             }
+            // Irradiance depends only on the resolved ideal sensor point and
+            // channel, never on the sampled point across the physical pupil.
+            const float3 sample_irradiance = center_ideal.valid
+                ? float3(
+                    physical_irradiance_weight_from_ideal(center_ideal.point, 0, p),
+                    physical_irradiance_weight_from_ideal(center_ideal.point, 1, p),
+                    physical_irradiance_weight_from_ideal(center_ideal.point, 2, p)
+                )
+                : float3(0.0f);
             const uint aperture_sample_count = vfx_depth_blur ? 1 : 32;
             for (uint aperture = 0; aperture < aperture_sample_count; ++aperture) {
             const float2 lens_sample = vfx_depth_blur
@@ -997,13 +1006,6 @@ kernel void evaluate_physical_pipeline(
             }
             const float layer_weight = 1.0f;
             aperture_weight += layer_weight;
-            const float3 sample_irradiance = center_ideal.valid
-                ? float3(
-                    physical_irradiance_weight_from_ideal(center_ideal.point, 0, p),
-                    physical_irradiance_weight_from_ideal(center_ideal.point, 1, p),
-                    physical_irradiance_weight_from_ideal(center_ideal.point, 2, p)
-                )
-                : float3(0.0f);
             PhysicalRayFootprint green_footprint;
             green_footprint.hit = physical_ray_miss();
             green_footprint.projected_sensor_half_extent = half_extent;
