@@ -37,9 +37,9 @@ the physical Screen result, never either source encoding directly. The final
 physical output is linear ACEScg. Preview transforms, ColorSync, DeckLink and
 render ODTs are outside the physical engine and run only after its result.
 
-Version 2 is the only live binary contract and has two ordered domains:
+Version 9 is the only live binary contract and has two ordered domains:
 
-1. Screen: Emission, Subpixel Geometry, Panel Light Spread, Temporal, Cover
+1. Screen: Emission, Subpixel Geometry, Panel Uniformity, Panel Light Spread, Temporal, Cover
    Glass, Environment.
 2. Capture: Geometry, Lens, Exposure/Shutter, Sensor/CFA, Noise,
    Develop/Demosaic.
@@ -80,8 +80,10 @@ Screen master and ordered stage contributions, requested dimensions, one
 typed intermediate selector, cancellation/progress identities and the exact
 parameter revision/hash. The snapshot materializes cover, procedural
 environment, resolved scene/camera/lens, shutter/readout/motion, sensor/noise
-and RAW development. Panel emission, temporal and complete light-spread radii
-and weights are materialized by the Device handle.
+and RAW development. Panel emission, the complete fixed spatial-uniformity profile, temporal
+behavior and complete light-spread radii and weights are materialized by the Device handle. The
+live Device layout is `ScreenDeviceParametersV3`; catalog ABI 4 and test-authoring ABI 12 are
+strict current-only companions to physical-frame ABI 9.
 
 `ScreenPhysicalFrameResultV2` returns one borrowed texture and states which
 typed intermediate it contains, plus native/effective dimensions, calculated

@@ -184,7 +184,8 @@ final class WorkspaceModel: ObservableObject {
 
     var physicalPreviewSurfaceAspect: Double? {
         switch requestedPhysicalIntermediate {
-        case .panelEmission, .subpixelRadiance, .panelLightSpread, .relativeGeometry,
+        case .panelEmission, .subpixelRadiance, .panelUniformity, .panelLightSpread,
+             .relativeGeometry,
              .coverEnvironment, .coverGlow, .lensProjection:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return Double(device.nativeWidth) / Double(device.nativeHeight)
@@ -207,7 +208,8 @@ final class WorkspaceModel: ObservableObject {
         case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg:
             guard let sensor = physicalAuthoringState?.sensor else { return nil }
             return "Captura \(sensor.nativeWidth)×\(sensor.nativeHeight)"
-        case .panelEmission, .subpixelRadiance, .panelLightSpread, .relativeGeometry,
+        case .panelEmission, .subpixelRadiance, .panelUniformity, .panelLightSpread,
+             .relativeGeometry,
              .coverEnvironment, .coverGlow, .lensProjection, .shutterMotion:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return "Panel \(device.nativeWidth * 3)×\(device.nativeHeight * 3)"
@@ -1338,7 +1340,7 @@ final class WorkspaceModel: ObservableObject {
                 "application": "SCREEN Simulation",
                 "implementation": "native-macos-swift-rust-metal",
                 "version": appVersion,
-                "physicalABI": 2,
+                "physicalABI": PhysicalFrameRequest.abiVersion,
             ],
             "frame": [
                 "index": currentFrame,
@@ -1663,6 +1665,13 @@ final class WorkspaceModel: ObservableObject {
         deviceSignalCheckpoint = checkpoint
         let deviceSignal = checkpoint.deviceSignal
         let contributions = physicalModel.orderedContributions
+        guard let uniformityAmount = contributions.first(where: {
+            $0.stage == .screen(.panelUniformity)
+        })?.amount else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "Falta la contribución resuelta de Panel Uniformity."
+            )
+        }
         guard let spreadAmount = contributions.first(where: {
             $0.stage == .screen(.panelLightSpread)
         })?.amount else {
@@ -1671,6 +1680,7 @@ final class WorkspaceModel: ObservableObject {
             )
         }
         var effectiveDeviceDefinition = resolvedDevice.definition
+        effectiveDeviceDefinition.panelUniformity.characterStrength = uniformityAmount
         effectiveDeviceDefinition.panelLightSpread.characterStrength = spreadAmount
         let effectiveDevice = try effectiveDeviceDefinition.resolved()
         let effectivePipeline = try resolvedPhysicalPipeline.resolving(
@@ -1775,6 +1785,7 @@ final class WorkspaceModel: ObservableObject {
         device.colorModeID = selection.colorModeID
         device.eotfGamma = selection.deviceEOTFGamma
         device.whiteLevelNits = selection.whiteLuminanceNits
+        device.panelUniformity.characterStrength = selection.panelUniformityAmount
         device.panelLightSpread.characterStrength = selection.panelLightSpreadAmount
         guard let placement = SourcePlacement(stableID: selection.placementID),
               let quality = PhysicalQuality(stableID: selection.previewQualityID)
@@ -1789,6 +1800,10 @@ final class WorkspaceModel: ObservableObject {
         try physicalModel.setContinuousAmount(
             selection.subpixelGeometryAmount,
             stage: .screen(.subpixelGeometry)
+        )
+        try physicalModel.setContinuousAmount(
+            selection.panelUniformityAmount,
+            stage: .screen(.panelUniformity)
         )
         try physicalModel.setContinuousAmount(
             selection.panelLightSpreadAmount,
@@ -1939,6 +1954,7 @@ final class WorkspaceModel: ObservableObject {
         case .feederSignal: .deviceSignal
         case .deviceInterpretation: .panelEmission
         case .panelStructure: .subpixelRadiance
+        case .panelUniformity: .panelUniformity
         case .panelLightSpread: .panelLightSpread
         case .relativeGeometry: .relativeGeometry
         case .coverEnvironment: .coverEnvironment
@@ -1973,7 +1989,7 @@ final class WorkspaceModel: ObservableObject {
             updateRequestedPhysicalIntermediate(.deviceSignal)
             rebuildPhysicalSelectedFrame()
             return
-        case .deviceInterpretation, .panelStructure, .panelLightSpread,
+        case .deviceInterpretation, .panelStructure, .panelUniformity, .panelLightSpread,
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
              .shutterExposure, .computationalCapture, .sensorBloom, .sensorCfa, .sensorNoise,
              .developDemosaic:

@@ -34,6 +34,10 @@ fn request(
         },
         plan: PhysicalPipelineExecutionPlan {
             panel,
+            panel_uniformity: screen_panel::PanelUniformityProfile {
+                character_strength: 0.0,
+                ..screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED
+            },
             panel_light_spread: PanelLightSpreadProfile {
                 character_strength: 0.0,
                 ..PanelLightSpreadProfile::LCD_DESKTOP
@@ -301,6 +305,7 @@ fn supported_intermediate_outputs_match_frozen_domain_goldens() {
         PhysicalIntermediate::DeviceSignal,
         PhysicalIntermediate::PanelEmission,
         PhysicalIntermediate::SubpixelRadiance,
+        PhysicalIntermediate::PanelUniformity,
         PhysicalIntermediate::PanelLightSpread,
         PhysicalIntermediate::DevelopedAcesCg,
     ] {
@@ -327,6 +332,7 @@ fn supported_intermediate_outputs_match_frozen_domain_goldens() {
             17_533_449_732_142_382_789,
             7_175_188_628_288_640_885,
             1_821_817_943_419_426_288,
+            7_822_282_370_568_033_078,
             7_822_282_370_568_033_078,
             7_008_296_159_193_486_740,
             16_849_740_274_292_448_334,

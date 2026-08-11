@@ -556,6 +556,7 @@ private func moireBaselineIntermediate() throws -> PhysicalIntermediate {
         "device-signal": PhysicalIntermediate.deviceSignal,
         "panel-emission": .panelEmission,
         "subpixel-radiance": .subpixelRadiance,
+        "panel-uniformity": .panelUniformity,
         "panel-light-spread": .panelLightSpread,
         "relative-geometry": .relativeGeometry,
         "cover-environment": .coverEnvironment,
@@ -643,6 +644,14 @@ private func renderMoireVariant(
             stage: .screen(.panelLightSpread)
         )
     }
+    if let panelUniformityAmount = ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_PANEL_UNIFORMITY_AMOUNT"
+    ].flatMap(Double.init) {
+        try controller.setContinuousAmount(
+            panelUniformityAmount,
+            stage: .screen(.panelUniformity)
+        )
+    }
     if let panelStructureAmount = ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_PANEL_STRUCTURE_AMOUNT"
     ].flatMap(Double.init) {
@@ -677,10 +686,14 @@ private func renderMoireVariant(
     }
     try editModel(controller)
     let contributions = controller.orderedContributions
+    let uniformity = try #require(contributions.first {
+        $0.stage == .screen(.panelUniformity)
+    }?.amount)
     let spread = try #require(contributions.first {
         $0.stage == .screen(.panelLightSpread)
     }?.amount)
     var effectiveDevice = context.imported.device
+    effectiveDevice.panelUniformity.characterStrength = uniformity
     effectiveDevice.panelLightSpread.characterStrength = spread
     let frame = try PhysicalFrameSelection(
         frameIndex: 0,

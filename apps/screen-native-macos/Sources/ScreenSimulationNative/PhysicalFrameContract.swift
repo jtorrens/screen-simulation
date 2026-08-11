@@ -23,6 +23,7 @@ where RawValue == UInt32, ID == UInt32 {}
 enum ScreenPhysicalSection: UInt32, PhysicalSectionID {
     case emission = 0x101
     case subpixelGeometry = 0x102
+    case panelUniformity = 0x108
     case panelLightSpread = 0x103
     case temporal = 0x104
     case coverGlass = 0x105
@@ -66,6 +67,7 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
     static let ordered: [Self] = [
         .screen(.emission),
         .screen(.subpixelGeometry),
+        .screen(.panelUniformity),
         .screen(.panelLightSpread),
         .screen(.temporal),
         .capture(.geometry),
@@ -209,17 +211,18 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case deviceSignal = 1
     case panelEmission = 2
     case subpixelRadiance = 3
-    case panelLightSpread = 4
-    case relativeGeometry = 5
-    case coverEnvironment = 6
-    case coverGlow = 7
-    case lensProjection = 8
-    case shutterMotion = 9
-    case computationalCapture = 10
-    case sensorBloom = 11
-    case sensorNoise = 12
-    case rawMosaic = 13
-    case developedACEScg = 14
+    case panelUniformity = 4
+    case panelLightSpread = 5
+    case relativeGeometry = 6
+    case coverEnvironment = 7
+    case coverGlow = 8
+    case lensProjection = 9
+    case shutterMotion = 10
+    case computationalCapture = 11
+    case sensorBloom = 12
+    case sensorNoise = 13
+    case rawMosaic = 14
+    case developedACEScg = 15
 
     var id: UInt32 { rawValue }
 
@@ -228,6 +231,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         .deviceSignal,
         .panelEmission,
         .subpixelRadiance,
+        .panelUniformity,
         .panelLightSpread,
         .relativeGeometry,
         .coverEnvironment,
@@ -247,6 +251,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         case .deviceSignal: "Device"
         case .panelEmission: "Emission"
         case .subpixelRadiance: "Subpixel"
+        case .panelUniformity: "Uniformity"
         case .panelLightSpread: "Spread"
         case .relativeGeometry: "Relative Geometry"
         case .developedACEScg: "Developed"

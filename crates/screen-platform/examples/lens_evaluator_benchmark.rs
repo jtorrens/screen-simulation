@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     scene.focus_distance_meters = 0.8;
     let base_plan = PhysicalPipelineExecutionPlan {
         panel: preset.profile(),
+        panel_uniformity: preset.uniformity,
         panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
         placement: RasterPlacement::Stretch,
         quality: FlatPanelQuality::High,

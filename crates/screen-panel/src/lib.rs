@@ -161,6 +161,209 @@ pub struct PanelLightSpreadProfile {
     pub tail_weight: LinearRgb,
 }
 
+/// Fixed manufacturing and compensation residuals at the emitted panel plane.
+/// Spatial scales are physical millimetres and the seed is authored data, so
+/// the field remains attached to the device independently of camera and time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelUniformityProfile {
+    /// Zero is exact identity, one is the calibrated preset and values above
+    /// one extrapolate the same fixed field without changing its frequencies.
+    pub character_strength: f32,
+    pub seed: u32,
+    pub broad_luminance_peak_to_peak: f32,
+    pub mid_luminance_peak_to_peak: f32,
+    pub fine_luminance_peak_to_peak: f32,
+    pub chromatic_peak_to_peak: f32,
+    pub mid_scale_millimeters: f32,
+    pub fine_scale_millimeters: f32,
+    pub low_drive_emphasis: f32,
+}
+
+impl PanelUniformityProfile {
+    pub const PROFESSIONAL_COMPENSATED: Self = Self {
+        character_strength: 1.0,
+        seed: 0x329C_2026,
+        broad_luminance_peak_to_peak: 0.025,
+        mid_luminance_peak_to_peak: 0.012,
+        fine_luminance_peak_to_peak: 0.006,
+        chromatic_peak_to_peak: 0.004,
+        mid_scale_millimeters: 32.0,
+        fine_scale_millimeters: 1.5,
+        low_drive_emphasis: 0.40,
+    };
+
+    pub const DESKTOP_LCD: Self = Self {
+        character_strength: 1.0,
+        seed: 0xD35C_7001,
+        broad_luminance_peak_to_peak: 0.050,
+        mid_luminance_peak_to_peak: 0.025,
+        fine_luminance_peak_to_peak: 0.010,
+        chromatic_peak_to_peak: 0.007,
+        mid_scale_millimeters: 24.0,
+        fine_scale_millimeters: 1.2,
+        low_drive_emphasis: 0.55,
+    };
+
+    pub const MOBILE_LCD: Self = Self {
+        character_strength: 1.0,
+        seed: 0xA10B_11E5,
+        broad_luminance_peak_to_peak: 0.030,
+        mid_luminance_peak_to_peak: 0.015,
+        fine_luminance_peak_to_peak: 0.008,
+        chromatic_peak_to_peak: 0.005,
+        mid_scale_millimeters: 12.0,
+        fine_scale_millimeters: 0.8,
+        low_drive_emphasis: 0.45,
+    };
+
+    pub const TELEVISION_LCD: Self = Self {
+        character_strength: 1.0,
+        seed: 0x7E1E_5150,
+        broad_luminance_peak_to_peak: 0.080,
+        mid_luminance_peak_to_peak: 0.040,
+        fine_luminance_peak_to_peak: 0.012,
+        chromatic_peak_to_peak: 0.010,
+        mid_scale_millimeters: 48.0,
+        fine_scale_millimeters: 2.0,
+        low_drive_emphasis: 0.65,
+    };
+
+    pub fn validate(self) -> Result<Self, PanelError> {
+        let amplitudes = [
+            self.broad_luminance_peak_to_peak,
+            self.mid_luminance_peak_to_peak,
+            self.fine_luminance_peak_to_peak,
+            self.chromatic_peak_to_peak,
+        ];
+        if !self.character_strength.is_finite()
+            || !(0.0..=4.0).contains(&self.character_strength)
+            || amplitudes
+                .into_iter()
+                .any(|value| !value.is_finite() || !(0.0..=0.25).contains(&value))
+            || !self.mid_scale_millimeters.is_finite()
+            || self.mid_scale_millimeters <= 0.0
+            || !self.fine_scale_millimeters.is_finite()
+            || self.fine_scale_millimeters <= 0.0
+            || self.fine_scale_millimeters >= self.mid_scale_millimeters
+            || !self.low_drive_emphasis.is_finite()
+            || !(0.0..=1.0).contains(&self.low_drive_emphasis)
+            || amplitudes.into_iter().sum::<f32>() * (1.0 + self.low_drive_emphasis) * 4.0 >= 0.95
+        {
+            return Err(PanelError::InvalidUniformity);
+        }
+        Ok(self)
+    }
+
+    pub fn channel_gains(
+        self,
+        panel: LcdProfile,
+        device_minimum: screen_contracts::Vec2,
+        device_maximum: screen_contracts::Vec2,
+        signal: DeviceRgb,
+    ) -> LinearRgb {
+        if self.character_strength == 0.0 {
+            return LinearRgb::new(1.0, 1.0, 1.0);
+        }
+        let center = screen_contracts::Vec2 {
+            x: (device_minimum.x + device_maximum.x) * 0.5 / panel.native_width as f32,
+            y: (device_minimum.y + device_maximum.y) * 0.5 / panel.native_height as f32,
+        };
+        let footprint_millimeters = screen_contracts::Vec2 {
+            x: (device_maximum.x - device_minimum.x).abs() / panel.native_width as f32
+                * panel.active_width.0
+                * 1_000.0,
+            y: (device_maximum.y - device_minimum.y).abs() / panel.native_height as f32
+                * panel.active_height.0
+                * 1_000.0,
+        };
+        let broad = broad_uniformity(center);
+        let mid = filtered_antisymmetric_noise(
+            center,
+            footprint_millimeters,
+            panel,
+            self.mid_scale_millimeters,
+            self.seed,
+        );
+        let fine = filtered_antisymmetric_noise(
+            center,
+            footprint_millimeters,
+            panel,
+            self.fine_scale_millimeters,
+            self.seed ^ 0x9E37_79B9,
+        );
+        let luminance = self.broad_luminance_peak_to_peak * broad
+            + self.mid_luminance_peak_to_peak * mid
+            + self.fine_luminance_peak_to_peak * fine;
+        let chroma = self.chromatic_peak_to_peak;
+        let opponent = [
+            chroma * (0.5 * mid - 0.25 * fine),
+            chroma * (-0.5 * mid - 0.25 * fine),
+            chroma * 0.5 * fine,
+        ];
+        let codes = [signal.r, signal.g, signal.b];
+        let mut gains = [1.0_f32; 3];
+        for channel in 0..3 {
+            let drive = codes[channel].abs().clamp(0.0, 1.0);
+            let drive_scale = 1.0 + self.low_drive_emphasis * (1.0 - drive).powi(2);
+            gains[channel] =
+                1.0 + self.character_strength * drive_scale * (luminance + opponent[channel]);
+        }
+        LinearRgb::new(gains[0], gains[1], gains[2])
+    }
+}
+
+fn broad_uniformity(uv: screen_contracts::Vec2) -> f32 {
+    let x = uv.x.clamp(0.0, 1.0) - 0.5;
+    let y = uv.y.clamp(0.0, 1.0) - 0.5;
+    2.0 * (1.0 / 6.0 - x * x - y * y)
+}
+
+fn hash_uniformity(mut value: u32) -> f32 {
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7FEB_352D);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846C_A68B);
+    value ^= value >> 16;
+    value as f32 / u32::MAX as f32
+}
+
+fn lattice_noise(x: i32, y: i32, seed: u32) -> f32 {
+    let key = (x as u32).wrapping_mul(0x1F12_3BB5) ^ (y as u32).wrapping_mul(0x5F35_6495) ^ seed;
+    hash_uniformity(key) * 2.0 - 1.0
+}
+
+fn smooth_noise(x: f32, y: f32, seed: u32) -> f32 {
+    let ix = x.floor() as i32;
+    let iy = y.floor() as i32;
+    let fx = x - ix as f32;
+    let fy = y - iy as f32;
+    let sx = fx * fx * (3.0 - 2.0 * fx);
+    let sy = fy * fy * (3.0 - 2.0 * fy);
+    let a = lattice_noise(ix, iy, seed);
+    let b = lattice_noise(ix + 1, iy, seed);
+    let c = lattice_noise(ix, iy + 1, seed);
+    let d = lattice_noise(ix + 1, iy + 1, seed);
+    (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sy
+}
+
+fn filtered_antisymmetric_noise(
+    uv: screen_contracts::Vec2,
+    footprint_millimeters: screen_contracts::Vec2,
+    panel: LcdProfile,
+    scale_millimeters: f32,
+    seed: u32,
+) -> f32 {
+    let width_millimeters = panel.active_width.0 * 1_000.0;
+    let height_millimeters = panel.active_height.0 * 1_000.0;
+    let x = uv.x * width_millimeters / scale_millimeters;
+    let y = uv.y * height_millimeters / scale_millimeters;
+    let mirror_x = (1.0 - uv.x) * width_millimeters / scale_millimeters;
+    let mirror_y = (1.0 - uv.y) * height_millimeters / scale_millimeters;
+    let footprint = footprint_millimeters.x.max(footprint_millimeters.y);
+    let attenuation = 1.0 / (1.0 + (footprint / scale_millimeters).powi(2));
+    (smooth_noise(x, y, seed) - smooth_noise(mirror_x, mirror_y, seed)) * 0.5 * attenuation
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PanelLightSpreadSample {
     pub offset_meters: screen_contracts::Vec2,
@@ -297,6 +500,7 @@ pub struct DevicePreset {
     pub category: &'static str,
     pub panel_technology: PanelTechnology,
     pub light_spread: PanelLightSpreadProfile,
+    pub uniformity: PanelUniformityProfile,
     pub native_width: u32,
     pub native_height: u32,
     pub active_width: Meters,
@@ -359,6 +563,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Phone",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_MOBILE,
+        uniformity: PanelUniformityProfile::MOBILE_LCD,
         native_width: 750,
         native_height: 1_334,
         active_width: Meters(0.058_436),
@@ -378,6 +583,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Phone",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_MOBILE,
+        uniformity: PanelUniformityProfile::MOBILE_LCD,
         native_width: 828,
         native_height: 1_792,
         active_width: Meters(0.064_517),
@@ -397,6 +603,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Phone",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_MOBILE,
+        uniformity: PanelUniformityProfile::MOBILE_LCD,
         native_width: 1_080,
         native_height: 2_400,
         active_width: Meters(0.067_733),
@@ -416,6 +623,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Laptop",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
+        uniformity: PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
         native_width: 3_024,
         native_height: 1_964,
         active_width: Meters(0.302_4),
@@ -435,6 +643,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Laptop",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
+        uniformity: PanelUniformityProfile::DESKTOP_LCD,
         native_width: 1_920,
         native_height: 1_080,
         active_width: Meters(0.345_353),
@@ -454,6 +663,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Television",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_TV,
+        uniformity: PanelUniformityProfile::TELEVISION_LCD,
         native_width: 1_366,
         native_height: 768,
         active_width: Meters(0.708_500),
@@ -473,6 +683,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Television",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_TV,
+        uniformity: PanelUniformityProfile::TELEVISION_LCD,
         native_width: 1_920,
         native_height: 1_080,
         active_width: Meters(0.951_935),
@@ -492,6 +703,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Television",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_TV,
+        uniformity: PanelUniformityProfile::TELEVISION_LCD,
         native_width: 3_840,
         native_height: 2_160,
         active_width: Meters(1.217_591),
@@ -511,6 +723,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         category: "Desktop monitor",
         panel_technology: PanelTechnology::IpsLcd,
         light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
+        uniformity: PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
         native_width: 3_840,
         native_height: 2_160,
         active_width: Meters(0.708_480),
@@ -1298,6 +1511,7 @@ pub enum PanelError {
     InvalidColorimetry,
     InvalidAngularResponse,
     InvalidLightSpread,
+    InvalidUniformity,
     InvalidTemporalEmission,
     InvalidTemporalInterval,
     TooManyTemporalTransitions,
@@ -1322,6 +1536,7 @@ impl fmt::Display for PanelError {
                 "panel angular-emission powers must be finite and non-negative"
             }
             Self::InvalidLightSpread => "panel light-spread radii and energy weights are invalid",
+            Self::InvalidUniformity => "panel spatial-uniformity profile is invalid",
             Self::InvalidTemporalEmission => {
                 "panel residual flicker and analytic banding parameters are outside their certified ranges"
             }
@@ -1365,6 +1580,110 @@ mod tests {
         let profile = profile().validate().expect("valid panel");
         assert!((profile.pixel_pitch_meters() - 0.000_155_4).abs() < 0.000_000_1);
         assert!((profile.pixels_per_inch() - 163.5).abs() < 0.2);
+    }
+
+    #[test]
+    fn panel_uniformity_is_fixed_positive_and_zero_is_exact_identity() {
+        let panel = profile();
+        let minimum = screen_contracts::Vec2 { x: 731.0, y: 412.0 };
+        let maximum = screen_contracts::Vec2 { x: 734.0, y: 415.0 };
+        let signal = DeviceRgb::new(0.1, 0.5, 0.8);
+        let zero = PanelUniformityProfile {
+            character_strength: 0.0,
+            ..PanelUniformityProfile::PROFESSIONAL_COMPENSATED
+        }
+        .channel_gains(panel, minimum, maximum, signal);
+        assert_eq!(zero, LinearRgb::new(1.0, 1.0, 1.0));
+
+        let calibrated = PanelUniformityProfile::PROFESSIONAL_COMPENSATED
+            .channel_gains(panel, minimum, maximum, signal);
+        let repeated = PanelUniformityProfile::PROFESSIONAL_COMPENSATED
+            .channel_gains(panel, minimum, maximum, signal);
+        assert_eq!(calibrated, repeated);
+        let exaggerated = PanelUniformityProfile {
+            character_strength: 4.0,
+            ..PanelUniformityProfile::PROFESSIONAL_COMPENSATED
+        }
+        .validate()
+        .expect("certified artistic range")
+        .channel_gains(panel, minimum, maximum, signal);
+        for (one, four) in [calibrated.r, calibrated.g, calibrated.b].into_iter().zip([
+            exaggerated.r,
+            exaggerated.g,
+            exaggerated.b,
+        ]) {
+            assert!(one.is_finite() && one > 0.0);
+            assert!(four.is_finite() && four > 0.0);
+            assert!((four - 1.0).abs() >= (one - 1.0).abs());
+        }
+    }
+
+    #[test]
+    fn panel_uniformity_presets_are_complete_and_filter_fine_structure() {
+        for preset in DEVICE_PRESETS {
+            preset
+                .uniformity
+                .validate()
+                .expect("bundled Device owns valid uniformity");
+        }
+        let panel = profile();
+        let signal = DeviceRgb::new(0.5, 0.5, 0.5);
+        let point = PanelUniformityProfile::PROFESSIONAL_COMPENSATED.channel_gains(
+            panel,
+            screen_contracts::Vec2 {
+                x: 1279.5,
+                y: 719.5,
+            },
+            screen_contracts::Vec2 {
+                x: 1280.5,
+                y: 720.5,
+            },
+            signal,
+        );
+        let wide = PanelUniformityProfile::PROFESSIONAL_COMPENSATED.channel_gains(
+            panel,
+            screen_contracts::Vec2 {
+                x: 1180.0,
+                y: 620.0,
+            },
+            screen_contracts::Vec2 {
+                x: 1380.0,
+                y: 820.0,
+            },
+            signal,
+        );
+        let point_chroma = (point.r - point.g).abs() + (point.b - point.g).abs();
+        let wide_chroma = (wide.r - wide.g).abs() + (wide.b - wide.g).abs();
+        assert!(wide_chroma <= point_chroma + 1.0e-4);
+
+        let mut mean = LinearRgb::new(0.0, 0.0, 0.0);
+        let grid_width = 64;
+        let grid_height = 36;
+        for y in 0..grid_height {
+            for x in 0..grid_width {
+                let minimum = screen_contracts::Vec2 {
+                    x: x as f32 * panel.native_width as f32 / grid_width as f32,
+                    y: y as f32 * panel.native_height as f32 / grid_height as f32,
+                };
+                let maximum = screen_contracts::Vec2 {
+                    x: (x + 1) as f32 * panel.native_width as f32 / grid_width as f32,
+                    y: (y + 1) as f32 * panel.native_height as f32 / grid_height as f32,
+                };
+                let gain = PanelUniformityProfile::PROFESSIONAL_COMPENSATED
+                    .channel_gains(panel, minimum, maximum, signal);
+                mean.r += gain.r;
+                mean.g += gain.g;
+                mean.b += gain.b;
+            }
+        }
+        let reciprocal = 1.0 / (grid_width * grid_height) as f32;
+        for channel in [
+            mean.r * reciprocal,
+            mean.g * reciprocal,
+            mean.b * reciprocal,
+        ] {
+            assert!((channel - 1.0).abs() <= 5.0e-4);
+        }
     }
 
     #[test]

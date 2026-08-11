@@ -52,6 +52,18 @@ struct DevicePanelLightSpread: Codable, Equatable, Sendable {
     var tailWeight: [Double]
 }
 
+struct DevicePanelUniformity: Codable, Equatable, Sendable {
+    var characterStrength: Double
+    var seed: UInt32
+    var broadLuminancePeakToPeak: Double
+    var midLuminancePeakToPeak: Double
+    var fineLuminancePeakToPeak: Double
+    var chromaticPeakToPeak: Double
+    var midScaleMillimeters: Double
+    var fineScaleMillimeters: Double
+    var lowDriveEmphasis: Double
+}
+
 struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var name: String
@@ -78,6 +90,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
     var blue: DeviceChromaticity
     var white: DeviceChromaticity
     var angularEmissionPower: [Double]
+    var panelUniformity: DevicePanelUniformity
     var panelLightSpread: DevicePanelLightSpread
     var residualFlickerPeriod: DeviceExactTime
     var residualFlickerAmplitude: Double
@@ -162,14 +175,14 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
-    fileprivate func bridgeParameters() throws -> ScreenDeviceParametersV2 {
+    fileprivate func bridgeParameters() throws -> ScreenDeviceParametersV3 {
         guard nativeWidth <= Int(UInt32.max), nativeHeight <= Int(UInt32.max) else {
             throw DeviceDomainError.invalidPhysicalProfile("La resolución nativa excede el ABI.")
         }
         guard angularEmissionPower.count == 3 else {
             throw DeviceDomainError.invalidAngularResponse
         }
-        var value = ScreenDeviceParametersV2()
+        var value = ScreenDeviceParametersV3()
         value.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
         value.native_width = UInt32(clamping: nativeWidth)
         value.native_height = UInt32(clamping: nativeHeight)
@@ -192,6 +205,23 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
             Float(angularEmissionPower[1]),
             Float(angularEmissionPower[2])
         )
+        value.uniformity_character_strength = Float(panelUniformity.characterStrength)
+        value.uniformity_seed = panelUniformity.seed
+        value.uniformity_broad_luminance_peak_to_peak = Float(
+            panelUniformity.broadLuminancePeakToPeak
+        )
+        value.uniformity_mid_luminance_peak_to_peak = Float(
+            panelUniformity.midLuminancePeakToPeak
+        )
+        value.uniformity_fine_luminance_peak_to_peak = Float(
+            panelUniformity.fineLuminancePeakToPeak
+        )
+        value.uniformity_chromatic_peak_to_peak = Float(
+            panelUniformity.chromaticPeakToPeak
+        )
+        value.uniformity_mid_scale_millimeters = Float(panelUniformity.midScaleMillimeters)
+        value.uniformity_fine_scale_millimeters = Float(panelUniformity.fineScaleMillimeters)
+        value.uniformity_low_drive_emphasis = Float(panelUniformity.lowDriveEmphasis)
         value.light_spread_character_strength = Float(panelLightSpread.characterStrength)
         value.light_spread_core_radius_micrometers = (
             Float(panelLightSpread.coreRadiusMicrometers[0]),
@@ -231,7 +261,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
 
 struct ResolvedDevice: @unchecked Sendable {
     let definition: DeviceDefinition
-    let parameters: ScreenDeviceParametersV2
+    let parameters: ScreenDeviceParametersV3
 
     var id: String { definition.id }
 
@@ -240,7 +270,7 @@ struct ResolvedDevice: @unchecked Sendable {
 enum RustDeviceCatalog {
     static func builtIns() throws -> [DeviceDefinition] {
         try (0..<screen_device_preset_count()).map { index in
-            var parameters = ScreenDeviceParametersV2()
+            var parameters = ScreenDeviceParametersV3()
             guard screen_device_preset_parameters(index, &parameters) else {
                 throw DeviceDomainError.invalidCatalog(index)
             }
@@ -296,6 +326,23 @@ enum RustDeviceCatalog {
                     Double(parameters.angular_emission_power.1),
                     Double(parameters.angular_emission_power.2),
                 ],
+                panelUniformity: .init(
+                    characterStrength: Double(parameters.uniformity_character_strength),
+                    seed: parameters.uniformity_seed,
+                    broadLuminancePeakToPeak: Double(
+                        parameters.uniformity_broad_luminance_peak_to_peak
+                    ),
+                    midLuminancePeakToPeak: Double(
+                        parameters.uniformity_mid_luminance_peak_to_peak
+                    ),
+                    fineLuminancePeakToPeak: Double(
+                        parameters.uniformity_fine_luminance_peak_to_peak
+                    ),
+                    chromaticPeakToPeak: Double(parameters.uniformity_chromatic_peak_to_peak),
+                    midScaleMillimeters: Double(parameters.uniformity_mid_scale_millimeters),
+                    fineScaleMillimeters: Double(parameters.uniformity_fine_scale_millimeters),
+                    lowDriveEmphasis: Double(parameters.uniformity_low_drive_emphasis)
+                ),
                 panelLightSpread: .init(
                     characterStrength: Double(parameters.light_spread_character_strength),
                     coreRadiusMicrometers: [

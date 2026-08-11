@@ -446,6 +446,8 @@ extension DeviceDefinition {
             activeHeightMeters = base.activeHeightMeters
             stripeLayout = base.stripeLayout
             blackMatrixFraction = base.blackMatrixFraction
+        case .panelUniformity:
+            panelUniformity = base.panelUniformity
         case .panelLightSpread:
             panelLightSpread = base.panelLightSpread
         case .temporal:

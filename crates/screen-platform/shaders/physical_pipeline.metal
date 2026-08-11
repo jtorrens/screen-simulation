@@ -12,6 +12,9 @@ struct PhysicalPipelineParams {
     float4 matrix1;
     float4 matrix2;
     float4 panel_size_meters;
+    float4 uniformity_amplitudes; // broad, mid, fine, chromatic peak-to-peak
+    float4 uniformity_scales; // mid mm, fine mm, low-drive emphasis, character
+    uint4 uniformity_seed;
     float4 spread_core_radius;
     float4 spread_core_weight;
     float4 spread_tail_radius;
@@ -701,6 +704,83 @@ inline float panel_linear_channel(float code, constant PhysicalPipelineParams& p
     return p.levels.y + span * sign(code) * pow(abs(code), p.levels.x);
 }
 
+inline float panel_uniformity_hash(uint value) {
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    value *= 0x846CA68Bu;
+    value ^= value >> 16;
+    return float(value) / float(0xFFFFFFFFu);
+}
+
+inline float panel_uniformity_lattice(int x, int y, uint seed) {
+    const uint key = uint(x) * 0x1F123BB5u ^ uint(y) * 0x5F356495u ^ seed;
+    return panel_uniformity_hash(key) * 2.0f - 1.0f;
+}
+
+inline float panel_uniformity_noise(float x, float y, uint seed) {
+    const int ix = int(floor(x));
+    const int iy = int(floor(y));
+    const float fx = x - float(ix);
+    const float fy = y - float(iy);
+    const float sx = fx * fx * (3.0f - 2.0f * fx);
+    const float sy = fy * fy * (3.0f - 2.0f * fy);
+    const float a = panel_uniformity_lattice(ix, iy, seed);
+    const float b = panel_uniformity_lattice(ix + 1, iy, seed);
+    const float c = panel_uniformity_lattice(ix, iy + 1, seed);
+    const float d = panel_uniformity_lattice(ix + 1, iy + 1, seed);
+    const float lower = mix(a, b, sx);
+    const float upper = mix(c, d, sx);
+    return mix(lower, upper, sy);
+}
+
+inline float panel_uniformity_filtered_noise(
+    float2 uv,
+    float2 footprint_millimeters,
+    float scale_millimeters,
+    uint seed,
+    constant PhysicalPipelineParams& p
+) {
+    const float2 panel_millimeters = p.panel_size_meters.xy * 1000.0f;
+    const float2 point = uv * panel_millimeters / scale_millimeters;
+    const float2 mirror = (1.0f - uv) * panel_millimeters / scale_millimeters;
+    const float footprint = max(footprint_millimeters.x, footprint_millimeters.y);
+    const float ratio = footprint / scale_millimeters;
+    const float attenuation = 1.0f / (1.0f + ratio * ratio);
+    return (panel_uniformity_noise(point.x, point.y, seed)
+        - panel_uniformity_noise(mirror.x, mirror.y, seed)) * 0.5f * attenuation;
+}
+
+inline float3 panel_uniformity_gains(
+    float2 device_minimum,
+    float2 device_maximum,
+    float3 code,
+    constant PhysicalPipelineParams& p
+) {
+    if (p.uniformity_scales.w == 0.0f) return 1.0f;
+    const float2 panel_pixels = float2(p.source_panel.zw);
+    const float2 uv = (device_minimum + device_maximum) * 0.5f / panel_pixels;
+    const float2 footprint_millimeters = abs(device_maximum - device_minimum)
+        / panel_pixels * p.panel_size_meters.xy * 1000.0f;
+    const float2 centered = clamp(uv, 0.0f, 1.0f) - 0.5f;
+    const float broad = 2.0f * (1.0f / 6.0f
+        - centered.x * centered.x - centered.y * centered.y);
+    const uint seed = p.uniformity_seed.x;
+    const float mid = panel_uniformity_filtered_noise(
+        uv, footprint_millimeters, p.uniformity_scales.x, seed, p);
+    const float fine = panel_uniformity_filtered_noise(
+        uv, footprint_millimeters, p.uniformity_scales.y, seed ^ 0x9E3779B9u, p);
+    const float luminance = dot(p.uniformity_amplitudes.xyz, float3(broad, mid, fine));
+    const float chroma = p.uniformity_amplitudes.w;
+    const float3 opponent = chroma * float3(
+        0.5f * mid - 0.25f * fine,
+        -0.5f * mid - 0.25f * fine,
+        0.5f * fine);
+    const float3 drive = clamp(abs(code), 0.0f, 1.0f);
+    const float3 drive_scale = 1.0f + p.uniformity_scales.z * (1.0f - drive) * (1.0f - drive);
+    return 1.0f + p.uniformity_scales.w * drive_scale * (luminance + opponent);
+}
+
 inline float native_channel_from_linear(
     float linear,
     uint channel,
@@ -911,10 +991,12 @@ kernel void evaluate_physical_pipeline(
     const uint side = p.output_tile.w;
     float4 ideal = 0.0f;
     float3 native = 0.0f;
+    float3 uniform_native = 0.0f;
     float3 spread_native = 0.0f;
     float3 glow_native = 0.0f;
     float3 carrier_detail_native = 0.0f;
     float3 continuous_native = 0.0f;
+    float3 uniform_continuous_native = 0.0f;
     float3 average_device_code = 0.0f;
     float cover_cosine = 0.0f;
     float3 cover_direction = 0.0f;
@@ -922,15 +1004,16 @@ kernel void evaluate_physical_pipeline(
     float cover_weight = 0.0f;
     float aperture_weight = 0.0f;
     const uint requested_stage = p.semantics.z;
-    const bool final_optical = requested_stage >= 5;
+    const bool final_optical = requested_stage >= 6;
     const bool needs_ideal_rgb = requested_stage == 0
         || (final_optical && (p.strengths.y != 1.0f || p.strengths.x != 1.0f));
     const bool needs_average_code = requested_stage == 1;
     const bool needs_continuous = requested_stage == 2
         || (final_optical && p.strengths.y != p.strengths.z);
-    const bool needs_physical = requested_stage == 3
+    const bool needs_physical = requested_stage == 3;
+    const bool needs_uniform = requested_stage == 4
         || (final_optical && p.strengths.z != 1.0f);
-    const bool needs_spread = requested_stage == 4;
+    const bool needs_spread = requested_stage == 5;
     const bool needs_glow = final_optical;
     const bool needs_carrier = final_optical && VFX_DEPTH_BLUR
         && p.strengths.z != 0.0f;
@@ -1058,7 +1141,7 @@ kernel void evaluate_physical_pipeline(
                 const float optical_weight = mix(1.0f, angular, p.panel_angular_scene.w)
                     * layer_weight;
                 float4 code = 0.0f;
-                if (needs_average_code || needs_continuous || needs_physical
+                if (needs_average_code || needs_continuous || needs_physical || needs_uniform
                     || needs_spread || needs_glow || needs_carrier) {
                     code = area_sample(
                         device_signal, device_row_prefix,
@@ -1072,6 +1155,9 @@ kernel void evaluate_physical_pipeline(
                 const float base_linear = panel_linear_channel(code[channel], p);
                 const float base_native = native_channel_from_linear(
                     base_linear, channel, device_minimum, device_maximum, p);
+                const float base_gain = panel_uniformity_gains(
+                    device_minimum, device_maximum, code.rgb, p)[channel];
+                const float uniform_base_native = base_native * base_gain;
                 if (needs_carrier) {
                     const float4 carrier_code = area_sample(
                         device_signal, device_row_prefix,
@@ -1080,26 +1166,33 @@ kernel void evaluate_physical_pipeline(
                         carrier_code[channel], channel,
                         carrier_minimum * float2(p.source_panel.zw),
                         carrier_maximum * float2(p.source_panel.zw), p);
+                    const float carrier_gain = panel_uniformity_gains(
+                        carrier_minimum * float2(p.source_panel.zw),
+                        carrier_maximum * float2(p.source_panel.zw), carrier_code.rgb, p)[channel];
                     carrier_detail_native[channel] +=
-                        (preserved_carrier - base_native) * optical_weight;
+                        (preserved_carrier * carrier_gain - uniform_base_native) * optical_weight;
                 }
                 if (needs_physical) {
                     native[channel] += base_native * optical_weight;
+                }
+                if (needs_uniform) {
+                    uniform_native[channel] += uniform_base_native * optical_weight;
                 }
                 if (needs_spread) {
                     spread_native[channel] += spread_native_channel(
                         device_signal, device_row_prefix, channel,
                         channel_minimum, channel_maximum, base_native,
-                        prepared_placement_scale, p) * optical_weight;
+                        prepared_placement_scale, p) * base_gain * optical_weight;
                 }
                 if (needs_glow) {
                     glow_native[channel] += cover_glow_native_channel(
                         device_signal, device_row_prefix, channel,
                         channel_minimum, channel_maximum, base_native,
-                        prepared_placement_scale, p) * optical_weight;
+                        prepared_placement_scale, p) * base_gain * optical_weight;
                 }
                 if (needs_continuous) {
                     continuous_native[channel] += base_linear * optical_weight;
+                    uniform_continuous_native[channel] += base_linear * base_gain * optical_weight;
                 }
             }
             const PhysicalRayHit green_hit = green_footprint.hit;
@@ -1136,20 +1229,32 @@ kernel void evaluate_physical_pipeline(
         ? normalize(cover_direction) : float3(0.0f, 0.0f, 1.0f);
     ideal *= reciprocal;
     native *= reciprocal;
+    uniform_native *= reciprocal;
     spread_native *= reciprocal;
     glow_native *= reciprocal;
     carrier_detail_native *= reciprocal;
     continuous_native *= reciprocal;
+    uniform_continuous_native *= reciprocal;
     average_device_code *= reciprocal;
     const float3 physical = float3(
         dot(p.matrix0.xyz, native),
         dot(p.matrix1.xyz, native),
         dot(p.matrix2.xyz, native)
     ) / p.levels.z;
+    const float3 uniform = float3(
+        dot(p.matrix0.xyz, uniform_native),
+        dot(p.matrix1.xyz, uniform_native),
+        dot(p.matrix2.xyz, uniform_native)
+    ) / p.levels.z;
     const float3 continuous = float3(
         dot(p.matrix0.xyz, continuous_native),
         dot(p.matrix1.xyz, continuous_native),
         dot(p.matrix2.xyz, continuous_native)
+    ) / p.levels.z;
+    const float3 uniform_continuous = float3(
+        dot(p.matrix0.xyz, uniform_continuous_native),
+        dot(p.matrix1.xyz, uniform_continuous_native),
+        dot(p.matrix2.xyz, uniform_continuous_native)
     ) / p.levels.z;
     const float3 spread = float3(
         dot(p.matrix0.xyz, spread_native),
@@ -1166,11 +1271,22 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix1.xyz, carrier_detail_native),
         dot(p.matrix2.xyz, carrier_detail_native)
     ) / p.levels.z;
-    const float3 glass_scattered = ideal.rgb * (1.0f - p.strengths.y)
-        + continuous * (p.strengths.y - p.strengths.z)
-        + physical * (p.strengths.z - 1.0f)
-        + glow
-        + carrier_detail * p.strengths.z;
+    float3 glass_scattered;
+    if (p.uniformity_scales.w == 0.0f) {
+        glass_scattered = ideal.rgb * (1.0f - p.strengths.y)
+            + continuous * (p.strengths.y - p.strengths.z)
+            + physical * (p.strengths.z - 1.0f)
+            + glow
+            + carrier_detail * p.strengths.z;
+    } else {
+        const float3 uniformed = ideal.rgb * (1.0f - p.strengths.y)
+            + uniform_continuous * (p.strengths.y - p.strengths.z)
+            + uniform * p.strengths.z;
+        glass_scattered = uniformed
+            + spread - uniform
+            + glow - spread
+            + carrier_detail * p.strengths.z;
+    }
     const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
     const float3 temporally_integrated = glass_scattered * temporal_gain;
     const float3 covered = apply_flat_cover(temporally_integrated,
@@ -1186,12 +1302,13 @@ kernel void evaluate_physical_pipeline(
         case 1: selected = average_device_code; break;
         case 2: selected = continuous; break;
         case 3: selected = physical; break;
-        case 4: selected = spread; break;
-        case 5: selected = temporally_integrated; break;
-        case 6: selected = covered; break;
+        case 4: selected = uniform; break;
+        case 5: selected = spread; break;
+        case 6: selected = temporally_integrated; break;
         case 7: selected = covered; break;
-        case 8: selected = glared; break;
-        case 9: selected = shuttered; break;
+        case 8: selected = covered; break;
+        case 9: selected = glared; break;
+        case 10: selected = shuttered; break;
         default: selected = ideal.rgb + p.strengths.x * (shuttered - ideal.rgb); break;
     }
     output.write(float4(selected, ideal.a), position);

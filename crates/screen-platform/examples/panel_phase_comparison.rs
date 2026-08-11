@@ -266,7 +266,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn arguments() -> Result<Arguments, Box<dyn Error>> {
     let values = std::env::args().skip(1).collect::<Vec<_>>();
     if values.len() != 10 {
-        return Err("usage: panel_phase_comparison <rgba16f.bin> <input-width> <input-height> <device-id> <white-nits> <fit|fill-crop|stretch|one-to-one> <draft|medium|high|native> <subpixel-radiance|panel-light-spread|relative-geometry|cover-environment|lens-projection|shutter-motion|sensor-noise|raw-mosaic|developed-acescg> <output-stem> <output-directory>".into());
+        return Err("usage: panel_phase_comparison <rgba16f.bin> <input-width> <input-height> <device-id> <white-nits> <fit|fill-crop|stretch|one-to-one> <draft|medium|high|native> <subpixel-radiance|panel-uniformity|panel-light-spread|relative-geometry|cover-environment|lens-projection|shutter-motion|sensor-noise|raw-mosaic|developed-acescg> <output-stem> <output-directory>".into());
     }
     let placement = match values[5].as_str() {
         "fit" => RasterPlacement::Fit,
@@ -284,6 +284,7 @@ fn arguments() -> Result<Arguments, Box<dyn Error>> {
     };
     let intermediate = match values[7].as_str() {
         "subpixel-radiance" => PhysicalIntermediate::SubpixelRadiance,
+        "panel-uniformity" => PhysicalIntermediate::PanelUniformity,
         "panel-light-spread" => PhysicalIntermediate::PanelLightSpread,
         "relative-geometry" => PhysicalIntermediate::RelativeGeometry,
         "cover-environment" => PhysicalIntermediate::CoverEnvironment,
@@ -335,6 +336,7 @@ fn plan(
 ) -> PhysicalPipelineExecutionPlan {
     PhysicalPipelineExecutionPlan {
         panel,
+        panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
         panel_light_spread,
         placement,
         quality,

@@ -15,6 +15,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         previewQualityID: "draft",
         frameRate: 24,
         subpixelGeometryAmount: 1,
+        panelUniformityAmount: 1,
         panelLightSpreadAmount: 1,
         capturePresetID: "iphone-16e-main-48mp",
         geometryModeID: "look-at",
@@ -96,7 +97,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
 
     #expect(snapshot.presentation.phases.map(\.label) == [
         "Origen", "Salida del feeder", "Mapeo e interpretación del dispositivo",
-        "Trama del panel", "Dispersión de luz del panel", "Geometría relativa",
+        "Trama del panel", "Uniformidad del panel", "Dispersión de luz del panel",
+        "Geometría relativa",
         "Cristal y entorno", "Resplandor del cristal", "Objetivo y proyección",
         "Exposición y obturador", "Captura computacional", "Crosstalk y bloom del sensor",
         "Sensor y CFA", "Ruido del sensor", "Revelado y demosaico",
@@ -115,26 +117,28 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[3].id]
         == .panelStructure)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[4].id]
-        == .panelLightSpread)
+        == .panelUniformity)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[5].id]
-        == .relativeGeometry)
+        == .panelLightSpread)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[6].id]
-        == .coverEnvironment)
+        == .relativeGeometry)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[7].id]
-        == .coverGlow)
+        == .coverEnvironment)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[8].id]
-        == .lensProjection)
+        == .coverGlow)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[9].id]
-        == .shutterExposure)
+        == .lensProjection)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[10].id]
-        == .computationalCapture)
+        == .shutterExposure)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[11].id]
-        == .sensorBloom)
+        == .computationalCapture)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[12].id]
-        == .sensorCfa)
+        == .sensorBloom)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[13].id]
-        == .sensorNoise)
+        == .sensorCfa)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[14].id]
+        == .sensorNoise)
+    #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[15].id]
         == .developDemosaic)
 
     let controls = snapshot.presentation.phases[1].sections.flatMap(\.controls)
@@ -166,7 +170,17 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(subpixel.value == 1)
     #expect(subpixel.minimum == 0)
     #expect(subpixel.maximum == 4)
-    let bloomControls = snapshot.presentation.phases[11].sections.flatMap(\.controls)
+    #expect(snapshot.presentation.phases[4].headerControlID == "panel-uniformity-amount")
+    guard case let .scalar(uniformity) = snapshot.presentation.phases[4].sections
+        .flatMap(\.controls).first
+    else {
+        Issue.record("La uniformidad debe ser un escalar publicado por Rust.")
+        return
+    }
+    #expect(uniformity.value == 1)
+    #expect(uniformity.minimum == 0)
+    #expect(uniformity.maximum == 4)
+    let bloomControls = snapshot.presentation.phases[12].sections.flatMap(\.controls)
     #expect(bloomControls.map(\.id) == [
         "sensor-bloom-amount",
         "sensor-bloom-crosstalk-fraction",
@@ -301,7 +315,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.handleTestIntent(.setChoice(controlID: quality.id, optionID: "high"))
     presentation = try #require(workspace.testPresentation)
 
-    workspace.handleTestIntent(.selectPhase(presentation.phases[4].id))
+    workspace.handleTestIntent(.selectPhase(presentation.phases[5].id))
     for _ in 0..<2_000 {
         if workspace.requestedPhysicalIntermediate == .panelLightSpread,
            workspace.physicalPublicationSummary.contains("publicado") { break }
@@ -310,7 +324,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     let flatFrame = try #require(workspace.metalFrame)
     let flat = try workspace.metalDisplay.readLinearRGBA(flatFrame)
 
-    workspace.handleTestIntent(.selectPhase(presentation.phases[7].id))
+    workspace.handleTestIntent(.selectPhase(presentation.phases[9].id))
     for _ in 0..<2_000 {
         if workspace.requestedPhysicalIntermediate == .lensProjection,
            workspace.physicalPublicationSummary.contains("Lens/Projection"),
@@ -382,6 +396,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         .deviceSignal,
         .panelEmission,
         .subpixelRadiance,
+        .panelUniformity,
         .panelLightSpread,
         .relativeGeometry,
         .coverEnvironment,

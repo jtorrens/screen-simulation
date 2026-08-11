@@ -20,6 +20,8 @@ import StudioColor
     #expect(macBook.maximumWhiteLuminance == 500)
     #expect(macBook.whiteLuminanceStep == 1)
     #expect(macBook.defaultCoverGlassPresetID == "cover-glossy-strong-ar")
+    #expect(macBook.panelUniformity.characterStrength == 1)
+    #expect(macBook.panelUniformity.seed != 0)
     #expect(macBook.panelLightSpread.coreRadiusMicrometers.count == 3)
     _ = try macBook.resolved()
 }

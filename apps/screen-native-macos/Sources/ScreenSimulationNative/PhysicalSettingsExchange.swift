@@ -1,7 +1,7 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.PhysicalSettings.v6"
+    static let schema = "ScreenSimulation.PhysicalSettings.v7"
     private static let selectedMigrationSchema = "ScreenSimulation.PhysicalSettings.v1"
 
     struct Imported: Sendable {
@@ -186,7 +186,7 @@ enum PhysicalSettingsExchange {
 
         Aplicados
         • Device: \(device.name) · \(device.nativeWidth)×\(device.nativeHeight)
-        • Panel: luminancia, EOTF, colorimetría, geometría subpíxel, temporal y light spread
+        • Panel: luminancia, EOTF, colorimetría, geometría subpíxel, uniformidad, temporal y light spread
         • Cristal y entorno
         • Pose cámara/pantalla y modelo de lente
         • Obturación, rolling shutter y muestreo temporal

@@ -7,17 +7,18 @@ enum TestPreviewResultKind: UInt32, Sendable {
     case feederSignal = 1
     case deviceInterpretation = 2
     case panelStructure = 3
-    case panelLightSpread = 4
-    case relativeGeometry = 5
-    case coverEnvironment = 6
-    case coverGlow = 7
-    case lensProjection = 8
-    case shutterExposure = 9
-    case computationalCapture = 10
-    case sensorBloom = 11
-    case sensorCfa = 12
-    case sensorNoise = 13
-    case developDemosaic = 14
+    case panelUniformity = 4
+    case panelLightSpread = 5
+    case relativeGeometry = 6
+    case coverEnvironment = 7
+    case coverGlow = 8
+    case lensProjection = 9
+    case shutterExposure = 10
+    case computationalCapture = 11
+    case sensorBloom = 12
+    case sensorCfa = 13
+    case sensorNoise = 14
+    case developDemosaic = 15
 }
 
 struct TestAuthoringResolvedSelection: Equatable, Sendable {
@@ -31,6 +32,7 @@ struct TestAuthoringResolvedSelection: Equatable, Sendable {
     let previewQualityID: String
     var frameRate: Double
     let subpixelGeometryAmount: Double
+    let panelUniformityAmount: Double
     let panelLightSpreadAmount: Double
     let capturePresetID: String
     let geometryModeID: String
@@ -98,7 +100,7 @@ enum RustTestAuthoringCoordinator {
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV11()
+                var output = ScreenTestAuthoringSelectionV12()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
                     inputView, deviceView, Float(frameRate), &output, &error
@@ -213,7 +215,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV11()
+                        var output = ScreenTestAuthoringSelectionV12()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -230,7 +232,7 @@ enum RustTestAuthoringCoordinator {
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV11()
+                    var output = ScreenTestAuthoringSelectionV12()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -246,7 +248,7 @@ enum RustTestAuthoringCoordinator {
         case let .setToggle(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV11()
+                    var output = ScreenTestAuthoringSelectionV12()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_toggle(
                         rawSelection, controlView, value, &output, &error
@@ -366,7 +368,7 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV11
+        _ raw: ScreenTestAuthoringSelectionV12
     ) -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
@@ -379,6 +381,7 @@ enum RustTestAuthoringCoordinator {
             previewQualityID: string(raw.preview_quality_id),
             frameRate: Double(raw.frame_rate),
             subpixelGeometryAmount: Double(raw.subpixel_geometry_amount),
+            panelUniformityAmount: Double(raw.panel_uniformity_amount),
             panelLightSpreadAmount: Double(raw.panel_light_spread_amount),
             capturePresetID: string(raw.capture_preset_id),
             geometryModeID: string(raw.geometry_mode_id),
@@ -423,7 +426,7 @@ enum RustTestAuthoringCoordinator {
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV11>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV12>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -436,7 +439,7 @@ enum RustTestAuthoringCoordinator {
                                 try withUTF8View(selection.coverGlassPresetID) { coverView in
                                     try withUTF8View(selection.environmentPresetID) { environmentView in
                                         try withUTF8View(selection.lensPresetID) { lensView in
-                                            var raw = ScreenTestAuthoringSelectionV11()
+                                            var raw = ScreenTestAuthoringSelectionV12()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView
@@ -448,6 +451,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.preview_quality_id = qualityView
                                             raw.frame_rate = Float(selection.frameRate)
                                             raw.subpixel_geometry_amount = Float(selection.subpixelGeometryAmount)
+                                            raw.panel_uniformity_amount = Float(selection.panelUniformityAmount)
                                             raw.panel_light_spread_amount = Float(selection.panelLightSpreadAmount)
                                             raw.capture_preset_id = captureView
                                             raw.geometry_mode_id = geometryModeView

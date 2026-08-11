@@ -8,12 +8,13 @@ use screen_cover::{
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 11;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 12;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
 pub const DEVICE_INTERPRETATION_PHASE_ID: &str = "device-interpretation";
 pub const PANEL_STRUCTURE_PHASE_ID: &str = "panel-structure";
+pub const PANEL_UNIFORMITY_PHASE_ID: &str = "panel-uniformity";
 pub const PANEL_LIGHT_SPREAD_PHASE_ID: &str = "panel-light-spread";
 pub const RELATIVE_GEOMETRY_PHASE_ID: &str = "relative-geometry";
 pub const COVER_ENVIRONMENT_PHASE_ID: &str = "cover-environment";
@@ -32,6 +33,7 @@ pub const WHITE_LUMINANCE_CONTROL_ID: &str = "white-luminance";
 pub const PLACEMENT_CONTROL_ID: &str = "placement";
 pub const PREVIEW_QUALITY_CONTROL_ID: &str = "preview-quality";
 pub const SUBPIXEL_GEOMETRY_CONTROL_ID: &str = "subpixel-geometry-amount";
+pub const PANEL_UNIFORMITY_CONTROL_ID: &str = "panel-uniformity-amount";
 pub const PANEL_LIGHT_SPREAD_CONTROL_ID: &str = "panel-light-spread-amount";
 pub const CAPTURE_PRESET_CONTROL_ID: &str = "capture-preset";
 pub const GEOMETRY_MODE_CONTROL_ID: &str = "geometry-mode";
@@ -131,6 +133,7 @@ pub struct TestAuthoringSelection<'a> {
     pub preview_quality_id: &'a str,
     pub frame_rate: f32,
     pub subpixel_geometry_amount: f32,
+    pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'a str,
     pub geometry_mode_id: &'a str,
@@ -182,6 +185,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub preview_quality_id: &'static str,
     pub frame_rate: f32,
     pub subpixel_geometry_amount: f32,
+    pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'static str,
     pub geometry_mode_id: &'static str,
@@ -342,17 +346,18 @@ pub enum TestPreviewResult {
     FeederSignal = 1,
     DeviceInterpretation = 2,
     PanelStructure = 3,
-    PanelLightSpread = 4,
-    RelativeGeometry = 5,
-    CoverEnvironment = 6,
-    CoverGlow = 7,
-    LensProjection = 8,
-    ShutterExposure = 9,
-    ComputationalCapture = 10,
-    SensorBloom = 11,
-    SensorCfa = 12,
-    SensorNoise = 13,
-    DevelopDemosaic = 14,
+    PanelUniformity = 4,
+    PanelLightSpread = 5,
+    RelativeGeometry = 6,
+    CoverEnvironment = 7,
+    CoverGlow = 8,
+    LensProjection = 9,
+    ShutterExposure = 10,
+    ComputationalCapture = 11,
+    SensorBloom = 12,
+    SensorCfa = 13,
+    SensorNoise = 14,
+    DevelopDemosaic = 15,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -373,6 +378,7 @@ pub enum TestAuthoringError {
     UnsupportedColorMode,
     InvalidWhiteLuminance,
     InvalidSubpixelGeometryAmount,
+    InvalidPanelUniformityAmount,
     InvalidPanelLightSpreadAmount,
     UnknownCapturePreset,
     UnknownLensPreset,
@@ -408,6 +414,7 @@ impl core::fmt::Display for TestAuthoringError {
             Self::UnsupportedColorMode => "Color Mode is not supported by the selected device",
             Self::InvalidWhiteLuminance => "White Luminance is outside the device capability",
             Self::InvalidSubpixelGeometryAmount => "Subpixel Geometry amount is outside 0..=4",
+            Self::InvalidPanelUniformityAmount => "Panel Uniformity amount is outside 0..=4",
             Self::InvalidPanelLightSpreadAmount => "Panel Light Spread amount is outside 0..=4",
             Self::UnknownCapturePreset => "unknown Test Capture preset",
             Self::UnknownLensPreset => "unknown Test Lens preset",
@@ -504,6 +511,7 @@ pub fn default_test_authoring_selection(
         preview_quality_id: "draft",
         frame_rate,
         subpixel_geometry_amount: 1.0,
+        panel_uniformity_amount: device.uniformity.character_strength,
         panel_light_spread_amount: device.light_spread.character_strength,
         capture_preset_id: capture.id,
         geometry_mode_id: "look-at",
@@ -587,6 +595,11 @@ pub fn resolve_test_authoring_selection(
         || !(0.0..=4.0).contains(&selection.subpixel_geometry_amount)
     {
         return Err(TestAuthoringError::InvalidSubpixelGeometryAmount);
+    }
+    if !selection.panel_uniformity_amount.is_finite()
+        || !(0.0..=4.0).contains(&selection.panel_uniformity_amount)
+    {
+        return Err(TestAuthoringError::InvalidPanelUniformityAmount);
     }
     if !selection.panel_light_spread_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.panel_light_spread_amount)
@@ -733,6 +746,7 @@ pub fn resolve_test_authoring_selection(
         preview_quality_id,
         frame_rate: selection.frame_rate,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
+        panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: capture.id,
         geometry_mode_id,
@@ -1238,11 +1252,29 @@ pub fn test_page_descriptor(
                 )],
             },
             TestPhaseDescriptor {
+                id: PANEL_UNIFORMITY_PHASE_ID,
+                label: "Uniformidad del panel",
+                effect_summary: "Introduce la variación espacial fija de luminancia y color residual del dispositivo.",
+                header_control_id: Some(PANEL_UNIFORMITY_CONTROL_ID),
+                input_artifact: "subpixel-radiance-v1",
+                output_artifact: "uniform-panel-radiance-v1",
+                preview_result: TestPreviewResult::PanelUniformity,
+                controls: vec![scalar_control(
+                    PANEL_UNIFORMITY_CONTROL_ID,
+                    "Uniformidad espacial",
+                    selection.panel_uniformity_amount,
+                    0.0,
+                    4.0,
+                    device.uniformity.character_strength,
+                    "×",
+                )],
+            },
+            TestPhaseDescriptor {
                 id: PANEL_LIGHT_SPREAD_PHASE_ID,
                 label: "Dispersión de luz del panel",
                 effect_summary: "Difunde la emisión entre celdas y suaviza la estructura fina del panel.",
                 header_control_id: Some(PANEL_LIGHT_SPREAD_CONTROL_ID),
-                input_artifact: "subpixel-radiance-v1",
+                input_artifact: "uniform-panel-radiance-v1",
                 output_artifact: "spread-panel-radiance-v1",
                 preview_result: TestPreviewResult::PanelLightSpread,
                 controls: vec![scalar_control(
@@ -1513,6 +1545,7 @@ pub fn apply_test_choice(
             next.device_id = device.id;
             next.color_mode_id = device.default_color_mode_id;
             next.white_luminance_nits = device.reference_white_nits;
+            next.panel_uniformity_amount = device.uniformity.character_strength;
             next.panel_light_spread_amount = device.light_spread.character_strength;
             next.cover_glass_preset_id = device.default_cover_glass_preset_id;
             next.cover_glass_amount = cover_glass_preset(device.default_cover_glass_preset_id)
@@ -1562,6 +1595,7 @@ pub fn apply_test_choice(
         LENS_PRESET_CONTROL_ID => next.lens_preset_id = option_id,
         WHITE_LUMINANCE_CONTROL_ID
         | SUBPIXEL_GEOMETRY_CONTROL_ID
+        | PANEL_UNIFORMITY_CONTROL_ID
         | PANEL_LIGHT_SPREAD_CONTROL_ID
         | CAMERA_DISTANCE_CONTROL_ID
         | CAMERA_ORBIT_X_CONTROL_ID
@@ -1613,6 +1647,7 @@ fn unresolved_test_selection(
         preview_quality_id: current.preview_quality_id,
         frame_rate: current.frame_rate,
         subpixel_geometry_amount: current.subpixel_geometry_amount,
+        panel_uniformity_amount: current.panel_uniformity_amount,
         panel_light_spread_amount: current.panel_light_spread_amount,
         capture_preset_id: current.capture_preset_id,
         geometry_mode_id: current.geometry_mode_id,
@@ -1752,6 +1787,7 @@ pub fn apply_test_scalar(
     match control_id {
         WHITE_LUMINANCE_CONTROL_ID => next.white_luminance_nits = value,
         SUBPIXEL_GEOMETRY_CONTROL_ID => next.subpixel_geometry_amount = value,
+        PANEL_UNIFORMITY_CONTROL_ID => next.panel_uniformity_amount = value,
         PANEL_LIGHT_SPREAD_CONTROL_ID => next.panel_light_spread_amount = value,
         CAMERA_DISTANCE_CONTROL_ID => next.camera_distance_meters = value,
         CAMERA_ORBIT_X_CONTROL_ID => next.camera_orbit_x_degrees = value,
@@ -1831,6 +1867,7 @@ mod tests {
             preview_quality_id: "draft",
             frame_rate: 24.0,
             subpixel_geometry_amount: 1.0,
+            panel_uniformity_amount: 1.0,
             panel_light_spread_amount: 1.0,
             capture_preset_id: "iphone-16e-main-48mp",
             geometry_mode_id: "look-at",
@@ -1874,7 +1911,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 11);
+        assert_eq!(page.schema_version, 12);
         assert_eq!(page.default_preview_phase_id, DEVELOP_DEMOSAIC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
@@ -1883,6 +1920,7 @@ mod tests {
                 FEEDER_SIGNAL_PHASE_ID,
                 DEVICE_INTERPRETATION_PHASE_ID,
                 PANEL_STRUCTURE_PHASE_ID,
+                PANEL_UNIFORMITY_PHASE_ID,
                 PANEL_LIGHT_SPREAD_PHASE_ID,
                 RELATIVE_GEOMETRY_PHASE_ID,
                 COVER_ENVIRONMENT_PHASE_ID,
@@ -1907,7 +1945,7 @@ mod tests {
             assert_eq!(adjacent[0].output_artifact, adjacent[1].input_artifact);
         }
         assert!(matches!(
-            &page.phases[5].controls[0],
+            &page.phases[6].controls[0],
             TestControlRequirement::Choice {
                 id: CAPTURE_PRESET_CONTROL_ID,
                 selected_id: "iphone-16e-main-48mp",
@@ -1915,7 +1953,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            &page.phases[8].controls[0],
+            &page.phases[9].controls[0],
             TestControlRequirement::Choice {
                 id: LENS_PRESET_CONTROL_ID,
                 options,
@@ -1952,6 +1990,16 @@ mod tests {
             &page.phases[3].controls[0],
             TestControlRequirement::Scalar {
                 id: SUBPIXEL_GEOMETRY_CONTROL_ID,
+                value: 1.0,
+                minimum: 0.0,
+                maximum: 4.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &page.phases[4].controls[0],
+            TestControlRequirement::Scalar {
+                id: PANEL_UNIFORMITY_CONTROL_ID,
                 value: 1.0,
                 minimum: 0.0,
                 maximum: 4.0,
@@ -2000,7 +2048,7 @@ mod tests {
     #[test]
     fn lens_and_exposure_publish_real_aperture_time_and_autofocus_controls() {
         let page = test_page_descriptor(asus()).unwrap();
-        let lens = &page.phases[8].controls;
+        let lens = &page.phases[9].controls;
         assert!(matches!(
             lens.iter().find(|control| matches!(
                 control,
@@ -2028,7 +2076,7 @@ mod tests {
                 ..
             }
         )));
-        assert!(page.phases[9].controls.iter().any(|control| matches!(
+        assert!(page.phases[10].controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Scalar {
                 id: SHUTTER_ANGLE_CONTROL_ID,
@@ -2043,7 +2091,7 @@ mod tests {
         assert!((from_angle.exposure_time_seconds - 1.0 / 48.0).abs() < 1.0e-6);
         let angle_page = test_page_descriptor(unresolved_test_selection(from_angle)).unwrap();
         assert!(matches!(
-            angle_page.phases[9]
+            angle_page.phases[10]
                 .controls
                 .iter()
                 .find(|control| matches!(
@@ -2066,7 +2114,7 @@ mod tests {
     #[test]
     fn sensor_bloom_publishes_and_restores_the_selected_camera_profile() {
         let page = test_page_descriptor(asus()).unwrap();
-        let ids = page.phases[11]
+        let ids = page.phases[12]
             .controls
             .iter()
             .map(|control| match control {
@@ -2153,7 +2201,7 @@ mod tests {
     #[test]
     fn geometry_mode_publishes_only_its_owned_controls() {
         let look_at = test_page_descriptor(asus()).unwrap();
-        let controls = &look_at.phases[5].controls;
+        let controls = &look_at.phases[6].controls;
         assert!(controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Scalar {
@@ -2178,7 +2226,7 @@ mod tests {
 
         let free = apply_test_choice(asus(), GEOMETRY_MODE_CONTROL_ID, "free").unwrap();
         let free = test_page_descriptor(unresolved_test_selection(free)).unwrap();
-        let controls = &free.phases[5].controls;
+        let controls = &free.phases[6].controls;
         for id in [
             CAMERA_POSITION_X_CONTROL_ID,
             CAMERA_POSITION_Y_CONTROL_ID,

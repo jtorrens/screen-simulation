@@ -36,6 +36,28 @@ import Testing
     #expect(try Data(contentsOf: url) == bytes)
 }
 
+@Test func schemaSevenIsRejectedWithoutACompatibilityReader() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-global-library-v7-rejected-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let url = root.appendingPathComponent("library.json")
+    let current = GlobalLibraryDocument(
+        devices: try RustDeviceCatalog.builtIns(),
+        coverGlasses: try RustCoverGlassCatalog.builtIns()
+    )
+    var object = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any]
+    )
+    object["schemaVersion"] = 7
+    let bytes = try JSONSerialization.data(withJSONObject: object)
+    try bytes.write(to: url)
+
+    #expect(throws: GlobalLibraryError.self) {
+        try GlobalLibraryStore(documentURL: url).load()
+    }
+    #expect(try Data(contentsOf: url) == bytes)
+}
+
 @Test func schemaOneMigratesAtomicallyAndSeedsCurrentLibrariesOnce() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-global-library-migration-\(UUID().uuidString)")

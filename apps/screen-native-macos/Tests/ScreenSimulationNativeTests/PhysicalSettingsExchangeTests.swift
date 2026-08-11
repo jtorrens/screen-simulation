@@ -43,6 +43,28 @@ import Testing
     }
 }
 
+@Test @MainActor func physicalSettingsExchangeRejectsVersionSixWithoutAReader() throws {
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    let pipeline = try PhysicalPipelineAuthoringState.seeded(
+        device: device,
+        coverGlass: cover
+    )
+    let controller = PhysicalModelController()
+    var settings = try #require(PhysicalSettingsExchange.metadata(
+        device: device,
+        pipeline: pipeline,
+        model: controller.authoringState
+    ))
+    settings["schema"] = "ScreenSimulation.PhysicalSettings.v6"
+
+    #expect(throws: PhysicalSettingsExchange.ImportError.self) {
+        try PhysicalSettingsExchange.decode(from: ["settings": settings])
+    }
+}
+
 @Test @MainActor func selectedImportMigratesTheRetiredSchemaWithExplicitCalibration() throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {

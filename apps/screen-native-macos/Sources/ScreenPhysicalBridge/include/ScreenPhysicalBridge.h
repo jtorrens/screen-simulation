@@ -16,16 +16,16 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 8u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 9u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
-#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 3u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 4u
 
 typedef struct {
     const uint8_t *bytes;
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 11u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 12u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -44,6 +44,7 @@ typedef struct {
     ScreenUTF8View preview_quality_id;
     float frame_rate;
     float subpixel_geometry_amount;
+    float panel_uniformity_amount;
     float panel_light_spread_amount;
     ScreenUTF8View capture_preset_id;
     ScreenUTF8View geometry_mode_id;
@@ -81,7 +82,7 @@ typedef struct {
     float sensor_bloom_crosstalk_fraction;
     float sensor_bloom_overflow_transfer_fraction;
     float sensor_noise_amount;
-} ScreenTestAuthoringSelectionV11;
+} ScreenTestAuthoringSelectionV12;
 
 typedef struct {
     uint32_t abi_version;
@@ -120,12 +121,12 @@ bool screen_test_authoring_default_selection(
     ScreenUTF8View input_transform_id,
     ScreenUTF8View device_id,
     float frame_rate,
-    ScreenTestAuthoringSelectionV11 *resolved,
+    ScreenTestAuthoringSelectionV12 *resolved,
     const char **error_message
 );
 
 ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
-    const ScreenTestAuthoringSelectionV11 *selection,
+    const ScreenTestAuthoringSelectionV12 *selection,
     const char **error_message
 );
 void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
@@ -177,24 +178,24 @@ bool screen_test_page_preview_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 bool screen_test_authoring_apply_choice(
-    const ScreenTestAuthoringSelectionV11 *selection,
+    const ScreenTestAuthoringSelectionV12 *selection,
     ScreenUTF8View control_id,
     ScreenUTF8View option_id,
-    ScreenTestAuthoringSelectionV11 *resolved,
+    ScreenTestAuthoringSelectionV12 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_scalar(
-    const ScreenTestAuthoringSelectionV11 *selection,
+    const ScreenTestAuthoringSelectionV12 *selection,
     ScreenUTF8View control_id,
     float value,
-    ScreenTestAuthoringSelectionV11 *resolved,
+    ScreenTestAuthoringSelectionV12 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_toggle(
-    const ScreenTestAuthoringSelectionV11 *selection,
+    const ScreenTestAuthoringSelectionV12 *selection,
     ScreenUTF8View control_id,
     bool value,
-    ScreenTestAuthoringSelectionV11 *resolved,
+    ScreenTestAuthoringSelectionV12 *resolved,
     const char **error_message
 );
 
@@ -213,6 +214,7 @@ typedef enum {
 typedef enum {
     SCREEN_PHYSICAL_STAGE_SCREEN_EMISSION = 0x101,
     SCREEN_PHYSICAL_STAGE_SCREEN_SUBPIXEL_GEOMETRY = 0x102,
+    SCREEN_PHYSICAL_STAGE_SCREEN_UNIFORMITY = 0x108,
     SCREEN_PHYSICAL_STAGE_SCREEN_LIGHT_SPREAD = 0x103,
     SCREEN_PHYSICAL_STAGE_SCREEN_TEMPORAL = 0x104,
     SCREEN_PHYSICAL_STAGE_SCREEN_COVER_GLASS = 0x105,
@@ -266,17 +268,18 @@ typedef enum {
     SCREEN_PHYSICAL_INTERMEDIATE_DEVICE_SIGNAL = 1,
     SCREEN_PHYSICAL_INTERMEDIATE_PANEL_EMISSION = 2,
     SCREEN_PHYSICAL_INTERMEDIATE_SUBPIXEL_RADIANCE = 3,
-    SCREEN_PHYSICAL_INTERMEDIATE_PANEL_LIGHT_SPREAD = 4,
-    SCREEN_PHYSICAL_INTERMEDIATE_RELATIVE_GEOMETRY = 5,
-    SCREEN_PHYSICAL_INTERMEDIATE_COVER_ENVIRONMENT = 6,
-    SCREEN_PHYSICAL_INTERMEDIATE_COVER_GLOW = 7,
-    SCREEN_PHYSICAL_INTERMEDIATE_LENS_PROJECTION = 8,
-    SCREEN_PHYSICAL_INTERMEDIATE_SHUTTER_MOTION = 9,
-    SCREEN_PHYSICAL_INTERMEDIATE_COMPUTATIONAL_CAPTURE = 10,
-    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_BLOOM = 11,
-    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_NOISE = 12,
-    SCREEN_PHYSICAL_INTERMEDIATE_RAW_MOSAIC = 13,
-    SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 14,
+    SCREEN_PHYSICAL_INTERMEDIATE_PANEL_UNIFORMITY = 4,
+    SCREEN_PHYSICAL_INTERMEDIATE_PANEL_LIGHT_SPREAD = 5,
+    SCREEN_PHYSICAL_INTERMEDIATE_RELATIVE_GEOMETRY = 6,
+    SCREEN_PHYSICAL_INTERMEDIATE_COVER_ENVIRONMENT = 7,
+    SCREEN_PHYSICAL_INTERMEDIATE_COVER_GLOW = 8,
+    SCREEN_PHYSICAL_INTERMEDIATE_LENS_PROJECTION = 9,
+    SCREEN_PHYSICAL_INTERMEDIATE_SHUTTER_MOTION = 10,
+    SCREEN_PHYSICAL_INTERMEDIATE_COMPUTATIONAL_CAPTURE = 11,
+    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_BLOOM = 12,
+    SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_NOISE = 13,
+    SCREEN_PHYSICAL_INTERMEDIATE_RAW_MOSAIC = 14,
+    SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 15,
 } ScreenPhysicalIntermediate;
 
 typedef struct {
@@ -382,6 +385,15 @@ typedef struct {
     float primary_xy[6];
     float white_xy[2];
     float angular_emission_power[3];
+    float uniformity_character_strength;
+    uint32_t uniformity_seed;
+    float uniformity_broad_luminance_peak_to_peak;
+    float uniformity_mid_luminance_peak_to_peak;
+    float uniformity_fine_luminance_peak_to_peak;
+    float uniformity_chromatic_peak_to_peak;
+    float uniformity_mid_scale_millimeters;
+    float uniformity_fine_scale_millimeters;
+    float uniformity_low_drive_emphasis;
     float light_spread_character_strength;
     float light_spread_core_radius_micrometers[3];
     float light_spread_core_weight[3];
@@ -399,7 +411,7 @@ typedef struct {
     int64_t banding_phase_numerator;
     uint32_t banding_phase_denominator;
     float banding_amount;
-} ScreenDeviceParametersV2;
+} ScreenDeviceParametersV3;
 
 typedef struct {
     uint32_t abi_version;
@@ -592,10 +604,10 @@ float screen_device_preset_white_step_nits(size_t index);
 ScreenUTF8View screen_device_preset_default_cover_id(size_t index);
 bool screen_device_preset_parameters(
     size_t index,
-    ScreenDeviceParametersV2 *parameters
+    ScreenDeviceParametersV3 *parameters
 );
 ScreenDeviceProfileRef screen_device_profile_create(
-    const ScreenDeviceParametersV2 *parameters,
+    const ScreenDeviceParametersV3 *parameters,
     const char **error_message
 );
 void screen_device_profile_release(ScreenDeviceProfileRef profile);

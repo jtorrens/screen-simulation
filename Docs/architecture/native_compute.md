@@ -60,13 +60,15 @@ integer interior span is obtained by prefix subtraction, so accumulation error i
 width rather than total raster area. This changes lookup cost without changing placement, EOTF,
 panel phase or any physical checkpoint. The kernel also evaluates only the
 checkpoint terms whose algebraic coefficients are nonzero. In the final optical result, ideal,
-continuous, physical and spread contributions are combined by their exact authored coefficients;
+continuous, physical, spatial-uniformity and spread contributions are combined by their exact authored coefficients;
 terms that cancel identically are not sampled merely to subtract them later. Alpha retains its
 complete aperture-integrated source evaluation. Cover glow reuses the same exact area sampler for
 two centered physical-radius filters instead of nesting a shifted nine-tap cover lattice over the
 nine-tap panel-spread lattice. Its positive core/tail mixture preserves uniform linear energy,
 keeps support outside the active outline and is materially cheaper without introducing a second
 post-sensor path.
+
+Panel Uniformity is evaluated in the same fused optical kernel immediately after native subpixel emission. Immutable Device parameters carry explicit amplitudes, physical scales and seed; no texture name, preset lookup or frame-derived seed crosses the compute boundary. CPU and Metal evaluate the same deterministic broad and band-limited fields in device coordinates. The accepted uniformity gain at the central per-channel optical footprint is reused by the micrometre-scale Panel Light Spread and Cover Glow taps because every supported uniformity wavelength is materially larger than those supports. This is a declared scale-separation approximation, not a screen-space blur or temporal noise source. Character zero selects the exact pre-existing arithmetic composition so the inserted phase is bit-identical when disabled.
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and

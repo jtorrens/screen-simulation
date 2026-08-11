@@ -11,7 +11,7 @@ use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, CameraSample, GeometryError,
     KeyframeInterpolation, LensModel, Quaternion, ScreenSample, TransformKeyframe, TransformTrack,
 };
-use screen_panel::{LcdProfile, PanelLightSpreadProfile};
+use screen_panel::{LcdProfile, PanelLightSpreadProfile, PanelUniformityProfile};
 use screen_sensor::{ComputationalCaptureProfile, SensorProfile};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +19,7 @@ use screen_sensor::{ComputationalCaptureProfile, SensorProfile};
 pub enum PhysicalStage {
     PanelEmission = 0x101,
     SubpixelGeometry = 0x102,
+    PanelUniformity = 0x108,
     PanelLightSpread = 0x103,
     PanelTemporal = 0x104,
     CoverGlass = 0x105,
@@ -34,9 +35,10 @@ pub enum PhysicalStage {
     ComputationalCapture = 0x208,
 }
 
-pub const PHYSICAL_STAGE_ORDER: [PhysicalStage; 15] = [
+pub const PHYSICAL_STAGE_ORDER: [PhysicalStage; 16] = [
     PhysicalStage::PanelEmission,
     PhysicalStage::SubpixelGeometry,
+    PhysicalStage::PanelUniformity,
     PhysicalStage::PanelLightSpread,
     PhysicalStage::PanelTemporal,
     PhysicalStage::SceneGeometry,
@@ -59,17 +61,18 @@ pub enum PhysicalIntermediate {
     DeviceSignal = 1,
     PanelEmission = 2,
     SubpixelRadiance = 3,
-    PanelLightSpread = 4,
-    RelativeGeometry = 5,
-    CoverEnvironment = 6,
-    CoverGlow = 7,
-    LensProjection = 8,
-    ShutterMotion = 9,
-    ComputationalCapture = 10,
-    SensorBloom = 11,
-    SensorNoise = 12,
-    RawMosaic = 13,
-    DevelopedAcesCg = 14,
+    PanelUniformity = 4,
+    PanelLightSpread = 5,
+    RelativeGeometry = 6,
+    CoverEnvironment = 7,
+    CoverGlow = 8,
+    LensProjection = 9,
+    ShutterMotion = 10,
+    ComputationalCapture = 11,
+    SensorBloom = 12,
+    SensorNoise = 13,
+    RawMosaic = 14,
+    DevelopedAcesCg = 15,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -199,6 +202,7 @@ impl ResolvedShutterMotionSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalPipelineSnapshot {
     pub panel: LcdProfile,
+    pub panel_uniformity: PanelUniformityProfile,
     pub panel_light_spread: PanelLightSpreadProfile,
     pub cover: CoverGlassProfile,
     pub environment: IncidentEnvironment,

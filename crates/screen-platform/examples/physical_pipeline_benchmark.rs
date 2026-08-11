@@ -76,6 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let plan = PhysicalPipelineExecutionPlan {
                 panel: preset.profile(),
+                panel_uniformity: preset.uniformity,
                 panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
                 placement: RasterPlacement::Stretch,
                 quality,

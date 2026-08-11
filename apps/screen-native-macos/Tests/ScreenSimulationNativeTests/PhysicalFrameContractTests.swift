@@ -26,6 +26,8 @@ import Testing
     #expect(PhysicalDomainID.capture.rawValue == SCREEN_PHYSICAL_DOMAIN_CAPTURE.rawValue)
     #expect(ScreenPhysicalSection.emission.rawValue ==
         SCREEN_PHYSICAL_STAGE_SCREEN_EMISSION.rawValue)
+    #expect(ScreenPhysicalSection.panelUniformity.rawValue ==
+        SCREEN_PHYSICAL_STAGE_SCREEN_UNIFORMITY.rawValue)
     #expect(CapturePhysicalSection.developDemosaic.rawValue ==
         SCREEN_PHYSICAL_STAGE_CAPTURE_DEVELOP_DEMOSAIC.rawValue)
     #expect(CapturePhysicalSection.computationalCapture.rawValue ==
@@ -41,11 +43,11 @@ import Testing
     #expect(PhysicalQuality.allCases.map(\.rawValue) == [0, 1, 2, 3])
     #expect(PhysicalDomainID.allCases.map(\.rawValue) == [0x100, 0x200])
     #expect(PhysicalStageID.ordered.map(\.id) == [
-        0x101, 0x102, 0x103, 0x104, 0x201, 0x105,
+        0x101, 0x102, 0x108, 0x103, 0x104, 0x201, 0x105,
         0x106, 0x107, 0x202, 0x203, 0x208, 0x207, 0x204, 0x205, 0x206,
     ])
     #expect(PhysicalStageID.ordered.map(\.domain) == [
-        .screen, .screen, .screen, .screen, .capture, .screen,
+        .screen, .screen, .screen, .screen, .screen, .capture, .screen,
         .screen, .screen, .capture, .capture, .capture, .capture, .capture, .capture, .capture,
     ])
 }

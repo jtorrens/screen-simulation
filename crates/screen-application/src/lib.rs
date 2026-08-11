@@ -47,7 +47,7 @@ use screen_geometry::{
 use screen_media::{AlphaInterpretation, AlphaPresence, DecodedFrame};
 use screen_panel::{
     FlatPanelGeometry, FlatPanelQuality, FlatPanelSampling, LcdProfile, PanelError,
-    PanelLightSpreadProfile, ValidatedPanelEvaluator,
+    PanelLightSpreadProfile, PanelUniformityProfile, ValidatedPanelEvaluator,
 };
 use screen_sensor::{
     BayerPattern, CaptureIdentity, ComputationalCaptureProfile, IntegratedOpticalExposure,
@@ -492,6 +492,7 @@ pub struct PhysicalPipelineRequest {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalPipelineExecutionPlan {
     pub panel: LcdProfile,
+    pub panel_uniformity: PanelUniformityProfile,
     pub panel_light_spread: PanelLightSpreadProfile,
     pub placement: RasterPlacement,
     pub quality: FlatPanelQuality,
@@ -562,6 +563,7 @@ impl PhysicalPipelineExecutionPlan {
             | PhysicalIntermediate::DeviceSignal
             | PhysicalIntermediate::PanelEmission
             | PhysicalIntermediate::SubpixelRadiance
+            | PhysicalIntermediate::PanelUniformity
             | PhysicalIntermediate::PanelLightSpread => {
                 self.scene_geometry_amount = 0.0;
                 self.lens_amount = 0.0;
@@ -1093,6 +1095,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         plan.screen_amount,
         plan.emission_amount,
         plan.subpixel_geometry_amount,
+        plan.panel_uniformity.character_strength,
         plan.temporal_emission_amount,
         plan.scene_geometry_amount,
         plan.lens_amount,
@@ -1106,6 +1109,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         return Err(ApplicationError::InvalidCharacterStrength);
     }
     plan.panel_light_spread
+        .validate()
+        .map_err(ApplicationError::Panel)?;
+    plan.panel_uniformity
         .validate()
         .map_err(ApplicationError::Panel)?;
     let cover = plan
@@ -1252,9 +1258,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     for y in 0..sampling.effective_height {
         for x in 0..sampling.effective_width {
             let mut physical_native = LinearRgb::new(0.0, 0.0, 0.0);
+            let mut uniform_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut spread_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut glow_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut continuous_native = LinearRgb::new(0.0, 0.0, 0.0);
+            let mut uniform_continuous_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut carrier_detail_native = LinearRgb::new(0.0, 0.0, 0.0);
             let mut average_device_code = DeviceRgb::BLACK;
             let mut ideal = [0.0_f32; 4];
@@ -1497,6 +1505,14 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     device_maximum,
                                     channel,
                                 );
+                                let base_gains = plan.panel_uniformity.channel_gains(
+                                    plan.panel,
+                                    device_minimum,
+                                    device_maximum,
+                                    area.device_code,
+                                );
+                                let base_gain = [base_gains.r, base_gains.g, base_gains.b][channel];
+                                let uniform_base = base * base_gain;
                                 let carrier_area = sample_placed_area(
                                     &prepared.integral,
                                     &emission_integral,
@@ -1506,19 +1522,30 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     carrier_minimum,
                                     carrier_maximum,
                                 );
+                                let carrier_device_minimum = Vec2 {
+                                    x: carrier_minimum.x * plan.panel.native_width as f32,
+                                    y: carrier_minimum.y * plan.panel.native_height as f32,
+                                };
+                                let carrier_device_maximum = Vec2 {
+                                    x: carrier_maximum.x * plan.panel.native_width as f32,
+                                    y: carrier_maximum.y * plan.panel.native_height as f32,
+                                };
                                 let carrier = evaluator.native_channel_over_device_rect(
                                     carrier_area.device_code,
-                                    Vec2 {
-                                        x: carrier_minimum.x * plan.panel.native_width as f32,
-                                        y: carrier_minimum.y * plan.panel.native_height as f32,
-                                    },
-                                    Vec2 {
-                                        x: carrier_maximum.x * plan.panel.native_width as f32,
-                                        y: carrier_maximum.y * plan.panel.native_height as f32,
-                                    },
+                                    carrier_device_minimum,
+                                    carrier_device_maximum,
                                     channel,
                                 );
-                                let carrier_detail = (carrier - base) * optical_weight;
+                                let carrier_gains = plan.panel_uniformity.channel_gains(
+                                    plan.panel,
+                                    carrier_device_minimum,
+                                    carrier_device_maximum,
+                                    carrier_area.device_code,
+                                );
+                                let carrier_gain =
+                                    [carrier_gains.r, carrier_gains.g, carrier_gains.b][channel];
+                                let carrier_detail =
+                                    (carrier * carrier_gain - uniform_base) * optical_weight;
                                 let spread_at = |cover_offset_meters: [f32; 2]| {
                                     plan.panel_light_spread
                                         .samples_for_channel(channel)
@@ -1549,20 +1576,22 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                                 shifted_minimum,
                                                 shifted_maximum,
                                             );
+                                            let shifted_device_minimum = Vec2 {
+                                                x: shifted_minimum.x
+                                                    * plan.panel.native_width as f32,
+                                                y: shifted_minimum.y
+                                                    * plan.panel.native_height as f32,
+                                            };
+                                            let shifted_device_maximum = Vec2 {
+                                                x: shifted_maximum.x
+                                                    * plan.panel.native_width as f32,
+                                                y: shifted_maximum.y
+                                                    * plan.panel.native_height as f32,
+                                            };
                                             evaluator.native_channel_over_device_rect(
                                                 shifted.device_code,
-                                                Vec2 {
-                                                    x: shifted_minimum.x
-                                                        * plan.panel.native_width as f32,
-                                                    y: shifted_minimum.y
-                                                        * plan.panel.native_height as f32,
-                                                },
-                                                Vec2 {
-                                                    x: shifted_maximum.x
-                                                        * plan.panel.native_width as f32,
-                                                    y: shifted_maximum.y
-                                                        * plan.panel.native_height as f32,
-                                                },
+                                                shifted_device_minimum,
+                                                shifted_device_maximum,
                                                 channel,
                                             ) * sample.weight
                                         })
@@ -1578,23 +1607,25 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         minimum,
                                         maximum,
                                     );
+                                    let sampled_device_minimum = Vec2 {
+                                        x: minimum.x * plan.panel.native_width as f32,
+                                        y: minimum.y * plan.panel.native_height as f32,
+                                    };
+                                    let sampled_device_maximum = Vec2 {
+                                        x: maximum.x * plan.panel.native_width as f32,
+                                        y: maximum.y * plan.panel.native_height as f32,
+                                    };
                                     evaluator.native_channel_over_device_rect(
                                         sampled.device_code,
-                                        Vec2 {
-                                            x: minimum.x * plan.panel.native_width as f32,
-                                            y: minimum.y * plan.panel.native_height as f32,
-                                        },
-                                        Vec2 {
-                                            x: maximum.x * plan.panel.native_width as f32,
-                                            y: maximum.y * plan.panel.native_height as f32,
-                                        },
+                                        sampled_device_minimum,
+                                        sampled_device_maximum,
                                         channel,
                                     )
                                 };
                                 let value = if plan.panel_light_spread.character_strength == 0.0 {
-                                    base * optical_weight
+                                    uniform_base * optical_weight
                                 } else {
-                                    spread_at([0.0, 0.0]) * optical_weight
+                                    spread_at([0.0, 0.0]) * base_gain * optical_weight
                                 };
                                 let glow_value = if plan.cover.glow.character_strength == 0.0 {
                                     value
@@ -1631,40 +1662,56 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     );
                                     value * (1.0 - scattered)
                                         + core_blur
+                                            * base_gain
                                             * scattered
                                             * (1.0 - glow.tail_fraction)
                                             * optical_weight
                                         + tail_blur
+                                            * base_gain
                                             * scattered
                                             * glow.tail_fraction
                                             * optical_weight
                                 };
                                 let base = base * optical_weight;
+                                let uniform_base = uniform_base * optical_weight;
+                                let uniform_continuous = [
+                                    area.linear_native_emission.r,
+                                    area.linear_native_emission.g,
+                                    area.linear_native_emission.b,
+                                ][channel]
+                                    * base_gain
+                                    * optical_weight;
                                 match channel {
                                     0 => {
                                         physical_native.r += base;
+                                        uniform_native.r += uniform_base;
                                         spread_native.r += value;
                                         glow_native.r += glow_value;
                                         continuous_native.r +=
                                             area.linear_native_emission.r * optical_weight;
+                                        uniform_continuous_native.r += uniform_continuous;
                                         average_device_code.r += area.device_code.r * layer_weight;
                                         carrier_detail_native.r += carrier_detail;
                                     }
                                     1 => {
                                         physical_native.g += base;
+                                        uniform_native.g += uniform_base;
                                         spread_native.g += value;
                                         glow_native.g += glow_value;
                                         continuous_native.g +=
                                             area.linear_native_emission.g * optical_weight;
+                                        uniform_continuous_native.g += uniform_continuous;
                                         average_device_code.g += area.device_code.g * layer_weight;
                                         carrier_detail_native.g += carrier_detail;
                                     }
                                     _ => {
                                         physical_native.b += base;
+                                        uniform_native.b += uniform_base;
                                         spread_native.b += value;
                                         glow_native.b += glow_value;
                                         continuous_native.b +=
                                             area.linear_native_emission.b * optical_weight;
+                                        uniform_continuous_native.b += uniform_continuous;
                                         average_device_code.b += area.device_code.b * layer_weight;
                                         carrier_detail_native.b += carrier_detail;
                                     }
@@ -1691,6 +1738,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             physical_native.r *= reciprocal;
             physical_native.g *= reciprocal;
             physical_native.b *= reciprocal;
+            uniform_native.r *= reciprocal;
+            uniform_native.g *= reciprocal;
+            uniform_native.b *= reciprocal;
             spread_native.r *= reciprocal;
             spread_native.g *= reciprocal;
             spread_native.b *= reciprocal;
@@ -1700,6 +1750,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             continuous_native.r *= reciprocal;
             continuous_native.g *= reciprocal;
             continuous_native.b *= reciprocal;
+            uniform_continuous_native.r *= reciprocal;
+            uniform_continuous_native.g *= reciprocal;
+            uniform_continuous_native.b *= reciprocal;
             carrier_detail_native.r *= reciprocal;
             carrier_detail_native.g *= reciprocal;
             carrier_detail_native.b *= reciprocal;
@@ -1724,6 +1777,20 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * physical_native.b)
                     / parameters.white_level_nits,
             ];
+            let uniform = [
+                (matrix[0][0] * uniform_native.r
+                    + matrix[0][1] * uniform_native.g
+                    + matrix[0][2] * uniform_native.b)
+                    / parameters.white_level_nits,
+                (matrix[1][0] * uniform_native.r
+                    + matrix[1][1] * uniform_native.g
+                    + matrix[1][2] * uniform_native.b)
+                    / parameters.white_level_nits,
+                (matrix[2][0] * uniform_native.r
+                    + matrix[2][1] * uniform_native.g
+                    + matrix[2][2] * uniform_native.b)
+                    / parameters.white_level_nits,
+            ];
             let continuous = [
                 (matrix[0][0] * continuous_native.r
                     + matrix[0][1] * continuous_native.g
@@ -1736,6 +1803,20 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 (matrix[2][0] * continuous_native.r
                     + matrix[2][1] * continuous_native.g
                     + matrix[2][2] * continuous_native.b)
+                    / parameters.white_level_nits,
+            ];
+            let uniform_continuous = [
+                (matrix[0][0] * uniform_continuous_native.r
+                    + matrix[0][1] * uniform_continuous_native.g
+                    + matrix[0][2] * uniform_continuous_native.b)
+                    / parameters.white_level_nits,
+                (matrix[1][0] * uniform_continuous_native.r
+                    + matrix[1][1] * uniform_continuous_native.g
+                    + matrix[1][2] * uniform_continuous_native.b)
+                    / parameters.white_level_nits,
+                (matrix[2][0] * uniform_continuous_native.r
+                    + matrix[2][1] * uniform_continuous_native.g
+                    + matrix[2][2] * uniform_continuous_native.b)
                     / parameters.white_level_nits,
             ];
             let spread = [
@@ -1789,25 +1870,47 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             } else {
                 glowed
             };
-            let staged = [
-                ideal[0]
-                    + plan.emission_amount * (continuous[0] - ideal[0])
-                    + plan.subpixel_geometry_amount * (physical[0] - continuous[0])
-                    + (spread[0] - physical[0]),
-                ideal[1]
-                    + plan.emission_amount * (continuous[1] - ideal[1])
-                    + plan.subpixel_geometry_amount * (physical[1] - continuous[1])
-                    + (spread[1] - physical[1]),
-                ideal[2]
-                    + plan.emission_amount * (continuous[2] - ideal[2])
-                    + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
-                    + (spread[2] - physical[2]),
-            ];
-            let staged = [
-                staged[0] + glowed[0] - spread[0],
-                staged[1] + glowed[1] - spread[1],
-                staged[2] + glowed[2] - spread[2],
-            ];
+            let staged = if plan.panel_uniformity.character_strength == 0.0 {
+                let structured_and_spread = [
+                    ideal[0]
+                        + plan.emission_amount * (continuous[0] - ideal[0])
+                        + plan.subpixel_geometry_amount * (physical[0] - continuous[0])
+                        + (spread[0] - physical[0]),
+                    ideal[1]
+                        + plan.emission_amount * (continuous[1] - ideal[1])
+                        + plan.subpixel_geometry_amount * (physical[1] - continuous[1])
+                        + (spread[1] - physical[1]),
+                    ideal[2]
+                        + plan.emission_amount * (continuous[2] - ideal[2])
+                        + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
+                        + (spread[2] - physical[2]),
+                ];
+                [
+                    structured_and_spread[0] + glowed[0] - spread[0],
+                    structured_and_spread[1] + glowed[1] - spread[1],
+                    structured_and_spread[2] + glowed[2] - spread[2],
+                ]
+            } else {
+                let uniformed = [
+                    ideal[0] * (1.0 - plan.emission_amount)
+                        + uniform_continuous[0]
+                            * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + uniform[0] * plan.subpixel_geometry_amount,
+                    ideal[1] * (1.0 - plan.emission_amount)
+                        + uniform_continuous[1]
+                            * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + uniform[1] * plan.subpixel_geometry_amount,
+                    ideal[2] * (1.0 - plan.emission_amount)
+                        + uniform_continuous[2]
+                            * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + uniform[2] * plan.subpixel_geometry_amount,
+                ];
+                [
+                    uniformed[0] + spread[0] - uniform[0] + glowed[0] - spread[0],
+                    uniformed[1] + spread[1] - uniform[1] + glowed[1] - spread[1],
+                    uniformed[2] + spread[2] - uniform[2] + glowed[2] - spread[2],
+                ]
+            };
             let resolved_temporal_gain =
                 physical_row_temporal_gain(plan, y as usize, sampling.effective_height as usize)?;
             let temporal_gain =
@@ -1904,6 +2007,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 ],
                 PhysicalIntermediate::PanelEmission => continuous,
                 PhysicalIntermediate::SubpixelRadiance => physical,
+                PhysicalIntermediate::PanelUniformity => uniform,
                 PhysicalIntermediate::PanelLightSpread => spread,
                 PhysicalIntermediate::RelativeGeometry => temporally_integrated,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
@@ -7791,6 +7895,7 @@ mod tests {
             },
             plan: PhysicalPipelineExecutionPlan {
                 panel,
+                panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
                 panel_light_spread: PanelLightSpreadProfile {
                     character_strength: 0.0,
                     ..PanelLightSpreadProfile::LCD_DESKTOP

@@ -30,6 +30,11 @@ import Testing
             identity: UInt64(10 + offset)
         )
         let result = try await terminalSnapshot(job)
+        if result.state != .complete {
+            Issue.record(
+                "intermediate=\(intermediate) diagnostics=\(result.diagnostics.map(\.message))"
+            )
+        }
         #expect(result.state == .complete)
         #expect(result.returnedIntermediate == intermediate)
         #expect(result.frame != nil)
@@ -48,14 +53,14 @@ import Testing
     )
     let result = try await terminalSnapshot(job)
     #expect(result.state == .complete)
-    #expect(result.diagnostics.count == 15)
-    #expect(result.diagnostics[9].message.contains("STATIC_INPUT"))
-    #expect(result.diagnostics.prefix(10).allSatisfy {
+    #expect(result.diagnostics.count == 16)
+    #expect(result.diagnostics[10].message.contains("STATIC_INPUT"))
+    #expect(result.diagnostics.prefix(11).allSatisfy {
         $0.elapsedNanoseconds == result.diagnostics[0].elapsedNanoseconds
     })
-    #expect(result.diagnostics[10].elapsedNanoseconds == 0)
-    #expect(result.diagnostics[11..<15].allSatisfy {
-        $0.elapsedNanoseconds == result.diagnostics[11].elapsedNanoseconds
+    #expect(result.diagnostics[11].elapsedNanoseconds == 0)
+    #expect(result.diagnostics[12..<16].allSatisfy {
+        $0.elapsedNanoseconds == result.diagnostics[12].elapsedNanoseconds
     })
 }
 
@@ -178,7 +183,7 @@ import Testing
                 #expect(result.state == .complete)
                 #expect(result.frame != nil)
                 #expect(result.progress == 1)
-                #expect(result.diagnostics.count == 15)
+                #expect(result.diagnostics.count == 16)
             }
         }
     }
@@ -422,10 +427,14 @@ private func submit(
     dimensions: PhysicalDimensions? = nil,
     exposureSeconds: Double? = nil
 ) throws -> PhysicalMetalFrameJob {
+    let uniformityAmount = try #require(contributions.first {
+        $0.stage == .screen(.panelUniformity)
+    }?.amount)
     let spreadAmount = try #require(contributions.first {
         $0.stage == .screen(.panelLightSpread)
     }?.amount)
     var effectiveDefinition = fixture.device.definition
+    effectiveDefinition.panelUniformity.characterStrength = uniformityAmount
     effectiveDefinition.panelLightSpread.characterStrength = spreadAmount
     let frame = try PhysicalFrameSelection(
         frameIndex: 0,

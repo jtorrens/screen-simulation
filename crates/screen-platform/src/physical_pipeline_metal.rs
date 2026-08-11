@@ -58,6 +58,9 @@ struct PhysicalPipelineParams {
     matrix1: [f32; 4],
     matrix2: [f32; 4],
     panel_size_meters: [f32; 4],
+    uniformity_amplitudes: [f32; 4],
+    uniformity_scales: [f32; 4],
+    uniformity_seed: [u32; 4],
     spread_core_radius: [f32; 4],
     spread_core_weight: [f32; 4],
     spread_tail_radius: [f32; 4],
@@ -143,7 +146,7 @@ pub struct MetalPhysicalPipelineResult {
     pub texture: Texture,
     pub geometry: FlatPanelGeometry,
     pub sampling: FlatPanelSampling,
-    pub stage_elapsed_nanoseconds: [u64; 15],
+    pub stage_elapsed_nanoseconds: [u64; 16],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -698,11 +701,11 @@ impl MetalPhysicalPipeline {
             .elapsed()
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        stage_elapsed_nanoseconds[11] = capture_elapsed;
         stage_elapsed_nanoseconds[12] = capture_elapsed;
         stage_elapsed_nanoseconds[13] = capture_elapsed;
+        stage_elapsed_nanoseconds[14] = capture_elapsed;
         if plan.development_enabled {
-            stage_elapsed_nanoseconds[14] = capture_elapsed;
+            stage_elapsed_nanoseconds[15] = capture_elapsed;
         }
         Ok(MetalPhysicalPipelineResult {
             texture: output,
@@ -756,7 +759,7 @@ impl MetalPhysicalPipeline {
         let mut accumulated: Option<Texture> = None;
         let mut final_geometry = None;
         let mut final_sampling = None;
-        let mut stage_elapsed_nanoseconds = [0_u64; 15];
+        let mut stage_elapsed_nanoseconds = [0_u64; 16];
         let mut prefix_cache: Vec<(*const TextureRef, *const TextureRef, Texture, Texture)> =
             Vec::new();
         for (index, (source, signal, plan, weight, row)) in samples.iter().enumerate() {
@@ -980,6 +983,9 @@ impl MetalPhysicalPipeline {
         plan.environment
             .validate()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        plan.panel_uniformity
+            .validate()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         match (plan.environment, environment_acescg) {
             (IncidentEnvironment::Procedural(_), None) => {}
             (IncidentEnvironment::Equirectangular(_), Some(texture))
@@ -1054,6 +1060,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::DeviceSignal
                 | PhysicalIntermediate::PanelEmission
                 | PhysicalIntermediate::SubpixelRadiance
+                | PhysicalIntermediate::PanelUniformity
                 | PhysicalIntermediate::PanelLightSpread
                 | PhysicalIntermediate::RelativeGeometry
                 | PhysicalIntermediate::CoverEnvironment
@@ -1079,7 +1086,7 @@ impl MetalPhysicalPipeline {
                 texture: source_acescg.to_owned(),
                 geometry,
                 sampling,
-                stage_elapsed_nanoseconds: [0; 15],
+                stage_elapsed_nanoseconds: [0; 16],
             });
         }
 
@@ -1196,6 +1203,19 @@ impl MetalPhysicalPipeline {
                 0.0,
                 0.0,
             ],
+            uniformity_amplitudes: [
+                plan.panel_uniformity.broad_luminance_peak_to_peak,
+                plan.panel_uniformity.mid_luminance_peak_to_peak,
+                plan.panel_uniformity.fine_luminance_peak_to_peak,
+                plan.panel_uniformity.chromatic_peak_to_peak,
+            ],
+            uniformity_scales: [
+                plan.panel_uniformity.mid_scale_millimeters,
+                plan.panel_uniformity.fine_scale_millimeters,
+                plan.panel_uniformity.low_drive_emphasis,
+                plan.panel_uniformity.character_strength,
+            ],
+            uniformity_seed: [plan.panel_uniformity.seed, 0, 0, 0],
             spread_core_radius: [
                 plan.panel_light_spread.core_radius_micrometers.r,
                 plan.panel_light_spread.core_radius_micrometers.g,
@@ -1525,8 +1545,8 @@ impl MetalPhysicalPipeline {
             .elapsed()
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        let mut stage_elapsed_nanoseconds = [0_u64; 15];
-        stage_elapsed_nanoseconds[..10].fill(elapsed);
+        let mut stage_elapsed_nanoseconds = [0_u64; 16];
+        stage_elapsed_nanoseconds[..11].fill(elapsed);
         Ok(MetalPhysicalPipelineResult {
             texture: output,
             geometry,
@@ -1724,6 +1744,7 @@ mod tests {
             },
             PhysicalPipelineExecutionPlan {
                 panel,
+                panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
                 panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
                 placement,
                 quality,
@@ -1964,6 +1985,69 @@ mod tests {
                 assert!(
                     maximum <= 2.0e-3,
                     "cover CPU/Metal deviation {maximum}; cover={cover:?}; environment={environment:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn panel_uniformity_matches_cpu_for_identity_calibrated_and_artistic_amounts() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for layout in [StripeLayout::Rgb, StripeLayout::Bgr] {
+            for (placement, amount, intermediate) in [
+                (
+                    RasterPlacement::Stretch,
+                    0.0,
+                    PhysicalIntermediate::PanelUniformity,
+                ),
+                (
+                    RasterPlacement::Stretch,
+                    1.0,
+                    PhysicalIntermediate::PanelUniformity,
+                ),
+                (
+                    RasterPlacement::Stretch,
+                    4.0,
+                    PhysicalIntermediate::PanelUniformity,
+                ),
+                (
+                    RasterPlacement::Fit,
+                    1.0,
+                    PhysicalIntermediate::PanelUniformity,
+                ),
+                (
+                    RasterPlacement::Fit,
+                    1.0,
+                    PhysicalIntermediate::PanelLightSpread,
+                ),
+            ] {
+                let (input, mut plan) =
+                    fixture(placement, FlatPanelQuality::High, layout, 0.2, 1.0);
+                plan.panel_uniformity.character_strength = amount;
+                plan.requested_intermediate = intermediate;
+                let source = texture(&device, input.width, input.height, &input.acescg);
+                let signal_values = input
+                    .device_signal
+                    .pixels
+                    .iter()
+                    .map(|value| [value.r, value.g, value.b, 1.0])
+                    .collect::<Vec<_>>();
+                let signal = texture(&device, input.width, input.height, &signal_values);
+                let cpu =
+                    evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+                        .expect("CPU uniformity oracle");
+                let gpu = backend
+                    .evaluate(&source, &signal, plan, |_| {}, || false)
+                    .expect("Metal uniformity result");
+                let maximum = read(&gpu.texture)
+                    .iter()
+                    .zip(&cpu.acescg)
+                    .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    maximum <= 2.0e-3,
+                    "uniformity CPU/Metal deviation {maximum}; layout={layout:?}; placement={placement:?}; amount={amount}; intermediate={intermediate:?}"
                 );
             }
         }
