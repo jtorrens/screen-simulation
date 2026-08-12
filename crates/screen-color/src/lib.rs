@@ -8,12 +8,90 @@ use ocio_rs::{
     TransformDirection,
 };
 use screen_contracts::{
-    ColorPrimaries, DeviceRgb, EncodedColorMetadata, LinearRgb, MatrixCoefficients,
+    ColorPrimaries, DeviceRgb, EncodedColorMetadata, LinearRgb, MatrixCoefficients, SignalRange,
     TransferCharacteristic,
 };
 
 pub const OCIO_CONFIGURATION_ID: &str = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
 const ACESCG_COLOR_SPACE: &str = "ACEScg";
+pub const RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID: &str = "recording-output-signal-v1";
+pub const IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID: &str = "iphone-heic-display-p3-bt709-full-v1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingOutputTransform {
+    IphoneHeicDisplayP3Bt709Full,
+}
+
+impl RecordingOutputTransform {
+    pub const ALL: [Self; 1] = [Self::IphoneHeicDisplayP3Bt709Full];
+
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::IphoneHeicDisplayP3Bt709Full => IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
+        }
+    }
+
+    pub fn from_stable_id(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|transform| transform.stable_id() == value)
+    }
+
+    pub fn encoded_color(self) -> EncodedColorMetadata {
+        match self {
+            Self::IphoneHeicDisplayP3Bt709Full => EncodedColorMetadata {
+                primaries: Some(ColorPrimaries::P3D65),
+                transfer: Some(TransferCharacteristic::Bt709),
+                matrix: Some(MatrixCoefficients::Rgb),
+                range: Some(SignalRange::Full),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingOutputAlpha {
+    Opaque,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordingOutputSignal {
+    pub artifact_id: &'static str,
+    pub transform: RecordingOutputTransform,
+    pub width: u32,
+    pub height: u32,
+    /// Exact nonlinear RGB signal in RGBA float before quantization or chroma subsampling.
+    pub rgba: Vec<[f32; 4]>,
+    pub color: EncodedColorMetadata,
+    pub alpha: RecordingOutputAlpha,
+}
+
+impl RecordingOutputSignal {
+    pub fn validate(&self) -> Result<&Self, ColorError> {
+        let expected = usize::try_from(self.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(self.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or(ColorError::InvalidRecordingOutputSignal)?;
+        if self.artifact_id != RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID
+            || self.width == 0
+            || self.height == 0
+            || self.rgba.len() != expected
+            || self.color != self.transform.encoded_color()
+            || self.alpha != RecordingOutputAlpha::Opaque
+            || self
+                .rgba
+                .iter()
+                .any(|pixel| pixel.iter().any(|value| !value.is_finite()) || pixel[3] != 1.0)
+        {
+            return Err(ColorError::InvalidRecordingOutputSignal);
+        }
+        Ok(self)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CameraOutputTransform {
@@ -431,6 +509,28 @@ impl ColorEngine {
         })
     }
 
+    pub fn recording_output_processor(
+        &self,
+        transform: RecordingOutputTransform,
+    ) -> Result<RecordingOutputProcessor, ColorError> {
+        let processor = match transform {
+            RecordingOutputTransform::IphoneHeicDisplayP3Bt709Full => {
+                self.config.processor_display(
+                    ACESCG_COLOR_SPACE,
+                    "Display P3 - Display",
+                    "ACES 2.0 - SDR 100 nits (P3 D65)",
+                    TransformDirection::Forward,
+                )
+            }
+        }
+        .and_then(|processor| processor.default_cpu_processor())
+        .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        Ok(RecordingOutputProcessor {
+            transform,
+            processor,
+        })
+    }
+
     pub fn camera_output_gpu_shader(
         &self,
         transform: CameraOutputTransform,
@@ -521,6 +621,76 @@ pub struct CameraOutputProcessor {
     processor: CPUProcessor,
 }
 
+pub struct RecordingOutputProcessor {
+    transform: RecordingOutputTransform,
+    processor: CPUProcessor,
+}
+
+impl RecordingOutputProcessor {
+    pub fn apply_acescg_raster(
+        &self,
+        width: u32,
+        height: u32,
+        pixels: &[LinearRgb],
+    ) -> Result<RecordingOutputSignal, ColorError> {
+        let expected = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or(ColorError::InvalidRecordingOutputSignal)?;
+        if width == 0 || height == 0 || pixels.len() != expected {
+            return Err(ColorError::InvalidRecordingOutputSignal);
+        }
+        let mut rgba = pixels
+            .iter()
+            .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
+            .collect::<Vec<_>>();
+        self.processor
+            .try_apply_rgba_pixels(
+                rgba.as_mut_slice().as_flattened_mut(),
+                i64::try_from(expected).map_err(|_| ColorError::PixelCountOverflow)?,
+                4,
+            )
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        for pixel in &mut rgba {
+            for channel in &mut pixel[..3] {
+                *channel = bt709_encode(srgb_decode(*channel));
+            }
+            pixel[3] = 1.0;
+        }
+        let signal = RecordingOutputSignal {
+            artifact_id: RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID,
+            transform: self.transform,
+            width,
+            height,
+            rgba,
+            color: self.transform.encoded_color(),
+            alpha: RecordingOutputAlpha::Opaque,
+        };
+        signal.validate()?;
+        Ok(signal)
+    }
+}
+
+fn srgb_decode(value: f32) -> f32 {
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn bt709_encode(value: f32) -> f32 {
+    if value < 0.018 {
+        4.5 * value
+    } else {
+        1.099 * value.powf(0.45) - 0.099
+    }
+}
+
 impl CameraOutputProcessor {
     pub const fn transform(&self) -> CameraOutputTransform {
         self.transform
@@ -583,6 +753,7 @@ pub enum ColorError {
     MissingLibraryVersion,
     InvalidRgbaBufferLength(usize),
     PixelCountOverflow,
+    InvalidRecordingOutputSignal,
     OpenColorIo(String),
 }
 
@@ -602,6 +773,9 @@ impl fmt::Display for ColorError {
                 )
             }
             Self::PixelCountOverflow => formatter.write_str("RGBA pixel count exceeds i64"),
+            Self::InvalidRecordingOutputSignal => {
+                formatter.write_str("invalid recording-output-signal-v1 artifact")
+            }
             Self::OpenColorIo(message) => write!(formatter, "OpenColorIO: {message}"),
         }
     }
@@ -722,6 +896,70 @@ mod tests {
             assert!(output.r.is_finite() && output.g.is_finite() && output.b.is_finite());
         }
         assert_eq!(CameraOutputTransform::from_stable_id("rec709"), None);
+    }
+
+    #[test]
+    fn iphone_heic_recording_output_is_strict_p3_bt709_full_opaque_float() {
+        let engine = ColorEngine::bundled().expect("bundled color engine");
+        let transform = RecordingOutputTransform::IphoneHeicDisplayP3Bt709Full;
+        assert_eq!(
+            RecordingOutputTransform::from_stable_id(transform.stable_id()),
+            Some(transform)
+        );
+        assert_eq!(RecordingOutputTransform::from_stable_id("display-p3"), None);
+        let signal = engine
+            .recording_output_processor(transform)
+            .expect("recording output processor")
+            .apply_acescg_raster(
+                2,
+                1,
+                &[
+                    LinearRgb::new(-0.01, 0.18, 1.2),
+                    LinearRgb::new(0.0, 0.5, 4.0),
+                ],
+            )
+            .expect("recording signal");
+        assert_eq!(signal.artifact_id, RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID);
+        assert_eq!(signal.color, transform.encoded_color());
+        assert_eq!(signal.alpha, RecordingOutputAlpha::Opaque);
+        assert!(signal.rgba.iter().all(|pixel| pixel[3] == 1.0));
+        assert!(signal.rgba.iter().flatten().all(|value| value.is_finite()));
+        assert_ne!(signal.rgba[0], signal.rgba[1]);
+    }
+
+    #[test]
+    fn recording_output_artifact_rejects_wrong_contract_without_inference() {
+        let transform = RecordingOutputTransform::IphoneHeicDisplayP3Bt709Full;
+        let valid = RecordingOutputSignal {
+            artifact_id: RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID,
+            transform,
+            width: 1,
+            height: 1,
+            rgba: vec![[0.1, 0.2, 0.3, 1.0]],
+            color: transform.encoded_color(),
+            alpha: RecordingOutputAlpha::Opaque,
+        };
+        assert!(valid.validate().is_ok());
+        assert_eq!(
+            RecordingOutputSignal {
+                artifact_id: "recording-output-signal",
+                ..valid.clone()
+            }
+            .validate(),
+            Err(ColorError::InvalidRecordingOutputSignal)
+        );
+        let mut wrong_color = valid.clone();
+        wrong_color.color.transfer = Some(TransferCharacteristic::Srgb);
+        assert_eq!(
+            wrong_color.validate(),
+            Err(ColorError::InvalidRecordingOutputSignal)
+        );
+        let mut non_opaque = valid;
+        non_opaque.rgba[0][3] = 0.999;
+        assert_eq!(
+            non_opaque.validate(),
+            Err(ColorError::InvalidRecordingOutputSignal)
+        );
     }
 
     #[test]

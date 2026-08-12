@@ -34,7 +34,10 @@ media source
      → explicit native-sensor white balance
      → explicit EI middle-gray placement and develop push/pull
      → immutable linear ACEScg developed camera result
-     → explicit OCIO output transform
+     → camera-authored rendering intent in linear ACEScg
+     → explicit Color-owned recording-output transform
+     → nonlinear float recording signal before quantization and subsampling
+     → explicit Recording-owned encode/decode
 ```
 
 Every arrow is a typed boundary. A consumer receives a complete validated result and never reconstructs the prior owner's semantics. Declared media color metadata crosses the Media boundary as typed evidence only. YUV matrix and signal range resolve independently from the Input Transform: `Auto` consumes only supported declared metadata, while absent or unsupported evidence blocks decoding until the user authors an explicit value. RGB sources bypass the YUV interpretation route, and monochrome sources require range but not matrix. The Platform adapter receives only a fully resolved decode interpretation and configures the single FFmpeg YUV-to-RGB conversion before OCIO. Color may propose an Input Transform from an exact complete pattern, while evaluation remains blocked until the source interpretation is explicitly authored.
