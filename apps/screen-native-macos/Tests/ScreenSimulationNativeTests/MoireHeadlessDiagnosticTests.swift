@@ -15,7 +15,6 @@ import Testing
         "SCREEN_MOIRE_FIXTURE_PATH",
         "SCREEN_MOIRE_RESOURCE_ROOT",
         "SCREEN_MOIRE_DIAGNOSTIC_DIR",
-        "SCREEN_MOIRE_CAMERA_LOOK_PROTOTYPE",
     ]
     let unexpectedInvocationSettings = Set(processSettings.keys.filter {
         ($0.hasPrefix("SCREEN_MOIRE_") && !allowedInvocationSettings.contains($0))
@@ -665,6 +664,7 @@ private func moireBaselineIntermediate() throws -> PhysicalIntermediate {
         "sensor-noise": .sensorNoise,
         "raw-mosaic": .rawMosaic,
         "developed-acescg": .developedACEScg,
+        "camera-rendered-acescg": .cameraRenderedACEScg,
     ][authored])
 }
 
@@ -814,10 +814,7 @@ private func renderMoireVariant(
     let snapshot = try await moireTerminalSnapshot(job)
     let metalElapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - metalStarted
     #expect(snapshot.state == .complete)
-    var frameResult = try #require(snapshot.frame)
-    if ProcessInfo.processInfo.environment["SCREEN_MOIRE_CAMERA_LOOK_PROTOTYPE"] == "1" {
-        frameResult = try applyExperimentalCameraRenderingIntent(frameResult)
-    }
+    let frameResult = try #require(snapshot.frame)
     let rgba8 = try context.display.renderRGBA8(frameResult, output: context.output)
     let rgba16: [UInt16]? = if ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_DIAGNOSTIC_DIR"
@@ -848,60 +845,6 @@ private func renderMoireVariant(
         p95Chroma: chroma[min(chroma.count - 1, Int(Double(chroma.count) * 0.95))],
         metalSubmitToResultMilliseconds: Double(metalElapsedNanoseconds) / 1_000_000
     )
-}
-
-/// Deliberately isolated prototype: no ABI, persistence, UI or canonical phase contract.
-/// It evaluates whether a camera-maker rendering intent is useful before promoting the model.
-private func applyExperimentalCameraRenderingIntent(
-    _ frame: StudioColorMetalFrame
-) throws -> StudioColorMetalFrame {
-    let device = frame.texture.device
-    guard let queue = device.makeCommandQueue() else { throw StudioColorMetalError.unavailableQueue }
-    let source = """
-    #include <metal_stdlib>
-    using namespace metal;
-    kernel void camera_rendering_intent(
-        texture2d<float, access::read> input [[texture(0)]],
-        texture2d<float, access::write> output [[texture(1)]],
-        uint2 p [[thread_position_in_grid]]) {
-        if (p.x >= output.get_width() || p.y >= output.get_height()) return;
-        float4 value = input.read(p);
-        float3 rgb = value.rgb * exp2(0.15f);
-        constexpr float middleGray = 0.18f;
-        rgb = sign(rgb) * middleGray * pow(abs(rgb) / middleGray, float3(1.10f));
-        float luminance = dot(rgb, float3(0.27222872f, 0.67408174f, 0.053689517f));
-        rgb = luminance + (rgb - luminance) * 1.08f;
-        output.write(float4(rgb, value.a), p);
-    }
-    """
-    let library = try device.makeLibrary(source: source, options: nil)
-    guard let function = library.makeFunction(name: "camera_rendering_intent") else {
-        throw StudioColorMetalError.missingShaderFunction
-    }
-    let pipeline = try device.makeComputePipelineState(function: function)
-    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-        pixelFormat: .rgba32Float, width: frame.width, height: frame.height, mipmapped: false
-    )
-    descriptor.usage = [.shaderRead, .shaderWrite]
-    descriptor.storageMode = .private
-    guard let output = device.makeTexture(descriptor: descriptor),
-          let command = queue.makeCommandBuffer(),
-          let encoder = command.makeComputeCommandEncoder()
-    else { throw StudioColorMetalError.textureCreation }
-    encoder.setComputePipelineState(pipeline)
-    encoder.setTexture(frame.texture, index: 0)
-    encoder.setTexture(output, index: 1)
-    let width = pipeline.threadExecutionWidth
-    let height = max(1, pipeline.maxTotalThreadsPerThreadgroup / width)
-    encoder.dispatchThreads(
-        MTLSize(width: frame.width, height: frame.height, depth: 1),
-        threadsPerThreadgroup: MTLSize(width: width, height: height, depth: 1)
-    )
-    encoder.endEncoding()
-    command.commit()
-    command.waitUntilCompleted()
-    guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
-    return StudioColorMetalFrame(texture: output)
 }
 
 private func writeMoireVariant(_ variant: MoireVariant, to directory: URL) throws {
