@@ -28,6 +28,8 @@ struct CameraParams {
     sensor_to_acescg_0: [f32; 4],
     sensor_to_acescg_1: [f32; 4],
     sensor_to_acescg_2: [f32; 4],
+    rendering_intent: [f32; 4],
+    rendering_white_gains: [f32; 4],
 }
 
 pub struct MetalRawDevelopment {
@@ -130,6 +132,8 @@ impl RawDevelopmentBackend for MetalRawDevelopment {
             sensor_to_acescg_0: pad(plan.sensor_to_acescg[0]),
             sensor_to_acescg_1: pad(plan.sensor_to_acescg[1]),
             sensor_to_acescg_2: pad(plan.sensor_to_acescg[2]),
+            rendering_intent: [0.0, 1.0, 1.0, 0.0],
+            rendering_white_gains: [1.0, 1.0, 1.0, 0.0],
         };
         let count = raw.codes.len();
         let codes = self.shared_buffer(&raw.codes);

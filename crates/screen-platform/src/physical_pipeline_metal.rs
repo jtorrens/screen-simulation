@@ -186,6 +186,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
                 | PhysicalIntermediate::DevelopedAcesCg
+                | PhysicalIntermediate::CameraRenderedAcesCg
         )
     }
 
@@ -1034,6 +1035,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::ComputationalCapture
                 | PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::DevelopedAcesCg
+                | PhysicalIntermediate::CameraRenderedAcesCg
         ) {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
                 "requested intermediate belongs to an unsupported stage".to_owned(),
@@ -1042,7 +1044,9 @@ impl MetalPhysicalPipeline {
         if plan.screen_amount == 0.0
             && matches!(
                 plan.requested_intermediate,
-                PhysicalIntermediate::SourceAcesCg | PhysicalIntermediate::DevelopedAcesCg
+                PhysicalIntermediate::SourceAcesCg
+                    | PhysicalIntermediate::DevelopedAcesCg
+                    | PhysicalIntermediate::CameraRenderedAcesCg
             )
         {
             report_progress(1.0);
@@ -2673,5 +2677,60 @@ mod tests {
             // domain rather than silently comparing a normalized surrogate.
             assert!(maximum <= 2.5e-3, "developed CPU/Metal deviation {maximum}");
         }
+    }
+
+    #[test]
+    fn camera_rendering_intent_matches_cpu_after_develop() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            StripeLayout::Rgb,
+            0.0,
+            1.0,
+        );
+        plan.sensor = screen_sensor::SensorProfile {
+            native_width: plan.requested_width as u16,
+            native_height: plan.requested_height as u16,
+            ..screen_sensor::SensorProfile::REFERENCE
+        };
+        plan.sensor_enabled = true;
+        plan.sensor_noise_amount = 0.0;
+        plan.development_enabled = true;
+        plan.rendering_intent = screen_camera::CameraRenderingIntent {
+            exposure_ev: 0.5,
+            contrast: 1.10,
+            saturation: 1.25,
+            temperature_kelvin: 6500.0,
+            tint: 0.0,
+        };
+        plan.rendering_intent_enabled = true;
+        plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+            input: input.clone(),
+            plan,
+        })
+        .expect("CPU camera-rendered oracle");
+        let gpu = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("Metal camera-rendered result");
+        let maximum = read(&gpu.texture)
+            .iter()
+            .zip(&cpu.acescg)
+            .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            maximum <= 3.0e-3,
+            "camera rendering intent CPU/Metal deviation {maximum}"
+        );
     }
 }
