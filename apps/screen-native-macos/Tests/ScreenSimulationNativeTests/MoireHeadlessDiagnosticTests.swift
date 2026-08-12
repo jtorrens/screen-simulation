@@ -6,23 +6,43 @@ import Testing
 @testable import ScreenSimulationNative
 
 @Test @MainActor func optionalMoireHeadlessDiagnosticIsDeterministic() async throws {
-    guard let pngPath = ProcessInfo.processInfo.environment["SCREEN_MOIRE_REFERENCE_PNG"] else {
+    let processSettings = ProcessInfo.processInfo.environment
+    guard let fixturePath = processSettings["SCREEN_MOIRE_FIXTURE_PATH"] else {
         return
     }
-    let referenceData = try Data(contentsOf: URL(fileURLWithPath: pngPath))
-    let metadataData = try #require(FrameCheckPNG.metadata(in: referenceData))
-    let document = try #require(
-        JSONSerialization.jsonObject(with: metadataData) as? [String: Any]
+    let allowedInvocationSettings: Set<String> = [
+        "SCREEN_MOIRE_FIXTURE_PATH",
+        "SCREEN_MOIRE_RESOURCE_ROOT",
+        "SCREEN_MOIRE_DIAGNOSTIC_DIR",
+    ]
+    let unexpectedInvocationSettings = Set(processSettings.keys.filter {
+        ($0.hasPrefix("SCREEN_MOIRE_") && !allowedInvocationSettings.contains($0))
+            || $0.hasPrefix("SCREEN_DIAGNOSTIC_")
+    })
+    #expect(unexpectedInvocationSettings.isEmpty)
+    guard unexpectedInvocationSettings.isEmpty else { return }
+    let resourceRoot = try #require(processSettings["SCREEN_MOIRE_RESOURCE_ROOT"])
+    let fixture = try VfxReferenceFixture.load(
+        from: URL(fileURLWithPath: fixturePath),
+        repositoryRoot: moireRepositoryRoot(),
+        resourceRoot: URL(fileURLWithPath: resourceRoot, isDirectory: true)
     )
-    let expectedHash = try #require(
-        (document["hashes"] as? [String: String])?["pixelRGBA8SHA256"]
-    )
-    let deviceID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_ID"]
+    VfxReferenceFixtureRuntime.current = fixture
+    let injectedKeys = Array(fixture.settings.keys)
+    defer {
+        for key in injectedKeys { unsetenv(key) }
+        VfxReferenceFixtureRuntime.current = nil
+    }
+    for (key, value) in fixture.settings {
+        setenv(key, value, 1)
+    }
+    let expectedHash = fixture.acceptedOutput?.pixelRGBA8SHA256
+    let deviceID = try #require(ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_ID"])
     let environmentSourcePath = ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_ENVIRONMENT_SOURCE_PATH"
     ]
-    var imported: PhysicalSettingsExchange.Imported
-    if let deviceID {
+    let imported: PhysicalSettingsExchange.Imported
+    do {
         var device = try #require(try RustDeviceCatalog.builtIns().first { $0.id == deviceID })
         if let width = ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_WIDTH"]
             .flatMap(Int.init),
@@ -37,6 +57,9 @@ import Testing
         {
             device.whiteLevelNits = white
         }
+        device.colorModeID = try #require(
+            ProcessInfo.processInfo.environment["SCREEN_MOIRE_COLOR_MODE_ID"]
+        )
         if let authoredBlackMatrix = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_BLACK_MATRIX_FRACTION"
         ] {
@@ -44,25 +67,60 @@ import Testing
             try #require(blackMatrix >= 0 && blackMatrix < 1)
             device.blackMatrixFraction = blackMatrix
         }
-        let coverID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_COVER_ID"]
-            ?? device.defaultCoverGlassPresetID
-        let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        let coverID = try #require(ProcessInfo.processInfo.environment["SCREEN_MOIRE_COVER_ID"])
+        var cover = try #require(try RustCoverGlassCatalog.builtIns().first {
             $0.id == coverID
         })
+        cover.characterStrength = try moireRequiredDouble("SCREEN_MOIRE_COVER_CHARACTER_STRENGTH")
+        cover.thicknessMillimeters = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_THICKNESS_MILLIMETERS"
+        )
+        cover.refractiveIndex = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_REFRACTIVE_INDEX"
+        )
+        cover.antiReflectiveEfficiency = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_ANTI_REFLECTIVE_EFFICIENCY"
+        )
+        cover.absorptionPerMillimeter = try [
+            moireRequiredDouble("SCREEN_MOIRE_COVER_ABSORPTION_R"),
+            moireRequiredDouble("SCREEN_MOIRE_COVER_ABSORPTION_G"),
+            moireRequiredDouble("SCREEN_MOIRE_COVER_ABSORPTION_B"),
+        ]
+        cover.roughness = try moireRequiredDouble("SCREEN_MOIRE_COVER_ROUGHNESS")
+        cover.haze = try moireRequiredDouble("SCREEN_MOIRE_COVER_HAZE")
+        cover.glowCharacterStrength = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_GLOW_PROFILE_STRENGTH"
+        )
+        cover.glowScatterFraction = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_GLOW_SCATTER_FRACTION"
+        )
+        cover.glowCoreRadiusMillimeters = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_GLOW_CORE_RADIUS_MILLIMETERS"
+        )
+        cover.glowTailRadiusMillimeters = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_GLOW_TAIL_RADIUS_MILLIMETERS"
+        )
+        cover.glowTailFraction = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_GLOW_TAIL_FRACTION"
+        )
+        try cover.validate()
         var pipeline = try PhysicalPipelineAuthoringState.seeded(
             device: device,
             coverGlass: cover
         )
-        if let captureID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_CAPTURE_ID"] {
-            let capture = try #require(
-                try CapturePresetDefinition.catalog().first { $0.id == captureID }
-            )
-            let lens = try #require(
-                try LensPresetDefinition.catalog().first { $0.id == capture.defaultLensID }
-            )
-            capture.applyCamera(to: &pipeline, frameRate: 24)
-            lens.apply(to: &pipeline)
-        }
+        let captureID = try #require(ProcessInfo.processInfo.environment["SCREEN_MOIRE_CAPTURE_ID"])
+        let capture = try #require(
+            try CapturePresetDefinition.catalog().first { $0.id == captureID }
+        )
+        let lensID = try #require(
+            ProcessInfo.processInfo.environment["SCREEN_MOIRE_LENS_ID"]
+        )
+        #expect(capture.compatibleLensIDs.contains(lensID))
+        let lens = try #require(
+            try LensPresetDefinition.catalog().first { $0.id == lensID }
+        )
+        capture.applyCamera(to: &pipeline, frameRate: 24)
+        lens.apply(to: &pipeline)
         let captureWidth = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_CAPTURE_WIDTH"
         ].flatMap(UInt32.init)
@@ -269,10 +327,12 @@ import Testing
         ].flatMap(Double.init) {
             pipeline.sensor.bloomOverflowTransferFraction = overflow
         }
-        if ProcessInfo.processInfo.environment[
-            "SCREEN_MOIRE_GLOBAL_SHUTTER"
-        ] == "1" {
-            pipeline.shutterMotion.readoutKind = 0
+        switch ProcessInfo.processInfo.environment["SCREEN_MOIRE_GLOBAL_SHUTTER"] {
+        case "0": break
+        case "1": pipeline.shutterMotion.readoutKind = 0
+        default:
+            Issue.record("SCREEN_MOIRE_GLOBAL_SHUTTER debe ser 0 o 1")
+            return
         }
         imported = .init(
             device: device,
@@ -280,8 +340,6 @@ import Testing
             model: PhysicalModelController().authoringState,
             report: "Headless VFX reference battery"
         )
-    } else {
-        imported = try PhysicalSettingsExchange.decode(from: document)
     }
 
     let sourcePath = ProcessInfo.processInfo.environment["SCREEN_MOIRE_SOURCE_PATH"]
@@ -305,8 +363,11 @@ import Testing
         decoded = try await NativeMediaDecoder.decode(url: sourceURL, time: .zero)
     }
     let display = try StudioColorMetalDisplay()
+    let sourceInputID = try #require(ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_SOURCE_INPUT_TRANSFORM_ID"
+    ])
     let input = try #require(StudioColorInputTransform.catalog.first {
-        $0.id == "srgb-encoded-rec709"
+        $0.id == sourceInputID
     })
     let outputSignal = try #require(StudioColorMode.catalog.first {
         $0.id == imported.device.colorModeID
@@ -349,8 +410,11 @@ import Testing
         environmentFrame = nil
     }
 
+    let outputID = try #require(ProcessInfo.processInfo.environment[
+        "SCREEN_MOIRE_OUTPUT_TRANSFORM_ID"
+    ])
     let output = try #require(StudioColorOutputTransform.catalog.first {
-        $0.id == "aces2-srgb-sdr-100"
+        $0.id == outputID
     })
     let context = MoireRenderContext(
         source: source,
@@ -384,7 +448,15 @@ import Testing
     let actualHash = SHA256.hash(data: Data(rendered))
         .map { String(format: "%02x", $0) }
         .joined()
-    print("MOIRE_BASELINE expected=\(expectedHash) actual=\(actualHash)")
+    print("MOIRE_BASELINE expected=\(expectedHash ?? "candidate") actual=\(actualHash)")
+    if let expectedHash {
+        #expect(actualHash == expectedHash)
+        let rgba16 = try #require(baseline.rgba16)
+        let actualRGBA16Hash = SHA256.hash(data: rgba16.withUnsafeBytes { Data($0) })
+            .map { String(format: "%02x", $0) }
+            .joined()
+        #expect(actualRGBA16Hash == fixture.acceptedOutput?.pixelRGBA16SHA256)
+    }
     if let repeatedBaseline {
         #expect(repeatedBaseline.rgba8 == rendered)
     }
@@ -398,6 +470,12 @@ import Testing
         withIntermediateDirectories: true
     )
     try writeMoireVariant(baseline, to: directory)
+    try writeMoireResolvedSettings(
+        fixture: fixture,
+        imported: imported,
+        baseline: baseline,
+        to: directory
+    )
     print(
         "MOIRE_VARIANT name=baseline hash=\(baseline.hash) "
             + "meanChroma=\(baseline.meanChroma) p95Chroma=\(baseline.p95Chroma) "
@@ -571,6 +649,50 @@ private func moireBaselineIntermediate() throws -> PhysicalIntermediate {
     ][authored])
 }
 
+private func moireRequiredDouble(_ key: String) throws -> Double {
+    try #require(
+        ProcessInfo.processInfo.environment[key].flatMap(Double.init),
+        "Falta el número VFX obligatorio \(key)"
+    )
+}
+
+@MainActor
+private func moireResolvedModel(
+    from imported: PhysicalSettingsExchange.Imported
+) throws -> PhysicalModelController {
+    let controller = PhysicalModelController()
+    try controller.restoreAuthoringState(imported.model)
+    try controller.setContinuousAmount(
+        try moireRequiredDouble("SCREEN_MOIRE_COVER_GLOW_AMOUNT"),
+        stage: .screen(.coverGlow)
+    )
+    try controller.setContinuousAmount(
+        try moireRequiredDouble("SCREEN_MOIRE_PANEL_SPREAD_AMOUNT"),
+        stage: .screen(.panelLightSpread)
+    )
+    try controller.setContinuousAmount(
+        try moireRequiredDouble("SCREEN_MOIRE_PANEL_UNIFORMITY_AMOUNT"),
+        stage: .screen(.panelUniformity)
+    )
+    try controller.setContinuousAmount(
+        try moireRequiredDouble("SCREEN_MOIRE_PANEL_STRUCTURE_AMOUNT"),
+        stage: .screen(.subpixelGeometry)
+    )
+    try controller.setContinuousAmount(
+        try moireRequiredDouble("SCREEN_MOIRE_SENSOR_NOISE_AMOUNT"),
+        stage: .capture(.noise)
+    )
+    try controller.setContinuousAmount(
+        try moireRequiredDouble("SCREEN_MOIRE_LENS_AMOUNT"),
+        stage: .capture(.lens)
+    )
+    try controller.setContinuousAmount(
+        try moireRequiredDouble("SCREEN_MOIRE_COMPUTATIONAL_CHARACTER_STRENGTH"),
+        stage: .capture(.computationalCapture)
+    )
+    return controller
+}
+
 @MainActor
 private func compensatedApertureVariant(
     name: String,
@@ -626,64 +748,7 @@ private func renderMoireVariant(
 ) async throws -> MoireVariant {
     var pipeline = context.imported.pipeline
     try editPipeline(&pipeline)
-    let controller = PhysicalModelController()
-    try controller.restoreAuthoringState(context.imported.model)
-    if let coverGlowAmount = ProcessInfo.processInfo.environment[
-        "SCREEN_MOIRE_COVER_GLOW_AMOUNT"
-    ].flatMap(Double.init) {
-        try controller.setContinuousAmount(
-            coverGlowAmount,
-            stage: .screen(.coverGlow)
-        )
-    }
-    if let panelSpreadAmount = ProcessInfo.processInfo.environment[
-        "SCREEN_MOIRE_PANEL_SPREAD_AMOUNT"
-    ].flatMap(Double.init) {
-        try controller.setContinuousAmount(
-            panelSpreadAmount,
-            stage: .screen(.panelLightSpread)
-        )
-    }
-    if let panelUniformityAmount = ProcessInfo.processInfo.environment[
-        "SCREEN_MOIRE_PANEL_UNIFORMITY_AMOUNT"
-    ].flatMap(Double.init) {
-        try controller.setContinuousAmount(
-            panelUniformityAmount,
-            stage: .screen(.panelUniformity)
-        )
-    }
-    if let panelStructureAmount = ProcessInfo.processInfo.environment[
-        "SCREEN_MOIRE_PANEL_STRUCTURE_AMOUNT"
-    ].flatMap(Double.init) {
-        try controller.setContinuousAmount(
-            panelStructureAmount,
-            stage: .screen(.subpixelGeometry)
-        )
-    }
-    if let sensorNoiseAmount = ProcessInfo.processInfo.environment[
-        "SCREEN_MOIRE_SENSOR_NOISE_AMOUNT"
-    ].flatMap(Double.init) {
-        try controller.setContinuousAmount(
-            sensorNoiseAmount,
-            stage: .capture(.noise)
-        )
-    }
-    if let lensAmount = ProcessInfo.processInfo.environment[
-        "SCREEN_MOIRE_LENS_AMOUNT"
-    ].flatMap(Double.init) {
-        try controller.setContinuousAmount(
-            lensAmount,
-            stage: .capture(.lens)
-        )
-    }
-    if let computationalCharacter = ProcessInfo.processInfo.environment[
-        "SCREEN_MOIRE_COMPUTATIONAL_CHARACTER_STRENGTH"
-    ].flatMap(Double.init) {
-        try controller.setContinuousAmount(
-            computationalCharacter,
-            stage: .capture(.computationalCapture)
-        )
-    }
+    let controller = try moireResolvedModel(from: context.imported)
     try editModel(controller)
     let contributions = controller.orderedContributions
     let uniformity = try #require(contributions.first {
@@ -790,6 +855,54 @@ private func writeMoireVariant(_ variant: MoireVariant, to directory: URL) throw
     )
     try png.write(
         to: directory.appendingPathComponent("moire-\(variant.name).png"),
+        options: .atomic
+    )
+}
+
+@MainActor
+private func writeMoireResolvedSettings(
+    fixture: VfxReferenceFixture,
+    imported: PhysicalSettingsExchange.Imported,
+    baseline: MoireVariant,
+    to directory: URL
+) throws {
+    let controller = try moireResolvedModel(from: imported)
+    let physical = try #require(PhysicalSettingsExchange.metadata(
+        device: imported.device,
+        pipeline: imported.pipeline,
+        model: controller.authoringState
+    ))
+    let rgba16 = try #require(baseline.rgba16)
+    let rgba16Hash = SHA256.hash(data: rgba16.withUnsafeBytes { Data($0) })
+        .map { String(format: "%02x", $0) }
+        .joined()
+    let manifest: [String: Any] = [
+        "schema": "ScreenSimulation.VfxResolvedRun",
+        "version": 1,
+        "fixtureID": fixture.id,
+        "fixtureSHA256": fixture.fixtureSHA256,
+        "fixtureStatus": fixture.status,
+        "fixtureDescription": fixture.description,
+        "fixture": fixture.document,
+        "resolvedResources": fixture.resolvedResources,
+        "resolvedPhysicalSettings": physical,
+        "render": [
+            "checkpoint": try #require(ProcessInfo.processInfo.environment[
+                "SCREEN_MOIRE_BASELINE_INTERMEDIATE"
+            ]),
+            "width": baseline.width,
+            "height": baseline.height,
+            "pixelRGBA8SHA256": baseline.hash,
+            "pixelRGBA16SHA256": rgba16Hash,
+            "metalSubmitToResultMilliseconds": baseline.metalSubmitToResultMilliseconds,
+        ],
+    ]
+    let data = try JSONSerialization.data(
+        withJSONObject: manifest,
+        options: [.prettyPrinted, .sortedKeys]
+    )
+    try data.write(
+        to: directory.appendingPathComponent("resolved-settings.json"),
         options: .atomic
     )
 }
