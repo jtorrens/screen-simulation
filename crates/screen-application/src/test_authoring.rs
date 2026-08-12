@@ -1,6 +1,7 @@
 //! Host-neutral authoring descriptors for the ordered Test surface.
 
 use crate::{CAPTURE_DEVICE_PRESETS, CaptureDevicePreset, capture_device_preset};
+use screen_camera::CameraRenderingIntent;
 use screen_color::{DeviceColorTarget, OcioInputTransform};
 use screen_cover::{
     COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset, environment_preset,
@@ -8,7 +9,7 @@ use screen_cover::{
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 13;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 14;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -26,6 +27,7 @@ pub const SENSOR_BLOOM_PHASE_ID: &str = "sensor-bloom";
 pub const SENSOR_CFA_PHASE_ID: &str = "sensor-cfa";
 pub const SENSOR_NOISE_PHASE_ID: &str = "sensor-noise";
 pub const DEVELOP_DEMOSAIC_PHASE_ID: &str = "develop-demosaic";
+pub const CAMERA_RENDERING_INTENT_PHASE_ID: &str = "camera-rendering-intent";
 pub const OUTPUT_SIGNAL_CONTROL_ID: &str = "output-signal";
 pub const DEVICE_CONTROL_ID: &str = "device";
 pub const COLOR_MODE_CONTROL_ID: &str = "color-mode";
@@ -73,6 +75,11 @@ pub const SENSOR_NOISE_AMOUNT_CONTROL_ID: &str = "sensor-noise-amount";
 pub const SENSOR_BLOOM_AMOUNT_CONTROL_ID: &str = "sensor-bloom-amount";
 pub const SENSOR_BLOOM_CROSSTALK_CONTROL_ID: &str = "sensor-bloom-crosstalk-fraction";
 pub const SENSOR_BLOOM_OVERFLOW_CONTROL_ID: &str = "sensor-bloom-overflow-transfer-fraction";
+pub const CAMERA_LOOK_EXPOSURE_CONTROL_ID: &str = "camera-look-exposure-ev";
+pub const CAMERA_LOOK_CONTRAST_CONTROL_ID: &str = "camera-look-contrast";
+pub const CAMERA_LOOK_SATURATION_CONTROL_ID: &str = "camera-look-saturation";
+pub const CAMERA_LOOK_TEMPERATURE_CONTROL_ID: &str = "camera-look-temperature-kelvin";
+pub const CAMERA_LOOK_TINT_CONTROL_ID: &str = "camera-look-tint";
 
 const PLACEMENTS: [TestChoiceOption; 4] = [
     TestChoiceOption {
@@ -173,6 +180,7 @@ pub struct TestAuthoringSelection<'a> {
     pub sensor_bloom_crosstalk_fraction: f32,
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
+    pub camera_rendering_intent: CameraRenderingIntent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -226,6 +234,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub sensor_bloom_crosstalk_fraction: f32,
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
+    pub camera_rendering_intent: CameraRenderingIntent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -361,6 +370,7 @@ pub enum TestPreviewResult {
     SensorCfa = 13,
     SensorNoise = 14,
     DevelopDemosaic = 15,
+    CameraRenderingIntent = 16,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -402,6 +412,7 @@ pub enum TestAuthoringError {
     InvalidSensorBloomAmount,
     InvalidSensorBloomProfile,
     InvalidSensorNoiseAmount,
+    InvalidCameraRenderingIntent,
     UnknownPlacement,
     UnknownPreviewQuality,
     UnknownControl,
@@ -445,6 +456,7 @@ impl core::fmt::Display for TestAuthoringError {
                 "Sensor Bloom profile is outside its physical bounds"
             }
             Self::InvalidSensorNoiseAmount => "Sensor Noise amount is outside 0..=4",
+            Self::InvalidCameraRenderingIntent => "Camera Rendering Intent is invalid",
             Self::UnknownPlacement => "unknown Test placement",
             Self::UnknownPreviewQuality => "unknown Test preview quality",
             Self::UnknownControl => "unknown Test control",
@@ -561,6 +573,7 @@ pub fn default_test_authoring_selection(
         sensor_bloom_crosstalk_fraction: capture.sensor.bloom.crosstalk_fraction,
         sensor_bloom_overflow_transfer_fraction: capture.sensor.bloom.overflow_transfer_fraction,
         sensor_noise_amount: 1.0,
+        camera_rendering_intent: capture.rendering_intent,
     })
 }
 
@@ -752,6 +765,10 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidSensorNoiseAmount);
     }
+    selection
+        .camera_rendering_intent
+        .validate()
+        .map_err(|_| TestAuthoringError::InvalidCameraRenderingIntent)?;
     Ok(ResolvedTestAuthoringSelection {
         input_transform_id: input.stable_id(),
         output_signal_id: output.stable_id(),
@@ -802,6 +819,7 @@ pub fn resolve_test_authoring_selection(
         sensor_bloom_crosstalk_fraction: selection.sensor_bloom_crosstalk_fraction,
         sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
+        camera_rendering_intent: selection.camera_rendering_intent,
     })
 }
 
@@ -1179,7 +1197,7 @@ pub fn test_page_descriptor(
     }
     Ok(TestPageDescriptor {
         schema_version: TEST_AUTHORING_SCHEMA_VERSION,
-        default_preview_phase_id: DEVELOP_DEMOSAIC_PHASE_ID,
+        default_preview_phase_id: CAMERA_RENDERING_INTENT_PHASE_ID,
         selection,
         phases: vec![
             TestPhaseDescriptor {
@@ -1550,6 +1568,62 @@ pub fn test_page_descriptor(
                 preview_result: TestPreviewResult::DevelopDemosaic,
                 controls: Vec::new(),
             },
+            TestPhaseDescriptor {
+                id: CAMERA_RENDERING_INTENT_PHASE_ID,
+                label: "Intención de render de cámara",
+                effect_summary: "Aplica el acabado del fabricante a la imagen desarrollada lineal.",
+                header_control_id: None,
+                input_artifact: "developed-camera-acescg-v1",
+                output_artifact: "camera-rendered-acescg-v1",
+                preview_result: TestPreviewResult::CameraRenderingIntent,
+                controls: vec![
+                    scalar_control(
+                        CAMERA_LOOK_EXPOSURE_CONTROL_ID,
+                        "Exposición del look",
+                        selection.camera_rendering_intent.exposure_ev,
+                        -8.0,
+                        8.0,
+                        capture.rendering_intent.exposure_ev,
+                        "EV",
+                    ),
+                    scalar_control(
+                        CAMERA_LOOK_CONTRAST_CONTROL_ID,
+                        "Contraste",
+                        selection.camera_rendering_intent.contrast,
+                        0.25,
+                        4.0,
+                        capture.rendering_intent.contrast,
+                        "×",
+                    ),
+                    scalar_control(
+                        CAMERA_LOOK_SATURATION_CONTROL_ID,
+                        "Saturación",
+                        selection.camera_rendering_intent.saturation,
+                        0.0,
+                        4.0,
+                        capture.rendering_intent.saturation,
+                        "×",
+                    ),
+                    scalar_control(
+                        CAMERA_LOOK_TEMPERATURE_CONTROL_ID,
+                        "Temperatura",
+                        selection.camera_rendering_intent.temperature_kelvin,
+                        2000.0,
+                        12_000.0,
+                        capture.rendering_intent.temperature_kelvin,
+                        "K",
+                    ),
+                    scalar_control(
+                        CAMERA_LOOK_TINT_CONTROL_ID,
+                        "Tinte",
+                        selection.camera_rendering_intent.tint,
+                        -1.0,
+                        1.0,
+                        capture.rendering_intent.tint,
+                        "G/M",
+                    ),
+                ],
+            },
         ],
         preview_controls: vec![choice_control(
             PREVIEW_QUALITY_CONTROL_ID,
@@ -1613,6 +1687,7 @@ pub fn apply_test_choice(
             next.sensor_bloom_crosstalk_fraction = capture.sensor.bloom.crosstalk_fraction;
             next.sensor_bloom_overflow_transfer_fraction =
                 capture.sensor.bloom.overflow_transfer_fraction;
+            next.camera_rendering_intent = capture.rendering_intent;
         }
         GEOMETRY_MODE_CONTROL_ID => apply_geometry_mode(&mut next, option_id)?,
         COVER_GLASS_CONTROL_ID => {
@@ -1667,7 +1742,12 @@ pub fn apply_test_choice(
         | SENSOR_BLOOM_AMOUNT_CONTROL_ID
         | SENSOR_BLOOM_CROSSTALK_CONTROL_ID
         | SENSOR_BLOOM_OVERFLOW_CONTROL_ID
-        | SENSOR_NOISE_AMOUNT_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
+        | SENSOR_NOISE_AMOUNT_CONTROL_ID
+        | CAMERA_LOOK_EXPOSURE_CONTROL_ID
+        | CAMERA_LOOK_CONTRAST_CONTROL_ID
+        | CAMERA_LOOK_SATURATION_CONTROL_ID
+        | CAMERA_LOOK_TEMPERATURE_CONTROL_ID
+        | CAMERA_LOOK_TINT_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
         _ => return Err(TestAuthoringError::UnknownControl),
     }
     resolve_test_authoring_selection(next)
@@ -1725,6 +1805,7 @@ fn unresolved_test_selection(
         sensor_bloom_crosstalk_fraction: current.sensor_bloom_crosstalk_fraction,
         sensor_bloom_overflow_transfer_fraction: current.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: current.sensor_noise_amount,
+        camera_rendering_intent: current.camera_rendering_intent,
     }
 }
 
@@ -1863,6 +1944,13 @@ pub fn apply_test_scalar(
         SENSOR_BLOOM_CROSSTALK_CONTROL_ID => next.sensor_bloom_crosstalk_fraction = value,
         SENSOR_BLOOM_OVERFLOW_CONTROL_ID => next.sensor_bloom_overflow_transfer_fraction = value,
         SENSOR_NOISE_AMOUNT_CONTROL_ID => next.sensor_noise_amount = value,
+        CAMERA_LOOK_EXPOSURE_CONTROL_ID => next.camera_rendering_intent.exposure_ev = value,
+        CAMERA_LOOK_CONTRAST_CONTROL_ID => next.camera_rendering_intent.contrast = value,
+        CAMERA_LOOK_SATURATION_CONTROL_ID => next.camera_rendering_intent.saturation = value,
+        CAMERA_LOOK_TEMPERATURE_CONTROL_ID => {
+            next.camera_rendering_intent.temperature_kelvin = value
+        }
+        CAMERA_LOOK_TINT_CONTROL_ID => next.camera_rendering_intent.tint = value,
         OUTPUT_SIGNAL_CONTROL_ID
         | DEVICE_CONTROL_ID
         | COLOR_MODE_CONTROL_ID
@@ -1947,14 +2035,18 @@ mod tests {
             sensor_bloom_crosstalk_fraction: 0.020,
             sensor_bloom_overflow_transfer_fraction: 0.30,
             sensor_noise_amount: 1.0,
+            camera_rendering_intent: capture("iphone-16e-main-48mp").unwrap().rendering_intent,
         }
     }
 
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 13);
-        assert_eq!(page.default_preview_phase_id, DEVELOP_DEMOSAIC_PHASE_ID);
+        assert_eq!(page.schema_version, 14);
+        assert_eq!(
+            page.default_preview_phase_id,
+            CAMERA_RENDERING_INTENT_PHASE_ID
+        );
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
             [
@@ -1974,6 +2066,7 @@ mod tests {
                 SENSOR_CFA_PHASE_ID,
                 SENSOR_NOISE_PHASE_ID,
                 DEVELOP_DEMOSAIC_PHASE_ID,
+                CAMERA_RENDERING_INTENT_PHASE_ID,
             ]
         );
         assert!(matches!(

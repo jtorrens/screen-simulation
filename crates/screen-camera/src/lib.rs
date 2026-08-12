@@ -105,6 +105,11 @@ impl CameraRenderingIntent {
         }
         Ok(self)
     }
+
+    pub fn acescg_white_gains(self) -> Result<LinearRgb, CameraDevelopmentError> {
+        self.validate()?;
+        Ok(rendering_white_gains(self.temperature_kelvin, self.tint))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

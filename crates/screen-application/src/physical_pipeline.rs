@@ -4,7 +4,7 @@
 //! materializes these values once per job; Metal never defines stage ordering.
 
 use crate::{RollingDirection, SensorReadout};
-use screen_camera::CameraDevelopment;
+use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_contracts::{Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, IncidentEnvironment};
 use screen_geometry::{
@@ -73,6 +73,7 @@ pub enum PhysicalIntermediate {
     SensorNoise = 13,
     RawMosaic = 14,
     DevelopedAcesCg = 15,
+    CameraRenderedAcesCg = 16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -211,6 +212,7 @@ pub struct PhysicalPipelineSnapshot {
     pub computational_capture: ComputationalCaptureProfile,
     pub sensor: SensorProfile,
     pub development: CameraDevelopment,
+    pub rendering_intent: CameraRenderingIntent,
 }
 
 #[cfg(test)]

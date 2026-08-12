@@ -23,8 +23,9 @@ pub use test_authoring::{
 use core::fmt;
 use rayon::prelude::*;
 use screen_camera::{
-    CameraDevelopment, CameraDevelopmentError, CpuRawDevelopment, DevelopedCameraRaster,
-    DevelopedCameraRegion, RawDevelopmentBackend, develop_raw_to_acescg,
+    CameraDevelopment, CameraDevelopmentError, CameraRenderingIntent, CpuRawDevelopment,
+    DevelopedCameraRaster, DevelopedCameraRegion, RawDevelopmentBackend,
+    apply_camera_rendering_intent, develop_raw_to_acescg,
 };
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{
@@ -174,6 +175,7 @@ pub struct CaptureDevicePreset {
     pub calibration: &'static str,
     pub sensor: SensorProfile,
     pub computational_capture: ComputationalCaptureProfile,
+    pub rendering_intent: CameraRenderingIntent,
     pub gate_width: Millimeters,
     pub gate_height: Millimeters,
     pub default_lens_preset_id: &'static str,
@@ -207,6 +209,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             bloom: SensorBloomProfile::LARGE_CAMERA,
         },
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
+        rendering_intent: CameraRenderingIntent::NEUTRAL,
         gate_width: Millimeters(27.99),
         gate_height: Millimeters(19.22),
         default_lens_preset_id: "generic-prime-50mm",
@@ -260,6 +263,13 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             exposure_count: 8,
             bracket_spacing_stops: 1.0,
         },
+        rendering_intent: CameraRenderingIntent {
+            exposure_ev: 0.5,
+            contrast: 1.10,
+            saturation: 1.25,
+            temperature_kelvin: 6500.0,
+            tint: 0.0,
+        },
         gate_width: Millimeters(5.815_385),
         gate_height: Millimeters(4.361_539),
         default_lens_preset_id: "iphone-16e-main-integrated",
@@ -303,6 +313,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             bloom: SensorBloomProfile::REFERENCE,
         },
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
+        rendering_intent: CameraRenderingIntent::NEUTRAL,
         gate_width: Millimeters(5.76),
         gate_height: Millimeters(4.32),
         default_lens_preset_id: "canon-a470-wide-reference",
@@ -345,6 +356,13 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             exposure_count: 3,
             bracket_spacing_stops: 1.0,
         },
+        rendering_intent: CameraRenderingIntent {
+            exposure_ev: 0.5,
+            contrast: 1.10,
+            saturation: 1.25,
+            temperature_kelvin: 6500.0,
+            tint: 0.0,
+        },
         gate_width: Millimeters(9.8),
         gate_height: Millimeters(7.35),
         default_lens_preset_id: "iphone-14-pro-main-reference",
@@ -386,6 +404,13 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
             bracket_spacing_stops: 1.0,
+        },
+        rendering_intent: CameraRenderingIntent {
+            exposure_ev: 0.5,
+            contrast: 1.10,
+            saturation: 1.25,
+            temperature_kelvin: 6500.0,
+            tint: 0.0,
         },
         gate_width: Millimeters(5.6),
         gate_height: Millimeters(4.2),
@@ -530,6 +555,8 @@ pub struct PhysicalPipelineExecutionPlan {
     pub sensor_noise_amount: f32,
     pub development: CameraDevelopment,
     pub development_enabled: bool,
+    pub rendering_intent: CameraRenderingIntent,
+    pub rendering_intent_enabled: bool,
     pub frame_index: i64,
     pub requested_intermediate: PhysicalIntermediate,
 }
@@ -589,7 +616,8 @@ impl PhysicalPipelineExecutionPlan {
             | PhysicalIntermediate::ShutterMotion
             | PhysicalIntermediate::ComputationalCapture
             | PhysicalIntermediate::RawMosaic
-            | PhysicalIntermediate::DevelopedAcesCg => {}
+            | PhysicalIntermediate::DevelopedAcesCg
+            | PhysicalIntermediate::CameraRenderedAcesCg => {}
             PhysicalIntermediate::SensorBloom | PhysicalIntermediate::SensorNoise => {
                 self.sensor_noise_amount = 0.0;
             }
@@ -756,6 +784,7 @@ pub fn expose_physical_pipeline_raw(
                 | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
                 | PhysicalIntermediate::DevelopedAcesCg
+                | PhysicalIntermediate::CameraRenderedAcesCg
         )
     {
         return Err(ApplicationError::OpticalSampleRasterMismatch);
@@ -1203,7 +1232,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     if plan.screen_amount == 0.0
         && matches!(
             plan.requested_intermediate,
-            PhysicalIntermediate::SourceAcesCg | PhysicalIntermediate::DevelopedAcesCg
+            PhysicalIntermediate::SourceAcesCg
+                | PhysicalIntermediate::DevelopedAcesCg
+                | PhysicalIntermediate::CameraRenderedAcesCg
         )
     {
         return Ok(PhysicalPipelineCpuResult {
@@ -2102,7 +2133,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
-                | PhysicalIntermediate::DevelopedAcesCg => [
+                | PhysicalIntermediate::DevelopedAcesCg
+                | PhysicalIntermediate::CameraRenderedAcesCg => [
                     ideal[0] + plan.screen_amount * (shuttered.r - ideal[0]),
                     ideal[1] + plan.screen_amount * (shuttered.g - ideal[1]),
                     ideal[2] + plan.screen_amount * (shuttered.b - ideal[2]),
@@ -2121,6 +2153,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
                 | PhysicalIntermediate::DevelopedAcesCg
+                | PhysicalIntermediate::CameraRenderedAcesCg
         )
     {
         let raw = expose_physical_pipeline_raw(
@@ -2161,6 +2194,26 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         }
         let developed = develop_raw_to_acescg(&raw, raw.sensor_profile, plan.development)
             .map_err(ApplicationError::CameraDevelopment)?;
+        if plan.requested_intermediate == PhysicalIntermediate::CameraRenderedAcesCg {
+            if !plan.rendering_intent_enabled {
+                return Err(ApplicationError::UnsupportedPhysicalIntermediate);
+            }
+            let acescg = developed
+                .acescg
+                .into_iter()
+                .map(|pixel| apply_camera_rendering_intent(pixel, plan.rendering_intent))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(ApplicationError::CameraDevelopment)?;
+            return Ok(PhysicalPipelineCpuResult {
+                width: developed.width,
+                height: developed.height,
+                acescg: acescg
+                    .into_iter()
+                    .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
+                    .collect(),
+                diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
+            });
+        }
         return Ok(PhysicalPipelineCpuResult {
             width: developed.width,
             height: developed.height,
@@ -8022,6 +8075,8 @@ mod tests {
                 sensor_noise_amount: 0.0,
                 development: CameraDevelopment::NEUTRAL,
                 development_enabled: false,
+                rendering_intent: CameraRenderingIntent::NEUTRAL,
+                rendering_intent_enabled: false,
                 frame_index: 0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },

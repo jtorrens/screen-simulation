@@ -118,6 +118,8 @@ struct CameraDevelopmentParams {
     sensor_to_acescg_0: [f32; 4],
     sensor_to_acescg_1: [f32; 4],
     sensor_to_acescg_2: [f32; 4],
+    rendering_intent: [f32; 4],
+    rendering_white_gains: [f32; 4],
 }
 
 #[repr(C)]
@@ -481,8 +483,10 @@ impl MetalPhysicalPipeline {
             MTLResourceOptions::StorageModeShared,
         );
         let development_parameters = if plan.development_enabled
-            && plan.requested_intermediate == PhysicalIntermediate::DevelopedAcesCg
-        {
+            && matches!(
+                plan.requested_intermediate,
+                PhysicalIntermediate::DevelopedAcesCg | PhysicalIntermediate::CameraRenderedAcesCg
+            ) {
             let development = plan
                 .development
                 .validate()
@@ -517,12 +521,42 @@ impl MetalPhysicalPipeline {
                 sensor_to_acescg_0: pad(inverse[0]),
                 sensor_to_acescg_1: pad(inverse[1]),
                 sensor_to_acescg_2: pad(inverse[2]),
+                rendering_intent: if plan.requested_intermediate
+                    == PhysicalIntermediate::CameraRenderedAcesCg
+                {
+                    plan.rendering_intent.validate().map_err(|error| {
+                        MetalPhysicalPipelineError::InvalidPlan(error.to_string())
+                    })?;
+                    [
+                        plan.rendering_intent.exposure_ev,
+                        plan.rendering_intent.contrast,
+                        plan.rendering_intent.saturation,
+                        1.0,
+                    ]
+                } else {
+                    [0.0, 1.0, 1.0, 0.0]
+                },
+                rendering_white_gains: if plan.requested_intermediate
+                    == PhysicalIntermediate::CameraRenderedAcesCg
+                {
+                    let gains = plan
+                        .rendering_intent
+                        .acescg_white_gains()
+                        .map_err(|error| {
+                            MetalPhysicalPipelineError::InvalidPlan(error.to_string())
+                        })?;
+                    [gains.r, gains.g, gains.b, 0.0]
+                } else {
+                    [1.0, 1.0, 1.0, 0.0]
+                },
             })
         } else {
             None
         };
-        if plan.requested_intermediate == PhysicalIntermediate::DevelopedAcesCg
-            && development_parameters.is_none()
+        if matches!(
+            plan.requested_intermediate,
+            PhysicalIntermediate::DevelopedAcesCg | PhysicalIntermediate::CameraRenderedAcesCg
+        ) && development_parameters.is_none()
         {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
                 "developed output requires the explicit development stage".to_owned(),

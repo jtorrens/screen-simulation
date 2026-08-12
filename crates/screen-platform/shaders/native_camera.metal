@@ -15,7 +15,13 @@ struct CameraParams {
     float4 sensor_to_acescg_0;
     float4 sensor_to_acescg_1;
     float4 sensor_to_acescg_2;
+    float4 rendering_intent;
+    float4 rendering_white_gains;
 };
+
+inline float signed_contrast(float value, float contrast) {
+    return sign(value) * 0.18f * pow(abs(value) / 0.18f, contrast);
+}
 
 struct RawPublicationParams {
     uint width;
@@ -168,6 +174,14 @@ inline float4 developed_acescg_at(device const ushort* codes,
     float3 acescg = float3(dot(p.sensor_to_acescg_0.xyz, sensor_rgb),
                            dot(p.sensor_to_acescg_1.xyz, sensor_rgb),
                            dot(p.sensor_to_acescg_2.xyz, sensor_rgb)) * p.linear_scale;
+    if (p.rendering_intent.w > 0.5f) {
+        acescg *= exp2(p.rendering_intent.x) * p.rendering_white_gains.xyz;
+        acescg = float3(signed_contrast(acescg.x, p.rendering_intent.y),
+                        signed_contrast(acescg.y, p.rendering_intent.y),
+                        signed_contrast(acescg.z, p.rendering_intent.y));
+        float luminance = dot(acescg, float3(0.27222872f, 0.67408174f, 0.053689517f));
+        acescg = luminance + (acescg - luminance) * p.rendering_intent.z;
+    }
     return float4(acescg, 1.0f);
 }
 
