@@ -48,6 +48,38 @@ constant float PI = 3.14159265358979323846f;
 constant bool VFX_DEPTH_BLUR [[function_constant(0)]];
 constant bool IMAGE_ENVIRONMENT [[function_constant(1)]];
 
+struct EnvironmentImportanceParams {
+    uint first_level;
+};
+
+kernel void build_environment_importance(
+    texture2d<float, access::read> source [[texture(0)]],
+    texture2d<float, access::write> destination [[texture(1)]],
+    constant EnvironmentImportanceParams& params [[buffer(0)]],
+    uint2 position [[thread_position_in_grid]]) {
+    if (position.x >= destination.get_width() || position.y >= destination.get_height()) return;
+    if (params.first_level != 0u) {
+        const float4 radiance = source.read(position);
+        const float v = (float(position.y) + 0.5f) / float(destination.get_height());
+        const float luminance = max(0.0f,
+            dot(radiance.rgb, float3(0.2722287f, 0.6740818f, 0.0536895f)));
+        destination.write(float4(radiance.rgb, luminance * max(sin(PI * v), 1.0e-8f)), position);
+        return;
+    }
+    const uint2 source_dimensions = uint2(source.get_width(), source.get_height());
+    const uint2 destination_dimensions = uint2(
+        destination.get_width(), destination.get_height());
+    const uint2 begin = position * source_dimensions / destination_dimensions;
+    const uint2 end = (position + 1u) * source_dimensions / destination_dimensions;
+    float weight = 0.0f;
+    for (uint y = begin.y; y < end.y; ++y) {
+        for (uint x = begin.x; x < end.x; ++x) {
+            weight += source.read(uint2(x, y)).a;
+        }
+    }
+    destination.write(float4(0.0f, 0.0f, 0.0f, weight), position);
+}
+
 struct PhysicalRayHit {
     float2 uv;
     float cosine;
@@ -408,6 +440,69 @@ inline float physical_smith_ggx_lambda(float3 direction, float alpha) {
     return 0.5f * (sqrt(1.0f + alpha * alpha * tangent_squared) - 1.0f);
 }
 
+inline float physical_ggx_distribution(float3 normal, float alpha) {
+    const float alpha_squared = alpha * alpha;
+    const float denominator = normal.z * normal.z * (alpha_squared - 1.0f) + 1.0f;
+    return alpha_squared / max(PI * denominator * denominator, 1.0e-12f);
+}
+
+inline float3 physical_environment_direction(float2 uv) {
+    const float longitude = (uv.x - 0.5f) * 2.0f * PI;
+    const float latitude = (0.5f - uv.y) * PI;
+    const float latitude_cosine = cos(latitude);
+    return float3(sin(longitude) * latitude_cosine, sin(latitude),
+        cos(longitude) * latitude_cosine);
+}
+
+inline float physical_environment_pdf(float3 direction,
+    texture2d<float, access::sample> environment) {
+    const float2 uv = physical_environment_uv(direction);
+    const uint2 dimensions = uint2(environment.get_width(), environment.get_height());
+    const uint2 texel = min(uint2(uv * float2(dimensions)), dimensions - 1u);
+    const uint top_level = environment.get_num_mip_levels() - 1u;
+    const float total = environment.read(uint2(0u), top_level).a;
+    const float weight = environment.read(texel, 0u).a;
+    const float sine_theta = max(sin(PI * uv.y), 1.0e-8f);
+    return weight * float(dimensions.x * dimensions.y)
+        / max(total * 2.0f * PI * PI * sine_theta, 1.0e-12f);
+}
+
+inline float3 physical_sample_environment(float selector, float2 jitter,
+    texture2d<float, access::sample> environment) {
+    const uint top_level = environment.get_num_mip_levels() - 1u;
+    uint2 parent = uint2(0u);
+    float residual = selector * environment.read(parent, top_level).a;
+    for (uint level = top_level; level > 0u; --level) {
+        const uint child_level = level - 1u;
+        const uint2 child_dimensions = uint2(
+            max(1u, environment.get_width() >> child_level),
+            max(1u, environment.get_height() >> child_level));
+        const uint2 parent_dimensions = uint2(
+            max(1u, environment.get_width() >> level),
+            max(1u, environment.get_height() >> level));
+        const uint2 begin = parent * child_dimensions / parent_dimensions;
+        const uint2 end = (parent + 1u) * child_dimensions / parent_dimensions;
+        uint2 selected = min(begin, child_dimensions - 1u);
+        bool selected_child = false;
+        for (uint y = begin.y; y < end.y && !selected_child; ++y) {
+            for (uint x = begin.x; x < end.x; ++x) {
+                const uint2 child = uint2(x, y);
+                const float weight = environment.read(child, child_level).a;
+                if (residual <= weight) {
+                    selected = child;
+                    selected_child = true;
+                    break;
+                }
+                residual -= weight;
+            }
+        }
+        parent = selected;
+    }
+    const float2 uv = (float2(parent) + jitter)
+        / float2(environment.get_width(), environment.get_height());
+    return physical_environment_direction(uv);
+}
+
 inline float physical_dielectric_fresnel(float cosine_i, float eta) {
     if (eta == 1.0f) return 0.0f;
     cosine_i = clamp(cosine_i, 0.0f, 1.0f);
@@ -441,34 +536,72 @@ inline float3 physical_reference_ggx_environment(
         return environment.sample(
             environment_sampler, physical_environment_uv(mirror), level(0.0f)).rgb;
     }
-    const float3 outgoing = float3(-mirror.x, -mirror.y, mirror.z);
+    const float normal_sign = mirror.z >= 0.0f ? 1.0f : -1.0f;
+    const float3 canonical_mirror = float3(
+        mirror.x, mirror.y * normal_sign, mirror.z * normal_sign);
+    const float3 outgoing = float3(
+        -canonical_mirror.x, -canonical_mirror.y, canonical_mirror.z);
     const float alpha = max(roughness * roughness, 1.0e-4f);
     const float smooth_fresnel = max(
         physical_dielectric_fresnel(view_cosine, p.cover_geometry.z), 1.0e-8f);
     const float lambda_outgoing = physical_smith_ggx_lambda(outgoing, alpha);
-    const uint sample_count = max(1u, uint(p.environment_key_radius.w));
+    const uint sample_count = max(2u, uint(p.environment_key_radius.w));
     const float2 shift = float2(
         physical_hash_uint(sample_seed.x ^ (sample_seed.y * 0x9E3779B9u)),
         physical_hash_uint(sample_seed.y ^ (sample_seed.x * 0x85EBCA6Bu)))
         * 2.3283064365386963e-10f;
     float3 sum = float3(0.0f);
     for (uint index = 0u; index < sample_count; ++index) {
-        const float2 sample = fract(float2(
-            (float(index) + 0.5f) / float(sample_count),
-            physical_radical_inverse_vdc(index)) + shift);
-        const float3 micro_normal = physical_sample_visible_ggx(outgoing, alpha, sample);
+        const uint random = physical_hash_uint(index);
+        const float2 random_sample = fract(float2(
+            (float(index / 2u) + 0.5f) / float(max(1u, sample_count / 2u)),
+            physical_radical_inverse_vdc(index / 2u)) + shift);
+        const float2 jitter = float2(
+            physical_hash_uint(random ^ sample_seed.x ^ 0x63D83595u),
+            physical_hash_uint(random ^ sample_seed.y ^ 0xB5297A4Du))
+            * 2.3283064365386963e-10f;
+        float3 source_direction;
+        float3 incident;
+        if ((index & 1u) == 0u) {
+            source_direction = physical_sample_environment(
+                random_sample.x, jitter, environment);
+            const float3 rotated_incident = float3(
+                source_direction.x * cosine - source_direction.z * sine,
+                source_direction.y,
+                source_direction.x * sine + source_direction.z * cosine);
+            incident = float3(
+                rotated_incident.x,
+                rotated_incident.y * normal_sign,
+                rotated_incident.z * normal_sign);
+        } else {
+            const float3 sampled_normal = physical_sample_visible_ggx(
+                outgoing, alpha, random_sample);
+            incident = reflect(-outgoing, sampled_normal);
+            const float3 rotated_incident = float3(
+                incident.x, incident.y * normal_sign, incident.z * normal_sign);
+            source_direction = float3(
+                rotated_incident.x * cosine + rotated_incident.z * sine,
+                rotated_incident.y,
+                -rotated_incident.x * sine + rotated_incident.z * cosine);
+        }
+        if (incident.z <= 0.0f) continue;
+        const float3 micro_normal = normalize(outgoing + incident);
         const float outgoing_dot_micro = max(0.0f, dot(outgoing, micro_normal));
-        float3 incident = reflect(-outgoing, micro_normal);
-        if (incident.z <= 0.0f || outgoing_dot_micro <= 0.0f) continue;
+        if (outgoing_dot_micro <= 0.0f || micro_normal.z <= 0.0f) continue;
         const float lambda_incident = physical_smith_ggx_lambda(incident, alpha);
-        const float masking_ratio = (1.0f + lambda_outgoing)
-            / (1.0f + lambda_outgoing + lambda_incident);
+        const float distribution = physical_ggx_distribution(micro_normal, alpha);
+        const float masking = 1.0f / (1.0f + lambda_outgoing + lambda_incident);
+        const float environment_pdf = physical_environment_pdf(source_direction, environment);
+        const float ggx_pdf = distribution
+            / (4.0f * max(outgoing.z * (1.0f + lambda_outgoing), 1.0e-12f));
+        const float mixture_pdf = 0.5f * (environment_pdf + ggx_pdf);
         const float weight = physical_dielectric_fresnel(
-            outgoing_dot_micro, p.cover_geometry.z) * masking_ratio / smooth_fresnel;
-        incident = float3(incident.x * cosine + incident.z * sine, incident.y,
-            -incident.x * sine + incident.z * cosine);
+            outgoing_dot_micro, p.cover_geometry.z) * distribution * masking
+            / (4.0f * max(outgoing.z, 1.0e-6f) * smooth_fresnel
+                * max(mixture_pdf, 1.0e-12f));
         sum += environment.sample(
-            environment_sampler, physical_environment_uv(incident), level(0.0f)).rgb * weight;
+            environment_sampler, physical_environment_uv(source_direction), level(0.0f)).rgb
+            * weight;
     }
     return sum / float(sample_count);
 }

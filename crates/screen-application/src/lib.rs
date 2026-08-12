@@ -554,10 +554,10 @@ pub fn physical_pipeline_aperture_sample_count(quality: FlatPanelQuality) -> usi
 
 pub fn physical_environment_reference_sample_count(quality: FlatPanelQuality) -> u32 {
     match quality {
-        FlatPanelQuality::Draft => 16,
-        FlatPanelQuality::Medium => 32,
-        FlatPanelQuality::High => 64,
-        FlatPanelQuality::Native => 256,
+        FlatPanelQuality::Draft => 256,
+        FlatPanelQuality::Medium => 512,
+        FlatPanelQuality::High => 1024,
+        FlatPanelQuality::Native => 4096,
     }
 }
 
@@ -6394,7 +6394,7 @@ mod tests {
                 FlatPanelQuality::Native,
             ]
             .map(physical_environment_reference_sample_count),
-            [16, 32, 64, 256]
+            [256, 512, 1024, 4096]
         );
     }
 
