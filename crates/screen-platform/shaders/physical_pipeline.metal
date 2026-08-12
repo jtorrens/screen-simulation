@@ -516,40 +516,52 @@ inline float physical_dielectric_fresnel(float cosine_i, float eta) {
     return 0.5f * (rs * rs + rp * rp);
 }
 
+inline float physical_microtexture_height(int2 lattice, uint octave, uint seed) {
+    const uint coordinates = uint(lattice.x) * 0x8DA6B343u
+        ^ uint(lattice.y) * 0xD8163841u
+        ^ octave * 0xCB1AB31Fu
+        ^ seed;
+    return float(physical_hash_uint(coordinates)) * 4.656612873077393e-10f - 1.0f;
+}
+
 inline float3 physical_microtexture_reflection(float3 reflection_direction,
     float2 cover_position_meters, float2 footprint_half_extent_meters,
     thread float& view_cosine, constant PhysicalPipelineParams& p) {
     const float effective_slope = p.cover_microtexture.x * p.cover_microtexture.y;
     if (effective_slope == 0.0f) return reflection_direction;
     const float correlation_length = p.cover_microtexture.z * 1.0e-6f;
-    constexpr float wavelength_ratios[8] = {
-        0.53f, 0.67f, 0.83f, 1.0f, 1.27f, 1.61f, 2.03f, 2.57f
-    };
-    constexpr float amplitudes[8] = {
-        0.42f, 0.58f, 0.76f, 1.0f, 0.88f, 0.69f, 0.50f, 0.34f
-    };
+    constexpr float cell_ratios[3] = { 1.0f, 0.47f, 0.22f };
+    constexpr float amplitudes[3] = { 1.0f, 0.46f, 0.21f };
     float2 gradient = 0.0f;
     float squared_amplitudes = 0.0f;
-    for (uint octave = 0u; octave < 8u; ++octave) {
-        const uint hashed = physical_hash_uint(
-            p.cover_microtexture_seed.x ^ (octave * 0x9E3779B9u));
-        const float angle = float(hashed) * 2.3283064365386963e-10f * 2.0f * PI;
-        const float phase = float(physical_hash_uint(hashed ^ 0x85EBCA6Bu))
-            * 2.3283064365386963e-10f * 2.0f * PI;
-        float2 direction = float2(
-            cos(angle) * (1.0f + p.cover_microtexture.w * abs(cos(angle))),
-            sin(angle));
-        direction = normalize(direction);
-        const float wavelength = correlation_length * wavelength_ratios[octave];
+    for (uint octave = 0u; octave < 3u; ++octave) {
+        const float cell = correlation_length * cell_ratios[octave];
         const float amplitude = amplitudes[octave];
-        const float sigma = length(direction * footprint_half_extent_meters);
-        const float filtered = rsqrt(1.0f + (sigma / wavelength) * (sigma / wavelength));
-        const float argument = (2.0f * PI / wavelength)
-            * dot(direction, cover_position_meters) + phase;
-        gradient += direction * cos(argument) * filtered * amplitude;
+        const float2 anisotropic_cell = float2(
+            cell * (1.0f + p.cover_microtexture.w), cell);
+        const float2 position = cover_position_meters / anisotropic_cell;
+        const int2 lattice = int2(floor(position));
+        const float2 fraction = position - float2(lattice);
+        const float2 fade = fraction * fraction * (3.0f - 2.0f * fraction);
+        const float2 fade_derivative = 6.0f * fraction * (1.0f - fraction);
+        const float h00 = physical_microtexture_height(
+            lattice, octave, p.cover_microtexture_seed.x);
+        const float h10 = physical_microtexture_height(
+            lattice + int2(1, 0), octave, p.cover_microtexture_seed.x);
+        const float h01 = physical_microtexture_height(
+            lattice + int2(0, 1), octave, p.cover_microtexture_seed.x);
+        const float h11 = physical_microtexture_height(
+            lattice + int2(1, 1), octave, p.cover_microtexture_seed.x);
+        const float dx = ((h10 - h00) * (1.0f - fade.y) + (h11 - h01) * fade.y)
+            * fade_derivative.x;
+        const float dy = ((h01 - h00) * (1.0f - fade.x) + (h11 - h10) * fade.x)
+            * fade_derivative.y;
+        const float footprint = length(footprint_half_extent_meters);
+        const float filtered = rsqrt(1.0f + (footprint / cell) * (footprint / cell));
+        gradient += float2(dx, dy) * filtered * amplitude;
         squared_amplitudes += amplitude * amplitude;
     }
-    gradient *= effective_slope * sqrt(2.0f / squared_amplitudes);
+    gradient *= effective_slope * rsqrt(squared_amplitudes);
     const float3 normal = normalize(float3(-gradient.x, -gradient.y, 1.0f));
     const float3 incident = float3(
         reflection_direction.x, reflection_direction.y, -reflection_direction.z);

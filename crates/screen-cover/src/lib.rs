@@ -513,48 +513,48 @@ impl AntiGlareMicrotextureProfile {
             );
         }
         let correlation_length = self.correlation_length_micrometers * 1.0e-6;
-        // A compact band-limited realization avoids turning a single
-        // correlation length into a visibly periodic grating. These fixed
-        // ratios and weights describe one material field; the seed rotates and
-        // phases it without changing its spectrum.
-        const WAVELENGTH_RATIOS: [f32; 8] = [0.53, 0.67, 0.83, 1.0, 1.27, 1.61, 2.03, 2.57];
-        const AMPLITUDES: [f32; 8] = [0.42, 0.58, 0.76, 1.0, 0.88, 0.69, 0.50, 0.34];
+        // Random lattice heights form one continuous, integrable surface. A
+        // compact octave stack removes the coherent waves of the first
+        // prototype without turning the reflected radiance into noise.
+        const CELL_RATIOS: [f32; 3] = [1.0, 0.47, 0.22];
+        const AMPLITUDES: [f32; 3] = [1.0, 0.46, 0.21];
         let mut gradient = [0.0_f32; 2];
         let mut squared_amplitudes = 0.0_f32;
-        for octave in 0..8_u32 {
-            let hashed = microtexture_hash(self.seed ^ octave.wrapping_mul(0x9e37_79b9));
-            let angle = hashed as f32 * 2.328_306_4e-10 * core::f32::consts::TAU;
-            let phase = microtexture_hash(hashed ^ 0x85eb_ca6b) as f32
-                * 2.328_306_4e-10
-                * core::f32::consts::TAU;
-            let directional_scale = 1.0 + self.anisotropy * angle.cos().abs();
-            let direction = [angle.cos() * directional_scale, angle.sin()];
-            let direction_length = direction[0].hypot(direction[1]);
-            let direction = [
-                direction[0] / direction_length,
-                direction[1] / direction_length,
-            ];
-            let wavelength = correlation_length * WAVELENGTH_RATIOS[octave as usize];
+        for octave in 0..3_u32 {
+            let cell = correlation_length * CELL_RATIOS[octave as usize];
             let amplitude = AMPLITUDES[octave as usize];
-            let sigma = (direction[0] * footprint_half_extent_meters[0])
-                .hypot(direction[1] * footprint_half_extent_meters[1]);
-            // Finite-footprint moment filtering: the mean resolved slope falls
-            // with covered correlation cells while the unresolved covariance
-            // remains represented by the residual GGX lobe.
-            let filtered = (1.0 + (sigma / wavelength).powi(2)).sqrt().recip();
-            let argument = (core::f32::consts::TAU / wavelength)
-                * (direction[0] * cover_position_meters[0]
-                    + direction[1] * cover_position_meters[1])
-                + phase;
-            let contribution = argument.cos() * filtered * amplitude;
-            gradient[0] += direction[0] * contribution;
-            gradient[1] += direction[1] * contribution;
+            let anisotropic_cell = [cell * (1.0 + self.anisotropy), cell];
+            let position = [
+                cover_position_meters[0] / anisotropic_cell[0],
+                cover_position_meters[1] / anisotropic_cell[1],
+            ];
+            let lattice = [position[0].floor() as i32, position[1].floor() as i32];
+            let fraction = [
+                position[0] - lattice[0] as f32,
+                position[1] - lattice[1] as f32,
+            ];
+            let fade = fraction.map(|value| value * value * (3.0 - 2.0 * value));
+            let fade_derivative = fraction.map(|value| 6.0 * value * (1.0 - value));
+            let height = |x: i32, y: i32| {
+                let coordinates = (x as u32).wrapping_mul(0x8da6_b343)
+                    ^ (y as u32).wrapping_mul(0xd816_3841)
+                    ^ octave.wrapping_mul(0xcb1a_b31f)
+                    ^ self.seed;
+                microtexture_hash(coordinates) as f32 * 4.656_613e-10 - 1.0
+            };
+            let h00 = height(lattice[0], lattice[1]);
+            let h10 = height(lattice[0] + 1, lattice[1]);
+            let h01 = height(lattice[0], lattice[1] + 1);
+            let h11 = height(lattice[0] + 1, lattice[1] + 1);
+            let dx = ((h10 - h00) * (1.0 - fade[1]) + (h11 - h01) * fade[1]) * fade_derivative[0];
+            let dy = ((h01 - h00) * (1.0 - fade[0]) + (h11 - h10) * fade[0]) * fade_derivative[1];
+            let footprint = footprint_half_extent_meters[0].hypot(footprint_half_extent_meters[1]);
+            let filtered = (1.0 + (footprint / cell).powi(2)).sqrt().recip();
+            gradient[0] += dx * filtered * amplitude;
+            gradient[1] += dy * filtered * amplitude;
             squared_amplitudes += amplitude * amplitude;
         }
-        // cos() contributes one half of its squared amplitude. Normalizing by
-        // the complete band keeps the requested RMS slope independent of the
-        // number and weighting of components.
-        let normalization = effective_slope * (2.0 / squared_amplitudes).sqrt();
+        let normalization = effective_slope / squared_amplitudes.sqrt();
         gradient[0] *= normalization;
         gradient[1] *= normalization;
         let normal_length = (gradient[0] * gradient[0] + gradient[1] * gradient[1] + 1.0).sqrt();
