@@ -1723,6 +1723,8 @@ mod tests {
                 sensor_noise_amount: 0.0,
                 development: screen_camera::CameraDevelopment::NEUTRAL,
                 development_enabled: false,
+                rendering_intent: screen_camera::CameraRenderingIntent::NEUTRAL,
+                rendering_intent_enabled: false,
                 frame_index: 0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             },
@@ -1866,58 +1868,172 @@ mod tests {
     fn cover_and_procedural_environment_match_the_existing_cpu_authority() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
-        for cover in [
+        for mut cover in [
             screen_cover::CoverGlassProfile::NEUTRAL,
             screen_cover::COVER_GLASS_PRESETS[1].profile,
             screen_cover::COVER_GLASS_PRESETS[4].profile,
         ] {
-            for environment in [
-                screen_cover::ProceduralEnvironment::NONE,
-                screen_cover::environment_preset("environment-uniform-neutral")
-                    .unwrap()
-                    .environment,
-                screen_cover::environment_preset("environment-studio-softboxes")
-                    .unwrap()
-                    .environment,
-                screen_cover::environment_preset("environment-calibration-grid")
-                    .unwrap()
-                    .environment,
-            ] {
-                let (input, mut plan) = fixture(
-                    RasterPlacement::Stretch,
-                    FlatPanelQuality::High,
-                    StripeLayout::Bgr,
-                    0.2,
-                    1.0,
-                );
-                plan.cover = cover;
-                plan.environment = screen_cover::IncidentEnvironment::Procedural(environment);
-                plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
-                let source = texture(&device, input.width, input.height, &input.acescg);
-                let signal_values = input
-                    .device_signal
-                    .pixels
-                    .iter()
-                    .map(|value| [value.r, value.g, value.b, 1.0])
-                    .collect::<Vec<_>>();
-                let signal = texture(&device, input.width, input.height, &signal_values);
-                let cpu =
-                    evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-                        .expect("CPU cover oracle");
-                let gpu = backend
-                    .evaluate(&source, &signal, plan, |_| {}, || false)
-                    .expect("Metal cover result");
-                let maximum = read(&gpu.texture)
-                    .iter()
-                    .zip(&cpu.acescg)
-                    .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
-                    .fold(0.0_f32, f32::max);
-                assert!(
-                    maximum <= 2.0e-3,
-                    "cover CPU/Metal deviation {maximum}; cover={cover:?}; environment={environment:?}"
-                );
+            for microtexture_amount in [0.0, 1.0, 4.0] {
+                cover.anti_glare_microtexture.character_strength = microtexture_amount;
+                for environment in [
+                    screen_cover::ProceduralEnvironment::NONE,
+                    screen_cover::environment_preset("environment-uniform-neutral")
+                        .unwrap()
+                        .environment,
+                    screen_cover::environment_preset("environment-studio-softboxes")
+                        .unwrap()
+                        .environment,
+                    screen_cover::environment_preset("environment-calibration-grid")
+                        .unwrap()
+                        .environment,
+                ] {
+                    let (input, mut plan) = fixture(
+                        RasterPlacement::Stretch,
+                        FlatPanelQuality::High,
+                        StripeLayout::Bgr,
+                        0.2,
+                        1.0,
+                    );
+                    plan.cover = cover;
+                    plan.environment = screen_cover::IncidentEnvironment::Procedural(environment);
+                    plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
+                    let source = texture(&device, input.width, input.height, &input.acescg);
+                    let signal_values = input
+                        .device_signal
+                        .pixels
+                        .iter()
+                        .map(|value| [value.r, value.g, value.b, 1.0])
+                        .collect::<Vec<_>>();
+                    let signal = texture(&device, input.width, input.height, &signal_values);
+                    let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                        input,
+                        plan,
+                    })
+                    .expect("CPU cover oracle");
+                    let gpu = backend
+                        .evaluate(&source, &signal, plan, |_| {}, || false)
+                        .expect("Metal cover result");
+                    let maximum = read(&gpu.texture)
+                        .iter()
+                        .zip(&cpu.acescg)
+                        .flat_map(|(gpu, cpu)| {
+                            gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs())
+                        })
+                        .fold(0.0_f32, f32::max);
+                    assert!(
+                        maximum <= 2.0e-3,
+                        "cover CPU/Metal deviation {maximum}; amount={microtexture_amount}; cover={cover:?}; environment={environment:?}"
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn microtexture_zero_is_exact_and_environment_none_cannot_change_emission() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let evaluate = |mut cover: screen_cover::CoverGlassProfile,
+                        environment: screen_cover::ProceduralEnvironment| {
+            let (input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Rgb,
+                0.12,
+                1.0,
+            );
+            cover.character_strength = 1.0;
+            plan.cover = cover;
+            plan.environment = screen_cover::IncidentEnvironment::Procedural(environment);
+            plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .map(|value| [value.r, value.g, value.b, 1.0])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let cpu =
+                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+                    .expect("CPU cover oracle");
+            let gpu = backend
+                .evaluate(&source, &signal, plan, |_| {}, || false)
+                .expect("Metal cover result");
+            (cpu.acescg, read(&gpu.texture))
+        };
+
+        let mut disabled = screen_cover::COVER_GLASS_PRESETS[3].profile;
+        disabled.anti_glare_microtexture.character_strength = 0.0;
+        let mut neutral_microtexture = disabled;
+        neutral_microtexture.anti_glare_microtexture =
+            screen_cover::AntiGlareMicrotextureProfile::NEUTRAL;
+        let environment = screen_cover::environment_preset("environment-studio-softboxes")
+            .unwrap()
+            .environment;
+        let disabled_result = evaluate(disabled, environment);
+        let neutral_result = evaluate(neutral_microtexture, environment);
+        assert_eq!(disabled_result, neutral_result);
+
+        let mut amount_one = disabled;
+        amount_one.anti_glare_microtexture.character_strength = 1.0;
+        let mut amount_four = disabled;
+        amount_four.anti_glare_microtexture.character_strength = 4.0;
+        let no_environment = screen_cover::ProceduralEnvironment::NONE;
+        assert_eq!(
+            evaluate(disabled, no_environment),
+            evaluate(amount_one, no_environment)
+        );
+        assert_eq!(
+            evaluate(disabled, no_environment),
+            evaluate(amount_four, no_environment)
+        );
+    }
+
+    #[test]
+    fn microtexture_cpu_metal_parity_uses_global_coordinates_in_non_origin_tiles() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        plan.requested_width = 3;
+        plan.requested_height = TILE_ROWS + 1;
+        plan.cover = screen_cover::COVER_GLASS_PRESETS[3].profile;
+        plan.environment = screen_cover::IncidentEnvironment::Procedural(
+            screen_cover::environment_preset("environment-studio-softboxes")
+                .unwrap()
+                .environment,
+        );
+        plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
+            .expect("CPU tiled cover oracle");
+        let gpu = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("Metal tiled cover result");
+        let actual = read(&gpu.texture);
+        let second_tile_start = (TILE_ROWS * plan.requested_width) as usize;
+        let maximum = actual[second_tile_start..]
+            .iter()
+            .zip(&cpu.acescg[second_tile_start..])
+            .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            maximum <= 2.0e-3,
+            "non-origin tile CPU/Metal microtexture deviation {maximum}"
+        );
     }
 
     #[test]

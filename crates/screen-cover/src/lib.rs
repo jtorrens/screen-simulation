@@ -1213,6 +1213,30 @@ mod tests {
     }
 
     #[test]
+    fn microtexture_visibility_preserves_neutral_mean_energy() {
+        let base = AntiGlareMicrotextureProfile::MATTE_AR;
+        for amount in [1.0, 4.0] {
+            let microtexture = AntiGlareMicrotextureProfile {
+                character_strength: amount,
+                ..base
+            };
+            let mut sum = 0.0_f64;
+            let sample_count = 256_u32;
+            for y in 0..sample_count {
+                for x in 0..sample_count {
+                    let position = [(x as f32 + 0.37) * 7.1e-6, (y as f32 + 0.61) * 7.9e-6];
+                    sum += f64::from(microtexture.reflection_visibility(position, [0.0, 0.0]));
+                }
+            }
+            let mean = sum / f64::from(sample_count * sample_count);
+            assert!(
+                (mean - 1.0).abs() <= 0.01,
+                "microtexture amount {amount} changed mean reflected energy to {mean}"
+            );
+        }
+    }
+
+    #[test]
     fn resolved_microtexture_visibility_does_not_emboss_transmitted_panel_emission() {
         let evaluator = COVER_GLASS_PRESETS[3]
             .profile
