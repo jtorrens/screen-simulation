@@ -32,6 +32,15 @@ import AppKit
     #expect(!StudioColorOutputTransform.catalog.contains(raw))
 }
 
+@Test func untoneMappedDiagnosticIsExplicitAndAbsentFromAuthoredOutputs() {
+    let diagnostic = StudioColorOutputTransform.diagnosticUntoneMappedSRGB
+    #expect(diagnostic.processor == .displayView(
+        display: "sRGB - Display", view: "Un-tone-mapped"
+    ))
+    #expect(diagnostic.colorSpace?.name == CGColorSpace.sRGB)
+    #expect(!StudioColorOutputTransform.catalog.contains(diagnostic))
+}
+
 @Test func colorModeResolvesFromTheAuthoredSourceDomain() throws {
     let mode = try #require(StudioColorMode.catalog.first { $0.id == "srgb" })
     let displayInput = try #require(StudioColorInputTransform.catalog.first {

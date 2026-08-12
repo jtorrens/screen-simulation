@@ -368,6 +368,16 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         encoding: .acescgRaw
     )
 
+    /// Diagnostic scene-linear view used to isolate the ACES output transform.
+    /// It is intentionally absent from the authored output catalog.
+    public static let diagnosticUntoneMappedSRGB = Self(
+        id: "diagnostic-untone-mapped-srgb",
+        label: "Diagnóstico sRGB · sin tone mapping",
+        display: "sRGB - Display",
+        view: "Un-tone-mapped",
+        encoding: .sRGB
+    )
+
     public var colorSpace: CGColorSpace? {
         switch encoding {
         // Raw inspection deliberately sends linear Rec.709 values as display

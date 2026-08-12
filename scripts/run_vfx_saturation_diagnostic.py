@@ -144,6 +144,12 @@ def main() -> int:
         ("developed-odt", "developed-acescg", "aces2-srgb-sdr-100", False),
         ("ideal-full-rgb-p3-odt", "lens-projection", "aces2-display-p3-sdr-100", True),
         ("developed-p3-odt", "developed-acescg", "aces2-display-p3-sdr-100", False),
+        (
+            "developed-untone-mapped-srgb",
+            "developed-acescg",
+            "diagnostic-untone-mapped-srgb",
+            False,
+        ),
     ]
     with tempfile.TemporaryDirectory(prefix="screen-saturation-fixtures-") as temporary:
         results = [
@@ -169,7 +175,9 @@ def main() -> int:
         "interpretation": (
             "Ideal full RGB applies the canonical shutter, radiometric calibration and Develop "
             "scale to Lens while omitting only CFA/demosaic. Developed uses the canonical Bayer "
-            "route. Both have the same 5712x4284 raster and Preview ODT."
+            "route. Both have the same 5712x4284 raster and Preview ODT. The additional "
+            "Developed un-tone-mapped sRGB view isolates chromaticity changes introduced by "
+            "the ACES 2.0 SDR output transform; it is diagnostic-only and never authored."
         ),
         "variants": results,
         "ratios": {

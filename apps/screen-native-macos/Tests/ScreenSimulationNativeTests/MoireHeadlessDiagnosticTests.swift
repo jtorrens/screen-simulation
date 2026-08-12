@@ -432,9 +432,14 @@ import Testing
     let outputID = try #require(ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_OUTPUT_TRANSFORM_ID"
     ])
-    let output = try #require(StudioColorOutputTransform.catalog.first {
-        $0.id == outputID
-    })
+    let output: StudioColorOutputTransform
+    if outputID == StudioColorOutputTransform.diagnosticUntoneMappedSRGB.id {
+        output = .diagnosticUntoneMappedSRGB
+    } else {
+        output = try #require(StudioColorOutputTransform.catalog.first {
+            $0.id == outputID
+        })
+    }
     let context = MoireRenderContext(
         source: source,
         deviceSignal: checkpoint.deviceSignal,
