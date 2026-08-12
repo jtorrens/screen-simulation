@@ -619,11 +619,14 @@ fn resample_physical_rgba_area(
     output_width: u32,
     output_height: u32,
 ) -> Vec<[f32; 4]> {
-    let mut output = Vec::with_capacity((output_width * output_height) as usize);
-    for output_y in 0..output_height {
-        let minimum_y = output_y as f64 * source_height as f64 / output_height as f64;
-        let maximum_y = (output_y + 1) as f64 * source_height as f64 / output_height as f64;
-        for output_x in 0..output_width {
+    let output_len = (output_width * output_height) as usize;
+    (0..output_len)
+        .into_par_iter()
+        .map(|output_index| {
+            let output_y = output_index as u32 / output_width;
+            let output_x = output_index as u32 % output_width;
+            let minimum_y = output_y as f64 * source_height as f64 / output_height as f64;
+            let maximum_y = (output_y + 1) as f64 * source_height as f64 / output_height as f64;
             let minimum_x = output_x as f64 * source_width as f64 / output_width as f64;
             let maximum_x = (output_x + 1) as f64 * source_width as f64 / output_width as f64;
             let mut sum = [0.0_f64; 4];
@@ -646,10 +649,9 @@ fn resample_physical_rgba_area(
                     area += weight;
                 }
             }
-            output.push(sum.map(|value| (value / area) as f32));
-        }
-    }
-    output
+            sum.map(|value| (value / area) as f32)
+        })
+        .collect()
 }
 
 fn sensor_exposure_pixels(
@@ -6380,6 +6382,26 @@ mod tests {
                 exposure_scale
             )),
             bits(&expected_fractional)
+        );
+
+        let resample_with_workers = |worker_count| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(worker_count)
+                .build()
+                .expect("resample worker pool")
+                .install(|| resample_physical_rgba_area(&fractional_source, 4, 3, 3, 2))
+        };
+        let one_worker = resample_with_workers(1);
+        let multiple_workers = resample_with_workers(4);
+        assert_eq!(
+            one_worker
+                .iter()
+                .flat_map(|pixel| pixel.map(f32::to_bits))
+                .collect::<Vec<_>>(),
+            multiple_workers
+                .iter()
+                .flat_map(|pixel| pixel.map(f32::to_bits))
+                .collect::<Vec<_>>()
         );
     }
 
