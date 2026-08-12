@@ -531,6 +531,25 @@ impl ColorEngine {
         })
     }
 
+    pub fn recording_output_inverse_processor(
+        &self,
+        transform: RecordingOutputTransform,
+    ) -> Result<RecordingOutputInverseProcessor, ColorError> {
+        let processor = match transform {
+            RecordingOutputTransform::IphoneHeicDisplayP3Bt709Full => {
+                self.config.processor_display(
+                    ACESCG_COLOR_SPACE,
+                    "Display P3 - Display",
+                    "ACES 2.0 - SDR 100 nits (P3 D65)",
+                    TransformDirection::Inverse,
+                )
+            }
+        }
+        .and_then(|processor| processor.default_cpu_processor())
+        .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        Ok(RecordingOutputInverseProcessor { processor })
+    }
+
     pub fn camera_output_gpu_shader(
         &self,
         transform: CameraOutputTransform,
@@ -626,6 +645,25 @@ pub struct RecordingOutputProcessor {
     processor: CPUProcessor,
 }
 
+pub struct RecordingOutputInverseProcessor {
+    processor: CPUProcessor,
+}
+
+impl RecordingOutputInverseProcessor {
+    pub fn apply_rgba(&self, rgba: &mut [[f32; 4]]) -> Result<(), ColorError> {
+        for pixel in rgba.iter_mut() {
+            for channel in &mut pixel[..3] {
+                *channel = srgb_encode(bt709_decode(*channel));
+            }
+            pixel[3] = 1.0;
+        }
+        let pixel_count = i64::try_from(rgba.len()).map_err(|_| ColorError::PixelCountOverflow)?;
+        self.processor
+            .try_apply_rgba_pixels(rgba.as_flattened_mut(), pixel_count, 4)
+            .map_err(|error| ColorError::OpenColorIo(error.to_string()))
+    }
+}
+
 impl RecordingOutputProcessor {
     pub fn apply_acescg_raster(
         &self,
@@ -688,6 +726,22 @@ fn bt709_encode(value: f32) -> f32 {
         4.5 * value
     } else {
         1.099 * value.powf(0.45) - 0.099
+    }
+}
+
+fn bt709_decode(value: f32) -> f32 {
+    if value < 0.081 {
+        value / 4.5
+    } else {
+        ((value + 0.099) / 1.099).powf(1.0 / 0.45)
+    }
+}
+
+fn srgb_encode(value: f32) -> f32 {
+    if value <= 0.003_130_8 {
+        12.92 * value
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
     }
 }
 

@@ -12,6 +12,7 @@ crate-type = ["staticlib"]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 screen-application = { path = "../screen-application" }
 screen-camera = { path = "../screen-camera" }
+screen-color = { path = "../screen-color" }
 screen-contracts = { path = "../screen-contracts" }
 screen-cover = { path = "../screen-cover" }
 screen-geometry = { path = "../screen-geometry" }

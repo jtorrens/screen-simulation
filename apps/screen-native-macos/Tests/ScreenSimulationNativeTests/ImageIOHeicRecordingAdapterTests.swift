@@ -1,9 +1,51 @@
 import Foundation
 import CoreGraphics
 import ImageIO
+import Metal
+import StudioColor
 import Testing
 import UniformTypeIdentifiers
 @testable import ScreenSimulationNative
+
+@MainActor
+@Test func recordingExecutorPublishesDistinctOutputAndCodecArtifacts() throws {
+    let display = try StudioColorMetalDisplay()
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba32Float, width: 64, height: 32, mipmapped: false
+    )
+    descriptor.storageMode = .shared
+    descriptor.usage = [.shaderRead]
+    let texture = try #require(device.makeTexture(descriptor: descriptor))
+    var pixels = [Float](repeating: 1, count: 64 * 32 * 4)
+    for index in stride(from: 0, to: pixels.count, by: 4) {
+        pixels[index] = Float(index % 251) / 250
+        pixels[index + 1] = 0.35
+        pixels[index + 2] = 0.8
+    }
+    pixels.withUnsafeBytes {
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, 64, 32), mipmapLevel: 0,
+            withBytes: $0.baseAddress!, bytesPerRow: 64 * 4 * MemoryLayout<Float>.size
+        )
+    }
+    let camera = StudioColorMetalFrame(texture: texture)
+    let output = try RecordingPhaseExecutor.output(
+        cameraRendered: camera,
+        transformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        display: display
+    )
+    let codec = try RecordingPhaseExecutor.codec(
+        output: output,
+        profileID: RecordingPhaseExecutor.iphoneHeicProfileID,
+        character: 1,
+        display: display
+    )
+    #expect(output.frame.texture !== camera.texture)
+    #expect(codec.frame.texture !== output.frame.texture)
+    #expect(codec.encodedBytes > 0)
+    #expect(codec.encodedSHA256Hex.count == 64)
+}
 
 @Test func imageIOHeicAdapterExecutesOneRealIntraRoundTrip() throws {
     let width = 320

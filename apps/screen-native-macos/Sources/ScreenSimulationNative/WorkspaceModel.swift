@@ -140,7 +140,11 @@ final class WorkspaceModel: ObservableObject {
     let environmentPresets = try! EnvironmentPresetDefinition.catalog()
     @Published private(set) var physicalPublicationSummary = "Sin publicación física"
     @Published private(set) var testPresentation: TestPagePresentation?
+    @Published private(set) var recordingEncodedBytes: Int?
+    @Published private(set) var recordingEncodedSHA256: String?
     private var testAuthoringSelection: TestAuthoringResolvedSelection?
+    private var recordingCameraCheckpoint: StudioColorMetalFrame?
+    private var recordingOutputExecution: RecordingOutputExecution?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -555,8 +559,14 @@ final class WorkspaceModel: ObservableObject {
                 )
                 testPresentation = snapshot.presentation
                 testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+                let selectedResult = snapshot.previewResultByPhaseID[phaseID]
+                if (selectedResult == .recordingOutput || selectedResult == .recordingCodec),
+                   recordingCameraCheckpoint != nil {
+                    publishRecordingPreview(result: selectedResult!)
+                    return
+                }
                 if let intermediate = physicalIntermediate(
-                    for: snapshot.previewResultByPhaseID[phaseID]
+                    for: selectedResult
                 ) {
                     updateRequestedPhysicalIntermediate(intermediate)
                     rebuildPhysicalSelectedFrame()
@@ -580,8 +590,14 @@ final class WorkspaceModel: ObservableObject {
                     )
                     testPresentation = snapshot.presentation
                     testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+                    let revealResult = snapshot.previewResultByPhaseID[phaseToReveal]
+                    if (revealResult == .recordingOutput || revealResult == .recordingCodec),
+                       recordingCameraCheckpoint != nil {
+                        publishRecordingPreview(result: revealResult!)
+                        return
+                    }
                     if let intermediate = physicalIntermediate(
-                        for: snapshot.previewResultByPhaseID[phaseToReveal]
+                        for: revealResult
                     ) {
                         updateRequestedPhysicalIntermediate(intermediate)
                         rebuildPhysicalSelectedFrame()
@@ -1606,6 +1622,10 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         guard physicalModel.quality != .native else { return }
+        recordingCameraCheckpoint = nil
+        recordingOutputExecution = nil
+        recordingEncodedBytes = nil
+        recordingEncodedSHA256 = nil
         _ = physicalInteractiveJob?.cancel()
         physicalInteractiveTask?.cancel()
         let quality = physicalModel.quality
@@ -1775,6 +1795,16 @@ final class WorkspaceModel: ObservableObject {
     private func applyTestAuthoringSelection(
         _ selection: TestAuthoringResolvedSelection
     ) throws {
+        let previous = testAuthoringSelection
+        if previous?.recordingOutputTransformID != selection.recordingOutputTransformID {
+            recordingOutputExecution = nil
+            recordingEncodedBytes = nil
+            recordingEncodedSHA256 = nil
+        } else if previous?.recordingProfileID != selection.recordingProfileID
+                    || previous?.recordingCharacter != selection.recordingCharacter {
+            recordingEncodedBytes = nil
+            recordingEncodedSHA256 = nil
+        }
         guard var device = try RustDeviceCatalog.builtIns().first(where: {
             $0.id == selection.deviceID
         }) else {
@@ -2007,6 +2037,45 @@ final class WorkspaceModel: ObservableObject {
         status = "Test · Ver hasta \(phase?.label ?? presentation.selectedPhaseID) · \(presentationFrame.width)×\(presentationFrame.height)"
     }
 
+    private func publishRecordingPreview(result: TestPreviewResultKind) {
+        guard let camera = recordingCameraCheckpoint,
+              let selection = testAuthoringSelection
+        else { return }
+        do {
+            let output: RecordingOutputExecution
+            if let cached = recordingOutputExecution {
+                output = cached
+            } else {
+                output = try RecordingPhaseExecutor.output(
+                    cameraRendered: camera,
+                    transformID: selection.recordingOutputTransformID,
+                    display: metalDisplay
+                )
+                recordingOutputExecution = output
+            }
+            let frame: StudioColorMetalFrame
+            if result == .recordingCodec {
+                let codec = try RecordingPhaseExecutor.codec(
+                    output: output,
+                    profileID: selection.recordingProfileID,
+                    character: selection.recordingCharacter,
+                    display: metalDisplay
+                )
+                frame = codec.frame
+                recordingEncodedBytes = codec.encodedBytes
+                recordingEncodedSHA256 = codec.encodedSHA256Hex
+            } else {
+                frame = output.frame
+                recordingEncodedBytes = nil
+                recordingEncodedSHA256 = nil
+            }
+            metalFrame = frame
+            monitorOutput.update(frame: frame, display: metalDisplay)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func pollPhysicalJob(
         _ job: PhysicalMetalFrameJob,
         native: Bool
@@ -2058,6 +2127,15 @@ final class WorkspaceModel: ObservableObject {
                     presentationFrame = frame
                 }
                 metalFrame = presentationFrame
+                if snapshot.returnedIntermediate == .cameraRenderedACEScg {
+                    recordingCameraCheckpoint = presentationFrame
+                    recordingOutputExecution = nil
+                    if selectedTestPreviewResult == .recordingOutput
+                        || selectedTestPreviewResult == .recordingCodec {
+                        publishRecordingPreview(result: selectedTestPreviewResult!)
+                        return
+                    }
+                }
                 monitorOutput.update(frame: presentationFrame, display: metalDisplay)
                 let duration = started.duration(to: .now)
                 let elapsed = Double(duration.components.seconds)

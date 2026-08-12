@@ -734,6 +734,21 @@ bool screen_test_pattern_render_rgba32f(
     size_t pixel_count,
     const char **error_message
 );
+bool screen_recording_output_transform_rgba32f(
+    ScreenUTF8View transform_id,
+    const float *input_rgba,
+    float *output_rgba,
+    uint32_t width,
+    uint32_t height,
+    const char **error_message
+);
+bool screen_recording_output_inverse_rgba32f(
+    ScreenUTF8View transform_id,
+    float *rgba,
+    uint32_t width,
+    uint32_t height,
+    const char **error_message
+);
 
 bool screen_openexr_encode_rgba_half(
     const float *pixels,

@@ -25,6 +25,7 @@ use screen_application::{
     physical_shutter_schedule, test_page_descriptor,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
+use screen_color::{ColorEngine, RecordingOutputTransform};
 use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
@@ -1088,10 +1089,8 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     ) && !contributions[13].discrete_enabled
         || matches!(
             requested_intermediate,
-            PhysicalIntermediate::DevelopedAcesCg
-                | PhysicalIntermediate::CameraRenderedAcesCg
-        )
-            && contributions[13].discrete_enabled
+            PhysicalIntermediate::DevelopedAcesCg | PhysicalIntermediate::CameraRenderedAcesCg
+        ) && contributions[13].discrete_enabled
             && !contributions[15].discrete_enabled
     {
         unsafe {
@@ -3848,6 +3847,109 @@ pub unsafe extern "C" fn screen_test_pattern_render_rgba32f(
         }
     }
     unsafe { set_error(error_message, b"\0") };
+    true
+}
+
+/// Color-owned ACEScg -> recording-output-signal-v1 CPU reference boundary.
+/// The caller owns both buffers and supplies exact stable transform identity.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_recording_output_transform_rgba32f(
+    transform_id: ScreenUtf8View,
+    input_rgba: *const f32,
+    output_rgba: *mut f32,
+    width: u32,
+    height: u32,
+    error_message: *mut *const c_char,
+) -> bool {
+    let Some(transform_id) = (unsafe { borrowed_utf8(transform_id) }) else {
+        unsafe { set_error(error_message, b"invalid Recording Output transform UTF-8\0") };
+        return false;
+    };
+    let Some(transform) = RecordingOutputTransform::from_stable_id(transform_id) else {
+        unsafe { set_error(error_message, b"unknown Recording Output transform\0") };
+        return false;
+    };
+    let Some(pixel_count) = usize::try_from(width).ok().and_then(|width| {
+        usize::try_from(height)
+            .ok()
+            .and_then(|height| width.checked_mul(height))
+    }) else {
+        unsafe { set_error(error_message, b"invalid Recording Output raster\0") };
+        return false;
+    };
+    let Some(component_count) = pixel_count.checked_mul(4) else {
+        unsafe { set_error(error_message, b"invalid Recording Output raster\0") };
+        return false;
+    };
+    if width == 0 || height == 0 || input_rgba.is_null() || output_rgba.is_null() {
+        unsafe { set_error(error_message, b"missing Recording Output raster\0") };
+        return false;
+    }
+    let input = unsafe { std::slice::from_raw_parts(input_rgba, component_count) };
+    let pixels = input
+        .chunks_exact(4)
+        .map(|value| LinearRgb::new(value[0], value[1], value[2]))
+        .collect::<Vec<_>>();
+    let result = ColorEngine::bundled()
+        .and_then(|engine| engine.recording_output_processor(transform))
+        .and_then(|processor| processor.apply_acescg_raster(width, height, &pixels));
+    let signal = match result {
+        Ok(signal) => signal,
+        Err(_) => {
+            unsafe { set_error(error_message, b"Recording Output transform failed\0") };
+            return false;
+        }
+    };
+    let output = unsafe { std::slice::from_raw_parts_mut(output_rgba, component_count) };
+    for (destination, source) in output.chunks_exact_mut(4).zip(signal.rgba) {
+        destination.copy_from_slice(&source);
+    }
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_recording_output_inverse_rgba32f(
+    transform_id: ScreenUtf8View,
+    rgba: *mut f32,
+    width: u32,
+    height: u32,
+    error_message: *mut *const c_char,
+) -> bool {
+    let Some(transform_id) = (unsafe { borrowed_utf8(transform_id) }) else {
+        unsafe { set_error(error_message, b"invalid Recording Output transform UTF-8\0") };
+        return false;
+    };
+    let Some(transform) = RecordingOutputTransform::from_stable_id(transform_id) else {
+        unsafe { set_error(error_message, b"unknown Recording Output transform\0") };
+        return false;
+    };
+    let Some(pixel_count) = usize::try_from(width).ok().and_then(|width| {
+        usize::try_from(height)
+            .ok()
+            .and_then(|height| width.checked_mul(height))
+    }) else {
+        unsafe { set_error(error_message, b"invalid decoded Recording raster\0") };
+        return false;
+    };
+    if width == 0 || height == 0 || rgba.is_null() {
+        unsafe { set_error(error_message, b"missing decoded Recording raster\0") };
+        return false;
+    }
+    let storage = unsafe { std::slice::from_raw_parts_mut(rgba, pixel_count * 4) };
+    let mut pixels = storage
+        .chunks_exact(4)
+        .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+        .collect::<Vec<_>>();
+    let result = ColorEngine::bundled()
+        .and_then(|engine| engine.recording_output_inverse_processor(transform))
+        .and_then(|processor| processor.apply_rgba(&mut pixels));
+    if result.is_err() {
+        unsafe { set_error(error_message, b"Recording Output inverse failed\0") };
+        return false;
+    }
+    for (destination, source) in storage.chunks_exact_mut(4).zip(pixels) {
+        destination.copy_from_slice(&source);
+    }
     true
 }
 
