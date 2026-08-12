@@ -1,15 +1,22 @@
 //! Host-neutral authoring descriptors for the ordered Test surface.
 
-use crate::{CAPTURE_DEVICE_PRESETS, CaptureDevicePreset, capture_device_preset};
+use crate::{
+    CAPTURE_DEVICE_PRESETS, CaptureDevicePreset, RecordingSelection, capture_device_preset,
+    prepare_recording_request,
+};
 use screen_camera::CameraRenderingIntent;
-use screen_color::{DeviceColorTarget, OcioInputTransform};
+use screen_color::{DeviceColorTarget, OcioInputTransform, RecordingOutputTransform};
 use screen_cover::{
     COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset, environment_preset,
 };
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
+use screen_recording::{
+    EncoderExecutionPolicy, GENERIC_JPEG_PHOTO_PROFILE_ID, IPHONE_HEIC_PHOTO_PROFILE_ID,
+    RecordingMedium, bundled_profiles,
+};
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 14;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 15;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -28,6 +35,8 @@ pub const SENSOR_CFA_PHASE_ID: &str = "sensor-cfa";
 pub const SENSOR_NOISE_PHASE_ID: &str = "sensor-noise";
 pub const DEVELOP_DEMOSAIC_PHASE_ID: &str = "develop-demosaic";
 pub const CAMERA_RENDERING_INTENT_PHASE_ID: &str = "camera-rendering-intent";
+pub const RECORDING_OUTPUT_PHASE_ID: &str = "recording-output";
+pub const RECORDING_CODEC_PHASE_ID: &str = "recording-codec";
 pub const OUTPUT_SIGNAL_CONTROL_ID: &str = "output-signal";
 pub const DEVICE_CONTROL_ID: &str = "device";
 pub const COLOR_MODE_CONTROL_ID: &str = "color-mode";
@@ -80,6 +89,9 @@ pub const CAMERA_LOOK_CONTRAST_CONTROL_ID: &str = "camera-look-contrast";
 pub const CAMERA_LOOK_SATURATION_CONTROL_ID: &str = "camera-look-saturation";
 pub const CAMERA_LOOK_TEMPERATURE_CONTROL_ID: &str = "camera-look-temperature-kelvin";
 pub const CAMERA_LOOK_TINT_CONTROL_ID: &str = "camera-look-tint";
+pub const RECORDING_OUTPUT_TRANSFORM_CONTROL_ID: &str = "recording-output-transform";
+pub const RECORDING_PROFILE_CONTROL_ID: &str = "recording-profile";
+pub const RECORDING_CHARACTER_CONTROL_ID: &str = "recording-character";
 
 const PLACEMENTS: [TestChoiceOption; 4] = [
     TestChoiceOption {
@@ -181,6 +193,9 @@ pub struct TestAuthoringSelection<'a> {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub recording_output_transform_id: &'a str,
+    pub recording_profile_id: &'a str,
+    pub recording_character: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -235,6 +250,9 @@ pub struct ResolvedTestAuthoringSelection {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub recording_output_transform_id: &'static str,
+    pub recording_profile_id: &'static str,
+    pub recording_character: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,6 +389,8 @@ pub enum TestPreviewResult {
     SensorNoise = 14,
     DevelopDemosaic = 15,
     CameraRenderingIntent = 16,
+    RecordingOutput = 17,
+    RecordingCodec = 18,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -413,6 +433,8 @@ pub enum TestAuthoringError {
     InvalidSensorBloomProfile,
     InvalidSensorNoiseAmount,
     InvalidCameraRenderingIntent,
+    UnknownRecordingOutputTransform,
+    InvalidRecording,
     UnknownPlacement,
     UnknownPreviewQuality,
     UnknownControl,
@@ -457,6 +479,8 @@ impl core::fmt::Display for TestAuthoringError {
             }
             Self::InvalidSensorNoiseAmount => "Sensor Noise amount is outside 0..=4",
             Self::InvalidCameraRenderingIntent => "Camera Rendering Intent is invalid",
+            Self::UnknownRecordingOutputTransform => "unknown Recording Output transform",
+            Self::InvalidRecording => "Recording selection is invalid",
             Self::UnknownPlacement => "unknown Test placement",
             Self::UnknownPreviewQuality => "unknown Test preview quality",
             Self::UnknownControl => "unknown Test control",
@@ -505,6 +529,14 @@ fn default_output_for_input(input: OcioInputTransform) -> DeviceColorTarget {
         OcioInputTransform::SrgbEncodedRec709 => DeviceColorTarget::SrgbDisplay,
         OcioInputTransform::Rec709Gamma24Display => DeviceColorTarget::Rec1886Rec709Display,
         _ => DeviceColorTarget::SrgbDisplay,
+    }
+}
+
+fn recording_profile_label(id: &str) -> &'static str {
+    match id {
+        IPHONE_HEIC_PHOTO_PROFILE_ID => "iPhone HEIC Photo",
+        GENERIC_JPEG_PHOTO_PROFILE_ID => "Generic JPEG Photo",
+        _ => unreachable!("only bundled still profiles are presented by Test"),
     }
 }
 
@@ -574,6 +606,9 @@ pub fn default_test_authoring_selection(
         sensor_bloom_overflow_transfer_fraction: capture.sensor.bloom.overflow_transfer_fraction,
         sensor_noise_amount: 1.0,
         camera_rendering_intent: capture.rendering_intent,
+        recording_output_transform_id: screen_color::IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
+        recording_profile_id: IPHONE_HEIC_PHOTO_PROFILE_ID,
+        recording_character: 1.0,
     })
 }
 
@@ -769,6 +804,18 @@ pub fn resolve_test_authoring_selection(
         .camera_rendering_intent
         .validate()
         .map_err(|_| TestAuthoringError::InvalidCameraRenderingIntent)?;
+    let recording_output_transform =
+        RecordingOutputTransform::from_stable_id(selection.recording_output_transform_id)
+            .ok_or(TestAuthoringError::UnknownRecordingOutputTransform)?;
+    let recording = prepare_recording_request(RecordingSelection {
+        profile_id: selection.recording_profile_id,
+        character: selection.recording_character,
+        frame_rate: None,
+        first_frame_index: 0,
+        frame_count: 1,
+        execution: EncoderExecutionPolicy::SINGLE_PASS,
+    })
+    .map_err(|_| TestAuthoringError::InvalidRecording)?;
     Ok(ResolvedTestAuthoringSelection {
         input_transform_id: input.stable_id(),
         output_signal_id: output.stable_id(),
@@ -820,6 +867,9 @@ pub fn resolve_test_authoring_selection(
         sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
         camera_rendering_intent: selection.camera_rendering_intent,
+        recording_output_transform_id: recording_output_transform.stable_id(),
+        recording_profile_id: recording.profile.id,
+        recording_character: recording.character,
     })
 }
 
@@ -941,6 +991,21 @@ pub fn test_page_descriptor(
         .map(|preset| TestChoiceOption {
             id: preset.id,
             label: preset.label,
+        })
+        .collect();
+    let recording_output_options = RecordingOutputTransform::ALL
+        .into_iter()
+        .map(|transform| TestChoiceOption {
+            id: transform.stable_id(),
+            label: "iPhone HEIC · Display P3 / BT.709",
+        })
+        .collect();
+    let recording_profile_options = bundled_profiles()
+        .into_iter()
+        .filter(|profile| profile.codec.medium() == RecordingMedium::StillImage)
+        .map(|profile| TestChoiceOption {
+            id: profile.id,
+            label: recording_profile_label(profile.id),
         })
         .collect();
     let input = OcioInputTransform::from_stable_id(selection.input_transform_id)
@@ -1197,7 +1262,7 @@ pub fn test_page_descriptor(
     }
     Ok(TestPageDescriptor {
         schema_version: TEST_AUTHORING_SCHEMA_VERSION,
-        default_preview_phase_id: CAMERA_RENDERING_INTENT_PHASE_ID,
+        default_preview_phase_id: RECORDING_CODEC_PHASE_ID,
         selection,
         phases: vec![
             TestPhaseDescriptor {
@@ -1624,6 +1689,49 @@ pub fn test_page_descriptor(
                     ),
                 ],
             },
+            TestPhaseDescriptor {
+                id: RECORDING_OUTPUT_PHASE_ID,
+                label: "Salida de grabación",
+                effect_summary: "Transforma el resultado lineal de cámara en la señal no lineal declarada para grabación.",
+                header_control_id: None,
+                input_artifact: "camera-rendered-acescg-v1",
+                output_artifact: "recording-output-signal-v1",
+                preview_result: TestPreviewResult::RecordingOutput,
+                controls: vec![choice_control(
+                    RECORDING_OUTPUT_TRANSFORM_CONTROL_ID,
+                    "Transformación de salida",
+                    recording_output_options,
+                    selection.recording_output_transform_id,
+                    screen_color::IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
+                )],
+            },
+            TestPhaseDescriptor {
+                id: RECORDING_CODEC_PHASE_ID,
+                label: "Códec de grabación",
+                effect_summary: "Codifica y decodifica la señal con el perfil seleccionado para mostrar su degradación acumulada.",
+                header_control_id: Some(RECORDING_CHARACTER_CONTROL_ID),
+                input_artifact: "recording-output-signal-v1",
+                output_artifact: "decoded-recording-signal-v1",
+                preview_result: TestPreviewResult::RecordingCodec,
+                controls: vec![
+                    choice_control(
+                        RECORDING_PROFILE_CONTROL_ID,
+                        "Perfil de grabación",
+                        recording_profile_options,
+                        selection.recording_profile_id,
+                        IPHONE_HEIC_PHOTO_PROFILE_ID,
+                    ),
+                    scalar_control(
+                        RECORDING_CHARACTER_CONTROL_ID,
+                        "Carácter del códec",
+                        selection.recording_character,
+                        0.0,
+                        4.0,
+                        1.0,
+                        "×",
+                    ),
+                ],
+            },
         ],
         preview_controls: vec![choice_control(
             PREVIEW_QUALITY_CONTROL_ID,
@@ -1706,6 +1814,8 @@ pub fn apply_test_choice(
             next.environment_amount = environment.environment.character_strength;
         }
         LENS_PRESET_CONTROL_ID => next.lens_preset_id = option_id,
+        RECORDING_OUTPUT_TRANSFORM_CONTROL_ID => next.recording_output_transform_id = option_id,
+        RECORDING_PROFILE_CONTROL_ID => next.recording_profile_id = option_id,
         WHITE_LUMINANCE_CONTROL_ID
         | SUBPIXEL_GEOMETRY_CONTROL_ID
         | PANEL_UNIFORMITY_CONTROL_ID
@@ -1747,7 +1857,8 @@ pub fn apply_test_choice(
         | CAMERA_LOOK_CONTRAST_CONTROL_ID
         | CAMERA_LOOK_SATURATION_CONTROL_ID
         | CAMERA_LOOK_TEMPERATURE_CONTROL_ID
-        | CAMERA_LOOK_TINT_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
+        | CAMERA_LOOK_TINT_CONTROL_ID
+        | RECORDING_CHARACTER_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
         _ => return Err(TestAuthoringError::UnknownControl),
     }
     resolve_test_authoring_selection(next)
@@ -1806,6 +1917,9 @@ fn unresolved_test_selection(
         sensor_bloom_overflow_transfer_fraction: current.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: current.sensor_noise_amount,
         camera_rendering_intent: current.camera_rendering_intent,
+        recording_output_transform_id: current.recording_output_transform_id,
+        recording_profile_id: current.recording_profile_id,
+        recording_character: current.recording_character,
     }
 }
 
@@ -1951,6 +2065,7 @@ pub fn apply_test_scalar(
             next.camera_rendering_intent.temperature_kelvin = value
         }
         CAMERA_LOOK_TINT_CONTROL_ID => next.camera_rendering_intent.tint = value,
+        RECORDING_CHARACTER_CONTROL_ID => next.recording_character = value,
         OUTPUT_SIGNAL_CONTROL_ID
         | DEVICE_CONTROL_ID
         | COLOR_MODE_CONTROL_ID
@@ -1961,6 +2076,8 @@ pub fn apply_test_scalar(
         | COVER_GLASS_CONTROL_ID
         | ENVIRONMENT_CONTROL_ID
         | LENS_PRESET_CONTROL_ID
+        | RECORDING_OUTPUT_TRANSFORM_CONTROL_ID
+        | RECORDING_PROFILE_CONTROL_ID
         | AUTOFOCUS_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
         _ => return Err(TestAuthoringError::UnknownControl),
     }
@@ -2036,17 +2153,17 @@ mod tests {
             sensor_bloom_overflow_transfer_fraction: 0.30,
             sensor_noise_amount: 1.0,
             camera_rendering_intent: capture("iphone-16e-main-48mp").unwrap().rendering_intent,
+            recording_output_transform_id: screen_color::IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
+            recording_profile_id: IPHONE_HEIC_PHOTO_PROFILE_ID,
+            recording_character: 1.0,
         }
     }
 
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 14);
-        assert_eq!(
-            page.default_preview_phase_id,
-            CAMERA_RENDERING_INTENT_PHASE_ID
-        );
+        assert_eq!(page.schema_version, 15);
+        assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
             [
@@ -2067,6 +2184,8 @@ mod tests {
                 SENSOR_NOISE_PHASE_ID,
                 DEVELOP_DEMOSAIC_PHASE_ID,
                 CAMERA_RENDERING_INTENT_PHASE_ID,
+                RECORDING_OUTPUT_PHASE_ID,
+                RECORDING_CODEC_PHASE_ID,
             ]
         );
         assert!(matches!(
