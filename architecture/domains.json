@@ -68,6 +68,7 @@
         "screen-geometry",
         "screen-media",
         "screen-panel",
+        "screen-recording",
         "screen-sensor"
       ]
     },
@@ -100,6 +101,7 @@
       "allowed_local_dependencies": [
         "screen-application",
         "screen-camera",
+        "screen-color",
         "screen-contracts",
         "screen-cover",
         "screen-geometry",
@@ -123,6 +125,7 @@
         "screen-panel",
         "screen-persistence",
         "screen-platform",
+        "screen-recording",
         "screen-sensor"
       ]
     }
