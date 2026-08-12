@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--fixture", required=True, type=Path)
     parser.add_argument("--resource-root", required=True, type=required_directory)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--camera-look-prototype", action="store_true")
     arguments = parser.parse_args()
 
     repository = Path(__file__).resolve().parent.parent
@@ -49,6 +50,8 @@ def main() -> int:
             "SCREEN_MOIRE_DIAGNOSTIC_DIR": str(output),
         }
     )
+    if arguments.camera_look_prototype:
+        environment["SCREEN_MOIRE_CAMERA_LOOK_PROTOTYPE"] = "1"
 
     subprocess.run(
         ["cargo", "build", "-p", "screen-native-bridge", "--release"],
