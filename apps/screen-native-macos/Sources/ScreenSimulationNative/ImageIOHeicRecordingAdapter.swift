@@ -42,6 +42,7 @@ struct ImageIOHeicStillResult: Equatable, Sendable {
     let width: Int
     let height: Int
     let rgba8: [UInt8]
+    let encodedData: Data
     let encodedBytes: Int
     let encodedSHA256: [UInt8]
 }
@@ -71,6 +72,7 @@ enum ImageIOHeicRecordingAdapter {
             width: request.width,
             height: request.height,
             rgba8: decoded,
+            encodedData: encoded,
             encodedBytes: encoded.count,
             encodedSHA256: Array(SHA256.hash(data: encoded))
         )

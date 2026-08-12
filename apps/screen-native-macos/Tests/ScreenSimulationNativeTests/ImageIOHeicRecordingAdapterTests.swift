@@ -1,5 +1,8 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 @testable import ScreenSimulationNative
 
 @Test func imageIOHeicAdapterExecutesOneRealIntraRoundTrip() throws {
@@ -35,6 +38,61 @@ import Testing
     })
 }
 
+@Test func imageIOHeicAdapterPublishesRequestedDiagnostic() throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let sourcePath = environment["SCREEN_HEIC_DIAGNOSTIC_SOURCE"],
+          let outputDirectory = environment["SCREEN_HEIC_DIAGNOSTIC_OUTPUT"]
+    else { return }
+    let sourceURL = URL(fileURLWithPath: sourcePath)
+    let outputURL = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+    let source = try Data(contentsOf: sourceURL)
+    guard let imageSource = CGImageSourceCreateWithData(source as CFData, nil),
+          let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
+    else { throw ImageIOHeicRecordingError.decodeFailed }
+    let rgba = try rgba8(image)
+    let result = try ImageIOHeicRecordingAdapter.roundTrip(ImageIOHeicStillRequest(
+        profileID: "iphone-heic-photo-v1",
+        width: image.width,
+        height: image.height,
+        quality: 0.82,
+        colorSpace: .displayP3D65,
+        rgba8: rgba
+    ))
+    try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+    try result.encodedData.write(to: outputURL.appendingPathComponent("after-codec.heic"))
+    try writePNG(
+        result.rgba8,
+        width: result.width,
+        height: result.height,
+        to: outputURL.appendingPathComponent("after-codec.png")
+    )
+    try writePNG(
+        rgba,
+        width: image.width,
+        height: image.height,
+        to: outputURL.appendingPathComponent("before-codec.png")
+    )
+    let manifest: [String: Any] = [
+        "schema": "screen_heic_codec_diagnostic",
+        "version": 1,
+        "profileID": result.profileID,
+        "quality": 0.82,
+        "width": result.width,
+        "height": result.height,
+        "encodedBytes": result.encodedBytes,
+        "encodedSHA256": result.encodedSHA256.map { String(format: "%02x", $0) }.joined(),
+        "cameraRenderingIntent": [
+            "exposureEV": 0.5,
+            "contrast": 1.10,
+            "saturation": 1.25,
+            "temperatureKelvin": 6500,
+            "tint": 0,
+        ],
+    ]
+    try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        .write(to: outputURL.appendingPathComponent("codec-diagnostic.json"))
+}
+
 @Test func imageIOHeicAdapterRejectsNonOpaqueInput() {
     #expect(throws: ImageIOHeicRecordingError.nonOpaqueInput) {
         try ImageIOHeicRecordingAdapter.roundTrip(ImageIOHeicStillRequest(
@@ -46,6 +104,63 @@ import Testing
             rgba8: [1, 2, 3, 254]
         ))
     }
+}
+
+private func rgba8(_ image: CGImage) throws -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    let rendered = bytes.withUnsafeMutableBytes { storage in
+        guard let space = CGColorSpace(name: CGColorSpace.displayP3),
+              let context = CGContext(
+                data: storage.baseAddress,
+                width: image.width,
+                height: image.height,
+                bitsPerComponent: 8,
+                bytesPerRow: image.width * 4,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue)
+                    .union(.byteOrder32Big).rawValue
+              )
+        else { return false }
+        context.setBlendMode(.copy)
+        context.interpolationQuality = .none
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return true
+    }
+    guard rendered else { throw ImageIOHeicRecordingError.decodeFailed }
+    for alpha in stride(from: 3, to: bytes.count, by: 4) { bytes[alpha] = 255 }
+    return bytes
+}
+
+private func writePNG(_ bytes: [UInt8], width: Int, height: Int, to url: URL) throws {
+    guard let space = CGColorSpace(name: CGColorSpace.displayP3),
+          let provider = CGDataProvider(data: Data(bytes) as CFData),
+          let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: space,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue)
+                .union(.byteOrder32Big),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .relativeColorimetric
+          )
+    else { throw ImageIOHeicRecordingError.decodeFailed }
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(
+        data,
+        UTType.png.identifier as CFString,
+        1,
+        nil
+    ) else { throw ImageIOHeicRecordingError.encodeFailed }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else {
+        throw ImageIOHeicRecordingError.encodeFailed
+    }
+    try (data as Data).write(to: url)
 }
 
 @Test func imageIOHeicAdapterRejectsInvalidQualityAndRaster() {
