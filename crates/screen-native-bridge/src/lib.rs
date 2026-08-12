@@ -189,7 +189,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 9;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 10;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 4;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;

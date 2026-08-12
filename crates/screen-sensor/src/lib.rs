@@ -32,7 +32,8 @@ pub struct SensorProfile {
 
 /// Analytic approximation of a bracketed computational capture. The optical
 /// image is evaluated once; additional shorter exposures extend highlight
-/// capacity before the canonical sensor/RAW boundary.
+/// capacity and the effective precision of the fused result before the
+/// canonical sensor/RAW boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ComputationalCaptureProfile {
     /// Total captures in the bracket. One is a single-exposure identity.
@@ -139,9 +140,11 @@ impl ComputationalCaptureProfile {
         Ok(self)
     }
 
-    /// Materializes the aggregate clipping/noise capacity used by the one-pass
-    /// sensor approximation. Zero is disabled, one is the authored bracket,
-    /// and values above one exaggerate its highlight headroom.
+    /// Materializes the aggregate clipping/noise capacity and fused precision
+    /// used by the one-pass sensor approximation. `adc_bits` in the returned
+    /// profile identifies the effective computational result, not another
+    /// hardware ADC. Zero is disabled, one is the authored bracket, and values
+    /// above one exaggerate the same model within the certified bound.
     pub fn effective_sensor(
         self,
         sensor: SensorProfile,
@@ -158,6 +161,8 @@ impl ComputationalCaptureProfile {
         let headroom_stops =
             f32::from(self.exposure_count - 1) * self.bracket_spacing_stops * amount;
         let capacity = headroom_stops.exp2();
+        let effective_precision_bits =
+            (f32::from(self.exposure_count).log2() * amount).floor() as u8;
         SensorProfile {
             saturation_illuminance_seconds: LinearRgb::new(
                 sensor.saturation_illuminance_seconds.r * capacity,
@@ -165,6 +170,10 @@ impl ComputationalCaptureProfile {
                 sensor.saturation_illuminance_seconds.b * capacity,
             ),
             full_well_electrons: sensor.full_well_electrons * capacity,
+            adc_bits: sensor
+                .adc_bits
+                .saturating_add(effective_precision_bits)
+                .min(16),
             ..sensor
         }
         .validate()
@@ -1243,6 +1252,35 @@ mod tests {
                 sensor.saturation_illuminance_seconds.g * 4.0,
                 sensor.saturation_illuminance_seconds.b * 4.0,
             )
+        );
+        assert_eq!(effective.adc_bits, sensor.adc_bits + 1);
+        let phone = SensorProfile {
+            adc_bits: 12,
+            ..sensor
+        };
+        let eight_exposures = ComputationalCaptureProfile {
+            exposure_count: 8,
+            bracket_spacing_stops: 1.0,
+        };
+        assert_eq!(
+            eight_exposures
+                .effective_sensor(phone, 1.0)
+                .unwrap()
+                .adc_bits,
+            15
+        );
+        assert_eq!(
+            eight_exposures
+                .effective_sensor(
+                    SensorProfile {
+                        adc_bits: 16,
+                        ..sensor
+                    },
+                    1.0
+                )
+                .unwrap()
+                .adc_bits,
+            16
         );
         assert_eq!(bracket.effective_sensor(sensor, 0.0).unwrap(), sensor);
         assert!(

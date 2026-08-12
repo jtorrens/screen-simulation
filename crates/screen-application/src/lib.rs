@@ -2060,7 +2060,6 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::DevelopedAcesCg
         )
     {
-        let sensor = plan.sensor;
         let raw = expose_physical_pipeline_raw(
             &output,
             sampling.effective_width,
@@ -2097,7 +2096,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         if !plan.development_enabled {
             return Err(ApplicationError::UnsupportedPhysicalIntermediate);
         }
-        let developed = develop_raw_to_acescg(&raw, sensor, plan.development)
+        let developed = develop_raw_to_acescg(&raw, raw.sensor_profile, plan.development)
             .map_err(ApplicationError::CameraDevelopment)?;
         return Ok(PhysicalPipelineCpuResult {
             width: developed.width,

@@ -37,7 +37,7 @@ the physical Screen result, never either source encoding directly. The final
 physical output is linear ACEScg. Preview transforms, ColorSync, DeckLink and
 render ODTs are outside the physical engine and run only after its result.
 
-Version 9 is the only live binary contract and has two ordered domains:
+Version 10 is the only live binary contract and has two ordered domains:
 
 1. Screen: Emission, Subpixel Geometry, Panel Uniformity, Panel Light Spread, Temporal, Cover
    Glass, Environment.

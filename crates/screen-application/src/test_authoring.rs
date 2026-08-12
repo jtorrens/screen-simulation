@@ -1412,7 +1412,7 @@ pub fn test_page_descriptor(
                 effect_summary: "Combina analíticamente una horquilla de exposiciones sin repetir la óptica.",
                 header_control_id: Some(COMPUTATIONAL_CAPTURE_AMOUNT_CONTROL_ID),
                 input_artifact: "integrated-optical-exposure-v1",
-                output_artifact: "computational-capture-exposure-v1",
+                output_artifact: "computational-capture-exposure-v2",
                 preview_result: TestPreviewResult::ComputationalCapture,
                 controls: vec![
                     scalar_control(
@@ -1449,7 +1449,7 @@ pub fn test_page_descriptor(
                 label: "Crosstalk y bloom del sensor",
                 effect_summary: "Transfiere carga entre fotositos y desborda altas luces saturadas.",
                 header_control_id: Some(SENSOR_BLOOM_AMOUNT_CONTROL_ID),
-                input_artifact: "computational-capture-exposure-v1",
+                input_artifact: "computational-capture-exposure-v2",
                 output_artifact: "coupled-sensor-charge-v1",
                 preview_result: TestPreviewResult::SensorBloom,
                 controls: vec![
