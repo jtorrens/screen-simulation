@@ -454,13 +454,11 @@ inline float3 physical_environment_direction(float2 uv) {
         cos(longitude) * latitude_cosine);
 }
 
-inline float physical_environment_pdf(float3 direction,
-    texture2d<float, access::sample> environment) {
-    const float2 uv = physical_environment_uv(direction);
-    const uint2 dimensions = uint2(environment.get_width(), environment.get_height());
+inline float physical_environment_pdf(float2 uv,
+    texture2d<float, access::sample> environment,
+    uint2 dimensions,
+    float total) {
     const uint2 texel = min(uint2(uv * float2(dimensions)), dimensions - 1u);
-    const uint top_level = environment.get_num_mip_levels() - 1u;
-    const float total = environment.read(uint2(0u), top_level).a;
     const float weight = environment.read(texel, 0u).a;
     const float sine_theta = max(sin(PI * uv.y), 1.0e-8f);
     return weight * float(dimensions.x * dimensions.y)
@@ -468,10 +466,11 @@ inline float physical_environment_pdf(float3 direction,
 }
 
 inline float3 physical_sample_environment(float selector, float2 jitter,
-    texture2d<float, access::sample> environment) {
-    const uint top_level = environment.get_num_mip_levels() - 1u;
+    texture2d<float, access::sample> environment,
+    uint top_level,
+    float total) {
     uint2 parent = uint2(0u);
-    float residual = selector * environment.read(parent, top_level).a;
+    float residual = selector * total;
     for (uint level = top_level; level > 0u; --level) {
         const uint child_level = level - 1u;
         const uint2 child_dimensions = uint2(
@@ -546,62 +545,93 @@ inline float3 physical_reference_ggx_environment(
         physical_dielectric_fresnel(view_cosine, p.cover_geometry.z), 1.0e-8f);
     const float lambda_outgoing = physical_smith_ggx_lambda(outgoing, alpha);
     const uint sample_count = max(2u, uint(p.environment_key_radius.w));
+    const uint pair_count = sample_count / 2u;
+    const uint2 environment_dimensions = uint2(
+        environment.get_width(), environment.get_height());
+    const uint environment_top_level = environment.get_num_mip_levels() - 1u;
+    const float environment_total = environment.read(
+        uint2(0u), environment_top_level).a;
     const float2 shift = float2(
         physical_hash_uint(sample_seed.x ^ (sample_seed.y * 0x9E3779B9u)),
         physical_hash_uint(sample_seed.y ^ (sample_seed.x * 0x85EBCA6Bu)))
         * 2.3283064365386963e-10f;
     float3 sum = float3(0.0f);
-    for (uint index = 0u; index < sample_count; ++index) {
-        const uint random = physical_hash_uint(index);
+    for (uint pair = 0u; pair < pair_count; ++pair) {
+        const uint source_index = pair * 2u;
         const float2 random_sample = fract(float2(
-            (float(index / 2u) + 0.5f) / float(max(1u, sample_count / 2u)),
-            physical_radical_inverse_vdc(index / 2u)) + shift);
+            (float(pair) + 0.5f) / float(max(1u, pair_count)),
+            physical_radical_inverse_vdc(pair)) + shift);
+        const uint random = physical_hash_uint(source_index);
         const float2 jitter = float2(
             physical_hash_uint(random ^ sample_seed.x ^ 0x63D83595u),
             physical_hash_uint(random ^ sample_seed.y ^ 0xB5297A4Du))
             * 2.3283064365386963e-10f;
-        float3 source_direction;
-        float3 incident;
-        if ((index & 1u) == 0u) {
-            source_direction = physical_sample_environment(
-                random_sample.x, jitter, environment);
+        {
+            const float3 source_direction = physical_sample_environment(
+                random_sample.x, jitter, environment,
+                environment_top_level, environment_total);
             const float3 rotated_incident = float3(
                 source_direction.x * cosine - source_direction.z * sine,
                 source_direction.y,
                 source_direction.x * sine + source_direction.z * cosine);
-            incident = float3(
+            const float3 incident = float3(
                 rotated_incident.x,
                 rotated_incident.y * normal_sign,
                 rotated_incident.z * normal_sign);
-        } else {
+            if (incident.z > 0.0f) {
+                const float3 micro_normal = normalize(outgoing + incident);
+                const float outgoing_dot_micro = max(0.0f, dot(outgoing, micro_normal));
+                if (outgoing_dot_micro > 0.0f && micro_normal.z > 0.0f) {
+                    const float lambda_incident = physical_smith_ggx_lambda(incident, alpha);
+                    const float distribution = physical_ggx_distribution(micro_normal, alpha);
+                    const float masking = 1.0f / (1.0f + lambda_outgoing + lambda_incident);
+                    const float2 source_uv = physical_environment_uv(source_direction);
+                    const float environment_pdf = physical_environment_pdf(
+                        source_uv, environment, environment_dimensions, environment_total);
+                    const float ggx_pdf = distribution
+                        / (4.0f * max(outgoing.z * (1.0f + lambda_outgoing), 1.0e-12f));
+                    const float mixture_pdf = 0.5f * (environment_pdf + ggx_pdf);
+                    const float weight = physical_dielectric_fresnel(
+                        outgoing_dot_micro, p.cover_geometry.z) * distribution * masking
+                        / (4.0f * max(outgoing.z, 1.0e-6f) * smooth_fresnel
+                            * max(mixture_pdf, 1.0e-12f));
+                    sum += environment.sample(
+                        environment_sampler, source_uv, level(0.0f)).rgb * weight;
+                }
+            }
+        }
+        {
             const float3 sampled_normal = physical_sample_visible_ggx(
                 outgoing, alpha, random_sample);
-            incident = reflect(-outgoing, sampled_normal);
+            const float3 incident = reflect(-outgoing, sampled_normal);
             const float3 rotated_incident = float3(
                 incident.x, incident.y * normal_sign, incident.z * normal_sign);
-            source_direction = float3(
+            const float3 source_direction = float3(
                 rotated_incident.x * cosine + rotated_incident.z * sine,
                 rotated_incident.y,
                 -rotated_incident.x * sine + rotated_incident.z * cosine);
+            if (incident.z > 0.0f) {
+                const float3 micro_normal = normalize(outgoing + incident);
+                const float outgoing_dot_micro = max(0.0f, dot(outgoing, micro_normal));
+                if (outgoing_dot_micro > 0.0f && micro_normal.z > 0.0f) {
+                    const float lambda_incident = physical_smith_ggx_lambda(incident, alpha);
+                    const float distribution = physical_ggx_distribution(micro_normal, alpha);
+                    const float masking = 1.0f / (1.0f + lambda_outgoing + lambda_incident);
+                    const float2 source_uv = physical_environment_uv(source_direction);
+                    const float environment_pdf = physical_environment_pdf(
+                        source_uv, environment, environment_dimensions, environment_total);
+                    const float ggx_pdf = distribution
+                        / (4.0f * max(outgoing.z * (1.0f + lambda_outgoing), 1.0e-12f));
+                    const float mixture_pdf = 0.5f * (environment_pdf + ggx_pdf);
+                    const float weight = physical_dielectric_fresnel(
+                        outgoing_dot_micro, p.cover_geometry.z) * distribution * masking
+                        / (4.0f * max(outgoing.z, 1.0e-6f) * smooth_fresnel
+                            * max(mixture_pdf, 1.0e-12f));
+                    sum += environment.sample(
+                        environment_sampler, source_uv, level(0.0f)).rgb * weight;
+                }
+            }
         }
-        if (incident.z <= 0.0f) continue;
-        const float3 micro_normal = normalize(outgoing + incident);
-        const float outgoing_dot_micro = max(0.0f, dot(outgoing, micro_normal));
-        if (outgoing_dot_micro <= 0.0f || micro_normal.z <= 0.0f) continue;
-        const float lambda_incident = physical_smith_ggx_lambda(incident, alpha);
-        const float distribution = physical_ggx_distribution(micro_normal, alpha);
-        const float masking = 1.0f / (1.0f + lambda_outgoing + lambda_incident);
-        const float environment_pdf = physical_environment_pdf(source_direction, environment);
-        const float ggx_pdf = distribution
-            / (4.0f * max(outgoing.z * (1.0f + lambda_outgoing), 1.0e-12f));
-        const float mixture_pdf = 0.5f * (environment_pdf + ggx_pdf);
-        const float weight = physical_dielectric_fresnel(
-            outgoing_dot_micro, p.cover_geometry.z) * distribution * masking
-            / (4.0f * max(outgoing.z, 1.0e-6f) * smooth_fresnel
-                * max(mixture_pdf, 1.0e-12f));
-        sum += environment.sample(
-            environment_sampler, physical_environment_uv(source_direction), level(0.0f)).rgb
-            * weight;
     }
     return sum / float(sample_count);
 }
