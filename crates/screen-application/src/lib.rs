@@ -2011,24 +2011,17 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 cover_half_extent[0] * reciprocal_cover * plan.panel.active_width.0,
                 cover_half_extent[1] * reciprocal_cover * plan.panel.active_height.0,
             ];
-            let (microtexture_cosine, reflection_direction_local) = microtexture
-                .perturb_reflection(
-                    reflection_direction_local,
-                    cover_position_meters,
-                    footprint_half_extent_meters,
-                );
+            let reflection_visibility = microtexture
+                .reflection_visibility(cover_position_meters, footprint_half_extent_meters);
             let emitted = LinearRgb::new(
                 temporally_integrated[0],
                 temporally_integrated[1],
                 temporally_integrated[2],
             );
             let cover_sample = CoverSurfaceSample {
-                view_cosine: if microtexture.character_strength == 0.0 {
-                    (cover_cosine * reciprocal_cover).clamp(0.0, 1.0)
-                } else {
-                    microtexture_cosine
-                },
+                view_cosine: (cover_cosine * reciprocal_cover).clamp(0.0, 1.0),
                 reflection_direction_local,
+                reflection_visibility,
                 lens_irradiance_weight: LinearRgb::new(
                     cover_irradiance[0] * reciprocal_cover / parameters.white_level_nits,
                     cover_irradiance[1] * reciprocal_cover / parameters.white_level_nits,
@@ -5940,6 +5933,7 @@ fn reflected_environment_average(
             let reflected = cover.reflected_illuminance(CoverSurfaceSample {
                 view_cosine: optical.emission_cosine[channel],
                 reflection_direction_local: [direction.x, direction.y, direction.z],
+                reflection_visibility: 1.0,
                 lens_irradiance_weight: LinearRgb::new(
                     optical.irradiance_weight[0],
                     optical.irradiance_weight[1],

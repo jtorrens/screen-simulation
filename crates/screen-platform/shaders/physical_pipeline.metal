@@ -524,16 +524,16 @@ inline float physical_microtexture_height(int2 lattice, uint octave, uint seed) 
     return float(physical_hash_uint(coordinates)) * 4.656612873077393e-10f - 1.0f;
 }
 
-inline float3 physical_microtexture_reflection(float3 reflection_direction,
-    float2 cover_position_meters, float2 footprint_half_extent_meters,
-    thread float& view_cosine, constant PhysicalPipelineParams& p) {
+inline float physical_microtexture_visibility(float2 cover_position_meters,
+    float2 footprint_half_extent_meters, constant PhysicalPipelineParams& p) {
     const float effective_slope = p.cover_microtexture.x * p.cover_microtexture.y;
-    if (effective_slope == 0.0f) return reflection_direction;
+    if (effective_slope == 0.0f) return 1.0f;
     const float correlation_length = p.cover_microtexture.z * 1.0e-6f;
     constexpr float cell_ratios[3] = { 1.0f, 0.47f, 0.22f };
     constexpr float amplitudes[3] = { 1.0f, 0.46f, 0.21f };
-    float2 gradient = 0.0f;
-    float squared_amplitudes = 0.0f;
+    float population = 0.0f;
+    float normalization = 0.0f;
+    const float footprint = length(footprint_half_extent_meters);
     for (uint octave = 0u; octave < 3u; ++octave) {
         const float cell = correlation_length * cell_ratios[octave];
         const float amplitude = amplitudes[octave];
@@ -543,7 +543,6 @@ inline float3 physical_microtexture_reflection(float3 reflection_direction,
         const int2 lattice = int2(floor(position));
         const float2 fraction = position - float2(lattice);
         const float2 fade = fraction * fraction * (3.0f - 2.0f * fraction);
-        const float2 fade_derivative = 6.0f * fraction * (1.0f - fraction);
         const float h00 = physical_microtexture_height(
             lattice, octave, p.cover_microtexture_seed.x);
         const float h10 = physical_microtexture_height(
@@ -552,21 +551,15 @@ inline float3 physical_microtexture_reflection(float3 reflection_direction,
             lattice + int2(0, 1), octave, p.cover_microtexture_seed.x);
         const float h11 = physical_microtexture_height(
             lattice + int2(1, 1), octave, p.cover_microtexture_seed.x);
-        const float dx = ((h10 - h00) * (1.0f - fade.y) + (h11 - h01) * fade.y)
-            * fade_derivative.x;
-        const float dy = ((h01 - h00) * (1.0f - fade.x) + (h11 - h10) * fade.x)
-            * fade_derivative.y;
-        const float footprint = length(footprint_half_extent_meters);
+        const float lower = mix(h00, h10, fade.x);
+        const float upper = mix(h01, h11, fade.x);
+        const float value = mix(lower, upper, fade.y);
         const float filtered = rsqrt(1.0f + (footprint / cell) * (footprint / cell));
-        gradient += float2(dx, dy) * filtered * amplitude;
-        squared_amplitudes += amplitude * amplitude;
+        population += value * filtered * amplitude;
+        normalization += amplitude;
     }
-    gradient *= effective_slope * rsqrt(squared_amplitudes);
-    const float3 normal = normalize(float3(-gradient.x, -gradient.y, 1.0f));
-    const float3 incident = float3(
-        reflection_direction.x, reflection_direction.y, -reflection_direction.z);
-    view_cosine = clamp(-dot(incident, normal), 0.0f, 1.0f);
-    return normalize(reflect(incident, normal));
+    const float contrast = clamp(effective_slope * 24.0f, 0.0f, 0.85f);
+    return clamp(1.0f + contrast * population / normalization, 0.15f, 1.85f);
 }
 
 inline float3 physical_reference_ggx_environment(
@@ -775,16 +768,17 @@ inline float3 apply_flat_cover(float3 emitted, float view_cosine,
     texture2d<float, access::sample> environment_acescg,
     uint2 sample_seed,
     constant PhysicalPipelineParams& p) {
-    reflection_direction_local = physical_microtexture_reflection(
-        reflection_direction_local, cover_position_meters,
-        footprint_half_extent_meters, view_cosine, p);
-    const float cosine_i = clamp(view_cosine, 0.0f, 1.0f);
-    const float reflection = cover_interface(cosine_i, p);
+    const float reflection_visibility = physical_microtexture_visibility(
+        cover_position_meters, footprint_half_extent_meters, p);
+    const float reflection_cosine = clamp(view_cosine, 0.0f, 1.0f);
+    const float transmission_cosine_i = reflection_cosine;
+    const float reflection = cover_interface(reflection_cosine, p);
     // Match the CPU cover evaluator: attenuation travels through the oblique
     // slab path, not merely its normal thickness.  The interface and this
     // Beer-Lambert path share the same Snell cosine.
     const float eta = p.cover_geometry.z;
-    const float sine_t2 = (1.0f - cosine_i * cosine_i) / (eta * eta);
+    const float sine_t2 = (1.0f - transmission_cosine_i * transmission_cosine_i)
+        / (eta * eta);
     const float cosine_t = sqrt(max(0.0f, 1.0f - sine_t2));
     const float absorption_scale = p.cover_geometry.y * p.cover_geometry.x
         / max(0.01f, cosine_t);
@@ -793,7 +787,9 @@ inline float3 apply_flat_cover(float3 emitted, float view_cosine,
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
     return emitted * transmission
         + flat_environment_radiance(
-            reflection_direction_local, environment_acescg, cosine_i, sample_seed, p) * reflection
+            reflection_direction_local, environment_acescg,
+            reflection_cosine, sample_seed, p) * reflection
+            * reflection_visibility
             * lens_irradiance_weight / p.levels.z;
 }
 

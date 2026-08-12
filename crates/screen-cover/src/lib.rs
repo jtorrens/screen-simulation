@@ -345,8 +345,11 @@ pub fn environment_preset(id: &str) -> Option<EnvironmentPreset> {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CoverSurfaceSample {
+    /// Mean macroscopic interface cosine shared by reflection and transmission.
     pub view_cosine: f32,
     pub reflection_direction_local: [f32; 3],
+    /// Cover-local resolved masking fraction, normalized around one.
+    pub reflection_visibility: f32,
     /// Lens conversion from incident radiance to sensor-plane illuminance.
     pub lens_irradiance_weight: LinearRgb,
 }
@@ -495,22 +498,16 @@ impl AntiGlareMicrotextureProfile {
         self.character_strength * self.rms_slope
     }
 
-    /// Reorients the same incident ray around a fixed, integrable cover-local
-    /// height field. The returned cosine and reflection direction remain
-    /// achromatic; radiance and Fresnel energy are evaluated by their existing
-    /// owners after this geometric operation.
-    pub fn perturb_reflection(
+    /// Resolves the fixed cover-local variation in the visible population of
+    /// anti-glare microfacets without deforming the mean reflected image.
+    pub fn reflection_visibility(
         self,
-        reflection_direction_local: [f32; 3],
         cover_position_meters: [f32; 2],
         footprint_half_extent_meters: [f32; 2],
-    ) -> (f32, [f32; 3]) {
+    ) -> f32 {
         let effective_slope = self.effective_rms_slope();
         if effective_slope == 0.0 {
-            return (
-                reflection_direction_local[2].clamp(0.0, 1.0),
-                reflection_direction_local,
-            );
+            return 1.0;
         }
         let correlation_length = self.correlation_length_micrometers * 1.0e-6;
         // Random lattice heights form one continuous, integrable surface. A
@@ -518,8 +515,9 @@ impl AntiGlareMicrotextureProfile {
         // prototype without turning the reflected radiance into noise.
         const CELL_RATIOS: [f32; 3] = [1.0, 0.47, 0.22];
         const AMPLITUDES: [f32; 3] = [1.0, 0.46, 0.21];
-        let mut gradient = [0.0_f32; 2];
-        let mut squared_amplitudes = 0.0_f32;
+        let mut population = 0.0_f32;
+        let mut normalization = 0.0_f32;
+        let footprint = footprint_half_extent_meters[0].hypot(footprint_half_extent_meters[1]);
         for octave in 0..3_u32 {
             let cell = correlation_length * CELL_RATIOS[octave as usize];
             let amplitude = AMPLITUDES[octave as usize];
@@ -534,7 +532,6 @@ impl AntiGlareMicrotextureProfile {
                 position[1] - lattice[1] as f32,
             ];
             let fade = fraction.map(|value| value * value * (3.0 - 2.0 * value));
-            let fade_derivative = fraction.map(|value| 6.0 * value * (1.0 - value));
             let height = |x: i32, y: i32| {
                 let coordinates = (x as u32).wrapping_mul(0x8da6_b343)
                     ^ (y as u32).wrapping_mul(0xd816_3841)
@@ -546,43 +543,15 @@ impl AntiGlareMicrotextureProfile {
             let h10 = height(lattice[0] + 1, lattice[1]);
             let h01 = height(lattice[0], lattice[1] + 1);
             let h11 = height(lattice[0] + 1, lattice[1] + 1);
-            let dx = ((h10 - h00) * (1.0 - fade[1]) + (h11 - h01) * fade[1]) * fade_derivative[0];
-            let dy = ((h01 - h00) * (1.0 - fade[0]) + (h11 - h10) * fade[0]) * fade_derivative[1];
-            let footprint = footprint_half_extent_meters[0].hypot(footprint_half_extent_meters[1]);
+            let lower = h00 + (h10 - h00) * fade[0];
+            let upper = h01 + (h11 - h01) * fade[0];
+            let value = lower + (upper - lower) * fade[1];
             let filtered = (1.0 + (footprint / cell).powi(2)).sqrt().recip();
-            gradient[0] += dx * filtered * amplitude;
-            gradient[1] += dy * filtered * amplitude;
-            squared_amplitudes += amplitude * amplitude;
+            population += value * filtered * amplitude;
+            normalization += amplitude;
         }
-        let normalization = effective_slope / squared_amplitudes.sqrt();
-        gradient[0] *= normalization;
-        gradient[1] *= normalization;
-        let normal_length = (gradient[0] * gradient[0] + gradient[1] * gradient[1] + 1.0).sqrt();
-        let normal = [
-            -gradient[0] / normal_length,
-            -gradient[1] / normal_length,
-            1.0 / normal_length,
-        ];
-        let incident = [
-            reflection_direction_local[0],
-            reflection_direction_local[1],
-            -reflection_direction_local[2],
-        ];
-        let incident_dot_normal =
-            incident[0] * normal[0] + incident[1] * normal[1] + incident[2] * normal[2];
-        let reflected = [
-            incident[0] - 2.0 * incident_dot_normal * normal[0],
-            incident[1] - 2.0 * incident_dot_normal * normal[1],
-            incident[2] - 2.0 * incident_dot_normal * normal[2],
-        ];
-        let length = (reflected[0] * reflected[0]
-            + reflected[1] * reflected[1]
-            + reflected[2] * reflected[2])
-            .sqrt();
-        (
-            (-incident_dot_normal).clamp(0.0, 1.0),
-            reflected.map(|value| value / length.max(1.0e-8)),
-        )
+        let contrast = (effective_slope * 24.0).clamp(0.0, 0.85);
+        (1.0 + contrast * population / normalization).clamp(0.15, 1.85)
     }
 }
 
@@ -924,9 +893,18 @@ impl ValidatedCoverEvaluator {
         let (reflection, _) = self.interface(sample.view_cosine);
         let environment = incident_radiance.0;
         LinearRgb::new(
-            environment.r * reflection * sample.lens_irradiance_weight.r,
-            environment.g * reflection * sample.lens_irradiance_weight.g,
-            environment.b * reflection * sample.lens_irradiance_weight.b,
+            environment.r
+                * reflection
+                * sample.reflection_visibility
+                * sample.lens_irradiance_weight.r,
+            environment.g
+                * reflection
+                * sample.reflection_visibility
+                * sample.lens_irradiance_weight.g,
+            environment.b
+                * reflection
+                * sample.reflection_visibility
+                * sample.lens_irradiance_weight.b,
         )
     }
 
@@ -1163,6 +1141,7 @@ mod tests {
         CoverSurfaceSample {
             view_cosine: cosine,
             reflection_direction_local: [0.0, 0.0, 1.0],
+            reflection_visibility: 1.0,
             lens_irradiance_weight: rgb(1.0),
         }
     }
@@ -1219,27 +1198,41 @@ mod tests {
     #[test]
     fn microtexture_is_deterministic_and_footprint_filtered() {
         let microtexture = AntiGlareMicrotextureProfile::MATTE_AR;
-        let mirror = [0.17, -0.09, 0.981_376];
         let position = [0.041_237, -0.018_619];
-        let resolved = microtexture.perturb_reflection(mirror, position, [0.0, 0.0]);
+        let resolved = microtexture.reflection_visibility(position, [0.0, 0.0]);
         assert_eq!(
             resolved,
-            microtexture.perturb_reflection(mirror, position, [0.0, 0.0])
+            microtexture.reflection_visibility(position, [0.0, 0.0])
         );
 
-        let filtered = microtexture.perturb_reflection(mirror, position, [0.001, 0.001]);
-        let deviation = |direction: [f32; 3]| {
-            direction
-                .into_iter()
-                .zip(mirror)
-                .map(|(actual, reference)| (actual - reference).powi(2))
-                .sum::<f32>()
-                .sqrt()
+        let filtered = microtexture.reflection_visibility(position, [0.001, 0.001]);
+        assert!((resolved - 1.0).abs() > 1.0e-5);
+        assert!((filtered - 1.0).abs() < (resolved - 1.0).abs());
+        assert!(resolved.is_finite());
+        assert!(filtered.is_finite());
+    }
+
+    #[test]
+    fn resolved_microtexture_visibility_does_not_emboss_transmitted_panel_emission() {
+        let evaluator = COVER_GLASS_PRESETS[3]
+            .profile
+            .evaluator(ProceduralEnvironment::NONE)
+            .expect("valid cover");
+        let emitted = LinearRgb::new(10.0, 8.0, 6.0);
+        let first = CoverSurfaceSample {
+            view_cosine: 0.8,
+            reflection_direction_local: [0.0, 0.0, 1.0],
+            reflection_visibility: 0.3,
+            lens_irradiance_weight: rgb(1.0),
         };
-        assert!(deviation(resolved.1) > 1.0e-5);
-        assert!(deviation(filtered.1) < deviation(resolved.1));
-        assert!(resolved.0.is_finite());
-        assert!(filtered.0.is_finite());
+        let second = CoverSurfaceSample {
+            reflection_visibility: 0.95,
+            ..first
+        };
+        assert_eq!(
+            evaluator.evaluate(emitted, first),
+            evaluator.evaluate(emitted, second)
+        );
     }
 
     #[test]
