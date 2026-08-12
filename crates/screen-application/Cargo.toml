@@ -14,4 +14,5 @@ screen-cover = { path = "../screen-cover" }
 screen-geometry = { path = "../screen-geometry" }
 screen-media = { path = "../screen-media" }
 screen-panel = { path = "../screen-panel" }
+screen-recording = { path = "../screen-recording" }
 screen-sensor = { path = "../screen-sensor" }

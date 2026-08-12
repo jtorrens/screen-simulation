@@ -3,12 +3,18 @@
 #![forbid(unsafe_code)]
 
 mod physical_pipeline;
+mod recording;
 mod test_authoring;
 
 pub use physical_pipeline::{
     PHYSICAL_STAGE_ORDER, PhysicalIntermediate, PhysicalPipelineSnapshot, PhysicalStage,
     PhysicalStageControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
     SourceAcesCgRaster,
+};
+pub use recording::{
+    ConditionalRecordingControl, PreparedRecordingRequest, RecordingCharacterInterpretation,
+    RecordingControlAvailability, RecordingPreparationError, RecordingSelection,
+    prepare_recording_request,
 };
 pub use test_authoring::{
     COLOR_MODE_CONTROL_ID, DEVICE_CONTROL_ID, DEVICE_INTERPRETATION_PHASE_ID,

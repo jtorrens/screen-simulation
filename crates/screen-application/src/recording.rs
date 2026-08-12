@@ -1,0 +1,332 @@
+//! Immutable preparation of an authored recording-codec selection.
+//!
+//! Application resolves one exact Recording-owned profile and exposes only the
+//! controls that profile implements. It does not encode media or reinterpret a
+//! profile selected by the author.
+
+use core::fmt;
+use screen_contracts::FrameRate;
+use screen_recording::{
+    EncoderExecutionPolicy, InterFrameStructure, RateControl, RecordingError, RecordingProfile,
+    RecordingRequest, RecordingTemporalRequirement, bundled_profiles,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingCharacterInterpretation {
+    /// Exact codec bypass. No encode/decode loss is introduced.
+    Bypassed,
+    /// Less compression character than the calibrated profile.
+    Reduced,
+    /// The calibrated profile is used without creative scaling.
+    Calibrated,
+    /// Compression character is intentionally increased for diagnosis or look development.
+    Exaggerated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConditionalRecordingControl<T> {
+    Unavailable,
+    Available { calibrated_value: T },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecordingControlAvailability {
+    pub quality: ConditionalRecordingControl<f32>,
+    pub quantizer: ConditionalRecordingControl<u8>,
+    pub target_bits_per_second: ConditionalRecordingControl<u64>,
+    pub lookahead_frames: ConditionalRecordingControl<u16>,
+    pub fixed_gop_frames: ConditionalRecordingControl<u16>,
+    pub maximum_b_frames: ConditionalRecordingControl<u8>,
+}
+
+impl RecordingControlAvailability {
+    fn from_profile(profile: &RecordingProfile) -> Self {
+        let mut controls = Self {
+            quality: ConditionalRecordingControl::Unavailable,
+            quantizer: ConditionalRecordingControl::Unavailable,
+            target_bits_per_second: ConditionalRecordingControl::Unavailable,
+            lookahead_frames: ConditionalRecordingControl::Unavailable,
+            fixed_gop_frames: ConditionalRecordingControl::Unavailable,
+            maximum_b_frames: ConditionalRecordingControl::Unavailable,
+        };
+        match profile.reference_rate_control {
+            RateControl::ProfileDefinedIntra => {}
+            RateControl::ConstantQuality { quality } => {
+                controls.quality = ConditionalRecordingControl::Available {
+                    calibrated_value: quality,
+                };
+            }
+            RateControl::ConstantQuantizer { qp } => {
+                controls.quantizer = ConditionalRecordingControl::Available {
+                    calibrated_value: qp,
+                };
+            }
+            RateControl::SinglePassTargetBitrate {
+                bits_per_second,
+                lookahead_frames,
+            } => {
+                controls.target_bits_per_second = ConditionalRecordingControl::Available {
+                    calibrated_value: bits_per_second,
+                };
+                controls.lookahead_frames = ConditionalRecordingControl::Available {
+                    calibrated_value: lookahead_frames,
+                };
+            }
+        }
+        if let Some(InterFrameStructure {
+            fixed_gop_frames,
+            maximum_b_frames,
+        }) = profile.inter_frame
+        {
+            controls.fixed_gop_frames = ConditionalRecordingControl::Available {
+                calibrated_value: fixed_gop_frames,
+            };
+            controls.maximum_b_frames = ConditionalRecordingControl::Available {
+                calibrated_value: maximum_b_frames,
+            };
+        }
+        controls
+    }
+}
+
+/// Complete authored selection at the Application boundary. Profile identity is
+/// exact and is never inferred from a filename, container, or media extension.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RecordingSelection<'a> {
+    pub profile_id: &'a str,
+    pub character: f32,
+    pub frame_rate: Option<FrameRate>,
+    pub first_frame_index: i64,
+    pub frame_count: u64,
+    pub execution: EncoderExecutionPolicy,
+}
+
+/// One immutable request ready for a host codec adapter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedRecordingRequest {
+    pub profile: RecordingProfile,
+    pub character: f32,
+    pub character_interpretation: RecordingCharacterInterpretation,
+    pub frame_rate: Option<FrameRate>,
+    pub first_frame_index: i64,
+    pub frame_count: u64,
+    pub execution: EncoderExecutionPolicy,
+    pub controls: RecordingControlAvailability,
+    pub temporal_requirement: RecordingTemporalRequirement,
+}
+
+impl PreparedRecordingRequest {
+    pub fn as_recording_request(&self) -> RecordingRequest<'_> {
+        RecordingRequest {
+            profile: &self.profile,
+            character: self.character,
+            frame_rate: self.frame_rate,
+            first_frame_index: self.first_frame_index,
+            frame_count: self.frame_count,
+            execution: self.execution,
+        }
+    }
+}
+
+pub fn prepare_recording_request(
+    selection: RecordingSelection<'_>,
+) -> Result<PreparedRecordingRequest, RecordingPreparationError> {
+    let profile = bundled_profiles()
+        .into_iter()
+        .find(|profile| profile.id == selection.profile_id)
+        .ok_or_else(|| {
+            RecordingPreparationError::UnknownProfile(selection.profile_id.to_owned())
+        })?;
+
+    RecordingRequest {
+        profile: &profile,
+        character: selection.character,
+        frame_rate: selection.frame_rate,
+        first_frame_index: selection.first_frame_index,
+        frame_count: selection.frame_count,
+        execution: selection.execution,
+    }
+    .validate()
+    .map_err(RecordingPreparationError::InvalidRequest)?;
+    let temporal_requirement = profile
+        .temporal_requirement()
+        .map_err(RecordingPreparationError::InvalidRequest)?;
+    let controls = RecordingControlAvailability::from_profile(&profile);
+    let character_interpretation = match selection.character {
+        0.0 => RecordingCharacterInterpretation::Bypassed,
+        value if value < 1.0 => RecordingCharacterInterpretation::Reduced,
+        1.0 => RecordingCharacterInterpretation::Calibrated,
+        _ => RecordingCharacterInterpretation::Exaggerated,
+    };
+
+    Ok(PreparedRecordingRequest {
+        profile,
+        character: selection.character,
+        character_interpretation,
+        frame_rate: selection.frame_rate,
+        first_frame_index: selection.first_frame_index,
+        frame_count: selection.frame_count,
+        execution: selection.execution,
+        controls,
+        temporal_requirement,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordingPreparationError {
+    UnknownProfile(String),
+    InvalidRequest(RecordingError),
+}
+
+impl fmt::Display for RecordingPreparationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownProfile(id) => write!(formatter, "unknown recording profile `{id}`"),
+            Self::InvalidRequest(error) => write!(formatter, "invalid recording request: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for RecordingPreparationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnknownProfile(_) => None,
+            Self::InvalidRequest(error) => Some(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use screen_contracts::FrameRate;
+    use screen_recording::{GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, IPHONE_HEIC_PHOTO_PROFILE_ID};
+
+    fn still(character: f32) -> RecordingSelection<'static> {
+        RecordingSelection {
+            profile_id: IPHONE_HEIC_PHOTO_PROFILE_ID,
+            character,
+            frame_rate: None,
+            first_frame_index: 0,
+            frame_count: 1,
+            execution: EncoderExecutionPolicy::SINGLE_PASS,
+        }
+    }
+
+    #[test]
+    fn exact_profile_identity_is_required() {
+        let error = prepare_recording_request(RecordingSelection {
+            profile_id: "iphone-heic-photo",
+            ..still(1.0)
+        })
+        .expect_err("aliases are not accepted");
+        assert_eq!(
+            error,
+            RecordingPreparationError::UnknownProfile("iphone-heic-photo".to_owned())
+        );
+    }
+
+    #[test]
+    fn still_profile_exposes_only_its_quality_control() {
+        let prepared = prepare_recording_request(still(1.0)).expect("prepared still");
+        assert_eq!(
+            prepared.controls.quality,
+            ConditionalRecordingControl::Available {
+                calibrated_value: 0.82
+            }
+        );
+        assert_eq!(
+            prepared.controls.target_bits_per_second,
+            ConditionalRecordingControl::Unavailable
+        );
+        assert_eq!(
+            prepared.controls.fixed_gop_frames,
+            ConditionalRecordingControl::Unavailable
+        );
+        assert!(
+            !prepared
+                .temporal_requirement
+                .chronological_sequence_required
+        );
+        assert_eq!(prepared.temporal_requirement.future_frames, 0);
+    }
+
+    #[test]
+    fn moving_profile_exposes_bitrate_and_finite_temporal_controls() {
+        let prepared = prepare_recording_request(RecordingSelection {
+            profile_id: GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
+            character: 1.0,
+            frame_rate: Some(FrameRate::new(24, 1).expect("rate")),
+            first_frame_index: 1001,
+            frame_count: 96,
+            execution: EncoderExecutionPolicy::SINGLE_PASS,
+        })
+        .expect("prepared moving image");
+        assert_eq!(
+            prepared.controls.target_bits_per_second,
+            ConditionalRecordingControl::Available {
+                calibrated_value: 80_000_000
+            }
+        );
+        assert_eq!(
+            prepared.controls.fixed_gop_frames,
+            ConditionalRecordingControl::Available {
+                calibrated_value: 48
+            }
+        );
+        assert!(
+            prepared
+                .temporal_requirement
+                .chronological_sequence_required
+        );
+        assert_eq!(prepared.temporal_requirement.future_frames, 16);
+        assert!(!prepared.temporal_requirement.complete_clip_preanalysis);
+    }
+
+    #[test]
+    fn character_points_and_intervals_have_explicit_meaning() {
+        for (value, expected) in [
+            (0.0, RecordingCharacterInterpretation::Bypassed),
+            (0.5, RecordingCharacterInterpretation::Reduced),
+            (1.0, RecordingCharacterInterpretation::Calibrated),
+            (2.0, RecordingCharacterInterpretation::Exaggerated),
+        ] {
+            assert_eq!(
+                prepare_recording_request(still(value))
+                    .expect("valid character")
+                    .character_interpretation,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_sequence_and_character_are_not_repaired() {
+        assert_eq!(
+            prepare_recording_request(RecordingSelection {
+                frame_rate: Some(FrameRate::new(24, 1).expect("rate")),
+                ..still(1.0)
+            }),
+            Err(RecordingPreparationError::InvalidRequest(
+                RecordingError::InvalidSequence
+            ))
+        );
+        assert_eq!(
+            prepare_recording_request(still(f32::NAN)),
+            Err(RecordingPreparationError::InvalidRequest(
+                RecordingError::InvalidCharacter
+            ))
+        );
+    }
+
+    #[test]
+    fn prepared_request_reconstitutes_the_exact_recording_contract() {
+        let prepared = prepare_recording_request(still(0.0)).expect("prepared bypass");
+        let request = prepared.as_recording_request();
+        request.validate().expect("valid domain request");
+        assert_eq!(request.profile.id, IPHONE_HEIC_PHOTO_PROFILE_ID);
+        assert_eq!(request.character, 0.0);
+        assert_eq!(request.frame_count, 1);
+        assert_eq!(request.execution, EncoderExecutionPolicy::SINGLE_PASS);
+    }
+}

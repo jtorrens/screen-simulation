@@ -4451,6 +4451,7 @@ dependencies = [
  "screen-geometry",
  "screen-media",
  "screen-panel",
+ "screen-recording",
  "screen-sensor",
 ]
 
