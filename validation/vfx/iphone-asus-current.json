@@ -2,7 +2,7 @@
   "schema": "ScreenSimulation.VfxReferenceFixture",
   "version": 1,
   "id": "iphone-asus-current",
-  "description": "ASUS PA329CV and iPhone 16e reference with GGX roughness 0.22 and cellular anti-glare microtexture; the permanent HDRI pitch X -25 degrees and environment Y rotation -57.3 degrees place the ceiling light in the upper-right quadrant.",
+  "description": "ASUS PA329CV and iPhone 16e reference with GGX roughness 0.18 and reflection-only cellular anti-glare visibility at RMS irregularity 0.030 and 60 micrometers; the permanent HDRI pitch X -25 degrees and environment Y rotation -57.3 degrees place the ceiling light in the upper-right quadrant.",
   "status": "canonical",
   "settings": {
     "SCREEN_MOIRE_DEVICE_ID": "lcd-asus-proart-pa329cv",
@@ -19,7 +19,7 @@
     "SCREEN_MOIRE_COVER_ABSORPTION_R": "0.012",
     "SCREEN_MOIRE_COVER_ABSORPTION_G": "0.012",
     "SCREEN_MOIRE_COVER_ABSORPTION_B": "0.012",
-    "SCREEN_MOIRE_COVER_ROUGHNESS": "0.22",
+    "SCREEN_MOIRE_COVER_ROUGHNESS": "0.18",
     "SCREEN_MOIRE_COVER_HAZE": "0.03",
     "SCREEN_MOIRE_COVER_AG_MICROTEXTURE_CHARACTER_STRENGTH": "1",
     "SCREEN_MOIRE_COVER_AG_MICROTEXTURE_RMS_SLOPE": "0.030",
@@ -84,7 +84,7 @@
     }
   ],
   "acceptedOutput": {
-    "pixelRGBA8SHA256": "c3d4b64bbbeebc317cc70b747e9ba0f6b41cb10bdd5f1f1dfb93dc3397010216",
-    "pixelRGBA16SHA256": "33b79c8b7875da3440627b9a2dd355d908af4e0af96e93305f9395067f682353"
+    "pixelRGBA8SHA256": "a9fd5ca779a9b376273bb64961b90ece5c84e259065883e113babda6f21fbfe0",
+    "pixelRGBA16SHA256": "2b47934530bc71071609b65e2b9691cded318bb00f9c20b1cddffdaeea26387c"
   }
 }

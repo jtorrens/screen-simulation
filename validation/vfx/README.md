@@ -14,8 +14,10 @@ El fixture actual fija:
   foco 0,11 m y f/1,64.
 - 1/25 s, EI 200, ND 0, revelado 0 EV y ocho exposiciones separadas 1 EV.
 - Cristal `cover-matte-ar` completamente materializado en el fixture, con
-  roughness GGX 0,25 y haze 0,03.
-- HDRI sintético mixed-light, Linear Rec.709, 100 cd/m² por unidad y −3 EV.
+  roughness GGX 0,18, haze 0,03 y visibilidad celular reflectante de
+  irregularidad RMS 0,030 a 60 µm, sin perturbación de normal ni relieve en la
+  emisión del panel.
+- HDRI sintético mixed-light, Linear Rec.709, 100 cd/m² por unidad y −1 EV.
   El recurso permanente incorpora una rotación de −25° sobre X y el entorno
   aplica −57,3° sobre Y. La luz de techo entre los dos cuadros queda en el
   cuadrante superior derecho.
