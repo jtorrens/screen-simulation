@@ -847,6 +847,32 @@ struct ContentView: View {
                     $0.haze = $1
                 }
             }
+            Section("Microtextura antirreflejos") {
+                coverGlassField(
+                    "Cantidad",
+                    value: cover.agMicrotextureCharacterStrength
+                ) {
+                    $0.agMicrotextureCharacterStrength = $1
+                }
+                coverGlassField("Pendiente RMS", value: cover.agMicrotextureRMSSlope) {
+                    $0.agMicrotextureRMSSlope = $1
+                }
+                coverGlassField(
+                    "Longitud de correlación (µm)",
+                    value: cover.agMicrotextureCorrelationLengthMicrometers
+                ) {
+                    $0.agMicrotextureCorrelationLengthMicrometers = $1
+                }
+                coverGlassField("Anisotropía", value: cover.agMicrotextureAnisotropy) {
+                    $0.agMicrotextureAnisotropy = $1
+                }
+                TextField("Semilla", value: Binding(
+                    get: { cover.agMicrotextureSeed },
+                    set: { value in
+                        library.updateSelectedCoverGlass { $0.agMicrotextureSeed = value }
+                    }
+                ), format: .number.grouping(.never))
+            }
             Section("Absorción por milímetro") {
                 ForEach(Array(["R", "G", "B"].enumerated()), id: \.offset) { channel in
                     TextField(channel.element, value: Binding(

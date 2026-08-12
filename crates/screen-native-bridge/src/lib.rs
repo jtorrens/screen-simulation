@@ -53,14 +53,14 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 12;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 13;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestAuthoringSelectionV12 {
+pub struct ScreenTestAuthoringSelectionV13 {
     abi_version: u32,
     input_transform_id: ScreenUtf8View,
     output_signal_id: ScreenUtf8View,
@@ -93,6 +93,7 @@ pub struct ScreenTestAuthoringSelectionV12 {
     screen_rotation_z_degrees: f32,
     cover_glass_preset_id: ScreenUtf8View,
     cover_glass_amount: f32,
+    cover_ag_microtexture_amount: f32,
     environment_preset_id: ScreenUtf8View,
     environment_amount: f32,
     cover_glow_amount: f32,
@@ -189,7 +190,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 10;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 11;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 4;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -1789,6 +1790,11 @@ pub struct ScreenCoverGlassParametersV2 {
     absorption_per_millimeter: [f32; 3],
     roughness: f32,
     haze: f32,
+    ag_microtexture_character_strength: f32,
+    ag_microtexture_rms_slope: f32,
+    ag_microtexture_correlation_length_micrometers: f32,
+    ag_microtexture_anisotropy: f32,
+    ag_microtexture_seed: u32,
     glow_character_strength: f32,
     glow_scatter_fraction: f32,
     glow_core_radius_millimeters: f32,
@@ -1944,7 +1950,7 @@ unsafe fn borrowed_utf8<'a>(view: ScreenUtf8View) -> Option<&'a str> {
 }
 
 unsafe fn test_selection<'a>(
-    selection: *const ScreenTestAuthoringSelectionV12,
+    selection: *const ScreenTestAuthoringSelectionV13,
 ) -> Option<TestAuthoringSelection<'a>> {
     let selection = unsafe { selection.as_ref() }?;
     if selection.abi_version != SCREEN_TEST_AUTHORING_ABI_VERSION {
@@ -1981,6 +1987,7 @@ unsafe fn test_selection<'a>(
         screen_rotation_z_degrees: selection.screen_rotation_z_degrees,
         cover_glass_preset_id: unsafe { borrowed_utf8(selection.cover_glass_preset_id) }?,
         cover_glass_amount: selection.cover_glass_amount,
+        cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
         environment_preset_id: unsafe { borrowed_utf8(selection.environment_preset_id) }?,
         environment_amount: selection.environment_amount,
         cover_glow_amount: selection.cover_glow_amount,
@@ -2030,6 +2037,9 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
         TestAuthoringError::InvalidGeometry => b"invalid Test relative geometry\0",
         TestAuthoringError::UnknownCoverGlassPreset => b"unknown Test Cover Glass preset\0",
         TestAuthoringError::InvalidCoverGlassAmount => b"Cover Glass amount is outside 0..=2\0",
+        TestAuthoringError::InvalidCoverAgMicrotextureAmount => {
+            b"Cover AG Microtexture amount is outside 0..=4\0"
+        }
         TestAuthoringError::UnknownEnvironmentPreset => b"unknown Test Environment preset\0",
         TestAuthoringError::InvalidEnvironmentAmount => b"Environment amount is outside 0..=4\0",
         TestAuthoringError::InvalidCoverGlowAmount => b"Cover Glow amount is outside 0..=4\0",
@@ -2055,8 +2065,8 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
 
 fn resolved_test_selection(
     selection: screen_application::ResolvedTestAuthoringSelection,
-) -> ScreenTestAuthoringSelectionV12 {
-    ScreenTestAuthoringSelectionV12 {
+) -> ScreenTestAuthoringSelectionV13 {
+    ScreenTestAuthoringSelectionV13 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         input_transform_id: utf8_view(selection.input_transform_id),
         output_signal_id: utf8_view(selection.output_signal_id),
@@ -2089,6 +2099,7 @@ fn resolved_test_selection(
         screen_rotation_z_degrees: selection.screen_rotation_z_degrees,
         cover_glass_preset_id: utf8_view(selection.cover_glass_preset_id),
         cover_glass_amount: selection.cover_glass_amount,
+        cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
         environment_preset_id: utf8_view(selection.environment_preset_id),
         environment_amount: selection.environment_amount,
         cover_glow_amount: selection.cover_glow_amount,
@@ -2114,7 +2125,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
     input_transform_id: ScreenUtf8View,
     device_id: ScreenUtf8View,
     frame_rate: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV12,
+    resolved: *mut ScreenTestAuthoringSelectionV13,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(input_transform_id) = (unsafe { borrowed_utf8(input_transform_id) }) else {
@@ -2149,7 +2160,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_page_descriptor_create(
-    selection: *const ScreenTestAuthoringSelectionV12,
+    selection: *const ScreenTestAuthoringSelectionV13,
     error_message: *mut *const c_char,
 ) -> *mut ScreenTestPageDescriptor {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2431,10 +2442,10 @@ pub unsafe extern "C" fn screen_test_page_preview_choice_option(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_choice(
-    selection: *const ScreenTestAuthoringSelectionV12,
+    selection: *const ScreenTestAuthoringSelectionV13,
     control_id: ScreenUtf8View,
     option_id: ScreenUtf8View,
-    resolved: *mut ScreenTestAuthoringSelectionV12,
+    resolved: *mut ScreenTestAuthoringSelectionV13,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2468,10 +2479,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_choice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
-    selection: *const ScreenTestAuthoringSelectionV12,
+    selection: *const ScreenTestAuthoringSelectionV13,
     control_id: ScreenUtf8View,
     value: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV12,
+    resolved: *mut ScreenTestAuthoringSelectionV13,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2501,10 +2512,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_toggle(
-    selection: *const ScreenTestAuthoringSelectionV12,
+    selection: *const ScreenTestAuthoringSelectionV13,
     control_id: ScreenUtf8View,
     value: bool,
-    resolved: *mut ScreenTestAuthoringSelectionV12,
+    resolved: *mut ScreenTestAuthoringSelectionV13,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2661,6 +2672,14 @@ pub unsafe extern "C" fn screen_cover_glass_profile_create(
         ),
         roughness: parameters.roughness,
         haze: parameters.haze,
+        anti_glare_microtexture: screen_cover::AntiGlareMicrotextureProfile {
+            character_strength: parameters.ag_microtexture_character_strength,
+            rms_slope: parameters.ag_microtexture_rms_slope,
+            correlation_length_micrometers: parameters
+                .ag_microtexture_correlation_length_micrometers,
+            anisotropy: parameters.ag_microtexture_anisotropy,
+            seed: parameters.ag_microtexture_seed,
+        },
         glow: screen_cover::CoverGlowProfile {
             character_strength: parameters.glow_character_strength,
             scatter_fraction: parameters.glow_scatter_fraction,
@@ -2725,6 +2744,15 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         ),
         roughness: parameters.cover.roughness,
         haze: parameters.cover.haze,
+        anti_glare_microtexture: screen_cover::AntiGlareMicrotextureProfile {
+            character_strength: parameters.cover.ag_microtexture_character_strength,
+            rms_slope: parameters.cover.ag_microtexture_rms_slope,
+            correlation_length_micrometers: parameters
+                .cover
+                .ag_microtexture_correlation_length_micrometers,
+            anisotropy: parameters.cover.ag_microtexture_anisotropy,
+            seed: parameters.cover.ag_microtexture_seed,
+        },
         glow: screen_cover::CoverGlowProfile {
             character_strength: parameters.cover.glow_character_strength,
             scatter_fraction: parameters.cover.glow_scatter_fraction,
@@ -3064,6 +3092,13 @@ fn cover_parameters(
         ],
         roughness: profile.roughness,
         haze: profile.haze,
+        ag_microtexture_character_strength: profile.anti_glare_microtexture.character_strength,
+        ag_microtexture_rms_slope: profile.anti_glare_microtexture.rms_slope,
+        ag_microtexture_correlation_length_micrometers: profile
+            .anti_glare_microtexture
+            .correlation_length_micrometers,
+        ag_microtexture_anisotropy: profile.anti_glare_microtexture.anisotropy,
+        ag_microtexture_seed: profile.anti_glare_microtexture.seed,
         glow_character_strength: profile.glow.character_strength,
         glow_scatter_fraction: profile.glow.scatter_fraction,
         glow_core_radius_millimeters: profile.glow.core_radius_millimeters,
@@ -3861,6 +3896,11 @@ mod tests {
                 absorption_per_millimeter: [0.0; 3],
                 roughness: 0.0,
                 haze: 0.0,
+                ag_microtexture_character_strength: 0.0,
+                ag_microtexture_rms_slope: 0.0,
+                ag_microtexture_correlation_length_micrometers: 1.0,
+                ag_microtexture_anisotropy: 0.0,
+                ag_microtexture_seed: 0,
                 glow_character_strength: 1.0,
                 glow_scatter_fraction: 0.03,
                 glow_core_radius_millimeters: 0.1,
@@ -4443,6 +4483,11 @@ mod tests {
                 absorption_per_millimeter: [0.0; 3],
                 roughness: 0.0,
                 haze: 0.0,
+                ag_microtexture_character_strength: 0.0,
+                ag_microtexture_rms_slope: 0.0,
+                ag_microtexture_correlation_length_micrometers: 0.0,
+                ag_microtexture_anisotropy: 0.0,
+                ag_microtexture_seed: 0,
                 glow_character_strength: 0.0,
                 glow_scatter_fraction: 0.0,
                 glow_core_radius_millimeters: 0.0,
@@ -4451,10 +4496,54 @@ mod tests {
             };
             assert!(unsafe { screen_cover_glass_preset_parameters(index, &mut parameters) });
             assert_eq!(parameters.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);
+            let preset = COVER_GLASS_PRESETS[index].profile.anti_glare_microtexture;
+            assert_eq!(
+                parameters.ag_microtexture_character_strength,
+                preset.character_strength
+            );
+            assert_eq!(parameters.ag_microtexture_rms_slope, preset.rms_slope);
+            assert_eq!(
+                parameters.ag_microtexture_correlation_length_micrometers,
+                preset.correlation_length_micrometers
+            );
+            assert_eq!(parameters.ag_microtexture_anisotropy, preset.anisotropy);
+            assert_eq!(parameters.ag_microtexture_seed, preset.seed);
             let profile =
                 unsafe { screen_cover_glass_profile_create(&parameters, std::ptr::null_mut()) };
             assert!(!profile.is_null());
             unsafe { screen_cover_glass_profile_release(profile) };
         }
+    }
+
+    #[test]
+    fn cover_glass_rejects_the_retired_physical_abi() {
+        let mut parameters = cover_parameters(
+            COVER_GLASS_PRESETS[0].authority,
+            COVER_GLASS_PRESETS[0].profile,
+        );
+        parameters.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION - 1;
+        let profile =
+            unsafe { screen_cover_glass_profile_create(&parameters, std::ptr::null_mut()) };
+        assert!(profile.is_null());
+
+        let mut pipeline = pipeline_parameters();
+        pipeline.cover.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION - 1;
+        let snapshot =
+            unsafe { screen_physical_pipeline_snapshot_create(&pipeline, std::ptr::null_mut()) };
+        assert!(snapshot.is_null());
+    }
+
+    #[test]
+    fn test_authoring_rejects_the_previous_selection_abi() {
+        let selection = default_test_authoring_selection(
+            "srgb-encoded-rec709",
+            "lcd-asus-proart-pa329cv",
+            24.0,
+        )
+        .unwrap();
+        let mut raw = resolved_test_selection(selection);
+        raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION - 1;
+        let descriptor = unsafe { screen_test_page_descriptor_create(&raw, std::ptr::null_mut()) };
+        assert!(descriptor.is_null());
     }
 }

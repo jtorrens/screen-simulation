@@ -2,7 +2,7 @@
 
 Status: normative.
 
-The current schema version is 10. The source document requires one named Input Transform; the retired identity source-to-feeder representation is rejected. The simulation request requires one independently authored Output Signal resolved by `screen-color`. The device document requires one stable Panel-owned Color Mode interpretation and carries the complete materialized optical-cover profile including its glow kernel, fixed spatial-uniformity profile and temporal-emission profile in addition to the LCD profile. The current shot document carries the complete authored synthetic-HDR environment profile, including its required spherical-pattern identity, rotation and ACEScg radiance values. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs. Version 9 is obsolete and rejected; there is no normal-reader compatibility route.
+The current schema version is 11. The source document requires one named Input Transform. The simulation request requires one independently authored Output Signal resolved by `screen-color`. The device document requires one stable Panel-owned Color Mode interpretation and carries the complete materialized optical-cover profile, including its required nested anti-glare microtexture realization and glow kernel, fixed spatial-uniformity profile and temporal-emission profile in addition to the LCD profile. The microtexture block explicitly stores character strength, RMS slope, physical correlation length in micrometers, anisotropy and stable seed; none may be supplied by a preset or inferred during opening. The current shot document carries the complete authored synthetic-HDR environment profile, including its required spherical-pattern identity, rotation and ACEScg radiance values. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs.
 
 The portable project is a `.screensim` package directory with one strict root manifest and separate owner documents for sources, device profiles, camera/screen tracks and simulation shots. SQLite is not a project format.
 
@@ -12,7 +12,7 @@ Project documents contain portable relative references and stable opaque ids. Ma
 
 Normal open validates without writing. Each document has one current schema and version. Unknown versions, unknown fields, missing required values and invalid references fail explicitly.
 
-Camera intrinsics schema 10 additionally requires the bounded lens veiling-glare fraction. It is
+Current camera intrinsics require the bounded lens veiling-glare fraction. It is
 materialized authoring data like every other lens coefficient; a preset id can never supply it at
 open or evaluation time.
 

@@ -8,7 +8,7 @@ use screen_cover::{
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 12;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 13;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -54,6 +54,7 @@ pub const SCREEN_ROTATION_X_CONTROL_ID: &str = "screen-rotation-x-degrees";
 pub const SCREEN_ROTATION_Z_CONTROL_ID: &str = "screen-rotation-z-degrees";
 pub const COVER_GLASS_CONTROL_ID: &str = "cover-glass-preset";
 pub const COVER_GLASS_AMOUNT_CONTROL_ID: &str = "cover-glass-amount";
+pub const COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID: &str = "cover-ag-microtexture-amount";
 pub const ENVIRONMENT_CONTROL_ID: &str = "environment-preset";
 pub const ENVIRONMENT_AMOUNT_CONTROL_ID: &str = "environment-amount";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
@@ -154,6 +155,7 @@ pub struct TestAuthoringSelection<'a> {
     pub screen_rotation_z_degrees: f32,
     pub cover_glass_preset_id: &'a str,
     pub cover_glass_amount: f32,
+    pub cover_ag_microtexture_amount: f32,
     pub environment_preset_id: &'a str,
     pub environment_amount: f32,
     pub cover_glow_amount: f32,
@@ -206,6 +208,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub screen_rotation_z_degrees: f32,
     pub cover_glass_preset_id: &'static str,
     pub cover_glass_amount: f32,
+    pub cover_ag_microtexture_amount: f32,
     pub environment_preset_id: &'static str,
     pub environment_amount: f32,
     pub cover_glow_amount: f32,
@@ -386,6 +389,7 @@ pub enum TestAuthoringError {
     InvalidGeometry,
     UnknownCoverGlassPreset,
     InvalidCoverGlassAmount,
+    InvalidCoverAgMicrotextureAmount,
     UnknownEnvironmentPreset,
     InvalidEnvironmentAmount,
     InvalidCoverGlowAmount,
@@ -422,6 +426,9 @@ impl core::fmt::Display for TestAuthoringError {
             Self::InvalidGeometry => "Test relative geometry is invalid",
             Self::UnknownCoverGlassPreset => "unknown Test Cover Glass preset",
             Self::InvalidCoverGlassAmount => "Cover Glass amount is outside 0..=2",
+            Self::InvalidCoverAgMicrotextureAmount => {
+                "Cover AG Microtexture amount is outside 0..=4"
+            }
             Self::UnknownEnvironmentPreset => "unknown Test Environment preset",
             Self::InvalidEnvironmentAmount => "Environment amount is outside 0..=4",
             Self::InvalidCoverGlowAmount => "Cover Glow amount is outside 0..=4",
@@ -532,6 +539,11 @@ pub fn default_test_authoring_selection(
         screen_rotation_z_degrees: 0.0,
         cover_glass_preset_id: device.default_cover_glass_preset_id,
         cover_glass_amount: 1.0,
+        cover_ag_microtexture_amount: cover_glass_preset(device.default_cover_glass_preset_id)
+            .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?
+            .profile
+            .anti_glare_microtexture
+            .character_strength,
         environment_preset_id: "environment-none",
         environment_amount: 0.0,
         cover_glow_amount: 1.0,
@@ -662,6 +674,11 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidCoverGlassAmount);
     }
+    if !selection.cover_ag_microtexture_amount.is_finite()
+        || !(0.0..=4.0).contains(&selection.cover_ag_microtexture_amount)
+    {
+        return Err(TestAuthoringError::InvalidCoverAgMicrotextureAmount);
+    }
     let environment = environment_preset(selection.environment_preset_id)
         .ok_or(TestAuthoringError::UnknownEnvironmentPreset)?;
     if !selection.environment_amount.is_finite()
@@ -767,6 +784,7 @@ pub fn resolve_test_authoring_selection(
         screen_rotation_z_degrees: selection.screen_rotation_z_degrees,
         cover_glass_preset_id: cover.id,
         cover_glass_amount: selection.cover_glass_amount,
+        cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
         environment_preset_id: environment.id,
         environment_amount: selection.environment_amount,
         cover_glow_amount: selection.cover_glow_amount,
@@ -1322,6 +1340,18 @@ pub fn test_page_descriptor(
                         selected_cover.profile.character_strength,
                         "×",
                     ),
+                    scalar_control(
+                        COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID,
+                        "Microtextura antirreflejos",
+                        selection.cover_ag_microtexture_amount,
+                        0.0,
+                        4.0,
+                        selected_cover
+                            .profile
+                            .anti_glare_microtexture
+                            .character_strength,
+                        "×",
+                    ),
                     choice_control(
                         ENVIRONMENT_CONTROL_ID,
                         "Entorno",
@@ -1552,6 +1582,12 @@ pub fn apply_test_choice(
                 .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?
                 .profile
                 .character_strength;
+            next.cover_ag_microtexture_amount =
+                cover_glass_preset(device.default_cover_glass_preset_id)
+                    .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?
+                    .profile
+                    .anti_glare_microtexture
+                    .character_strength;
             next.cover_glow_amount = cover_glass_preset(device.default_cover_glass_preset_id)
                 .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?
                 .profile
@@ -1584,6 +1620,8 @@ pub fn apply_test_choice(
                 cover_glass_preset(option_id).ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
             next.cover_glass_preset_id = cover.id;
             next.cover_glass_amount = cover.profile.character_strength;
+            next.cover_ag_microtexture_amount =
+                cover.profile.anti_glare_microtexture.character_strength;
             next.cover_glow_amount = cover.profile.glow.character_strength;
         }
         ENVIRONMENT_CONTROL_ID => {
@@ -1613,6 +1651,7 @@ pub fn apply_test_choice(
         | SCREEN_ROTATION_X_CONTROL_ID
         | SCREEN_ROTATION_Z_CONTROL_ID
         | COVER_GLASS_AMOUNT_CONTROL_ID
+        | COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID
         | ENVIRONMENT_AMOUNT_CONTROL_ID
         | COVER_GLOW_AMOUNT_CONTROL_ID
         | LENS_AMOUNT_CONTROL_ID
@@ -1668,6 +1707,7 @@ fn unresolved_test_selection(
         screen_rotation_z_degrees: current.screen_rotation_z_degrees,
         cover_glass_preset_id: current.cover_glass_preset_id,
         cover_glass_amount: current.cover_glass_amount,
+        cover_ag_microtexture_amount: current.cover_ag_microtexture_amount,
         environment_preset_id: current.environment_preset_id,
         environment_amount: current.environment_amount,
         cover_glow_amount: current.cover_glow_amount,
@@ -1805,6 +1845,7 @@ pub fn apply_test_scalar(
         SCREEN_YAW_CONTROL_ID => next.screen_yaw_degrees = value,
         SCREEN_ROTATION_Z_CONTROL_ID => next.screen_rotation_z_degrees = value,
         COVER_GLASS_AMOUNT_CONTROL_ID => next.cover_glass_amount = value,
+        COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID => next.cover_ag_microtexture_amount = value,
         ENVIRONMENT_AMOUNT_CONTROL_ID => next.environment_amount = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
@@ -1888,6 +1929,7 @@ mod tests {
             screen_rotation_z_degrees: 0.0,
             cover_glass_preset_id: "cover-matte-ar",
             cover_glass_amount: 1.0,
+            cover_ag_microtexture_amount: 1.0,
             environment_preset_id: "environment-none",
             environment_amount: 0.0,
             cover_glow_amount: 1.0,
@@ -1911,7 +1953,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 12);
+        assert_eq!(page.schema_version, 13);
         assert_eq!(page.default_preview_phase_id, DEVELOP_DEMOSAIC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
@@ -2180,6 +2222,55 @@ mod tests {
         assert_eq!(selection.device_id, "lcd-tv-hd-32");
         assert_eq!(selection.color_mode_id, "rec709-gamma24");
         assert_eq!(selection.white_luminance_nits, 250.0);
+        let device = preset(selection.device_id).unwrap();
+        let cover = cover_glass_preset(device.default_cover_glass_preset_id).unwrap();
+        assert_eq!(
+            selection.cover_ag_microtexture_amount,
+            cover.profile.anti_glare_microtexture.character_strength
+        );
+    }
+
+    #[test]
+    fn cover_microtexture_is_model_authored_and_resets_with_the_cover_preset() {
+        let page = test_page_descriptor(asus()).unwrap();
+        assert!(matches!(
+            page.phases[7].controls.iter().find(|control| matches!(
+                control,
+                TestControlRequirement::Scalar {
+                    id: COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID,
+                    ..
+                }
+            )),
+            Some(TestControlRequirement::Scalar {
+                value: 1.0,
+                minimum: 0.0,
+                maximum: 4.0,
+                slider_visible: true,
+                reset_value: 1.0,
+                ..
+            })
+        ));
+        let edited =
+            apply_test_scalar(asus(), COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID, 2.5).unwrap();
+        assert_eq!(edited.cover_ag_microtexture_amount, 2.5);
+        let changed = apply_test_choice(
+            unresolved_test_selection(edited),
+            COVER_GLASS_CONTROL_ID,
+            "cover-glossy-strong-ar",
+        )
+        .unwrap();
+        assert_eq!(
+            changed.cover_ag_microtexture_amount,
+            cover_glass_preset("cover-glossy-strong-ar")
+                .unwrap()
+                .profile
+                .anti_glare_microtexture
+                .character_strength
+        );
+        assert_eq!(
+            apply_test_scalar(asus(), COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID, 4.1),
+            Err(TestAuthoringError::InvalidCoverAgMicrotextureAmount)
+        );
     }
 
     #[test]

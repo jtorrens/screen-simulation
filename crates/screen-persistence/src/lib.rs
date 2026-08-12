@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 10;
+pub const CURRENT_VERSION: u32 = 11;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -180,7 +180,18 @@ pub struct CoverDocument {
     pub absorption_per_millimeter: [f32; 3],
     pub roughness: f32,
     pub haze: f32,
+    pub anti_glare_microtexture: AntiGlareMicrotextureDocument,
     pub glow: CoverGlowDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AntiGlareMicrotextureDocument {
+    pub character_strength: f32,
+    pub rms_slope: f32,
+    pub correlation_length_micrometers: f32,
+    pub anisotropy: f32,
+    pub seed: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -865,6 +876,10 @@ fn validate_cover(cover: &CoverDocument) -> Result<(), PersistenceError> {
         cover.absorption_per_millimeter[2],
         cover.roughness,
         cover.haze,
+        cover.anti_glare_microtexture.character_strength,
+        cover.anti_glare_microtexture.rms_slope,
+        cover.anti_glare_microtexture.correlation_length_micrometers,
+        cover.anti_glare_microtexture.anisotropy,
         cover.glow.character_strength,
         cover.glow.scatter_fraction,
         cover.glow.core_radius_millimeters,
@@ -1200,6 +1215,13 @@ mod tests {
                     absorption_per_millimeter: [0.012; 3],
                     roughness: 0.65,
                     haze: 0.03,
+                    anti_glare_microtexture: AntiGlareMicrotextureDocument {
+                        character_strength: 1.0,
+                        rms_slope: 0.045,
+                        correlation_length_micrometers: 18.0,
+                        anisotropy: 0.12,
+                        seed: 0xb036_0104,
+                    },
                     glow: CoverGlowDocument {
                         character_strength: 1.0,
                         scatter_fraction: 0.08,
@@ -1397,6 +1419,21 @@ mod tests {
             open_project(&root),
             Err(PersistenceError::InvalidDocument(_, _))
         ));
+    }
+
+    #[test]
+    fn cover_microtexture_is_required_and_rejects_unknown_fields() {
+        let cover = package().device.cover;
+        let mut missing = serde_json::to_value(cover).expect("serialize cover");
+        missing
+            .as_object_mut()
+            .expect("cover object")
+            .remove("anti_glare_microtexture");
+        assert!(serde_json::from_value::<CoverDocument>(missing).is_err());
+
+        let mut unknown = serde_json::to_value(cover).expect("serialize cover");
+        unknown["anti_glare_microtexture"]["legacy_noise_amount"] = serde_json::Value::from(1.0);
+        assert!(serde_json::from_value::<CoverDocument>(unknown).is_err());
     }
 
     #[test]

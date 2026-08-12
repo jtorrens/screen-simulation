@@ -5,7 +5,8 @@ use screen_color::{
 };
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_cover::{
-    AcesCgRadiance, CoverGlassProfile, CoverGlowProfile, EnvironmentPattern, ProceduralEnvironment,
+    AcesCgRadiance, AntiGlareMicrotextureProfile, CoverGlassProfile, CoverGlowProfile,
+    EnvironmentPattern, ProceduralEnvironment,
 };
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation, LensModel,
@@ -160,6 +161,16 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             ),
             roughness: device.cover.roughness,
             haze: device.cover.haze,
+            anti_glare_microtexture: AntiGlareMicrotextureProfile {
+                character_strength: device.cover.anti_glare_microtexture.character_strength,
+                rms_slope: device.cover.anti_glare_microtexture.rms_slope,
+                correlation_length_micrometers: device
+                    .cover
+                    .anti_glare_microtexture
+                    .correlation_length_micrometers,
+                anisotropy: device.cover.anti_glare_microtexture.anisotropy,
+                seed: device.cover.anti_glare_microtexture.seed,
+            },
             glow: CoverGlowProfile {
                 character_strength: device.cover.glow.character_strength,
                 scatter_fraction: device.cover.glow.scatter_fraction,
@@ -475,6 +486,13 @@ mod tests {
                     absorption_per_millimeter: [0.012; 3],
                     roughness: 0.65,
                     haze: 0.03,
+                    anti_glare_microtexture: AntiGlareMicrotextureDocument {
+                        character_strength: 1.0,
+                        rms_slope: 0.045,
+                        correlation_length_micrometers: 18.0,
+                        anisotropy: 0.12,
+                        seed: 0xb036_0104,
+                    },
                     glow: CoverGlowDocument {
                         character_strength: 1.0,
                         scatter_fraction: 0.08,
@@ -611,6 +629,17 @@ mod tests {
         assert_eq!(scene.sensor_noise_seed, 42);
         assert_eq!(scene.cover.thickness_millimeters, 0.8);
         assert_eq!(scene.cover.anti_reflective_efficiency, 0.62);
+        assert_eq!(scene.cover.anti_glare_microtexture.character_strength, 1.0);
+        assert_eq!(scene.cover.anti_glare_microtexture.rms_slope, 0.045);
+        assert_eq!(
+            scene
+                .cover
+                .anti_glare_microtexture
+                .correlation_length_micrometers,
+            18.0
+        );
+        assert_eq!(scene.cover.anti_glare_microtexture.anisotropy, 0.12);
+        assert_eq!(scene.cover.anti_glare_microtexture.seed, 0xb036_0104);
         assert_eq!(
             scene.environment.ambient_radiance.0,
             LinearRgb::new(30.0, 30.0, 30.0)

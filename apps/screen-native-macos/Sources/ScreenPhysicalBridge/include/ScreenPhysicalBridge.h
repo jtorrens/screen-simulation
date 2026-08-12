@@ -16,7 +16,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 10u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 11u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 4u
 
@@ -25,7 +25,7 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 12u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 13u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -65,6 +65,7 @@ typedef struct {
     float screen_rotation_z_degrees;
     ScreenUTF8View cover_glass_preset_id;
     float cover_glass_amount;
+    float cover_ag_microtexture_amount;
     ScreenUTF8View environment_preset_id;
     float environment_amount;
     float cover_glow_amount;
@@ -82,7 +83,7 @@ typedef struct {
     float sensor_bloom_crosstalk_fraction;
     float sensor_bloom_overflow_transfer_fraction;
     float sensor_noise_amount;
-} ScreenTestAuthoringSelectionV12;
+} ScreenTestAuthoringSelectionV13;
 
 typedef struct {
     uint32_t abi_version;
@@ -121,12 +122,12 @@ bool screen_test_authoring_default_selection(
     ScreenUTF8View input_transform_id,
     ScreenUTF8View device_id,
     float frame_rate,
-    ScreenTestAuthoringSelectionV12 *resolved,
+    ScreenTestAuthoringSelectionV13 *resolved,
     const char **error_message
 );
 
 ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
-    const ScreenTestAuthoringSelectionV12 *selection,
+    const ScreenTestAuthoringSelectionV13 *selection,
     const char **error_message
 );
 void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
@@ -178,24 +179,24 @@ bool screen_test_page_preview_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 bool screen_test_authoring_apply_choice(
-    const ScreenTestAuthoringSelectionV12 *selection,
+    const ScreenTestAuthoringSelectionV13 *selection,
     ScreenUTF8View control_id,
     ScreenUTF8View option_id,
-    ScreenTestAuthoringSelectionV12 *resolved,
+    ScreenTestAuthoringSelectionV13 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_scalar(
-    const ScreenTestAuthoringSelectionV12 *selection,
+    const ScreenTestAuthoringSelectionV13 *selection,
     ScreenUTF8View control_id,
     float value,
-    ScreenTestAuthoringSelectionV12 *resolved,
+    ScreenTestAuthoringSelectionV13 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_toggle(
-    const ScreenTestAuthoringSelectionV12 *selection,
+    const ScreenTestAuthoringSelectionV13 *selection,
     ScreenUTF8View control_id,
     bool value,
-    ScreenTestAuthoringSelectionV12 *resolved,
+    ScreenTestAuthoringSelectionV13 *resolved,
     const char **error_message
 );
 
@@ -423,6 +424,11 @@ typedef struct {
     float absorption_per_millimeter[3];
     float roughness;
     float haze;
+    float ag_microtexture_character_strength;
+    float ag_microtexture_rms_slope;
+    float ag_microtexture_correlation_length_micrometers;
+    float ag_microtexture_anisotropy;
+    uint32_t ag_microtexture_seed;
     float glow_character_strength;
     float glow_scatter_fraction;
     float glow_core_radius_millimeters;

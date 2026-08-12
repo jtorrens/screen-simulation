@@ -19,6 +19,11 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
     var absorptionPerMillimeter: [Double]
     var roughness: Double
     var haze: Double
+    var agMicrotextureCharacterStrength: Double
+    var agMicrotextureRMSSlope: Double
+    var agMicrotextureCorrelationLengthMicrometers: Double
+    var agMicrotextureAnisotropy: Double
+    var agMicrotextureSeed: UInt32
     var glowCharacterStrength: Double
     var glowScatterFraction: Double
     var glowCoreRadiusMillimeters: Double
@@ -66,6 +71,13 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
         )
         parameters.roughness = Float(roughness)
         parameters.haze = Float(haze)
+        parameters.ag_microtexture_character_strength = Float(agMicrotextureCharacterStrength)
+        parameters.ag_microtexture_rms_slope = Float(agMicrotextureRMSSlope)
+        parameters.ag_microtexture_correlation_length_micrometers = Float(
+            agMicrotextureCorrelationLengthMicrometers
+        )
+        parameters.ag_microtexture_anisotropy = Float(agMicrotextureAnisotropy)
+        parameters.ag_microtexture_seed = agMicrotextureSeed
         parameters.glow_character_strength = Float(glowCharacterStrength)
         parameters.glow_scatter_fraction = Float(glowScatterFraction)
         parameters.glow_core_radius_millimeters = Float(glowCoreRadiusMillimeters)
@@ -101,6 +113,15 @@ enum RustCoverGlassCatalog {
                 ],
                 roughness: Double(parameters.roughness),
                 haze: Double(parameters.haze),
+                agMicrotextureCharacterStrength: Double(
+                    parameters.ag_microtexture_character_strength
+                ),
+                agMicrotextureRMSSlope: Double(parameters.ag_microtexture_rms_slope),
+                agMicrotextureCorrelationLengthMicrometers: Double(
+                    parameters.ag_microtexture_correlation_length_micrometers
+                ),
+                agMicrotextureAnisotropy: Double(parameters.ag_microtexture_anisotropy),
+                agMicrotextureSeed: parameters.ag_microtexture_seed,
                 glowCharacterStrength: Double(parameters.glow_character_strength),
                 glowScatterFraction: Double(parameters.glow_scatter_fraction),
                 glowCoreRadiusMillimeters: Double(parameters.glow_core_radius_millimeters),

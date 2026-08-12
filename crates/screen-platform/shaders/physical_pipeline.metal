@@ -22,6 +22,8 @@ struct PhysicalPipelineParams {
     float4 cover_geometry;
     float4 cover_absorption_roughness;
     float4 cover_haze;
+    float4 cover_microtexture; // character, RMS slope, correlation um, anisotropy
+    uint4 cover_microtexture_seed;
     float4 cover_glow; // core mm, tail mm, scattered fraction, tail fraction
     float4 environment_ambient_strength;
     float4 environment_key_radius;
@@ -514,6 +516,47 @@ inline float physical_dielectric_fresnel(float cosine_i, float eta) {
     return 0.5f * (rs * rs + rp * rp);
 }
 
+inline float3 physical_microtexture_reflection(float3 reflection_direction,
+    float2 cover_position_meters, float2 footprint_half_extent_meters,
+    thread float& view_cosine, constant PhysicalPipelineParams& p) {
+    const float effective_slope = p.cover_microtexture.x * p.cover_microtexture.y;
+    if (effective_slope == 0.0f) return reflection_direction;
+    const float correlation_length = p.cover_microtexture.z * 1.0e-6f;
+    constexpr float wavelength_ratios[8] = {
+        0.53f, 0.67f, 0.83f, 1.0f, 1.27f, 1.61f, 2.03f, 2.57f
+    };
+    constexpr float amplitudes[8] = {
+        0.42f, 0.58f, 0.76f, 1.0f, 0.88f, 0.69f, 0.50f, 0.34f
+    };
+    float2 gradient = 0.0f;
+    float squared_amplitudes = 0.0f;
+    for (uint octave = 0u; octave < 8u; ++octave) {
+        const uint hashed = physical_hash_uint(
+            p.cover_microtexture_seed.x ^ (octave * 0x9E3779B9u));
+        const float angle = float(hashed) * 2.3283064365386963e-10f * 2.0f * PI;
+        const float phase = float(physical_hash_uint(hashed ^ 0x85EBCA6Bu))
+            * 2.3283064365386963e-10f * 2.0f * PI;
+        float2 direction = float2(
+            cos(angle) * (1.0f + p.cover_microtexture.w * abs(cos(angle))),
+            sin(angle));
+        direction = normalize(direction);
+        const float wavelength = correlation_length * wavelength_ratios[octave];
+        const float amplitude = amplitudes[octave];
+        const float sigma = length(direction * footprint_half_extent_meters);
+        const float filtered = rsqrt(1.0f + (sigma / wavelength) * (sigma / wavelength));
+        const float argument = (2.0f * PI / wavelength)
+            * dot(direction, cover_position_meters) + phase;
+        gradient += direction * cos(argument) * filtered * amplitude;
+        squared_amplitudes += amplitude * amplitude;
+    }
+    gradient *= effective_slope * sqrt(2.0f / squared_amplitudes);
+    const float3 normal = normalize(float3(-gradient.x, -gradient.y, 1.0f));
+    const float3 incident = float3(
+        reflection_direction.x, reflection_direction.y, -reflection_direction.z);
+    view_cosine = clamp(-dot(incident, normal), 0.0f, 1.0f);
+    return normalize(reflect(incident, normal));
+}
+
 inline float3 physical_reference_ggx_environment(
     float3 reflection_direction,
     texture2d<float, access::sample> environment,
@@ -716,9 +759,13 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
 
 inline float3 apply_flat_cover(float3 emitted, float view_cosine,
     float3 reflection_direction_local, float3 lens_irradiance_weight,
+    float2 cover_position_meters, float2 footprint_half_extent_meters,
     texture2d<float, access::sample> environment_acescg,
     uint2 sample_seed,
     constant PhysicalPipelineParams& p) {
+    reflection_direction_local = physical_microtexture_reflection(
+        reflection_direction_local, cover_position_meters,
+        footprint_half_extent_meters, view_cosine, p);
     const float cosine_i = clamp(view_cosine, 0.0f, 1.0f);
     const float reflection = cover_interface(cosine_i, p);
     // Match the CPU cover evaluator: attenuation travels through the oblique
@@ -1155,6 +1202,8 @@ kernel void evaluate_physical_pipeline(
     float3 average_device_code = 0.0f;
     float cover_cosine = 0.0f;
     float3 cover_direction = 0.0f;
+    float2 cover_uv = 0.0f;
+    float2 cover_half_extent = 0.0f;
     float3 cover_irradiance = 0.0f;
     float cover_weight = 0.0f;
     float aperture_weight = 0.0f;
@@ -1358,6 +1407,9 @@ kernel void evaluate_physical_pipeline(
             if (green_hit.valid) {
                 cover_cosine += green_hit.cosine * layer_weight;
                 cover_direction += green_hit.reflection_direction * layer_weight;
+                cover_uv += green_hit.uv * layer_weight;
+                cover_half_extent += (green_projected_sensor_half_extent
+                    + green_continuous_half_extent) * layer_weight;
                 cover_irradiance += sample_irradiance * layer_weight;
                 cover_weight += layer_weight;
             }
@@ -1382,6 +1434,11 @@ kernel void evaluate_physical_pipeline(
     const float cover_reciprocal = cover_weight == 0.0f ? 1.0f : 1.0f / cover_weight;
     const float3 cover_reflection_direction = length_squared(cover_direction) > 1.0e-12f
         ? normalize(cover_direction) : float3(0.0f, 0.0f, 1.0f);
+    const float2 cover_position_meters = float2(
+        (cover_uv.x * cover_reciprocal - 0.5f) * p.panel_size_meters.x,
+        (0.5f - cover_uv.y * cover_reciprocal) * p.panel_size_meters.y);
+    const float2 cover_footprint_half_extent_meters = cover_half_extent
+        * cover_reciprocal * p.panel_size_meters.xy;
     ideal *= reciprocal;
     native *= reciprocal;
     uniform_native *= reciprocal;
@@ -1446,7 +1503,8 @@ kernel void evaluate_physical_pipeline(
     const float3 temporally_integrated = glass_scattered * temporal_gain;
     const float3 covered = apply_flat_cover(temporally_integrated,
         cover_cosine * cover_reciprocal, cover_reflection_direction,
-        cover_irradiance * cover_reciprocal, environment_acescg, position, p);
+        cover_irradiance * cover_reciprocal, cover_position_meters,
+        cover_footprint_half_extent_meters, environment_acescg, position, p);
     const float3 glared = mix(covered, veiling_gate_average[0].xyz * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);

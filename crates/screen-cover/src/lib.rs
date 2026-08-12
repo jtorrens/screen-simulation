@@ -30,7 +30,26 @@ pub struct CoverGlassProfile {
     pub absorption_per_millimeter: LinearRgb,
     pub roughness: f32,
     pub haze: f32,
+    pub anti_glare_microtexture: AntiGlareMicrotextureProfile,
     pub glow: CoverGlowProfile,
+}
+
+/// A fixed realization of the microscopic height field at the air-facing
+/// anti-glare surface. The field is evaluated in cover-local physical space,
+/// so it remains attached to the glass as the camera or device moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AntiGlareMicrotextureProfile {
+    /// Zero is exact identity, one is calibrated and values above one
+    /// exaggerate the authored slope distribution without changing its scale.
+    pub character_strength: f32,
+    /// Root-mean-square surface slope. This is dimensionless (rise over run).
+    pub rms_slope: f32,
+    /// Characteristic lateral feature size on the physical cover surface.
+    pub correlation_length_micrometers: f32,
+    /// Zero is isotropic; one is the maximum supported directional bias.
+    pub anisotropy: f32,
+    /// Stable authored realization. It is never inferred from another field.
+    pub seed: u32,
 }
 
 /// Energy-redistributing lateral scatter inside the cover stack. Radii are
@@ -83,6 +102,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.006),
             roughness: 0.025,
             haze: 0.002,
+            anti_glare_microtexture: AntiGlareMicrotextureProfile::GLOSSY_STRONG_AR,
             glow: CoverGlowProfile::GLOSSY_STRONG_AR,
         },
     },
@@ -98,6 +118,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.008),
             roughness: 0.045,
             haze: 0.004,
+            anti_glare_microtexture: AntiGlareMicrotextureProfile::GLOSSY_STANDARD_AR,
             glow: CoverGlowProfile::GLOSSY_STANDARD_AR,
         },
     },
@@ -113,6 +134,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.010),
             roughness: 0.20,
             haze: 0.012,
+            anti_glare_microtexture: AntiGlareMicrotextureProfile::SEMI_GLOSS,
             glow: CoverGlowProfile::SEMI_GLOSS,
         },
     },
@@ -128,6 +150,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.012),
             roughness: 0.65,
             haze: 0.030,
+            anti_glare_microtexture: AntiGlareMicrotextureProfile::MATTE_AR,
             glow: CoverGlowProfile::MATTE_AR,
         },
     },
@@ -143,6 +166,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: rgb(0.018),
             roughness: 0.72,
             haze: 0.075,
+            anti_glare_microtexture: AntiGlareMicrotextureProfile::HEAVY_MATTE,
             glow: CoverGlowProfile::HEAVY_MATTE,
         },
     },
@@ -158,6 +182,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             absorption_per_millimeter: LinearRgb::new(0.010, 0.008, 0.006),
             roughness: 0.035,
             haze: 0.010,
+            anti_glare_microtexture: AntiGlareMicrotextureProfile::THICK_GLASS,
             glow: CoverGlowProfile::THICK_GLASS,
         },
     },
@@ -341,6 +366,7 @@ impl CoverGlassProfile {
         absorption_per_millimeter: LinearRgb::new(0.0, 0.0, 0.0),
         roughness: 0.0,
         haze: 0.0,
+        anti_glare_microtexture: AntiGlareMicrotextureProfile::NEUTRAL,
         glow: CoverGlowProfile::NEUTRAL,
     };
 
@@ -378,6 +404,7 @@ impl CoverGlassProfile {
         {
             return Err(CoverError::InvalidSurface);
         }
+        self.anti_glare_microtexture.validate()?;
         self.glow.validate()?;
         Ok(self)
     }
@@ -391,6 +418,180 @@ impl CoverGlassProfile {
             environment: environment.validate()?,
         })
     }
+}
+
+impl AntiGlareMicrotextureProfile {
+    pub const NEUTRAL: Self = Self {
+        character_strength: 0.0,
+        rms_slope: 0.0,
+        correlation_length_micrometers: 1.0,
+        anisotropy: 0.0,
+        seed: 0,
+    };
+    pub const GLOSSY_STRONG_AR: Self = Self {
+        character_strength: 1.0,
+        rms_slope: 0.002,
+        correlation_length_micrometers: 8.0,
+        anisotropy: 0.0,
+        seed: 0x4cc5_0101,
+    };
+    pub const GLOSSY_STANDARD_AR: Self = Self {
+        character_strength: 1.0,
+        rms_slope: 0.004,
+        correlation_length_micrometers: 10.0,
+        anisotropy: 0.0,
+        seed: 0x93b7_0102,
+    };
+    pub const SEMI_GLOSS: Self = Self {
+        character_strength: 1.0,
+        rms_slope: 0.018,
+        correlation_length_micrometers: 14.0,
+        anisotropy: 0.08,
+        seed: 0x207a_0103,
+    };
+    /// Moderate etched matte surface suitable as a category approximation
+    /// for desktop anti-glare displays.
+    pub const MATTE_AR: Self = Self {
+        character_strength: 1.0,
+        rms_slope: 0.045,
+        correlation_length_micrometers: 18.0,
+        anisotropy: 0.12,
+        seed: 0xb036_0104,
+    };
+    pub const HEAVY_MATTE: Self = Self {
+        character_strength: 1.0,
+        rms_slope: 0.090,
+        correlation_length_micrometers: 28.0,
+        anisotropy: 0.18,
+        seed: 0x4fc9_0105,
+    };
+    pub const THICK_GLASS: Self = Self {
+        character_strength: 1.0,
+        rms_slope: 0.003,
+        correlation_length_micrometers: 12.0,
+        anisotropy: 0.0,
+        seed: 0x91da_0106,
+    };
+
+    pub fn validate(self) -> Result<Self, CoverError> {
+        if !self.character_strength.is_finite() || !(0.0..=4.0).contains(&self.character_strength) {
+            return Err(CoverError::InvalidMicrotextureCharacterStrength);
+        }
+        if !self.rms_slope.is_finite() || !(0.0..=1.0).contains(&self.rms_slope) {
+            return Err(CoverError::InvalidMicrotextureSlope);
+        }
+        if !self.correlation_length_micrometers.is_finite()
+            || !(0.1..=1_000.0).contains(&self.correlation_length_micrometers)
+        {
+            return Err(CoverError::InvalidMicrotextureCorrelationLength);
+        }
+        if !self.anisotropy.is_finite() || !(0.0..=1.0).contains(&self.anisotropy) {
+            return Err(CoverError::InvalidMicrotextureAnisotropy);
+        }
+        Ok(self)
+    }
+
+    pub fn effective_rms_slope(self) -> f32 {
+        self.character_strength * self.rms_slope
+    }
+
+    /// Reorients the same incident ray around a fixed, integrable cover-local
+    /// height field. The returned cosine and reflection direction remain
+    /// achromatic; radiance and Fresnel energy are evaluated by their existing
+    /// owners after this geometric operation.
+    pub fn perturb_reflection(
+        self,
+        reflection_direction_local: [f32; 3],
+        cover_position_meters: [f32; 2],
+        footprint_half_extent_meters: [f32; 2],
+    ) -> (f32, [f32; 3]) {
+        let effective_slope = self.effective_rms_slope();
+        if effective_slope == 0.0 {
+            return (
+                reflection_direction_local[2].clamp(0.0, 1.0),
+                reflection_direction_local,
+            );
+        }
+        let correlation_length = self.correlation_length_micrometers * 1.0e-6;
+        // A compact band-limited realization avoids turning a single
+        // correlation length into a visibly periodic grating. These fixed
+        // ratios and weights describe one material field; the seed rotates and
+        // phases it without changing its spectrum.
+        const WAVELENGTH_RATIOS: [f32; 8] = [0.53, 0.67, 0.83, 1.0, 1.27, 1.61, 2.03, 2.57];
+        const AMPLITUDES: [f32; 8] = [0.42, 0.58, 0.76, 1.0, 0.88, 0.69, 0.50, 0.34];
+        let mut gradient = [0.0_f32; 2];
+        let mut squared_amplitudes = 0.0_f32;
+        for octave in 0..8_u32 {
+            let hashed = microtexture_hash(self.seed ^ octave.wrapping_mul(0x9e37_79b9));
+            let angle = hashed as f32 * 2.328_306_4e-10 * core::f32::consts::TAU;
+            let phase = microtexture_hash(hashed ^ 0x85eb_ca6b) as f32
+                * 2.328_306_4e-10
+                * core::f32::consts::TAU;
+            let directional_scale = 1.0 + self.anisotropy * angle.cos().abs();
+            let direction = [angle.cos() * directional_scale, angle.sin()];
+            let direction_length = direction[0].hypot(direction[1]);
+            let direction = [
+                direction[0] / direction_length,
+                direction[1] / direction_length,
+            ];
+            let wavelength = correlation_length * WAVELENGTH_RATIOS[octave as usize];
+            let amplitude = AMPLITUDES[octave as usize];
+            let sigma = (direction[0] * footprint_half_extent_meters[0])
+                .hypot(direction[1] * footprint_half_extent_meters[1]);
+            // Finite-footprint moment filtering: the mean resolved slope falls
+            // with covered correlation cells while the unresolved covariance
+            // remains represented by the residual GGX lobe.
+            let filtered = (1.0 + (sigma / wavelength).powi(2)).sqrt().recip();
+            let argument = (core::f32::consts::TAU / wavelength)
+                * (direction[0] * cover_position_meters[0]
+                    + direction[1] * cover_position_meters[1])
+                + phase;
+            let contribution = argument.cos() * filtered * amplitude;
+            gradient[0] += direction[0] * contribution;
+            gradient[1] += direction[1] * contribution;
+            squared_amplitudes += amplitude * amplitude;
+        }
+        // cos() contributes one half of its squared amplitude. Normalizing by
+        // the complete band keeps the requested RMS slope independent of the
+        // number and weighting of components.
+        let normalization = effective_slope * (2.0 / squared_amplitudes).sqrt();
+        gradient[0] *= normalization;
+        gradient[1] *= normalization;
+        let normal_length = (gradient[0] * gradient[0] + gradient[1] * gradient[1] + 1.0).sqrt();
+        let normal = [
+            -gradient[0] / normal_length,
+            -gradient[1] / normal_length,
+            1.0 / normal_length,
+        ];
+        let incident = [
+            reflection_direction_local[0],
+            reflection_direction_local[1],
+            -reflection_direction_local[2],
+        ];
+        let incident_dot_normal =
+            incident[0] * normal[0] + incident[1] * normal[1] + incident[2] * normal[2];
+        let reflected = [
+            incident[0] - 2.0 * incident_dot_normal * normal[0],
+            incident[1] - 2.0 * incident_dot_normal * normal[1],
+            incident[2] - 2.0 * incident_dot_normal * normal[2],
+        ];
+        let length = (reflected[0] * reflected[0]
+            + reflected[1] * reflected[1]
+            + reflected[2] * reflected[2])
+            .sqrt();
+        (
+            (-incident_dot_normal).clamp(0.0, 1.0),
+            reflected.map(|value| value / length.max(1.0e-8)),
+        )
+    }
+}
+
+fn microtexture_hash(mut value: u32) -> u32 {
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7feb_352d);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846c_a68b);
+    value ^ (value >> 16)
 }
 
 impl CoverGlowProfile {
@@ -900,6 +1101,10 @@ pub enum CoverError {
     InvalidCoating,
     InvalidAbsorption,
     InvalidSurface,
+    InvalidMicrotextureCharacterStrength,
+    InvalidMicrotextureSlope,
+    InvalidMicrotextureCorrelationLength,
+    InvalidMicrotextureAnisotropy,
     InvalidGlow,
     InvalidEnvironmentStrength,
     InvalidEnvironmentRadiance,
@@ -917,6 +1122,18 @@ impl fmt::Display for CoverError {
             Self::InvalidCoating => "cover coating efficiency must be finite in [0, 1]",
             Self::InvalidAbsorption => "cover absorption must be finite in [0, 2] per millimeter",
             Self::InvalidSurface => "cover roughness and haze must be finite in [0, 1]",
+            Self::InvalidMicrotextureCharacterStrength => {
+                "anti-glare microtexture character strength must be finite in [0, 4]"
+            }
+            Self::InvalidMicrotextureSlope => {
+                "anti-glare microtexture RMS slope must be finite in [0, 1]"
+            }
+            Self::InvalidMicrotextureCorrelationLength => {
+                "anti-glare microtexture correlation length must be finite in [0.1, 1000] micrometers"
+            }
+            Self::InvalidMicrotextureAnisotropy => {
+                "anti-glare microtexture anisotropy must be finite in [0, 1]"
+            }
             Self::InvalidGlow => "cover glow profile is outside its physical bounds",
             Self::InvalidEnvironmentStrength => "environment strength must be finite in [0, 4]",
             Self::InvalidEnvironmentRadiance => {
@@ -965,6 +1182,106 @@ mod tests {
                 .environment
                 .validate()
                 .expect("valid environment preset");
+        }
+    }
+
+    #[test]
+    fn every_cover_preset_explicitly_owns_a_valid_microtexture_realization() {
+        let mut seeds = HashSet::new();
+        for preset in COVER_GLASS_PRESETS {
+            let microtexture = preset.profile.anti_glare_microtexture;
+            assert_eq!(microtexture.validate(), Ok(microtexture));
+            assert!(microtexture.character_strength > 0.0);
+            assert!(microtexture.rms_slope > 0.0);
+            assert!(microtexture.correlation_length_micrometers > 0.0);
+            assert_ne!(microtexture.seed, 0);
+            assert!(seeds.insert(microtexture.seed));
+        }
+    }
+
+    #[test]
+    fn zero_microtexture_character_strength_is_exact_identity() {
+        let neutral = AntiGlareMicrotextureProfile::NEUTRAL;
+        assert_eq!(neutral.validate(), Ok(neutral));
+        assert_eq!(neutral.effective_rms_slope(), 0.0);
+
+        let disabled = AntiGlareMicrotextureProfile {
+            character_strength: 0.0,
+            rms_slope: 1.0,
+            correlation_length_micrometers: 0.1,
+            anisotropy: 1.0,
+            seed: u32::MAX,
+        };
+        assert_eq!(disabled.validate(), Ok(disabled));
+        assert_eq!(disabled.effective_rms_slope(), 0.0);
+    }
+
+    #[test]
+    fn microtexture_is_deterministic_and_footprint_filtered() {
+        let microtexture = AntiGlareMicrotextureProfile::MATTE_AR;
+        let mirror = [0.17, -0.09, 0.981_376];
+        let position = [0.041_237, -0.018_619];
+        let resolved = microtexture.perturb_reflection(mirror, position, [0.0, 0.0]);
+        assert_eq!(
+            resolved,
+            microtexture.perturb_reflection(mirror, position, [0.0, 0.0])
+        );
+
+        let filtered = microtexture.perturb_reflection(mirror, position, [0.001, 0.001]);
+        let deviation = |direction: [f32; 3]| {
+            direction
+                .into_iter()
+                .zip(mirror)
+                .map(|(actual, reference)| (actual - reference).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        };
+        assert!(deviation(resolved.1) > 1.0e-5);
+        assert!(deviation(filtered.1) < deviation(resolved.1));
+        assert!(resolved.0.is_finite());
+        assert!(filtered.0.is_finite());
+    }
+
+    #[test]
+    fn microtexture_rejects_non_finite_and_out_of_range_parameters() {
+        let valid = AntiGlareMicrotextureProfile::MATTE_AR;
+        assert_eq!(valid.validate(), Ok(valid));
+
+        for character_strength in [-0.01, 4.01, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                AntiGlareMicrotextureProfile {
+                    character_strength,
+                    ..valid
+                }
+                .validate(),
+                Err(CoverError::InvalidMicrotextureCharacterStrength)
+            );
+        }
+        for rms_slope in [-0.01, 1.01, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                AntiGlareMicrotextureProfile { rms_slope, ..valid }.validate(),
+                Err(CoverError::InvalidMicrotextureSlope)
+            );
+        }
+        for correlation_length_micrometers in [0.09, 1_000.01, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                AntiGlareMicrotextureProfile {
+                    correlation_length_micrometers,
+                    ..valid
+                }
+                .validate(),
+                Err(CoverError::InvalidMicrotextureCorrelationLength)
+            );
+        }
+        for anisotropy in [-0.01, 1.01, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                AntiGlareMicrotextureProfile {
+                    anisotropy,
+                    ..valid
+                }
+                .validate(),
+                Err(CoverError::InvalidMicrotextureAnisotropy)
+            );
         }
     }
 
@@ -1103,6 +1420,7 @@ mod tests {
             absorption_per_millimeter: rgb(0.0),
             roughness: 0.0,
             haze: 0.0,
+            anti_glare_microtexture: AntiGlareMicrotextureProfile::NEUTRAL,
             glow: CoverGlowProfile::NEUTRAL,
         };
         let no_interface = base.evaluator(environment).expect("valid interface");

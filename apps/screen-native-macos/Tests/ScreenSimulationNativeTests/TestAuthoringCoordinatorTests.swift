@@ -36,6 +36,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         screenRotationZDegrees: 0,
         coverGlassPresetID: "cover-matte-ar",
         coverGlassAmount: 1,
+        coverAgMicrotextureAmount: 1,
         environmentPresetID: "environment-none",
         environmentAmount: 0,
         coverGlowAmount: 1,
@@ -377,6 +378,30 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(resolved.outputSignalID == "srgb")
     #expect(resolved.colorModeID == "rec709-gamma24")
     #expect(resolved.whiteLuminanceNits == 250)
+    #expect(resolved.coverAgMicrotextureAmount == 1)
+}
+
+@Test func coverMicrotextureControlIsVisibleAndResetsToTheSelectedPreset() throws {
+    let current = canonicalTestSelection()
+    let snapshot = try RustTestAuthoringCoordinator.snapshot(
+        selection: current,
+        selectedPreviewPhaseID: nil
+    )
+    let controls = snapshot.presentation.phases[7].sections.flatMap(\.controls)
+    guard case let .scalar(control) = controls.first(where: {
+        $0.id == "cover-ag-microtexture-amount"
+    }) else {
+        Issue.record("Rust debe publicar la microtextura AG como control escalar visible.")
+        return
+    }
+    #expect(control.minimum == 0)
+    #expect(control.maximum == 4)
+    #expect(control.resetValue == 1)
+    let edited = try RustTestAuthoringCoordinator.apply(
+        .setScalar(controlID: control.id, value: 2.5),
+        to: current
+    )
+    #expect(edited.coverAgMicrotextureAmount == 2.5)
 }
 
 @Test @MainActor func everyTestPhaseSelectsItsOwnCumulativePreviewRoute() throws {

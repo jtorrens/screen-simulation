@@ -1820,6 +1820,7 @@ final class WorkspaceModel: ObservableObject {
         modelDeviceDefinition = device
         var selectedCover = cover
         selectedCover.characterStrength = selection.coverGlassAmount
+        selectedCover.agMicrotextureCharacterStrength = selection.coverAgMicrotextureAmount
         selectedCover.glowCharacterStrength = selection.coverGlowAmount
         var authored = try PhysicalPipelineAuthoringState.seeded(
             device: device,

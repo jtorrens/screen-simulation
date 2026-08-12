@@ -88,6 +88,23 @@ import Testing
         ]
         cover.roughness = try moireRequiredDouble("SCREEN_MOIRE_COVER_ROUGHNESS")
         cover.haze = try moireRequiredDouble("SCREEN_MOIRE_COVER_HAZE")
+        cover.agMicrotextureCharacterStrength = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_AG_MICROTEXTURE_CHARACTER_STRENGTH"
+        )
+        cover.agMicrotextureRMSSlope = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_AG_MICROTEXTURE_RMS_SLOPE"
+        )
+        cover.agMicrotextureCorrelationLengthMicrometers = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_AG_MICROTEXTURE_CORRELATION_LENGTH_MICROMETERS"
+        )
+        cover.agMicrotextureAnisotropy = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_AG_MICROTEXTURE_ANISOTROPY"
+        )
+        cover.agMicrotextureSeed = try #require(
+            ProcessInfo.processInfo.environment["SCREEN_MOIRE_COVER_AG_MICROTEXTURE_SEED"]
+                .flatMap(UInt32.init),
+            "Falta el entero VFX obligatorio SCREEN_MOIRE_COVER_AG_MICROTEXTURE_SEED"
+        )
         cover.glowCharacterStrength = try moireRequiredDouble(
             "SCREEN_MOIRE_COVER_GLOW_PROFILE_STRENGTH"
         )

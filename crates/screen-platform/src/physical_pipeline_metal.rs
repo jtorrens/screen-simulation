@@ -69,6 +69,8 @@ struct PhysicalPipelineParams {
     cover_geometry: [f32; 4],
     cover_absorption_roughness: [f32; 4],
     cover_haze: [f32; 4],
+    cover_microtexture: [f32; 4],
+    cover_microtexture_seed: [u32; 4],
     cover_glow: [f32; 4],
     environment_ambient_strength: [f32; 4],
     environment_key_radius: [f32; 4],
@@ -1162,6 +1164,15 @@ impl MetalPhysicalPipeline {
                 plan.cover.roughness,
             ],
             cover_haze: [plan.cover.haze, 0.0, 0.0, 0.0],
+            cover_microtexture: [
+                plan.cover.anti_glare_microtexture.character_strength,
+                plan.cover.anti_glare_microtexture.rms_slope,
+                plan.cover
+                    .anti_glare_microtexture
+                    .correlation_length_micrometers,
+                plan.cover.anti_glare_microtexture.anisotropy,
+            ],
+            cover_microtexture_seed: [plan.cover.anti_glare_microtexture.seed, 0, 0, 0],
             cover_glow: [
                 plan.cover.glow.core_radius_millimeters,
                 plan.cover.glow.tail_radius_millimeters,

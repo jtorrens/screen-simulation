@@ -1327,6 +1327,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             // irradiance instead of substituting a front-facing sample.
             let mut cover_cosine = 0.0_f32;
             let mut cover_direction = [0.0_f32; 3];
+            let mut cover_uv = [0.0_f32; 2];
+            let mut cover_half_extent = [0.0_f32; 2];
             let mut cover_irradiance = [0.0_f32; 3];
             let mut cover_weight = 0.0_f32;
             let mut aperture_weight = 0.0_f32;
@@ -1461,6 +1463,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 cover_direction[0] += direction.x * layer_weight;
                                 cover_direction[1] += direction.y * layer_weight;
                                 cover_direction[2] += direction.z * layer_weight;
+                                if let Some(hit) = optical.panel_uv[1] {
+                                    cover_uv[0] += hit.x * layer_weight;
+                                    cover_uv[1] += hit.y * layer_weight;
+                                }
+                                cover_half_extent[0] += (sensor_panel_half_extent[1].x
+                                    + aperture_cell_half_extent[1].x)
+                                    * layer_weight;
+                                cover_half_extent[1] += (sensor_panel_half_extent[1].y
+                                    + aperture_cell_half_extent[1].y)
+                                    * layer_weight;
                                 cover_irradiance[0] += optical.irradiance_weight[0] * layer_weight;
                                 cover_irradiance[1] += optical.irradiance_weight[1] * layer_weight;
                                 cover_irradiance[2] += optical.irradiance_weight[2] * layer_weight;
@@ -1990,13 +2002,32 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             } else {
                 [0.0, 0.0, 1.0]
             };
+            let microtexture = plan.cover.anti_glare_microtexture;
+            let cover_position_meters = [
+                (cover_uv[0] * reciprocal_cover - 0.5) * plan.panel.active_width.0,
+                (0.5 - cover_uv[1] * reciprocal_cover) * plan.panel.active_height.0,
+            ];
+            let footprint_half_extent_meters = [
+                cover_half_extent[0] * reciprocal_cover * plan.panel.active_width.0,
+                cover_half_extent[1] * reciprocal_cover * plan.panel.active_height.0,
+            ];
+            let (microtexture_cosine, reflection_direction_local) = microtexture
+                .perturb_reflection(
+                    reflection_direction_local,
+                    cover_position_meters,
+                    footprint_half_extent_meters,
+                );
             let emitted = LinearRgb::new(
                 temporally_integrated[0],
                 temporally_integrated[1],
                 temporally_integrated[2],
             );
             let cover_sample = CoverSurfaceSample {
-                view_cosine: (cover_cosine * reciprocal_cover).clamp(0.0, 1.0),
+                view_cosine: if microtexture.character_strength == 0.0 {
+                    (cover_cosine * reciprocal_cover).clamp(0.0, 1.0)
+                } else {
+                    microtexture_cosine
+                },
                 reflection_direction_local,
                 lens_irradiance_weight: LinearRgb::new(
                     cover_irradiance[0] * reciprocal_cover / parameters.white_level_nits,

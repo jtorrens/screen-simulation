@@ -242,6 +242,14 @@ import Testing
     let controller = GlobalLibraryController(store: store)
     #expect(controller.document.coverGlasses.count == 6)
     #expect(controller.document.coverGlasses.allSatisfy { $0.isLocked })
+    #expect(controller.document.coverGlasses.allSatisfy {
+        $0.value.agMicrotextureCharacterStrength >= 0
+            && $0.value.agMicrotextureCharacterStrength <= 4
+            && $0.value.agMicrotextureRMSSlope >= 0
+            && $0.value.agMicrotextureCorrelationLengthMicrometers > 0
+            && $0.value.agMicrotextureAnisotropy >= 0
+            && $0.value.agMicrotextureAnisotropy <= 1
+    })
     controller.selectedCoverGlassID = controller.document.coverGlasses.first?.id
     let originalID = try #require(controller.selectedCoverGlassID)
     controller.duplicateSelectedCoverGlass()

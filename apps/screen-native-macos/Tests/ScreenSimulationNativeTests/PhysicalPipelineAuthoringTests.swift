@@ -12,6 +12,11 @@ import Testing
         coverGlass: cover
     )
     authored.environment.rotationDegrees = 37.5
+    authored.coverGlass.agMicrotextureCharacterStrength = 1.25
+    authored.coverGlass.agMicrotextureRMSSlope = 0.07
+    authored.coverGlass.agMicrotextureCorrelationLengthMicrometers = 24
+    authored.coverGlass.agMicrotextureAnisotropy = 0.3
+    authored.coverGlass.agMicrotextureSeed = 4_294_967_295
     authored.sceneLens.focalLengthMillimeters = 85
     authored.shutterMotion.temporalSamples = 8
     authored.sensor.nativeWidth = 1_920
@@ -28,6 +33,11 @@ import Testing
     #expect(restored == authored)
     let snapshot = try restored.resolvedPipeline().parameters
     #expect(snapshot.environment.rotation_degrees == 37.5)
+    #expect(snapshot.cover.ag_microtexture_character_strength == 1.25)
+    #expect(snapshot.cover.ag_microtexture_rms_slope == 0.07)
+    #expect(snapshot.cover.ag_microtexture_correlation_length_micrometers == 24)
+    #expect(snapshot.cover.ag_microtexture_anisotropy == 0.3)
+    #expect(snapshot.cover.ag_microtexture_seed == UInt32.max)
     #expect(snapshot.scene_geometry_lens.focal_length_millimeters == 85)
     #expect(snapshot.shutter_motion.temporal_samples == 8)
     #expect(snapshot.sensor_noise.native_width == 1_920)
