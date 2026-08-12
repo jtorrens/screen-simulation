@@ -19,6 +19,7 @@ enum TestPreviewResultKind: UInt32, Sendable {
     case sensorCfa = 13
     case sensorNoise = 14
     case developDemosaic = 15
+    case cameraRenderingIntent = 16
 }
 
 struct TestAuthoringResolvedSelection: Equatable, Sendable {

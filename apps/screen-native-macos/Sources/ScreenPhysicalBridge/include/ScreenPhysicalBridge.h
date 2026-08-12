@@ -83,6 +83,11 @@ typedef struct {
     float sensor_bloom_crosstalk_fraction;
     float sensor_bloom_overflow_transfer_fraction;
     float sensor_noise_amount;
+    float camera_look_exposure_ev;
+    float camera_look_contrast;
+    float camera_look_saturation;
+    float camera_look_temperature_kelvin;
+    float camera_look_tint;
 } ScreenTestAuthoringSelectionV13;
 
 typedef struct {
@@ -281,6 +286,7 @@ typedef enum {
     SCREEN_PHYSICAL_INTERMEDIATE_SENSOR_NOISE = 13,
     SCREEN_PHYSICAL_INTERMEDIATE_RAW_MOSAIC = 14,
     SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 15,
+    SCREEN_PHYSICAL_INTERMEDIATE_CAMERA_RENDERED_ACESCG = 16,
 } ScreenPhysicalIntermediate;
 
 typedef struct {
@@ -528,8 +534,18 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
+    float exposure_ev;
+    float contrast;
+    float saturation;
+    float temperature_kelvin;
+    float tint;
+} ScreenCameraRenderingIntentParametersV1;
+
+typedef struct {
+    uint32_t abi_version;
     ScreenSensorNoiseParametersV2 sensor;
     ScreenComputationalCaptureParametersV3 computational_capture;
+    ScreenCameraRenderingIntentParametersV1 camera_rendering_intent;
     float gate_width_millimeters;
     float gate_height_millimeters;
     float default_f_stop;
@@ -565,6 +581,7 @@ typedef struct {
     ScreenComputationalCaptureParametersV3 computational_capture;
     ScreenSensorNoiseParametersV2 sensor_noise;
     ScreenRawDevelopParametersV2 raw_develop;
+    ScreenCameraRenderingIntentParametersV1 camera_rendering_intent;
     ScreenCameraRadiometricCalibrationV2 radiometric_calibration;
 } ScreenPhysicalPipelineParametersV2;
 

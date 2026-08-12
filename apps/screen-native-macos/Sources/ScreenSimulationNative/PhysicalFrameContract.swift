@@ -223,6 +223,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case sensorNoise = 13
     case rawMosaic = 14
     case developedACEScg = 15
+    case cameraRenderedACEScg = 16
 
     var id: UInt32 { rawValue }
 
@@ -243,6 +244,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         .sensorNoise,
         .rawMosaic,
         .developedACEScg,
+        .cameraRenderedACEScg,
     ]
 
     var uiLabel: String {
@@ -255,6 +257,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         case .panelLightSpread: "Spread"
         case .relativeGeometry: "Relative Geometry"
         case .developedACEScg: "Developed"
+        case .cameraRenderedACEScg: "Camera Rendering Intent"
         case .coverEnvironment: "Cover / Environment"
         case .coverGlow: "Cover Glow"
         case .lensProjection: "Lens / Projection"

@@ -84,6 +84,14 @@ struct PhysicalPipelineResolvedState {
         develop.middle_gray_illuminance_seconds = 0.18
         develop.develop_exposure_ev = 0
 
+        var renderingIntent = ScreenCameraRenderingIntentParametersV1()
+        renderingIntent.abi_version = version
+        renderingIntent.exposure_ev = 0
+        renderingIntent.contrast = 1
+        renderingIntent.saturation = 1
+        renderingIntent.temperature_kelvin = 6500
+        renderingIntent.tint = 0
+
         var radiometric = ScreenCameraRadiometricCalibrationV2()
         radiometric.abi_version = version
         radiometric.base_exposure_index = 100
@@ -102,6 +110,7 @@ struct PhysicalPipelineResolvedState {
         parameters.computational_capture = computational
         parameters.sensor_noise = sensor
         parameters.raw_develop = develop
+        parameters.camera_rendering_intent = renderingIntent
         parameters.radiometric_calibration = radiometric
         return Self(parameters: parameters, coverGlassID: coverGlass.id)
     }

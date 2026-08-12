@@ -91,6 +91,14 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var demosaicAuthority = "Edge-directed"
     }
 
+    struct CameraRenderingIntent: Codable, Equatable, Sendable {
+        var exposureEV = 0.0
+        var contrast = 1.0
+        var saturation = 1.0
+        var temperatureKelvin = 6500.0
+        var tint = 0.0
+    }
+
     struct Pose: Codable, Equatable, Sendable {
         var position = [0.0, 0.0, 1.0]
         var quaternion = [0.0, 0.0, 0.0, 1.0]
@@ -109,6 +117,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
     var sensor = Sensor()
     var radiometricCalibration = RadiometricCalibration()
     var develop = Develop()
+    var cameraRenderingIntent = CameraRenderingIntent()
     var cameraPose = Pose()
     /// UI authoring aid only. The physical engine continues to receive one
     /// canonical quaternion, never a second orientation authority.
@@ -217,6 +226,14 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         developABI.middle_gray_illuminance_seconds = Float(develop.middleGrayIlluminanceSeconds)
         developABI.develop_exposure_ev = Float(develop.exposureEV)
 
+        var renderingIntentABI = ScreenCameraRenderingIntentParametersV1()
+        renderingIntentABI.abi_version = version
+        renderingIntentABI.exposure_ev = Float(cameraRenderingIntent.exposureEV)
+        renderingIntentABI.contrast = Float(cameraRenderingIntent.contrast)
+        renderingIntentABI.saturation = Float(cameraRenderingIntent.saturation)
+        renderingIntentABI.temperature_kelvin = Float(cameraRenderingIntent.temperatureKelvin)
+        renderingIntentABI.tint = Float(cameraRenderingIntent.tint)
+
         var radiometricABI = ScreenCameraRadiometricCalibrationV2()
         radiometricABI.abi_version = version
         radiometricABI.base_exposure_index = Float(radiometricCalibration.baseExposureIndex)
@@ -235,6 +252,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         parameters.computational_capture = computationalABI
         parameters.sensor_noise = sensorABI
         parameters.raw_develop = developABI
+        parameters.camera_rendering_intent = renderingIntentABI
         parameters.radiometric_calibration = radiometricABI
         return PhysicalPipelineResolvedState(parameters: parameters, coverGlassID: coverGlass.id)
     }
@@ -296,7 +314,12 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             sceneLens.farClipMeters > sceneLens.nearClipMeters,
             sensor.fullWellElectrons > 0,
             sensor.analogGain > 0,
-            develop.middleGrayIlluminanceSeconds > 0
+            develop.middleGrayIlluminanceSeconds > 0,
+            (-8 ... 8).contains(cameraRenderingIntent.exposureEV),
+            (0.25 ... 4).contains(cameraRenderingIntent.contrast),
+            (0 ... 4).contains(cameraRenderingIntent.saturation),
+            (2000 ... 12_000).contains(cameraRenderingIntent.temperatureKelvin),
+            (-1 ... 1).contains(cameraRenderingIntent.tint)
         else {
             throw DeviceDomainError.invalidPhysicalProfile(
                 "Los overrides físicos no cumplen el dominio seguro del snapshot ABI v3."

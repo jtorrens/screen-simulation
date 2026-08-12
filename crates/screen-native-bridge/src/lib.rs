@@ -24,7 +24,7 @@ use screen_application::{
     apply_test_scalar, apply_test_toggle, default_test_authoring_selection, diagnostic_signal,
     physical_shutter_schedule, test_page_descriptor,
 };
-use screen_camera::CameraDevelopment;
+use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
@@ -111,6 +111,11 @@ pub struct ScreenTestAuthoringSelectionV13 {
     sensor_bloom_crosstalk_fraction: f32,
     sensor_bloom_overflow_transfer_fraction: f32,
     sensor_noise_amount: f32,
+    camera_look_exposure_ev: f32,
+    camera_look_contrast: f32,
+    camera_look_saturation: f32,
+    camera_look_temperature_kelvin: f32,
+    camera_look_tint: f32,
 }
 
 #[repr(C)]
@@ -162,6 +167,7 @@ pub struct ScreenCapturePresetParametersV2 {
     abi_version: u32,
     sensor: ScreenSensorNoiseParametersV2,
     computational_capture: ScreenComputationalCaptureParametersV3,
+    camera_rendering_intent: ScreenCameraRenderingIntentParametersV1,
     gate_width_millimeters: f32,
     gate_height_millimeters: f32,
     default_f_stop: f32,
@@ -699,6 +705,7 @@ fn intermediate(value: u32) -> Option<PhysicalIntermediate> {
         13 => PhysicalIntermediate::SensorNoise,
         14 => PhysicalIntermediate::RawMosaic,
         15 => PhysicalIntermediate::DevelopedAcesCg,
+        16 => PhysicalIntermediate::CameraRenderedAcesCg,
         _ => return None,
     })
 }
@@ -1119,6 +1126,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         computational_capture: pipeline.computational_capture,
         sensor: pipeline.sensor,
         development: pipeline.development,
+        rendering_intent: pipeline.rendering_intent,
     };
     if device.uniformity.character_strength != amounts.panel_uniformity {
         unsafe {
@@ -1224,6 +1232,9 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         sensor_noise_amount: amounts.sensor_noise,
         development: pipeline.development,
         development_enabled: contributions[15].discrete_enabled,
+        rendering_intent: pipeline.rendering_intent,
+        rendering_intent_enabled: requested_intermediate
+            == PhysicalIntermediate::CameraRenderedAcesCg,
         frame_index: request.frame_index,
         requested_intermediate,
     };
@@ -1893,6 +1904,17 @@ pub struct ScreenRawDevelopParametersV2 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub struct ScreenCameraRenderingIntentParametersV1 {
+    abi_version: u32,
+    exposure_ev: f32,
+    contrast: f32,
+    saturation: f32,
+    temperature_kelvin: f32,
+    tint: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ScreenCameraRadiometricCalibrationV2 {
     abi_version: u32,
     base_exposure_index: f32,
@@ -1914,6 +1936,7 @@ pub struct ScreenPhysicalPipelineParametersV2 {
     computational_capture: ScreenComputationalCaptureParametersV3,
     sensor_noise: ScreenSensorNoiseParametersV2,
     raw_develop: ScreenRawDevelopParametersV2,
+    camera_rendering_intent: ScreenCameraRenderingIntentParametersV1,
     radiometric_calibration: ScreenCameraRadiometricCalibrationV2,
 }
 
@@ -1926,6 +1949,7 @@ pub struct ScreenPhysicalPipelineSnapshot {
     computational_capture: ComputationalCaptureProfile,
     sensor: SensorProfile,
     development: CameraDevelopment,
+    rendering_intent: CameraRenderingIntent,
     radiometric_calibration: CameraRadiometricCalibration,
 }
 
@@ -2005,6 +2029,13 @@ unsafe fn test_selection<'a>(
         sensor_bloom_crosstalk_fraction: selection.sensor_bloom_crosstalk_fraction,
         sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
+        camera_rendering_intent: CameraRenderingIntent {
+            exposure_ev: selection.camera_look_exposure_ev,
+            contrast: selection.camera_look_contrast,
+            saturation: selection.camera_look_saturation,
+            temperature_kelvin: selection.camera_look_temperature_kelvin,
+            tint: selection.camera_look_tint,
+        },
     })
 }
 
@@ -2056,6 +2087,7 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
             b"Sensor Bloom profile is outside its physical bounds\0"
         }
         TestAuthoringError::InvalidSensorNoiseAmount => b"Sensor Noise amount is outside 0..=4\0",
+        TestAuthoringError::InvalidCameraRenderingIntent => b"invalid Camera Rendering Intent\0",
         TestAuthoringError::UnknownPlacement => b"unknown Test placement\0",
         TestAuthoringError::UnknownPreviewQuality => b"unknown Test preview quality\0",
         TestAuthoringError::UnknownControl => b"unknown Test control\0",
@@ -2117,6 +2149,11 @@ fn resolved_test_selection(
         sensor_bloom_crosstalk_fraction: selection.sensor_bloom_crosstalk_fraction,
         sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
+        camera_look_exposure_ev: selection.camera_rendering_intent.exposure_ev,
+        camera_look_contrast: selection.camera_rendering_intent.contrast,
+        camera_look_saturation: selection.camera_rendering_intent.saturation,
+        camera_look_temperature_kelvin: selection.camera_rendering_intent.temperature_kelvin,
+        camera_look_tint: selection.camera_rendering_intent.tint,
     }
 }
 
@@ -3024,6 +3061,14 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         middle_gray_illuminance_seconds: parameters.raw_develop.middle_gray_illuminance_seconds,
         develop_exposure_ev: parameters.raw_develop.develop_exposure_ev,
     };
+    let rendering = parameters.camera_rendering_intent;
+    let rendering_intent = CameraRenderingIntent {
+        exposure_ev: rendering.exposure_ev,
+        contrast: rendering.contrast,
+        saturation: rendering.saturation,
+        temperature_kelvin: rendering.temperature_kelvin,
+        tint: rendering.tint,
+    };
     let calibration = parameters.radiometric_calibration;
     let radiometric_calibration = CameraRadiometricCalibration {
         base_exposure_index: calibration.base_exposure_index,
@@ -3037,6 +3082,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
     if cover.validate().is_err()
         || environment.validate().is_err()
         || development.validate().is_err()
+        || rendering_intent.validate().is_err()
         || radiometric_calibration.validate().is_err()
     {
         unsafe {
@@ -3057,6 +3103,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         computational_capture,
         sensor,
         development,
+        rendering_intent,
         radiometric_calibration,
     }))
 }
@@ -3219,6 +3266,14 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
                 abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
                 exposure_count: u32::from(preset.computational_capture.exposure_count),
                 bracket_spacing_stops: preset.computational_capture.bracket_spacing_stops,
+            },
+            camera_rendering_intent: ScreenCameraRenderingIntentParametersV1 {
+                abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+                exposure_ev: preset.rendering_intent.exposure_ev,
+                contrast: preset.rendering_intent.contrast,
+                saturation: preset.rendering_intent.saturation,
+                temperature_kelvin: preset.rendering_intent.temperature_kelvin,
+                tint: preset.rendering_intent.tint,
             },
             gate_width_millimeters: preset.gate_width.0,
             gate_height_millimeters: preset.gate_height.0,

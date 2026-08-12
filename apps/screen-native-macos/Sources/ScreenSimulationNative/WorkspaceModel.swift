@@ -189,7 +189,7 @@ final class WorkspaceModel: ObservableObject {
              .coverEnvironment, .coverGlow, .lensProjection:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return Double(device.nativeWidth) / Double(device.nativeHeight)
-        case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg:
+        case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg, .cameraRenderedACEScg:
             guard let sensor = physicalAuthoringState?.sensor,
                   sensor.nativeWidth > 0, sensor.nativeHeight > 0
             else { return nil }
@@ -205,7 +205,7 @@ final class WorkspaceModel: ObservableObject {
 
     var physicalNativeOutputDescription: String? {
         switch requestedPhysicalIntermediate {
-        case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg:
+        case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg, .cameraRenderedACEScg:
             guard let sensor = physicalAuthoringState?.sensor else { return nil }
             return "Captura \(sensor.nativeWidth)×\(sensor.nativeHeight)"
         case .panelEmission, .subpixelRadiance, .panelUniformity, .panelLightSpread,
@@ -1967,6 +1967,7 @@ final class WorkspaceModel: ObservableObject {
         case .sensorCfa: .sensorNoise
         case .sensorNoise: .rawMosaic
         case .developDemosaic: .developedACEScg
+        case .cameraRenderingIntent: .cameraRenderedACEScg
         case .sourceACEScg, nil: nil
         }
     }
@@ -1993,7 +1994,7 @@ final class WorkspaceModel: ObservableObject {
         case .deviceInterpretation, .panelStructure, .panelUniformity, .panelLightSpread,
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
              .shutterExposure, .computationalCapture, .sensorBloom, .sensorCfa, .sensorNoise,
-             .developDemosaic:
+             .developDemosaic, .cameraRenderingIntent:
             updateRequestedPhysicalIntermediate(physicalIntermediate(for: result)!)
             rebuildPhysicalSelectedFrame()
             return

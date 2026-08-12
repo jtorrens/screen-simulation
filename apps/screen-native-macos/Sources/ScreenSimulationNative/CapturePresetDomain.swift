@@ -75,6 +75,14 @@ struct CapturePresetDefinition: Identifiable {
             exposureCount: parameters.computational_capture.exposure_count,
             bracketSpacingStops: Double(parameters.computational_capture.bracket_spacing_stops)
         )
+        let intent = parameters.camera_rendering_intent
+        state.cameraRenderingIntent = .init(
+            exposureEV: Double(intent.exposure_ev),
+            contrast: Double(intent.contrast),
+            saturation: Double(intent.saturation),
+            temperatureKelvin: Double(intent.temperature_kelvin),
+            tint: Double(intent.tint)
+        )
         let radiometric = parameters.radiometric_calibration
         state.radiometricCalibration = .init(
             baseExposureIndex: Double(radiometric.base_exposure_index),
