@@ -20,6 +20,8 @@ enum TestPreviewResultKind: UInt32, Sendable {
     case sensorNoise = 14
     case developDemosaic = 15
     case cameraRenderingIntent = 16
+    case recordingOutput = 17
+    case recordingCodec = 18
 }
 
 struct TestAuthoringResolvedSelection: Equatable, Sendable {
@@ -72,6 +74,14 @@ struct TestAuthoringResolvedSelection: Equatable, Sendable {
     let sensorBloomCrosstalkFraction: Double
     let sensorBloomOverflowTransferFraction: Double
     let sensorNoiseAmount: Double
+    let cameraLookExposureEV: Double
+    let cameraLookContrast: Double
+    let cameraLookSaturation: Double
+    let cameraLookTemperatureKelvin: Double
+    let cameraLookTint: Double
+    let recordingOutputTransformID: String
+    let recordingProfileID: String
+    let recordingCharacter: Double
 }
 
 struct TestAuthoringSnapshot: Sendable {
@@ -102,7 +112,7 @@ enum RustTestAuthoringCoordinator {
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV13()
+                var output = ScreenTestAuthoringSelectionV15()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
                     inputView, deviceView, Float(frameRate), &output, &error
@@ -217,7 +227,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV13()
+                        var output = ScreenTestAuthoringSelectionV15()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -234,7 +244,7 @@ enum RustTestAuthoringCoordinator {
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV13()
+                    var output = ScreenTestAuthoringSelectionV15()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -250,7 +260,7 @@ enum RustTestAuthoringCoordinator {
         case let .setToggle(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV13()
+                    var output = ScreenTestAuthoringSelectionV15()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_toggle(
                         rawSelection, controlView, value, &output, &error
@@ -370,7 +380,7 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV13
+        _ raw: ScreenTestAuthoringSelectionV15
     ) -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
@@ -423,13 +433,21 @@ enum RustTestAuthoringCoordinator {
             sensorBloomOverflowTransferFraction: Double(
                 raw.sensor_bloom_overflow_transfer_fraction
             ),
-            sensorNoiseAmount: Double(raw.sensor_noise_amount)
+            sensorNoiseAmount: Double(raw.sensor_noise_amount),
+            cameraLookExposureEV: Double(raw.camera_look_exposure_ev),
+            cameraLookContrast: Double(raw.camera_look_contrast),
+            cameraLookSaturation: Double(raw.camera_look_saturation),
+            cameraLookTemperatureKelvin: Double(raw.camera_look_temperature_kelvin),
+            cameraLookTint: Double(raw.camera_look_tint),
+            recordingOutputTransformID: string(raw.recording_output_transform_id),
+            recordingProfileID: string(raw.recording_profile_id),
+            recordingCharacter: Double(raw.recording_character)
         )
     }
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV13>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV15>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -442,7 +460,9 @@ enum RustTestAuthoringCoordinator {
                                 try withUTF8View(selection.coverGlassPresetID) { coverView in
                                     try withUTF8View(selection.environmentPresetID) { environmentView in
                                         try withUTF8View(selection.lensPresetID) { lensView in
-                                            var raw = ScreenTestAuthoringSelectionV13()
+                                            try withUTF8View(selection.recordingOutputTransformID) { recordingOutputView in
+                                                try withUTF8View(selection.recordingProfileID) { recordingProfileView in
+                                                    var raw = ScreenTestAuthoringSelectionV15()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView
@@ -499,8 +519,17 @@ enum RustTestAuthoringCoordinator {
                                                 selection.sensorBloomOverflowTransferFraction
                                             )
                                             raw.sensor_noise_amount = Float(selection.sensorNoiseAmount)
-                                            return try withUnsafePointer(to: &raw, body)
-                                        }
+                                            raw.camera_look_exposure_ev = Float(selection.cameraLookExposureEV)
+                                            raw.camera_look_contrast = Float(selection.cameraLookContrast)
+                                            raw.camera_look_saturation = Float(selection.cameraLookSaturation)
+                                            raw.camera_look_temperature_kelvin = Float(selection.cameraLookTemperatureKelvin)
+                                            raw.camera_look_tint = Float(selection.cameraLookTint)
+                                            raw.recording_output_transform_id = recordingOutputView
+                                            raw.recording_profile_id = recordingProfileView
+                                            raw.recording_character = Float(selection.recordingCharacter)
+                                                    return try withUnsafePointer(to: &raw, body)
+                                                }
+                                            }
                                     }
                                 }
                             }
@@ -508,6 +537,7 @@ enum RustTestAuthoringCoordinator {
                     }
                 }
             }
+        }
         }
         }
         }

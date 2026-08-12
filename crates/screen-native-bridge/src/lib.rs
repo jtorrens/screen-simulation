@@ -53,14 +53,14 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 14;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 15;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestAuthoringSelectionV13 {
+pub struct ScreenTestAuthoringSelectionV15 {
     abi_version: u32,
     input_transform_id: ScreenUtf8View,
     output_signal_id: ScreenUtf8View,
@@ -116,6 +116,9 @@ pub struct ScreenTestAuthoringSelectionV13 {
     camera_look_saturation: f32,
     camera_look_temperature_kelvin: f32,
     camera_look_tint: f32,
+    recording_output_transform_id: ScreenUtf8View,
+    recording_profile_id: ScreenUtf8View,
+    recording_character: f32,
 }
 
 #[repr(C)]
@@ -1067,6 +1070,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::SensorNoise
             | PhysicalIntermediate::RawMosaic
             | PhysicalIntermediate::DevelopedAcesCg
+            | PhysicalIntermediate::CameraRenderedAcesCg
     ) {
         unsafe {
             set_error(
@@ -1082,7 +1086,11 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::SensorNoise
             | PhysicalIntermediate::RawMosaic
     ) && !contributions[13].discrete_enabled
-        || requested_intermediate == PhysicalIntermediate::DevelopedAcesCg
+        || matches!(
+            requested_intermediate,
+            PhysicalIntermediate::DevelopedAcesCg
+                | PhysicalIntermediate::CameraRenderedAcesCg
+        )
             && contributions[13].discrete_enabled
             && !contributions[15].discrete_enabled
     {
@@ -1974,7 +1982,7 @@ unsafe fn borrowed_utf8<'a>(view: ScreenUtf8View) -> Option<&'a str> {
 }
 
 unsafe fn test_selection<'a>(
-    selection: *const ScreenTestAuthoringSelectionV13,
+    selection: *const ScreenTestAuthoringSelectionV15,
 ) -> Option<TestAuthoringSelection<'a>> {
     let selection = unsafe { selection.as_ref() }?;
     if selection.abi_version != SCREEN_TEST_AUTHORING_ABI_VERSION {
@@ -2036,6 +2044,11 @@ unsafe fn test_selection<'a>(
             temperature_kelvin: selection.camera_look_temperature_kelvin,
             tint: selection.camera_look_tint,
         },
+        recording_output_transform_id: unsafe {
+            borrowed_utf8(selection.recording_output_transform_id)
+        }?,
+        recording_profile_id: unsafe { borrowed_utf8(selection.recording_profile_id) }?,
+        recording_character: selection.recording_character,
     })
 }
 
@@ -2088,6 +2101,10 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
         }
         TestAuthoringError::InvalidSensorNoiseAmount => b"Sensor Noise amount is outside 0..=4\0",
         TestAuthoringError::InvalidCameraRenderingIntent => b"invalid Camera Rendering Intent\0",
+        TestAuthoringError::UnknownRecordingOutputTransform => {
+            b"unknown Recording Output Transform\0"
+        }
+        TestAuthoringError::InvalidRecording => b"invalid Recording request\0",
         TestAuthoringError::UnknownPlacement => b"unknown Test placement\0",
         TestAuthoringError::UnknownPreviewQuality => b"unknown Test preview quality\0",
         TestAuthoringError::UnknownControl => b"unknown Test control\0",
@@ -2097,8 +2114,8 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
 
 fn resolved_test_selection(
     selection: screen_application::ResolvedTestAuthoringSelection,
-) -> ScreenTestAuthoringSelectionV13 {
-    ScreenTestAuthoringSelectionV13 {
+) -> ScreenTestAuthoringSelectionV15 {
+    ScreenTestAuthoringSelectionV15 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         input_transform_id: utf8_view(selection.input_transform_id),
         output_signal_id: utf8_view(selection.output_signal_id),
@@ -2154,6 +2171,9 @@ fn resolved_test_selection(
         camera_look_saturation: selection.camera_rendering_intent.saturation,
         camera_look_temperature_kelvin: selection.camera_rendering_intent.temperature_kelvin,
         camera_look_tint: selection.camera_rendering_intent.tint,
+        recording_output_transform_id: utf8_view(selection.recording_output_transform_id),
+        recording_profile_id: utf8_view(selection.recording_profile_id),
+        recording_character: selection.recording_character,
     }
 }
 
@@ -2162,7 +2182,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
     input_transform_id: ScreenUtf8View,
     device_id: ScreenUtf8View,
     frame_rate: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV13,
+    resolved: *mut ScreenTestAuthoringSelectionV15,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(input_transform_id) = (unsafe { borrowed_utf8(input_transform_id) }) else {
@@ -2197,7 +2217,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_page_descriptor_create(
-    selection: *const ScreenTestAuthoringSelectionV13,
+    selection: *const ScreenTestAuthoringSelectionV15,
     error_message: *mut *const c_char,
 ) -> *mut ScreenTestPageDescriptor {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2479,10 +2499,10 @@ pub unsafe extern "C" fn screen_test_page_preview_choice_option(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_choice(
-    selection: *const ScreenTestAuthoringSelectionV13,
+    selection: *const ScreenTestAuthoringSelectionV15,
     control_id: ScreenUtf8View,
     option_id: ScreenUtf8View,
-    resolved: *mut ScreenTestAuthoringSelectionV13,
+    resolved: *mut ScreenTestAuthoringSelectionV15,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2516,10 +2536,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_choice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
-    selection: *const ScreenTestAuthoringSelectionV13,
+    selection: *const ScreenTestAuthoringSelectionV15,
     control_id: ScreenUtf8View,
     value: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV13,
+    resolved: *mut ScreenTestAuthoringSelectionV15,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2549,10 +2569,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_toggle(
-    selection: *const ScreenTestAuthoringSelectionV13,
+    selection: *const ScreenTestAuthoringSelectionV15,
     control_id: ScreenUtf8View,
     value: bool,
-    resolved: *mut ScreenTestAuthoringSelectionV13,
+    resolved: *mut ScreenTestAuthoringSelectionV15,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -4010,6 +4030,14 @@ mod tests {
                 abi_version: version,
                 exposure_count: 1,
                 bracket_spacing_stops: 0.0,
+            },
+            camera_rendering_intent: ScreenCameraRenderingIntentParametersV1 {
+                abi_version: version,
+                exposure_ev: 0.0,
+                contrast: 1.0,
+                saturation: 1.0,
+                temperature_kelvin: 6_500.0,
+                tint: 0.0,
             },
             sensor_noise: ScreenSensorNoiseParametersV2 {
                 abi_version: version,

@@ -1967,7 +1967,7 @@ final class WorkspaceModel: ObservableObject {
         case .sensorCfa: .sensorNoise
         case .sensorNoise: .rawMosaic
         case .developDemosaic: .developedACEScg
-        case .cameraRenderingIntent: .cameraRenderedACEScg
+        case .cameraRenderingIntent, .recordingOutput, .recordingCodec: .cameraRenderedACEScg
         case .sourceACEScg, nil: nil
         }
     }
@@ -1994,7 +1994,7 @@ final class WorkspaceModel: ObservableObject {
         case .deviceInterpretation, .panelStructure, .panelUniformity, .panelLightSpread,
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
              .shutterExposure, .computationalCapture, .sensorBloom, .sensorCfa, .sensorNoise,
-             .developDemosaic, .cameraRenderingIntent:
+             .developDemosaic, .cameraRenderingIntent, .recordingOutput, .recordingCodec:
             updateRequestedPhysicalIntermediate(physicalIntermediate(for: result)!)
             rebuildPhysicalSelectedFrame()
             return
