@@ -612,13 +612,14 @@ pub struct PhysicalPipelineCpuResult {
     pub diagnostic: PhysicalPipelineDiagnostic,
 }
 
-fn resample_physical_rgba_area(
+fn resample_physical_exposure_area(
     source: &[[f32; 4]],
     source_width: u32,
     source_height: u32,
     output_width: u32,
     output_height: u32,
-) -> Vec<[f32; 4]> {
+    exposure_scale: f32,
+) -> Vec<LinearRgb> {
     let output_len = (output_width * output_height) as usize;
     (0..output_len)
         .into_par_iter()
@@ -627,6 +628,50 @@ fn resample_physical_rgba_area(
             let output_x = output_index as u32 % output_width;
             let minimum_y = output_y as f64 * source_height as f64 / output_height as f64;
             let maximum_y = (output_y + 1) as f64 * source_height as f64 / output_height as f64;
+            let minimum_x = output_x as f64 * source_width as f64 / output_width as f64;
+            let maximum_x = (output_x + 1) as f64 * source_width as f64 / output_width as f64;
+            let mut sum = [0.0_f64; 3];
+            let mut area = 0.0_f64;
+            for source_y in minimum_y.floor() as u32..maximum_y.ceil() as u32 {
+                let overlap_y = (maximum_y.min(f64::from(source_y + 1))
+                    - minimum_y.max(f64::from(source_y)))
+                .max(0.0);
+                for source_x in minimum_x.floor() as u32..maximum_x.ceil() as u32 {
+                    let overlap_x = (maximum_x.min(f64::from(source_x + 1))
+                        - minimum_x.max(f64::from(source_x)))
+                    .max(0.0);
+                    let weight = overlap_x * overlap_y;
+                    let pixel = source[(source_y.min(source_height - 1) * source_width
+                        + source_x.min(source_width - 1))
+                        as usize];
+                    for channel in 0..3 {
+                        sum[channel] += f64::from(pixel[channel]) * weight;
+                    }
+                    area += weight;
+                }
+            }
+            LinearRgb::new(
+                (sum[0] / area) as f32 * exposure_scale,
+                (sum[1] / area) as f32 * exposure_scale,
+                (sum[2] / area) as f32 * exposure_scale,
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn resample_physical_rgba_area_reference(
+    source: &[[f32; 4]],
+    source_width: u32,
+    source_height: u32,
+    output_width: u32,
+    output_height: u32,
+) -> Vec<[f32; 4]> {
+    let mut output = Vec::with_capacity((output_width * output_height) as usize);
+    for output_y in 0..output_height {
+        let minimum_y = output_y as f64 * source_height as f64 / output_height as f64;
+        let maximum_y = (output_y + 1) as f64 * source_height as f64 / output_height as f64;
+        for output_x in 0..output_width {
             let minimum_x = output_x as f64 * source_width as f64 / output_width as f64;
             let maximum_x = (output_x + 1) as f64 * source_width as f64 / output_width as f64;
             let mut sum = [0.0_f64; 4];
@@ -649,9 +694,10 @@ fn resample_physical_rgba_area(
                     area += weight;
                 }
             }
-            sum.map(|value| (value / area) as f32)
-        })
-        .collect()
+            output.push(sum.map(|value| (value / area) as f32));
+        }
+    }
+    output
 }
 
 fn sensor_exposure_pixels(
@@ -662,13 +708,6 @@ fn sensor_exposure_pixels(
     sensor_height: u32,
     exposure_scale: f32,
 ) -> Vec<LinearRgb> {
-    let scaled = |pixel: &[f32; 4]| {
-        LinearRgb::new(
-            pixel[0] * exposure_scale,
-            pixel[1] * exposure_scale,
-            pixel[2] * exposure_scale,
-        )
-    };
     if source_width == sensor_width && source_height == sensor_height {
         source
             .iter()
@@ -685,16 +724,14 @@ fn sensor_exposure_pixels(
             })
             .collect()
     } else {
-        resample_physical_rgba_area(
+        resample_physical_exposure_area(
             source,
             source_width,
             source_height,
             sensor_width,
             sensor_height,
+            exposure_scale,
         )
-        .iter()
-        .map(scaled)
-        .collect()
     }
 }
 
@@ -6320,7 +6357,7 @@ mod tests {
             [0.33, 0.66, 0.99, 0.8],
         ];
         let exposure_scale = 117.25_f32;
-        let expected = resample_physical_rgba_area(&source, 2, 2, 2, 2)
+        let expected = resample_physical_rgba_area_reference(&source, 2, 2, 2, 2)
             .iter()
             .map(|pixel| {
                 LinearRgb::new(
@@ -6341,7 +6378,7 @@ mod tests {
             bits(&expected)
         );
 
-        let expected_resampled = resample_physical_rgba_area(&source, 2, 2, 1, 1)
+        let expected_resampled = resample_physical_rgba_area_reference(&source, 2, 2, 1, 1)
             .iter()
             .map(|pixel| {
                 LinearRgb::new(
@@ -6362,16 +6399,17 @@ mod tests {
                 [value, value * 0.5, 1.25 - value, 1.0]
             })
             .collect::<Vec<_>>();
-        let expected_fractional = resample_physical_rgba_area(&fractional_source, 4, 3, 3, 2)
-            .iter()
-            .map(|pixel| {
-                LinearRgb::new(
-                    pixel[0] * exposure_scale,
-                    pixel[1] * exposure_scale,
-                    pixel[2] * exposure_scale,
-                )
-            })
-            .collect::<Vec<_>>();
+        let expected_fractional =
+            resample_physical_rgba_area_reference(&fractional_source, 4, 3, 3, 2)
+                .iter()
+                .map(|pixel| {
+                    LinearRgb::new(
+                        pixel[0] * exposure_scale,
+                        pixel[1] * exposure_scale,
+                        pixel[2] * exposure_scale,
+                    )
+                })
+                .collect::<Vec<_>>();
         assert_eq!(
             bits(&sensor_exposure_pixels(
                 &fractional_source,
@@ -6389,20 +6427,13 @@ mod tests {
                 .num_threads(worker_count)
                 .build()
                 .expect("resample worker pool")
-                .install(|| resample_physical_rgba_area(&fractional_source, 4, 3, 3, 2))
+                .install(|| {
+                    resample_physical_exposure_area(&fractional_source, 4, 3, 3, 2, exposure_scale)
+                })
         };
         let one_worker = resample_with_workers(1);
         let multiple_workers = resample_with_workers(4);
-        assert_eq!(
-            one_worker
-                .iter()
-                .flat_map(|pixel| pixel.map(f32::to_bits))
-                .collect::<Vec<_>>(),
-            multiple_workers
-                .iter()
-                .flat_map(|pixel| pixel.map(f32::to_bits))
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(bits(&one_worker), bits(&multiple_workers));
     }
 
     #[test]
@@ -8321,7 +8352,7 @@ mod tests {
                 .device_stage_parameters();
             let exposure_scale = parameters.white_level_nits
                 * plan.radiometric_calibration.effective_sensor_exposure_scale;
-            let reference_pixels = resample_physical_rgba_area(&shuttered, 2, 2, 2, 2);
+            let reference_pixels = resample_physical_rgba_area_reference(&shuttered, 2, 2, 2, 2);
             let reference_exposure = IntegratedOpticalExposure {
                 width: 2,
                 height: 2,
