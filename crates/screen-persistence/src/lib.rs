@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 12;
+pub const CURRENT_VERSION: u32 = 13;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -362,6 +362,7 @@ pub struct ShotDocument {
     pub reference_exposure_index: f32,
     pub develop_exposure_ev: f32,
     pub camera_rendering_intent: CameraRenderingIntentDocument,
+    pub recording: RecordingSelectionDocument,
     pub camera_output_transform_id: String,
     pub environment: EnvironmentDocument,
 }
@@ -374,6 +375,14 @@ pub struct CameraRenderingIntentDocument {
     pub saturation: f32,
     pub temperature_kelvin: f32,
     pub tint: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingSelectionDocument {
+    pub output_transform_id: OpaqueId,
+    pub profile_id: OpaqueId,
+    pub character: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -534,6 +543,13 @@ impl ProjectPackage {
             || self.shot.camera_output_transform_id.is_empty()
         {
             return Err(PersistenceError::InvalidCameraDevelopment);
+        }
+        if validate_id(&self.shot.recording.output_transform_id).is_err()
+            || validate_id(&self.shot.recording.profile_id).is_err()
+            || !self.shot.recording.character.is_finite()
+            || !(0.0..=4.0).contains(&self.shot.recording.character)
+        {
+            return Err(PersistenceError::InvalidRecordingSelection);
         }
         Ok(())
     }
@@ -1033,6 +1049,7 @@ pub enum PersistenceError {
     InvalidEnvironment,
     InvalidSensorProfile,
     InvalidCameraDevelopment,
+    InvalidRecordingSelection,
     NonFiniteNumber,
     MissingResource(String),
     Io(PathBuf, std::io::Error),
@@ -1106,6 +1123,9 @@ impl fmt::Display for PersistenceError {
             Self::InvalidCameraDevelopment => formatter.write_str(
                 "camera development requires explicit white balance and output transform",
             ),
+            Self::InvalidRecordingSelection => {
+                formatter.write_str("recording selection is invalid")
+            }
             Self::NonFiniteNumber => {
                 formatter.write_str("project documents cannot contain non-finite numbers")
             }
@@ -1348,6 +1368,11 @@ mod tests {
                     temperature_kelvin: 6500.0,
                     tint: 0.0,
                 },
+                recording: RecordingSelectionDocument {
+                    output_transform_id: id("iphone-heic-display-p3-bt709-full-v1"),
+                    profile_id: id("iphone-heic-photo-v1"),
+                    character: 1.0,
+                },
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
                 environment: EnvironmentDocument {
                     character_strength: 1.0,
@@ -1466,6 +1491,33 @@ mod tests {
         let mut unknown = serde_json::to_value(cover).expect("serialize cover");
         unknown["anti_glare_microtexture"]["legacy_noise_amount"] = serde_json::Value::from(1.0);
         assert!(serde_json::from_value::<CoverDocument>(unknown).is_err());
+    }
+
+    #[test]
+    fn recording_selection_is_required_and_strict() {
+        let recording = package().shot.recording;
+        let mut missing = serde_json::to_value(&recording).expect("serialize recording");
+        missing
+            .as_object_mut()
+            .expect("recording object")
+            .remove("profile_id");
+        assert!(serde_json::from_value::<RecordingSelectionDocument>(missing).is_err());
+
+        let mut unknown = serde_json::to_value(&recording).expect("serialize recording");
+        unknown["codec"] = serde_json::Value::from("hevc");
+        assert!(serde_json::from_value::<RecordingSelectionDocument>(unknown).is_err());
+
+        let mut invalid = package();
+        invalid.shot.recording.character = 4.1;
+        assert!(matches!(
+            invalid.validate(),
+            Err(PersistenceError::InvalidRecordingSelection)
+        ));
+        invalid.shot.recording.character = f32::NAN;
+        assert!(matches!(
+            invalid.validate(),
+            Err(PersistenceError::InvalidRecordingSelection)
+        ));
     }
 
     #[test]

@@ -1,7 +1,11 @@
-use screen_application::{RasterPlacement, RollingDirection, SensorReadout};
+use screen_application::{
+    PreparedRecordingRequest, RasterPlacement, RecordingSelection, RollingDirection, SensorReadout,
+    prepare_recording_request,
+};
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{
-    CameraOutputTransform, DeviceColorTarget, OcioInputTransform, SourceColorInterpretation,
+    CameraOutputTransform, DeviceColorTarget, OcioInputTransform, RecordingOutputTransform,
+    SourceColorInterpretation,
 };
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_cover::{
@@ -22,10 +26,12 @@ use screen_panel::{
 use screen_persistence::{
     AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics,
     CameraRenderingIntentDocument, CoverGlowDocument, ExactTime, InterpolationSelection,
-    MatrixSelection, PlacementSelection, ProjectPackage, RangeSelection, RollingDirectionSelection,
-    SensorBloomDocument, SensorReadoutDocument, SourceColorSelection, StripeSelection,
+    MatrixSelection, PlacementSelection, ProjectPackage, RangeSelection,
+    RecordingSelectionDocument, RollingDirectionSelection, SensorBloomDocument,
+    SensorReadoutDocument, SourceColorSelection, StripeSelection,
     TransformKeyframe as StoredTransform,
 };
+use screen_recording::EncoderExecutionPolicy;
 use screen_sensor::{BayerPattern, SensorBloomProfile, SensorProfile};
 
 pub struct ProjectScene {
@@ -49,6 +55,8 @@ pub struct ProjectScene {
     pub neutral_density_stops: f32,
     pub camera_development: CameraDevelopment,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub recording_output_transform: RecordingOutputTransform,
+    pub recording: PreparedRecordingRequest,
     pub camera_output_transform: CameraOutputTransform,
 }
 
@@ -318,6 +326,24 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
         }
         .validate()
         .map_err(|error| error.to_string())?,
+        recording_output_transform: RecordingOutputTransform::from_stable_id(
+            package.shot.recording.output_transform_id.as_str(),
+        )
+        .ok_or_else(|| {
+            format!(
+                "unknown recording output transform: {}",
+                package.shot.recording.output_transform_id.as_str()
+            )
+        })?,
+        recording: prepare_recording_request(RecordingSelection {
+            profile_id: package.shot.recording.profile_id.as_str(),
+            character: package.shot.recording.character,
+            frame_rate: None,
+            first_frame_index: 0,
+            frame_count: 1,
+            execution: EncoderExecutionPolicy::SINGLE_PASS,
+        })
+        .map_err(|error| error.to_string())?,
         camera_output_transform: CameraOutputTransform::from_stable_id(
             &package.shot.camera_output_transform_id,
         )
@@ -421,7 +447,7 @@ mod tests {
 
     #[test]
     fn complete_current_package_maps_to_one_executable_scene() {
-        let package = ProjectPackage {
+        let mut package = ProjectPackage {
             manifest: ProjectManifest {
                 schema: "screen_simulation_project".into(),
                 version: CURRENT_VERSION,
@@ -610,6 +636,11 @@ mod tests {
                     temperature_kelvin: 6500.0,
                     tint: 0.0,
                 },
+                recording: RecordingSelectionDocument {
+                    output_transform_id: id("iphone-heic-display-p3-bt709-full-v1"),
+                    profile_id: id("iphone-heic-photo-v1"),
+                    character: 1.0,
+                },
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
                 environment: EnvironmentDocument {
                     character_strength: 1.0,
@@ -686,6 +717,12 @@ mod tests {
             scene.camera_output_transform,
             CameraOutputTransform::SrgbSdr100
         );
+        assert_eq!(
+            scene.recording_output_transform,
+            RecordingOutputTransform::IphoneHeicDisplayP3Bt709Full
+        );
+        assert_eq!(scene.recording.profile.id, "iphone-heic-photo-v1");
+        assert_eq!(scene.recording.character, 1.0);
         let time = scene.frame_rate.time_at_frame(0).expect("time");
         let camera = scene.camera.sample(time).expect("camera");
         let screen = scene.screen.sample(time).expect("screen");
@@ -715,5 +752,17 @@ mod tests {
                 }
             }
         );
+
+        package.shot.recording.output_transform_id = id("display-p3");
+        assert!(matches!(
+            map_project_scene(&package),
+            Err(error) if error.contains("unknown recording output transform")
+        ));
+        package.shot.recording.output_transform_id = id("iphone-heic-display-p3-bt709-full-v1");
+        package.shot.recording.profile_id = id("iphone-heic-photo");
+        assert!(matches!(
+            map_project_scene(&package),
+            Err(error) if error.contains("unknown recording profile")
+        ));
     }
 }

@@ -22,6 +22,7 @@ screen-media = { path = "../../crates/screen-media" }
 screen-panel = { path = "../../crates/screen-panel" }
 screen-persistence = { path = "../../crates/screen-persistence" }
 screen-platform = { path = "../../crates/screen-platform" }
+screen-recording = { path = "../../crates/screen-recording" }
 screen-sensor = { path = "../../crates/screen-sensor" }
 
 [build-dependencies]
