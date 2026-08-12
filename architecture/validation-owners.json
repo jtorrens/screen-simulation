@@ -70,6 +70,11 @@
       "checks": ["architecture", "workspace", "camera-development"]
     },
     {
+      "id": "recording-codec",
+      "paths": ["crates/screen-recording/**"],
+      "checks": ["architecture", "workspace", "recording-codec"]
+    },
+    {
       "id": "application",
       "paths": ["crates/screen-application/**"],
       "checks": ["architecture", "workspace", "application"]

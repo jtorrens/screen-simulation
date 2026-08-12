@@ -4573,6 +4573,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "screen-recording"
+version = "0.1.0"
+dependencies = [
+ "screen-contracts",
+]
+
+[[package]]
 name = "screen-sensor"
 version = "0.1.0"
 dependencies = [

@@ -51,6 +51,12 @@
       "allowed_local_dependencies": ["screen-contracts", "screen-sensor"]
     },
     {
+      "name": "screen-recording",
+      "path": "crates/screen-recording",
+      "owner": "recording-codec",
+      "allowed_local_dependencies": ["screen-contracts"]
+    },
+    {
       "name": "screen-application",
       "path": "crates/screen-application",
       "owner": "application",
