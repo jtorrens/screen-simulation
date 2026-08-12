@@ -80,6 +80,38 @@ import UniformTypeIdentifiers
     })
 }
 
+@MainActor
+@Test func recordingOutputUsesTheExactDisplayP3SrgbTransferExpectedByImageIO() throws {
+    let display = try StudioColorMetalDisplay()
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba32Float, width: 1, height: 1, mipmapped: false
+    )
+    descriptor.storageMode = .shared
+    descriptor.usage = [.shaderRead]
+    let texture = try #require(device.makeTexture(descriptor: descriptor))
+    let source: [Float] = [0.18, 0.18, 0.18, 1]
+    source.withUnsafeBytes {
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0,
+            withBytes: $0.baseAddress!, bytesPerRow: 4 * MemoryLayout<Float>.size
+        )
+    }
+    let output = try RecordingPhaseExecutor.output(
+        cameraRendered: StudioColorMetalFrame(texture: texture),
+        transformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        display: display
+    )
+    let encoded = output.rgba8.map { Float($0) / 255 }
+    let reference = try display.renderRGBA8(
+        StudioColorMetalFrame(texture: texture),
+        output: try #require(StudioColorOutputTransform.catalog.first {
+            $0.id == "aces2-display-p3-sdr-100"
+        })
+    ).map { Float($0) / 255 }
+    #expect(zip(encoded, reference).allSatisfy { abs($0 - $1) <= 1.0 / 255.0 })
+}
+
 @Test func imageIOHeicAdapterPublishesRequestedDiagnostic() throws {
     let environment = ProcessInfo.processInfo.environment
     guard let sourcePath = environment["SCREEN_HEIC_DIAGNOSTIC_SOURCE"],
@@ -133,6 +165,115 @@ import UniformTypeIdentifiers
     ]
     try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
         .write(to: outputURL.appendingPathComponent("codec-diagnostic.json"))
+}
+
+@MainActor
+@Test func recordingColorDiagnosticPublishesUniformAndHighFrequencyCyan() throws {
+    guard let outputDirectory = ProcessInfo.processInfo.environment[
+        "SCREEN_RECORDING_COLOR_DIAGNOSTIC_DIR"
+    ] else { return }
+    let width = 512
+    let height = 256
+    var pixels = [Float](repeating: 1, count: width * height * 4)
+    for y in 0 ..< height {
+        for x in 0 ..< width {
+            let offset = (y * width + x) * 4
+            let cyan: Bool = x < width / 2 || ((x + y) & 1) == 0
+            pixels[offset] = cyan ? 0.02 : 0.18
+            pixels[offset + 1] = cyan ? 0.80 : 0.18
+            pixels[offset + 2] = cyan ? 0.80 : 0.18
+        }
+    }
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba32Float, width: width, height: height, mipmapped: false
+    )
+    descriptor.storageMode = .shared
+    descriptor.usage = [.shaderRead]
+    let texture = try #require(device.makeTexture(descriptor: descriptor))
+    pixels.withUnsafeBytes {
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+            withBytes: $0.baseAddress!, bytesPerRow: width * 4 * MemoryLayout<Float>.size
+        )
+    }
+    let display = try StudioColorMetalDisplay()
+    let output = try RecordingPhaseExecutor.output(
+        cameraRendered: StudioColorMetalFrame(texture: texture),
+        transformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        display: display
+    )
+    let codec = try RecordingPhaseExecutor.codec(
+        output: output,
+        profileID: RecordingPhaseExecutor.iphoneHeicProfileID,
+        character: 1,
+        display: display
+    )
+    let directory = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try writePNG(
+        output.rgba8, width: width, height: height,
+        to: directory.appendingPathComponent("recording-output.png")
+    )
+    try writePNG(
+        codec.decodedRGBA8, width: width, height: height,
+        to: directory.appendingPathComponent("recording-codec-decoded.png")
+    )
+    try codec.encodedData.write(to: directory.appendingPathComponent("recording-codec.heic"))
+    func meanChroma(_ rgba: [UInt8], xRange: Range<Int>) -> Double {
+        var total = 0.0
+        var count = 0
+        for y in 0 ..< height {
+            for x in xRange {
+                let offset = (y * width + x) * 4
+                let minimum = min(rgba[offset], rgba[offset + 1], rgba[offset + 2])
+                let maximum = max(rgba[offset], rgba[offset + 1], rgba[offset + 2])
+                total += Double(maximum - minimum) / 255
+                count += 1
+            }
+        }
+        return total / Double(count)
+    }
+    func horizontalColorContrast(_ rgba: [UInt8], xRange: Range<Int>) -> Double {
+        var total = 0.0
+        var count = 0
+        for y in 0 ..< height {
+            for x in xRange.dropFirst() {
+                let left = (y * width + x - 1) * 4
+                let right = left + 4
+                for channel in 0 ..< 3 {
+                    total += abs(Double(rgba[right + channel]) - Double(rgba[left + channel])) / 255
+                    count += 1
+                }
+            }
+        }
+        return total / Double(count)
+    }
+    let manifest: [String: Any] = [
+        "schema": "ScreenSimulation.RecordingColorDiagnostic",
+        "version": 1,
+        "recordingOutputTransformID": RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        "recordingProfileID": RecordingPhaseExecutor.iphoneHeicProfileID,
+        "quality": RecordingPhaseExecutor.calibratedHeicQuality,
+        "encodedBytes": codec.encodedBytes,
+        "encodedSHA256": codec.encodedSHA256Hex,
+        "uniformCyan": [
+            "beforeMeanChroma": meanChroma(output.rgba8, xRange: 0 ..< width / 2),
+            "afterMeanChroma": meanChroma(codec.decodedRGBA8, xRange: 0 ..< width / 2),
+        ],
+        "onePixelCyanChecker": [
+            "beforeMeanChroma": meanChroma(output.rgba8, xRange: width / 2 ..< width),
+            "afterMeanChroma": meanChroma(codec.decodedRGBA8, xRange: width / 2 ..< width),
+            "beforeHorizontalColorContrast": horizontalColorContrast(
+                output.rgba8, xRange: width / 2 ..< width
+            ),
+            "afterHorizontalColorContrast": horizontalColorContrast(
+                codec.decodedRGBA8, xRange: width / 2 ..< width
+            ),
+        ],
+    ]
+    try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        .write(to: directory.appendingPathComponent("recording-color-diagnostic.json"))
 }
 
 @Test func imageIOHeicAdapterRejectsNonOpaqueInput() {

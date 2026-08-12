@@ -9,6 +9,8 @@ struct RecordingOutputExecution: Sendable {
 
 struct RecordingCodecExecution: Sendable {
     let frame: StudioColorMetalFrame
+    let decodedRGBA8: [UInt8]
+    let encodedData: Data
     let encodedBytes: Int
     let encodedSHA256Hex: String
 }
@@ -29,7 +31,7 @@ enum RecordingPhaseExecutionError: Error, LocalizedError {
 
 @MainActor
 enum RecordingPhaseExecutor {
-    static let iphoneHeicOutputTransformID = "iphone-heic-display-p3-bt709-full-v1"
+    static let iphoneHeicOutputTransformID = "iphone-heic-display-p3-srgb-full-v2"
     static let iphoneHeicProfileID = "iphone-heic-photo-v1"
     static let calibratedHeicQuality = 0.82
 
@@ -88,7 +90,13 @@ enum RecordingPhaseExecutor {
         }
         let quality = min(max(calibratedHeicQuality / max(character, 0.0001), 0), 1)
         if character == 0 {
-            return RecordingCodecExecution(frame: output.frame, encodedBytes: 0, encodedSHA256Hex: "")
+            return RecordingCodecExecution(
+                frame: output.frame,
+                decodedRGBA8: output.rgba8,
+                encodedData: Data(),
+                encodedBytes: 0,
+                encodedSHA256Hex: ""
+            )
         }
         let result = try ImageIOHeicRecordingAdapter.roundTrip(.init(
             profileID: profileID,
@@ -109,6 +117,8 @@ enum RecordingPhaseExecutor {
         )
         return RecordingCodecExecution(
             frame: frame,
+            decodedRGBA8: result.rgba8,
+            encodedData: result.encodedData,
             encodedBytes: result.encodedBytes,
             encodedSHA256Hex: result.encodedSHA256.map { String(format: "%02x", $0) }.joined()
         )

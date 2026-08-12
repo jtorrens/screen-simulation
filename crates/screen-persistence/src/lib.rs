@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 13;
+pub const CURRENT_VERSION: u32 = 14;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -1369,7 +1369,7 @@ mod tests {
                     tint: 0.0,
                 },
                 recording: RecordingSelectionDocument {
-                    output_transform_id: id("iphone-heic-display-p3-bt709-full-v1"),
+                    output_transform_id: id("iphone-heic-display-p3-srgb-full-v2"),
                     profile_id: id("iphone-heic-photo-v1"),
                     character: 1.0,
                 },

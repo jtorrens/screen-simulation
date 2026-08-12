@@ -16,7 +16,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 15;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 16;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -997,7 +997,7 @@ pub fn test_page_descriptor(
         .into_iter()
         .map(|transform| TestChoiceOption {
             id: transform.stable_id(),
-            label: "iPhone HEIC · Display P3 / BT.709",
+            label: "iPhone HEIC · Display P3 / sRGB",
         })
         .collect();
     let recording_profile_options = bundled_profiles()
@@ -1695,7 +1695,7 @@ pub fn test_page_descriptor(
                 effect_summary: "Transforma el resultado lineal de cámara en la señal no lineal declarada para grabación.",
                 header_control_id: None,
                 input_artifact: "camera-rendered-acescg-v1",
-                output_artifact: "recording-output-signal-v1",
+                output_artifact: "recording-output-signal-v2",
                 preview_result: TestPreviewResult::RecordingOutput,
                 controls: vec![choice_control(
                     RECORDING_OUTPUT_TRANSFORM_CONTROL_ID,
@@ -1710,7 +1710,7 @@ pub fn test_page_descriptor(
                 label: "Códec de grabación",
                 effect_summary: "Codifica y decodifica la señal con el perfil seleccionado para mostrar su degradación acumulada.",
                 header_control_id: Some(RECORDING_CHARACTER_CONTROL_ID),
-                input_artifact: "recording-output-signal-v1",
+                input_artifact: "recording-output-signal-v2",
                 output_artifact: "decoded-recording-signal-v1",
                 preview_result: TestPreviewResult::RecordingCodec,
                 controls: vec![
@@ -2162,7 +2162,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 15);
+        assert_eq!(page.schema_version, 16);
         assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),

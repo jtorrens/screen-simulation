@@ -637,7 +637,7 @@ mod tests {
                     tint: 0.0,
                 },
                 recording: RecordingSelectionDocument {
-                    output_transform_id: id("iphone-heic-display-p3-bt709-full-v1"),
+                    output_transform_id: id("iphone-heic-display-p3-srgb-full-v2"),
                     profile_id: id("iphone-heic-photo-v1"),
                     character: 1.0,
                 },
@@ -719,7 +719,7 @@ mod tests {
         );
         assert_eq!(
             scene.recording_output_transform,
-            RecordingOutputTransform::IphoneHeicDisplayP3Bt709Full
+            RecordingOutputTransform::IphoneHeicDisplayP3SrgbFull
         );
         assert_eq!(scene.recording.profile.id, "iphone-heic-photo-v1");
         assert_eq!(scene.recording.character, 1.0);
@@ -758,7 +758,7 @@ mod tests {
             map_project_scene(&package),
             Err(error) if error.contains("unknown recording output transform")
         ));
-        package.shot.recording.output_transform_id = id("iphone-heic-display-p3-bt709-full-v1");
+        package.shot.recording.output_transform_id = id("iphone-heic-display-p3-srgb-full-v2");
         package.shot.recording.profile_id = id("iphone-heic-photo");
         assert!(matches!(
             map_project_scene(&package),

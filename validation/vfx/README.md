@@ -21,7 +21,7 @@ El fixture actual fija:
   El recurso permanente incorpora una rotación de −25° sobre X y el entorno
   aplica −57,3° sobre Y. La luz de techo entre los dos cuadros queda en el
   cuadrante superior derecho.
-- Checkpoint acumulativo `developed-acescg` y PNG de salida de 16 bits.
+- Checkpoint acumulativo `camera-rendered-acescg` y PNG de salida de 16 bits.
 
 ## Ejecución repetible
 

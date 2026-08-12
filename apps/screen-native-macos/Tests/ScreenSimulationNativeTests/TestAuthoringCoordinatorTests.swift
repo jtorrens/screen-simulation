@@ -59,7 +59,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         cameraLookSaturation: 1.25,
         cameraLookTemperatureKelvin: 6_500,
         cameraLookTint: 0,
-        recordingOutputTransformID: "iphone-heic-display-p3-bt709-full-v1",
+        recordingOutputTransformID: "iphone-heic-display-p3-srgb-full-v2",
         recordingProfileID: "iphone-heic-photo-v1",
         recordingCharacter: 1
     )

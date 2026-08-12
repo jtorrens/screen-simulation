@@ -25,7 +25,7 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 15u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 16u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -91,7 +91,7 @@ typedef struct {
     ScreenUTF8View recording_output_transform_id;
     ScreenUTF8View recording_profile_id;
     float recording_character;
-} ScreenTestAuthoringSelectionV15;
+} ScreenTestAuthoringSelectionV16;
 
 typedef struct {
     uint32_t abi_version;
@@ -130,12 +130,12 @@ bool screen_test_authoring_default_selection(
     ScreenUTF8View input_transform_id,
     ScreenUTF8View device_id,
     float frame_rate,
-    ScreenTestAuthoringSelectionV15 *resolved,
+    ScreenTestAuthoringSelectionV16 *resolved,
     const char **error_message
 );
 
 ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
-    const ScreenTestAuthoringSelectionV15 *selection,
+    const ScreenTestAuthoringSelectionV16 *selection,
     const char **error_message
 );
 void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
@@ -187,24 +187,24 @@ bool screen_test_page_preview_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 bool screen_test_authoring_apply_choice(
-    const ScreenTestAuthoringSelectionV15 *selection,
+    const ScreenTestAuthoringSelectionV16 *selection,
     ScreenUTF8View control_id,
     ScreenUTF8View option_id,
-    ScreenTestAuthoringSelectionV15 *resolved,
+    ScreenTestAuthoringSelectionV16 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_scalar(
-    const ScreenTestAuthoringSelectionV15 *selection,
+    const ScreenTestAuthoringSelectionV16 *selection,
     ScreenUTF8View control_id,
     float value,
-    ScreenTestAuthoringSelectionV15 *resolved,
+    ScreenTestAuthoringSelectionV16 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_toggle(
-    const ScreenTestAuthoringSelectionV15 *selection,
+    const ScreenTestAuthoringSelectionV16 *selection,
     ScreenUTF8View control_id,
     bool value,
-    ScreenTestAuthoringSelectionV15 *resolved,
+    ScreenTestAuthoringSelectionV16 *resolved,
     const char **error_message
 );
 

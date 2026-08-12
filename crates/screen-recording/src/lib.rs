@@ -9,7 +9,7 @@
 use core::fmt;
 use screen_contracts::{EncodedColorMetadata, FrameRate};
 
-pub const RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID: &str = "recording-output-signal-v1";
+pub const RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID: &str = "recording-output-signal-v2";
 pub const DECODED_RECORDING_SIGNAL_ARTIFACT_ID: &str = "decoded-recording-signal-v1";
 
 pub const IPHONE_HEIC_PHOTO_PROFILE_ID: &str = "iphone-heic-photo-v1";
