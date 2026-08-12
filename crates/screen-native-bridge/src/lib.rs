@@ -53,7 +53,7 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 13;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 14;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -196,8 +196,8 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 11;
-pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 4;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 12;
+pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 5;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
 pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;

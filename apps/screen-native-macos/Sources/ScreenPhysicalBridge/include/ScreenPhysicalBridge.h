@@ -16,16 +16,16 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 11u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 12u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
-#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 4u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 5u
 
 typedef struct {
     const uint8_t *bytes;
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 13u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 14u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
