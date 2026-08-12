@@ -65,6 +65,56 @@ pub struct DevelopedCameraRegion {
     pub acescg: Vec<LinearRgb>,
 }
 
+/// Camera-authored rendering intent applied to the developed scene-linear camera image.
+/// This remains upstream of every display/output transform and recording codec.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraRenderingIntent {
+    pub exposure_ev: f32,
+    /// Scene-linear contrast around ACES middle gray. One is identity.
+    pub contrast: f32,
+    /// Achromatic-to-original chroma interpolation. One is identity.
+    pub saturation: f32,
+    /// Creative target white expressed as correlated color temperature.
+    pub temperature_kelvin: f32,
+    /// Creative green/magenta displacement in normalized CIE xy units.
+    pub tint: f32,
+}
+
+impl CameraRenderingIntent {
+    pub const NEUTRAL: Self = Self {
+        exposure_ev: 0.0,
+        contrast: 1.0,
+        saturation: 1.0,
+        temperature_kelvin: 6500.0,
+        tint: 0.0,
+    };
+
+    pub fn validate(self) -> Result<Self, CameraDevelopmentError> {
+        if !self.exposure_ev.is_finite()
+            || !(-8.0..=8.0).contains(&self.exposure_ev)
+            || !self.contrast.is_finite()
+            || !(0.25..=4.0).contains(&self.contrast)
+            || !self.saturation.is_finite()
+            || !(0.0..=4.0).contains(&self.saturation)
+            || !self.temperature_kelvin.is_finite()
+            || !(2000.0..=12_000.0).contains(&self.temperature_kelvin)
+            || !self.tint.is_finite()
+            || !(-1.0..=1.0).contains(&self.tint)
+        {
+            return Err(CameraDevelopmentError::InvalidRenderingIntent);
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderedCameraRaster {
+    pub width: u32,
+    pub height: u32,
+    /// Scene-linear ACEScg with the camera-authored rendering intent applied.
+    pub acescg: Vec<LinearRgb>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RawDevelopmentPlan {
     pub maximum_code: u32,
@@ -84,6 +134,103 @@ pub enum CameraDevelopmentError {
     InvalidSensorProfile,
     InvalidColorMatrix,
     NonFiniteDevelopedPixel,
+    InvalidRenderingIntent,
+}
+
+/// Applies the camera maker's rendering intent without choosing an output encoding.
+/// Exposure and chromatic intent are linear operations; contrast is a signed scene-linear
+/// power around middle gray so finite negative and above-one values remain representable.
+pub fn apply_camera_rendering_intent(
+    input: LinearRgb,
+    intent: CameraRenderingIntent,
+) -> Result<LinearRgb, CameraDevelopmentError> {
+    let intent = intent.validate()?;
+    let gains = rendering_white_gains(intent.temperature_kelvin, intent.tint);
+    let exposure = intent.exposure_ev.exp2();
+    let mut value = LinearRgb::new(
+        input.r * exposure * gains.r,
+        input.g * exposure * gains.g,
+        input.b * exposure * gains.b,
+    );
+    value = LinearRgb::new(
+        signed_contrast(value.r, intent.contrast),
+        signed_contrast(value.g, intent.contrast),
+        signed_contrast(value.b, intent.contrast),
+    );
+    let luminance = value.r * 0.272_228_72 + value.g * 0.674_081_74 + value.b * 0.053_689_517;
+    let result = LinearRgb::new(
+        luminance + (value.r - luminance) * intent.saturation,
+        luminance + (value.g - luminance) * intent.saturation,
+        luminance + (value.b - luminance) * intent.saturation,
+    );
+    if [result.r, result.g, result.b]
+        .into_iter()
+        .any(|v| !v.is_finite())
+    {
+        return Err(CameraDevelopmentError::NonFiniteDevelopedPixel);
+    }
+    Ok(result)
+}
+
+pub fn render_developed_camera(
+    developed: &DevelopedCameraRaster,
+    intent: CameraRenderingIntent,
+) -> Result<RenderedCameraRaster, CameraDevelopmentError> {
+    intent.validate()?;
+    Ok(RenderedCameraRaster {
+        width: developed.width,
+        height: developed.height,
+        acescg: developed
+            .acescg
+            .iter()
+            .copied()
+            .map(|pixel| apply_camera_rendering_intent(pixel, intent))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn signed_contrast(value: f32, contrast: f32) -> f32 {
+    value.signum() * 0.18 * (value.abs() / 0.18).powf(contrast)
+}
+
+fn rendering_white_gains(temperature_kelvin: f32, tint: f32) -> LinearRgb {
+    let t = temperature_kelvin;
+    let x = if t <= 4000.0 {
+        -0.266_123_9e9 / t.powi(3) - 0.234_358e6 / t.powi(2) + 0.877_695_6e3 / t + 0.179_910
+    } else {
+        -3.025_846_9e9 / t.powi(3) + 2.107_038e6 / t.powi(2) + 0.222_634_7e3 / t + 0.240_390
+    };
+    let mut y = if t <= 2222.0 {
+        -1.106_381_4 * x.powi(3) - 1.348_110_2 * x.powi(2) + 2.185_558_3 * x - 0.202_196_83
+    } else if t <= 4000.0 {
+        -0.954_947_6 * x.powi(3) - 1.374_185_9 * x.powi(2) + 2.091_370_2 * x - 0.167_488_67
+    } else {
+        3.081_758 * x.powi(3) - 5.873_387 * x.powi(2) + 3.751_129_9 * x - 0.370_014_83
+    };
+    y = (y + tint * 0.025).clamp(0.05, 0.85);
+    let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+    let rgb = [
+        1.641_023_4 * xyz[0] - 0.324_803_3 * xyz[1] - 0.236_424_7 * xyz[2],
+        -0.663_662_9 * xyz[0] + 1.615_331_6 * xyz[1] + 0.016_756_35 * xyz[2],
+        0.011_721_9 * xyz[0] - 0.008_284_44 * xyz[1] + 0.988_394_9 * xyz[2],
+    ];
+    let neutral = rendering_white_raw(6500.0);
+    LinearRgb::new(
+        rgb[0] / neutral[0],
+        rgb[1] / neutral[1],
+        rgb[2] / neutral[2],
+    )
+}
+
+fn rendering_white_raw(t: f32) -> [f32; 3] {
+    let x = -3.025_846_9e9 / t.powi(3) + 2.107_038e6 / t.powi(2) + 0.222_634_7e3 / t + 0.240_390;
+    let y = 3.081_758 * x.powi(3) - 5.873_387 * x.powi(2) + 3.751_129_9 * x - 0.370_014_83;
+    let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+    [
+        1.641_023_4 * xyz[0] - 0.324_803_3 * xyz[1] - 0.236_424_7 * xyz[2],
+        -0.663_662_9 * xyz[0] + 1.615_331_6 * xyz[1] + 0.016_756_35 * xyz[2],
+        0.011_721_9 * xyz[0] - 0.008_284_44 * xyz[1] + 0.988_394_9 * xyz[2],
+    ]
 }
 
 /// Replaceable compute boundary for the one authoritative RAW-development operation.
@@ -555,6 +702,9 @@ impl fmt::Display for CameraDevelopmentError {
             Self::InvalidSensorProfile => "sensor profile is invalid",
             Self::InvalidColorMatrix => "sensor-to-ACEScg matrix cannot be resolved",
             Self::NonFiniteDevelopedPixel => "camera development produced a non-finite pixel",
+            Self::InvalidRenderingIntent => {
+                "camera rendering intent is outside its finite authored domain"
+            }
         })
     }
 }
@@ -580,6 +730,64 @@ mod tests {
             adc_bits: 16,
             bloom: SensorBloomProfile::NEUTRAL,
         }
+    }
+
+    #[test]
+    fn neutral_rendering_intent_is_identity_for_extended_linear_values() {
+        for input in [
+            LinearRgb::new(-0.1, 0.18, 2.0),
+            LinearRgb::new(0.0, 0.0, 0.0),
+            LinearRgb::new(0.4, 0.2, 0.1),
+        ] {
+            let output = apply_camera_rendering_intent(input, CameraRenderingIntent::NEUTRAL)
+                .expect("neutral intent");
+            assert!(
+                (output.r - input.r).abs() < 2.0e-6,
+                "{input:?} -> {output:?}"
+            );
+            assert!(
+                (output.g - input.g).abs() < 2.0e-6,
+                "{input:?} -> {output:?}"
+            );
+            assert!(
+                (output.b - input.b).abs() < 2.0e-6,
+                "{input:?} -> {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rendering_intent_controls_are_independent_of_output_encoding() {
+        let input = LinearRgb::new(0.4, 0.2, 0.1);
+        let exposed = apply_camera_rendering_intent(
+            input,
+            CameraRenderingIntent {
+                exposure_ev: 1.0,
+                ..CameraRenderingIntent::NEUTRAL
+            },
+        )
+        .expect("exposure intent");
+        assert!((exposed.r - 0.8).abs() < 3.0e-6);
+        let monochrome = apply_camera_rendering_intent(
+            input,
+            CameraRenderingIntent {
+                saturation: 0.0,
+                ..CameraRenderingIntent::NEUTRAL
+            },
+        )
+        .expect("achromatic intent");
+        assert_eq!(monochrome.r, monochrome.g);
+        assert_eq!(monochrome.g, monochrome.b);
+        let warm = apply_camera_rendering_intent(
+            input,
+            CameraRenderingIntent {
+                temperature_kelvin: 3200.0,
+                tint: 0.1,
+                ..CameraRenderingIntent::NEUTRAL
+            },
+        )
+        .expect("chromatic intent");
+        assert_ne!(warm, input);
     }
 
     #[test]
