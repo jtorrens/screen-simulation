@@ -16,6 +16,7 @@ import Testing
         "SCREEN_MOIRE_RESOURCE_ROOT",
         "SCREEN_MOIRE_DIAGNOSTIC_DIR",
         "SCREEN_MOIRE_DIAGNOSTIC_IDEAL_FULL_RGB",
+        "SCREEN_MOIRE_RECORDING_DIAGNOSTIC",
     ]
     let unexpectedInvocationSettings = Set(processSettings.keys.filter {
         ($0.hasPrefix("SCREEN_MOIRE_") && !allowedInvocationSettings.contains($0))
@@ -500,6 +501,13 @@ import Testing
         baseline: baseline,
         to: directory
     )
+    if ProcessInfo.processInfo.environment["SCREEN_MOIRE_RECORDING_DIAGNOSTIC"] == "1" {
+        try writeMoireRecordingDiagnostic(
+            cameraRendered: baseline.frame,
+            context: context,
+            to: directory
+        )
+    }
     print(
         "MOIRE_VARIANT name=baseline hash=\(baseline.hash) "
             + "meanChroma=\(baseline.meanChroma) p95Chroma=\(baseline.p95Chroma) "
@@ -760,6 +768,7 @@ private struct MoireVariant {
     let meanChroma: Double
     let p95Chroma: Double
     let metalSubmitToResultMilliseconds: Double
+    let frame: StudioColorMetalFrame
 }
 
 @MainActor
@@ -858,8 +867,72 @@ private func renderMoireVariant(
         hash: hash,
         meanChroma: chroma.reduce(0, +) / Double(chroma.count),
         p95Chroma: chroma[min(chroma.count - 1, Int(Double(chroma.count) * 0.95))],
-        metalSubmitToResultMilliseconds: Double(metalElapsedNanoseconds) / 1_000_000
+        metalSubmitToResultMilliseconds: Double(metalElapsedNanoseconds) / 1_000_000,
+        frame: frameResult
     )
+}
+
+@MainActor
+private func writeMoireRecordingDiagnostic(
+    cameraRendered: StudioColorMetalFrame,
+    context: MoireRenderContext,
+    to directory: URL
+) throws {
+    let p3Output = try #require(StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-display-p3-sdr-100"
+    })
+    let cameraP3 = try context.display.renderRGBA16(cameraRendered, output: p3Output)
+    let output = try RecordingPhaseExecutor.output(
+        cameraRendered: cameraRendered,
+        transformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        display: context.display
+    )
+    let codec = try RecordingPhaseExecutor.codec(
+        output: output,
+        profileID: RecordingPhaseExecutor.iphoneHeicProfileID,
+        character: 1,
+        display: context.display
+    )
+    let output16 = output.rgba8.map { UInt16($0) * 257 }
+    let codec16 = codec.decodedRGBA8.map { UInt16($0) * 257 }
+    let metadata = try JSONSerialization.data(withJSONObject: [
+        "schema": "ScreenSimulation.RecordingChainDiagnostic",
+        "version": 1,
+        "recordingOutputTransformID": RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        "recordingProfileID": RecordingPhaseExecutor.iphoneHeicProfileID,
+        "quality": RecordingPhaseExecutor.calibratedHeicQuality,
+    ], options: [.sortedKeys])
+    for (name, rgba) in [
+        ("camera-intent-display-p3", cameraP3),
+        ("recording-output-display-p3", output16),
+        ("recording-codec-display-p3", codec16),
+    ] {
+        let png = try FrameCheckPNG.encode(
+            rgba16: rgba,
+            width: cameraRendered.width,
+            height: cameraRendered.height,
+            colorSpace: CGColorSpace(name: CGColorSpace.displayP3),
+            metadata: metadata
+        )
+        try png.write(to: directory.appendingPathComponent("\(name).png"), options: .atomic)
+    }
+    try codec.encodedData.write(
+        to: directory.appendingPathComponent("recording-codec.heic"), options: .atomic
+    )
+    let manifest: [String: Any] = [
+        "schema": "ScreenSimulation.RecordingChainDiagnostic",
+        "version": 1,
+        "recordingOutputTransformID": RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        "recordingProfileID": RecordingPhaseExecutor.iphoneHeicProfileID,
+        "quality": RecordingPhaseExecutor.calibratedHeicQuality,
+        "encodedBytes": codec.encodedBytes,
+        "encodedSHA256": codec.encodedSHA256Hex,
+        "cameraIntentP3VersusRecordingOutputMaximumCodeDifference": zip(
+            cameraP3, output16
+        ).map { abs(Int($0) - Int($1)) }.max() ?? 0,
+    ]
+    try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+        .write(to: directory.appendingPathComponent("recording-chain-diagnostic.json"))
 }
 
 @MainActor
