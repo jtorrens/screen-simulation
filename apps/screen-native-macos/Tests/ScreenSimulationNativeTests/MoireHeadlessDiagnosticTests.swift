@@ -15,6 +15,7 @@ import Testing
         "SCREEN_MOIRE_FIXTURE_PATH",
         "SCREEN_MOIRE_RESOURCE_ROOT",
         "SCREEN_MOIRE_DIAGNOSTIC_DIR",
+        "SCREEN_MOIRE_DIAGNOSTIC_IDEAL_FULL_RGB",
     ]
     let unexpectedInvocationSettings = Set(processSettings.keys.filter {
         ($0.hasPrefix("SCREEN_MOIRE_") && !allowedInvocationSettings.contains($0))
@@ -814,7 +815,16 @@ private func renderMoireVariant(
     let snapshot = try await moireTerminalSnapshot(job)
     let metalElapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - metalStarted
     #expect(snapshot.state == .complete)
-    let frameResult = try #require(snapshot.frame)
+    var frameResult = try #require(snapshot.frame)
+    if ProcessInfo.processInfo.environment["SCREEN_MOIRE_DIAGNOSTIC_IDEAL_FULL_RGB"] == "1" {
+        #expect(intermediate == .lensProjection)
+        frameResult = try moireIdealFullRGBControl(
+            lens: frameResult,
+            context: context,
+            pipeline: pipeline,
+            contributions: contributions
+        )
+    }
     let rgba8 = try context.display.renderRGBA8(frameResult, output: context.output)
     let rgba16: [UInt16]? = if ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_DIAGNOSTIC_DIR"
@@ -845,6 +855,96 @@ private func renderMoireVariant(
         p95Chroma: chroma[min(chroma.count - 1, Int(Double(chroma.count) * 0.95))],
         metalSubmitToResultMilliseconds: Double(metalElapsedNanoseconds) / 1_000_000
     )
+}
+
+@MainActor
+private func moireIdealFullRGBControl(
+    lens: StudioColorMetalFrame,
+    context: MoireRenderContext,
+    pipeline: PhysicalPipelineAuthoringState,
+    contributions: [PhysicalStageContribution]
+) throws -> StudioColorMetalFrame {
+    let shutterAmount = try #require(contributions.first {
+        $0.stage == PhysicalStageID.capture(.exposureShutter)
+    }?.amount)
+    let open = Double(pipeline.shutterMotion.openOffsetNumerator)
+        / Double(pipeline.shutterMotion.openOffsetDenominator)
+    let close = Double(pipeline.shutterMotion.closeOffsetNumerator)
+        / Double(pipeline.shutterMotion.closeOffsetDenominator)
+    let shutterBase = (close - open) * pow(2, -pipeline.shutterMotion.neutralDensityStops)
+    let shutterScale = pow(shutterBase, shutterAmount)
+    let developScale = 0.18 / pipeline.develop.middleGrayIlluminanceSeconds
+        * pow(2, pipeline.develop.exposureEV)
+    let scale = Float(
+        shutterScale * context.imported.device.whiteLevelNits
+            * pipeline.radiometricCalibration.effectiveSensorExposureScale * developScale
+    )
+    let device = lens.texture.device
+    guard let queue = device.makeCommandQueue() else {
+        throw StudioColorMetalError.unavailableQueue
+    }
+    let source = """
+    #include <metal_stdlib>
+    using namespace metal;
+    kernel void ideal_full_rgb(
+        texture2d<float, access::read> input [[texture(0)]],
+        texture2d<float, access::write> output [[texture(1)]],
+        constant float &scale [[buffer(0)]],
+        uint2 gid [[thread_position_in_grid]]) {
+        if (gid.x >= output.get_width() || gid.y >= output.get_height()) return;
+        float2 sourceSize = float2(input.get_width(), input.get_height());
+        float2 outputSize = float2(output.get_width(), output.get_height());
+        float2 minimum = float2(gid) * sourceSize / outputSize;
+        float2 maximum = float2(gid + 1) * sourceSize / outputSize;
+        uint2 first = uint2(floor(minimum));
+        uint2 last = uint2(ceil(maximum));
+        float3 sum = 0.0f;
+        float area = 0.0f;
+        for (uint y = first.y; y < last.y; ++y) {
+            float overlapY = max(0.0f, min(maximum.y, float(y + 1)) - max(minimum.y, float(y)));
+            for (uint x = first.x; x < last.x; ++x) {
+                float overlapX = max(0.0f, min(maximum.x, float(x + 1)) - max(minimum.x, float(x)));
+                float weight = overlapX * overlapY;
+                sum += input.read(uint2(min(x, input.get_width() - 1), min(y, input.get_height() - 1))).rgb * weight;
+                area += weight;
+            }
+        }
+        output.write(float4(sum / area * scale, 1.0f), gid);
+    }
+    """
+    let library = try device.makeLibrary(source: source, options: nil)
+    guard let function = library.makeFunction(name: "ideal_full_rgb") else {
+        throw StudioColorMetalError.missingShaderFunction
+    }
+    let state = try device.makeComputePipelineState(function: function)
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba32Float,
+        width: Int(pipeline.sensor.nativeWidth),
+        height: Int(pipeline.sensor.nativeHeight),
+        mipmapped: false
+    )
+    descriptor.usage = [.shaderRead, .shaderWrite]
+    descriptor.storageMode = .private
+    guard let output = device.makeTexture(descriptor: descriptor),
+          let command = queue.makeCommandBuffer(),
+          let encoder = command.makeComputeCommandEncoder()
+    else { throw StudioColorMetalError.textureCreation }
+    var authoredScale = scale
+    encoder.setComputePipelineState(state)
+    encoder.setTexture(lens.texture, index: 0)
+    encoder.setTexture(output, index: 1)
+    encoder.setBytes(&authoredScale, length: MemoryLayout<Float>.size, index: 0)
+    let width = state.threadExecutionWidth
+    let height = max(1, state.maxTotalThreadsPerThreadgroup / width)
+    encoder.dispatchThreads(
+        MTLSize(width: output.width, height: output.height, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: width, height: height, depth: 1)
+    )
+    encoder.endEncoding()
+    command.commit()
+    command.waitUntilCompleted()
+    guard command.status == .completed else { throw StudioColorMetalError.commandFailure }
+    return StudioColorMetalFrame(texture: output)
 }
 
 private func writeMoireVariant(_ variant: MoireVariant, to directory: URL) throws {
