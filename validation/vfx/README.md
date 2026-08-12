@@ -13,11 +13,12 @@ El fixture actual fija:
 - iPhone 16e, 5712×4284, lente integrada de 4,2 mm, VFX 2D DOF,
   foco 0,11 m y f/1,64.
 - 1/25 s, EI 200, ND 0, revelado 0 EV y ocho exposiciones separadas 1 EV.
-- Cristal `cover-matte-ar` completamente materializado en el fixture;
-  su rugosidad actual es 0,65 y su haze 0,03.
-- HDRI sintético mixed-light, Linear Rec.709, 100 cd/m² por unidad, −3 EV
-  y rotación horizontal 12°. El centro útil del panorama es la región que
-  debe reflejarse en esta pose.
+- Cristal `cover-matte-ar` completamente materializado en el fixture, con
+  roughness GGX 0,25 y haze 0,03.
+- HDRI sintético mixed-light, Linear Rec.709, 100 cd/m² por unidad y −3 EV.
+  El recurso permanente incorpora una rotación de −25° sobre X y el entorno
+  aplica −57,3° sobre Y. La luz de techo entre los dos cuadros queda en el
+  cuadrante superior derecho.
 - Checkpoint acumulativo `developed-acescg` y PNG de salida de 16 bits.
 
 ## Ejecución repetible
@@ -25,7 +26,7 @@ El fixture actual fija:
 El HDRI permanente debe existir bajo el root explícito indicado al runner:
 
 ```text
-<resource-root>/hdr-environments/rustic_mixed_light_hdri_4k.exr
+<resource-root>/hdr-environments/rustic_mixed_light_hdri_4k-rx-minus25.exr
 ```
 
 Ejemplo:
@@ -47,8 +48,8 @@ Una prueba que cambie un parámetro usa un fixture completo nuevo; no se admiten
 overrides de línea de comandos ni herencia parcial. El fixture candidato debe
 nombrar el parámetro en su descripción. Si se acepta, sustituye íntegramente a
 `iphone-asus-current.json`, se actualiza este documento y se elimina el fixture
-candidato. `acceptedOutput` permanece `null` mientras el resultado no haya sido
-aceptado visualmente; al aceptarlo contiene los hashes RGBA8 y RGBA16 actuales.
+candidato. `acceptedOutput` contiene los hashes RGBA8 y RGBA16 del resultado
+aceptado.
 
 Así, el repositorio solo describe el ajuste vigente y no conserva valores
 anteriores que puedan volver a seleccionarse accidentalmente.

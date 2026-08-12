@@ -2,8 +2,8 @@
   "schema": "ScreenSimulation.VfxReferenceFixture",
   "version": 1,
   "id": "iphone-asus-current",
-  "description": "ASUS PA329CV photographed with the iPhone 16e reference capture and the synthetic mixed-light HDRI.",
-  "status": "candidate",
+  "description": "ASUS PA329CV and iPhone 16e reference with GGX roughness 0.25; the permanent HDRI pitch X -25 degrees and environment Y rotation -57.3 degrees place the ceiling light in the upper-right quadrant.",
+  "status": "canonical",
   "settings": {
     "SCREEN_MOIRE_DEVICE_ID": "lcd-asus-proart-pa329cv",
     "SCREEN_MOIRE_DEVICE_WIDTH": "3840",
@@ -19,7 +19,7 @@
     "SCREEN_MOIRE_COVER_ABSORPTION_R": "0.012",
     "SCREEN_MOIRE_COVER_ABSORPTION_G": "0.012",
     "SCREEN_MOIRE_COVER_ABSORPTION_B": "0.012",
-    "SCREEN_MOIRE_COVER_ROUGHNESS": "0.65",
+    "SCREEN_MOIRE_COVER_ROUGHNESS": "0.25",
     "SCREEN_MOIRE_COVER_HAZE": "0.03",
     "SCREEN_MOIRE_COVER_GLOW_PROFILE_STRENGTH": "1",
     "SCREEN_MOIRE_COVER_GLOW_SCATTER_FRACTION": "0.10",
@@ -36,7 +36,7 @@
     "SCREEN_MOIRE_ENVIRONMENT_INPUT_TRANSFORM_ID": "linear-rec709",
     "SCREEN_MOIRE_ENVIRONMENT_UNIT_RADIANCE_CDM2": "100",
     "SCREEN_MOIRE_ENVIRONMENT_EXPOSURE_STOPS": "-3",
-    "SCREEN_MOIRE_ENVIRONMENT_ROTATION_DEGREES": "12",
+    "SCREEN_MOIRE_ENVIRONMENT_ROTATION_DEGREES": "-57.3",
     "SCREEN_MOIRE_DISTANCE_METERS": "0.11",
     "SCREEN_MOIRE_ORBIT_X_DEGREES": "0",
     "SCREEN_MOIRE_ORBIT_Y_DEGREES": "12",
@@ -68,8 +68,8 @@
     {
       "setting": "SCREEN_MOIRE_ENVIRONMENT_SOURCE_PATH",
       "root": "resource-root",
-      "relativePath": "hdr-environments/rustic_mixed_light_hdri_4k.exr",
-      "sha256": "6e00a37d82bfce86b619e4b5f07c1879135b47dd1c79b283148c3fa31a914917"
+      "relativePath": "hdr-environments/rustic_mixed_light_hdri_4k-rx-minus25.exr",
+      "sha256": "efb9e5b6b3bf1ef415ee5a15b869239007188b9fceebd3409b47d35ac871968d"
     },
     {
       "setting": null,
@@ -78,5 +78,8 @@
       "sha256": "35cc1e4191ad17dc75a37d5fb1a02b8e45c98a716e12bed0941b55381c71fdd8"
     }
   ],
-  "acceptedOutput": null
+  "acceptedOutput": {
+    "pixelRGBA8SHA256": "2bfb7760cce516860dfa2142e25f80af77479593c08abe7a16ee8f08c8d045c3",
+    "pixelRGBA16SHA256": "a5c59741119e7e906d0a97b781b4480459cb46af57a4e30aa3be5e15abff0aea"
+  }
 }
