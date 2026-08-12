@@ -1,5 +1,5 @@
 use screen_application::{RasterPlacement, RollingDirection, SensorReadout};
-use screen_camera::CameraDevelopment;
+use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{
     CameraOutputTransform, DeviceColorTarget, OcioInputTransform, SourceColorInterpretation,
 };
@@ -21,9 +21,9 @@ use screen_panel::{
 };
 use screen_persistence::{
     AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics,
-    CoverGlowDocument, ExactTime, InterpolationSelection, MatrixSelection, PlacementSelection,
-    ProjectPackage, RangeSelection, RollingDirectionSelection, SensorBloomDocument,
-    SensorReadoutDocument, SourceColorSelection, StripeSelection,
+    CameraRenderingIntentDocument, CoverGlowDocument, ExactTime, InterpolationSelection,
+    MatrixSelection, PlacementSelection, ProjectPackage, RangeSelection, RollingDirectionSelection,
+    SensorBloomDocument, SensorReadoutDocument, SourceColorSelection, StripeSelection,
     TransformKeyframe as StoredTransform,
 };
 use screen_sensor::{BayerPattern, SensorBloomProfile, SensorProfile};
@@ -48,6 +48,7 @@ pub struct ProjectScene {
     pub sensor_noise_seed: u64,
     pub neutral_density_stops: f32,
     pub camera_development: CameraDevelopment,
+    pub camera_rendering_intent: CameraRenderingIntent,
     pub camera_output_transform: CameraOutputTransform,
 }
 
@@ -305,6 +306,15 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 * package.shot.reference_exposure_index
                 / package.shot.exposure_index,
             develop_exposure_ev: package.shot.develop_exposure_ev,
+        }
+        .validate()
+        .map_err(|error| error.to_string())?,
+        camera_rendering_intent: CameraRenderingIntent {
+            exposure_ev: package.shot.camera_rendering_intent.exposure_ev,
+            contrast: package.shot.camera_rendering_intent.contrast,
+            saturation: package.shot.camera_rendering_intent.saturation,
+            temperature_kelvin: package.shot.camera_rendering_intent.temperature_kelvin,
+            tint: package.shot.camera_rendering_intent.tint,
         }
         .validate()
         .map_err(|error| error.to_string())?,
@@ -593,6 +603,13 @@ mod tests {
                 middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
                 reference_exposure_index: 800.0,
                 develop_exposure_ev: 0.0,
+                camera_rendering_intent: CameraRenderingIntentDocument {
+                    exposure_ev: 0.5,
+                    contrast: 1.10,
+                    saturation: 1.25,
+                    temperature_kelvin: 6500.0,
+                    tint: 0.0,
+                },
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
                 environment: EnvironmentDocument {
                     character_strength: 1.0,
@@ -655,6 +672,16 @@ mod tests {
             0.0125
         );
         assert_eq!(scene.camera_development.develop_exposure_ev, 0.0);
+        assert_eq!(
+            scene.camera_rendering_intent,
+            CameraRenderingIntent {
+                exposure_ev: 0.5,
+                contrast: 1.10,
+                saturation: 1.25,
+                temperature_kelvin: 6500.0,
+                tint: 0.0,
+            }
+        );
         assert_eq!(
             scene.camera_output_transform,
             CameraOutputTransform::SrgbSdr100

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 11;
+pub const CURRENT_VERSION: u32 = 12;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -361,8 +361,19 @@ pub struct ShotDocument {
     pub middle_gray_illuminance_seconds_at_reference_ei: f32,
     pub reference_exposure_index: f32,
     pub develop_exposure_ev: f32,
+    pub camera_rendering_intent: CameraRenderingIntentDocument,
     pub camera_output_transform_id: String,
     pub environment: EnvironmentDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraRenderingIntentDocument {
+    pub exposure_ev: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub temperature_kelvin: f32,
+    pub tint: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -506,6 +517,20 @@ impl ProjectPackage {
             || !(25.0..=12_800.0).contains(&self.shot.reference_exposure_index)
             || !self.shot.develop_exposure_ev.is_finite()
             || !(-16.0..=16.0).contains(&self.shot.develop_exposure_ev)
+            || !self.shot.camera_rendering_intent.exposure_ev.is_finite()
+            || !(-8.0..=8.0).contains(&self.shot.camera_rendering_intent.exposure_ev)
+            || !self.shot.camera_rendering_intent.contrast.is_finite()
+            || !(0.25..=4.0).contains(&self.shot.camera_rendering_intent.contrast)
+            || !self.shot.camera_rendering_intent.saturation.is_finite()
+            || !(0.0..=4.0).contains(&self.shot.camera_rendering_intent.saturation)
+            || !self
+                .shot
+                .camera_rendering_intent
+                .temperature_kelvin
+                .is_finite()
+            || !(2000.0..=12_000.0).contains(&self.shot.camera_rendering_intent.temperature_kelvin)
+            || !self.shot.camera_rendering_intent.tint.is_finite()
+            || !(-1.0..=1.0).contains(&self.shot.camera_rendering_intent.tint)
             || self.shot.camera_output_transform_id.is_empty()
         {
             return Err(PersistenceError::InvalidCameraDevelopment);
@@ -1316,6 +1341,13 @@ mod tests {
                 middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
                 reference_exposure_index: 800.0,
                 develop_exposure_ev: 0.0,
+                camera_rendering_intent: CameraRenderingIntentDocument {
+                    exposure_ev: 0.5,
+                    contrast: 1.10,
+                    saturation: 1.25,
+                    temperature_kelvin: 6500.0,
+                    tint: 0.0,
+                },
                 camera_output_transform_id: "aces2-srgb-sdr-100".into(),
                 environment: EnvironmentDocument {
                     character_strength: 1.0,
