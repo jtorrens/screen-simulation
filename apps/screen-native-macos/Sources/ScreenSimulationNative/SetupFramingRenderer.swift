@@ -33,6 +33,7 @@ final class SetupFramingRenderer {
         var screenQuaternion: SIMD4<Float>
         var screenHeightShiftY: SIMD4<Float>
         var raster: SIMD4<UInt32>
+        var previewRaster: SIMD4<UInt32>
         var sourceDevice: SIMD4<UInt32>
         var modes: SIMD4<UInt32>
     }
@@ -70,9 +71,14 @@ final class SetupFramingRenderer {
         deliveryWidth: Int,
         deliveryHeight: Int,
         deliveryPlacementID: String,
-        deliveryBackgroundID: String
+        deliveryBackgroundID: String,
+        previewWidth: Int? = nil,
+        previewHeight: Int? = nil
     ) throws -> Result {
+        let outputWidth = previewWidth ?? deliveryWidth
+        let outputHeight = previewHeight ?? deliveryHeight
         guard deliveryWidth > 0, deliveryHeight > 0,
+              outputWidth > 0, outputHeight > 0,
               authored.cameraPose.position.count == 3,
               authored.cameraPose.quaternion.count == 4,
               authored.screenPose.position.count == 3,
@@ -84,8 +90,8 @@ final class SetupFramingRenderer {
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float,
-            width: deliveryWidth,
-            height: deliveryHeight,
+            width: outputWidth,
+            height: outputHeight,
             mipmapped: false
         )
         descriptor.usage = [.shaderRead, .shaderWrite]
@@ -132,6 +138,7 @@ final class SetupFramingRenderer {
                 UInt32(deliveryWidth), UInt32(deliveryHeight),
                 cameraRaster.nativeWidth, cameraRaster.nativeHeight
             ),
+            previewRaster: SIMD4(UInt32(outputWidth), UInt32(outputHeight), 0, 0),
             sourceDevice: SIMD4(
                 UInt32(source.width), UInt32(source.height),
                 UInt32(device.nativeWidth), UInt32(device.nativeHeight)
@@ -153,7 +160,7 @@ final class SetupFramingRenderer {
         let width = pipeline.threadExecutionWidth
         let height = max(1, pipeline.maxTotalThreadsPerThreadgroup / width)
         encoder.dispatchThreads(
-            MTLSize(width: deliveryWidth, height: deliveryHeight, depth: 1),
+            MTLSize(width: outputWidth, height: outputHeight, depth: 1),
             threadsPerThreadgroup: MTLSize(width: width, height: height, depth: 1)
         )
         encoder.endEncoding()
@@ -164,7 +171,8 @@ final class SetupFramingRenderer {
         let boundary = Self.projectedBoundary(
             authored: authored, device: device,
             deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
-            deliveryPlacement: deliveryPlacement
+            deliveryPlacement: deliveryPlacement,
+            outputWidth: outputWidth, outputHeight: outputHeight
         )
         return Result(frame: frame, boundary: boundary)
     }
@@ -189,7 +197,9 @@ final class SetupFramingRenderer {
         device: DeviceDefinition,
         deliveryWidth: Int,
         deliveryHeight: Int,
-        deliveryPlacement: UInt32
+        deliveryPlacement: UInt32,
+        outputWidth: Int,
+        outputHeight: Int
     ) -> [CGPoint] {
         let cameraQ = authored.cameraPose.quaternion.map(Float.init)
         let screenQ = authored.screenPose.quaternion.map(Float.init)
@@ -233,7 +243,11 @@ final class SetupFramingRenderer {
             let outputPixel = deliveryPlacement == 1
                 ? cameraPixel + offset
                 : (cameraPixel + 0.5) * scale - 0.5 + offset
-            return CGPoint(x: CGFloat(outputPixel.x), y: CGFloat(outputPixel.y))
+            let preview = (outputPixel + 0.5) * SIMD2<Float>(
+                Float(outputWidth) / Float(deliveryWidth),
+                Float(outputHeight) / Float(deliveryHeight)
+            ) - 0.5
+            return CGPoint(x: CGFloat(preview.x), y: CGFloat(preview.y))
         }
     }
 
@@ -250,6 +264,7 @@ final class SetupFramingRenderer {
         float4 screen_quaternion;
         float4 screen_height_shift_y;
         uint4 raster;
+        uint4 preview_raster;
         uint4 source_device;
         uint4 modes;
     };
@@ -262,16 +277,18 @@ final class SetupFramingRenderer {
     inline bool camera_uv(uint2 p, constant SetupParameters& s, thread float2& uv) {
         const float2 output_size = float2(s.raster.xy);
         const float2 camera_size = float2(s.raster.zw);
+        const float2 output_pixel = (float2(p) + 0.5f)
+            * output_size / float2(s.preview_raster.xy) - 0.5f;
         float2 camera_pixel;
         if (s.modes.y == 0 || s.modes.y == 2) {
             const float scale = s.modes.y == 0
                 ? min(output_size.x / camera_size.x, output_size.y / camera_size.y)
                 : max(output_size.x / camera_size.x, output_size.y / camera_size.y);
             const float2 offset = (output_size - camera_size * scale) * 0.5f;
-            camera_pixel = (float2(p) + 0.5f - offset) / scale - 0.5f;
+            camera_pixel = (output_pixel + 0.5f - offset) / scale - 0.5f;
         } else {
             const int2 offset = (int2(s.raster.xy) - int2(s.raster.zw)) / 2;
-            camera_pixel = float2(int2(p) - offset);
+            camera_pixel = output_pixel - float2(offset);
         }
         if (any(camera_pixel < -0.5f) || any(camera_pixel >= camera_size - 0.5f)) return false;
         uv = (camera_pixel + 0.5f) / camera_size;
@@ -338,7 +355,7 @@ final class SetupFramingRenderer {
         constant SetupParameters& s [[buffer(0)]],
         uint2 p [[thread_position_in_grid]]
     ) {
-        if (any(p >= s.raster.xy)) return;
+        if (any(p >= s.preview_raster.xy)) return;
         const float4 background = s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1);
         float2 camera;
         if (!camera_uv(p, s, camera)) { output.write(background, p); return; }

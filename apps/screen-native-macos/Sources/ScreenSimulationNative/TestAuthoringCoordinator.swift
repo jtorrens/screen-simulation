@@ -33,7 +33,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let deviceEOTFGamma: Double
     let whiteLuminanceNits: Double
     let placementID: String
-    let previewQualityID: String
+    var previewQualityID: String
     var frameRate: Double
     let subpixelGeometryAmount: Double
     let panelUniformityAmount: Double
@@ -41,16 +41,16 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let capturePresetID: String
     let captureRasterModeID: String
     let lensEvaluationModelID: String
-    let geometryModeID: String
+    var geometryModeID: String
     let cameraDistanceMeters: Double
     let cameraOrbitXDegrees: Double
     let cameraOrbitYDegrees: Double
-    let cameraPositionXMeters: Double
-    let cameraPositionYMeters: Double
-    let cameraPositionZMeters: Double
-    let cameraRotationXDegrees: Double
-    let cameraRotationYDegrees: Double
-    let cameraRotationZDegrees: Double
+    var cameraPositionXMeters: Double
+    var cameraPositionYMeters: Double
+    var cameraPositionZMeters: Double
+    var cameraRotationXDegrees: Double
+    var cameraRotationYDegrees: Double
+    var cameraRotationZDegrees: Double
     let screenPositionXMeters: Double
     let screenPositionYMeters: Double
     let screenPositionZMeters: Double

@@ -161,6 +161,7 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceInputTransformID: String?
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
+    private var cameraNavigationLatestPose: CameraNavigationPose?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -689,6 +690,7 @@ final class WorkspaceModel: ObservableObject {
                 / (2 * authored.sceneLens.focalLengthMillimeters)
         )
         cameraNavigationStartSelection = selection
+        cameraNavigationLatestPose = nil
         cameraNavigationGesture = .init(
             operation: operation,
             startPose: .init(
@@ -720,12 +722,17 @@ final class WorkspaceModel: ObservableObject {
                 gesture: gesture, deltaPixels: Double(delta.width)
             )
         }
-        applyCameraNavigationPose(pose)
+        cameraNavigationLatestPose = pose
+        applyTransientCameraNavigationPose(pose, viewportSize: gesture.viewportSize)
     }
 
     func endCameraNavigation(undoManager: UndoManager?) {
         guard cameraNavigationGesture != nil else { return }
         cameraNavigationGesture = nil
+        if let pose = cameraNavigationLatestPose {
+            commitCameraNavigationPose(pose)
+        }
+        cameraNavigationLatestPose = nil
         if let prior = cameraNavigationStartSelection,
            prior != testAuthoringSelection {
             let manager = UndoManagerBox(undoManager)
@@ -741,33 +748,44 @@ final class WorkspaceModel: ObservableObject {
         cameraNavigationStartSelection = nil
     }
 
-    private func applyCameraNavigationPose(_ pose: CameraNavigationPose) {
+    private func applyTransientCameraNavigationPose(
+        _ pose: CameraNavigationPose,
+        viewportSize: CGSize
+    ) {
+        guard var authored = physicalAuthoringState else { return }
+        authored.cameraPose.position = [pose.position.x, pose.position.y, pose.position.z]
+        authored.cameraPose.quaternion = [
+            pose.orientation.imag.x, pose.orientation.imag.y,
+            pose.orientation.imag.z, pose.orientation.real,
+        ]
+        authored.cameraLookAt = nil
+        physicalAuthoringState = authored
+        physicalModel.setQuality(.setup)
+        publishSetupFraming(interactiveViewportSize: viewportSize)
+    }
+
+    private func commitCameraNavigationPose(_ pose: CameraNavigationPose) {
         guard var selection = testAuthoringSelection else { return }
+        let degrees = PoseRotationProjection.degrees(from: [
+            pose.orientation.imag.x, pose.orientation.imag.y,
+            pose.orientation.imag.z, pose.orientation.real,
+        ])
+        selection.geometryModeID = "free"
+        selection.previewQualityID = "setup"
+        selection.cameraPositionXMeters = pose.position.x
+        selection.cameraPositionYMeters = pose.position.y
+        selection.cameraPositionZMeters = pose.position.z
+        selection.cameraRotationXDegrees = degrees[0]
+        selection.cameraRotationYDegrees = degrees[1]
+        selection.cameraRotationZDegrees = degrees[2]
         do {
-            selection = try RustTestAuthoringCoordinator.apply(
-                .setChoice(controlID: "geometry-mode", optionID: "free"), to: selection
-            )
-            let degrees = PoseRotationProjection.degrees(from: [
-                pose.orientation.imag.x, pose.orientation.imag.y,
-                pose.orientation.imag.z, pose.orientation.real,
-            ])
-            for (id, value) in [
-                ("camera-position-x-meters", pose.position.x),
-                ("camera-position-y-meters", pose.position.y),
-                ("camera-position-z-meters", pose.position.z),
-                ("camera-rotation-x-degrees", degrees[0]),
-                ("camera-rotation-y-degrees", degrees[1]),
-                ("camera-rotation-z-degrees", degrees[2]),
-            ] {
-                selection = try RustTestAuthoringCoordinator.apply(
-                    .setScalar(controlID: id, value: value), to: selection
-                )
-            }
-            selection = try RustTestAuthoringCoordinator.apply(
-                .setChoice(controlID: "preview-quality", optionID: "setup"), to: selection
-            )
             try applyTestAuthoringSelection(selection)
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            if let prior = cameraNavigationStartSelection {
+                try? applyTestAuthoringSelection(prior)
+            }
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func restoreCameraNavigationSelection(
@@ -2004,7 +2022,7 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func publishSetupFraming() {
+    private func publishSetupFraming(interactiveViewportSize: CGSize? = nil) {
         guard let sourceACEScgFrame,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
               let authored = physicalAuthoringState
@@ -2017,6 +2035,21 @@ final class WorkspaceModel: ObservableObject {
             let selection = testAuthoringSelection
             let width = Int(selection?.deliveryWidth ?? UInt32(sourceACEScgFrame.width))
             let height = Int(selection?.deliveryHeight ?? UInt32(sourceACEScgFrame.height))
+            let previewSize: (width: Int?, height: Int?) = if let viewport = interactiveViewportSize {
+                {
+                    let scale = min(
+                        1,
+                        max(1, Double(viewport.width)) / Double(width),
+                        max(1, Double(viewport.height)) / Double(height)
+                    )
+                    return (
+                        max(1, Int((Double(width) * scale).rounded())),
+                        max(1, Int((Double(height) * scale).rounded()))
+                    )
+                }()
+            } else {
+                (nil, nil)
+            }
             let result = try setupFramingRenderer!.render(
                 source: sourceACEScgFrame,
                 sourcePlacement: sourcePlacement,
@@ -2025,7 +2058,9 @@ final class WorkspaceModel: ObservableObject {
                 deliveryWidth: width,
                 deliveryHeight: height,
                 deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
-                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black"
+                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black",
+                previewWidth: previewSize.width,
+                previewHeight: previewSize.height
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary

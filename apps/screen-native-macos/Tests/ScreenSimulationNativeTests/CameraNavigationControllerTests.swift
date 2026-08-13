@@ -3,6 +3,22 @@ import simd
 import Testing
 @testable import ScreenSimulationNative
 
+@Test @MainActor func workspaceNavigationPublishesSetupWithoutPresentationFailure() throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectModelDevice(device, coverGlass: cover)
+
+    workspace.beginCameraNavigation(.pan, viewportSize: CGSize(width: 1_200, height: 800))
+    workspace.updateCameraNavigation(delta: CGSize(width: 180, height: -70))
+    workspace.endCameraNavigation(undoManager: nil)
+
+    #expect(workspace.errorMessage == nil)
+    #expect(workspace.physicalModel.quality == .setup)
+}
+
 private func navigationGesture(
     distance: Double,
     operation: CameraNavigationOperation = .pan,

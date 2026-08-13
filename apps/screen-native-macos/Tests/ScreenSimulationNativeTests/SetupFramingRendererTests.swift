@@ -88,6 +88,13 @@ import Testing
         deliveryWidth: 320, deliveryHeight: 240,
         deliveryPlacementID: "one-to-one", deliveryBackgroundID: "black"
     )
+    let interactive = try renderer.render(
+        source: source, sourcePlacement: .stretch,
+        device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 240,
+        deliveryPlacementID: "fit", deliveryBackgroundID: "black",
+        previewWidth: 160, previewHeight: 120
+    )
 
     #expect(fit.boundary.count == 4)
     #expect(oneToOne.boundary.count == 4)
@@ -95,4 +102,10 @@ import Testing
     #expect(oneToOne.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
     #expect(fit.boundary != oneToOne.boundary)
     #expect(try display.readLinearRGBA(fit.frame) != display.readLinearRGBA(oneToOne.frame))
+    #expect(interactive.frame.width == 160)
+    #expect(interactive.frame.height == 120)
+    for index in fit.boundary.indices {
+        #expect(abs(interactive.boundary[index].x - (fit.boundary[index].x + 0.5) * 0.5 + 0.5) < 0.001)
+        #expect(abs(interactive.boundary[index].y - (fit.boundary[index].y + 0.5) * 0.5 + 0.5) < 0.001)
+    }
 }
