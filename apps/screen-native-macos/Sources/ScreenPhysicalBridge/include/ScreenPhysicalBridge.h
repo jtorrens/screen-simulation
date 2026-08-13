@@ -18,6 +18,7 @@ typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
 #define SCREEN_PHYSICAL_FRAME_ABI_VERSION 14u
+#define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u
 
@@ -358,6 +359,24 @@ typedef struct {
     float rotation_xyzw[4];
     uint32_t interpolation;
 } ScreenPhysicalPoseKnotV2;
+
+typedef struct {
+    uint32_t abi_version;
+    float device_corners_xyz[12];
+    float image_corners_xy[8];
+    uint32_t image_width;
+    uint32_t image_height;
+    float focal_length_millimeters;
+    float sensor_width_millimeters;
+    float sensor_height_millimeters;
+    float lens_shift_xy[2];
+} ScreenPlanarReferenceMatchV1;
+
+typedef struct {
+    float camera_position[3];
+    float camera_rotation_xyzw[4];
+    float maximum_reprojection_error_pixels;
+} ScreenMatchedCameraPoseV1;
 
 typedef struct {
     uint32_t abi_version;
@@ -762,6 +781,11 @@ ScreenPhysicalScreenPoseTrackV2Ref screen_physical_screen_pose_track_v2_create(
 );
 void screen_physical_camera_pose_track_v2_release(ScreenPhysicalCameraPoseTrackV2Ref track);
 void screen_physical_screen_pose_track_v2_release(ScreenPhysicalScreenPoseTrackV2Ref track);
+bool screen_geometry_solve_planar_reference_v1(
+    const ScreenPlanarReferenceMatchV1 *request,
+    ScreenMatchedCameraPoseV1 *result,
+    const char **error_message
+);
 ScreenPhysicalFrameJobRef screen_physical_frame_submit(
     const ScreenPhysicalFrameRequestV2 *request,
     const char **error_message

@@ -34,8 +34,8 @@ use screen_cover::{
     ProceduralEnvironment,
 };
 use screen_geometry::{
-    KeyframeInterpolation, LENS_PRESETS, LensModel, LensPresetAuthority, Quaternion,
-    TransformKeyframe, TransformTrack,
+    KeyframeInterpolation, LENS_PRESETS, LensModel, LensPresetAuthority, PlanarReferenceMatch,
+    Quaternion, TransformKeyframe, TransformTrack, solve_planar_reference_camera,
 };
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, FlatPanelQuality, LcdProfile, PanelColorimetry,
@@ -54,6 +54,89 @@ use screen_sensor::{BayerPattern, ComputationalCaptureProfile, SensorBloomProfil
 pub struct ScreenUtf8View {
     bytes: *const u8,
     count: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPlanarReferenceMatchV1 {
+    abi_version: u32,
+    device_corners_xyz: [f32; 12],
+    image_corners_xy: [f32; 8],
+    image_width: u32,
+    image_height: u32,
+    focal_length_millimeters: f32,
+    sensor_width_millimeters: f32,
+    sensor_height_millimeters: f32,
+    lens_shift_xy: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenMatchedCameraPoseV1 {
+    camera_position: [f32; 3],
+    camera_rotation_xyzw: [f32; 4],
+    maximum_reprojection_error_pixels: f32,
+}
+
+pub const SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION: u32 = 1;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
+    request: *const ScreenPlanarReferenceMatchV1,
+    result: *mut ScreenMatchedCameraPoseV1,
+    error_message: *mut *const c_char,
+) -> bool {
+    if request.is_null() || result.is_null() {
+        unsafe { set_error(error_message, b"invalid planar reference request\0") };
+        return false;
+    }
+    let request = unsafe { *request };
+    if request.abi_version != SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION {
+        unsafe { set_error(error_message, b"invalid planar reference ABI\0") };
+        return false;
+    }
+    let device_corners = core::array::from_fn(|index| Vec3 {
+        x: request.device_corners_xyz[index * 3],
+        y: request.device_corners_xyz[index * 3 + 1],
+        z: request.device_corners_xyz[index * 3 + 2],
+    });
+    let image_corners = core::array::from_fn(|index| Vec2 {
+        x: request.image_corners_xy[index * 2],
+        y: request.image_corners_xy[index * 2 + 1],
+    });
+    let matched = match solve_planar_reference_camera(PlanarReferenceMatch {
+        device_corners,
+        image_corners,
+        image_width: request.image_width,
+        image_height: request.image_height,
+        focal_length: screen_contracts::Millimeters(request.focal_length_millimeters),
+        sensor_width: screen_contracts::Millimeters(request.sensor_width_millimeters),
+        sensor_height: screen_contracts::Millimeters(request.sensor_height_millimeters),
+        lens_shift: Vec2 {
+            x: request.lens_shift_xy[0],
+            y: request.lens_shift_xy[1],
+        },
+    }) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"planar reference match failed\0") };
+            return false;
+        }
+    };
+    unsafe {
+        *result = ScreenMatchedCameraPoseV1 {
+            camera_position: [matched.position.x, matched.position.y, matched.position.z],
+            camera_rotation_xyzw: [
+                matched.rotation.x,
+                matched.rotation.y,
+                matched.rotation.z,
+                matched.rotation.w,
+            ],
+            maximum_reprojection_error_pixels: matched.maximum_reprojection_error_pixels,
+        };
+        set_error(error_message, b"\0");
+    }
+    true
 }
 
 pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 25;
@@ -4234,6 +4317,40 @@ unsafe fn set_error(destination: *mut *const c_char, message: &'static [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planar_reference_bridge_returns_only_a_rigid_camera_pose() {
+        let request = ScreenPlanarReferenceMatchV1 {
+            abi_version: SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION,
+            device_corners_xyz: [
+                -0.36, 0.20, 0.0, 0.36, 0.20, 0.0, 0.36, -0.20, 0.0, -0.36, -0.20, 0.0,
+            ],
+            image_corners_xy: [479.5, 269.5, 1439.5, 269.5, 1439.5, 809.5, 479.5, 809.5],
+            image_width: 1920,
+            image_height: 1080,
+            focal_length_millimeters: 50.0,
+            sensor_width_millimeters: 36.0,
+            sensor_height_millimeters: 20.0,
+            lens_shift_xy: [0.0, 0.0],
+        };
+        let mut result = ScreenMatchedCameraPoseV1 {
+            camera_position: [0.0; 3],
+            camera_rotation_xyzw: [0.0; 4],
+            maximum_reprojection_error_pixels: f32::INFINITY,
+        };
+        let mut error = core::ptr::null();
+        assert!(unsafe {
+            screen_geometry_solve_planar_reference_v1(&request, &mut result, &mut error)
+        });
+        assert!(result.maximum_reprojection_error_pixels < 1.0e-3);
+        assert!(result.camera_position[2] > 0.0);
+
+        let mut invalid = request;
+        invalid.abi_version = SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION + 1;
+        assert!(!unsafe {
+            screen_geometry_solve_planar_reference_v1(&invalid, &mut result, &mut error)
+        });
+    }
 
     #[cfg(target_os = "macos")]
     fn metal_texture(values: &[[f32; 4]], width: u32, height: u32) -> metal::Texture {

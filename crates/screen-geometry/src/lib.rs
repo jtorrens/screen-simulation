@@ -23,6 +23,27 @@ pub struct Quaternion {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanarReferenceMatch {
+    /// Device corners in world space, ordered top-left, top-right, bottom-right, bottom-left.
+    pub device_corners: [Vec3; 4],
+    /// Matching reference-image pixels in the same order.
+    pub image_corners: [Vec2; 4],
+    pub image_width: u32,
+    pub image_height: u32,
+    pub focal_length: Millimeters,
+    pub sensor_width: Millimeters,
+    pub sensor_height: Millimeters,
+    pub lens_shift: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MatchedCameraPose {
+    pub position: Vec3,
+    pub rotation: Quaternion,
+    pub maximum_reprojection_error_pixels: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LensModel {
     pub radial_distortion: [f32; 3],
     pub tangential_distortion: [f32; 2],
@@ -312,6 +333,53 @@ impl Quaternion {
         }
     }
 
+    fn from_world_basis(right: Vec3, up: Vec3, back: Vec3) -> Self {
+        let m00 = right.x;
+        let m01 = up.x;
+        let m02 = back.x;
+        let m10 = right.y;
+        let m11 = up.y;
+        let m12 = back.y;
+        let m20 = right.z;
+        let m21 = up.z;
+        let m22 = back.z;
+        let trace = m00 + m11 + m22;
+        let result = if trace > 0.0 {
+            let s = (trace + 1.0).sqrt() * 2.0;
+            Self {
+                x: (m21 - m12) / s,
+                y: (m02 - m20) / s,
+                z: (m10 - m01) / s,
+                w: 0.25 * s,
+            }
+        } else if m00 > m11 && m00 > m22 {
+            let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
+            Self {
+                x: 0.25 * s,
+                y: (m01 + m10) / s,
+                z: (m02 + m20) / s,
+                w: (m21 - m12) / s,
+            }
+        } else if m11 > m22 {
+            let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
+            Self {
+                x: (m01 + m10) / s,
+                y: 0.25 * s,
+                z: (m12 + m21) / s,
+                w: (m02 - m20) / s,
+            }
+        } else {
+            let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
+            Self {
+                x: (m02 + m20) / s,
+                y: (m12 + m21) / s,
+                z: 0.25 * s,
+                w: (m10 - m01) / s,
+            }
+        };
+        result.normalized()
+    }
+
     fn rotate(self, value: Vec3) -> Vec3 {
         let q = Vec3 {
             x: self.x,
@@ -363,6 +431,175 @@ impl Quaternion {
             w: self.w * left + other.w * right,
         }
     }
+}
+
+pub fn solve_planar_reference_camera(
+    request: PlanarReferenceMatch,
+) -> Result<MatchedCameraPose, GeometryError> {
+    if request.image_width == 0
+        || request.image_height == 0
+        || request.focal_length.0 <= 0.0
+        || request.sensor_width.0 <= 0.0
+        || request.sensor_height.0 <= 0.0
+        || !request.lens_shift.x.is_finite()
+        || !request.lens_shift.y.is_finite()
+    {
+        return Err(GeometryError::InvalidReferenceMatch);
+    }
+    let center = scale(
+        request.device_corners.into_iter().fold(
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            add,
+        ),
+        0.25,
+    );
+    let right_edge = subtract(request.device_corners[1], request.device_corners[0]);
+    let down_edge = subtract(request.device_corners[3], request.device_corners[0]);
+    let width = dot(right_edge, right_edge).sqrt();
+    let height = dot(down_edge, down_edge).sqrt();
+    if !width.is_finite() || !height.is_finite() || width <= 1.0e-6 || height <= 1.0e-6 {
+        return Err(GeometryError::InvalidReferenceMatch);
+    }
+    let device_right = scale(right_edge, 1.0 / width);
+    let device_down = scale(down_edge, 1.0 / height);
+    if dot(device_right, device_down).abs() > 1.0e-3 {
+        return Err(GeometryError::InvalidReferenceMatch);
+    }
+    let local = [
+        [-width * 0.5, -height * 0.5],
+        [width * 0.5, -height * 0.5],
+        [width * 0.5, height * 0.5],
+        [-width * 0.5, height * 0.5],
+    ];
+    let normalized = request.image_corners.map(|pixel| {
+        let observed_x = 2.0 * (pixel.x + 0.5) / request.image_width as f32 - 1.0;
+        let observed_y = 2.0 * (pixel.y + 0.5) / request.image_height as f32 - 1.0;
+        [
+            (observed_x + 2.0 * request.lens_shift.x) * request.sensor_width.0
+                / (2.0 * request.focal_length.0),
+            (observed_y + 2.0 * request.lens_shift.y) * request.sensor_height.0
+                / (2.0 * request.focal_length.0),
+        ]
+    });
+    let mut system = [[0.0_f32; 9]; 8];
+    for index in 0..4 {
+        let [x, y] = local[index];
+        let [u, v] = normalized[index];
+        system[index * 2] = [x, y, 1.0, 0.0, 0.0, 0.0, -u * x, -u * y, u];
+        system[index * 2 + 1] = [0.0, 0.0, 0.0, x, y, 1.0, -v * x, -v * y, v];
+    }
+    for column in 0..8 {
+        let pivot = (column..8)
+            .max_by(|left, right| {
+                system[*left][column]
+                    .abs()
+                    .total_cmp(&system[*right][column].abs())
+            })
+            .ok_or(GeometryError::InvalidReferenceMatch)?;
+        if system[pivot][column].abs() <= 1.0e-8 {
+            return Err(GeometryError::InvalidReferenceMatch);
+        }
+        system.swap(column, pivot);
+        let divisor = system[column][column];
+        for value in column..9 {
+            system[column][value] /= divisor;
+        }
+        for row in 0..8 {
+            if row == column {
+                continue;
+            }
+            let factor = system[row][column];
+            for value in column..9 {
+                system[row][value] -= factor * system[column][value];
+            }
+        }
+    }
+    let h = core::array::from_fn::<_, 8, _>(|index| system[index][8]);
+    let first = Vec3 {
+        x: h[0],
+        y: h[3],
+        z: h[6],
+    };
+    let second = Vec3 {
+        x: h[1],
+        y: h[4],
+        z: h[7],
+    };
+    let translation_h = Vec3 {
+        x: h[2],
+        y: h[5],
+        z: 1.0,
+    };
+    let scale_factor = 2.0 / (dot(first, first).sqrt() + dot(second, second).sqrt());
+    let first = normalize(scale(first, scale_factor));
+    let second_raw = scale(second, scale_factor);
+    let second = normalize(subtract(second_raw, scale(first, dot(first, second_raw))));
+    let third = normalize(cross(first, second));
+    let translation = scale(translation_h, scale_factor);
+    if !translation.z.is_finite() || translation.z <= 0.0 {
+        return Err(GeometryError::ReferenceMatchBehindCamera);
+    }
+    // Rows of the world-to-camera matrix. Camera Y points down; local camera Y points up.
+    let camera_right = add(
+        add(scale(device_right, first.x), scale(device_down, second.x)),
+        scale(cross(device_right, device_down), third.x),
+    );
+    let camera_down = add(
+        add(scale(device_right, first.y), scale(device_down, second.y)),
+        scale(cross(device_right, device_down), third.y),
+    );
+    let camera_forward = add(
+        add(scale(device_right, first.z), scale(device_down, second.z)),
+        scale(cross(device_right, device_down), third.z),
+    );
+    let world_offset = add(
+        add(
+            scale(camera_right, translation.x),
+            scale(camera_down, translation.y),
+        ),
+        scale(camera_forward, translation.z),
+    );
+    let position = subtract(center, world_offset);
+    let rotation = Quaternion::from_world_basis(
+        camera_right,
+        scale(camera_down, -1.0),
+        scale(camera_forward, -1.0),
+    );
+    let project = |point: Vec3| {
+        let relative = subtract(point, position);
+        let depth = dot(relative, camera_forward);
+        let observed_x = dot(relative, camera_right) / depth
+            * (2.0 * request.focal_length.0 / request.sensor_width.0)
+            - 2.0 * request.lens_shift.x;
+        let observed_y = dot(relative, camera_down) / depth
+            * (2.0 * request.focal_length.0 / request.sensor_height.0)
+            - 2.0 * request.lens_shift.y;
+        Vec2 {
+            x: (observed_x + 1.0) * 0.5 * request.image_width as f32 - 0.5,
+            y: (observed_y + 1.0) * 0.5 * request.image_height as f32 - 0.5,
+        }
+    };
+    let maximum_reprojection_error_pixels = request
+        .device_corners
+        .into_iter()
+        .zip(request.image_corners)
+        .map(|(point, target)| {
+            let actual = project(point);
+            (actual.x - target.x).hypot(actual.y - target.y)
+        })
+        .fold(0.0_f32, f32::max);
+    if !maximum_reprojection_error_pixels.is_finite() || maximum_reprojection_error_pixels > 2.0 {
+        return Err(GeometryError::ReferenceMatchReprojectionFailed);
+    }
+    Ok(MatchedCameraPose {
+        position,
+        rotation,
+        maximum_reprojection_error_pixels,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1729,6 +1966,9 @@ pub enum GeometryError {
     NonPositiveIntrinsics,
     InvalidInspectionRegion,
     InspectionRegionCannotBeFramed,
+    InvalidReferenceMatch,
+    ReferenceMatchBehindCamera,
+    ReferenceMatchReprojectionFailed,
 }
 
 impl fmt::Display for GeometryError {
@@ -1752,6 +1992,13 @@ impl fmt::Display for GeometryError {
             Self::InvalidInspectionRegion => "inspection region must have finite positive area",
             Self::InspectionRegionCannotBeFramed => {
                 "inspection camera cannot frame the selected region"
+            }
+            Self::InvalidReferenceMatch => "reference correspondences are degenerate or invalid",
+            Self::ReferenceMatchBehindCamera => {
+                "reference match places the Device behind the camera"
+            }
+            Self::ReferenceMatchReprojectionFailed => {
+                "reference match cannot reproduce all four corners"
             }
         })
     }
@@ -1781,6 +2028,134 @@ mod tests {
         assert!((forward.x + position.x).abs() < 1.0e-6);
         assert!((forward.y + position.y).abs() < 1.0e-6);
         assert!((forward.z + position.z).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn planar_reference_match_recovers_external_camera_pose_without_moving_device() {
+        let corners = [
+            Vec3 {
+                x: -0.36,
+                y: 0.20,
+                z: 0.0,
+            },
+            Vec3 {
+                x: 0.36,
+                y: 0.20,
+                z: 0.0,
+            },
+            Vec3 {
+                x: 0.36,
+                y: -0.20,
+                z: 0.0,
+            },
+            Vec3 {
+                x: -0.36,
+                y: -0.20,
+                z: 0.0,
+            },
+        ];
+        let expected_position = Vec3 {
+            x: 0.18,
+            y: 0.07,
+            z: 0.82,
+        };
+        let target = Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let forward = normalize(subtract(target, expected_position));
+        let right = normalize(cross(
+            forward,
+            Vec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        ));
+        let up = normalize(cross(right, forward));
+        let focal = Millimeters(50.0);
+        let sensor_width = Millimeters(36.0);
+        let sensor_height = Millimeters(20.25);
+        let width = 1920_u32;
+        let height = 1080_u32;
+        let image_corners = corners.map(|point| {
+            let relative = subtract(point, expected_position);
+            let depth = dot(relative, forward);
+            let x = dot(relative, right) / depth * (2.0 * focal.0 / sensor_width.0);
+            let y = -dot(relative, up) / depth * (2.0 * focal.0 / sensor_height.0);
+            Vec2 {
+                x: (x + 1.0) * 0.5 * width as f32 - 0.5,
+                y: (y + 1.0) * 0.5 * height as f32 - 0.5,
+            }
+        });
+        let result = solve_planar_reference_camera(PlanarReferenceMatch {
+            device_corners: corners,
+            image_corners,
+            image_width: width,
+            image_height: height,
+            focal_length: focal,
+            sensor_width,
+            sensor_height,
+            lens_shift: Vec2 { x: 0.0, y: 0.0 },
+        })
+        .expect("solvable planar reference");
+        assert!((result.position.x - expected_position.x).abs() < 1.0e-4);
+        assert!((result.position.y - expected_position.y).abs() < 1.0e-4);
+        assert!((result.position.z - expected_position.z).abs() < 1.0e-4);
+        assert!(result.maximum_reprojection_error_pixels < 1.0e-3);
+        let recovered_forward = result.rotation.rotate(Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: -1.0,
+        });
+        assert!(dot(recovered_forward, forward) > 0.999_999);
+        assert_eq!(
+            corners,
+            [
+                Vec3 {
+                    x: -0.36,
+                    y: 0.20,
+                    z: 0.0
+                },
+                Vec3 {
+                    x: 0.36,
+                    y: 0.20,
+                    z: 0.0
+                },
+                Vec3 {
+                    x: 0.36,
+                    y: -0.20,
+                    z: 0.0
+                },
+                Vec3 {
+                    x: -0.36,
+                    y: -0.20,
+                    z: 0.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn planar_reference_match_rejects_degenerate_correspondences() {
+        let point = Vec2 { x: 10.0, y: 10.0 };
+        let error = solve_planar_reference_camera(PlanarReferenceMatch {
+            device_corners: [Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }; 4],
+            image_corners: [point; 4],
+            image_width: 1920,
+            image_height: 1080,
+            focal_length: Millimeters(50.0),
+            sensor_width: Millimeters(36.0),
+            sensor_height: Millimeters(20.25),
+            lens_shift: Vec2 { x: 0.0, y: 0.0 },
+        })
+        .expect_err("degenerate correspondence must fail");
+        assert_eq!(error, GeometryError::InvalidReferenceMatch);
     }
 
     fn rig() -> CameraRig {
