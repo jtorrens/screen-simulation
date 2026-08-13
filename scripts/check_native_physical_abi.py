@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -25,9 +26,6 @@ RETIRED_TOKENS = (
     "ScreenPhysicalFrameResultV1",
     "ScreenPhysicalStageContributionV1",
     "screen_physical_pipeline_process_rgba32f",
-    "SCREEN_PHYSICAL_FRAME_ABI_VERSION 1",
-    "SCREEN_PHYSICAL_FRAME_ABI_VERSION 4",
-    "SCREEN_PHYSICAL_FRAME_ABI_VERSION 5",
     "ScreenPhysicalFrameInputRef",
     "screen_physical_frame_input_create",
     "capture_amount",
@@ -44,6 +42,10 @@ RETIRED_TOKENS = (
     "ScreenTestAuthoringSelectionV9",
     "ScreenCapturePresetParametersV1",
     "SCREEN_AUTHORING_CATALOG_ABI_VERSION 2",
+)
+
+RETIRED_SOURCE_PATTERNS = (
+    r"#define\s+SCREEN_PHYSICAL_FRAME_ABI_VERSION\s+(?:1|4|5)u\b",
 )
 
 
@@ -68,6 +70,9 @@ def validate_sources() -> None:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             matches = [token for token in RETIRED_TOKENS if token in text]
+            matches.extend(
+                pattern for pattern in RETIRED_SOURCE_PATTERNS if re.search(pattern, text)
+            )
             if matches:
                 raise RuntimeError(
                     f"retired physical ABI tokens in {path.relative_to(ROOT)}: {matches}"
@@ -77,7 +82,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 7u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 12u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
         "screen_physical_frame_submit",
@@ -86,10 +91,10 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 11u",
-        "ScreenTestAuthoringSelectionV11",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 16u",
+        "ScreenTestAuthoringSelectionV16",
         "ScreenTestControlDescriptorV5",
-        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 3u",
+        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 5u",
         "ScreenCapturePresetParametersV2",
     )
     missing = [token for token in required if token not in header]
@@ -99,11 +104,11 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 7",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 11",
-        "ScreenTestAuthoringSelectionV11",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 12",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 16",
+        "ScreenTestAuthoringSelectionV16",
         "ScreenTestControlDescriptorV5",
-        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 3",
+        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 5",
         "ScreenCapturePresetParametersV2",
     ):
         if token not in rust_bridge:
@@ -129,7 +134,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v7 source/header/symbol gate passed")
+    print("native macOS physical ABI v12 source/header/symbol gate passed")
     return 0
 
 
