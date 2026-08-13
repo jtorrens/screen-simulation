@@ -592,7 +592,10 @@ pub fn solve_planar_reference_camera(
             (actual.x - target.x).hypot(actual.y - target.y)
         })
         .fold(0.0_f32, f32::max);
-    if !maximum_reprojection_error_pixels.is_finite() || maximum_reprojection_error_pixels > 2.0 {
+    let maximum_usable_error = request.image_width.max(request.image_height) as f32 * 0.25;
+    if !maximum_reprojection_error_pixels.is_finite()
+        || maximum_reprojection_error_pixels > maximum_usable_error
+    {
         return Err(GeometryError::ReferenceMatchReprojectionFailed);
     }
     Ok(MatchedCameraPose {
