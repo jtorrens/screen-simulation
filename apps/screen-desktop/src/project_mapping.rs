@@ -548,12 +548,12 @@ mod tests {
                     refractive_index: 1.5,
                     anti_reflective_efficiency: 0.62,
                     absorption_per_millimeter: [0.012; 3],
-                    roughness: 0.65,
+                    roughness: 0.18,
                     haze: 0.03,
                     anti_glare_microtexture: AntiGlareMicrotextureDocument {
                         character_strength: 1.0,
-                        rms_slope: 0.045,
-                        correlation_length_micrometers: 18.0,
+                        rms_slope: 0.030,
+                        correlation_length_micrometers: 60.0,
                         anisotropy: 0.12,
                         seed: 0xb036_0104,
                     },
@@ -728,13 +728,13 @@ mod tests {
         assert_eq!(scene.cover.thickness_millimeters, 0.8);
         assert_eq!(scene.cover.anti_reflective_efficiency, 0.62);
         assert_eq!(scene.cover.anti_glare_microtexture.character_strength, 1.0);
-        assert_eq!(scene.cover.anti_glare_microtexture.rms_slope, 0.045);
+        assert_eq!(scene.cover.anti_glare_microtexture.rms_slope, 0.030);
         assert_eq!(
             scene
                 .cover
                 .anti_glare_microtexture
                 .correlation_length_micrometers,
-            18.0
+            60.0
         );
         assert_eq!(scene.cover.anti_glare_microtexture.anisotropy, 0.12);
         assert_eq!(scene.cover.anti_glare_microtexture.seed, 0xb036_0104);

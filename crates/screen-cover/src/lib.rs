@@ -148,7 +148,7 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             refractive_index: 1.50,
             anti_reflective_efficiency: 0.62,
             absorption_per_millimeter: rgb(0.012),
-            roughness: 0.65,
+            roughness: 0.18,
             haze: 0.030,
             anti_glare_microtexture: AntiGlareMicrotextureProfile::MATTE_AR,
             glow: CoverGlowProfile::MATTE_AR,
@@ -474,8 +474,8 @@ impl AntiGlareMicrotextureProfile {
     /// for desktop anti-glare displays.
     pub const MATTE_AR: Self = Self {
         character_strength: 1.0,
-        rms_slope: 0.045,
-        correlation_length_micrometers: 18.0,
+        rms_slope: 0.030,
+        correlation_length_micrometers: 60.0,
         anisotropy: 0.12,
         seed: 0xb036_0104,
     };
@@ -1205,6 +1205,25 @@ mod tests {
                 .validate()
                 .expect("valid environment preset");
         }
+    }
+
+    #[test]
+    fn matte_ar_preset_matches_the_calibrated_asus_cover() {
+        let profile = cover_glass_preset("cover-matte-ar")
+            .expect("matte AR preset")
+            .profile;
+        assert_eq!(profile.roughness, 0.18);
+        assert_eq!(profile.haze, 0.030);
+        assert_eq!(profile.anti_glare_microtexture.rms_slope, 0.030);
+        assert_eq!(
+            profile
+                .anti_glare_microtexture
+                .correlation_length_micrometers,
+            60.0
+        );
+        assert_eq!(profile.anti_glare_microtexture.anisotropy, 0.12);
+        assert_eq!(profile.anti_glare_microtexture.seed, 0xb036_0104);
+        assert_eq!(profile.glow, CoverGlowProfile::MATTE_AR);
     }
 
     #[test]
