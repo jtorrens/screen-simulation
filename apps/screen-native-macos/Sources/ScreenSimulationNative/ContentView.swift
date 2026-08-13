@@ -1580,7 +1580,10 @@ struct ContentView: View {
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
                         onZoomChange: model.setInteractiveZoom,
-                        onFittedZoomChange: model.updateFittedZoom
+                        onFittedZoomChange: model.updateFittedZoom,
+                        onCameraGestureBegin: model.beginCameraNavigation,
+                        onCameraGestureChange: model.updateCameraNavigation,
+                        onCameraGestureEnd: { model.endCameraNavigation(undoManager: undoManager) }
                     )
                     .accessibilityLabel("Preview OCIO del resultado")
                     image
@@ -1693,6 +1696,9 @@ struct MetalPreview: NSViewRepresentable {
     let onPanChange: (CGSize) -> Void
     let onZoomChange: (Double) -> Void
     let onFittedZoomChange: (Double) -> Void
+    let onCameraGestureBegin: (CameraNavigationOperation, CGSize) -> Void
+    let onCameraGestureChange: (CGSize) -> Void
+    let onCameraGestureEnd: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onDisplayChange: onDisplayChange)
@@ -1722,6 +1728,9 @@ struct MetalPreview: NSViewRepresentable {
         container.onPanChange = onPanChange
         container.onZoomChange = onZoomChange
         container.onFittedZoomChange = onFittedZoomChange
+        container.onCameraGestureBegin = onCameraGestureBegin
+        container.onCameraGestureChange = onCameraGestureChange
+        container.onCameraGestureEnd = onCameraGestureEnd
         display.present(frame, output: output, in: container.metalView)
     }
 
@@ -1799,6 +1808,9 @@ final class MetalPreviewContainer: NSView {
     var onPanChange: ((CGSize) -> Void)?
     var onZoomChange: ((Double) -> Void)?
     var onFittedZoomChange: ((Double) -> Void)?
+    var onCameraGestureBegin: ((CameraNavigationOperation, CGSize) -> Void)?
+    var onCameraGestureChange: ((CGSize) -> Void)?
+    var onCameraGestureEnd: (() -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
@@ -1806,6 +1818,7 @@ final class MetalPreviewContainer: NSView {
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
     private var magnifyAnchor: CGPoint?
+    private var cameraDragStart: CGPoint?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1895,6 +1908,43 @@ final class MetalPreviewContainer: NSView {
             dragStartLocation = nil
             NSCursor.pop()
         }
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return }
+        window?.makeFirstResponder(self)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let operation: CameraNavigationOperation
+        if flags.contains(.option), !flags.contains(.shift) { operation = .orbit }
+        else if flags.contains(.shift), !flags.contains(.option) { operation = .dolly }
+        else if !flags.contains(.option), !flags.contains(.shift) { operation = .pan }
+        else { return }
+        cameraDragStart = convert(event.locationInWindow, from: nil)
+        onCameraGestureBegin?(operation, contentViewportSize())
+        NSCursor.closedHand.push()
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        guard event.buttonNumber == 2, let start = cameraDragStart else { return }
+        let current = convert(event.locationInWindow, from: nil)
+        onCameraGestureChange?(CGSize(
+            width: current.x - start.x,
+            height: current.y - start.y
+        ))
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard event.buttonNumber == 2, cameraDragStart != nil else { return }
+        cameraDragStart = nil
+        onCameraGestureEnd?()
+        NSCursor.pop()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard !event.hasPreciseScrollingDeltas || abs(event.scrollingDeltaY) > 0 else { return }
+        onCameraGestureBegin?(.dolly, contentViewportSize())
+        onCameraGestureChange?(CGSize(width: event.scrollingDeltaY * 8, height: 0))
+        onCameraGestureEnd?()
     }
 
     override func magnify(with event: NSEvent) {

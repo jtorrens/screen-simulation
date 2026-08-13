@@ -19,6 +19,7 @@
       "paths": [
         ".github/workflows/*.yml",
         "architecture/*.json",
+        "Docs/MATCH_REFERENCE_MODE_PROPOSAL.md",
         "Docs/architecture/*.md",
         "scripts/*.py"
       ],

@@ -48,3 +48,51 @@ import Testing
     #expect(result.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
     #expect(sourceInterior.count > 1_000)
 }
+
+@Test @MainActor func setupFramingRecomputesDeliveryPlacementWithoutLosingTheBoundary() throws {
+    let display = try StudioColorMetalDisplay()
+    let input = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    })
+    let pixel: [Float] = [0.18, 0.18, 0.18, 1]
+    let encoded: [Float] = Array(repeating: pixel, count: 16 * 9).flatMap { $0 }
+    let source = try display.makeACEScgFrame(
+        width: 16, height: 9, encodedRGBA: encoded, input: input, alpha: .straight
+    )
+    let device = try #require(try RustDeviceCatalog.builtIns().first {
+        $0.name.contains("ASUS ProArt")
+    })
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    var authored = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
+    authored.cameraPose.position = [0, 0, 1]
+    authored.cameraPose.quaternion = [0, 0, 0, 1]
+    authored.screenPose.position = [0, 0, 0]
+    authored.screenPose.quaternion = [0, 0, 0, 1]
+    authored.sceneLens.sensorWidthMillimeters = 36
+    authored.sceneLens.sensorHeightMillimeters = 20.25
+    authored.sceneLens.focalLengthMillimeters = 45
+    authored.sceneLens.lensShift = [0, 0]
+
+    let renderer = try SetupFramingRenderer(device: source.texture.device)
+    let fit = try renderer.render(
+        source: source, sourcePlacement: .stretch,
+        device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 240,
+        deliveryPlacementID: "fit", deliveryBackgroundID: "black"
+    )
+    let oneToOne = try renderer.render(
+        source: source, sourcePlacement: .stretch,
+        device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 240,
+        deliveryPlacementID: "one-to-one", deliveryBackgroundID: "black"
+    )
+
+    #expect(fit.boundary.count == 4)
+    #expect(oneToOne.boundary.count == 4)
+    #expect(fit.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+    #expect(oneToOne.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+    #expect(fit.boundary != oneToOne.boundary)
+    #expect(try display.readLinearRGBA(fit.frame) != display.readLinearRGBA(oneToOne.frame))
+}

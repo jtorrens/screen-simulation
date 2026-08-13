@@ -39,6 +39,10 @@ enum NativeRenderButtonState: Equatable {
 
 @MainActor
 final class WorkspaceModel: ObservableObject {
+    private final class UndoManagerBox: @unchecked Sendable {
+        weak var value: UndoManager?
+        init(_ value: UndoManager?) { self.value = value }
+    }
     enum SourcePlacement: String, CaseIterable, Identifiable {
         case fit = "Fit"
         case fillCrop = "Fill / Crop"
@@ -155,6 +159,8 @@ final class WorkspaceModel: ObservableObject {
     private var authoredImageEnvironment: PhysicalPipelineAuthoringState.Environment?
     private var environmentSourceHash: String?
     private var environmentSourceInputTransformID: String?
+    private var cameraNavigationGesture: CameraNavigationGesture?
+    private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -648,6 +654,138 @@ final class WorkspaceModel: ObservableObject {
             }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func beginCameraNavigation(
+        _ operation: CameraNavigationOperation,
+        viewportSize: CGSize
+    ) {
+        guard let authored = physicalAuthoringState,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let selection = testAuthoringSelection,
+              viewportSize.width > 0, viewportSize.height > 0
+        else { return }
+        let cameraQuaternion = simd_quatd(
+            ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
+            iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
+        ).normalized
+        let screenQuaternion = simd_quatd(
+            ix: authored.screenPose.quaternion[0], iy: authored.screenPose.quaternion[1],
+            iz: authored.screenPose.quaternion[2], r: authored.screenPose.quaternion[3]
+        ).normalized
+        let geometry = CameraNavigationGeometry(
+            center: SIMD3(
+                authored.screenPose.position[0], authored.screenPose.position[1],
+                authored.screenPose.position[2]
+            ),
+            right: screenQuaternion.act(SIMD3(1, 0, 0)),
+            up: screenQuaternion.act(SIMD3(0, 1, 0)),
+            halfWidth: device.activeWidthMeters * 0.5,
+            halfHeight: device.activeHeightMeters * 0.5
+        )
+        let verticalFov = 2 * atan(
+            authored.sceneLens.sensorHeightMillimeters
+                / (2 * authored.sceneLens.focalLengthMillimeters)
+        )
+        cameraNavigationStartSelection = selection
+        cameraNavigationGesture = .init(
+            operation: operation,
+            startPose: .init(
+                position: SIMD3(
+                    authored.cameraPose.position[0], authored.cameraPose.position[1],
+                    authored.cameraPose.position[2]
+                ),
+                orientation: cameraQuaternion
+            ),
+            geometry: geometry,
+            viewportSize: viewportSize,
+            verticalFovRadians: verticalFov,
+            nearClipMeters: authored.sceneLens.nearClipMeters,
+            lockedAxis: nil
+        )
+    }
+
+    func updateCameraNavigation(delta: CGSize) {
+        guard var gesture = cameraNavigationGesture else { return }
+        let pose: CameraNavigationPose
+        switch gesture.operation {
+        case .pan:
+            pose = CameraNavigationMath.pan(gesture: gesture, delta: delta)
+        case .orbit:
+            pose = CameraNavigationMath.orbit(gesture: &gesture, delta: delta)
+            cameraNavigationGesture = gesture
+        case .dolly:
+            pose = CameraNavigationMath.dolly(
+                gesture: gesture, deltaPixels: Double(delta.width)
+            )
+        }
+        applyCameraNavigationPose(pose)
+    }
+
+    func endCameraNavigation(undoManager: UndoManager?) {
+        guard cameraNavigationGesture != nil else { return }
+        cameraNavigationGesture = nil
+        if let prior = cameraNavigationStartSelection,
+           prior != testAuthoringSelection {
+            let manager = UndoManagerBox(undoManager)
+            undoManager?.registerUndo(withTarget: self) { target in
+                Task { @MainActor in
+                    try? target.restoreCameraNavigationSelection(
+                        prior, undoManager: manager.value
+                    )
+                }
+            }
+            undoManager?.setActionName("Navegar cámara")
+        }
+        cameraNavigationStartSelection = nil
+    }
+
+    private func applyCameraNavigationPose(_ pose: CameraNavigationPose) {
+        guard var selection = testAuthoringSelection else { return }
+        do {
+            selection = try RustTestAuthoringCoordinator.apply(
+                .setChoice(controlID: "geometry-mode", optionID: "free"), to: selection
+            )
+            let degrees = PoseRotationProjection.degrees(from: [
+                pose.orientation.imag.x, pose.orientation.imag.y,
+                pose.orientation.imag.z, pose.orientation.real,
+            ])
+            for (id, value) in [
+                ("camera-position-x-meters", pose.position.x),
+                ("camera-position-y-meters", pose.position.y),
+                ("camera-position-z-meters", pose.position.z),
+                ("camera-rotation-x-degrees", degrees[0]),
+                ("camera-rotation-y-degrees", degrees[1]),
+                ("camera-rotation-z-degrees", degrees[2]),
+            ] {
+                selection = try RustTestAuthoringCoordinator.apply(
+                    .setScalar(controlID: id, value: value), to: selection
+                )
+            }
+            selection = try RustTestAuthoringCoordinator.apply(
+                .setChoice(controlID: "preview-quality", optionID: "setup"), to: selection
+            )
+            try applyTestAuthoringSelection(selection)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func restoreCameraNavigationSelection(
+        _ selection: TestAuthoringResolvedSelection,
+        undoManager: UndoManager?
+    ) throws {
+        let prior = testAuthoringSelection
+        try applyTestAuthoringSelection(selection)
+        if let prior {
+            let manager = UndoManagerBox(undoManager)
+            undoManager?.registerUndo(withTarget: self) { target in
+                Task { @MainActor in
+                    try? target.restoreCameraNavigationSelection(
+                        prior, undoManager: manager.value
+                    )
+                }
+            }
+            undoManager?.setActionName("Navegar cámara")
         }
     }
 
