@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 14;
+pub const CURRENT_VERSION: u32 = 15;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -352,6 +352,7 @@ pub struct ShotDocument {
     pub device_id: OpaqueId,
     pub camera_id: OpaqueId,
     pub sensor_id: OpaqueId,
+    pub capture_raster_mode_id: OpaqueId,
     pub screen_id: OpaqueId,
     pub project_frame_rate: ExactFrameRate,
     pub sensor_noise_seed: u64,
@@ -362,9 +363,33 @@ pub struct ShotDocument {
     pub reference_exposure_index: f32,
     pub develop_exposure_ev: f32,
     pub camera_rendering_intent: CameraRenderingIntentDocument,
+    pub delivery: DeliveryRasterDocument,
     pub recording: RecordingSelectionDocument,
     pub camera_output_transform_id: String,
     pub environment: EnvironmentDocument,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliveryRasterDocument {
+    pub width: u32,
+    pub height: u32,
+    pub placement: DeliveryPlacementDocument,
+    pub background: DeliveryBackgroundDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryPlacementDocument {
+    Fit,
+    OneToOne,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryBackgroundDocument {
+    Transparent,
+    Black,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -467,6 +492,7 @@ impl ProjectPackage {
         validate_id(&self.sensor.sensor_id)?;
         validate_id(&self.screen.screen_id)?;
         validate_id(&self.shot.shot_id)?;
+        validate_id(&self.shot.capture_raster_mode_id)?;
         PortablePath::parse(self.source.media.as_str())?;
         if self.source.media.as_str() == MANIFEST_NAME
             || [
@@ -550,6 +576,13 @@ impl ProjectPackage {
             || !(0.0..=4.0).contains(&self.shot.recording.character)
         {
             return Err(PersistenceError::InvalidRecordingSelection);
+        }
+        if self.shot.delivery.width == 0
+            || self.shot.delivery.height == 0
+            || self.shot.delivery.width > 16_384
+            || self.shot.delivery.height > 16_384
+        {
+            return Err(PersistenceError::InvalidDeliveryRaster);
         }
         Ok(())
     }
@@ -1037,6 +1070,7 @@ pub enum PersistenceError {
     UnknownVersion { schema: &'static str, version: u32 },
     EmptyProjectTitle,
     InvalidShotReference,
+    InvalidDeliveryRaster,
     InvalidFrameRate,
     InvalidExactTime,
     EmptyAnimationTrack,
@@ -1099,6 +1133,7 @@ impl fmt::Display for PersistenceError {
             Self::InvalidShotReference => {
                 formatter.write_str("shot contains an invalid owner reference")
             }
+            Self::InvalidDeliveryRaster => formatter.write_str("invalid Delivery Raster"),
             Self::InvalidFrameRate => formatter.write_str("project frame rate must be positive"),
             Self::InvalidExactTime => {
                 formatter.write_str("exact time denominator must be non-zero")
@@ -1349,6 +1384,7 @@ mod tests {
                 device_id: id("device-01"),
                 camera_id: id("camera-01"),
                 sensor_id: id("sensor-01"),
+                capture_raster_mode_id: id("full"),
                 screen_id: id("screen-01"),
                 project_frame_rate: ExactFrameRate {
                     numerator: 24,
@@ -1367,6 +1403,12 @@ mod tests {
                     saturation: 1.25,
                     temperature_kelvin: 6500.0,
                     tint: 0.0,
+                },
+                delivery: DeliveryRasterDocument {
+                    width: 3_840,
+                    height: 2_160,
+                    placement: DeliveryPlacementDocument::Fit,
+                    background: DeliveryBackgroundDocument::Black,
                 },
                 recording: RecordingSelectionDocument {
                     output_transform_id: id("iphone-heic-display-p3-srgb-full-v2"),

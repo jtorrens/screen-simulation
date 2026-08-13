@@ -2,6 +2,8 @@
 
 Status: normative.
 
+Delivery Raster coverage proves exact centered `1:1` crop/pad, aspect-preserving `Fit`, explicit transparent/black alpha, finite linear ACEScg and strict adjacency between Camera Rendering Intent and Recording Output. Every phase descriptor publishes a nonempty native calculation domain and the explicit Preview ODT presentation route.
+
 Capture-preset coverage requires exactly three unique stable `Full`, `Half` and `Quarter` raster identities with explicit nonzero dimensions and an explicit contained default; unknown modes fail at the Application boundary.
 
 Architecture is enforced rather than inferred from prose. `architecture/domains.json` is the exact current workspace package and local-dependency matrix. `architecture/validation-owners.json` assigns every repository path to one validation owner. An undeclared package, dependency or path is an error.

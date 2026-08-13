@@ -16,13 +16,14 @@ use metal::foreign_types::{ForeignType, ForeignTypeRef};
 #[cfg(target_os = "macos")]
 use metal::{MTLTexture, Texture, TextureRef};
 use screen_application::{
-    CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, PhysicalIntermediate,
+    CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, DeliveryRasterBackground,
+    DeliveryRasterPlacement, DeliveryRasterRequest, PhysicalIntermediate,
     PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, ProceduralTestPattern,
     RasterPlacement, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
     RollingDirection, SensorReadout, TestAuthoringError, TestAuthoringSelection,
     TestControlRequirement, TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice,
     apply_test_scalar, apply_test_toggle, default_test_authoring_selection, diagnostic_signal,
-    physical_shutter_schedule, test_page_descriptor,
+    evaluate_delivery_raster_rgba32f, physical_shutter_schedule, test_page_descriptor,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform};
@@ -54,14 +55,14 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 17;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 18;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestAuthoringSelectionV17 {
+pub struct ScreenTestAuthoringSelectionV18 {
     abi_version: u32,
     input_transform_id: ScreenUtf8View,
     output_signal_id: ScreenUtf8View,
@@ -118,6 +119,10 @@ pub struct ScreenTestAuthoringSelectionV17 {
     camera_look_saturation: f32,
     camera_look_temperature_kelvin: f32,
     camera_look_tint: f32,
+    delivery_width: u32,
+    delivery_height: u32,
+    delivery_placement_id: ScreenUtf8View,
+    delivery_background_id: ScreenUtf8View,
     recording_output_transform_id: ScreenUtf8View,
     recording_profile_id: ScreenUtf8View,
     recording_character: f32,
@@ -125,7 +130,7 @@ pub struct ScreenTestAuthoringSelectionV17 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestPhaseDescriptorV3 {
+pub struct ScreenTestPhaseDescriptorV4 {
     abi_version: u32,
     id: ScreenUtf8View,
     label: ScreenUtf8View,
@@ -134,6 +139,8 @@ pub struct ScreenTestPhaseDescriptorV3 {
     input_artifact: ScreenUtf8View,
     output_artifact: ScreenUtf8View,
     preview_result: u32,
+    calculation_domain: ScreenUtf8View,
+    preview_route: ScreenUtf8View,
 }
 
 #[repr(C)]
@@ -1993,7 +2000,7 @@ unsafe fn borrowed_utf8<'a>(view: ScreenUtf8View) -> Option<&'a str> {
 }
 
 unsafe fn test_selection<'a>(
-    selection: *const ScreenTestAuthoringSelectionV17,
+    selection: *const ScreenTestAuthoringSelectionV18,
 ) -> Option<TestAuthoringSelection<'a>> {
     let selection = unsafe { selection.as_ref() }?;
     if selection.abi_version != SCREEN_TEST_AUTHORING_ABI_VERSION {
@@ -2056,6 +2063,10 @@ unsafe fn test_selection<'a>(
             temperature_kelvin: selection.camera_look_temperature_kelvin,
             tint: selection.camera_look_tint,
         },
+        delivery_width: selection.delivery_width as f32,
+        delivery_height: selection.delivery_height as f32,
+        delivery_placement_id: unsafe { borrowed_utf8(selection.delivery_placement_id) }?,
+        delivery_background_id: unsafe { borrowed_utf8(selection.delivery_background_id) }?,
         recording_output_transform_id: unsafe {
             borrowed_utf8(selection.recording_output_transform_id)
         }?,
@@ -2114,6 +2125,7 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
         }
         TestAuthoringError::InvalidSensorNoiseAmount => b"Sensor Noise amount is outside 0..=4\0",
         TestAuthoringError::InvalidCameraRenderingIntent => b"invalid Camera Rendering Intent\0",
+        TestAuthoringError::InvalidDeliveryRaster => b"invalid Delivery Raster\0",
         TestAuthoringError::UnknownRecordingOutputTransform => {
             b"unknown Recording Output Transform\0"
         }
@@ -2127,8 +2139,8 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
 
 fn resolved_test_selection(
     selection: screen_application::ResolvedTestAuthoringSelection,
-) -> ScreenTestAuthoringSelectionV17 {
-    ScreenTestAuthoringSelectionV17 {
+) -> ScreenTestAuthoringSelectionV18 {
+    ScreenTestAuthoringSelectionV18 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         input_transform_id: utf8_view(selection.input_transform_id),
         output_signal_id: utf8_view(selection.output_signal_id),
@@ -2185,6 +2197,10 @@ fn resolved_test_selection(
         camera_look_saturation: selection.camera_rendering_intent.saturation,
         camera_look_temperature_kelvin: selection.camera_rendering_intent.temperature_kelvin,
         camera_look_tint: selection.camera_rendering_intent.tint,
+        delivery_width: selection.delivery_width,
+        delivery_height: selection.delivery_height,
+        delivery_placement_id: utf8_view(selection.delivery_placement_id),
+        delivery_background_id: utf8_view(selection.delivery_background_id),
         recording_output_transform_id: utf8_view(selection.recording_output_transform_id),
         recording_profile_id: utf8_view(selection.recording_profile_id),
         recording_character: selection.recording_character,
@@ -2196,7 +2212,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
     input_transform_id: ScreenUtf8View,
     device_id: ScreenUtf8View,
     frame_rate: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV17,
+    resolved: *mut ScreenTestAuthoringSelectionV18,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(input_transform_id) = (unsafe { borrowed_utf8(input_transform_id) }) else {
@@ -2231,7 +2247,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_page_descriptor_create(
-    selection: *const ScreenTestAuthoringSelectionV17,
+    selection: *const ScreenTestAuthoringSelectionV18,
     error_message: *mut *const c_char,
 ) -> *mut ScreenTestPageDescriptor {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2280,7 +2296,7 @@ pub unsafe extern "C" fn screen_test_page_default_preview_phase_id(
 pub unsafe extern "C" fn screen_test_page_phase_descriptor(
     descriptor: *const ScreenTestPageDescriptor,
     phase_index: usize,
-    phase: *mut ScreenTestPhaseDescriptorV3,
+    phase: *mut ScreenTestPhaseDescriptorV4,
 ) -> bool {
     let Some(source) =
         unsafe { descriptor.as_ref() }.and_then(|value| value.page.phases.get(phase_index))
@@ -2290,7 +2306,7 @@ pub unsafe extern "C" fn screen_test_page_phase_descriptor(
     let Some(destination) = (unsafe { phase.as_mut() }) else {
         return false;
     };
-    *destination = ScreenTestPhaseDescriptorV3 {
+    *destination = ScreenTestPhaseDescriptorV4 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         id: utf8_view(source.id),
         label: utf8_view(source.label),
@@ -2299,6 +2315,8 @@ pub unsafe extern "C" fn screen_test_page_phase_descriptor(
         input_artifact: utf8_view(source.input_artifact),
         output_artifact: utf8_view(source.output_artifact),
         preview_result: source.preview_result as u32,
+        calculation_domain: utf8_view(source.calculation_domain()),
+        preview_route: utf8_view(source.preview_route()),
     };
     true
 }
@@ -2513,10 +2531,10 @@ pub unsafe extern "C" fn screen_test_page_preview_choice_option(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_choice(
-    selection: *const ScreenTestAuthoringSelectionV17,
+    selection: *const ScreenTestAuthoringSelectionV18,
     control_id: ScreenUtf8View,
     option_id: ScreenUtf8View,
-    resolved: *mut ScreenTestAuthoringSelectionV17,
+    resolved: *mut ScreenTestAuthoringSelectionV18,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2550,10 +2568,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_choice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
-    selection: *const ScreenTestAuthoringSelectionV17,
+    selection: *const ScreenTestAuthoringSelectionV18,
     control_id: ScreenUtf8View,
     value: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV17,
+    resolved: *mut ScreenTestAuthoringSelectionV18,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2583,10 +2601,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_toggle(
-    selection: *const ScreenTestAuthoringSelectionV17,
+    selection: *const ScreenTestAuthoringSelectionV18,
     control_id: ScreenUtf8View,
     value: bool,
-    resolved: *mut ScreenTestAuthoringSelectionV17,
+    resolved: *mut ScreenTestAuthoringSelectionV18,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -3868,6 +3886,57 @@ pub unsafe extern "C" fn screen_test_pattern_render_rgba32f(
             }
         }
     }
+    unsafe { set_error(error_message, b"\0") };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_delivery_raster_rgba32f(
+    input_rgba: *const f32,
+    input_width: u32,
+    input_height: u32,
+    output_rgba: *mut f32,
+    output_width: u32,
+    output_height: u32,
+    placement: u32,
+    background: u32,
+    error_message: *mut *const c_char,
+) -> bool {
+    let input_count = input_width as usize * input_height as usize;
+    let output_count = output_width as usize * output_height as usize;
+    if input_rgba.is_null() || output_rgba.is_null() || input_count == 0 || output_count == 0 {
+        unsafe { set_error(error_message, b"invalid Delivery Raster buffers\0") };
+        return false;
+    }
+    let input = unsafe { std::slice::from_raw_parts(input_rgba.cast::<[f32; 4]>(), input_count) };
+    let request = DeliveryRasterRequest {
+        width: output_width,
+        height: output_height,
+        placement: match placement {
+            0 => DeliveryRasterPlacement::Fit,
+            1 => DeliveryRasterPlacement::OneToOne,
+            _ => {
+                unsafe { set_error(error_message, b"invalid Delivery Raster placement\0") };
+                return false;
+            }
+        },
+        background: match background {
+            0 => DeliveryRasterBackground::Transparent,
+            1 => DeliveryRasterBackground::Black,
+            _ => {
+                unsafe { set_error(error_message, b"invalid Delivery Raster background\0") };
+                return false;
+            }
+        },
+    };
+    let Ok(result) = evaluate_delivery_raster_rgba32f(input, input_width, input_height, request)
+    else {
+        unsafe { set_error(error_message, b"Delivery Raster evaluation failed\0") };
+        return false;
+    };
+    let output =
+        unsafe { std::slice::from_raw_parts_mut(output_rgba.cast::<[f32; 4]>(), output_count) };
+    output.copy_from_slice(&result);
     unsafe { set_error(error_message, b"\0") };
     true
 }

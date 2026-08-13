@@ -16,6 +16,7 @@ import Testing
                 .init(
                     id: "phase", label: "Phase", effectSummary: "Effect",
                     inputArtifactID: "input-v1", outputArtifactID: "output-v1",
+                    calculationDomain: "ACEScg lineal", previewRoute: "Preview ODT seleccionado",
                     sections: [duplicateControls]
                 ),
             ],
@@ -55,6 +56,8 @@ import Testing
                         effectSummary: "Effect",
                         inputArtifactID: "input-v1",
                         outputArtifactID: "output-v1",
+                        calculationDomain: "ACEScg lineal",
+                        previewRoute: "Preview ODT seleccionado",
                         sections: [.init(id: "section", label: "Section", controls: [control])]
                     ),
                 ],
@@ -80,6 +83,8 @@ import Testing
             .init(
                 id: "device", label: "Device", effectSummary: "Effect",
                 inputArtifactID: "acescg-v1", outputArtifactID: "device-signal-v1",
+                calculationDomain: "Señal Device no lineal",
+                previewRoute: "Preview ODT seleccionado",
                 sections: [.init(id: "parameters", label: "Parameters", controls: [fixedWhite])]
             ),
         ],

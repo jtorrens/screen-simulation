@@ -617,6 +617,7 @@ mod tests {
                 device_id: id("device-01"),
                 camera_id: id("camera-01"),
                 sensor_id: id("sensor-01"),
+                capture_raster_mode_id: id("full"),
                 screen_id: id("screen-01"),
                 project_frame_rate: ExactFrameRate {
                     numerator: 24,
@@ -635,6 +636,12 @@ mod tests {
                     saturation: 1.25,
                     temperature_kelvin: 6500.0,
                     tint: 0.0,
+                },
+                delivery: screen_persistence::DeliveryRasterDocument {
+                    width: 3_840,
+                    height: 2_160,
+                    placement: screen_persistence::DeliveryPlacementDocument::Fit,
+                    background: screen_persistence::DeliveryBackgroundDocument::Black,
                 },
                 recording: RecordingSelectionDocument {
                     output_transform_id: id("iphone-heic-display-p3-srgb-full-v2"),

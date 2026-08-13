@@ -16,7 +16,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 16;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 17;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -35,6 +35,7 @@ pub const SENSOR_CFA_PHASE_ID: &str = "sensor-cfa";
 pub const SENSOR_NOISE_PHASE_ID: &str = "sensor-noise";
 pub const DEVELOP_DEMOSAIC_PHASE_ID: &str = "develop-demosaic";
 pub const CAMERA_RENDERING_INTENT_PHASE_ID: &str = "camera-rendering-intent";
+pub const DELIVERY_RASTER_PHASE_ID: &str = "delivery-raster";
 pub const RECORDING_OUTPUT_PHASE_ID: &str = "recording-output";
 pub const RECORDING_CODEC_PHASE_ID: &str = "recording-codec";
 pub const OUTPUT_SIGNAL_CONTROL_ID: &str = "output-signal";
@@ -90,6 +91,10 @@ pub const CAMERA_LOOK_CONTRAST_CONTROL_ID: &str = "camera-look-contrast";
 pub const CAMERA_LOOK_SATURATION_CONTROL_ID: &str = "camera-look-saturation";
 pub const CAMERA_LOOK_TEMPERATURE_CONTROL_ID: &str = "camera-look-temperature-kelvin";
 pub const CAMERA_LOOK_TINT_CONTROL_ID: &str = "camera-look-tint";
+pub const DELIVERY_WIDTH_CONTROL_ID: &str = "delivery-width-pixels";
+pub const DELIVERY_HEIGHT_CONTROL_ID: &str = "delivery-height-pixels";
+pub const DELIVERY_PLACEMENT_CONTROL_ID: &str = "delivery-placement";
+pub const DELIVERY_BACKGROUND_CONTROL_ID: &str = "delivery-background";
 pub const RECORDING_OUTPUT_TRANSFORM_CONTROL_ID: &str = "recording-output-transform";
 pub const RECORDING_PROFILE_CONTROL_ID: &str = "recording-profile";
 pub const RECORDING_CHARACTER_CONTROL_ID: &str = "recording-character";
@@ -110,6 +115,27 @@ const PLACEMENTS: [TestChoiceOption; 4] = [
     TestChoiceOption {
         id: "one-to-one",
         label: "One to One",
+    },
+];
+
+const DELIVERY_PLACEMENTS: [TestChoiceOption; 2] = [
+    TestChoiceOption {
+        id: "fit",
+        label: "Fit",
+    },
+    TestChoiceOption {
+        id: "one-to-one",
+        label: "1:1",
+    },
+];
+const DELIVERY_BACKGROUNDS: [TestChoiceOption; 2] = [
+    TestChoiceOption {
+        id: "transparent",
+        label: "Transparente",
+    },
+    TestChoiceOption {
+        id: "black",
+        label: "Negro",
     },
 ];
 
@@ -195,6 +221,10 @@ pub struct TestAuthoringSelection<'a> {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub delivery_width: f32,
+    pub delivery_height: f32,
+    pub delivery_placement_id: &'a str,
+    pub delivery_background_id: &'a str,
     pub recording_output_transform_id: &'a str,
     pub recording_profile_id: &'a str,
     pub recording_character: f32,
@@ -253,6 +283,10 @@ pub struct ResolvedTestAuthoringSelection {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub delivery_width: u32,
+    pub delivery_height: u32,
+    pub delivery_placement_id: &'static str,
+    pub delivery_background_id: &'static str,
     pub recording_output_transform_id: &'static str,
     pub recording_profile_id: &'static str,
     pub recording_character: f32,
@@ -372,6 +406,35 @@ pub struct TestPhaseDescriptor {
     pub controls: Vec<TestControlRequirement>,
 }
 
+impl TestPhaseDescriptor {
+    pub fn calculation_domain(&self) -> &'static str {
+        match self.id {
+            ORIGIN_PHASE_ID
+            | DEVELOP_DEMOSAIC_PHASE_ID
+            | CAMERA_RENDERING_INTENT_PHASE_ID
+            | DELIVERY_RASTER_PHASE_ID => "ACEScg lineal",
+            FEEDER_SIGNAL_PHASE_ID => "Señal Device no lineal",
+            DEVICE_INTERPRETATION_PHASE_ID
+            | PANEL_STRUCTURE_PHASE_ID
+            | PANEL_UNIFORMITY_PHASE_ID
+            | PANEL_LIGHT_SPREAD_PHASE_ID
+            | COVER_ENVIRONMENT_PHASE_ID
+            | COVER_GLOW_PHASE_ID => "Radiancia espectral RGB",
+            RELATIVE_GEOMETRY_PHASE_ID => "Geometría física",
+            LENS_PROJECTION_PHASE_ID => "Iluminancia ACEScg",
+            SHUTTER_EXPOSURE_PHASE_ID | COMPUTATIONAL_CAPTURE_PHASE_ID => "Exposición ACEScg",
+            SENSOR_BLOOM_PHASE_ID => "Carga de fotositos",
+            SENSOR_CFA_PHASE_ID | SENSOR_NOISE_PHASE_ID => "RAW mosaico",
+            RECORDING_OUTPUT_PHASE_ID | RECORDING_CODEC_PHASE_ID => "Señal de grabación",
+            _ => unreachable!("all Test phases own a calculation domain"),
+        }
+    }
+
+    pub const fn preview_route(&self) -> &'static str {
+        "Preview ODT seleccionado"
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum TestPreviewResult {
@@ -392,8 +455,9 @@ pub enum TestPreviewResult {
     SensorNoise = 14,
     DevelopDemosaic = 15,
     CameraRenderingIntent = 16,
-    RecordingOutput = 17,
-    RecordingCodec = 18,
+    DeliveryRaster = 17,
+    RecordingOutput = 18,
+    RecordingCodec = 19,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -437,6 +501,7 @@ pub enum TestAuthoringError {
     InvalidSensorBloomProfile,
     InvalidSensorNoiseAmount,
     InvalidCameraRenderingIntent,
+    InvalidDeliveryRaster,
     UnknownRecordingOutputTransform,
     InvalidRecording,
     UnknownPlacement,
@@ -484,6 +549,7 @@ impl core::fmt::Display for TestAuthoringError {
             }
             Self::InvalidSensorNoiseAmount => "Sensor Noise amount is outside 0..=4",
             Self::InvalidCameraRenderingIntent => "Camera Rendering Intent is invalid",
+            Self::InvalidDeliveryRaster => "Delivery Raster is invalid",
             Self::UnknownRecordingOutputTransform => "unknown Recording Output transform",
             Self::InvalidRecording => "Recording selection is invalid",
             Self::UnknownPlacement => "unknown Test placement",
@@ -612,6 +678,10 @@ pub fn default_test_authoring_selection(
         sensor_bloom_overflow_transfer_fraction: capture.sensor.bloom.overflow_transfer_fraction,
         sensor_noise_amount: 1.0,
         camera_rendering_intent: capture.rendering_intent,
+        delivery_width: 3_840.0,
+        delivery_height: 2_160.0,
+        delivery_placement_id: "fit",
+        delivery_background_id: "black",
         recording_output_transform_id: screen_color::IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
         recording_profile_id: IPHONE_HEIC_PHOTO_PROFILE_ID,
         recording_character: 1.0,
@@ -813,6 +883,25 @@ pub fn resolve_test_authoring_selection(
         .camera_rendering_intent
         .validate()
         .map_err(|_| TestAuthoringError::InvalidCameraRenderingIntent)?;
+    if !selection.delivery_width.is_finite()
+        || !selection.delivery_height.is_finite()
+        || selection.delivery_width.fract() != 0.0
+        || selection.delivery_height.fract() != 0.0
+        || !(1.0..=16_384.0).contains(&selection.delivery_width)
+        || !(1.0..=16_384.0).contains(&selection.delivery_height)
+    {
+        return Err(TestAuthoringError::InvalidDeliveryRaster);
+    }
+    let delivery_placement_id = selected_option(
+        &DELIVERY_PLACEMENTS,
+        selection.delivery_placement_id,
+        TestAuthoringError::InvalidDeliveryRaster,
+    )?;
+    let delivery_background_id = selected_option(
+        &DELIVERY_BACKGROUNDS,
+        selection.delivery_background_id,
+        TestAuthoringError::InvalidDeliveryRaster,
+    )?;
     let recording_output_transform =
         RecordingOutputTransform::from_stable_id(selection.recording_output_transform_id)
             .ok_or(TestAuthoringError::UnknownRecordingOutputTransform)?;
@@ -840,6 +929,10 @@ pub fn resolve_test_authoring_selection(
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: capture.id,
         capture_raster_mode_id: capture_raster_mode.id,
+        delivery_width: selection.delivery_width as u32,
+        delivery_height: selection.delivery_height as u32,
+        delivery_placement_id,
+        delivery_background_id,
         geometry_mode_id,
         camera_distance_meters: selection.camera_distance_meters,
         camera_orbit_x_degrees: selection.camera_orbit_x_degrees,
@@ -1714,11 +1807,54 @@ pub fn test_page_descriptor(
                 ],
             },
             TestPhaseDescriptor {
+                id: DELIVERY_RASTER_PHASE_ID,
+                label: "Raster de entrega",
+                effect_summary: "Ajusta el resultado de cámara al raster final sin cambiar óptica, sensor ni look.",
+                header_control_id: None,
+                input_artifact: "camera-rendered-acescg-v1",
+                output_artifact: "delivery-acescg-raster-v1",
+                preview_result: TestPreviewResult::DeliveryRaster,
+                controls: vec![
+                    scalar_field_control(
+                        DELIVERY_WIDTH_CONTROL_ID,
+                        "Anchura de entrega",
+                        selection.delivery_width as f32,
+                        1.0,
+                        16_384.0,
+                        3_840.0,
+                        "px",
+                    ),
+                    scalar_field_control(
+                        DELIVERY_HEIGHT_CONTROL_ID,
+                        "Altura de entrega",
+                        selection.delivery_height as f32,
+                        1.0,
+                        16_384.0,
+                        2_160.0,
+                        "px",
+                    ),
+                    choice_control(
+                        DELIVERY_PLACEMENT_CONTROL_ID,
+                        "Colocación de entrega",
+                        DELIVERY_PLACEMENTS.to_vec(),
+                        selection.delivery_placement_id,
+                        "fit",
+                    ),
+                    choice_control(
+                        DELIVERY_BACKGROUND_CONTROL_ID,
+                        "Fondo",
+                        DELIVERY_BACKGROUNDS.to_vec(),
+                        selection.delivery_background_id,
+                        "black",
+                    ),
+                ],
+            },
+            TestPhaseDescriptor {
                 id: RECORDING_OUTPUT_PHASE_ID,
                 label: "Salida de grabación",
                 effect_summary: "Transforma el resultado lineal de cámara en la señal no lineal declarada para grabación.",
                 header_control_id: None,
-                input_artifact: "camera-rendered-acescg-v1",
+                input_artifact: "delivery-acescg-raster-v1",
                 output_artifact: "recording-output-signal-v2",
                 preview_result: TestPreviewResult::RecordingOutput,
                 controls: vec![choice_control(
@@ -1823,6 +1959,8 @@ pub fn apply_test_choice(
             next.camera_rendering_intent = capture.rendering_intent;
         }
         CAPTURE_RASTER_MODE_CONTROL_ID => next.capture_raster_mode_id = option_id,
+        DELIVERY_PLACEMENT_CONTROL_ID => next.delivery_placement_id = option_id,
+        DELIVERY_BACKGROUND_CONTROL_ID => next.delivery_background_id = option_id,
         GEOMETRY_MODE_CONTROL_ID => apply_geometry_mode(&mut next, option_id)?,
         COVER_GLASS_CONTROL_ID => {
             let cover =
@@ -1884,6 +2022,8 @@ pub fn apply_test_choice(
         | CAMERA_LOOK_SATURATION_CONTROL_ID
         | CAMERA_LOOK_TEMPERATURE_CONTROL_ID
         | CAMERA_LOOK_TINT_CONTROL_ID
+        | DELIVERY_WIDTH_CONTROL_ID
+        | DELIVERY_HEIGHT_CONTROL_ID
         | RECORDING_CHARACTER_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
         _ => return Err(TestAuthoringError::UnknownControl),
     }
@@ -1944,6 +2084,10 @@ fn unresolved_test_selection(
         sensor_bloom_overflow_transfer_fraction: current.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: current.sensor_noise_amount,
         camera_rendering_intent: current.camera_rendering_intent,
+        delivery_width: current.delivery_width as f32,
+        delivery_height: current.delivery_height as f32,
+        delivery_placement_id: current.delivery_placement_id,
+        delivery_background_id: current.delivery_background_id,
         recording_output_transform_id: current.recording_output_transform_id,
         recording_profile_id: current.recording_profile_id,
         recording_character: current.recording_character,
@@ -2092,6 +2236,8 @@ pub fn apply_test_scalar(
             next.camera_rendering_intent.temperature_kelvin = value
         }
         CAMERA_LOOK_TINT_CONTROL_ID => next.camera_rendering_intent.tint = value,
+        DELIVERY_WIDTH_CONTROL_ID => next.delivery_width = value,
+        DELIVERY_HEIGHT_CONTROL_ID => next.delivery_height = value,
         RECORDING_CHARACTER_CONTROL_ID => next.recording_character = value,
         OUTPUT_SIGNAL_CONTROL_ID
         | DEVICE_CONTROL_ID
@@ -2100,6 +2246,8 @@ pub fn apply_test_scalar(
         | PREVIEW_QUALITY_CONTROL_ID
         | CAPTURE_PRESET_CONTROL_ID
         | CAPTURE_RASTER_MODE_CONTROL_ID
+        | DELIVERY_PLACEMENT_CONTROL_ID
+        | DELIVERY_BACKGROUND_CONTROL_ID
         | GEOMETRY_MODE_CONTROL_ID
         | COVER_GLASS_CONTROL_ID
         | ENVIRONMENT_CONTROL_ID
@@ -2182,6 +2330,10 @@ mod tests {
             sensor_bloom_overflow_transfer_fraction: 0.30,
             sensor_noise_amount: 1.0,
             camera_rendering_intent: capture("iphone-16e-main-48mp").unwrap().rendering_intent,
+            delivery_width: 3_840.0,
+            delivery_height: 2_160.0,
+            delivery_placement_id: "fit",
+            delivery_background_id: "black",
             recording_output_transform_id: screen_color::IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
             recording_profile_id: IPHONE_HEIC_PHOTO_PROFILE_ID,
             recording_character: 1.0,
@@ -2191,7 +2343,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 16);
+        assert_eq!(page.schema_version, 17);
         assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
@@ -2213,6 +2365,7 @@ mod tests {
                 SENSOR_NOISE_PHASE_ID,
                 DEVELOP_DEMOSAIC_PHASE_ID,
                 CAMERA_RENDERING_INTENT_PHASE_ID,
+                DELIVERY_RASTER_PHASE_ID,
                 RECORDING_OUTPUT_PHASE_ID,
                 RECORDING_CODEC_PHASE_ID,
             ]

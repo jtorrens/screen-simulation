@@ -117,6 +117,10 @@ Domain packages expose narrow capabilities and do not depend on sibling implemen
 
 ## Current scope
 
+`Delivery Raster` follows Camera Rendering Intent and precedes Recording Output. It consumes `camera-rendered-acescg-v1` and publishes `delivery-acescg-raster-v1`, preserving scene-linear ACEScg while establishing explicit output width, height, `Fit` or centered `1:1` placement, and transparent or black background. It never changes gate, lens, sensor, exposure or camera look. Recording Output and Codec consume only this accepted delivery artifact, so delivery-only or codec-only edits reuse the camera checkpoint.
+
+Every Test phase publishes its native calculation-domain label for `Ver hasta`. The visible image remains a presentation of that authoritative checkpoint through the explicitly selected Preview ODT; the label never claims that the monitor directly displays native linear, radiometric, charge or RAW values.
+
 Capture presets publish exact `Full`, `Half` and `Quarter` raster modes. `Half` denotes approximately half the total photosite count rather than halving each axis. The selected mode becomes the effective sensor raster before physical evaluation without changing gate dimensions or lens geometry. The iPhone 16e defaults to 5712×4284 `Half`; ARRI ALEXA 35 defaults to 4608×3164 `Full`.
 
 The project-owned physical state includes complete LCD, optical-cover, environment and sensor profiles. Cover and environment cross the same immutable Application request as panel and sensor; they are not workstation-only effects.

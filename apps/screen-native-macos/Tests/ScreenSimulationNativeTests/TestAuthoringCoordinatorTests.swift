@@ -60,6 +60,10 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         cameraLookSaturation: 1.25,
         cameraLookTemperatureKelvin: 6_500,
         cameraLookTint: 0,
+        deliveryWidth: 3_840,
+        deliveryHeight: 2_160,
+        deliveryPlacementID: "fit",
+        deliveryBackgroundID: "black",
         recordingOutputTransformID: "iphone-heic-display-p3-srgb-full-v2",
         recordingProfileID: "iphone-heic-photo-v1",
         recordingCharacter: 1
@@ -112,7 +116,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         "Cristal y entorno", "Resplandor del cristal", "Objetivo y proyección",
         "Exposición y obturador", "Captura computacional", "Crosstalk y bloom del sensor",
         "Sensor y CFA", "Ruido del sensor", "Revelado y demosaico",
-        "Intención de render de cámara", "Salida de grabación", "Códec de grabación",
+        "Intención de render de cámara", "Raster de entrega", "Salida de grabación",
+        "Códec de grabación",
     ])
     #expect(snapshot.presentation.selectedPhaseID == snapshot.presentation.phases.last?.id)
     for index in 0..<(snapshot.presentation.phases.count - 1) {
@@ -443,6 +448,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         .sensorNoise,
         .rawMosaic,
         .developedACEScg,
+        .cameraRenderedACEScg,
         .cameraRenderedACEScg,
         .cameraRenderedACEScg,
         .cameraRenderedACEScg,

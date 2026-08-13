@@ -197,6 +197,104 @@ pub const CAPTURE_RASTER_FULL_ID: &str = "full";
 pub const CAPTURE_RASTER_HALF_ID: &str = "half";
 pub const CAPTURE_RASTER_QUARTER_ID: &str = "quarter";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryRasterPlacement {
+    Fit,
+    OneToOne,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryRasterBackground {
+    Transparent,
+    Black,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeliveryRasterRequest {
+    pub width: u32,
+    pub height: u32,
+    pub placement: DeliveryRasterPlacement,
+    pub background: DeliveryRasterBackground,
+}
+
+pub fn evaluate_delivery_raster_rgba32f(
+    source: &[[f32; 4]],
+    source_width: u32,
+    source_height: u32,
+    request: DeliveryRasterRequest,
+) -> Result<Vec<[f32; 4]>, ApplicationError> {
+    if source_width == 0
+        || source_height == 0
+        || request.width == 0
+        || request.height == 0
+        || source.len() != source_width as usize * source_height as usize
+        || source.iter().flatten().any(|value| !value.is_finite())
+    {
+        return Err(ApplicationError::InvalidDeliveryRaster);
+    }
+    let clear = match request.background {
+        DeliveryRasterBackground::Transparent => [0.0; 4],
+        DeliveryRasterBackground::Black => [0.0, 0.0, 0.0, 1.0],
+    };
+    let mut output = vec![clear; request.width as usize * request.height as usize];
+    let (scale, placed_width, placed_height) = match request.placement {
+        DeliveryRasterPlacement::Fit => {
+            let scale = (request.width as f64 / source_width as f64)
+                .min(request.height as f64 / source_height as f64);
+            (
+                scale,
+                source_width as f64 * scale,
+                source_height as f64 * scale,
+            )
+        }
+        DeliveryRasterPlacement::OneToOne => (1.0, source_width as f64, source_height as f64),
+    };
+    let offset_x = match request.placement {
+        DeliveryRasterPlacement::Fit => (request.width as f64 - placed_width) * 0.5,
+        DeliveryRasterPlacement::OneToOne => {
+            f64::from((request.width as i64 - source_width as i64).div_euclid(2) as i32)
+        }
+    };
+    let offset_y = match request.placement {
+        DeliveryRasterPlacement::Fit => (request.height as f64 - placed_height) * 0.5,
+        DeliveryRasterPlacement::OneToOne => {
+            f64::from((request.height as i64 - source_height as i64).div_euclid(2) as i32)
+        }
+    };
+    for y in 0..request.height {
+        for x in 0..request.width {
+            let sx = (x as f64 + 0.5 - offset_x) / scale - 0.5;
+            let sy = (y as f64 + 0.5 - offset_y) / scale - 0.5;
+            if sx < -0.5
+                || sy < -0.5
+                || sx >= source_width as f64 - 0.5
+                || sy >= source_height as f64 - 0.5
+            {
+                continue;
+            }
+            let x0 = sx.floor().clamp(0.0, (source_width - 1) as f64) as u32;
+            let y0 = sy.floor().clamp(0.0, (source_height - 1) as f64) as u32;
+            let x1 = (x0 + 1).min(source_width - 1);
+            let y1 = (y0 + 1).min(source_height - 1);
+            let fx = (sx - sx.floor()) as f32;
+            let fy = (sy - sy.floor()) as f32;
+            let sample = |px: u32, py: u32| source[(py * source_width + px) as usize];
+            let a = sample(x0, y0);
+            let b = sample(x1, y0);
+            let c = sample(x0, y1);
+            let d = sample(x1, y1);
+            let mut pixel = [0.0; 4];
+            for channel in 0..4 {
+                let top = a[channel] + (b[channel] - a[channel]) * fx;
+                let bottom = c[channel] + (d[channel] - c[channel]) * fx;
+                pixel[channel] = top + (bottom - top) * fy;
+            }
+            output[(y * request.width + x) as usize] = pixel;
+        }
+    }
+    Ok(output)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CaptureDevicePreset {
     pub id: &'static str,
@@ -6358,6 +6456,7 @@ fn diagnostic_area_signal(
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApplicationError {
+    InvalidDeliveryRaster,
     InvalidViewportAspect,
     InvalidCharacterStrength,
     UnsupportedPhysicalIntermediate,
@@ -6401,9 +6500,58 @@ pub enum ApplicationError {
     Time(ContractError),
 }
 
+#[cfg(test)]
+mod delivery_raster_tests {
+    use super::*;
+
+    #[test]
+    fn one_to_one_centers_and_crops_without_resampling() {
+        let source = (0..12)
+            .map(|value| [value as f32, 0.0, 0.0, 1.0])
+            .collect::<Vec<_>>();
+        let output = evaluate_delivery_raster_rgba32f(
+            &source,
+            4,
+            3,
+            DeliveryRasterRequest {
+                width: 2,
+                height: 2,
+                placement: DeliveryRasterPlacement::OneToOne,
+                background: DeliveryRasterBackground::Black,
+            },
+        )
+        .unwrap();
+        assert_eq!(output, vec![source[5], source[6], source[9], source[10]]);
+    }
+
+    #[test]
+    fn fit_preserves_aspect_and_background_alpha_contract() {
+        let source = vec![[1.0, 0.5, 0.25, 1.0]; 4];
+        let output = evaluate_delivery_raster_rgba32f(
+            &source,
+            2,
+            2,
+            DeliveryRasterRequest {
+                width: 4,
+                height: 2,
+                placement: DeliveryRasterPlacement::Fit,
+                background: DeliveryRasterBackground::Transparent,
+            },
+        )
+        .unwrap();
+        assert_eq!(output[0], [0.0; 4]);
+        assert_eq!(output[1], source[0]);
+        assert_eq!(output[2], source[0]);
+        assert_eq!(output[3], [0.0; 4]);
+    }
+}
+
 impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidDeliveryRaster => formatter.write_str(
+                "delivery raster requires finite RGBA and positive source/output dimensions",
+            ),
             Self::InvalidViewportAspect => formatter.write_str("viewport aspect must be positive"),
             Self::InvalidCharacterStrength => formatter.write_str(
                 "physical pipeline amounts must be finite and remain in the supported [0, 4] range",

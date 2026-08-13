@@ -35,6 +35,44 @@ enum RecordingPhaseExecutor {
     static let iphoneHeicProfileID = "iphone-heic-photo-v1"
     static let calibratedHeicQuality = 0.82
 
+    static func delivery(
+        cameraRendered: StudioColorMetalFrame,
+        width: Int,
+        height: Int,
+        placementID: String,
+        backgroundID: String,
+        display: StudioColorMetalDisplay
+    ) throws -> StudioColorMetalFrame {
+        let input = try display.readLinearRGBA(cameraRendered)
+        var output = [Float](repeating: 0, count: width * height * 4)
+        var bridgeError: UnsafePointer<CChar>?
+        let placement: UInt32 = placementID == "fit" ? 0 : 1
+        let background: UInt32 = backgroundID == "transparent" ? 0 : 1
+        let succeeded = input.withUnsafeBufferPointer { inputBuffer in
+            output.withUnsafeMutableBufferPointer { outputBuffer in
+                screen_delivery_raster_rgba32f(
+                    inputBuffer.baseAddress,
+                    UInt32(cameraRendered.width), UInt32(cameraRendered.height),
+                    outputBuffer.baseAddress,
+                    UInt32(width), UInt32(height),
+                    placement, background, &bridgeError
+                )
+            }
+        }
+        guard succeeded else {
+            throw RecordingPhaseExecutionError.bridge(
+                bridgeError.map(String.init(cString:)) ?? "Delivery Raster ha fallado."
+            )
+        }
+        return try display.makeACEScgFrame(
+            width: width,
+            height: height,
+            encodedRGBA: output,
+            input: try acescgInput(),
+            alpha: backgroundID == "transparent" ? .premultiplied : .ignore
+        )
+    }
+
     static func output(
         cameraRendered: StudioColorMetalFrame,
         transformID: String,

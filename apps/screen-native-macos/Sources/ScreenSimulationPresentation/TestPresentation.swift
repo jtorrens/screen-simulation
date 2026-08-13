@@ -139,6 +139,8 @@ public struct TestPhasePresentation: Equatable, Identifiable, Sendable {
     public let headerControlID: String?
     public let inputArtifactID: String
     public let outputArtifactID: String
+    public let calculationDomain: String
+    public let previewRoute: String
     public let sections: [TestControlSection]
 
     public init(
@@ -148,6 +150,8 @@ public struct TestPhasePresentation: Equatable, Identifiable, Sendable {
         headerControlID: String? = nil,
         inputArtifactID: String,
         outputArtifactID: String,
+        calculationDomain: String,
+        previewRoute: String,
         sections: [TestControlSection]
     ) {
         self.id = id
@@ -156,6 +160,8 @@ public struct TestPhasePresentation: Equatable, Identifiable, Sendable {
         self.headerControlID = headerControlID
         self.inputArtifactID = inputArtifactID
         self.outputArtifactID = outputArtifactID
+        self.calculationDomain = calculationDomain
+        self.previewRoute = previewRoute
         self.sections = sections
     }
 }
@@ -181,6 +187,7 @@ public struct TestPagePresentation: Equatable, Sendable {
               phases.allSatisfy({
                   !$0.id.isEmpty && !$0.label.isEmpty
                       && !$0.effectSummary.isEmpty
+                      && !$0.calculationDomain.isEmpty && !$0.previewRoute.isEmpty
                       && !$0.inputArtifactID.isEmpty && !$0.outputArtifactID.isEmpty
               }),
               Set(phases.map(\.id)).count == phases.count,

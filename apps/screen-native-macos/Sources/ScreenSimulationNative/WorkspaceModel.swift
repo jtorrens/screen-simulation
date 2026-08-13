@@ -145,6 +145,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var recordingEncodedSHA256: String?
     private var testAuthoringSelection: TestAuthoringResolvedSelection?
     private var recordingCameraCheckpoint: StudioColorMetalFrame?
+    private var deliveryRasterCheckpoint: StudioColorMetalFrame?
     private var recordingOutputExecution: RecordingOutputExecution?
 
     let metalDisplay: StudioColorMetalDisplay
@@ -1641,6 +1642,7 @@ final class WorkspaceModel: ObservableObject {
         }
         guard physicalModel.quality != .native else { return }
         recordingCameraCheckpoint = nil
+        deliveryRasterCheckpoint = nil
         recordingOutputExecution = nil
         recordingEncodedBytes = nil
         recordingEncodedSHA256 = nil
@@ -1814,7 +1816,15 @@ final class WorkspaceModel: ObservableObject {
         _ selection: TestAuthoringResolvedSelection
     ) throws {
         let previous = testAuthoringSelection
-        if previous?.recordingOutputTransformID != selection.recordingOutputTransformID {
+        if previous?.deliveryWidth != selection.deliveryWidth
+            || previous?.deliveryHeight != selection.deliveryHeight
+            || previous?.deliveryPlacementID != selection.deliveryPlacementID
+            || previous?.deliveryBackgroundID != selection.deliveryBackgroundID {
+            deliveryRasterCheckpoint = nil
+            recordingOutputExecution = nil
+            recordingEncodedBytes = nil
+            recordingEncodedSHA256 = nil
+        } else if previous?.recordingOutputTransformID != selection.recordingOutputTransformID {
             recordingOutputExecution = nil
             recordingEncodedBytes = nil
             recordingEncodedSHA256 = nil
@@ -2021,7 +2031,7 @@ final class WorkspaceModel: ObservableObject {
         case .sensorCfa: .sensorNoise
         case .sensorNoise: .rawMosaic
         case .developDemosaic: .developedACEScg
-        case .cameraRenderingIntent, .recordingOutput, .recordingCodec: .cameraRenderedACEScg
+        case .cameraRenderingIntent, .deliveryRaster, .recordingOutput, .recordingCodec: .cameraRenderedACEScg
         case .sourceACEScg, nil: nil
         }
     }
@@ -2048,7 +2058,7 @@ final class WorkspaceModel: ObservableObject {
         case .deviceInterpretation, .panelStructure, .panelUniformity, .panelLightSpread,
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
              .shutterExposure, .computationalCapture, .sensorBloom, .sensorCfa, .sensorNoise,
-             .developDemosaic, .cameraRenderingIntent, .recordingOutput, .recordingCodec:
+             .developDemosaic, .cameraRenderingIntent, .deliveryRaster, .recordingOutput, .recordingCodec:
             updateRequestedPhysicalIntermediate(physicalIntermediate(for: result)!)
             rebuildPhysicalSelectedFrame()
             return
@@ -2066,12 +2076,31 @@ final class WorkspaceModel: ObservableObject {
               let selection = testAuthoringSelection
         else { return }
         do {
+            let delivery: StudioColorMetalFrame
+            if let cached = deliveryRasterCheckpoint {
+                delivery = cached
+            } else {
+                delivery = try RecordingPhaseExecutor.delivery(
+                    cameraRendered: camera,
+                    width: Int(selection.deliveryWidth),
+                    height: Int(selection.deliveryHeight),
+                    placementID: selection.deliveryPlacementID,
+                    backgroundID: selection.deliveryBackgroundID,
+                    display: metalDisplay
+                )
+                deliveryRasterCheckpoint = delivery
+            }
+            if result == .deliveryRaster {
+                metalFrame = delivery
+                monitorOutput.update(frame: delivery, display: metalDisplay)
+                return
+            }
             let output: RecordingOutputExecution
             if let cached = recordingOutputExecution {
                 output = cached
             } else {
                 output = try RecordingPhaseExecutor.output(
-                    cameraRendered: camera,
+                    cameraRendered: delivery,
                     transformID: selection.recordingOutputTransformID,
                     display: metalDisplay
                 )
@@ -2165,8 +2194,10 @@ final class WorkspaceModel: ObservableObject {
                 }
                 if snapshot.returnedIntermediate == .cameraRenderedACEScg {
                     recordingCameraCheckpoint = presentationFrame
+                    deliveryRasterCheckpoint = nil
                     recordingOutputExecution = nil
-                    if selectedTestPreviewResult == .recordingOutput
+                    if selectedTestPreviewResult == .deliveryRaster
+                        || selectedTestPreviewResult == .recordingOutput
                         || selectedTestPreviewResult == .recordingCodec {
                         publishRecordingPreview(result: selectedTestPreviewResult!)
                         return

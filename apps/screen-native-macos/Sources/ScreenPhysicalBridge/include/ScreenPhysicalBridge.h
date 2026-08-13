@@ -25,7 +25,7 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 17u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 18u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -96,10 +96,14 @@ typedef struct {
     float camera_look_saturation;
     float camera_look_temperature_kelvin;
     float camera_look_tint;
+    uint32_t delivery_width;
+    uint32_t delivery_height;
+    ScreenUTF8View delivery_placement_id;
+    ScreenUTF8View delivery_background_id;
     ScreenUTF8View recording_output_transform_id;
     ScreenUTF8View recording_profile_id;
     float recording_character;
-} ScreenTestAuthoringSelectionV17;
+} ScreenTestAuthoringSelectionV18;
 
 typedef struct {
     uint32_t abi_version;
@@ -110,7 +114,9 @@ typedef struct {
     ScreenUTF8View input_artifact;
     ScreenUTF8View output_artifact;
     uint32_t preview_result;
-} ScreenTestPhaseDescriptorV3;
+    ScreenUTF8View calculation_domain;
+    ScreenUTF8View preview_route;
+} ScreenTestPhaseDescriptorV4;
 
 typedef struct {
     uint32_t abi_version;
@@ -138,12 +144,12 @@ bool screen_test_authoring_default_selection(
     ScreenUTF8View input_transform_id,
     ScreenUTF8View device_id,
     float frame_rate,
-    ScreenTestAuthoringSelectionV17 *resolved,
+    ScreenTestAuthoringSelectionV18 *resolved,
     const char **error_message
 );
 
 ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
-    const ScreenTestAuthoringSelectionV17 *selection,
+    const ScreenTestAuthoringSelectionV18 *selection,
     const char **error_message
 );
 void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
@@ -154,7 +160,7 @@ ScreenUTF8View screen_test_page_default_preview_phase_id(
 bool screen_test_page_phase_descriptor(
     ScreenTestPageDescriptorRef descriptor,
     size_t phase_index,
-    ScreenTestPhaseDescriptorV3 *phase
+    ScreenTestPhaseDescriptorV4 *phase
 );
 size_t screen_test_page_control_count(
     ScreenTestPageDescriptorRef descriptor,
@@ -195,24 +201,24 @@ bool screen_test_page_preview_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 bool screen_test_authoring_apply_choice(
-    const ScreenTestAuthoringSelectionV17 *selection,
+    const ScreenTestAuthoringSelectionV18 *selection,
     ScreenUTF8View control_id,
     ScreenUTF8View option_id,
-    ScreenTestAuthoringSelectionV17 *resolved,
+    ScreenTestAuthoringSelectionV18 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_scalar(
-    const ScreenTestAuthoringSelectionV17 *selection,
+    const ScreenTestAuthoringSelectionV18 *selection,
     ScreenUTF8View control_id,
     float value,
-    ScreenTestAuthoringSelectionV17 *resolved,
+    ScreenTestAuthoringSelectionV18 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_toggle(
-    const ScreenTestAuthoringSelectionV17 *selection,
+    const ScreenTestAuthoringSelectionV18 *selection,
     ScreenUTF8View control_id,
     bool value,
-    ScreenTestAuthoringSelectionV17 *resolved,
+    ScreenTestAuthoringSelectionV18 *resolved,
     const char **error_message
 );
 
@@ -742,6 +748,17 @@ bool screen_test_pattern_render_rgba32f(
     double time_seconds,
     float *pixels,
     size_t pixel_count,
+    const char **error_message
+);
+bool screen_delivery_raster_rgba32f(
+    const float *input_rgba,
+    uint32_t input_width,
+    uint32_t input_height,
+    float *output_rgba,
+    uint32_t output_width,
+    uint32_t output_height,
+    uint32_t placement,
+    uint32_t background,
     const char **error_message
 );
 bool screen_recording_output_transform_rgba32f(

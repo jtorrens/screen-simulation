@@ -282,8 +282,19 @@ public struct TestPhasePicker: View {
             set: { onIntent(.selectPhase($0)) }
         )) {
             ForEach(state.phases) { phase in
-                Text(phase.label).tag(phase.id)
+                HStack {
+                    Text(phase.label)
+                    Spacer()
+                    Text(phase.calculationDomain)
+                        .foregroundStyle(.secondary)
+                }
+                .tag(phase.id)
             }
+        }
+        if let phase = state.phases.first(where: { $0.id == state.selectedPhaseID }) {
+            Text("Vista: \(phase.previewRoute)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
