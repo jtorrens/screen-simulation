@@ -147,6 +147,7 @@ final class WorkspaceModel: ObservableObject {
     private var recordingCameraCheckpoint: StudioColorMetalFrame?
     private var deliveryRasterCheckpoint: StudioColorMetalFrame?
     private var recordingOutputExecution: RecordingOutputExecution?
+    private var setupFramingRenderer: SetupFramingRenderer?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -1291,6 +1292,7 @@ final class WorkspaceModel: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         let quality = switch physicalModel.quality {
+        case .setup: "Setup"
         case .draft: "Draft"
         case .medium: "Media"
         case .high: "Alta"
@@ -1640,6 +1642,12 @@ final class WorkspaceModel: ObservableObject {
             if !isTestPageActive, let sourceACEScgFrame { metalFrame = sourceACEScgFrame }
             return
         }
+        if physicalModel.quality == .setup {
+            _ = physicalInteractiveJob?.cancel()
+            physicalInteractiveTask?.cancel()
+            publishSetupFraming()
+            return
+        }
         guard physicalModel.quality != .native else { return }
         recordingCameraCheckpoint = nil
         deliveryRasterCheckpoint = nil
@@ -1670,6 +1678,39 @@ final class WorkspaceModel: ObservableObject {
             if physicalInteractiveJob === submittedJob {
                 physicalInteractiveJob = nil
             }
+        }
+    }
+
+    private func publishSetupFraming() {
+        guard let sourceACEScgFrame,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let authored = physicalAuthoringState
+        else { return }
+        do {
+            let started = CACurrentMediaTime()
+            if setupFramingRenderer == nil {
+                setupFramingRenderer = try SetupFramingRenderer(device: sourceACEScgFrame.texture.device)
+            }
+            let selection = testAuthoringSelection
+            let width = Int(selection?.deliveryWidth ?? UInt32(sourceACEScgFrame.width))
+            let height = Int(selection?.deliveryHeight ?? UInt32(sourceACEScgFrame.height))
+            let frame = try setupFramingRenderer!.render(
+                source: sourceACEScgFrame,
+                sourcePlacement: sourcePlacement,
+                device: device,
+                pipeline: authored,
+                deliveryWidth: width,
+                deliveryHeight: height,
+                deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
+                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black"
+            )
+            metalFrame = frame
+            monitorOutput.update(frame: frame, display: metalDisplay)
+            let elapsedMilliseconds = (CACurrentMediaTime() - started) * 1_000
+            status = "Setup · encuadre ideal · \(width)×\(height) · \(elapsedMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
+            physicalPublicationSummary = "Setup · fuente + Device + cámara + Delivery Raster · publicado"
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -1854,7 +1895,6 @@ final class WorkspaceModel: ObservableObject {
         }
         testAuthoringSelection = selection
         sourcePlacement = placement
-        physicalModel.setQuality(quality)
         try physicalModel.setContinuousAmount(
             selection.subpixelGeometryAmount,
             stage: .screen(.subpixelGeometry)
@@ -2002,6 +2042,10 @@ final class WorkspaceModel: ObservableObject {
         basePhysicalAuthoringState = authored
         try refreshTestAuthoringDescriptor()
         rebuildCurrent()
+        // Rebuilding the source invalidates the previous physical frame and
+        // deliberately returns the viewer to Setup. Apply an explicitly
+        // authored physical quality only after that final invalidation.
+        physicalModel.setQuality(quality)
     }
 
     private var selectedTestPreviewResult: TestPreviewResultKind? {
@@ -2224,6 +2268,9 @@ final class WorkspaceModel: ObservableObject {
         quality: PhysicalQuality,
         device: DeviceDefinition
     ) throws -> PhysicalDimensions {
+        if quality == .setup {
+            throw PhysicalEvaluationAvailabilityError.sectionPending(.capture(.geometry))
+        }
         if quality == .native {
             return try PhysicalDimensions(
                 width: device.nativeWidth,
@@ -2238,6 +2285,7 @@ final class WorkspaceModel: ObservableObject {
             width = max(1, Int((Double(height) * aspect).rounded(.down)))
         }
         let scale: Double = switch quality {
+        case .setup: 1
         case .draft: 0.5
         case .medium: 1
         case .high: 1.5
@@ -2305,6 +2353,7 @@ enum PhysicalEvaluationAvailabilityError: Error, LocalizedError {
 private extension PhysicalQuality {
     init?(stableID: String) {
         switch stableID {
+        case "setup": self = .setup
         case "draft": self = .draft
         case "medium": self = .medium
         case "high": self = .high
@@ -2315,6 +2364,7 @@ private extension PhysicalQuality {
 
     var uiLabel: String {
         switch self {
+        case .setup: "Setup"
         case .draft: "Draft"
         case .medium: "Media"
         case .high: "Alta"

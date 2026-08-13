@@ -2,6 +2,8 @@ import Foundation
 import ScreenPhysicalBridge
 
 enum PhysicalQuality: UInt32, CaseIterable, Identifiable, Sendable {
+    /// Host-only ideal framing route. It never crosses the physical ABI.
+    case setup = 4
     case draft = 0
     case medium = 1
     case high = 2

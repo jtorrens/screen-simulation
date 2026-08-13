@@ -200,6 +200,7 @@ pub const CAPTURE_RASTER_QUARTER_ID: &str = "quarter";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryRasterPlacement {
     Fit,
+    FillCrop,
     OneToOne,
 }
 
@@ -247,16 +248,29 @@ pub fn evaluate_delivery_raster_rgba32f(
                 source_height as f64 * scale,
             )
         }
+        DeliveryRasterPlacement::FillCrop => {
+            let scale = (request.width as f64 / source_width as f64)
+                .max(request.height as f64 / source_height as f64);
+            (
+                scale,
+                source_width as f64 * scale,
+                source_height as f64 * scale,
+            )
+        }
         DeliveryRasterPlacement::OneToOne => (1.0, source_width as f64, source_height as f64),
     };
     let offset_x = match request.placement {
-        DeliveryRasterPlacement::Fit => (request.width as f64 - placed_width) * 0.5,
+        DeliveryRasterPlacement::Fit | DeliveryRasterPlacement::FillCrop => {
+            (request.width as f64 - placed_width) * 0.5
+        }
         DeliveryRasterPlacement::OneToOne => {
             f64::from((request.width as i64 - source_width as i64).div_euclid(2) as i32)
         }
     };
     let offset_y = match request.placement {
-        DeliveryRasterPlacement::Fit => (request.height as f64 - placed_height) * 0.5,
+        DeliveryRasterPlacement::Fit | DeliveryRasterPlacement::FillCrop => {
+            (request.height as f64 - placed_height) * 0.5
+        }
         DeliveryRasterPlacement::OneToOne => {
             f64::from((request.height as i64 - source_height as i64).div_euclid(2) as i32)
         }
@@ -6549,6 +6563,30 @@ mod delivery_raster_tests {
         assert_eq!(output[1], source[0]);
         assert_eq!(output[2], source[0]);
         assert_eq!(output[3], [0.0; 4]);
+    }
+
+    #[test]
+    fn fill_crop_covers_the_delivery_raster_and_crops_from_the_center() {
+        let source = (0..8)
+            .map(|value| [value as f32, 0.0, 0.0, 1.0])
+            .collect::<Vec<_>>();
+        let output = evaluate_delivery_raster_rgba32f(
+            &source,
+            4,
+            2,
+            DeliveryRasterRequest {
+                width: 2,
+                height: 2,
+                placement: DeliveryRasterPlacement::FillCrop,
+                background: DeliveryRasterBackground::Transparent,
+            },
+        )
+        .unwrap();
+        assert!(output.iter().all(|pixel| pixel[3] == 1.0));
+        assert_eq!(output[0][0], 1.0);
+        assert_eq!(output[1][0], 2.0);
+        assert_eq!(output[2][0], 5.0);
+        assert_eq!(output[3][0], 6.0);
     }
 }
 

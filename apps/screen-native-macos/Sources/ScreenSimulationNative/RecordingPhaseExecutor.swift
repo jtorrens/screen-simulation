@@ -46,7 +46,14 @@ enum RecordingPhaseExecutor {
         let input = try display.readLinearRGBA(cameraRendered)
         var output = [Float](repeating: 0, count: width * height * 4)
         var bridgeError: UnsafePointer<CChar>?
-        let placement: UInt32 = placementID == "fit" ? 0 : 1
+        let placement: UInt32 = switch placementID {
+        case "fit": 0
+        case "one-to-one": 1
+        case "fill-crop": 2
+        default: throw RecordingPhaseExecutionError.bridge(
+            "Colocación Delivery Raster desconocida: \(placementID)"
+        )
+        }
         let background: UInt32 = backgroundID == "transparent" ? 0 : 1
         let succeeded = input.withUnsafeBufferPointer { inputBuffer in
             output.withUnsafeMutableBufferPointer { outputBuffer in

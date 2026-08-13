@@ -16,7 +16,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 17;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 18;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -119,10 +119,14 @@ const PLACEMENTS: [TestChoiceOption; 4] = [
     },
 ];
 
-const DELIVERY_PLACEMENTS: [TestChoiceOption; 2] = [
+const DELIVERY_PLACEMENTS: [TestChoiceOption; 3] = [
     TestChoiceOption {
         id: "fit",
         label: "Fit",
+    },
+    TestChoiceOption {
+        id: "fill-crop",
+        label: "Fill / Crop",
     },
     TestChoiceOption {
         id: "one-to-one",
@@ -140,7 +144,11 @@ const DELIVERY_BACKGROUNDS: [TestChoiceOption; 2] = [
     },
 ];
 
-const PREVIEW_QUALITIES: [TestChoiceOption; 4] = [
+const PREVIEW_QUALITIES: [TestChoiceOption; 5] = [
+    TestChoiceOption {
+        id: "setup",
+        label: "Setup",
+    },
     TestChoiceOption {
         id: "draft",
         label: "Draft",
@@ -640,7 +648,7 @@ pub fn default_test_authoring_selection(
         color_mode_id: device.default_color_mode_id,
         white_luminance_nits: device.reference_white_nits,
         placement_id: "fit",
-        preview_quality_id: "draft",
+        preview_quality_id: "setup",
         frame_rate,
         subpixel_geometry_amount: 1.0,
         panel_uniformity_amount: device.uniformity.character_strength,
@@ -1931,7 +1939,7 @@ pub fn test_page_descriptor(
             "Calidad",
             PREVIEW_QUALITIES.to_vec(),
             selection.preview_quality_id,
-            "draft",
+            "setup",
         )],
     })
 }
@@ -2065,6 +2073,9 @@ pub fn apply_test_choice(
         | DELIVERY_HEIGHT_CONTROL_ID
         | RECORDING_CHARACTER_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
         _ => return Err(TestAuthoringError::UnknownControl),
+    }
+    if control_id != PREVIEW_QUALITY_CONTROL_ID {
+        next.preview_quality_id = "setup";
     }
     resolve_test_authoring_selection(next)
 }
@@ -2297,6 +2308,7 @@ pub fn apply_test_scalar(
         | AUTOFOCUS_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
         _ => return Err(TestAuthoringError::UnknownControl),
     }
+    next.preview_quality_id = "setup";
     resolve_test_authoring_selection(next)
 }
 
@@ -2311,6 +2323,7 @@ pub fn apply_test_toggle(
         AUTOFOCUS_CONTROL_ID => next.autofocus_enabled = value,
         _ => return Err(TestAuthoringError::WrongControlType),
     }
+    next.preview_quality_id = "setup";
     resolve_test_authoring_selection(next)
 }
 
@@ -2326,7 +2339,7 @@ mod tests {
             color_mode_id: "srgb",
             white_luminance_nits: 350.0,
             placement_id: "fit",
-            preview_quality_id: "draft",
+            preview_quality_id: "setup",
             frame_rate: 24.0,
             subpixel_geometry_amount: 1.0,
             panel_uniformity_amount: 1.0,
@@ -2384,7 +2397,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 17);
+        assert_eq!(page.schema_version, 18);
         assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),

@@ -55,7 +55,7 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 19;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 20;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -3923,6 +3923,7 @@ pub unsafe extern "C" fn screen_delivery_raster_rgba32f(
         placement: match placement {
             0 => DeliveryRasterPlacement::Fit,
             1 => DeliveryRasterPlacement::OneToOne,
+            2 => DeliveryRasterPlacement::FillCrop,
             _ => {
                 unsafe { set_error(error_message, b"invalid Delivery Raster placement\0") };
                 return false;

@@ -46,7 +46,7 @@ final class PhysicalModelController: ObservableObject {
     @Published private(set) var screenAmount = 1.0
     @Published private(set) var screenIsBypassed = false
     @Published private(set) var stages: [PhysicalStageID: StageValue]
-    @Published private(set) var quality = PhysicalQuality.draft
+    @Published private(set) var quality = PhysicalQuality.setup
     @Published private(set) var frameState = PhysicalFrameState.idle
     @Published private(set) var progress = 0.0
     @Published private(set) var parameterRevision: UInt64 = 0
@@ -134,7 +134,7 @@ final class PhysicalModelController: ObservableObject {
     func setQuality(_ quality: PhysicalQuality) {
         guard self.quality != quality else { return }
         self.quality = quality
-        invalidateParameters()
+        invalidateParameters(returnToSetup: false)
     }
 
     func invalidateExternalParameters() {
@@ -412,7 +412,7 @@ final class PhysicalModelController: ObservableObject {
         }
     }
 
-    private func invalidateParameters() {
+    private func invalidateParameters(returnToSetup: Bool = true) {
         parameterRevision &+= 1
         if frameState == .rendering {
             cancelNativeWork?()
@@ -422,7 +422,8 @@ final class PhysicalModelController: ObservableObject {
         } else if frameState == .complete {
             frameState = .stale
         }
-        if quality != .native { interactiveInvalidation?() }
+        if returnToSetup { quality = .setup }
+        interactiveInvalidation?()
     }
 }
 

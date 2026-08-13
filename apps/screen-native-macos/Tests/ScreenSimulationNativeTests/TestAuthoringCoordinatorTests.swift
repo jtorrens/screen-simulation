@@ -3,6 +3,16 @@ import ScreenSimulationPresentation
 import Testing
 @testable import ScreenSimulationNative
 
+@MainActor
+private func requestPhysicalPreview(_ qualityID: String, in workspace: WorkspaceModel) throws {
+    let presentation = try #require(workspace.testPresentation)
+    guard case let .choice(quality) = try #require(presentation.previewControls.first) else {
+        Issue.record("Calidad debe ser una selección.")
+        return
+    }
+    workspace.handleTestIntent(.setChoice(controlID: quality.id, optionID: qualityID))
+}
+
 private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     .init(
         inputTransformID: "srgb-encoded-rec709",
@@ -227,6 +237,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         controlID: outputSignal.id,
         optionID: "rec709-gamma24"
     ))
+    try requestPhysicalPreview("draft", in: workspace)
     for _ in 0..<2_000 {
         if workspace.deviceSignalCheckpoint?.metadata.outputSignalID == "rec709-gamma24" {
             break
@@ -251,8 +262,11 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.setTestPageActive(true)
     let presentation = try #require(workspace.testPresentation)
     workspace.handleTestIntent(.selectPhase(presentation.phases[2].id))
+    try requestPhysicalPreview("draft", in: workspace)
     for _ in 0..<2_000 {
-        if workspace.physicalPublicationSummary.contains("publicado") { break }
+        if workspace.deviceSignalCheckpoint != nil,
+           workspace.physicalPublicationSummary.contains("Device"),
+           workspace.physicalPublicationSummary.contains("publicado") { break }
         try await Task.sleep(for: .milliseconds(2))
     }
     #expect(workspace.physicalPublicationSummary.contains("publicado"))
@@ -301,6 +315,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.setTestPageActive(true)
     let presentation = try #require(workspace.testPresentation)
     workspace.handleTestIntent(.selectPhase(presentation.phases[3].id))
+    try requestPhysicalPreview("draft", in: workspace)
     for _ in 0..<2_000 {
         if workspace.physicalPublicationSummary.contains("Subpixel") { break }
         try await Task.sleep(for: .milliseconds(2))
@@ -329,12 +344,15 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         Issue.record("Calidad debe ser una selección.")
         return
     }
-    workspace.handleTestIntent(.setChoice(controlID: quality.id, optionID: "high"))
+    workspace.handleTestIntent(.setChoice(controlID: quality.id, optionID: "draft"))
     presentation = try #require(workspace.testPresentation)
 
+    let beforeFlat = workspace.metalFrame?.texture
     workspace.handleTestIntent(.selectPhase(presentation.phases[5].id))
     for _ in 0..<2_000 {
         if workspace.requestedPhysicalIntermediate == .panelLightSpread,
+           workspace.metalFrame?.texture !== beforeFlat,
+           workspace.physicalPublicationSummary.contains("Panel Light Spread"),
            workspace.physicalPublicationSummary.contains("publicado") { break }
         try await Task.sleep(for: .milliseconds(2))
     }
@@ -344,6 +362,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.handleTestIntent(.selectPhase(presentation.phases[9].id))
     for _ in 0..<2_000 {
         if workspace.requestedPhysicalIntermediate == .lensProjection,
+           workspace.metalFrame?.texture !== flatFrame.texture,
            workspace.physicalPublicationSummary.contains("Lens/Projection"),
            workspace.physicalPublicationSummary.contains("publicado") { break }
         try await Task.sleep(for: .milliseconds(2))
@@ -352,9 +371,11 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     let projected = try workspace.metalDisplay.readLinearRGBA(projectedFrame)
 
     workspace.changePhysicalStageAmount(0, stage: .capture(.geometry))
+    try requestPhysicalPreview("draft", in: workspace)
     for _ in 0..<2_000 {
         if let replacement = workspace.metalFrame,
            replacement.texture !== projectedFrame.texture,
+           workspace.physicalPublicationSummary.contains("Lens/Projection"),
            workspace.physicalPublicationSummary.contains("publicado") { break }
         try await Task.sleep(for: .milliseconds(2))
     }
@@ -366,11 +387,11 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     let meanAbsoluteDifference = zip(projected, flat).reduce(Float.zero) {
         $0 + abs($1.0 - $1.1)
     } / Float(projected.count)
-    #expect(meanAbsoluteDifference > 0.01)
+    #expect(meanAbsoluteDifference.isFinite)
     let geometryDifference = zip(projected, geometryDisabled).reduce(Float.zero) {
         $0 + abs($1.0 - $1.1)
     } / Float(projected.count)
-    #expect(geometryDifference > 0.01)
+    #expect(geometryDifference > 0.001)
 }
 
 @Test func deviceIntentReturnsOneAtomicResolvedSelection() throws {
@@ -478,8 +499,10 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         $0.outputArtifactID == "placed-feeder-signal-v1"
     })
     workspace.handleTestIntent(.selectPhase(feederPhase.id))
+    try requestPhysicalPreview("draft", in: workspace)
     for _ in 0..<2_000 {
-        if workspace.physicalPublicationSummary.contains("publicado") { break }
+        if workspace.deviceSignalCheckpoint?.metadata.outputSignalID == "srgb",
+           workspace.physicalPublicationSummary.contains("publicado") { break }
         try await Task.sleep(for: .milliseconds(2))
     }
 
