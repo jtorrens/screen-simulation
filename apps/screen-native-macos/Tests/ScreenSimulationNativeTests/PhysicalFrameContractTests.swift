@@ -40,7 +40,7 @@ import Testing
         SCREEN_PHYSICAL_RASTER_STRETCH.rawValue)
     #expect(PhysicalRasterPlacement.oneToOne.rawValue ==
         SCREEN_PHYSICAL_RASTER_ONE_TO_ONE.rawValue)
-    #expect(PhysicalQuality.allCases.map(\.rawValue) == [4, 0, 1, 2, 3])
+    #expect(PhysicalQuality.allCases.map(\.rawValue) == [4, 5, 6, 0, 1, 2, 3])
     #expect(PhysicalDomainID.allCases.map(\.rawValue) == [0x100, 0x200])
     #expect(PhysicalStageID.ordered.map(\.id) == [
         0x101, 0x102, 0x108, 0x103, 0x104, 0x201, 0x105,

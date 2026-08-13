@@ -109,3 +109,46 @@ import Testing
         #expect(abs(interactive.boundary[index].y - (fit.boundary[index].y + 0.5) * 0.5 + 0.5) < 0.001)
     }
 }
+
+@Test @MainActor func focusSetupClipsItsChartAndDistortedBoundaryToTheDevice() throws {
+    let display = try StudioColorMetalDisplay()
+    let input = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    })
+    let encoded = Array(repeating: Float(0.18), count: 16 * 9 * 4)
+    let source = try display.makeACEScgFrame(
+        width: 16, height: 9, encodedRGBA: encoded, input: input, alpha: .straight
+    )
+    let device = try #require(try RustDeviceCatalog.builtIns().first {
+        $0.name.contains("ASUS ProArt")
+    })
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    var authored = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
+    authored.cameraPose.position = [0, 0, 1]
+    authored.cameraPose.quaternion = [0, 0, 0, 1]
+    authored.screenPose.position = [0, 0, 0]
+    authored.screenPose.quaternion = PoseRotationProjection.quaternion(fromDegrees: [0, 20, 0])
+    authored.sceneLens.sensorWidthMillimeters = 36
+    authored.sceneLens.sensorHeightMillimeters = 20.25
+    authored.sceneLens.focalLengthMillimeters = 45
+    authored.sceneLens.focusDistanceMeters = 1
+    authored.sceneLens.fStop = 2.8
+    authored.sceneLens.radialDistortion = [0.18, -0.04, 0.01]
+    authored.sceneLens.tangentialDistortion = [0.01, -0.005]
+
+    let renderer = try SetupFramingRenderer(device: source.texture.device)
+    let result = try renderer.renderFocus(
+        source: source, device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180,
+        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+    )
+    let values = try display.readLinearRGBA(result.frame)
+    let luminance = stride(from: 0, to: values.count, by: 4).map { values[$0] }
+    #expect(result.boundary.count == 256)
+    #expect(result.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+    #expect(luminance.contains { $0 == 0 })
+    #expect(luminance.contains { $0 > 0.95 })
+    #expect(luminance.contains { index in index > 0 && index < 0.95 })
+}

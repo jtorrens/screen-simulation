@@ -6,6 +6,8 @@ The host-only `Setup` preview is deliberately outside the native physical frame 
 
 `Setup entorno` is also host-only. Its Metal kernel uses the same pinhole camera, screen plane, Delivery Raster and distant/finite Environment projection contract, but replaces the complete material and capture pipeline with a perfect-mirror lookup solely for interactive placement.
 
+`Setup foco` is host-only and uses the Setup Metal boundary rather than the physical ABI. It evaluates the analytic thin-lens circle of confusion only at the camera-ray/Device intersection, emits a grayscale focus diagnostic, and draws a Device-local red grid through the current Brown-Conrady radial/tangential distortion. The sampled red Device outline uses that same distortion while retaining one viewer-space pixel after presentation scaling.
+
 The Platform scene-adjustment adapter evaluates the Color-owned operator in RGBA32F Metal before Feeder Output and during one-time image-Environment preparation. Neutral values are exact identity, alpha is unchanged, and Environment adjustment uses the non-negative incident-radiance policy rather than a display transform.
 
 Native capture has one Application orchestration path and one result contract. Physical owners

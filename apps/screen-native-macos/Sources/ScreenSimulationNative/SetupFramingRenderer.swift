@@ -37,6 +37,8 @@ final class SetupFramingRenderer {
         var sourceDevice: SIMD4<UInt32>
         var modes: SIMD4<UInt32>
         var environment: SIMD4<Float>
+        var lensRadialTangential: SIMD4<Float>
+        var lensTangentialFocus: SIMD4<Float>
     }
 
     private let queue: MTLCommandQueue
@@ -75,7 +77,7 @@ final class SetupFramingRenderer {
         deliveryBackgroundID: String,
         previewWidth: Int? = nil,
         previewHeight: Int? = nil,
-        environmentSetup: Bool = false
+        diagnosticMode: UInt32 = 0
     ) throws -> Result {
         let outputWidth = previewWidth ?? deliveryWidth
         let outputHeight = previewHeight ?? deliveryHeight
@@ -149,13 +151,24 @@ final class SetupFramingRenderer {
                 Self.sourcePlacement(sourcePlacement),
                 deliveryPlacement,
                 deliveryBackgroundID == "transparent" ? 0 : 1,
-                environmentSetup ? 1 : 0
+                diagnosticMode
             ),
             environment: SIMD4(
                 Float(authored.environment.rotationXDegrees * .pi / 180),
                 Float(authored.environment.rotationYDegrees * .pi / 180),
                 Float(authored.environment.projectionMode),
                 Float(authored.environment.sphereRadiusMeters)
+            ),
+            lensRadialTangential: SIMD4(
+                Float(authored.sceneLens.radialDistortion[0]),
+                Float(authored.sceneLens.radialDistortion[1]),
+                Float(authored.sceneLens.radialDistortion[2]),
+                Float(authored.sceneLens.tangentialDistortion[0])
+            ),
+            lensTangentialFocus: SIMD4(
+                Float(authored.sceneLens.tangentialDistortion[1]),
+                Float(authored.sceneLens.focusDistanceMeters),
+                Float(authored.sceneLens.fStop), 0
             )
         )
         parameters.cameraForward.w = Float(authored.sceneLens.lensShift[0])
@@ -180,7 +193,8 @@ final class SetupFramingRenderer {
             authored: authored, device: device,
             deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
             deliveryPlacement: deliveryPlacement,
-            outputWidth: outputWidth, outputHeight: outputHeight
+            outputWidth: outputWidth, outputHeight: outputHeight,
+            applyLensDistortion: diagnosticMode == 2
         )
         return Result(frame: frame, boundary: boundary)
     }
@@ -207,7 +221,29 @@ final class SetupFramingRenderer {
             deliveryBackgroundID: deliveryBackgroundID,
             previewWidth: previewWidth,
             previewHeight: previewHeight,
-            environmentSetup: true
+            diagnosticMode: 1
+        )
+    }
+
+    func renderFocus(
+        source: StudioColorMetalFrame,
+        device: DeviceDefinition,
+        pipeline authored: PhysicalPipelineAuthoringState,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        deliveryPlacementID: String,
+        deliveryBackgroundID: String,
+        previewWidth: Int? = nil,
+        previewHeight: Int? = nil
+    ) throws -> Result {
+        try render(
+            source: source, sourcePlacement: .stretch,
+            device: device, pipeline: authored,
+            deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
+            deliveryPlacementID: deliveryPlacementID,
+            deliveryBackgroundID: deliveryBackgroundID,
+            previewWidth: previewWidth, previewHeight: previewHeight,
+            diagnosticMode: 2
         )
     }
 
@@ -233,7 +269,8 @@ final class SetupFramingRenderer {
         deliveryHeight: Int,
         deliveryPlacement: UInt32,
         outputWidth: Int,
-        outputHeight: Int
+        outputHeight: Int,
+        applyLensDistortion: Bool
     ) -> [CGPoint] {
         let cameraQ = authored.cameraPose.quaternion.map(Float.init)
         let screenQ = authored.screenPose.quaternion.map(Float.init)
@@ -265,14 +302,33 @@ final class SetupFramingRenderer {
         let shiftY = Float(authored.sceneLens.lensShift[1])
         let halfWidth = Float(device.activeWidthMeters) * 0.5
         let halfHeight = Float(device.activeHeightMeters) * 0.5
+        let edgeSamples = applyLensDistortion ? 64 : 1
         let corners: [(Float, Float)] = [(-1, 1), (1, 1), (1, -1), (-1, -1)]
-        return corners.map { sx, sy in
+        let perimeter = corners.indices.flatMap { edge -> [(Float, Float)] in
+            let start = corners[edge]
+            let end = corners[(edge + 1) % corners.count]
+            return (0..<edgeSamples).map { sample in
+                let t = Float(sample) / Float(edgeSamples)
+                return (
+                    start.0 + (end.0 - start.0) * t,
+                    start.1 + (end.1 - start.1) * t
+                )
+            }
+        }
+        return perimeter.map { sx, sy in
             let world = screen + screenRight * (sx * halfWidth) + screenUp * (sy * halfHeight)
             let relative = world - camera
             let depth = simd_dot(relative, cameraForward)
             let idealX = simd_dot(relative, cameraRight) / depth * (2 * focal / sensorWidth)
             let idealY = simd_dot(relative, cameraUp) / depth * (2 * focal / sensorHeight)
-            let observed = SIMD2<Float>(idealX - 2 * shiftX, -idealY - 2 * shiftY)
+            let distorted = applyLensDistortion
+                ? Self.distort(
+                    SIMD2(idealX, idealY),
+                    radial: authored.sceneLens.radialDistortion,
+                    tangential: authored.sceneLens.tangentialDistortion
+                )
+                : SIMD2(idealX, idealY)
+            let observed = SIMD2<Float>(distorted.x - 2 * shiftX, -distorted.y - 2 * shiftY)
             let cameraPixel = (observed + 1) * 0.5 * cameraSize - 0.5
             let outputPixel = deliveryPlacement == 1
                 ? cameraPixel + offset
@@ -283,6 +339,20 @@ final class SetupFramingRenderer {
             ) - 0.5
             return CGPoint(x: CGFloat(preview.x), y: CGFloat(preview.y))
         }
+    }
+
+    private static func distort(
+        _ point: SIMD2<Float>, radial: [Double], tangential: [Double]
+    ) -> SIMD2<Float> {
+        let r2 = simd_dot(point, point)
+        let radialScale = 1 + Float(radial[0]) * r2
+            + Float(radial[1]) * r2 * r2 + Float(radial[2]) * r2 * r2 * r2
+        let p1 = Float(tangential[0])
+        let p2 = Float(tangential[1])
+        return point * radialScale + SIMD2(
+            2 * p1 * point.x * point.y + p2 * (r2 + 2 * point.x * point.x),
+            p1 * (r2 + 2 * point.y * point.y) + 2 * p2 * point.x * point.y
+        )
     }
 
     private static let shader = #"""
@@ -302,6 +372,8 @@ final class SetupFramingRenderer {
         uint4 source_device;
         uint4 modes;
         float4 environment;
+        float4 lens_radial_tangential;
+        float4 lens_tangential_focus;
     };
 
     inline float3 rotate_q(float4 q, float3 v) {
@@ -361,6 +433,70 @@ final class SetupFramingRenderer {
             dot(local, screen_right) / s.screen_position_width.w + 0.5f,
             0.5f - dot(local, screen_up) / s.screen_height_shift_y.x
         );
+        return true;
+    }
+
+    inline float2 distort_point(float2 point, constant SetupParameters& s) {
+        const float r2 = dot(point, point);
+        const float scale = 1.0f + s.lens_radial_tangential.x * r2
+            + s.lens_radial_tangential.y * r2 * r2
+            + s.lens_radial_tangential.z * r2 * r2 * r2;
+        const float p1 = s.lens_radial_tangential.w;
+        const float p2 = s.lens_tangential_focus.x;
+        return point * scale + float2(
+            2.0f * p1 * point.x * point.y + p2 * (r2 + 2.0f * point.x * point.x),
+            p1 * (r2 + 2.0f * point.y * point.y) + 2.0f * p2 * point.x * point.y);
+    }
+
+    inline bool inverse_distortion(float2 observed, constant SetupParameters& s,
+        thread float2& ideal) {
+        ideal = observed;
+        for (uint iteration = 0; iteration < 12; ++iteration) {
+            const float2 projected = distort_point(ideal, s);
+            const float2 residual = projected - observed;
+            if (max(abs(residual.x), abs(residual.y)) < 1.0e-7f) break;
+            const float e = 1.0e-4f;
+            const float2 dx = (distort_point(ideal + float2(e, 0), s)
+                - distort_point(ideal - float2(e, 0), s)) / (2.0f * e);
+            const float2 dy = (distort_point(ideal + float2(0, e), s)
+                - distort_point(ideal - float2(0, e), s)) / (2.0f * e);
+            const float determinant = dx.x * dy.y - dy.x * dx.y;
+            if (abs(determinant) < 1.0e-10f) return false;
+            ideal -= float2(
+                (dy.y * residual.x - dy.x * residual.y) / determinant,
+                (-dx.y * residual.x + dx.x * residual.y) / determinant);
+        }
+        const float2 final_residual = abs(distort_point(ideal, s) - observed);
+        return all(isfinite(ideal))
+            && max(final_residual.x, final_residual.y) < 2.0e-4f;
+    }
+
+    inline bool focus_screen_sample(float2 camera_uv, constant SetupParameters& s,
+        thread float2& panel_uv, thread float& optical_depth) {
+        const float2 observed = camera_uv * 2.0f - 1.0f;
+        float2 ideal;
+        if (!inverse_distortion(float2(
+            observed.x + 2.0f * s.camera_forward_shift_x.w,
+            -observed.y - 2.0f * s.screen_height_shift_y.y), s, ideal)) return false;
+        const float3 ray = normalize(s.camera_forward_shift_x.xyz
+            + s.camera_right_sensor_width.xyz
+                * (ideal.x * s.camera_right_sensor_width.w / (2.0f * s.camera_position_focal.w))
+            + s.camera_up_sensor_height.xyz
+                * (ideal.y * s.camera_up_sensor_height.w / (2.0f * s.camera_position_focal.w)));
+        const float3 screen_right = rotate_q(s.screen_quaternion, float3(1, 0, 0));
+        const float3 screen_up = rotate_q(s.screen_quaternion, float3(0, 1, 0));
+        const float3 screen_normal = rotate_q(s.screen_quaternion, float3(0, 0, 1));
+        const float denominator = dot(ray, screen_normal);
+        if (abs(denominator) < 1.0e-8f) return false;
+        const float distance = dot(s.screen_position_width.xyz - s.camera_position_focal.xyz,
+            screen_normal) / denominator;
+        if (distance <= 0.0f) return false;
+        const float3 point = s.camera_position_focal.xyz + ray * distance;
+        const float3 local = point - s.screen_position_width.xyz;
+        panel_uv = float2(dot(local, screen_right) / s.screen_position_width.w + 0.5f,
+            0.5f - dot(local, screen_up) / s.screen_height_shift_y.x);
+        optical_depth = dot(point - s.camera_position_focal.xyz,
+            s.camera_forward_shift_x.xyz);
         return true;
     }
 
@@ -447,6 +583,28 @@ final class SetupFramingRenderer {
             float4 reflected = source.sample(linear_sampler, environmentUV);
             reflected.a = 1.0f;
             output.write(reflected, p);
+            return;
+        }
+        if (s.modes.w == 2u) {
+            float2 panel;
+            float depth;
+            if (!focus_screen_sample(camera, s, panel, depth)
+                || any(panel < 0.0f) || any(panel > 1.0f)) {
+                output.write(background, p); return;
+            }
+            const float focal_m = s.camera_position_focal.w * 0.001f;
+            const float focus_m = s.lens_tangential_focus.y;
+            const float f_stop = s.lens_tangential_focus.z;
+            const float denominator = max(1.0e-8f, f_stop * depth * (focus_m - focal_m));
+            const float coc_m = focal_m * focal_m * abs(depth - focus_m) / denominator;
+            const float pixel_pitch_m = s.camera_right_sensor_width.w * 0.001f
+                / float(s.raster.z);
+            const float coc_pixels = coc_m / max(1.0e-9f, pixel_pitch_m);
+            const float focus_value = 1.0f / (1.0f + 0.25f * coc_pixels * coc_pixels);
+            const float2 grid_phase = abs(fract(panel * float2(12, 8) + 0.5f) - 0.5f);
+            const bool grid = min(grid_phase.x, grid_phase.y) < 0.018f;
+            output.write(grid ? float4(1, 0, 0, 1)
+                : float4(focus_value, focus_value, focus_value, 1), p);
             return;
         }
         float2 panel;

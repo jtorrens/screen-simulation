@@ -18,7 +18,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 22;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 23;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -163,7 +163,7 @@ const DELIVERY_BACKGROUNDS: [TestChoiceOption; 2] = [
     },
 ];
 
-const PREVIEW_QUALITIES: [TestChoiceOption; 6] = [
+const PREVIEW_QUALITIES: [TestChoiceOption; 7] = [
     TestChoiceOption {
         id: "setup",
         label: "Setup",
@@ -171,6 +171,10 @@ const PREVIEW_QUALITIES: [TestChoiceOption; 6] = [
     TestChoiceOption {
         id: "environment-setup",
         label: "Setup entorno",
+    },
+    TestChoiceOption {
+        id: "focus-setup",
+        label: "Setup foco",
     },
     TestChoiceOption {
         id: "draft",
@@ -2756,7 +2760,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 21);
+        assert_eq!(page.schema_version, TEST_AUTHORING_SCHEMA_VERSION);
         assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),

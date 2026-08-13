@@ -1590,6 +1590,7 @@ struct ContentView: View {
                         metadataLines: model.previewMetadataLines,
                         deviceBoundary: model.physicalModel.quality == .setup
                                 || model.physicalModel.quality == .environmentSetup
+                                || model.physicalModel.quality == .focusSetup
                             ? model.setupDeviceBoundary : [],
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },

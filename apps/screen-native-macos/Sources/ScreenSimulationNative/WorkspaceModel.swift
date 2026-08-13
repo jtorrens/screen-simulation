@@ -168,6 +168,7 @@ final class WorkspaceModel: ObservableObject {
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
     private var cameraNavigationLatestPose: CameraNavigationPose?
+    private var cameraNavigationPreviewQuality = PhysicalQuality.setup
     private var environmentNavigationStartSelection: TestAuthoringResolvedSelection?
     private var environmentNavigationOperation: CameraNavigationOperation?
 
@@ -721,7 +722,8 @@ final class WorkspaceModel: ObservableObject {
         )
         cameraNavigationStartSelection = selection
         cameraNavigationLatestPose = nil
-        physicalModel.setQuality(.setup)
+        cameraNavigationPreviewQuality = physicalModel.quality == .focusSetup ? .focusSetup : .setup
+        physicalModel.setQuality(cameraNavigationPreviewQuality)
         cameraNavigationGesture = .init(
             operation: operation,
             startPose: .init(
@@ -785,6 +787,7 @@ final class WorkspaceModel: ObservableObject {
             undoManager?.setActionName("Navegar cámara")
         }
         cameraNavigationStartSelection = nil
+        cameraNavigationPreviewQuality = .setup
     }
 
     private func beginEnvironmentNavigation(_ operation: CameraNavigationOperation) {
@@ -843,10 +846,17 @@ final class WorkspaceModel: ObservableObject {
             pose.orientation.imag.z, pose.orientation.real,
         ]
         authored.cameraLookAt = nil
-        publishSetupFraming(
-            interactiveViewportSize: viewportSize,
-            authoredOverride: authored
-        )
+        if cameraNavigationPreviewQuality == .focusSetup {
+            publishFocusSetup(
+                interactiveViewportSize: viewportSize,
+                authoredOverride: authored
+            )
+        } else {
+            publishSetupFraming(
+                interactiveViewportSize: viewportSize,
+                authoredOverride: authored
+            )
+        }
     }
 
     private func commitCameraNavigationPose(_ pose: CameraNavigationPose) {
@@ -856,7 +866,8 @@ final class WorkspaceModel: ObservableObject {
             pose.orientation.imag.z, pose.orientation.real,
         ])
         selection.geometryModeID = "free"
-        selection.previewQualityID = "setup"
+        selection.previewQualityID = cameraNavigationPreviewQuality == .focusSetup
+            ? "focus-setup" : "setup"
         selection.cameraPositionXMeters = pose.position.x
         selection.cameraPositionYMeters = pose.position.y
         selection.cameraPositionZMeters = pose.position.z
@@ -1690,6 +1701,7 @@ final class WorkspaceModel: ObservableObject {
         let quality = switch physicalModel.quality {
         case .setup: "Setup"
         case .environmentSetup: "Setup entorno"
+        case .focusSetup: "Setup foco"
         case .draft: "Draft"
         case .medium: "Media"
         case .high: "Alta"
@@ -2172,6 +2184,12 @@ final class WorkspaceModel: ObservableObject {
             publishEnvironmentSetup()
             return
         }
+        if physicalModel.quality == .focusSetup {
+            _ = physicalInteractiveJob?.cancel()
+            physicalInteractiveTask?.cancel()
+            publishFocusSetup()
+            return
+        }
         guard physicalModel.quality != .native else { return }
         recordingCameraCheckpoint = nil
         deliveryRasterCheckpoint = nil
@@ -2292,6 +2310,48 @@ final class WorkspaceModel: ObservableObject {
             setupDeviceBoundary = result.boundary
             status = "Setup entorno · reflexión ideal 100% · \(width)×\(height)"
             physicalPublicationSummary = "Setup entorno · espejo ideal sin cristal, panel ni cámara"
+        } catch {
+            setupDeviceBoundary = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func publishFocusSetup(
+        interactiveViewportSize: CGSize? = nil,
+        authoredOverride: PhysicalPipelineAuthoringState? = nil
+    ) {
+        guard let sourceACEScgFrame,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let authored = authoredOverride ?? physicalAuthoringState
+        else { return }
+        do {
+            if setupFramingRenderer == nil {
+                setupFramingRenderer = try SetupFramingRenderer(device: sourceACEScgFrame.texture.device)
+            }
+            let selection = testAuthoringSelection
+            let width = Int(selection?.deliveryWidth ?? UInt32(sourceACEScgFrame.width))
+            let height = Int(selection?.deliveryHeight ?? UInt32(sourceACEScgFrame.height))
+            let previewSize: (width: Int?, height: Int?) = if let viewport = interactiveViewportSize {
+                {
+                    let scale = min(1, max(1, Double(viewport.width)) / Double(width),
+                        max(1, Double(viewport.height)) / Double(height))
+                    return (max(1, Int((Double(width) * scale).rounded())),
+                        max(1, Int((Double(height) * scale).rounded())))
+                }()
+            } else { (nil, nil) }
+            let result = try setupFramingRenderer!.renderFocus(
+                source: sourceACEScgFrame, device: device, pipeline: authored,
+                deliveryWidth: width, deliveryHeight: height,
+                deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
+                deliveryBackgroundID: "black",
+                previewWidth: previewSize.width, previewHeight: previewSize.height
+            )
+            metalFrame = result.frame
+            setupDeviceBoundary = result.boundary
+            if interactiveViewportSize == nil {
+                status = "Setup foco · blanco máximo foco · retícula y borde ópticos"
+                physicalPublicationSummary = "Setup foco · círculo de confusión + distorsión de lente"
+            }
         } catch {
             setupDeviceBoundary = []
             errorMessage = error.localizedDescription
@@ -2916,7 +2976,7 @@ final class WorkspaceModel: ObservableObject {
         quality: PhysicalQuality,
         device: DeviceDefinition
     ) throws -> PhysicalDimensions {
-        if quality == .setup {
+        if quality == .setup || quality == .environmentSetup || quality == .focusSetup {
             throw PhysicalEvaluationAvailabilityError.sectionPending(.capture(.geometry))
         }
         if quality == .native {
@@ -2935,6 +2995,7 @@ final class WorkspaceModel: ObservableObject {
         let scale: Double = switch quality {
         case .setup: 1
         case .environmentSetup: 1
+        case .focusSetup: 1
         case .draft: 0.5
         case .medium: 1
         case .high: 1.5
@@ -3005,6 +3066,7 @@ private extension PhysicalQuality {
         switch stableID {
         case "setup": self = .setup
         case "environment-setup": self = .environmentSetup
+        case "focus-setup": self = .focusSetup
         case "draft": self = .draft
         case "medium": self = .medium
         case "high": self = .high
@@ -3017,6 +3079,7 @@ private extension PhysicalQuality {
         switch self {
         case .setup: "Setup"
         case .environmentSetup: "Setup entorno"
+        case .focusSetup: "Setup foco"
         case .draft: "Draft"
         case .medium: "Media"
         case .high: "Alta"
