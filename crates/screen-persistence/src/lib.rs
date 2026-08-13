@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 17;
+pub const CURRENT_VERSION: u32 = 18;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -373,6 +373,7 @@ pub struct ShotDocument {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeliveryRasterDocument {
+    pub preset_id: OpaqueId,
     pub width: u32,
     pub height: u32,
     pub placement: DeliveryPlacementDocument,
@@ -383,6 +384,7 @@ pub struct DeliveryRasterDocument {
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryPlacementDocument {
     Fit,
+    FillCrop,
     OneToOne,
 }
 
@@ -605,7 +607,8 @@ impl ProjectPackage {
         {
             return Err(PersistenceError::InvalidRecordingSelection);
         }
-        if self.shot.delivery.width == 0
+        if validate_id(&self.shot.delivery.preset_id).is_err()
+            || self.shot.delivery.width == 0
             || self.shot.delivery.height == 0
             || self.shot.delivery.width > 16_384
             || self.shot.delivery.height > 16_384
@@ -1476,6 +1479,7 @@ mod tests {
                     tint: 0.0,
                 },
                 delivery: DeliveryRasterDocument {
+                    preset_id: OpaqueId::parse("uhd").unwrap(),
                     width: 3_840,
                     height: 2_160,
                     placement: DeliveryPlacementDocument::Fit,

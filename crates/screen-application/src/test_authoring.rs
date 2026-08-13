@@ -18,7 +18,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 23;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 24;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -111,6 +111,7 @@ pub const CAMERA_LOOK_CONTRAST_CONTROL_ID: &str = "camera-look-contrast";
 pub const CAMERA_LOOK_SATURATION_CONTROL_ID: &str = "camera-look-saturation";
 pub const CAMERA_LOOK_TEMPERATURE_CONTROL_ID: &str = "camera-look-temperature-kelvin";
 pub const CAMERA_LOOK_TINT_CONTROL_ID: &str = "camera-look-tint";
+pub const DELIVERY_PRESET_CONTROL_ID: &str = "delivery-preset";
 pub const DELIVERY_WIDTH_CONTROL_ID: &str = "delivery-width-pixels";
 pub const DELIVERY_HEIGHT_CONTROL_ID: &str = "delivery-height-pixels";
 pub const DELIVERY_PLACEMENT_CONTROL_ID: &str = "delivery-placement";
@@ -152,6 +153,80 @@ const DELIVERY_PLACEMENTS: [TestChoiceOption; 3] = [
         label: "1:1",
     },
 ];
+
+const DELIVERY_PRESETS: [TestChoiceOption; 8] = [
+    TestChoiceOption {
+        id: "uhd",
+        label: "UHD · 3840 × 2160",
+    },
+    TestChoiceOption {
+        id: "dci-4k",
+        label: "DCI 4K · 4096 × 2160",
+    },
+    TestChoiceOption {
+        id: "hd",
+        label: "HD · 1920 × 1080",
+    },
+    TestChoiceOption {
+        id: "dci-2k",
+        label: "DCI 2K · 2048 × 1080",
+    },
+    TestChoiceOption {
+        id: "vertical-uhd",
+        label: "Vertical · 2160 × 3840",
+    },
+    TestChoiceOption {
+        id: "square-2160",
+        label: "Cuadrado · 2160 × 2160",
+    },
+    TestChoiceOption {
+        id: "camera-native",
+        label: "Raster de cámara",
+    },
+    TestChoiceOption {
+        id: "custom",
+        label: "Personalizado",
+    },
+];
+
+fn materialize_delivery_preset(
+    selection: &mut TestAuthoringSelection<'_>,
+    preset_id: &str,
+) -> Result<(), TestAuthoringError> {
+    let preset_id = selected_option(
+        &DELIVERY_PRESETS,
+        preset_id,
+        TestAuthoringError::InvalidDeliveryRaster,
+    )?;
+    let (width, height, placement) = match preset_id {
+        "uhd" => (3_840.0, 2_160.0, "fit"),
+        "dci-4k" => (4_096.0, 2_160.0, "fit"),
+        "hd" => (1_920.0, 1_080.0, "fit"),
+        "dci-2k" => (2_048.0, 1_080.0, "fit"),
+        "vertical-uhd" => (2_160.0, 3_840.0, "fit"),
+        "square-2160" => (2_160.0, 2_160.0, "fit"),
+        "camera-native" => {
+            let capture = capture(selection.capture_preset_id)?;
+            let raster = capture
+                .raster_modes
+                .iter()
+                .find(|mode| mode.id == selection.capture_raster_mode_id)
+                .ok_or(TestAuthoringError::InvalidCaptureRasterMode)?;
+            (raster.width as f32, raster.height as f32, "one-to-one")
+        }
+        "custom" => {
+            selection.delivery_preset_id = "custom";
+            return Ok(());
+        }
+        _ => return Err(TestAuthoringError::InvalidDeliveryRaster),
+    };
+    selection.delivery_preset_id = preset_id;
+    selection.delivery_width = width;
+    selection.delivery_height = height;
+    selection.delivery_placement_id = placement;
+    selection.delivery_background_id = "black";
+    Ok(())
+}
 const DELIVERY_BACKGROUNDS: [TestChoiceOption; 2] = [
     TestChoiceOption {
         id: "transparent",
@@ -268,6 +343,7 @@ pub struct TestAuthoringSelection<'a> {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub delivery_preset_id: &'a str,
     pub delivery_width: f32,
     pub delivery_height: f32,
     pub delivery_placement_id: &'a str,
@@ -341,6 +417,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub delivery_preset_id: &'static str,
     pub delivery_width: u32,
     pub delivery_height: u32,
     pub delivery_placement_id: &'static str,
@@ -766,6 +843,7 @@ pub fn default_test_authoring_selection(
         sensor_bloom_overflow_transfer_fraction: capture.sensor.bloom.overflow_transfer_fraction,
         sensor_noise_amount: 1.0,
         camera_rendering_intent: capture.rendering_intent,
+        delivery_preset_id: "uhd",
         delivery_width: 3_840.0,
         delivery_height: 2_160.0,
         delivery_placement_id: "fit",
@@ -1021,6 +1099,11 @@ pub fn resolve_test_authoring_selection(
         .camera_rendering_intent
         .validate()
         .map_err(|_| TestAuthoringError::InvalidCameraRenderingIntent)?;
+    let delivery_preset_id = selected_option(
+        &DELIVERY_PRESETS,
+        selection.delivery_preset_id,
+        TestAuthoringError::InvalidDeliveryRaster,
+    )?;
     if !selection.delivery_width.is_finite()
         || !selection.delivery_height.is_finite()
         || selection.delivery_width.fract() != 0.0
@@ -1121,6 +1204,7 @@ pub fn resolve_test_authoring_selection(
         sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
         camera_rendering_intent: selection.camera_rendering_intent,
+        delivery_preset_id,
         recording_output_transform_id: recording_output_transform.stable_id(),
         recording_profile_id: recording.profile.id,
         recording_character: recording.character,
@@ -2146,6 +2230,13 @@ pub fn test_page_descriptor(
                 output_artifact: "delivery-acescg-raster-v1",
                 preview_result: TestPreviewResult::DeliveryRaster,
                 controls: vec![
+                    choice_control(
+                        DELIVERY_PRESET_CONTROL_ID,
+                        "Preset de entrega",
+                        DELIVERY_PRESETS.to_vec(),
+                        selection.delivery_preset_id,
+                        "uhd",
+                    ),
                     scalar_field_control(
                         DELIVERY_WIDTH_CONTROL_ID,
                         "Anchura de entrega",
@@ -2292,8 +2383,15 @@ pub fn apply_test_choice(
             next.camera_rendering_intent = capture.rendering_intent;
         }
         CAPTURE_RASTER_MODE_CONTROL_ID => next.capture_raster_mode_id = option_id,
-        DELIVERY_PLACEMENT_CONTROL_ID => next.delivery_placement_id = option_id,
-        DELIVERY_BACKGROUND_CONTROL_ID => next.delivery_background_id = option_id,
+        DELIVERY_PRESET_CONTROL_ID => materialize_delivery_preset(&mut next, option_id)?,
+        DELIVERY_PLACEMENT_CONTROL_ID => {
+            next.delivery_placement_id = option_id;
+            next.delivery_preset_id = "custom";
+        }
+        DELIVERY_BACKGROUND_CONTROL_ID => {
+            next.delivery_background_id = option_id;
+            next.delivery_preset_id = "custom";
+        }
         GEOMETRY_MODE_CONTROL_ID => apply_geometry_mode(&mut next, option_id)?,
         COVER_GLASS_CONTROL_ID => {
             let cover =
@@ -2477,6 +2575,7 @@ fn unresolved_test_selection(
         camera_rendering_intent: current.camera_rendering_intent,
         delivery_width: current.delivery_width as f32,
         delivery_height: current.delivery_height as f32,
+        delivery_preset_id: current.delivery_preset_id,
         delivery_placement_id: current.delivery_placement_id,
         delivery_background_id: current.delivery_background_id,
         recording_output_transform_id: current.recording_output_transform_id,
@@ -2640,8 +2739,14 @@ pub fn apply_test_scalar(
             next.camera_rendering_intent.temperature_kelvin = value
         }
         CAMERA_LOOK_TINT_CONTROL_ID => next.camera_rendering_intent.tint = value,
-        DELIVERY_WIDTH_CONTROL_ID => next.delivery_width = value,
-        DELIVERY_HEIGHT_CONTROL_ID => next.delivery_height = value,
+        DELIVERY_WIDTH_CONTROL_ID => {
+            next.delivery_width = value;
+            next.delivery_preset_id = "custom";
+        }
+        DELIVERY_HEIGHT_CONTROL_ID => {
+            next.delivery_height = value;
+            next.delivery_preset_id = "custom";
+        }
         RECORDING_CHARACTER_CONTROL_ID => next.recording_character = value,
         OUTPUT_SIGNAL_CONTROL_ID
         | DEVICE_CONTROL_ID
@@ -2650,6 +2755,7 @@ pub fn apply_test_scalar(
         | PREVIEW_QUALITY_CONTROL_ID
         | CAPTURE_PRESET_CONTROL_ID
         | CAPTURE_RASTER_MODE_CONTROL_ID
+        | DELIVERY_PRESET_CONTROL_ID
         | DELIVERY_PLACEMENT_CONTROL_ID
         | DELIVERY_BACKGROUND_CONTROL_ID
         | GEOMETRY_MODE_CONTROL_ID
@@ -2747,6 +2853,7 @@ mod tests {
             sensor_bloom_overflow_transfer_fraction: 0.30,
             sensor_noise_amount: 1.0,
             camera_rendering_intent: capture("iphone-16e-main-48mp").unwrap().rendering_intent,
+            delivery_preset_id: "uhd",
             delivery_width: 3_840.0,
             delivery_height: 2_160.0,
             delivery_placement_id: "fit",
@@ -2868,6 +2975,38 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn delivery_presets_materialize_values_and_manual_edits_become_custom() {
+        let selected = apply_test_choice(asus(), DELIVERY_PRESET_CONTROL_ID, "dci-4k").unwrap();
+        assert_eq!(selected.delivery_preset_id, "dci-4k");
+        assert_eq!(
+            (selected.delivery_width, selected.delivery_height),
+            (4096, 2160)
+        );
+        assert_eq!(selected.delivery_placement_id, "fit");
+
+        let edited = apply_test_scalar(
+            unresolved_test_selection(selected),
+            DELIVERY_WIDTH_CONTROL_ID,
+            4000.0,
+        )
+        .unwrap();
+        assert_eq!(edited.delivery_preset_id, "custom");
+        assert_eq!(
+            (edited.delivery_width, edited.delivery_height),
+            (4000, 2160)
+        );
+
+        let native =
+            apply_test_choice(asus(), DELIVERY_PRESET_CONTROL_ID, "camera-native").unwrap();
+        assert_eq!(native.delivery_preset_id, "camera-native");
+        assert_eq!(
+            (native.delivery_width, native.delivery_height),
+            (5712, 4284)
+        );
+        assert_eq!(native.delivery_placement_id, "one-to-one");
     }
 
     #[test]

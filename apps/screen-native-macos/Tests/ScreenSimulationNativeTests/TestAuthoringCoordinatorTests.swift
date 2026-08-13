@@ -85,6 +85,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         cameraLookSaturation: 1.25,
         cameraLookTemperatureKelvin: 6_500,
         cameraLookTint: 0,
+        deliveryPresetID: "uhd",
         deliveryWidth: 3_840,
         deliveryHeight: 2_160,
         deliveryPlacementID: "fit",

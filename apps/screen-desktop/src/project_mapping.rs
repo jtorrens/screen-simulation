@@ -673,6 +673,7 @@ mod tests {
                     tint: 0.0,
                 },
                 delivery: screen_persistence::DeliveryRasterDocument {
+                    preset_id: id("uhd"),
                     width: 3_840,
                     height: 2_160,
                     placement: screen_persistence::DeliveryPlacementDocument::Fit,
