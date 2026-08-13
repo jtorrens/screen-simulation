@@ -39,17 +39,46 @@ enum NativeRenderButtonState: Equatable {
 }
 
 enum ReferenceMatchError: LocalizedError {
-    case incompatibleRasterAspect(
-        referenceWidth: Int, referenceHeight: Int, sensorWidth: Double, sensorHeight: Double
-    )
+    case unknownDeliveryPlacement(String)
     case unsolved(String)
 
     var errorDescription: String? {
         switch self {
-        case let .incompatibleRasterAspect(width, height, sensorWidth, sensorHeight):
-            "La referencia \(width)×\(height) no usa la relación de aspecto del gate seleccionado \(sensorWidth.formatted())×\(sensorHeight.formatted()) mm."
+        case let .unknownDeliveryPlacement(value):
+            "El Raster de entrega usa una colocación desconocida: \(value)."
         case let .unsolved(message):
             "No se puede resolver una cámara rígida con estos cuatro puntos: \(message)."
+        }
+    }
+}
+
+enum ReferenceMatchRasterMapping {
+    static func cameraGateCorners(
+        _ referenceCorners: [CGPoint],
+        referenceWidth: Int,
+        referenceHeight: Int,
+        cameraWidth: UInt32,
+        cameraHeight: UInt32,
+        deliveryPlacementID: String
+    ) throws -> [CGPoint] {
+        let gateWidth = Double(cameraWidth)
+        let gateHeight = Double(cameraHeight)
+        let outputWidth = Double(referenceWidth)
+        let outputHeight = Double(referenceHeight)
+        let scale: Double
+        switch deliveryPlacementID {
+        case "fit": scale = min(outputWidth / gateWidth, outputHeight / gateHeight)
+        case "fill-crop": scale = max(outputWidth / gateWidth, outputHeight / gateHeight)
+        case "one-to-one": scale = 1
+        default: throw ReferenceMatchError.unknownDeliveryPlacement(deliveryPlacementID)
+        }
+        let offsetX = (outputWidth - gateWidth * scale) * 0.5
+        let offsetY = (outputHeight - gateHeight * scale) * 0.5
+        return referenceCorners.map { point in
+            CGPoint(
+                x: (Double(point.x) + 0.5 - offsetX) / scale - 0.5,
+                y: (Double(point.y) + 0.5 - offsetY) / scale - 0.5
+            )
         }
     }
 }
@@ -2587,7 +2616,8 @@ final class WorkspaceModel: ObservableObject {
                 reference: reference,
                 sourcePlacement: sourcePlacement,
                 device: device,
-                pipeline: authored
+                pipeline: authored,
+                deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
@@ -2615,17 +2645,15 @@ final class WorkspaceModel: ObservableObject {
               let reference = referenceACEScgFrame,
               referenceMatchCorners.count == 4
         else { throw NativeMediaError.invalidRaster }
-        let referenceAspect = Double(reference.width) / Double(reference.height)
-        let sensorAspect = authored.sceneLens.sensorWidthMillimeters
-            / authored.sceneLens.sensorHeightMillimeters
-        guard abs(referenceAspect / sensorAspect - 1) <= 0.01 else {
-            throw ReferenceMatchError.incompatibleRasterAspect(
-                referenceWidth: reference.width,
-                referenceHeight: reference.height,
-                sensorWidth: authored.sceneLens.sensorWidthMillimeters,
-                sensorHeight: authored.sceneLens.sensorHeightMillimeters
-            )
-        }
+        let placement = testAuthoringSelection?.deliveryPlacementID ?? "fit"
+        let cameraCorners = try ReferenceMatchRasterMapping.cameraGateCorners(
+            referenceMatchCorners,
+            referenceWidth: reference.width,
+            referenceHeight: reference.height,
+            cameraWidth: authored.sensor.nativeWidth,
+            cameraHeight: authored.sensor.nativeHeight,
+            deliveryPlacementID: placement
+        )
         let screenQuaternion = simd_quatd(
             ix: authored.screenPose.quaternion[0], iy: authored.screenPose.quaternion[1],
             iz: authored.screenPose.quaternion[2], r: authored.screenPose.quaternion[3]
@@ -2643,15 +2671,15 @@ final class WorkspaceModel: ObservableObject {
         var request = ScreenPlanarReferenceMatchV1()
         request.abi_version = SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION
         let deviceValues = geometry.corners.flatMap { [Float($0.x), Float($0.y), Float($0.z)] }
-        let imageValues = referenceMatchCorners.flatMap { [Float($0.x), Float($0.y)] }
+        let imageValues = cameraCorners.flatMap { [Float($0.x), Float($0.y)] }
         withUnsafeMutableBytes(of: &request.device_corners_xyz) { destination in
             deviceValues.withUnsafeBytes { source in destination.copyBytes(from: source) }
         }
         withUnsafeMutableBytes(of: &request.image_corners_xy) { destination in
             imageValues.withUnsafeBytes { source in destination.copyBytes(from: source) }
         }
-        request.image_width = UInt32(reference.width)
-        request.image_height = UInt32(reference.height)
+        request.image_width = authored.sensor.nativeWidth
+        request.image_height = authored.sensor.nativeHeight
         request.focal_length_millimeters = Float(authored.sceneLens.focalLengthMillimeters)
         request.sensor_width_millimeters = Float(authored.sceneLens.sensorWidthMillimeters)
         request.sensor_height_millimeters = Float(authored.sceneLens.sensorHeightMillimeters)

@@ -1,6 +1,50 @@
+import CoreGraphics
 import StudioColor
 import Testing
 @testable import ScreenSimulationNative
+
+@Test func referenceMatchInvertsEveryDeliveryRasterPlacement() throws {
+    let cameraWidth: UInt32 = 4_032
+    let cameraHeight: UInt32 = 3_024
+    let referenceWidth = 1_920
+    let referenceHeight = 1_080
+
+    for placement in ["fit", "fill-crop", "one-to-one"] {
+        let gateWidth = Double(cameraWidth)
+        let gateHeight = Double(cameraHeight)
+        let outputWidth = Double(referenceWidth)
+        let outputHeight = Double(referenceHeight)
+        let scale: Double = switch placement {
+        case "fit": min(outputWidth / gateWidth, outputHeight / gateHeight)
+        case "fill-crop": max(outputWidth / gateWidth, outputHeight / gateHeight)
+        default: 1
+        }
+        let offsetX = (outputWidth - gateWidth * scale) * 0.5
+        let offsetY = (outputHeight - gateHeight * scale) * 0.5
+        let gateCorners = [
+            CGPoint(x: 120, y: 240), CGPoint(x: 3_000, y: 240),
+            CGPoint(x: 3_000, y: 2_400), CGPoint(x: 120, y: 2_400),
+        ]
+        let referenceCorners = gateCorners.map { point in
+            CGPoint(
+                x: (Double(point.x) + 0.5) * scale + offsetX - 0.5,
+                y: (Double(point.y) + 0.5) * scale + offsetY - 0.5
+            )
+        }
+        let recovered = try ReferenceMatchRasterMapping.cameraGateCorners(
+            referenceCorners,
+            referenceWidth: referenceWidth,
+            referenceHeight: referenceHeight,
+            cameraWidth: cameraWidth,
+            cameraHeight: cameraHeight,
+            deliveryPlacementID: placement
+        )
+        for index in gateCorners.indices {
+            #expect(abs(recovered[index].x - gateCorners[index].x) < 0.000_001)
+            #expect(abs(recovered[index].y - gateCorners[index].y) < 0.000_001)
+        }
+    }
+}
 
 @Test @MainActor func setupFramingUsesTheAuthoredCameraAndMarksTheDeviceBoundary() throws {
     let display = try StudioColorMetalDisplay()
@@ -79,7 +123,7 @@ import Testing
 
     let result = try SetupFramingRenderer(device: source.texture.device).renderReferenceMatch(
         source: source, reference: reference, sourcePlacement: .stretch,
-        device: device, pipeline: authored
+        device: device, pipeline: authored, deliveryPlacementID: "fit"
     )
     #expect(result.frame.width == 320)
     #expect(result.frame.height == 180)

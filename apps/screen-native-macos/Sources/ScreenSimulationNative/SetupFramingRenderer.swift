@@ -207,6 +207,7 @@ final class SetupFramingRenderer {
         sourcePlacement: WorkspaceModel.SourcePlacement,
         device: DeviceDefinition,
         pipeline authored: PhysicalPipelineAuthoringState,
+        deliveryPlacementID: String,
         previewWidth: Int? = nil,
         previewHeight: Int? = nil
     ) throws -> Result {
@@ -218,7 +219,7 @@ final class SetupFramingRenderer {
             pipeline: authored,
             deliveryWidth: reference.width,
             deliveryHeight: reference.height,
-            deliveryPlacementID: "fit",
+            deliveryPlacementID: deliveryPlacementID,
             deliveryBackgroundID: "black",
             previewWidth: previewWidth,
             previewHeight: previewHeight,

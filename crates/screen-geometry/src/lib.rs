@@ -2161,6 +2161,51 @@ mod tests {
         assert_eq!(error, GeometryError::InvalidReferenceMatch);
     }
 
+    #[test]
+    fn planar_reference_match_accepts_a_progressive_oblique_quad() {
+        let result = solve_planar_reference_camera(PlanarReferenceMatch {
+            device_corners: [
+                Vec3 {
+                    x: -0.344,
+                    y: 0.194,
+                    z: 0.0,
+                },
+                Vec3 {
+                    x: 0.344,
+                    y: 0.194,
+                    z: 0.0,
+                },
+                Vec3 {
+                    x: 0.344,
+                    y: -0.194,
+                    z: 0.0,
+                },
+                Vec3 {
+                    x: -0.344,
+                    y: -0.194,
+                    z: 0.0,
+                },
+            ],
+            image_corners: [
+                Vec2 { x: 324.0, y: 255.0 },
+                Vec2 { x: 961.0, y: 197.0 },
+                Vec2 {
+                    x: 1004.0,
+                    y: 548.0,
+                },
+                Vec2 { x: 376.0, y: 651.0 },
+            ],
+            image_width: 1920,
+            image_height: 1080,
+            focal_length: Millimeters(35.0),
+            sensor_width: Millimeters(36.0),
+            sensor_height: Millimeters(20.25),
+            lens_shift: Vec2 { x: 0.0, y: 0.0 },
+        })
+        .expect("progressive oblique match must publish its best rigid pose");
+        assert!(result.maximum_reprojection_error_pixels.is_finite());
+    }
+
     fn rig() -> CameraRig {
         let keys = |id: &str, frame, yaw: f32| {
             (
