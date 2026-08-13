@@ -362,6 +362,7 @@ import Testing
             device: device,
             pipeline: pipeline,
             model: PhysicalModelController().authoringState,
+            context: nil,
             report: "Headless VFX reference battery"
         )
     }
@@ -1068,10 +1069,12 @@ private func writeMoireResolvedSettings(
     to directory: URL
 ) throws {
     let controller = try moireResolvedModel(from: imported)
+    let context = try #require(imported.context)
     let physical = try #require(PhysicalSettingsExchange.metadata(
         device: imported.device,
         pipeline: imported.pipeline,
-        model: controller.authoringState
+        model: controller.authoringState,
+        context: context
     ))
     let rgba16 = try #require(baseline.rgba16)
     let rgba16Hash = SHA256.hash(data: rgba16.withUnsafeBytes { Data($0) })

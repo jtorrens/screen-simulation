@@ -1,23 +1,61 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.PhysicalSettings.v7"
-    private static let selectedMigrationSchema = "ScreenSimulation.PhysicalSettings.v1"
+    static let schema = "ScreenSimulation.FrameSettings.v8"
+
+    struct EnvironmentResource: Codable, Equatable, Sendable {
+        enum Kind: String, Codable, Sendable { case procedural, image }
+        let kind: Kind
+        let fileName: String?
+        let sha256: String?
+        let inputTransformID: String?
+
+        func validate() throws {
+            switch kind {
+            case .procedural:
+                guard fileName == nil, sha256 == nil, inputTransformID == nil else {
+                    throw ImportError.invalidEnvironmentResource
+                }
+            case .image:
+                guard let fileName, !fileName.isEmpty,
+                      let sha256, sha256.count == 64,
+                      sha256.allSatisfy({ $0.isHexDigit }),
+                      let inputTransformID, !inputTransformID.isEmpty
+                else { throw ImportError.invalidEnvironmentResource }
+            }
+        }
+    }
+
+    struct FrameContext: Codable, Equatable, Sendable {
+        let selection: TestAuthoringResolvedSelection
+        let sourceInputTransformID: String
+        let sourceAlphaMode: String
+        let sourceColorModel: String
+        let sourceYUVMatrix: String
+        let sourceSignalRange: String
+        let sourcePlacementID: String
+        let previewOutputTransformID: String
+        let previewPhaseID: String
+        let environmentResource: EnvironmentResource
+    }
 
     struct Imported: Sendable {
         let device: DeviceDefinition
         let pipeline: PhysicalPipelineAuthoringState
         let model: PhysicalModelAuthoringState
+        let context: FrameContext?
         let report: String
     }
 
     static func metadata(
         device: DeviceDefinition,
         pipeline: PhysicalPipelineAuthoringState,
-        model: PhysicalModelAuthoringState
+        model: PhysicalModelAuthoringState,
+        context: FrameContext
     ) -> [String: Any]? {
         guard let deviceObject = FrameCheckPNG.jsonObject(device),
-              let pipelineObject = FrameCheckPNG.jsonObject(pipeline)
+              let pipelineObject = FrameCheckPNG.jsonObject(pipeline),
+              let contextObject = FrameCheckPNG.jsonObject(context)
         else { return nil }
         let stages: [[String: Any]] = model.stages.map { stage in
             switch stage.control {
@@ -40,6 +78,7 @@ enum PhysicalSettingsExchange {
             "schema": schema,
             "device": deviceObject,
             "pipeline": pipelineObject,
+            "context": contextObject,
             "screen": [
                 "storedAmount": model.screen.storedAmount,
                 "bypassed": model.screen.isBypassed,
@@ -67,6 +106,11 @@ enum PhysicalSettingsExchange {
         )
         _ = try device.resolved()
         _ = try pipeline.resolvedPipeline()
+        let context = try decoder.decode(
+            FrameContext.self,
+            from: try JSONSerialization.data(withJSONObject: requiredObject("context", in: settings))
+        )
+        try context.environmentResource.validate()
 
         guard let screen = settings["screen"] as? [String: Any],
               let amount = number(screen["storedAmount"]),
@@ -103,53 +147,8 @@ enum PhysicalSettingsExchange {
             device: device,
             pipeline: pipeline,
             model: imported,
-            report: report(device: device, pipeline: pipeline, model: imported)
-        )
-    }
-
-    /// Explicit, user-selected one-way migration. Normal reads remain current-schema only.
-    @MainActor
-    static func decodeSelectedImport(
-        from document: [String: Any],
-        retainedCalibration: PhysicalPipelineAuthoringState.RadiometricCalibration,
-        retainedCaptureName: String
-    ) throws -> Imported {
-        guard let settings = document["settings"] as? [String: Any] else {
-            throw ImportError.missingSettings
-        }
-        let sourceSchema = settings["schema"] as? String
-        if sourceSchema == schema {
-            return try decode(from: document)
-        }
-        guard sourceSchema == selectedMigrationSchema else {
-            throw ImportError.unsupportedSchema(sourceSchema)
-        }
-        var migratedDocument = document
-        var migratedSettings = settings
-        var pipeline = try requiredObject("pipeline", in: settings)
-        guard pipeline["radiometricCalibration"] == nil else {
-            throw ImportError.invalidLegacyCalibration
-        }
-        guard let calibration = FrameCheckPNG.jsonObject(retainedCalibration) else {
-            throw ImportError.invalidLegacyCalibration
-        }
-        pipeline["radiometricCalibration"] = calibration
-        migratedSettings["pipeline"] = pipeline
-        migratedSettings["schema"] = schema
-        migratedDocument["settings"] = migratedSettings
-        let imported = try decode(from: migratedDocument)
-        return Imported(
-            device: imported.device,
-            pipeline: imported.pipeline,
-            model: imported.model,
-            report: imported.report + """
-
-
-            Migración seleccionada
-            • Origen: \(selectedMigrationSchema)
-            • Calibración radiométrica conservada del estado actual (cámara seleccionada: \(retainedCaptureName)).
-            • No se ha inferido una cámara por nombre, resolución ni valores del PNG.
-            """
+            context: context,
+            report: report(device: device, pipeline: pipeline, model: imported, context: context)
         )
     }
 
@@ -178,7 +177,8 @@ enum PhysicalSettingsExchange {
     private static func report(
         device: DeviceDefinition,
         pipeline: PhysicalPipelineAuthoringState,
-        model: PhysicalModelAuthoringState
+        model: PhysicalModelAuthoringState,
+        context: FrameContext
     ) -> String {
         """
         SCREEN Simulation · importación física
@@ -191,17 +191,20 @@ enum PhysicalSettingsExchange {
         • Pose cámara/pantalla y modelo de lente
         • Obturación, rolling shutter y muestreo temporal
         • Sensor, CFA, ruido, RAW y revelado
+        • Cámara, raster de captura y objetivo
+        • Raster de entrega, transform de grabación y codec
+        • Interpretación de fuente, colocación, preview y fase visible
+        • Recurso de entorno con identidad SHA-256 e interpretación radiométrica
         • Contribución maestra y \(model.stages.count) controles de etapa
 
         Conservados deliberadamente
         • Fuente y fotograma actual
-        • ODT de preview y perfil ColorSync
-        • Calidad Draft/Media/Alta/Nativa
         • Zoom, pan, transporte, render y DeckLink
         • Armado de animación/keyframes
 
         Incompatibles u omitidos
-        • Ninguno en este archivo (\(schema))
+        • Fuente de imagen/vídeo (se conserva; el PNG guarda su interpretación, no sus píxeles)
+        • Perfil ColorSync observado del monitor
 
         Importación atómica: una sola operación de Undo.
         """
@@ -212,7 +215,8 @@ enum PhysicalSettingsExchange {
         case unsupportedSchema(String?)
         case missingField(String)
         case invalidModel
-        case invalidLegacyCalibration
+        case invalidEnvironmentResource
+        case unavailableEnvironmentResource(String)
 
         var errorDescription: String? {
             switch self {
@@ -224,8 +228,10 @@ enum PhysicalSettingsExchange {
                 "Falta el campo físico obligatorio ‘\(field)’ en el PNG."
             case .invalidModel:
                 "Los controles físicos del PNG no cumplen el contrato vigente."
-            case .invalidLegacyCalibration:
-                "El PNG antiguo no puede migrarse de forma inequívoca a la calibración radiométrica vigente."
+            case .invalidEnvironmentResource:
+                "La identidad del entorno HDR del PNG es incompleta o inválida."
+            case let .unavailableEnvironmentResource(name):
+                "El frame necesita el entorno HDR ‘\(name)’. Selecciona primero ese archivo con Browse; su SHA-256 debe coincidir y después repite la importación."
             }
         }
     }

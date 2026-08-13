@@ -25,7 +25,7 @@ enum TestPreviewResultKind: UInt32, Sendable {
     case recordingCodec = 19
 }
 
-struct TestAuthoringResolvedSelection: Equatable, Sendable {
+struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let inputTransformID: String
     let outputSignalID: String
     let deviceID: String

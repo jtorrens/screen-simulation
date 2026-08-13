@@ -154,6 +154,7 @@ final class WorkspaceModel: ObservableObject {
     private var environmentRadianceFrame: EnvironmentRadianceFrame?
     private var authoredImageEnvironment: PhysicalPipelineAuthoringState.Environment?
     private var environmentSourceHash: String?
+    private var environmentSourceInputTransformID: String?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -611,6 +612,7 @@ final class WorkspaceModel: ObservableObject {
                     authoredImageEnvironment = nil
                     environmentSourceName = nil
                     environmentSourceHash = nil
+                    environmentSourceInputTransformID = nil
                 }
                 let phaseToReveal = testPhaseToReveal(for: intent)
                 let resolved = try RustTestAuthoringCoordinator.apply(intent, to: selection)
@@ -728,6 +730,7 @@ final class WorkspaceModel: ObservableObject {
             environmentRadianceFrame = environment
             authoredImageEnvironment = authored.environment
             environmentSourceName = url.lastPathComponent
+            environmentSourceInputTransformID = inputTransformID
             environmentSourceHash = SHA256.hash(data: try Data(contentsOf: url))
                 .map { String(format: "%02x", $0) }.joined()
             try physicalModel.setContinuousAmount(1, stage: .screen(.environment))
@@ -1517,10 +1520,12 @@ final class WorkspaceModel: ObservableObject {
         ]
         if let device = modelDeviceDefinition ?? resolvedDevice?.definition,
            let state = physicalAuthoringState,
+           let context = currentSettingsContext(),
            let settings = PhysicalSettingsExchange.metadata(
                device: device,
                pipeline: state,
-               model: physicalModel.authoringState
+               model: physicalModel.authoringState,
+               context: context
            ) {
             document["settings"] = settings
         }
@@ -1531,7 +1536,7 @@ final class WorkspaceModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.png]
         panel.allowsMultipleSelection = false
-        panel.message = "Importa únicamente los ajustes del modelo físico; ODT y calidad se conservan."
+        panel.message = "Recupera todos los ajustes que generaron el frame; zoom y pan se conservan."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let png = try Data(contentsOf: url)
@@ -1540,15 +1545,7 @@ final class WorkspaceModel: ObservableObject {
             else {
                 throw PhysicalSettingsExchange.ImportError.missingSettings
             }
-            guard let capture = capturePresets.first(where: { $0.id == selectedCapturePresetID })
-                ?? capturePresets.first,
-                let calibration = physicalAuthoringState?.radiometricCalibration
-            else { throw PhysicalSettingsExchange.ImportError.invalidModel }
-            let imported = try PhysicalSettingsExchange.decodeSelectedImport(
-                from: document,
-                retainedCalibration: calibration,
-                retainedCaptureName: capture.name
-            )
+            let imported = try PhysicalSettingsExchange.decode(from: document)
             guard confirmPhysicalSettingsImport(imported.report) else { return }
             try applyPhysicalSettings(imported, undoManager: undoManager)
             status = "Ajustes físicos importados · \(url.lastPathComponent)"
@@ -1561,24 +1558,56 @@ final class WorkspaceModel: ObservableObject {
         let device: DeviceDefinition
         let pipeline: PhysicalPipelineAuthoringState
         let model: PhysicalModelAuthoringState
+        let context: PhysicalSettingsExchange.FrameContext?
+    }
+
+    private func currentSettingsContext() -> PhysicalSettingsExchange.FrameContext? {
+        guard let selection = testAuthoringSelection else { return nil }
+        return .init(
+            selection: selection,
+            sourceInputTransformID: inputTransform.id,
+            sourceAlphaMode: alphaMode.rawValue,
+            sourceColorModel: signalColorModel.rawValue,
+            sourceYUVMatrix: signalMatrix.rawValue,
+            sourceSignalRange: signalRange.rawValue,
+            sourcePlacementID: sourcePlacement.stableID,
+            previewOutputTransformID: previewTransform.id,
+            previewPhaseID: testPresentation?.selectedPhaseID ?? "recording-codec",
+            environmentResource: .init(
+                kind: environmentRadianceFrame == nil ? .procedural : .image,
+                fileName: environmentSourceName,
+                sha256: environmentSourceHash,
+                inputTransformID: environmentSourceInputTransformID
+            )
+        )
     }
 
     private func applyPhysicalSettings(
         _ imported: PhysicalSettingsExchange.Imported,
         undoManager: UndoManager?
     ) throws {
+        if let resource = imported.context?.environmentResource,
+           resource.kind == .image,
+           (environmentSourceHash != resource.sha256
+               || environmentSourceInputTransformID != resource.inputTransformID) {
+            throw PhysicalSettingsExchange.ImportError.unavailableEnvironmentResource(
+                resource.fileName ?? "sin nombre"
+            )
+        }
         guard let priorDevice = modelDeviceDefinition ?? resolvedDevice?.definition,
               let priorPipeline = physicalAuthoringState
         else { throw PhysicalSettingsExchange.ImportError.invalidModel }
         let prior = ImportedPhysicalState(
             device: priorDevice,
             pipeline: priorPipeline,
-            model: physicalModel.authoringState
+            model: physicalModel.authoringState,
+            context: currentSettingsContext()
         )
         try restoreImportedPhysicalState(.init(
             device: imported.device,
             pipeline: imported.pipeline,
-            model: imported.model
+            model: imported.model,
+            context: imported.context
         ))
         undoManager?.registerUndo(withTarget: self) { target in
             Task { @MainActor in try? target.restoreImportedPhysicalState(prior) }
@@ -1592,13 +1621,64 @@ final class WorkspaceModel: ObservableObject {
         try physicalModel.restoreAuthoringState(state.model)
         modelDeviceDefinition = state.device
         physicalAuthoringState = state.pipeline
+        if let context = state.context {
+            guard let input = StudioColorInputTransform.catalog.first(where: {
+                $0.id == context.sourceInputTransformID
+            }), let output = StudioColorOutputTransform.catalog.first(where: {
+                $0.id == context.previewOutputTransformID
+            }), let placement = SourcePlacement(stableID: context.sourcePlacementID),
+                let alpha = StudioAlphaMode(rawValue: context.sourceAlphaMode),
+                let colorModel = StudioSignalColorModel(rawValue: context.sourceColorModel),
+                let matrix = StudioSignalMatrix(rawValue: context.sourceYUVMatrix),
+                let range = StudioSignalRange(rawValue: context.sourceSignalRange),
+                let quality = PhysicalQuality(stableID: context.selection.previewQualityID),
+                capturePresets.contains(where: { $0.id == context.selection.capturePresetID }),
+                lensPresets.contains(where: { $0.id == context.selection.lensPresetID })
+            else { throw PhysicalSettingsExchange.ImportError.invalidModel }
+            let snapshot = try RustTestAuthoringCoordinator.snapshot(
+                selection: context.selection,
+                selectedPreviewPhaseID: context.previewPhaseID
+            )
+            inputTransform = input
+            previewTransform = output
+            sourcePlacement = placement
+            alphaMode = alpha
+            signalColorModel = colorModel
+            signalMatrix = matrix
+            signalRange = range
+            switch context.environmentResource.kind {
+            case .procedural:
+                environmentRadianceFrame = nil
+                authoredImageEnvironment = nil
+                environmentSourceName = nil
+                environmentSourceHash = nil
+                environmentSourceInputTransformID = nil
+            case .image:
+                authoredImageEnvironment = state.pipeline.environment
+                environmentSourceName = context.environmentResource.fileName
+                environmentSourceHash = context.environmentResource.sha256
+                environmentSourceInputTransformID = context.environmentResource.inputTransformID
+            }
+            testAuthoringSelection = context.selection
+            selectedCapturePresetID = context.selection.capturePresetID
+            selectedCaptureRasterModeID = context.selection.captureRasterModeID
+            selectedLensPresetID = context.selection.lensPresetID
+            testPresentation = snapshot.presentation
+            testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+            physicalModel.setQuality(quality)
+        }
+        resolvedDevice = try state.device.resolved()
+        resolvedPhysicalPipeline = try state.pipeline.resolvedPipeline()
+        try physicalModel.restoreAuthoringState(state.model)
+        modelDeviceDefinition = state.device
+        physicalAuthoringState = state.pipeline
         physicalModel.invalidateExternalParameters()
     }
 
     private func confirmPhysicalSettingsImport(_ report: String) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Importar ajustes físicos"
-        alert.informativeText = "Se aplicarán los valores compatibles. ODT, calidad y navegación no cambiarán."
+        alert.informativeText = "Se aplicará el snapshot completo. Solo zoom, pan y transporte no cambiarán."
         alert.addButton(withTitle: "Importar")
         alert.addButton(withTitle: "Cancelar")
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 300))

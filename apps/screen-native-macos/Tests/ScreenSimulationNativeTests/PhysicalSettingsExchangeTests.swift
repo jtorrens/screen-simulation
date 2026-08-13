@@ -26,14 +26,17 @@ import Testing
     let settings = try #require(PhysicalSettingsExchange.metadata(
         device: device,
         pipeline: pipeline,
-        model: controller.authoringState
+        model: controller.authoringState,
+        context: try canonicalFrameContext(deviceID: device.id)
     ))
     let imported = try PhysicalSettingsExchange.decode(from: ["settings": settings])
+    let expectedContext = try canonicalFrameContext(deviceID: device.id)
 
     #expect(imported.device == device)
     #expect(imported.pipeline == pipeline)
     #expect(imported.model == controller.authoringState)
-    #expect(imported.report.contains("ODT de preview"))
+    #expect(imported.context == expectedContext)
+    #expect(imported.report.contains("preview y fase visible"))
     #expect(imported.report.contains("Incompatibles u omitidos"))
 }
 
@@ -56,7 +59,8 @@ import Testing
     var settings = try #require(PhysicalSettingsExchange.metadata(
         device: device,
         pipeline: pipeline,
-        model: controller.authoringState
+        model: controller.authoringState,
+        context: try canonicalFrameContext(deviceID: device.id)
     ))
     settings["schema"] = "ScreenSimulation.PhysicalSettings.v6"
 
@@ -65,44 +69,24 @@ import Testing
     }
 }
 
-@Test @MainActor func selectedImportMigratesTheRetiredSchemaWithExplicitCalibration() throws {
+@Test @MainActor func physicalSettingsExchangeRejectsRetiredSchemaWithoutAReader() throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
         $0.id == device.defaultCoverGlassPresetID
     })
-    var pipeline = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
-    let calibration = PhysicalPipelineAuthoringState.RadiometricCalibration(
-        baseExposureIndex: 800,
-        referenceLambertianReflectance: 0.18,
-        referenceIlluminanceLux: 1_000,
-        referenceTStop: 2.8,
-        referenceShutterSeconds: 1.0 / 48.0,
-        effectiveSensorExposureScale: 0.75
-    )
-    pipeline.radiometricCalibration = calibration
+    let pipeline = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
     let controller = PhysicalModelController()
     var settings = try #require(PhysicalSettingsExchange.metadata(
         device: device,
         pipeline: pipeline,
-        model: controller.authoringState
+        model: controller.authoringState,
+        context: try canonicalFrameContext(deviceID: device.id)
     ))
-    settings["schema"] = "ScreenSimulation.PhysicalSettings.v1"
-    var oldPipeline = try #require(settings["pipeline"] as? [String: Any])
-    oldPipeline.removeValue(forKey: "radiometricCalibration")
-    settings["pipeline"] = oldPipeline
+    settings["schema"] = "ScreenSimulation.PhysicalSettings.v7"
 
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
         try PhysicalSettingsExchange.decode(from: ["settings": settings])
     }
-    let imported = try PhysicalSettingsExchange.decodeSelectedImport(
-        from: ["settings": settings],
-        retainedCalibration: calibration,
-        retainedCaptureName: "Cámara elegida"
-    )
-
-    #expect(imported.pipeline.radiometricCalibration == calibration)
-    #expect(imported.report.contains("Migración seleccionada"))
-    #expect(imported.report.contains("Cámara elegida"))
 }
 
 @Test func selectedPNGImportReadsRawAndCompressedRetiredContainers() throws {
@@ -123,6 +107,18 @@ import Testing
     #expect(FrameCheckPNG.metadataForSelectedImport(in: compressedPNG) == metadata)
 }
 
+@Test func frameSettingsRejectMalformedImageEnvironmentIdentity() throws {
+    let resource = PhysicalSettingsExchange.EnvironmentResource(
+        kind: .image,
+        fileName: "room.exr",
+        sha256: "not-a-sha",
+        inputTransformID: "linear-rec709"
+    )
+    #expect(throws: PhysicalSettingsExchange.ImportError.self) {
+        try resource.validate()
+    }
+}
+
 private func pngWithInternationalText(
     keyword: String, text: Data, compressed: Bool
 ) throws -> Data {
@@ -139,6 +135,30 @@ private func pngWithInternationalText(
     appendPNGChunk(type: "iTXt", payload: payload, to: &png)
     appendPNGChunk(type: "IEND", payload: Data(), to: &png)
     return png
+}
+
+@MainActor
+private func canonicalFrameContext(
+    deviceID: String
+) throws -> PhysicalSettingsExchange.FrameContext {
+    .init(
+        selection: try RustTestAuthoringCoordinator.defaultSelection(
+            inputTransformID: "srgb-encoded-rec709",
+            deviceID: deviceID,
+            frameRate: 24
+        ),
+        sourceInputTransformID: "srgb-encoded-rec709",
+        sourceAlphaMode: "Ignorar",
+        sourceColorModel: "RGB",
+        sourceYUVMatrix: "BT.709",
+        sourceSignalRange: "Completo",
+        sourcePlacementID: "fit",
+        previewOutputTransformID: "aces2-srgb-sdr-100",
+        previewPhaseID: "recording-codec",
+        environmentResource: .init(
+            kind: .procedural, fileName: nil, sha256: nil, inputTransformID: nil
+        )
+    )
 }
 
 private func zlibCompressed(_ source: Data) -> Data? {
