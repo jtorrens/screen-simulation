@@ -29,22 +29,22 @@ import Testing
     authored.sceneLens.lensShift = [0, 0]
 
     let renderer = try SetupFramingRenderer(device: source.texture.device)
-    let frame = try renderer.render(
+    let result = try renderer.render(
         source: source, sourcePlacement: WorkspaceModel.SourcePlacement.stretch,
         device: device, pipeline: authored,
         deliveryWidth: 320, deliveryHeight: 180,
         deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
     )
+    let frame = result.frame
     let values = try display.readLinearRGBA(frame)
     let pixels = stride(from: 0, to: values.count, by: 4).map {
         (values[$0], values[$0 + 1], values[$0 + 2])
     }
-    let redBoundary = pixels.filter { $0.0 > 0.9 && $0.1 < 0.01 && $0.2 < 0.01 }
     let sourceInterior = pixels.filter { abs($0.0 - $0.1) < 0.01 && $0.0 > 0.01 }
 
     #expect(frame.width == 320)
     #expect(frame.height == 180)
-    #expect(redBoundary.count > 100)
-    #expect(redBoundary.count < 2_000)
+    #expect(result.boundary.count == 4)
+    #expect(result.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
     #expect(sourceInterior.count > 1_000)
 }

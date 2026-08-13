@@ -25,11 +25,12 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 20u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 21u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
     SCREEN_TEST_CONTROL_SCALAR = 1,
+    SCREEN_TEST_CONTROL_ACTION = 3,
 } ScreenTestControlKind;
 
 typedef struct {

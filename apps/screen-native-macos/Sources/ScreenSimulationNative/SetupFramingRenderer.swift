@@ -19,6 +19,11 @@ enum SetupFramingError: Error, LocalizedError {
 
 @MainActor
 final class SetupFramingRenderer {
+    struct Result {
+        let frame: StudioColorMetalFrame
+        /// Device corners in Delivery Raster coordinates, clockwise from top-left.
+        let boundary: [CGPoint]
+    }
     private struct Parameters {
         var cameraPositionFocal: SIMD4<Float>
         var cameraRightSensorWidth: SIMD4<Float>
@@ -66,7 +71,7 @@ final class SetupFramingRenderer {
         deliveryHeight: Int,
         deliveryPlacementID: String,
         deliveryBackgroundID: String
-    ) throws -> StudioColorMetalFrame {
+    ) throws -> Result {
         guard deliveryWidth > 0, deliveryHeight > 0,
               authored.cameraPose.position.count == 3,
               authored.cameraPose.quaternion.count == 4,
@@ -155,7 +160,13 @@ final class SetupFramingRenderer {
         command.commit()
         command.waitUntilCompleted()
         guard command.status == .completed else { throw SetupFramingError.commandFailed }
-        return StudioColorMetalFrame(texture: output)
+        let frame = StudioColorMetalFrame(texture: output)
+        let boundary = Self.projectedBoundary(
+            authored: authored, device: device,
+            deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
+            deliveryPlacement: deliveryPlacement
+        )
+        return Result(frame: frame, boundary: boundary)
     }
 
     private static func sourcePlacement(_ placement: WorkspaceModel.SourcePlacement) -> UInt32 {
@@ -171,6 +182,59 @@ final class SetupFramingRenderer {
         let xyz = SIMD3(q[0], q[1], q[2])
         let t = 2 * simd_cross(xyz, vector)
         return vector + q[3] * t + simd_cross(xyz, t)
+    }
+
+    private static func projectedBoundary(
+        authored: PhysicalPipelineAuthoringState,
+        device: DeviceDefinition,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        deliveryPlacement: UInt32
+    ) -> [CGPoint] {
+        let cameraQ = authored.cameraPose.quaternion.map(Float.init)
+        let screenQ = authored.screenPose.quaternion.map(Float.init)
+        let camera = SIMD3<Float>(
+            Float(authored.cameraPose.position[0]), Float(authored.cameraPose.position[1]),
+            Float(authored.cameraPose.position[2])
+        )
+        let screen = SIMD3<Float>(
+            Float(authored.screenPose.position[0]), Float(authored.screenPose.position[1]),
+            Float(authored.screenPose.position[2])
+        )
+        let cameraRight = rotate([1, 0, 0], by: cameraQ)
+        let cameraUp = rotate([0, 1, 0], by: cameraQ)
+        let cameraForward = rotate([0, 0, -1], by: cameraQ)
+        let screenRight = rotate([1, 0, 0], by: screenQ)
+        let screenUp = rotate([0, 1, 0], by: screenQ)
+        let cameraSize = SIMD2<Float>(Float(authored.sensor.nativeWidth), Float(authored.sensor.nativeHeight))
+        let outputSize = SIMD2<Float>(Float(deliveryWidth), Float(deliveryHeight))
+        let scale: Float = switch deliveryPlacement {
+        case 0: min(outputSize.x / cameraSize.x, outputSize.y / cameraSize.y)
+        case 2: max(outputSize.x / cameraSize.x, outputSize.y / cameraSize.y)
+        default: 1
+        }
+        let offset = (outputSize - cameraSize * scale) * 0.5
+        let focal = Float(authored.sceneLens.focalLengthMillimeters)
+        let sensorWidth = Float(authored.sceneLens.sensorWidthMillimeters)
+        let sensorHeight = Float(authored.sceneLens.sensorHeightMillimeters)
+        let shiftX = Float(authored.sceneLens.lensShift[0])
+        let shiftY = Float(authored.sceneLens.lensShift[1])
+        let halfWidth = Float(device.activeWidthMeters) * 0.5
+        let halfHeight = Float(device.activeHeightMeters) * 0.5
+        let corners: [(Float, Float)] = [(-1, 1), (1, 1), (1, -1), (-1, -1)]
+        return corners.map { sx, sy in
+            let world = screen + screenRight * (sx * halfWidth) + screenUp * (sy * halfHeight)
+            let relative = world - camera
+            let depth = simd_dot(relative, cameraForward)
+            let idealX = simd_dot(relative, cameraRight) / depth * (2 * focal / sensorWidth)
+            let idealY = simd_dot(relative, cameraUp) / depth * (2 * focal / sensorHeight)
+            let observed = SIMD2<Float>(idealX - 2 * shiftX, -idealY - 2 * shiftY)
+            let cameraPixel = (observed + 1) * 0.5 * cameraSize - 0.5
+            let outputPixel = deliveryPlacement == 1
+                ? cameraPixel + offset
+                : (cameraPixel + 0.5) * scale - 0.5 + offset
+            return CGPoint(x: CGFloat(outputPixel.x), y: CGFloat(outputPixel.y))
+        }
     }
 
     private static let shader = #"""
@@ -283,19 +347,6 @@ final class SetupFramingRenderer {
         const bool inside = all(panel >= 0.0f) && all(panel <= 1.0f);
         if (!inside) { output.write(background, p); return; }
 
-        float2 camera_x, camera_y, panel_x, panel_y;
-        const bool x_ok = camera_uv(p + uint2(1, 0), s, camera_x) && screen_uv(camera_x, s, panel_x);
-        const bool y_ok = camera_uv(p + uint2(0, 1), s, camera_y) && screen_uv(camera_y, s, panel_y);
-        const float2 footprint = max(
-            x_ok ? abs(panel_x - panel) : 0.0f,
-            y_ok ? abs(panel_y - panel) : 0.0f
-        );
-        const float edge_distance = min(min(panel.x, 1.0f - panel.x), min(panel.y, 1.0f - panel.y));
-        const float one_pixel = max(footprint.x, footprint.y) * 0.7f;
-        if (edge_distance <= one_pixel) {
-            output.write(float4(1, 0, 0, 1), p);
-            return;
-        }
         const float2 uv = source_uv(panel, s);
         if (any(uv < 0.0f) || any(uv > 1.0f)) {
             output.write(float4(0, 0, 0, 1), p);

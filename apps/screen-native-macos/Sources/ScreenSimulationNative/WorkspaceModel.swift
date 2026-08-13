@@ -8,6 +8,7 @@ import ScreenSimulationPresentation
 import StudioColor
 import StudioMedia
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum NativeRenderButtonState: Equatable {
     case outdated
@@ -98,6 +99,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var sourceDetail = "Patrón SCREEN canónico · 960 × 540"
     @Published var status = "Preparado"
     @Published var metalFrame: StudioColorMetalFrame?
+    @Published private(set) var setupDeviceBoundary: [CGPoint] = []
+    @Published private(set) var environmentSourceName: String?
     @Published var jobs: [RenderJob] = []
     @Published var errorMessage: String?
     @Published var currentFrame = 0
@@ -148,6 +151,9 @@ final class WorkspaceModel: ObservableObject {
     private var deliveryRasterCheckpoint: StudioColorMetalFrame?
     private var recordingOutputExecution: RecordingOutputExecution?
     private var setupFramingRenderer: SetupFramingRenderer?
+    private var environmentRadianceFrame: EnvironmentRadianceFrame?
+    private var authoredImageEnvironment: PhysicalPipelineAuthoringState.Environment?
+    private var environmentSourceHash: String?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -599,6 +605,13 @@ final class WorkspaceModel: ObservableObject {
                         "Test necesita un Device resuelto."
                     )
                 }
+                if case let .setChoice(controlID, _) = intent,
+                   controlID == "environment-preset" {
+                    environmentRadianceFrame = nil
+                    authoredImageEnvironment = nil
+                    environmentSourceName = nil
+                    environmentSourceHash = nil
+                }
                 let phaseToReveal = testPhaseToReveal(for: intent)
                 let resolved = try RustTestAuthoringCoordinator.apply(intent, to: selection)
                 try applyTestAuthoringSelection(resolved)
@@ -625,9 +638,101 @@ final class WorkspaceModel: ObservableObject {
                         publishSelectedTestPreview()
                     }
                 }
-            case .performAction:
-                throw TestAuthoringCoordinatorError.unsupportedIntent
+            case let .performAction(controlID):
+                guard controlID == "environment-browse" else {
+                    throw TestAuthoringCoordinatorError.unsupportedIntent
+                }
+                browseEnvironment()
             }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func browseEnvironment() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image] + ["exr", "hdr"].compactMap {
+            UTType(filenameExtension: $0)
+        }
+        panel.message = "Selecciona un panorama HDRI/OpenEXR equirectangular 2:1."
+        let inputTransforms = StudioColorInputTransform.catalog.filter {
+            $0.referenceDomain == .sceneReferred
+        }
+        let inputPicker = NSPopUpButton()
+        for input in inputTransforms {
+            inputPicker.addItem(withTitle: input.label)
+            inputPicker.lastItem?.representedObject = input.id
+        }
+        inputPicker.selectItem(at: inputTransforms.firstIndex { $0.id == "acescg" } ?? 0)
+        let radianceField = NSTextField(string: "1")
+        let exposureField = NSTextField(string: "0")
+        let accessory = NSGridView(views: [
+            [NSTextField(labelWithString: "Input Transform"), inputPicker],
+            [NSTextField(labelWithString: "cd/m² por unidad"), radianceField],
+            [NSTextField(labelWithString: "Exposición EV"), exposureField],
+        ])
+        accessory.column(at: 0).xPlacement = .trailing
+        accessory.column(at: 1).width = 260
+        panel.accessoryView = accessory
+        guard panel.runModal() == .OK, let url = panel.url,
+              let inputID = inputPicker.selectedItem?.representedObject as? String,
+              let unitRadiance = Double(radianceField.stringValue), unitRadiance.isFinite,
+              unitRadiance > 0,
+              let exposureStops = Double(exposureField.stringValue), exposureStops.isFinite,
+              (-16 ... 16).contains(exposureStops)
+        else { return }
+        Task {
+            await loadEnvironment(
+                url, inputTransformID: inputID,
+                unitRadiance: unitRadiance, exposureStops: exposureStops
+            )
+        }
+    }
+
+    private func loadEnvironment(
+        _ url: URL,
+        inputTransformID: String,
+        unitRadiance: Double,
+        exposureStops: Double
+    ) async {
+        do {
+            status = "Decodificando entorno HDR…"
+            let decoded = try await NativeMediaDecoder.decode(url: url, time: .zero)
+            guard decoded.width == decoded.height * 2 else {
+                throw EnvironmentRadianceFrameError.invalidEquirectangularRaster
+            }
+            guard let input = StudioColorInputTransform.catalog.first(where: {
+                $0.id == inputTransformID && $0.referenceDomain == .sceneReferred
+            })
+            else {
+                throw NativeMediaError.unreadable(
+                    "El Input Transform explícito del entorno no existe o no es scene-referred."
+                )
+            }
+            let source = try metalDisplay.makeACEScgFrame(
+                width: decoded.width, height: decoded.height,
+                encodedRGBA: decoded.rgba, input: input, alpha: .ignore
+            )
+            let environment = try EnvironmentRadianceFrame.prefiltered(from: source)
+            guard var authored = physicalAuthoringState else { return }
+            authored.environment.sourceKind = 1
+            authored.environment.sourceUnitRadianceCandelasPerSquareMeter = unitRadiance
+            authored.environment.exposureStops = exposureStops
+            authored.environment.ambientRadianceACEScg = [0, 0, 0]
+            authored.environment.keyRadianceACEScg = [0, 0, 0]
+            authored.environment.pattern = 0
+            resolvedPhysicalPipeline = try authored.resolvedPipeline()
+            physicalAuthoringState = authored
+            environmentRadianceFrame = environment
+            authoredImageEnvironment = authored.environment
+            environmentSourceName = url.lastPathComponent
+            environmentSourceHash = SHA256.hash(data: try Data(contentsOf: url))
+                .map { String(format: "%02x", $0) }.joined()
+            try physicalModel.setContinuousAmount(1, stage: .screen(.environment))
+            physicalModel.invalidateExternalParameters()
+            status = "Entorno · \(url.lastPathComponent) · \(decoded.width)×\(decoded.height) · \(input.label)"
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1694,7 +1799,7 @@ final class WorkspaceModel: ObservableObject {
             let selection = testAuthoringSelection
             let width = Int(selection?.deliveryWidth ?? UInt32(sourceACEScgFrame.width))
             let height = Int(selection?.deliveryHeight ?? UInt32(sourceACEScgFrame.height))
-            let frame = try setupFramingRenderer!.render(
+            let result = try setupFramingRenderer!.render(
                 source: sourceACEScgFrame,
                 sourcePlacement: sourcePlacement,
                 device: device,
@@ -1704,12 +1809,14 @@ final class WorkspaceModel: ObservableObject {
                 deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
                 deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black"
             )
-            metalFrame = frame
-            monitorOutput.update(frame: frame, display: metalDisplay)
+            metalFrame = result.frame
+            setupDeviceBoundary = result.boundary
+            monitorOutput.update(frame: result.frame, display: metalDisplay)
             let elapsedMilliseconds = (CACurrentMediaTime() - started) * 1_000
             status = "Setup · encuadre ideal · \(width)×\(height) · \(elapsedMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
             physicalPublicationSummary = "Setup · fuente + Device + cámara + Delivery Raster · publicado"
         } catch {
+            setupDeviceBoundary = []
             errorMessage = error.localizedDescription
         }
     }
@@ -1784,7 +1891,7 @@ final class WorkspaceModel: ObservableObject {
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
-            environmentACEScg: nil,
+            environmentACEScg: environmentRadianceFrame,
             orchestration: try physicalAuthoringState.orchestration(for: selection),
             resolvedDevice: effectiveDevice,
             resolvedPipeline: effectivePipeline,
@@ -1940,6 +2047,9 @@ final class WorkspaceModel: ObservableObject {
             to: &authored
         )
         environment.apply(to: &authored)
+        if let authoredImageEnvironment {
+            authored.environment = authoredImageEnvironment
+        }
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
         authored.sceneLens.evaluationModel = selection.lensEvaluationModelID
@@ -2310,6 +2420,7 @@ final class WorkspaceModel: ObservableObject {
             physicalModel.effectiveScreenAmount.description,
             sourcePlacement.rawValue,
             physicalModel.parameterRevision.description,
+            environmentSourceHash ?? "procedural-environment",
             physicalModel.orderedContributions.map {
                 switch $0.control {
                 case let .continuous(amount, _): "\($0.id):c:\(amount)"

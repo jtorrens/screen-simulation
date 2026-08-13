@@ -1568,6 +1568,8 @@ struct ContentView: View {
                         pan: model.pan,
                         fitted: model.previewIsFitted,
                         metadataLines: model.previewMetadataLines,
+                        deviceBoundary: model.physicalModel.quality == .setup
+                            ? model.setupDeviceBoundary : [],
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
                         onZoomChange: model.setInteractiveZoom,
@@ -1679,6 +1681,7 @@ struct MetalPreview: NSViewRepresentable {
     let pan: CGSize
     let fitted: Bool
     let metadataLines: [String]
+    let deviceBoundary: [CGPoint]
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
     let onZoomChange: (Double) -> Void
@@ -1705,6 +1708,7 @@ struct MetalPreview: NSViewRepresentable {
             pan: pan,
             fitted: fitted,
             metadataLines: metadataLines,
+            deviceBoundary: deviceBoundary,
             textureWidth: frame.width,
             textureHeight: frame.height
         )
@@ -1790,6 +1794,8 @@ final class MetalPreviewContainer: NSView {
     var onFittedZoomChange: ((Double) -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
+    private let deviceBoundaryLayer = CAShapeLayer()
+    private var deviceBoundary: [CGPoint] = []
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
     private var magnifyAnchor: CGPoint?
@@ -1806,6 +1812,11 @@ final class MetalPreviewContainer: NSView {
         frameBorderLayer.borderWidth = 1
         frameBorderLayer.zPosition = 100
         layer?.addSublayer(frameBorderLayer)
+        deviceBoundaryLayer.fillColor = NSColor.clear.cgColor
+        deviceBoundaryLayer.strokeColor = NSColor.systemRed.cgColor
+        deviceBoundaryLayer.lineWidth = 1
+        deviceBoundaryLayer.zPosition = 110
+        layer?.addSublayer(deviceBoundaryLayer)
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
         metadataLabel.alignment = .right
@@ -1839,6 +1850,7 @@ final class MetalPreviewContainer: NSView {
         pan: CGSize,
         fitted: Bool,
         metadataLines: [String],
+        deviceBoundary: [CGPoint],
         textureWidth: Int,
         textureHeight: Int
     ) {
@@ -1847,6 +1859,7 @@ final class MetalPreviewContainer: NSView {
         presentationFitted = fitted
         metadataLabel.stringValue = metadataLines.joined(separator: "\n")
         metadataLabel.isHidden = metadataLines.isEmpty
+        self.deviceBoundary = deviceBoundary
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
         applyPresentation()
@@ -1948,6 +1961,18 @@ final class MetalPreviewContainer: NSView {
             width: displayed.width,
             height: displayed.height
         )
+        let boundaryPath = CGMutablePath()
+        for (index, point) in deviceBoundary.enumerated() {
+            let displayedPoint = CGPoint(
+                x: displayedOriginX + point.x * scale,
+                y: displayedOriginY + (CGFloat(textureHeight) - point.y) * scale
+            )
+            if index == 0 { boundaryPath.move(to: displayedPoint) }
+            else { boundaryPath.addLine(to: displayedPoint) }
+        }
+        if !deviceBoundary.isEmpty { boundaryPath.closeSubpath() }
+        deviceBoundaryLayer.frame = bounds
+        deviceBoundaryLayer.path = boundaryPath
         metadataLabel.frame = NSRect(
             x: min(
                 max(12, displayedOriginX),

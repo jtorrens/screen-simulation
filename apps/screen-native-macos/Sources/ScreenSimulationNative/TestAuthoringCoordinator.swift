@@ -342,6 +342,8 @@ enum RustTestAuthoringCoordinator {
                 value: raw.value != 0,
                 resetValue: raw.reset_value != 0
             ))
+        case 3:
+            return .action(.init(id: string(raw.id), label: string(raw.label)))
         default:
             throw TestAuthoringCoordinatorError.malformedDescriptor(
                 "Rust publicó un tipo de control desconocido."

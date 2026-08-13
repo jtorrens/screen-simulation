@@ -55,10 +55,11 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 20;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 21;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
+pub const SCREEN_TEST_CONTROL_ACTION: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -2420,6 +2421,21 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             minimum: 0.0,
             maximum: 1.0,
             step: 1.0,
+            slider_visible: false,
+            unit: utf8_view(""),
+        },
+        TestControlRequirement::Action { id, label } => ScreenTestControlDescriptorV5 {
+            abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
+            kind: SCREEN_TEST_CONTROL_ACTION,
+            id: utf8_view(id),
+            label: utf8_view(label),
+            selected_id: utf8_view(""),
+            reset_id: utf8_view(""),
+            value: 0.0,
+            reset_value: 0.0,
+            minimum: 0.0,
+            maximum: 0.0,
+            step: 0.0,
             slider_visible: false,
             unit: utf8_view(""),
         },

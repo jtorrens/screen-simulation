@@ -16,7 +16,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 18;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 19;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -69,6 +69,7 @@ pub const COVER_GLASS_CONTROL_ID: &str = "cover-glass-preset";
 pub const COVER_GLASS_AMOUNT_CONTROL_ID: &str = "cover-glass-amount";
 pub const COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID: &str = "cover-ag-microtexture-amount";
 pub const ENVIRONMENT_CONTROL_ID: &str = "environment-preset";
+pub const ENVIRONMENT_BROWSE_CONTROL_ID: &str = "environment-browse";
 pub const ENVIRONMENT_AMOUNT_CONTROL_ID: &str = "environment-amount";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
@@ -342,6 +343,10 @@ pub enum TestControlRequirement {
         value: bool,
         reset_value: bool,
     },
+    Action {
+        id: &'static str,
+        label: &'static str,
+    },
 }
 
 fn choice_control(
@@ -410,6 +415,10 @@ fn toggle_control(
         value,
         reset_value,
     }
+}
+
+fn action_control(id: &'static str, label: &'static str) -> TestControlRequirement {
+    TestControlRequirement::Action { id, label }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1600,6 +1609,7 @@ pub fn test_page_descriptor(
                         selection.environment_preset_id,
                         "environment-none",
                     ),
+                    action_control(ENVIRONMENT_BROWSE_CONTROL_ID, "Seleccionar HDRI / EXR…"),
                     scalar_control(
                         ENVIRONMENT_AMOUNT_CONTROL_ID,
                         "Carácter del entorno",
@@ -2397,7 +2407,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 18);
+        assert_eq!(page.schema_version, 19);
         assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
@@ -2618,7 +2628,8 @@ mod tests {
             .map(|control| match control {
                 TestControlRequirement::Choice { id, .. }
                 | TestControlRequirement::Scalar { id, .. }
-                | TestControlRequirement::Toggle { id, .. } => *id,
+                | TestControlRequirement::Toggle { id, .. }
+                | TestControlRequirement::Action { id, .. } => *id,
             })
             .collect::<Vec<_>>();
         assert_eq!(
