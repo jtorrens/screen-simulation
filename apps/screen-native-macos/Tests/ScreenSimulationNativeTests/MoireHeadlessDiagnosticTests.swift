@@ -414,6 +414,7 @@ import Testing
         inputTransform: input,
         outputSignal: outputSignal,
         alphaInterpretation: "ignore",
+        sourceAdjustment: .neutral,
         display: display
     )
     let environmentFrame: EnvironmentRadianceFrame?

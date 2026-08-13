@@ -6,5 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+screen-color = { path = "../screen-color" }
 screen-contracts = { path = "../screen-contracts" }
 screen-sensor = { path = "../screen-sensor" }

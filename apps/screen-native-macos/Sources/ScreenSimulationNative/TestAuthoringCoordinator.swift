@@ -4,25 +4,26 @@ import ScreenSimulationPresentation
 
 enum TestPreviewResultKind: UInt32, Sendable {
     case sourceACEScg = 0
-    case feederSignal = 1
-    case deviceInterpretation = 2
-    case panelStructure = 3
-    case panelUniformity = 4
-    case panelLightSpread = 5
-    case relativeGeometry = 6
-    case coverEnvironment = 7
-    case coverGlow = 8
-    case lensProjection = 9
-    case shutterExposure = 10
-    case computationalCapture = 11
-    case sensorBloom = 12
-    case sensorCfa = 13
-    case sensorNoise = 14
-    case developDemosaic = 15
-    case cameraRenderingIntent = 16
-    case deliveryRaster = 17
-    case recordingOutput = 18
-    case recordingCodec = 19
+    case sourceAdjustment = 1
+    case feederSignal = 2
+    case deviceInterpretation = 3
+    case panelStructure = 4
+    case panelUniformity = 5
+    case panelLightSpread = 6
+    case relativeGeometry = 7
+    case coverEnvironment = 8
+    case coverGlow = 9
+    case lensProjection = 10
+    case shutterExposure = 11
+    case computationalCapture = 12
+    case sensorBloom = 13
+    case sensorCfa = 14
+    case sensorNoise = 15
+    case developDemosaic = 16
+    case cameraRenderingIntent = 17
+    case deliveryRaster = 18
+    case recordingOutput = 19
+    case recordingCodec = 20
 }
 
 struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
@@ -35,6 +36,11 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let placementID: String
     var previewQualityID: String
     var frameRate: Double
+    let sourceExposureEV: Double
+    let sourceContrast: Double
+    let sourceSaturation: Double
+    let sourceTemperatureKelvin: Double
+    let sourceTint: Double
     let subpixelGeometryAmount: Double
     let panelUniformityAmount: Double
     let panelLightSpreadAmount: Double
@@ -65,6 +71,10 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let environmentRotationXDegrees: Double
     let environmentRotationYDegrees: Double
     let environmentExposureEV: Double
+    let environmentContrast: Double
+    let environmentSaturation: Double
+    let environmentTemperatureKelvin: Double
+    let environmentTint: Double
     let coverGlowAmount: Double
     let lensPresetID: String
     let lensAmount: Double
@@ -406,6 +416,11 @@ enum RustTestAuthoringCoordinator {
             placementID: string(raw.placement_id),
             previewQualityID: string(raw.preview_quality_id),
             frameRate: Double(raw.frame_rate),
+            sourceExposureEV: Double(raw.source_exposure_ev),
+            sourceContrast: Double(raw.source_contrast),
+            sourceSaturation: Double(raw.source_saturation),
+            sourceTemperatureKelvin: Double(raw.source_temperature_kelvin),
+            sourceTint: Double(raw.source_tint),
             subpixelGeometryAmount: Double(raw.subpixel_geometry_amount),
             panelUniformityAmount: Double(raw.panel_uniformity_amount),
             panelLightSpreadAmount: Double(raw.panel_light_spread_amount),
@@ -436,6 +451,10 @@ enum RustTestAuthoringCoordinator {
             environmentRotationXDegrees: Double(raw.environment_rotation_x_degrees),
             environmentRotationYDegrees: Double(raw.environment_rotation_y_degrees),
             environmentExposureEV: Double(raw.environment_exposure_ev),
+            environmentContrast: Double(raw.environment_contrast),
+            environmentSaturation: Double(raw.environment_saturation),
+            environmentTemperatureKelvin: Double(raw.environment_temperature_kelvin),
+            environmentTint: Double(raw.environment_tint),
             coverGlowAmount: Double(raw.cover_glow_amount),
             lensPresetID: string(raw.lens_preset_id),
             lensAmount: Double(raw.lens_amount),
@@ -500,6 +519,11 @@ enum RustTestAuthoringCoordinator {
                                             raw.placement_id = placementView
                                             raw.preview_quality_id = qualityView
                                             raw.frame_rate = Float(selection.frameRate)
+                                            raw.source_exposure_ev = Float(selection.sourceExposureEV)
+                                            raw.source_contrast = Float(selection.sourceContrast)
+                                            raw.source_saturation = Float(selection.sourceSaturation)
+                                            raw.source_temperature_kelvin = Float(selection.sourceTemperatureKelvin)
+                                            raw.source_tint = Float(selection.sourceTint)
                                             raw.subpixel_geometry_amount = Float(selection.subpixelGeometryAmount)
                                             raw.panel_uniformity_amount = Float(selection.panelUniformityAmount)
                                             raw.panel_light_spread_amount = Float(selection.panelLightSpreadAmount)
@@ -538,6 +562,10 @@ enum RustTestAuthoringCoordinator {
                                             raw.environment_exposure_ev = Float(
                                                 selection.environmentExposureEV
                                             )
+                                            raw.environment_contrast = Float(selection.environmentContrast)
+                                            raw.environment_saturation = Float(selection.environmentSaturation)
+                                            raw.environment_temperature_kelvin = Float(selection.environmentTemperatureKelvin)
+                                            raw.environment_tint = Float(selection.environmentTint)
                                             raw.cover_glow_amount = Float(selection.coverGlowAmount)
                                             raw.lens_preset_id = lensView
                                             raw.lens_amount = Float(selection.lensAmount)

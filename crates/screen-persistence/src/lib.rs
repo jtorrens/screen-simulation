@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 15;
+pub const CURRENT_VERSION: u32 = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -362,6 +362,7 @@ pub struct ShotDocument {
     pub middle_gray_illuminance_seconds_at_reference_ei: f32,
     pub reference_exposure_index: f32,
     pub develop_exposure_ev: f32,
+    pub source_adjustment: SceneLinearAdjustmentDocument,
     pub camera_rendering_intent: CameraRenderingIntentDocument,
     pub delivery: DeliveryRasterDocument,
     pub recording: RecordingSelectionDocument,
@@ -402,6 +403,16 @@ pub struct CameraRenderingIntentDocument {
     pub tint: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneLinearAdjustmentDocument {
+    pub exposure_ev: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub temperature_kelvin: f32,
+    pub tint: f32,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordingSelectionDocument {
@@ -420,6 +431,11 @@ pub struct EnvironmentDocument {
     pub key_angular_radius_degrees: f32,
     pub rotation_x_degrees: f32,
     pub rotation_y_degrees: f32,
+    pub exposure_ev: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub temperature_kelvin: f32,
+    pub tint: f32,
     pub pattern: EnvironmentPatternDocument,
 }
 
@@ -535,6 +551,8 @@ impl ProjectPackage {
         validate_device(&self.device)?;
         validate_environment(&self.shot.environment)?;
         validate_sensor(&self.sensor)?;
+        validate_scene_linear_adjustment(&self.shot.source_adjustment)
+            .map_err(|_| PersistenceError::InvalidCameraDevelopment)?;
         if self
             .shot
             .white_balance_gains
@@ -984,13 +1002,44 @@ fn validate_environment(environment: &EnvironmentDocument) -> Result<(), Persist
         environment.key_angular_radius_degrees,
         environment.rotation_x_degrees,
         environment.rotation_y_degrees,
+        environment.exposure_ev,
+        environment.contrast,
+        environment.saturation,
+        environment.temperature_kelvin,
+        environment.tint,
     ]
     .into_iter()
     .all(f32::is_finite);
     if !finite {
         return Err(PersistenceError::InvalidEnvironment);
     }
+    validate_scene_linear_adjustment(&SceneLinearAdjustmentDocument {
+        exposure_ev: environment.exposure_ev,
+        contrast: environment.contrast,
+        saturation: environment.saturation,
+        temperature_kelvin: environment.temperature_kelvin,
+        tint: environment.tint,
+    })
+    .map_err(|_| PersistenceError::InvalidEnvironment)?;
     Ok(())
+}
+
+fn validate_scene_linear_adjustment(adjustment: &SceneLinearAdjustmentDocument) -> Result<(), ()> {
+    if adjustment.exposure_ev.is_finite()
+        && (-8.0..=8.0).contains(&adjustment.exposure_ev)
+        && adjustment.contrast.is_finite()
+        && (0.25..=4.0).contains(&adjustment.contrast)
+        && adjustment.saturation.is_finite()
+        && (0.0..=4.0).contains(&adjustment.saturation)
+        && adjustment.temperature_kelvin.is_finite()
+        && (2000.0..=12_000.0).contains(&adjustment.temperature_kelvin)
+        && adjustment.tint.is_finite()
+        && (-1.0..=1.0).contains(&adjustment.tint)
+    {
+        Ok(())
+    } else {
+        Err(())
+    }
 }
 
 fn validate_sensor(sensor: &SensorDocument) -> Result<(), PersistenceError> {
@@ -1399,6 +1448,13 @@ mod tests {
                 middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
                 reference_exposure_index: 800.0,
                 develop_exposure_ev: 0.0,
+                source_adjustment: SceneLinearAdjustmentDocument {
+                    exposure_ev: 0.0,
+                    contrast: 1.0,
+                    saturation: 1.0,
+                    temperature_kelvin: 6500.0,
+                    tint: 0.0,
+                },
                 camera_rendering_intent: CameraRenderingIntentDocument {
                     exposure_ev: 0.5,
                     contrast: 1.10,
@@ -1426,6 +1482,11 @@ mod tests {
                     key_angular_radius_degrees: 24.0,
                     rotation_x_degrees: -10.0,
                     rotation_y_degrees: 15.0,
+                    exposure_ev: 0.0,
+                    contrast: 1.0,
+                    saturation: 1.0,
+                    temperature_kelvin: 6500.0,
+                    tint: 0.0,
                     pattern: EnvironmentPatternDocument::StudioSoftboxes,
                 },
             },

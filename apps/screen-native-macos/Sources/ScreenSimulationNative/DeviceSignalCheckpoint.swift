@@ -16,7 +16,7 @@ enum DeviceSignalCheckpointError: Error, LocalizedError {
 }
 
 struct DeviceSignalCheckpointMetadata: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.FeederSignalCheckpoint.v2"
+    static let schema = "ScreenSimulation.FeederSignalCheckpoint.v3"
 
     let schema: String
     let width: Int
@@ -27,6 +27,7 @@ struct DeviceSignalCheckpointMetadata: Codable, Equatable, Sendable {
     let outputSignalID: String
     let feederOutputTransformID: String
     let alphaInterpretation: String
+    let sourceAdjustment: SceneAdjustmentParameters
 
     init(
         width: Int,
@@ -34,7 +35,8 @@ struct DeviceSignalCheckpointMetadata: Codable, Equatable, Sendable {
         inputTransform: StudioColorInputTransform,
         outputSignal: StudioColorMode,
         feederOutput: StudioColorOutputTransform,
-        alphaInterpretation: String
+        alphaInterpretation: String,
+        sourceAdjustment: SceneAdjustmentParameters
     ) {
         schema = Self.schema
         self.width = width
@@ -45,6 +47,7 @@ struct DeviceSignalCheckpointMetadata: Codable, Equatable, Sendable {
         outputSignalID = outputSignal.id
         feederOutputTransformID = feederOutput.id
         self.alphaInterpretation = alphaInterpretation
+        self.sourceAdjustment = sourceAdjustment
     }
 
     func validate() throws {
@@ -69,6 +72,21 @@ struct DeviceSignalCheckpointMetadata: Codable, Equatable, Sendable {
                 "El feeder no corresponde al Input Transform y Output Signal declarados."
             )
         }
+        guard sourceAdjustment.exposureEV.isFinite,
+              (-8 ... 8).contains(sourceAdjustment.exposureEV),
+              sourceAdjustment.contrast.isFinite,
+              (0.25 ... 4).contains(sourceAdjustment.contrast),
+              sourceAdjustment.saturation.isFinite,
+              (0 ... 4).contains(sourceAdjustment.saturation),
+              sourceAdjustment.temperatureKelvin.isFinite,
+              (2000 ... 12_000).contains(sourceAdjustment.temperatureKelvin),
+              sourceAdjustment.tint.isFinite,
+              (-1 ... 1).contains(sourceAdjustment.tint)
+        else {
+            throw DeviceSignalCheckpointError.invalidMetadata(
+                "El ajuste de fuente no pertenece al contrato vigente."
+            )
+        }
     }
 }
 
@@ -83,6 +101,7 @@ struct DeviceSignalCheckpoint: @unchecked Sendable {
         inputTransform: StudioColorInputTransform,
         outputSignal: StudioColorMode,
         alphaInterpretation: String,
+        sourceAdjustment: SceneAdjustmentParameters,
         display: StudioColorMetalDisplay
     ) throws -> Self {
         let feederOutput = outputSignal.resolvedOutput(for: inputTransform)
@@ -100,7 +119,8 @@ struct DeviceSignalCheckpoint: @unchecked Sendable {
                 inputTransform: inputTransform,
                 outputSignal: outputSignal,
                 feederOutput: feederOutput,
-                alphaInterpretation: alphaInterpretation
+                alphaInterpretation: alphaInterpretation,
+                sourceAdjustment: sourceAdjustment
             )
         )
     }
@@ -191,6 +211,7 @@ private extension DeviceSignalCheckpointMetadata {
         "outputSignalID",
         "feederOutputTransformID",
         "alphaInterpretation",
+        "sourceAdjustment",
     ]
 }
 

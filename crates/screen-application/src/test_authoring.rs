@@ -5,7 +5,9 @@ use crate::{
     prepare_recording_request,
 };
 use screen_camera::CameraRenderingIntent;
-use screen_color::{DeviceColorTarget, OcioInputTransform, RecordingOutputTransform};
+use screen_color::{
+    DeviceColorTarget, OcioInputTransform, RecordingOutputTransform, SceneLinearAdjustment,
+};
 use screen_cover::{
     COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset, environment_preset,
 };
@@ -16,9 +18,10 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 20;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 21;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
+pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
 pub const DEVICE_INTERPRETATION_PHASE_ID: &str = "device-interpretation";
 pub const PANEL_STRUCTURE_PHASE_ID: &str = "panel-structure";
@@ -39,6 +42,11 @@ pub const DELIVERY_RASTER_PHASE_ID: &str = "delivery-raster";
 pub const RECORDING_OUTPUT_PHASE_ID: &str = "recording-output";
 pub const RECORDING_CODEC_PHASE_ID: &str = "recording-codec";
 pub const OUTPUT_SIGNAL_CONTROL_ID: &str = "output-signal";
+pub const SOURCE_EXPOSURE_CONTROL_ID: &str = "source-exposure-ev";
+pub const SOURCE_CONTRAST_CONTROL_ID: &str = "source-contrast";
+pub const SOURCE_SATURATION_CONTROL_ID: &str = "source-saturation";
+pub const SOURCE_TEMPERATURE_CONTROL_ID: &str = "source-temperature-kelvin";
+pub const SOURCE_TINT_CONTROL_ID: &str = "source-tint";
 pub const DEVICE_CONTROL_ID: &str = "device";
 pub const COLOR_MODE_CONTROL_ID: &str = "color-mode";
 pub const WHITE_LUMINANCE_CONTROL_ID: &str = "white-luminance";
@@ -74,6 +82,10 @@ pub const ENVIRONMENT_AMOUNT_CONTROL_ID: &str = "environment-amount";
 pub const ENVIRONMENT_ROTATION_X_CONTROL_ID: &str = "environment-rotation-x-degrees";
 pub const ENVIRONMENT_ROTATION_Y_CONTROL_ID: &str = "environment-rotation-y-degrees";
 pub const ENVIRONMENT_EXPOSURE_CONTROL_ID: &str = "environment-exposure-ev";
+pub const ENVIRONMENT_CONTRAST_CONTROL_ID: &str = "environment-contrast";
+pub const ENVIRONMENT_SATURATION_CONTROL_ID: &str = "environment-saturation";
+pub const ENVIRONMENT_TEMPERATURE_CONTROL_ID: &str = "environment-temperature-kelvin";
+pub const ENVIRONMENT_TINT_CONTROL_ID: &str = "environment-tint";
 pub const IMAGE_ENVIRONMENT_SOURCE_ID: &str = "environment-image";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
@@ -193,6 +205,7 @@ pub struct TestAuthoringSelection<'a> {
     pub placement_id: &'a str,
     pub preview_quality_id: &'a str,
     pub frame_rate: f32,
+    pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
@@ -222,6 +235,10 @@ pub struct TestAuthoringSelection<'a> {
     pub environment_rotation_x_degrees: f32,
     pub environment_rotation_y_degrees: f32,
     pub environment_exposure_ev: f32,
+    pub environment_contrast: f32,
+    pub environment_saturation: f32,
+    pub environment_temperature_kelvin: f32,
+    pub environment_tint: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'a str,
     pub lens_evaluation_model_id: &'a str,
@@ -259,6 +276,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub placement_id: &'static str,
     pub preview_quality_id: &'static str,
     pub frame_rate: f32,
+    pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
@@ -288,6 +306,10 @@ pub struct ResolvedTestAuthoringSelection {
     pub environment_rotation_x_degrees: f32,
     pub environment_rotation_y_degrees: f32,
     pub environment_exposure_ev: f32,
+    pub environment_contrast: f32,
+    pub environment_saturation: f32,
+    pub environment_temperature_kelvin: f32,
+    pub environment_tint: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'static str,
     pub lens_evaluation_model_id: &'static str,
@@ -447,6 +469,7 @@ impl TestPhaseDescriptor {
     pub fn calculation_domain(&self) -> &'static str {
         match self.id {
             ORIGIN_PHASE_ID
+            | SOURCE_ADJUSTMENT_PHASE_ID
             | DEVELOP_DEMOSAIC_PHASE_ID
             | CAMERA_RENDERING_INTENT_PHASE_ID
             | DELIVERY_RASTER_PHASE_ID => "ACEScg lineal",
@@ -476,25 +499,26 @@ impl TestPhaseDescriptor {
 #[repr(u32)]
 pub enum TestPreviewResult {
     SourceAcesCg = 0,
-    FeederSignal = 1,
-    DeviceInterpretation = 2,
-    PanelStructure = 3,
-    PanelUniformity = 4,
-    PanelLightSpread = 5,
-    RelativeGeometry = 6,
-    CoverEnvironment = 7,
-    CoverGlow = 8,
-    LensProjection = 9,
-    ShutterExposure = 10,
-    ComputationalCapture = 11,
-    SensorBloom = 12,
-    SensorCfa = 13,
-    SensorNoise = 14,
-    DevelopDemosaic = 15,
-    CameraRenderingIntent = 16,
-    DeliveryRaster = 17,
-    RecordingOutput = 18,
-    RecordingCodec = 19,
+    SourceAdjustment = 1,
+    FeederSignal = 2,
+    DeviceInterpretation = 3,
+    PanelStructure = 4,
+    PanelUniformity = 5,
+    PanelLightSpread = 6,
+    RelativeGeometry = 7,
+    CoverEnvironment = 8,
+    CoverGlow = 9,
+    LensProjection = 10,
+    ShutterExposure = 11,
+    ComputationalCapture = 12,
+    SensorBloom = 13,
+    SensorCfa = 14,
+    SensorNoise = 15,
+    DevelopDemosaic = 16,
+    CameraRenderingIntent = 17,
+    DeliveryRaster = 18,
+    RecordingOutput = 19,
+    RecordingCodec = 20,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -514,6 +538,7 @@ pub enum TestAuthoringError {
     UnknownColorMode,
     UnsupportedColorMode,
     InvalidWhiteLuminance,
+    InvalidSourceAdjustment,
     InvalidSubpixelGeometryAmount,
     InvalidPanelUniformityAmount,
     InvalidPanelLightSpreadAmount,
@@ -556,6 +581,7 @@ impl core::fmt::Display for TestAuthoringError {
             Self::UnknownColorMode => "unknown Test Color Mode",
             Self::UnsupportedColorMode => "Color Mode is not supported by the selected device",
             Self::InvalidWhiteLuminance => "White Luminance is outside the device capability",
+            Self::InvalidSourceAdjustment => "Source Adjustment is invalid",
             Self::InvalidSubpixelGeometryAmount => "Subpixel Geometry amount is outside 0..=4",
             Self::InvalidPanelUniformityAmount => "Panel Uniformity amount is outside 0..=4",
             Self::InvalidPanelLightSpreadAmount => "Panel Light Spread amount is outside 0..=4",
@@ -669,6 +695,7 @@ pub fn default_test_authoring_selection(
         placement_id: "fit",
         preview_quality_id: "setup",
         frame_rate,
+        source_adjustment: SceneLinearAdjustment::NEUTRAL,
         subpixel_geometry_amount: 1.0,
         panel_uniformity_amount: device.uniformity.character_strength,
         panel_light_spread_amount: device.light_spread.character_strength,
@@ -702,6 +729,10 @@ pub fn default_test_authoring_selection(
         environment_rotation_x_degrees: 0.0,
         environment_rotation_y_degrees: 0.0,
         environment_exposure_ev: 0.0,
+        environment_contrast: 1.0,
+        environment_saturation: 1.0,
+        environment_temperature_kelvin: 6500.0,
+        environment_tint: 0.0,
         cover_glow_amount: 1.0,
         lens_preset_id: capture.default_lens_preset_id,
         lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
@@ -750,6 +781,10 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidWhiteLuminance);
     }
+    selection
+        .source_adjustment
+        .validate()
+        .map_err(|_| TestAuthoringError::InvalidSourceAdjustment)?;
     let placement_id = selected_option(
         &PLACEMENTS,
         selection.placement_id,
@@ -866,13 +901,28 @@ pub fn resolve_test_authoring_selection(
         || !selection.environment_rotation_y_degrees.is_finite()
         || !(-180.0..=180.0).contains(&selection.environment_rotation_y_degrees)
         || !selection.environment_exposure_ev.is_finite()
-        || !(-16.0..=16.0).contains(&selection.environment_exposure_ev)
+        || !(-8.0..=8.0).contains(&selection.environment_exposure_ev)
     {
         return Err(TestAuthoringError::InvalidEnvironmentAmount);
     }
-    if environment.is_some() && selection.environment_exposure_ev != 0.0 {
+    if environment.is_some()
+        && (selection.environment_exposure_ev != 0.0
+            || selection.environment_contrast != 1.0
+            || selection.environment_saturation != 1.0
+            || selection.environment_temperature_kelvin != 6500.0
+            || selection.environment_tint != 0.0)
+    {
         return Err(TestAuthoringError::InvalidEnvironmentAmount);
     }
+    SceneLinearAdjustment {
+        exposure_ev: selection.environment_exposure_ev,
+        contrast: selection.environment_contrast,
+        saturation: selection.environment_saturation,
+        temperature_kelvin: selection.environment_temperature_kelvin,
+        tint: selection.environment_tint,
+    }
+    .validate()
+    .map_err(|_| TestAuthoringError::InvalidEnvironmentAmount)?;
     if !selection.cover_glow_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.cover_glow_amount)
     {
@@ -984,6 +1034,7 @@ pub fn resolve_test_authoring_selection(
         placement_id,
         preview_quality_id,
         frame_rate: selection.frame_rate,
+        source_adjustment: selection.source_adjustment,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
@@ -1019,6 +1070,10 @@ pub fn resolve_test_authoring_selection(
         environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
         environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
         environment_exposure_ev: selection.environment_exposure_ev,
+        environment_contrast: selection.environment_contrast,
+        environment_saturation: selection.environment_saturation,
+        environment_temperature_kelvin: selection.environment_temperature_kelvin,
+        environment_tint: selection.environment_tint,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: lens.id,
         lens_evaluation_model_id,
@@ -1481,11 +1536,67 @@ pub fn test_page_descriptor(
                 controls: Vec::new(),
             },
             TestPhaseDescriptor {
+                id: SOURCE_ADJUSTMENT_PHASE_ID,
+                label: "Ajuste de fuente",
+                effect_summary: "Ajusta únicamente el contenido que alimentará el Device antes de codificarlo.",
+                header_control_id: None,
+                input_artifact: "linear-acescg-raster-v1",
+                output_artifact: "source-graded-acescg-v1",
+                preview_result: TestPreviewResult::SourceAdjustment,
+                controls: vec![
+                    scalar_control(
+                        SOURCE_EXPOSURE_CONTROL_ID,
+                        "Exposición",
+                        selection.source_adjustment.exposure_ev,
+                        -8.0,
+                        8.0,
+                        0.0,
+                        "EV",
+                    ),
+                    scalar_control(
+                        SOURCE_CONTRAST_CONTROL_ID,
+                        "Contraste",
+                        selection.source_adjustment.contrast,
+                        0.25,
+                        4.0,
+                        1.0,
+                        "×",
+                    ),
+                    scalar_control(
+                        SOURCE_SATURATION_CONTROL_ID,
+                        "Saturación",
+                        selection.source_adjustment.saturation,
+                        0.0,
+                        4.0,
+                        1.0,
+                        "×",
+                    ),
+                    scalar_control(
+                        SOURCE_TEMPERATURE_CONTROL_ID,
+                        "Temperatura",
+                        selection.source_adjustment.temperature_kelvin,
+                        2000.0,
+                        12_000.0,
+                        6500.0,
+                        "K",
+                    ),
+                    scalar_control(
+                        SOURCE_TINT_CONTROL_ID,
+                        "Tinte",
+                        selection.source_adjustment.tint,
+                        -1.0,
+                        1.0,
+                        0.0,
+                        "G/M",
+                    ),
+                ],
+            },
+            TestPhaseDescriptor {
                 id: FEEDER_SIGNAL_PHASE_ID,
                 label: "Salida del feeder",
                 effect_summary: "Codifica y coloca la señal que recibe el dispositivo.",
                 header_control_id: None,
-                input_artifact: "linear-acescg-raster-v1",
+                input_artifact: "source-graded-acescg-v1",
                 output_artifact: "placed-feeder-signal-v1",
                 preview_result: TestPreviewResult::FeederSignal,
                 controls: vec![
@@ -1682,15 +1793,53 @@ pub fn test_page_descriptor(
                         ),
                     ];
                     if selection.environment_source_id == IMAGE_ENVIRONMENT_SOURCE_ID {
-                        controls.push(scalar_control(
-                            ENVIRONMENT_EXPOSURE_CONTROL_ID,
-                            "Exposición",
-                            selection.environment_exposure_ev,
-                            -16.0,
-                            16.0,
-                            0.0,
-                            "EV",
-                        ));
+                        controls.extend([
+                            scalar_control(
+                                ENVIRONMENT_EXPOSURE_CONTROL_ID,
+                                "Exposición",
+                                selection.environment_exposure_ev,
+                                -8.0,
+                                8.0,
+                                0.0,
+                                "EV",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_CONTRAST_CONTROL_ID,
+                                "Contraste",
+                                selection.environment_contrast,
+                                0.25,
+                                4.0,
+                                1.0,
+                                "×",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_SATURATION_CONTROL_ID,
+                                "Saturación",
+                                selection.environment_saturation,
+                                0.0,
+                                4.0,
+                                1.0,
+                                "×",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_TEMPERATURE_CONTROL_ID,
+                                "Temperatura",
+                                selection.environment_temperature_kelvin,
+                                2000.0,
+                                12_000.0,
+                                6500.0,
+                                "K",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_TINT_CONTROL_ID,
+                                "Tinte",
+                                selection.environment_tint,
+                                -1.0,
+                                1.0,
+                                0.0,
+                                "G/M",
+                            ),
+                        ]);
                     }
                     controls
                 },
@@ -2105,6 +2254,10 @@ pub fn apply_test_choice(
                 next.environment_rotation_x_degrees = 0.0;
                 next.environment_rotation_y_degrees = 0.0;
                 next.environment_exposure_ev = 0.0;
+                next.environment_contrast = 1.0;
+                next.environment_saturation = 1.0;
+                next.environment_temperature_kelvin = 6500.0;
+                next.environment_tint = 0.0;
             } else {
                 let environment = environment_preset(option_id)
                     .ok_or(TestAuthoringError::UnknownEnvironmentPreset)?;
@@ -2113,6 +2266,10 @@ pub fn apply_test_choice(
                 next.environment_rotation_x_degrees = environment.environment.rotation_x_degrees;
                 next.environment_rotation_y_degrees = environment.environment.rotation_y_degrees;
                 next.environment_exposure_ev = 0.0;
+                next.environment_contrast = 1.0;
+                next.environment_saturation = 1.0;
+                next.environment_temperature_kelvin = 6500.0;
+                next.environment_tint = 0.0;
             }
         }
         LENS_PRESET_CONTROL_ID => next.lens_preset_id = option_id,
@@ -2147,6 +2304,15 @@ pub fn apply_test_choice(
         | ENVIRONMENT_ROTATION_X_CONTROL_ID
         | ENVIRONMENT_ROTATION_Y_CONTROL_ID
         | ENVIRONMENT_EXPOSURE_CONTROL_ID
+        | SOURCE_EXPOSURE_CONTROL_ID
+        | SOURCE_CONTRAST_CONTROL_ID
+        | SOURCE_SATURATION_CONTROL_ID
+        | SOURCE_TEMPERATURE_CONTROL_ID
+        | SOURCE_TINT_CONTROL_ID
+        | ENVIRONMENT_CONTRAST_CONTROL_ID
+        | ENVIRONMENT_SATURATION_CONTROL_ID
+        | ENVIRONMENT_TEMPERATURE_CONTROL_ID
+        | ENVIRONMENT_TINT_CONTROL_ID
         | COVER_GLOW_AMOUNT_CONTROL_ID
         | LENS_AMOUNT_CONTROL_ID
         | AUTOFOCUS_CONTROL_ID
@@ -2190,6 +2356,7 @@ fn unresolved_test_selection(
         placement_id: current.placement_id,
         preview_quality_id: current.preview_quality_id,
         frame_rate: current.frame_rate,
+        source_adjustment: current.source_adjustment,
         subpixel_geometry_amount: current.subpixel_geometry_amount,
         panel_uniformity_amount: current.panel_uniformity_amount,
         panel_light_spread_amount: current.panel_light_spread_amount,
@@ -2220,6 +2387,10 @@ fn unresolved_test_selection(
         environment_rotation_x_degrees: current.environment_rotation_x_degrees,
         environment_rotation_y_degrees: current.environment_rotation_y_degrees,
         environment_exposure_ev: current.environment_exposure_ev,
+        environment_contrast: current.environment_contrast,
+        environment_saturation: current.environment_saturation,
+        environment_temperature_kelvin: current.environment_temperature_kelvin,
+        environment_tint: current.environment_tint,
         cover_glow_amount: current.cover_glow_amount,
         lens_preset_id: current.lens_preset_id,
         lens_amount: current.lens_amount,
@@ -2368,6 +2539,15 @@ pub fn apply_test_scalar(
         ENVIRONMENT_ROTATION_X_CONTROL_ID => next.environment_rotation_x_degrees = value,
         ENVIRONMENT_ROTATION_Y_CONTROL_ID => next.environment_rotation_y_degrees = value,
         ENVIRONMENT_EXPOSURE_CONTROL_ID => next.environment_exposure_ev = value,
+        SOURCE_EXPOSURE_CONTROL_ID => next.source_adjustment.exposure_ev = value,
+        SOURCE_CONTRAST_CONTROL_ID => next.source_adjustment.contrast = value,
+        SOURCE_SATURATION_CONTROL_ID => next.source_adjustment.saturation = value,
+        SOURCE_TEMPERATURE_CONTROL_ID => next.source_adjustment.temperature_kelvin = value,
+        SOURCE_TINT_CONTROL_ID => next.source_adjustment.tint = value,
+        ENVIRONMENT_CONTRAST_CONTROL_ID => next.environment_contrast = value,
+        ENVIRONMENT_SATURATION_CONTROL_ID => next.environment_saturation = value,
+        ENVIRONMENT_TEMPERATURE_CONTROL_ID => next.environment_temperature_kelvin = value,
+        ENVIRONMENT_TINT_CONTROL_ID => next.environment_tint = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
         F_STOP_CONTROL_ID => next.f_stop = value,
@@ -2445,6 +2625,7 @@ mod tests {
             placement_id: "fit",
             preview_quality_id: "setup",
             frame_rate: 24.0,
+            source_adjustment: SceneLinearAdjustment::NEUTRAL,
             subpixel_geometry_amount: 1.0,
             panel_uniformity_amount: 1.0,
             panel_light_spread_amount: 1.0,
@@ -2475,6 +2656,10 @@ mod tests {
             environment_rotation_x_degrees: 0.0,
             environment_rotation_y_degrees: 0.0,
             environment_exposure_ev: 0.0,
+            environment_contrast: 1.0,
+            environment_saturation: 1.0,
+            environment_temperature_kelvin: 6500.0,
+            environment_tint: 0.0,
             cover_glow_amount: 1.0,
             lens_preset_id: "iphone-16e-main-integrated",
             lens_amount: 1.0,
@@ -2504,12 +2689,13 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 20);
+        assert_eq!(page.schema_version, 21);
         assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
             [
                 ORIGIN_PHASE_ID,
+                SOURCE_ADJUSTMENT_PHASE_ID,
                 FEEDER_SIGNAL_PHASE_ID,
                 DEVICE_INTERPRETATION_PHASE_ID,
                 PANEL_STRUCTURE_PHASE_ID,
@@ -2532,7 +2718,7 @@ mod tests {
             ]
         );
         assert!(matches!(
-            &page.phases[1].controls[0],
+            &page.phases[2].controls[0],
             TestControlRequirement::Choice {
                 id: OUTPUT_SIGNAL_CONTROL_ID,
                 ..
@@ -2542,7 +2728,7 @@ mod tests {
             assert_eq!(adjacent[0].output_artifact, adjacent[1].input_artifact);
         }
         assert!(matches!(
-            &page.phases[6].controls[0],
+            &page.phases[7].controls[0],
             TestControlRequirement::Choice {
                 id: CAPTURE_PRESET_CONTROL_ID,
                 selected_id: "iphone-16e-main-48mp",
@@ -2550,7 +2736,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            &page.phases[9].controls[0],
+            &page.phases[10].controls[0],
             TestControlRequirement::Choice {
                 id: LENS_EVALUATION_MODEL_CONTROL_ID,
                 selected_id: "vfx-2d-dof",
@@ -2558,7 +2744,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            &page.phases[9].controls[1],
+            &page.phases[10].controls[1],
             TestControlRequirement::Choice {
                 id: LENS_PRESET_CONTROL_ID,
                 options,
@@ -2566,21 +2752,21 @@ mod tests {
                 ..
             } if options.len() == 1
         ));
-        assert!(page.phases[1].controls.iter().any(|control| matches!(
-            control,
-            TestControlRequirement::Choice {
-                id: PLACEMENT_CONTROL_ID,
-                ..
-            }
-        )));
-        assert!(!page.phases[2].controls.iter().any(|control| matches!(
-            control,
-            TestControlRequirement::Choice {
-                id: PLACEMENT_CONTROL_ID,
-                ..
-            }
-        )));
         assert!(page.phases[2].controls.iter().any(|control| matches!(
+            control,
+            TestControlRequirement::Choice {
+                id: PLACEMENT_CONTROL_ID,
+                ..
+            }
+        )));
+        assert!(!page.phases[3].controls.iter().any(|control| matches!(
+            control,
+            TestControlRequirement::Choice {
+                id: PLACEMENT_CONTROL_ID,
+                ..
+            }
+        )));
+        assert!(page.phases[3].controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Choice {
                 id: COLOR_MODE_CONTROL_ID,
@@ -2588,11 +2774,11 @@ mod tests {
             }
         )));
         assert_eq!(
-            page.phases[2].output_artifact,
-            page.phases[3].input_artifact
+            page.phases[3].output_artifact,
+            page.phases[4].input_artifact
         );
         assert!(matches!(
-            &page.phases[3].controls[0],
+            &page.phases[4].controls[0],
             TestControlRequirement::Scalar {
                 id: SUBPIXEL_GEOMETRY_CONTROL_ID,
                 value: 1.0,
@@ -2602,7 +2788,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            &page.phases[4].controls[0],
+            &page.phases[5].controls[0],
             TestControlRequirement::Scalar {
                 id: PANEL_UNIFORMITY_CONTROL_ID,
                 value: 1.0,
@@ -2699,7 +2885,7 @@ mod tests {
     #[test]
     fn lens_and_exposure_publish_real_aperture_time_and_autofocus_controls() {
         let page = test_page_descriptor(asus()).unwrap();
-        let lens = &page.phases[9].controls;
+        let lens = &page.phases[10].controls;
         assert!(matches!(
             lens.iter().find(|control| matches!(
                 control,
@@ -2727,7 +2913,7 @@ mod tests {
                 ..
             }
         )));
-        assert!(page.phases[10].controls.iter().any(|control| matches!(
+        assert!(page.phases[11].controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Scalar {
                 id: SHUTTER_ANGLE_CONTROL_ID,
@@ -2742,7 +2928,7 @@ mod tests {
         assert!((from_angle.exposure_time_seconds - 1.0 / 48.0).abs() < 1.0e-6);
         let angle_page = test_page_descriptor(unresolved_test_selection(from_angle)).unwrap();
         assert!(matches!(
-            angle_page.phases[10]
+            angle_page.phases[11]
                 .controls
                 .iter()
                 .find(|control| matches!(
@@ -2765,7 +2951,7 @@ mod tests {
     #[test]
     fn sensor_bloom_publishes_and_restores_the_selected_camera_profile() {
         let page = test_page_descriptor(asus()).unwrap();
-        let ids = page.phases[12]
+        let ids = page.phases[13]
             .controls
             .iter()
             .map(|control| match control {
@@ -2872,7 +3058,7 @@ mod tests {
     fn cover_microtexture_is_model_authored_and_resets_with_the_cover_preset() {
         let page = test_page_descriptor(asus()).unwrap();
         assert!(matches!(
-            page.phases[7].controls.iter().find(|control| matches!(
+            page.phases[8].controls.iter().find(|control| matches!(
                 control,
                 TestControlRequirement::Scalar {
                     id: COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID,
@@ -2930,7 +3116,7 @@ mod tests {
     #[test]
     fn geometry_mode_publishes_only_its_owned_controls() {
         let look_at = test_page_descriptor(asus()).unwrap();
-        let controls = &look_at.phases[6].controls;
+        let controls = &look_at.phases[7].controls;
         assert!(controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Scalar {
@@ -2955,7 +3141,7 @@ mod tests {
 
         let free = apply_test_choice(asus(), GEOMETRY_MODE_CONTROL_ID, "free").unwrap();
         let free = test_page_descriptor(unresolved_test_selection(free)).unwrap();
-        let controls = &free.phases[6].controls;
+        let controls = &free.phases[7].controls;
         for id in [
             CAMERA_POSITION_X_CONTROL_ID,
             CAMERA_POSITION_Y_CONTROL_ID,

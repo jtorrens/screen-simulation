@@ -12,6 +12,154 @@ use screen_contracts::{
     TransferCharacteristic,
 };
 
+/// Shared scene-linear ACEScg adjustment used at explicit color boundaries.
+/// It never chooses an input/output transform and preserves alpha externally.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneLinearAdjustment {
+    pub exposure_ev: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub temperature_kelvin: f32,
+    pub tint: f32,
+}
+
+impl SceneLinearAdjustment {
+    pub const NEUTRAL: Self = Self {
+        exposure_ev: 0.0,
+        contrast: 1.0,
+        saturation: 1.0,
+        temperature_kelvin: 6500.0,
+        tint: 0.0,
+    };
+
+    pub fn validate(self) -> Result<Self, ColorError> {
+        if !self.exposure_ev.is_finite()
+            || !(-8.0..=8.0).contains(&self.exposure_ev)
+            || !self.contrast.is_finite()
+            || !(0.25..=4.0).contains(&self.contrast)
+            || !self.saturation.is_finite()
+            || !(0.0..=4.0).contains(&self.saturation)
+            || !self.temperature_kelvin.is_finite()
+            || !(2000.0..=12_000.0).contains(&self.temperature_kelvin)
+            || !self.tint.is_finite()
+            || !(-1.0..=1.0).contains(&self.tint)
+        {
+            return Err(ColorError::InvalidSceneLinearAdjustment);
+        }
+        Ok(self)
+    }
+
+    pub fn acescg_white_gains(self) -> Result<LinearRgb, ColorError> {
+        self.validate()?;
+        Ok(scene_linear_white_gains(self.temperature_kelvin, self.tint))
+    }
+}
+
+pub fn apply_scene_linear_adjustment(
+    input: LinearRgb,
+    adjustment: SceneLinearAdjustment,
+) -> Result<LinearRgb, ColorError> {
+    let adjustment = adjustment.validate()?;
+    if adjustment == SceneLinearAdjustment::NEUTRAL {
+        return Ok(input);
+    }
+    let gains = scene_linear_white_gains(adjustment.temperature_kelvin, adjustment.tint);
+    let exposure = adjustment.exposure_ev.exp2();
+    let value = LinearRgb::new(
+        signed_scene_contrast(input.r * exposure * gains.r, adjustment.contrast),
+        signed_scene_contrast(input.g * exposure * gains.g, adjustment.contrast),
+        signed_scene_contrast(input.b * exposure * gains.b, adjustment.contrast),
+    );
+    let luminance = value.r * 0.272_228_72 + value.g * 0.674_081_74 + value.b * 0.053_689_517;
+    let result = LinearRgb::new(
+        luminance + (value.r - luminance) * adjustment.saturation,
+        luminance + (value.g - luminance) * adjustment.saturation,
+        luminance + (value.b - luminance) * adjustment.saturation,
+    );
+    if [result.r, result.g, result.b]
+        .into_iter()
+        .any(|v| !v.is_finite())
+    {
+        return Err(ColorError::InvalidSceneLinearAdjustment);
+    }
+    Ok(result)
+}
+
+/// Converts an extended scene-linear result into physically non-negative incident
+/// radiance by reducing chroma towards equal-energy luminance, never by clipping channels.
+pub fn apply_incident_radiance_adjustment(
+    input: LinearRgb,
+    adjustment: SceneLinearAdjustment,
+) -> Result<LinearRgb, ColorError> {
+    if [input.r, input.g, input.b]
+        .into_iter()
+        .any(|v| !v.is_finite() || v < 0.0)
+    {
+        return Err(ColorError::InvalidSceneLinearAdjustment);
+    }
+    let adjusted = apply_scene_linear_adjustment(input, adjustment)?;
+    if adjusted.r >= 0.0 && adjusted.g >= 0.0 && adjusted.b >= 0.0 {
+        return Ok(adjusted);
+    }
+    let y = (adjusted.r * 0.272_228_72 + adjusted.g * 0.674_081_74 + adjusted.b * 0.053_689_517)
+        .max(0.0);
+    let mut scale = 1.0_f32;
+    for channel in [adjusted.r, adjusted.g, adjusted.b] {
+        if channel < 0.0 {
+            scale = scale.min(y / (y - channel));
+        }
+    }
+    Ok(LinearRgb::new(
+        y + (adjusted.r - y) * scale,
+        y + (adjusted.g - y) * scale,
+        y + (adjusted.b - y) * scale,
+    ))
+}
+
+fn signed_scene_contrast(value: f32, contrast: f32) -> f32 {
+    value.signum() * 0.18 * (value.abs() / 0.18).powf(contrast)
+}
+
+fn scene_linear_white_gains(temperature_kelvin: f32, tint: f32) -> LinearRgb {
+    let t = temperature_kelvin;
+    let x = if t <= 4000.0 {
+        -0.266_123_9e9 / t.powi(3) - 0.234_358e6 / t.powi(2) + 0.877_695_6e3 / t + 0.179_910
+    } else {
+        -3.025_846_9e9 / t.powi(3) + 2.107_038e6 / t.powi(2) + 0.222_634_7e3 / t + 0.240_390
+    };
+    let mut y = if t <= 2222.0 {
+        -1.106_381_4 * x.powi(3) - 1.348_110_2 * x.powi(2) + 2.185_558_3 * x - 0.202_196_83
+    } else if t <= 4000.0 {
+        -0.954_947_6 * x.powi(3) - 1.374_185_9 * x.powi(2) + 2.091_370_2 * x - 0.167_488_67
+    } else {
+        3.081_758 * x.powi(3) - 5.873_387 * x.powi(2) + 3.751_129_9 * x - 0.370_014_83
+    };
+    y = (y + tint * 0.025).clamp(0.05, 0.85);
+    let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+    let rgb = [
+        1.641_023_4 * xyz[0] - 0.324_803_3 * xyz[1] - 0.236_424_7 * xyz[2],
+        -0.663_662_9 * xyz[0] + 1.615_331_6 * xyz[1] + 0.016_756_35 * xyz[2],
+        0.011_721_9 * xyz[0] - 0.008_284_44 * xyz[1] + 0.988_394_9 * xyz[2],
+    ];
+    let neutral = scene_linear_white_raw(6500.0);
+    LinearRgb::new(
+        rgb[0] / neutral[0],
+        rgb[1] / neutral[1],
+        rgb[2] / neutral[2],
+    )
+}
+
+fn scene_linear_white_raw(t: f32) -> [f32; 3] {
+    let x = -3.025_846_9e9 / t.powi(3) + 2.107_038e6 / t.powi(2) + 0.222_634_7e3 / t + 0.240_390;
+    let y = 3.081_758 * x.powi(3) - 5.873_387 * x.powi(2) + 3.751_129_9 * x - 0.370_014_83;
+    let xyz = [x / y, 1.0, (1.0 - x - y) / y];
+    [
+        1.641_023_4 * xyz[0] - 0.324_803_3 * xyz[1] - 0.236_424_7 * xyz[2],
+        -0.663_662_9 * xyz[0] + 1.615_331_6 * xyz[1] + 0.016_756_35 * xyz[2],
+        0.011_721_9 * xyz[0] - 0.008_284_44 * xyz[1] + 0.988_394_9 * xyz[2],
+    ]
+}
+
 pub const OCIO_CONFIGURATION_ID: &str = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
 const ACESCG_COLOR_SPACE: &str = "ACEScg";
 pub const RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID: &str = "recording-output-signal-v2";
@@ -766,6 +914,7 @@ pub enum ColorError {
     InvalidRgbaBufferLength(usize),
     PixelCountOverflow,
     InvalidRecordingOutputSignal,
+    InvalidSceneLinearAdjustment,
     OpenColorIo(String),
 }
 
@@ -787,6 +936,9 @@ impl fmt::Display for ColorError {
             Self::PixelCountOverflow => formatter.write_str("RGBA pixel count exceeds i64"),
             Self::InvalidRecordingOutputSignal => {
                 formatter.write_str("invalid recording-output-signal-v2 artifact")
+            }
+            Self::InvalidSceneLinearAdjustment => {
+                formatter.write_str("invalid scene-linear ACEScg adjustment")
             }
             Self::OpenColorIo(message) => write!(formatter, "OpenColorIO: {message}"),
         }
@@ -829,6 +981,34 @@ impl DiagnosticDisplayTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neutral_scene_linear_adjustment_is_exact_for_extended_values() {
+        for input in [
+            LinearRgb::new(-0.25, 0.0, 2.0),
+            LinearRgb::new(0.18, 0.18, 0.18),
+        ] {
+            let output = apply_scene_linear_adjustment(input, SceneLinearAdjustment::NEUTRAL)
+                .expect("neutral adjustment");
+            assert_eq!(output, input);
+        }
+    }
+
+    #[test]
+    fn incident_adjustment_preserves_non_negative_radiance_without_channel_clipping() {
+        let input = LinearRgb::new(0.02, 0.3, 0.9);
+        let output = apply_incident_radiance_adjustment(
+            input,
+            SceneLinearAdjustment {
+                saturation: 4.0,
+                ..SceneLinearAdjustment::NEUTRAL
+            },
+        )
+        .expect("physical radiance adjustment");
+        assert!(output.r >= 0.0 && output.g >= 0.0 && output.b >= 0.0);
+        assert_eq!(output.r, 0.0);
+        assert!(output.g > 0.0 && output.b > output.g);
+    }
 
     #[test]
     fn diagnostic_display_transform_is_monotonic_and_bounded() {

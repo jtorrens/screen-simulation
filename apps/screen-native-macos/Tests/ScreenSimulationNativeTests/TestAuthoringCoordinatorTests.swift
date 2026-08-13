@@ -24,6 +24,11 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         placementID: "fit",
         previewQualityID: "draft",
         frameRate: 24,
+        sourceExposureEV: 0,
+        sourceContrast: 1,
+        sourceSaturation: 1,
+        sourceTemperatureKelvin: 6500,
+        sourceTint: 0,
         subpixelGeometryAmount: 1,
         panelUniformityAmount: 1,
         panelLightSpreadAmount: 1,
@@ -54,6 +59,10 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         environmentRotationXDegrees: 0,
         environmentRotationYDegrees: 0,
         environmentExposureEV: 0,
+        environmentContrast: 1,
+        environmentSaturation: 1,
+        environmentTemperatureKelvin: 6500,
+        environmentTint: 0,
         coverGlowAmount: 1,
         lensPresetID: "iphone-16e-main-integrated",
         lensAmount: 1,
@@ -124,7 +133,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     )
 
     #expect(snapshot.presentation.phases.map(\.label) == [
-        "Origen", "Salida del feeder", "Mapeo e interpretación del dispositivo",
+        "Origen", "Ajuste de fuente", "Salida del feeder", "Mapeo e interpretación del dispositivo",
         "Trama del panel", "Uniformidad del panel", "Dispersión de luz del panel",
         "Geometría relativa",
         "Cristal y entorno", "Resplandor del cristal", "Objetivo y proyección",
@@ -141,37 +150,39 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[0].id]
         == .sourceACEScg)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[1].id]
-        == .feederSignal)
+        == .sourceAdjustment)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[2].id]
-        == .deviceInterpretation)
+        == .feederSignal)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[3].id]
-        == .panelStructure)
+        == .deviceInterpretation)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[4].id]
-        == .panelUniformity)
+        == .panelStructure)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[5].id]
-        == .panelLightSpread)
+        == .panelUniformity)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[6].id]
-        == .relativeGeometry)
+        == .panelLightSpread)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[7].id]
-        == .coverEnvironment)
+        == .relativeGeometry)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[8].id]
-        == .coverGlow)
+        == .coverEnvironment)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[9].id]
-        == .lensProjection)
+        == .coverGlow)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[10].id]
-        == .shutterExposure)
+        == .lensProjection)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[11].id]
-        == .computationalCapture)
+        == .shutterExposure)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[12].id]
-        == .sensorBloom)
+        == .computationalCapture)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[13].id]
-        == .sensorCfa)
+        == .sensorBloom)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[14].id]
-        == .sensorNoise)
+        == .sensorCfa)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[15].id]
+        == .sensorNoise)
+    #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[16].id]
         == .developDemosaic)
 
-    let controls = snapshot.presentation.phases[1].sections.flatMap(\.controls)
+    let controls = snapshot.presentation.phases[2].sections.flatMap(\.controls)
     #expect(controls.count == 2)
     guard case let .choice(outputSignal) = controls[0] else {
         Issue.record("Output Signal debe llegar como opción publicada por Rust.")
@@ -182,7 +193,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         "srgb", "rec709-gamma22", "rec709-gamma24",
         "rec2100-pq-1000", "rec2100-hlg-1000",
     ])
-    let deviceControls = snapshot.presentation.phases[2].sections.flatMap(\.controls)
+    let deviceControls = snapshot.presentation.phases[3].sections.flatMap(\.controls)
     guard case let .choice(colorMode) = deviceControls[1] else {
         Issue.record("Color Mode debe pertenecer a la fase del dispositivo.")
         return
@@ -190,8 +201,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(colorMode.options.map(\.id) == ["srgb", "rec709-gamma24"])
     #expect(snapshot.presentation.previewControls.count == 1)
     #expect(snapshot.presentation.phases.allSatisfy { !$0.effectSummary.isEmpty })
-    #expect(snapshot.presentation.phases[3].headerControlID == "subpixel-geometry-amount")
-    guard case let .scalar(subpixel) = snapshot.presentation.phases[3].sections
+    #expect(snapshot.presentation.phases[4].headerControlID == "subpixel-geometry-amount")
+    guard case let .scalar(subpixel) = snapshot.presentation.phases[4].sections
         .flatMap(\.controls).first
     else {
         Issue.record("La trama debe ser un escalar publicado por Rust.")
@@ -200,8 +211,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(subpixel.value == 1)
     #expect(subpixel.minimum == 0)
     #expect(subpixel.maximum == 4)
-    #expect(snapshot.presentation.phases[4].headerControlID == "panel-uniformity-amount")
-    guard case let .scalar(uniformity) = snapshot.presentation.phases[4].sections
+    #expect(snapshot.presentation.phases[5].headerControlID == "panel-uniformity-amount")
+    guard case let .scalar(uniformity) = snapshot.presentation.phases[5].sections
         .flatMap(\.controls).first
     else {
         Issue.record("La uniformidad debe ser un escalar publicado por Rust.")
@@ -210,7 +221,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(uniformity.value == 1)
     #expect(uniformity.minimum == 0)
     #expect(uniformity.maximum == 4)
-    let bloomControls = snapshot.presentation.phases[12].sections.flatMap(\.controls)
+    let bloomControls = snapshot.presentation.phases[13].sections.flatMap(\.controls)
     #expect(bloomControls.map(\.id) == [
         "sensor-bloom-amount",
         "sensor-bloom-crosstalk-fraction",
@@ -230,7 +241,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.setTestPageActive(true)
     let presentation = try #require(workspace.testPresentation)
     workspace.handleTestIntent(.selectPhase(presentation.phases[0].id))
-    let feederPhase = presentation.phases[1]
+    let feederPhase = presentation.phases[2]
     guard case let .choice(outputSignal) = feederPhase.sections.flatMap(\.controls).first else {
         Issue.record("Output Signal debe ser una selección.")
         return
@@ -264,7 +275,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.selectDevice(asus, coverGlass: cover, amount: 0)
     workspace.setTestPageActive(true)
     let presentation = try #require(workspace.testPresentation)
-    workspace.handleTestIntent(.selectPhase(presentation.phases[2].id))
+    workspace.handleTestIntent(.selectPhase(presentation.phases[3].id))
     try requestPhysicalPreview("draft", in: workspace)
     for _ in 0..<2_000 {
         if workspace.deviceSignalCheckpoint != nil,
@@ -317,7 +328,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.selectDevice(asus, coverGlass: cover, amount: 0)
     workspace.setTestPageActive(true)
     let presentation = try #require(workspace.testPresentation)
-    workspace.handleTestIntent(.selectPhase(presentation.phases[3].id))
+    workspace.handleTestIntent(.selectPhase(presentation.phases[4].id))
     try requestPhysicalPreview("draft", in: workspace)
     for _ in 0..<2_000 {
         if workspace.physicalPublicationSummary.contains("Subpixel") { break }
@@ -351,7 +362,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     presentation = try #require(workspace.testPresentation)
 
     let beforeFlat = workspace.metalFrame?.texture
-    workspace.handleTestIntent(.selectPhase(presentation.phases[5].id))
+    workspace.handleTestIntent(.selectPhase(presentation.phases[6].id))
     for _ in 0..<2_000 {
         if workspace.requestedPhysicalIntermediate == .panelLightSpread,
            workspace.metalFrame?.texture !== beforeFlat,
@@ -362,7 +373,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     let flatFrame = try #require(workspace.metalFrame)
     let flat = try workspace.metalDisplay.readLinearRGBA(flatFrame)
 
-    workspace.handleTestIntent(.selectPhase(presentation.phases[9].id))
+    workspace.handleTestIntent(.selectPhase(presentation.phases[10].id))
     for _ in 0..<2_000 {
         if workspace.requestedPhysicalIntermediate == .lensProjection,
            workspace.metalFrame?.texture !== flatFrame.texture,
@@ -403,7 +414,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         selection: current,
         selectedPreviewPhaseID: nil
     )
-    let deviceControl = snapshot.presentation.phases[2].sections
+    let deviceControl = snapshot.presentation.phases[3].sections
         .flatMap(\.controls).first
     guard case let .choice(device) = deviceControl else {
         Issue.record("Device debe ser un selector publicado por Rust.")
@@ -427,7 +438,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         selection: current,
         selectedPreviewPhaseID: nil
     )
-    let controls = snapshot.presentation.phases[7].sections.flatMap(\.controls)
+    let controls = snapshot.presentation.phases[8].sections.flatMap(\.controls)
     guard case let .scalar(control) = controls.first(where: {
         $0.id == "cover-ag-microtexture-amount"
     }) else {
@@ -482,6 +493,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.setTestPageActive(true)
     let presentation = try #require(workspace.testPresentation)
     let expected: [PhysicalIntermediate] = [
+        .sourceACEScg,
         .sourceACEScg,
         .deviceSignal,
         .panelEmission,
@@ -557,12 +569,12 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.setTestPageActive(true)
 
     let presentation = try #require(workspace.testPresentation)
-    let feeder = try #require(presentation.phases[1].sections.flatMap(\.controls).first)
+    let feeder = try #require(presentation.phases[2].sections.flatMap(\.controls).first)
     guard case let .choice(outputSignal) = feeder else {
         Issue.record("Output Signal debe ser una selección.")
         return
     }
-    let deviceControls = presentation.phases[2].sections.flatMap(\.controls)
+    let deviceControls = presentation.phases[3].sections.flatMap(\.controls)
     guard case let .choice(colorMode) = deviceControls[1] else {
         Issue.record("Color Mode debe ser una selección.")
         return
@@ -573,7 +585,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     ))
 
     let updated = try #require(workspace.testPresentation)
-    guard case let .choice(updatedOutput) = updated.phases[1].sections
+    guard case let .choice(updatedOutput) = updated.phases[2].sections
         .flatMap(\.controls).first
     else {
         Issue.record("Output Signal debe permanecer publicada.")

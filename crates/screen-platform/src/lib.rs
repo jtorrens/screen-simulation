@@ -13,6 +13,11 @@ mod physical_pipeline_metal;
 mod presentation_cpu;
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 mod presentation_metal;
+#[cfg(all(
+    target_os = "macos",
+    any(feature = "scene-adjustment-metal", feature = "full-platform")
+))]
+mod scene_adjustment_metal;
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 mod spatial_metal;
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
@@ -30,6 +35,11 @@ pub use presentation_cpu::{
 };
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 pub use presentation_metal::{MetalDisplayPublication, MetalDisplayPublicationError};
+#[cfg(all(
+    target_os = "macos",
+    any(feature = "scene-adjustment-metal", feature = "full-platform")
+))]
+pub use scene_adjustment_metal::{MetalSceneAdjustment, MetalSceneAdjustmentError};
 
 #[cfg(feature = "ffmpeg-media")]
 mod ffmpeg_media {

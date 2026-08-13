@@ -24,6 +24,7 @@ import UniformTypeIdentifiers
         inputTransform: input,
         outputSignal: outputSignal,
         alphaInterpretation: "straight",
+        sourceAdjustment: .neutral,
         display: display
     )
 
@@ -95,6 +96,7 @@ import UniformTypeIdentifiers
         inputTransform: input,
         outputSignal: outputSignal,
         alphaInterpretation: "ignore",
+        sourceAdjustment: .neutral,
         display: display
     )
 

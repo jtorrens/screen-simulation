@@ -9,6 +9,7 @@ typedef struct ScreenDeviceProfile *ScreenDeviceProfileRef;
 typedef struct ScreenCoverGlassProfile *ScreenCoverGlassProfileRef;
 typedef struct ScreenPhysicalPipelineSnapshot *ScreenPhysicalPipelineSnapshotRef;
 typedef struct ScreenPhysicalTexture *ScreenPhysicalTextureRef;
+typedef struct ScreenAdjustedSceneTexture *ScreenAdjustedSceneTextureRef;
 typedef struct ScreenEnvironmentRadianceTexture *ScreenEnvironmentRadianceTextureRef;
 typedef struct ScreenPhysicalTimedInputSetV2 *ScreenPhysicalTimedInputSetV2Ref;
 typedef struct ScreenPhysicalCameraPoseTrackV2 *ScreenPhysicalCameraPoseTrackV2Ref;
@@ -25,7 +26,7 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 21u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 22u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -51,6 +52,11 @@ typedef struct {
     ScreenUTF8View placement_id;
     ScreenUTF8View preview_quality_id;
     float frame_rate;
+    float source_exposure_ev;
+    float source_contrast;
+    float source_saturation;
+    float source_temperature_kelvin;
+    float source_tint;
     float subpixel_geometry_amount;
     float panel_uniformity_amount;
     float panel_light_spread_amount;
@@ -81,6 +87,10 @@ typedef struct {
     float environment_rotation_x_degrees;
     float environment_rotation_y_degrees;
     float environment_exposure_ev;
+    float environment_contrast;
+    float environment_saturation;
+    float environment_temperature_kelvin;
+    float environment_tint;
     float cover_glow_amount;
     ScreenUTF8View lens_preset_id;
     float lens_amount;
@@ -700,6 +710,23 @@ ScreenPhysicalTextureRef screen_physical_texture_create_borrowed_metal(
 );
 const void *screen_physical_texture_borrow_metal(ScreenPhysicalTextureRef texture);
 void screen_physical_texture_release(ScreenPhysicalTextureRef texture);
+ScreenAdjustedSceneTextureRef screen_scene_adjustment_texture_create_metal(
+    const void *source_metal_texture,
+    float exposure_ev,
+    float contrast,
+    float saturation,
+    float temperature_kelvin,
+    float tint,
+    bool incident_radiance,
+    const char **error_message
+);
+ScreenPhysicalTextureRef screen_scene_adjustment_texture_borrow_physical(
+    ScreenAdjustedSceneTextureRef texture
+);
+const void *screen_scene_adjustment_texture_borrow_metal(
+    ScreenAdjustedSceneTextureRef texture
+);
+void screen_scene_adjustment_texture_release(ScreenAdjustedSceneTextureRef texture);
 ScreenEnvironmentRadianceTextureRef screen_environment_radiance_texture_create_metal(
     const void *source_metal_texture,
     const char **error_message

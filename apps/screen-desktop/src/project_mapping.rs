@@ -5,7 +5,7 @@ use screen_application::{
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{
     CameraOutputTransform, DeviceColorTarget, OcioInputTransform, RecordingOutputTransform,
-    SourceColorInterpretation,
+    SceneLinearAdjustment, SourceColorInterpretation,
 };
 use screen_contracts::{FrameRate, LinearRgb, Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_cover::{
@@ -45,6 +45,8 @@ pub struct ProjectScene {
     pub panel: LcdProfile,
     pub cover: CoverGlassProfile,
     pub environment: ProceduralEnvironment,
+    pub source_adjustment: SceneLinearAdjustment,
+    pub environment_adjustment: SceneLinearAdjustment,
     pub camera: CameraRig,
     pub screen: ScreenTrack,
     pub sensor: SensorProfile,
@@ -232,6 +234,20 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
         }
         .validate()
         .map_err(|error| error.to_string())?,
+        source_adjustment: SceneLinearAdjustment {
+            exposure_ev: package.shot.source_adjustment.exposure_ev,
+            contrast: package.shot.source_adjustment.contrast,
+            saturation: package.shot.source_adjustment.saturation,
+            temperature_kelvin: package.shot.source_adjustment.temperature_kelvin,
+            tint: package.shot.source_adjustment.tint,
+        },
+        environment_adjustment: SceneLinearAdjustment {
+            exposure_ev: package.shot.environment.exposure_ev,
+            contrast: package.shot.environment.contrast,
+            saturation: package.shot.environment.saturation,
+            temperature_kelvin: package.shot.environment.temperature_kelvin,
+            tint: package.shot.environment.tint,
+        },
         camera: CameraRig {
             transform: TransformTrack {
                 keyframes: package
@@ -631,6 +647,13 @@ mod tests {
                 middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
                 reference_exposure_index: 800.0,
                 develop_exposure_ev: 0.0,
+                source_adjustment: screen_persistence::SceneLinearAdjustmentDocument {
+                    exposure_ev: 0.0,
+                    contrast: 1.0,
+                    saturation: 1.0,
+                    temperature_kelvin: 6500.0,
+                    tint: 0.0,
+                },
                 camera_rendering_intent: CameraRenderingIntentDocument {
                     exposure_ev: 0.5,
                     contrast: 1.10,
@@ -658,6 +681,11 @@ mod tests {
                     key_angular_radius_degrees: 24.0,
                     rotation_x_degrees: -10.0,
                     rotation_y_degrees: 15.0,
+                    exposure_ev: 0.0,
+                    contrast: 1.0,
+                    saturation: 1.0,
+                    temperature_kelvin: 6500.0,
+                    tint: 0.0,
                     pattern: screen_persistence::EnvironmentPatternDocument::StudioSoftboxes,
                 },
             },

@@ -48,7 +48,7 @@
       "name": "screen-camera",
       "path": "crates/screen-camera",
       "owner": "camera-development",
-      "allowed_local_dependencies": ["screen-contracts", "screen-sensor"]
+      "allowed_local_dependencies": ["screen-color", "screen-contracts", "screen-sensor"]
     },
     {
       "name": "screen-recording",

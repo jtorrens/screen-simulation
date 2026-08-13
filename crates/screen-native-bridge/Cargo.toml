@@ -17,7 +17,7 @@ screen-contracts = { path = "../screen-contracts" }
 screen-cover = { path = "../screen-cover" }
 screen-geometry = { path = "../screen-geometry" }
 screen-panel = { path = "../screen-panel" }
-screen-platform = { path = "../screen-platform", default-features = false, features = ["flat-panel-metal"] }
+screen-platform = { path = "../screen-platform", default-features = false, features = ["flat-panel-metal", "scene-adjustment-metal"] }
 screen-sensor = { path = "../screen-sensor" }
 
 [target.'cfg(target_os = "macos")'.dependencies]

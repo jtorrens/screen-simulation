@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 use core::fmt;
+use screen_color::{SceneLinearAdjustment, apply_scene_linear_adjustment};
 use screen_contracts::LinearRgb;
 use screen_sensor::{RawSensorRaster, RawSensorRegion, SensorProfile, SensorRegion};
 
@@ -108,7 +109,9 @@ impl CameraRenderingIntent {
 
     pub fn acescg_white_gains(self) -> Result<LinearRgb, CameraDevelopmentError> {
         self.validate()?;
-        Ok(rendering_white_gains(self.temperature_kelvin, self.tint))
+        SceneLinearAdjustment::from(self)
+            .acescg_white_gains()
+            .map_err(|_| CameraDevelopmentError::InvalidRenderingIntent)
     }
 }
 
@@ -149,32 +152,21 @@ pub fn apply_camera_rendering_intent(
     input: LinearRgb,
     intent: CameraRenderingIntent,
 ) -> Result<LinearRgb, CameraDevelopmentError> {
-    let intent = intent.validate()?;
-    let gains = rendering_white_gains(intent.temperature_kelvin, intent.tint);
-    let exposure = intent.exposure_ev.exp2();
-    let mut value = LinearRgb::new(
-        input.r * exposure * gains.r,
-        input.g * exposure * gains.g,
-        input.b * exposure * gains.b,
-    );
-    value = LinearRgb::new(
-        signed_contrast(value.r, intent.contrast),
-        signed_contrast(value.g, intent.contrast),
-        signed_contrast(value.b, intent.contrast),
-    );
-    let luminance = value.r * 0.272_228_72 + value.g * 0.674_081_74 + value.b * 0.053_689_517;
-    let result = LinearRgb::new(
-        luminance + (value.r - luminance) * intent.saturation,
-        luminance + (value.g - luminance) * intent.saturation,
-        luminance + (value.b - luminance) * intent.saturation,
-    );
-    if [result.r, result.g, result.b]
-        .into_iter()
-        .any(|v| !v.is_finite())
-    {
-        return Err(CameraDevelopmentError::NonFiniteDevelopedPixel);
+    intent.validate()?;
+    apply_scene_linear_adjustment(input, intent.into())
+        .map_err(|_| CameraDevelopmentError::NonFiniteDevelopedPixel)
+}
+
+impl From<CameraRenderingIntent> for SceneLinearAdjustment {
+    fn from(value: CameraRenderingIntent) -> Self {
+        Self {
+            exposure_ev: value.exposure_ev,
+            contrast: value.contrast,
+            saturation: value.saturation,
+            temperature_kelvin: value.temperature_kelvin,
+            tint: value.tint,
+        }
     }
-    Ok(result)
 }
 
 pub fn render_developed_camera(
@@ -192,50 +184,6 @@ pub fn render_developed_camera(
             .map(|pixel| apply_camera_rendering_intent(pixel, intent))
             .collect::<Result<Vec<_>, _>>()?,
     })
-}
-
-fn signed_contrast(value: f32, contrast: f32) -> f32 {
-    value.signum() * 0.18 * (value.abs() / 0.18).powf(contrast)
-}
-
-fn rendering_white_gains(temperature_kelvin: f32, tint: f32) -> LinearRgb {
-    let t = temperature_kelvin;
-    let x = if t <= 4000.0 {
-        -0.266_123_9e9 / t.powi(3) - 0.234_358e6 / t.powi(2) + 0.877_695_6e3 / t + 0.179_910
-    } else {
-        -3.025_846_9e9 / t.powi(3) + 2.107_038e6 / t.powi(2) + 0.222_634_7e3 / t + 0.240_390
-    };
-    let mut y = if t <= 2222.0 {
-        -1.106_381_4 * x.powi(3) - 1.348_110_2 * x.powi(2) + 2.185_558_3 * x - 0.202_196_83
-    } else if t <= 4000.0 {
-        -0.954_947_6 * x.powi(3) - 1.374_185_9 * x.powi(2) + 2.091_370_2 * x - 0.167_488_67
-    } else {
-        3.081_758 * x.powi(3) - 5.873_387 * x.powi(2) + 3.751_129_9 * x - 0.370_014_83
-    };
-    y = (y + tint * 0.025).clamp(0.05, 0.85);
-    let xyz = [x / y, 1.0, (1.0 - x - y) / y];
-    let rgb = [
-        1.641_023_4 * xyz[0] - 0.324_803_3 * xyz[1] - 0.236_424_7 * xyz[2],
-        -0.663_662_9 * xyz[0] + 1.615_331_6 * xyz[1] + 0.016_756_35 * xyz[2],
-        0.011_721_9 * xyz[0] - 0.008_284_44 * xyz[1] + 0.988_394_9 * xyz[2],
-    ];
-    let neutral = rendering_white_raw(6500.0);
-    LinearRgb::new(
-        rgb[0] / neutral[0],
-        rgb[1] / neutral[1],
-        rgb[2] / neutral[2],
-    )
-}
-
-fn rendering_white_raw(t: f32) -> [f32; 3] {
-    let x = -3.025_846_9e9 / t.powi(3) + 2.107_038e6 / t.powi(2) + 0.222_634_7e3 / t + 0.240_390;
-    let y = 3.081_758 * x.powi(3) - 5.873_387 * x.powi(2) + 3.751_129_9 * x - 0.370_014_83;
-    let xyz = [x / y, 1.0, (1.0 - x - y) / y];
-    [
-        1.641_023_4 * xyz[0] - 0.324_803_3 * xyz[1] - 0.236_424_7 * xyz[2],
-        -0.663_662_9 * xyz[0] + 1.615_331_6 * xyz[1] + 0.016_756_35 * xyz[2],
-        0.011_721_9 * xyz[0] - 0.008_284_44 * xyz[1] + 0.988_394_9 * xyz[2],
-    ]
 }
 
 /// Replaceable compute boundary for the one authoritative RAW-development operation.

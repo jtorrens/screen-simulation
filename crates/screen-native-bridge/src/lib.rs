@@ -26,7 +26,7 @@ use screen_application::{
     evaluate_delivery_raster_rgba32f, physical_shutter_schedule, test_page_descriptor,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
-use screen_color::{ColorEngine, RecordingOutputTransform};
+use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
 use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
@@ -45,6 +45,7 @@ use screen_panel::{
 #[cfg(target_os = "macos")]
 use screen_platform::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
+    MetalSceneAdjustment,
 };
 use screen_sensor::{BayerPattern, ComputationalCaptureProfile, SensorBloomProfile, SensorProfile};
 
@@ -55,7 +56,7 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 21;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 22;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -74,6 +75,11 @@ pub struct ScreenTestAuthoringSelectionV19 {
     placement_id: ScreenUtf8View,
     preview_quality_id: ScreenUtf8View,
     frame_rate: f32,
+    source_exposure_ev: f32,
+    source_contrast: f32,
+    source_saturation: f32,
+    source_temperature_kelvin: f32,
+    source_tint: f32,
     subpixel_geometry_amount: f32,
     panel_uniformity_amount: f32,
     panel_light_spread_amount: f32,
@@ -104,6 +110,10 @@ pub struct ScreenTestAuthoringSelectionV19 {
     environment_rotation_x_degrees: f32,
     environment_rotation_y_degrees: f32,
     environment_exposure_ev: f32,
+    environment_contrast: f32,
+    environment_saturation: f32,
+    environment_temperature_kelvin: f32,
+    environment_tint: f32,
     cover_glow_amount: f32,
     lens_preset_id: ScreenUtf8View,
     lens_amount: f32,
@@ -241,6 +251,12 @@ pub struct ScreenPhysicalTexture {
 
 #[cfg(target_os = "macos")]
 pub struct ScreenEnvironmentRadianceTexture {
+    _texture: Texture,
+    view: ScreenPhysicalTexture,
+}
+
+#[cfg(target_os = "macos")]
+pub struct ScreenAdjustedSceneTexture {
     _texture: Texture,
     view: ScreenPhysicalTexture,
 }
@@ -470,6 +486,82 @@ pub unsafe extern "C" fn screen_physical_texture_borrow_metal(
 pub unsafe extern "C" fn screen_physical_texture_release(texture: *mut ScreenPhysicalTexture) {
     if !texture.is_null() {
         // SAFETY: the ABI requires the uniquely owned wrapper returned by create.
+        unsafe { drop(Box::from_raw(texture)) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_scene_adjustment_texture_create_metal(
+    source_metal_texture: *const c_void,
+    exposure_ev: f32,
+    contrast: f32,
+    saturation: f32,
+    temperature_kelvin: f32,
+    tint: f32,
+    incident_radiance: bool,
+    error_message: *mut *const c_char,
+) -> *mut ScreenAdjustedSceneTexture {
+    if source_metal_texture.is_null() {
+        unsafe { set_error(error_message, b"missing scene adjustment source texture\0") };
+        return std::ptr::null_mut();
+    }
+    let source = unsafe { TextureRef::from_ptr(source_metal_texture as *mut MTLTexture) };
+    let adjustment = SceneLinearAdjustment {
+        exposure_ev,
+        contrast,
+        saturation,
+        temperature_kelvin,
+        tint,
+    };
+    let result = MetalSceneAdjustment::new(source.device())
+        .and_then(|backend| backend.evaluate(source, adjustment, incident_radiance));
+    match result {
+        Ok(texture) => {
+            let view = ScreenPhysicalTexture {
+                metal_texture: texture.as_ptr() as usize,
+            };
+            unsafe { set_error(error_message, b"\0") };
+            Box::into_raw(Box::new(ScreenAdjustedSceneTexture {
+                _texture: texture,
+                view,
+            }))
+        }
+        Err(_) => {
+            unsafe { set_error(error_message, b"scene adjustment failed\0") };
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_scene_adjustment_texture_borrow_physical(
+    texture: *const ScreenAdjustedSceneTexture,
+) -> *const ScreenPhysicalTexture {
+    if texture.is_null() {
+        return std::ptr::null();
+    }
+    unsafe { &(*texture).view }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_scene_adjustment_texture_borrow_metal(
+    texture: *const ScreenAdjustedSceneTexture,
+) -> *const c_void {
+    if texture.is_null() {
+        return std::ptr::null();
+    }
+    unsafe { (*texture).view.metal_texture as *const c_void }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_scene_adjustment_texture_release(
+    texture: *mut ScreenAdjustedSceneTexture,
+) {
+    if !texture.is_null() {
         unsafe { drop(Box::from_raw(texture)) };
     }
 }
@@ -2022,6 +2114,13 @@ unsafe fn test_selection<'a>(
         placement_id: unsafe { borrowed_utf8(selection.placement_id) }?,
         preview_quality_id: unsafe { borrowed_utf8(selection.preview_quality_id) }?,
         frame_rate: selection.frame_rate,
+        source_adjustment: SceneLinearAdjustment {
+            exposure_ev: selection.source_exposure_ev,
+            contrast: selection.source_contrast,
+            saturation: selection.source_saturation,
+            temperature_kelvin: selection.source_temperature_kelvin,
+            tint: selection.source_tint,
+        },
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
@@ -2052,6 +2151,10 @@ unsafe fn test_selection<'a>(
         environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
         environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
         environment_exposure_ev: selection.environment_exposure_ev,
+        environment_contrast: selection.environment_contrast,
+        environment_saturation: selection.environment_saturation,
+        environment_temperature_kelvin: selection.environment_temperature_kelvin,
+        environment_tint: selection.environment_tint,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
         lens_amount: selection.lens_amount,
@@ -2098,6 +2201,7 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
         TestAuthoringError::InvalidWhiteLuminance => {
             b"White Luminance is outside the selected device capability\0"
         }
+        TestAuthoringError::InvalidSourceAdjustment => b"invalid Source Adjustment\0",
         TestAuthoringError::InvalidSubpixelGeometryAmount => {
             b"Subpixel Geometry amount is outside 0..=4\0"
         }
@@ -2162,6 +2266,11 @@ fn resolved_test_selection(
         placement_id: utf8_view(selection.placement_id),
         preview_quality_id: utf8_view(selection.preview_quality_id),
         frame_rate: selection.frame_rate,
+        source_exposure_ev: selection.source_adjustment.exposure_ev,
+        source_contrast: selection.source_adjustment.contrast,
+        source_saturation: selection.source_adjustment.saturation,
+        source_temperature_kelvin: selection.source_adjustment.temperature_kelvin,
+        source_tint: selection.source_adjustment.tint,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
@@ -2192,6 +2301,10 @@ fn resolved_test_selection(
         environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
         environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
         environment_exposure_ev: selection.environment_exposure_ev,
+        environment_contrast: selection.environment_contrast,
+        environment_saturation: selection.environment_saturation,
+        environment_temperature_kelvin: selection.environment_temperature_kelvin,
+        environment_tint: selection.environment_tint,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: utf8_view(selection.lens_preset_id),
         lens_amount: selection.lens_amount,

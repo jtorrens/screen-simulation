@@ -9,6 +9,7 @@ license.workspace = true
 default = ["full-platform"]
 full-platform = ["ffmpeg-media"]
 flat-panel-metal = []
+scene-adjustment-metal = []
 ffmpeg-media = ["dep:ffmpeg-next"]
 
 [dependencies]

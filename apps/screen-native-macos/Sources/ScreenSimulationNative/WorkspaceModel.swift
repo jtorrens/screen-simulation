@@ -137,6 +137,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var physicalAuthoringState: PhysicalPipelineAuthoringState?
     @Published private(set) var requestedPhysicalIntermediate = PhysicalIntermediate.developedACEScg
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
+    @Published private(set) var originACEScgFrame: StudioColorMetalFrame?
     @Published private(set) var deviceSignalCheckpoint: DeviceSignalCheckpoint?
     @Published var sourcePlacement = SourcePlacement.fit
     @Published var modelViewerOneToOne = false
@@ -157,6 +158,9 @@ final class WorkspaceModel: ObservableObject {
     private var recordingOutputExecution: RecordingOutputExecution?
     private var setupFramingRenderer: SetupFramingRenderer?
     private var environmentRadianceFrame: EnvironmentRadianceFrame?
+    private var environmentSourceACEScgFrame: StudioColorMetalFrame?
+    private var sourceAdjustmentOwner: SceneAdjustmentFrame?
+    private var environmentAdjustmentOwner: SceneAdjustmentFrame?
     private var authoredImageEnvironment: PhysicalPipelineAuthoringState.Environment?
     private var environmentSourceHash: String?
     private var environmentSourceInputTransformID: String?
@@ -915,7 +919,20 @@ final class WorkspaceModel: ObservableObject {
                 width: decoded.width, height: decoded.height,
                 encodedRGBA: decoded.rgba, input: input, alpha: .ignore
             )
-            let environment = try EnvironmentRadianceFrame.prefiltered(from: source)
+            environmentSourceACEScgFrame = source
+            let selection = currentTestAuthoringSelection()
+            let environmentAdjustment = SceneAdjustmentParameters(
+                exposureEV: 0,
+                contrast: selection?.environmentContrast ?? 1,
+                saturation: selection?.environmentSaturation ?? 1,
+                temperatureKelvin: selection?.environmentTemperatureKelvin ?? 6500,
+                tint: selection?.environmentTint ?? 0
+            )
+            let adjusted = try SceneAdjustmentFrame(
+                source: source, parameters: environmentAdjustment, incidentRadiance: true
+            )
+            environmentAdjustmentOwner = adjusted
+            let environment = try EnvironmentRadianceFrame.prefiltered(from: adjusted.frame)
             guard var authored = physicalAuthoringState else { return }
             authored.environment.sourceKind = 1
             authored.environment.sourceUnitRadianceCandelasPerSquareMeter = unitRadiance
@@ -1989,7 +2006,8 @@ final class WorkspaceModel: ObservableObject {
                 width: decoded.width, height: decoded.height, encodedRGBA: decoded.rgba,
                 input: inputTransform, alpha: effectiveAlpha
             )
-            sourceACEScgFrame = base
+            originACEScgFrame = base
+            sourceACEScgFrame = try adjustedSourceFrame(base)
             physicalModel.invalidateExternalParameters()
             metalFrame = base
             if let metalFrame {
@@ -2022,7 +2040,8 @@ final class WorkspaceModel: ObservableObject {
             pixelBuffer: sample.pixelBuffer, input: inputTransform,
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
         )
-        sourceACEScgFrame = base
+        originACEScgFrame = base
+        sourceACEScgFrame = try adjustedSourceFrame(base)
         physicalModel.invalidateExternalParameters()
         metalFrame = base
         if let metalFrame {
@@ -2035,6 +2054,22 @@ final class WorkspaceModel: ObservableObject {
         publishSelectedTestPreview()
     }
 
+    private func adjustedSourceFrame(_ origin: StudioColorMetalFrame) throws -> StudioColorMetalFrame {
+        let selection = testAuthoringSelection
+        let parameters = SceneAdjustmentParameters(
+            exposureEV: selection?.sourceExposureEV ?? 0,
+            contrast: selection?.sourceContrast ?? 1,
+            saturation: selection?.sourceSaturation ?? 1,
+            temperatureKelvin: selection?.sourceTemperatureKelvin ?? 6500,
+            tint: selection?.sourceTint ?? 0
+        )
+        let owner = try SceneAdjustmentFrame(
+            source: origin, parameters: parameters, incidentRadiance: false
+        )
+        sourceAdjustmentOwner = owner
+        return owner.frame
+    }
+
     private func renderFrame(_ index: Int) async throws -> StudioColorMetalFrame {
         if sourceIsPattern {
             let decoded = try selectedPattern.frame(time: Double(index) / frameRate)
@@ -2042,7 +2077,7 @@ final class WorkspaceModel: ObservableObject {
                 width: decoded.width, height: decoded.height,
                 encodedRGBA: decoded.rgba, input: inputTransform, alpha: effectiveAlpha
             )
-            return base
+            return try adjustedSourceFrame(base)
         }
         let time = session.time(forFrame: index)
         try Task.checkCancellation()
@@ -2053,7 +2088,7 @@ final class WorkspaceModel: ObservableObject {
             pixelBuffer: sample.pixelBuffer, input: inputTransform,
             alpha: effectiveAlpha, matrix: effectiveMatrix, range: effectiveRange
         )
-        return base
+        return try adjustedSourceFrame(base)
     }
 
     private func rebuildPhysicalSelectedFrame() {
@@ -2183,11 +2218,19 @@ final class WorkspaceModel: ObservableObject {
             )
         }
         let outputSignal = try resolvedOutputSignal()
+        let authoringSelection = currentTestAuthoringSelection()
         let checkpoint = try DeviceSignalCheckpoint.prepare(
             sourceACEScg: sourceACEScgFrame,
             inputTransform: inputTransform,
             outputSignal: outputSignal,
             alphaInterpretation: String(describing: effectiveAlpha),
+            sourceAdjustment: .init(
+                exposureEV: authoringSelection?.sourceExposureEV ?? 0,
+                contrast: authoringSelection?.sourceContrast ?? 1,
+                saturation: authoringSelection?.sourceSaturation ?? 1,
+                temperatureKelvin: authoringSelection?.sourceTemperatureKelvin ?? 6500,
+                tint: authoringSelection?.sourceTint ?? 0
+            ),
             display: metalDisplay
         )
         deviceSignalCheckpoint = checkpoint
@@ -2304,6 +2347,19 @@ final class WorkspaceModel: ObservableObject {
         _ selection: TestAuthoringResolvedSelection
     ) throws {
         let previous = testAuthoringSelection
+        let sourceAdjustmentChanged = previous.map {
+            $0.sourceExposureEV != selection.sourceExposureEV
+                || $0.sourceContrast != selection.sourceContrast
+                || $0.sourceSaturation != selection.sourceSaturation
+                || $0.sourceTemperatureKelvin != selection.sourceTemperatureKelvin
+                || $0.sourceTint != selection.sourceTint
+        } ?? false
+        let environmentAdjustmentChanged = previous.map {
+            $0.environmentContrast != selection.environmentContrast
+                || $0.environmentSaturation != selection.environmentSaturation
+                || $0.environmentTemperatureKelvin != selection.environmentTemperatureKelvin
+                || $0.environmentTint != selection.environmentTint
+        } ?? false
         if previous?.deliveryWidth != selection.deliveryWidth
             || previous?.deliveryHeight != selection.deliveryHeight
             || previous?.deliveryPlacementID != selection.deliveryPlacementID
@@ -2341,6 +2397,26 @@ final class WorkspaceModel: ObservableObject {
             )
         }
         testAuthoringSelection = selection
+        if sourceAdjustmentChanged, let originACEScgFrame {
+            sourceACEScgFrame = try adjustedSourceFrame(originACEScgFrame)
+        }
+        if environmentAdjustmentChanged,
+           let environmentSourceACEScgFrame,
+           selection.environmentSourceID == "environment-image" {
+            let adjusted = try SceneAdjustmentFrame(
+                source: environmentSourceACEScgFrame,
+                parameters: .init(
+                    exposureEV: 0,
+                    contrast: selection.environmentContrast,
+                    saturation: selection.environmentSaturation,
+                    temperatureKelvin: selection.environmentTemperatureKelvin,
+                    tint: selection.environmentTint
+                ),
+                incidentRadiance: true
+            )
+            environmentAdjustmentOwner = adjusted
+            environmentRadianceFrame = try EnvironmentRadianceFrame.prefiltered(from: adjusted.frame)
+        }
         sourcePlacement = placement
         try physicalModel.setContinuousAmount(
             selection.subpixelGeometryAmount,
@@ -2525,6 +2601,7 @@ final class WorkspaceModel: ObservableObject {
         for result: TestPreviewResultKind?
     ) -> PhysicalIntermediate? {
         switch result {
+        case .sourceAdjustment: nil
         case .feederSignal: .deviceSignal
         case .deviceInterpretation: .panelEmission
         case .panelStructure: .subpixelRadiance
@@ -2558,6 +2635,9 @@ final class WorkspaceModel: ObservableObject {
         let presentationFrame: StudioColorMetalFrame
         switch result {
         case .sourceACEScg:
+            updateRequestedPhysicalIntermediate(.sourceACEScg)
+            presentationFrame = originACEScgFrame ?? sourceACEScgFrame
+        case .sourceAdjustment:
             updateRequestedPhysicalIntermediate(.sourceACEScg)
             presentationFrame = sourceACEScgFrame
         case .feederSignal:
