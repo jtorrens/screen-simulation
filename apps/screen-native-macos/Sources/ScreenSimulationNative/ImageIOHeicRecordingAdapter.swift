@@ -83,7 +83,8 @@ enum ImageIOHeicRecordingAdapter {
         colorSpace: CGColorSpace
     ) throws -> Data {
         let destinationTypes = CGImageDestinationCopyTypeIdentifiers() as NSArray
-        guard destinationTypes.contains(UTType.heic.identifier)
+        let type = request.profileID == "generic-jpeg-photo-v1" ? UTType.jpeg : UTType.heic
+        guard destinationTypes.contains(type.identifier)
         else { throw ImageIOHeicRecordingError.unavailableEncoder }
         let provider = CGDataProvider(data: Data(request.rgba8) as CFData)
         guard let provider,
@@ -106,7 +107,7 @@ enum ImageIOHeicRecordingAdapter {
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             output,
-            UTType.heic.identifier as CFString,
+            type.identifier as CFString,
             1,
             nil
         ) else { throw ImageIOHeicRecordingError.unavailableEncoder }

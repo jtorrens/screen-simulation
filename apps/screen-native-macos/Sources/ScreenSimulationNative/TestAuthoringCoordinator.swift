@@ -135,7 +135,7 @@ enum RustTestAuthoringCoordinator {
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV20()
+                var output = ScreenTestAuthoringSelectionV21()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
                     inputView, deviceView, Float(frameRate), &output, &error
@@ -252,7 +252,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV20()
+                        var output = ScreenTestAuthoringSelectionV21()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -269,7 +269,7 @@ enum RustTestAuthoringCoordinator {
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV20()
+                    var output = ScreenTestAuthoringSelectionV21()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -285,7 +285,7 @@ enum RustTestAuthoringCoordinator {
         case let .setToggle(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV20()
+                    var output = ScreenTestAuthoringSelectionV21()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_toggle(
                         rawSelection, controlView, value, &output, &error
@@ -407,7 +407,7 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV20
+        _ raw: ScreenTestAuthoringSelectionV21
     ) -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
@@ -495,7 +495,7 @@ enum RustTestAuthoringCoordinator {
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV20>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV21>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -516,7 +516,7 @@ enum RustTestAuthoringCoordinator {
                                             try withUTF8View(selection.recordingOutputTransformID) { recordingOutputView in
                                                 try withUTF8View(selection.recordingProfileID) { recordingProfileView in
                                                 try withUTF8View(selection.environmentProjectionID) { environmentProjectionView in
-                                                    var raw = ScreenTestAuthoringSelectionV20()
+                                                    var raw = ScreenTestAuthoringSelectionV21()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView

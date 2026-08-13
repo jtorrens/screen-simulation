@@ -354,15 +354,10 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
         }
         .validate()
         .map_err(|error| error.to_string())?,
-        recording_output_transform: RecordingOutputTransform::from_stable_id(
-            package.shot.recording.output_transform_id.as_str(),
+        recording_output_transform: screen_application::recording_output_transform_for_profile(
+            package.shot.recording.profile_id.as_str(),
         )
-        .ok_or_else(|| {
-            format!(
-                "unknown recording output transform: {}",
-                package.shot.recording.output_transform_id.as_str()
-            )
-        })?,
+        .map_err(|error| error.to_string())?,
         recording: prepare_recording_request(RecordingSelection {
             profile_id: package.shot.recording.profile_id.as_str(),
             character: package.shot.recording.character,
@@ -680,7 +675,6 @@ mod tests {
                     background: screen_persistence::DeliveryBackgroundDocument::Black,
                 },
                 recording: RecordingSelectionDocument {
-                    output_transform_id: id("iphone-heic-display-p3-srgb-full-v2"),
                     profile_id: id("iphone-heic-photo-v1"),
                     character: 1.0,
                 },
@@ -805,12 +799,6 @@ mod tests {
             }
         );
 
-        package.shot.recording.output_transform_id = id("display-p3");
-        assert!(matches!(
-            map_project_scene(&package),
-            Err(error) if error.contains("unknown recording output transform")
-        ));
-        package.shot.recording.output_transform_id = id("iphone-heic-display-p3-srgb-full-v2");
         package.shot.recording.profile_id = id("iphone-heic-photo");
         assert!(matches!(
             map_project_scene(&package),

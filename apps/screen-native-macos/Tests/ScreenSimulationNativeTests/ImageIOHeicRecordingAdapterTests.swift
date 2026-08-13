@@ -80,6 +80,55 @@ import UniformTypeIdentifiers
     })
 }
 
+@Test func imageIOJpegAdapterExecutesOneRealIntraRoundTrip() throws {
+    let width = 96
+    let height = 64
+    var rgba = [UInt8](repeating: 255, count: width * height * 4)
+    for index in stride(from: 0, to: rgba.count, by: 4) {
+        rgba[index] = UInt8((index / 4) % 251)
+        rgba[index + 1] = 96
+        rgba[index + 2] = 210
+    }
+    let result = try ImageIOHeicRecordingAdapter.roundTrip(.init(
+        profileID: "generic-jpeg-photo-v1",
+        width: width,
+        height: height,
+        quality: 0.9,
+        colorSpace: .rec709,
+        rgba8: rgba
+    ))
+    #expect(result.profileID == "generic-jpeg-photo-v1")
+    #expect(result.encodedBytes > 0)
+    #expect(result.rgba8.count == rgba.count)
+}
+
+@Test func avFoundationRecordingAdapterExecutesAllBundledVideoProfiles() throws {
+    let width = 96
+    let height = 64
+    var rgba = [UInt8](repeating: 255, count: width * height * 4)
+    for index in stride(from: 0, to: rgba.count, by: 4) {
+        rgba[index] = UInt8((index / 4) % 251)
+        rgba[index + 1] = 128
+        rgba[index + 2] = 220
+    }
+    for profile in [
+        "generic-hevc-main10-video-v1",
+        "generic-h264-high-video-v1",
+        "generic-prores-422-hq-v1",
+    ] {
+        let result = try AVFoundationRecordingAdapter.roundTrip(
+            profileID: profile,
+            width: width,
+            height: height,
+            bitsPerSecond: 4_000_000,
+            rgba8: rgba
+        )
+        #expect(result.encodedData.count > 0)
+        #expect(result.encodedSHA256.count == 32)
+        #expect(result.rgba8.count == rgba.count)
+    }
+}
+
 @MainActor
 @Test func recordingOutputUsesTheExactDisplayP3SrgbTransferExpectedByImageIO() throws {
     let display = try StudioColorMetalDisplay()

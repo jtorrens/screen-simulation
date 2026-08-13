@@ -2,7 +2,7 @@
 
 Status: normative.
 
-The current schema version is 17. The source document requires one named Input Transform. The simulation request requires one independently authored Output Signal resolved by `screen-color`. The device document requires one stable Panel-owned Color Mode interpretation and carries the complete materialized optical-cover profile, including its required nested anti-glare microtexture realization and glow kernel, fixed spatial-uniformity profile and temporal-emission profile in addition to the LCD profile. The microtexture block explicitly stores character strength, RMS slope, physical correlation length in micrometers, anisotropy and stable seed; none may be supplied by a preset or inferred during opening. The current shot document carries the complete authored synthetic-HDR environment profile, including its required spherical-pattern identity, explicit X/Y rotations and ACEScg radiance values. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs.
+The current schema version is 19. The source document requires one named Input Transform. The simulation request requires one independently authored Output Signal resolved by `screen-color`. The device document requires one stable Panel-owned Color Mode interpretation and carries the complete materialized optical-cover profile, including its required nested anti-glare microtexture realization and glow kernel, fixed spatial-uniformity profile and temporal-emission profile in addition to the LCD profile. The microtexture block explicitly stores character strength, RMS slope, physical correlation length in micrometers, anisotropy and stable seed; none may be supplied by a preset or inferred during opening. The current shot document carries the complete authored synthetic-HDR environment profile, including its required spherical-pattern identity, explicit X/Y rotations and ACEScg radiance values. Bundled device, cover and environment ids are non-authoritative authoring provenance only; normal opening and evaluation never consult those catalogs.
 
 The portable project is a `.screensim` package directory with one strict root manifest and separate owner documents for sources, device profiles, camera/screen tracks and simulation shots. SQLite is not a project format.
 
@@ -12,7 +12,7 @@ Project documents contain portable relative references and stable opaque ids. Ma
 
 Normal open validates without writing. Each document has one current schema and version. Unknown versions, unknown fields, missing required values and invalid references fail explicitly.
 
-The authored Recording selection is mandatory: exact recording-output transform id, exact codec profile id and finite Character. It is never inferred from filename, extension, container, export format or camera preset.
+The authored Recording selection is mandatory: exact codec profile id and finite Character. Application resolves the one Color-owned recording-output transform required by that profile; persistence cannot author a contradictory pair. Profile identity is never inferred from filename, extension, container, export format or raster values. Capture presets provide only the explicit initial recommendation for new authoring and never alter a persisted selection while opening.
 
 Current camera intrinsics require the bounded lens veiling-glare fraction. It is
 materialized authoring data like every other lens coefficient; a preset id can never supply it at

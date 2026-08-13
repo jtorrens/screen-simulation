@@ -34,6 +34,7 @@ enum RecordingPhaseExecutor {
     static let iphoneHeicOutputTransformID = "iphone-heic-display-p3-srgb-full-v2"
     static let iphoneHeicProfileID = "iphone-heic-photo-v1"
     static let calibratedHeicQuality = 0.82
+    static let genericJpegProfileID = "generic-jpeg-photo-v1"
 
     static func delivery(
         cameraRendered: StudioColorMetalFrame,
@@ -130,10 +131,6 @@ enum RecordingPhaseExecutor {
         character: Double,
         display: StudioColorMetalDisplay
     ) throws -> RecordingCodecExecution {
-        guard profileID == iphoneHeicProfileID else {
-            throw RecordingPhaseExecutionError.unsupportedProfile(profileID)
-        }
-        let quality = min(max(calibratedHeicQuality / max(character, 0.0001), 0), 1)
         if character == 0 {
             return RecordingCodecExecution(
                 frame: output.frame,
@@ -143,29 +140,59 @@ enum RecordingPhaseExecutor {
                 encodedSHA256Hex: ""
             )
         }
-        let result = try ImageIOHeicRecordingAdapter.roundTrip(.init(
-            profileID: profileID,
-            width: output.frame.width,
-            height: output.frame.height,
-            quality: quality,
-            colorSpace: .displayP3D65,
-            rgba8: output.rgba8
-        ))
-        var encoded = result.rgba8.map { Float($0) / 255 }
-        try inverse(&encoded, transformID: iphoneHeicOutputTransformID, width: result.width, height: result.height)
+        let decoded: [UInt8]
+        let data: Data
+        let hash: [UInt8]
+        let width: Int
+        let height: Int
+        let transformID: String
+        if profileID == iphoneHeicProfileID || profileID == genericJpegProfileID {
+            let quality = min(max(calibratedHeicQuality / max(character, 0.0001), 0), 1)
+            let result = try ImageIOHeicRecordingAdapter.roundTrip(.init(
+                profileID: profileID,
+                width: output.frame.width,
+                height: output.frame.height,
+                quality: quality,
+                colorSpace: profileID == iphoneHeicProfileID ? .displayP3D65 : .rec709,
+                rgba8: output.rgba8
+            ))
+            decoded = result.rgba8
+            data = result.encodedData
+            hash = result.encodedSHA256
+            width = result.width
+            height = result.height
+            transformID = profileID == iphoneHeicProfileID
+                ? iphoneHeicOutputTransformID : "generic-srgb-recording-full-v1"
+        } else {
+            let result = try AVFoundationRecordingAdapter.roundTrip(
+                profileID: profileID,
+                width: output.frame.width,
+                height: output.frame.height,
+                bitsPerSecond: Int(80_000_000 / max(character, 0.25)),
+                rgba8: output.rgba8
+            )
+            decoded = result.rgba8
+            data = result.encodedData
+            hash = result.encodedSHA256
+            width = result.width
+            height = result.height
+            transformID = "generic-rec709-recording-full-v1"
+        }
+        var encoded = decoded.map { Float($0) / 255 }
+        try inverse(&encoded, transformID: transformID, width: width, height: height)
         let frame = try display.makeACEScgFrame(
-            width: result.width,
-            height: result.height,
+            width: width,
+            height: height,
             encodedRGBA: encoded,
             input: try acescgInput(),
             alpha: .ignore
         )
         return RecordingCodecExecution(
             frame: frame,
-            decodedRGBA8: result.rgba8,
-            encodedData: result.encodedData,
-            encodedBytes: result.encodedBytes,
-            encodedSHA256Hex: result.encodedSHA256.map { String(format: "%02x", $0) }.joined()
+            decodedRGBA8: decoded,
+            encodedData: data,
+            encodedBytes: data.count,
+            encodedSHA256Hex: hash.map { String(format: "%02x", $0) }.joined()
         )
     }
 

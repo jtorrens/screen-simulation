@@ -8,17 +8,20 @@ use screen_camera::CameraRenderingIntent;
 use screen_color::{
     DeviceColorTarget, OcioInputTransform, RecordingOutputTransform, SceneLinearAdjustment,
 };
+use screen_contracts::FrameRate;
 use screen_cover::{
     COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset, environment_preset,
 };
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 use screen_recording::{
-    EncoderExecutionPolicy, GENERIC_JPEG_PHOTO_PROFILE_ID, IPHONE_HEIC_PHOTO_PROFILE_ID,
-    RecordingMedium, bundled_profiles,
+    EncoderExecutionPolicy, GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
+    GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, GENERIC_JPEG_PHOTO_PROFILE_ID,
+    GENERIC_PRORES_422_HQ_PROFILE_ID, IPHONE_HEIC_PHOTO_PROFILE_ID, RecordingMedium,
+    bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 24;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 25;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -119,6 +122,49 @@ pub const DELIVERY_BACKGROUND_CONTROL_ID: &str = "delivery-background";
 pub const RECORDING_OUTPUT_TRANSFORM_CONTROL_ID: &str = "recording-output-transform";
 pub const RECORDING_PROFILE_CONTROL_ID: &str = "recording-profile";
 pub const RECORDING_CHARACTER_CONTROL_ID: &str = "recording-character";
+
+fn recording_profile_options(capture: CaptureDevicePreset) -> Vec<TestChoiceOption> {
+    bundled_profiles()
+        .into_iter()
+        .map(|profile| {
+            let common = capture
+                .recommended_recording_profile_ids
+                .contains(&profile.id);
+            let label = match (profile.id, common) {
+                (IPHONE_HEIC_PHOTO_PROFILE_ID, true) => "Habitual · HEIC · foto",
+                (GENERIC_JPEG_PHOTO_PROFILE_ID, true) => "Habitual · JPEG · foto",
+                (GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, true) => "Habitual · HEVC Main 10 · vídeo",
+                (GENERIC_H264_HIGH_VIDEO_PROFILE_ID, true) => "Habitual · H.264 High · vídeo",
+                (GENERIC_PRORES_422_HQ_PROFILE_ID, true) => "Habitual · ProRes 422 HQ · vídeo",
+                (IPHONE_HEIC_PHOTO_PROFILE_ID, false) => "Disponible · HEIC · foto",
+                (GENERIC_JPEG_PHOTO_PROFILE_ID, false) => "Disponible · JPEG · foto",
+                (GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, false) => {
+                    "Disponible · HEVC Main 10 · vídeo"
+                }
+                (GENERIC_H264_HIGH_VIDEO_PROFILE_ID, false) => "Disponible · H.264 High · vídeo",
+                (GENERIC_PRORES_422_HQ_PROFILE_ID, false) => "Disponible · ProRes 422 HQ · vídeo",
+                _ => "Disponible · formato de grabación",
+            };
+            TestChoiceOption {
+                id: profile.id,
+                label,
+            }
+        })
+        .collect()
+}
+
+pub fn recording_output_transform_for_profile(
+    profile_id: &str,
+) -> Result<RecordingOutputTransform, TestAuthoringError> {
+    match profile_id {
+        IPHONE_HEIC_PHOTO_PROFILE_ID => Ok(RecordingOutputTransform::IphoneHeicDisplayP3SrgbFull),
+        GENERIC_JPEG_PHOTO_PROFILE_ID => Ok(RecordingOutputTransform::GenericSrgbFull),
+        GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID
+        | GENERIC_H264_HIGH_VIDEO_PROFILE_ID
+        | GENERIC_PRORES_422_HQ_PROFILE_ID => Ok(RecordingOutputTransform::GenericRec709Full),
+        _ => Err(TestAuthoringError::InvalidRecording),
+    }
+}
 
 const PLACEMENTS: [TestChoiceOption; 4] = [
     TestChoiceOption {
@@ -757,14 +803,6 @@ fn default_output_for_input(input: OcioInputTransform) -> DeviceColorTarget {
     }
 }
 
-fn recording_profile_label(id: &str) -> &'static str {
-    match id {
-        IPHONE_HEIC_PHOTO_PROFILE_ID => "iPhone HEIC Photo",
-        GENERIC_JPEG_PHOTO_PROFILE_ID => "Generic JPEG Photo",
-        _ => unreachable!("only bundled still profiles are presented by Test"),
-    }
-}
-
 pub fn default_test_authoring_selection(
     input_transform_id: &str,
     device_id: &str,
@@ -1124,12 +1162,27 @@ pub fn resolve_test_authoring_selection(
         TestAuthoringError::InvalidDeliveryRaster,
     )?;
     let recording_output_transform =
-        RecordingOutputTransform::from_stable_id(selection.recording_output_transform_id)
-            .ok_or(TestAuthoringError::UnknownRecordingOutputTransform)?;
+        recording_output_transform_for_profile(selection.recording_profile_id)?;
+    if recording_output_transform.stable_id() != selection.recording_output_transform_id {
+        return Err(TestAuthoringError::UnknownRecordingOutputTransform);
+    }
+    let selected_profile = bundled_profiles()
+        .into_iter()
+        .find(|profile| profile.id == selection.recording_profile_id)
+        .ok_or(TestAuthoringError::InvalidRecording)?;
+    let recording_frame_rate = if selected_profile.codec.medium() == RecordingMedium::MovingImage {
+        let rounded = selection.frame_rate.round();
+        if (selection.frame_rate - rounded).abs() > 1.0e-6 {
+            return Err(TestAuthoringError::InvalidRecording);
+        }
+        Some(FrameRate::new(rounded as u32, 1).map_err(|_| TestAuthoringError::InvalidRecording)?)
+    } else {
+        None
+    };
     let recording = prepare_recording_request(RecordingSelection {
         profile_id: selection.recording_profile_id,
         character: selection.recording_character,
-        frame_rate: None,
+        frame_rate: recording_frame_rate,
         first_frame_index: 0,
         frame_count: 1,
         execution: EncoderExecutionPolicy::SINGLE_PASS,
@@ -1335,21 +1388,7 @@ pub fn test_page_descriptor(
         id: IMAGE_ENVIRONMENT_SOURCE_ID,
         label: "HDRI / EXR seleccionado",
     });
-    let recording_output_options = RecordingOutputTransform::ALL
-        .into_iter()
-        .map(|transform| TestChoiceOption {
-            id: transform.stable_id(),
-            label: "iPhone HEIC · Display P3 / sRGB",
-        })
-        .collect();
-    let recording_profile_options = bundled_profiles()
-        .into_iter()
-        .filter(|profile| profile.codec.medium() == RecordingMedium::StillImage)
-        .map(|profile| TestChoiceOption {
-            id: profile.id,
-            label: recording_profile_label(profile.id),
-        })
-        .collect();
+    let recording_profile_options = recording_profile_options(capture);
     let input = OcioInputTransform::from_stable_id(selection.input_transform_id)
         .ok_or(TestAuthoringError::UnknownInputTransform)?;
     let reset_output_signal_id = default_output_for_input(input).stable_id();
@@ -2273,19 +2312,13 @@ pub fn test_page_descriptor(
             },
             TestPhaseDescriptor {
                 id: RECORDING_OUTPUT_PHASE_ID,
-                label: "Salida de grabación",
-                effect_summary: "Transforma el resultado lineal de cámara en la señal no lineal declarada para grabación.",
+                label: "Señal de grabación · diagnóstico",
+                effect_summary: "Muestra la señal interna que recibirá el códec; la previsualización normal vuelve después al monitor.",
                 header_control_id: None,
                 input_artifact: "delivery-acescg-raster-v1",
                 output_artifact: "recording-output-signal-v2",
                 preview_result: TestPreviewResult::RecordingOutput,
-                controls: vec![choice_control(
-                    RECORDING_OUTPUT_TRANSFORM_CONTROL_ID,
-                    "Transformación de salida",
-                    recording_output_options,
-                    selection.recording_output_transform_id,
-                    screen_color::IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
-                )],
+                controls: Vec::new(),
             },
             TestPhaseDescriptor {
                 id: RECORDING_CODEC_PHASE_ID,
@@ -2298,10 +2331,10 @@ pub fn test_page_descriptor(
                 controls: vec![
                     choice_control(
                         RECORDING_PROFILE_CONTROL_ID,
-                        "Perfil de grabación",
+                        "Formato de grabación",
                         recording_profile_options,
                         selection.recording_profile_id,
-                        IPHONE_HEIC_PHOTO_PROFILE_ID,
+                        capture.default_recording_profile_id,
                     ),
                     scalar_control(
                         RECORDING_CHARACTER_CONTROL_ID,
@@ -2381,6 +2414,10 @@ pub fn apply_test_choice(
             next.sensor_bloom_overflow_transfer_fraction =
                 capture.sensor.bloom.overflow_transfer_fraction;
             next.camera_rendering_intent = capture.rendering_intent;
+            next.recording_profile_id = capture.default_recording_profile_id;
+            next.recording_output_transform_id =
+                recording_output_transform_for_profile(capture.default_recording_profile_id)?
+                    .stable_id();
         }
         CAPTURE_RASTER_MODE_CONTROL_ID => next.capture_raster_mode_id = option_id,
         DELIVERY_PRESET_CONTROL_ID => materialize_delivery_preset(&mut next, option_id)?,
@@ -2436,8 +2473,11 @@ pub fn apply_test_choice(
             "thin-lens" | "vfx-2d-dof" => next.lens_evaluation_model_id = option_id,
             _ => return Err(TestAuthoringError::UnknownControl),
         },
-        RECORDING_OUTPUT_TRANSFORM_CONTROL_ID => next.recording_output_transform_id = option_id,
-        RECORDING_PROFILE_CONTROL_ID => next.recording_profile_id = option_id,
+        RECORDING_PROFILE_CONTROL_ID => {
+            next.recording_profile_id = option_id;
+            next.recording_output_transform_id =
+                recording_output_transform_for_profile(option_id)?.stable_id();
+        }
         ENVIRONMENT_PROJECTION_CONTROL_ID => match option_id {
             "distant" | "finite-sphere" => next.environment_projection_id = option_id,
             _ => return Err(TestAuthoringError::UnknownControl),
@@ -3007,6 +3047,50 @@ mod tests {
             (5712, 4284)
         );
         assert_eq!(native.delivery_placement_id, "one-to-one");
+    }
+
+    #[test]
+    fn recording_profiles_are_all_available_and_camera_defaults_are_explicit() {
+        let iphone = test_page_descriptor(asus()).unwrap();
+        let codec = iphone
+            .phases
+            .iter()
+            .find(|phase| phase.id == RECORDING_CODEC_PHASE_ID)
+            .unwrap();
+        let TestControlRequirement::Choice {
+            options, reset_id, ..
+        } = &codec.controls[0]
+        else {
+            panic!("recording profile must be a choice");
+        };
+        assert_eq!(options.len(), bundled_profiles().len());
+        assert_eq!(*reset_id, IPHONE_HEIC_PHOTO_PROFILE_ID);
+        assert!(options.iter().any(|option| {
+            option.id == GENERIC_PRORES_422_HQ_PROFILE_ID && option.label.starts_with("Disponible")
+        }));
+
+        let arri = apply_test_choice(asus(), CAPTURE_PRESET_CONTROL_ID, "arri-alexa-35-open-gate")
+            .unwrap();
+        assert_eq!(arri.recording_profile_id, GENERIC_PRORES_422_HQ_PROFILE_ID);
+        assert_eq!(
+            arri.recording_output_transform_id,
+            screen_color::GENERIC_REC709_RECORDING_OUTPUT_TRANSFORM_ID
+        );
+        let arri_page = test_page_descriptor(unresolved_test_selection(arri)).unwrap();
+        let arri_codec = arri_page
+            .phases
+            .iter()
+            .find(|phase| phase.id == RECORDING_CODEC_PHASE_ID)
+            .unwrap();
+        let TestControlRequirement::Choice { options, .. } = &arri_codec.controls[0] else {
+            panic!("recording profile must be a choice");
+        };
+        assert!(options.iter().any(|option| {
+            option.id == IPHONE_HEIC_PHOTO_PROFILE_ID && option.label.starts_with("Disponible")
+        }));
+        assert!(options.iter().any(|option| {
+            option.id == GENERIC_PRORES_422_HQ_PROFILE_ID && option.label.starts_with("Habitual")
+        }));
     }
 
     #[test]

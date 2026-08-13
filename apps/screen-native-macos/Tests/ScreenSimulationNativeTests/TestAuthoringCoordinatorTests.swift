@@ -142,7 +142,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         "Cristal y entorno", "Resplandor del cristal", "Objetivo y proyección",
         "Exposición y obturador", "Captura computacional", "Crosstalk y bloom del sensor",
         "Sensor y CFA", "Ruido del sensor", "Revelado y demosaico",
-        "Intención de render de cámara", "Raster de entrega", "Salida de grabación",
+        "Intención de render de cámara", "Raster de entrega", "Señal de grabación · diagnóstico",
         "Códec de grabación",
     ])
     #expect(snapshot.presentation.selectedPhaseID == snapshot.presentation.phases.last?.id)

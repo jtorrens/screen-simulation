@@ -164,18 +164,28 @@ pub const OCIO_CONFIGURATION_ID: &str = "studio-config-v4.0.0_aces-v2.0_ocio-v2.
 const ACESCG_COLOR_SPACE: &str = "ACEScg";
 pub const RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID: &str = "recording-output-signal-v2";
 pub const IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID: &str = "iphone-heic-display-p3-srgb-full-v2";
+pub const GENERIC_SRGB_RECORDING_OUTPUT_TRANSFORM_ID: &str = "generic-srgb-recording-full-v1";
+pub const GENERIC_REC709_RECORDING_OUTPUT_TRANSFORM_ID: &str = "generic-rec709-recording-full-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordingOutputTransform {
     IphoneHeicDisplayP3SrgbFull,
+    GenericSrgbFull,
+    GenericRec709Full,
 }
 
 impl RecordingOutputTransform {
-    pub const ALL: [Self; 1] = [Self::IphoneHeicDisplayP3SrgbFull];
+    pub const ALL: [Self; 3] = [
+        Self::IphoneHeicDisplayP3SrgbFull,
+        Self::GenericSrgbFull,
+        Self::GenericRec709Full,
+    ];
 
     pub const fn stable_id(self) -> &'static str {
         match self {
             Self::IphoneHeicDisplayP3SrgbFull => IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
+            Self::GenericSrgbFull => GENERIC_SRGB_RECORDING_OUTPUT_TRANSFORM_ID,
+            Self::GenericRec709Full => GENERIC_REC709_RECORDING_OUTPUT_TRANSFORM_ID,
         }
     }
 
@@ -190,6 +200,18 @@ impl RecordingOutputTransform {
             Self::IphoneHeicDisplayP3SrgbFull => EncodedColorMetadata {
                 primaries: Some(ColorPrimaries::P3D65),
                 transfer: Some(TransferCharacteristic::Srgb),
+                matrix: Some(MatrixCoefficients::Rgb),
+                range: Some(SignalRange::Full),
+            },
+            Self::GenericSrgbFull => EncodedColorMetadata {
+                primaries: Some(ColorPrimaries::Bt709),
+                transfer: Some(TransferCharacteristic::Srgb),
+                matrix: Some(MatrixCoefficients::Rgb),
+                range: Some(SignalRange::Full),
+            },
+            Self::GenericRec709Full => EncodedColorMetadata {
+                primaries: Some(ColorPrimaries::Bt709),
+                transfer: Some(TransferCharacteristic::Bt709),
                 matrix: Some(MatrixCoefficients::Rgb),
                 range: Some(SignalRange::Full),
             },
@@ -668,6 +690,18 @@ impl ColorEngine {
                 "ACES 2.0 - SDR 100 nits (P3 D65)",
                 TransformDirection::Forward,
             ),
+            RecordingOutputTransform::GenericSrgbFull => self.config.processor_display(
+                ACESCG_COLOR_SPACE,
+                "sRGB - Display",
+                "ACES 2.0 - SDR 100 nits (Rec.709)",
+                TransformDirection::Forward,
+            ),
+            RecordingOutputTransform::GenericRec709Full => self.config.processor_display(
+                ACESCG_COLOR_SPACE,
+                "Rec.1886 Rec.709 - Display",
+                "ACES 2.0 - SDR 100 nits (Rec.709)",
+                TransformDirection::Forward,
+            ),
         }
         .and_then(|processor| processor.default_cpu_processor())
         .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
@@ -686,6 +720,18 @@ impl ColorEngine {
                 ACESCG_COLOR_SPACE,
                 "Display P3 - Display",
                 "ACES 2.0 - SDR 100 nits (P3 D65)",
+                TransformDirection::Inverse,
+            ),
+            RecordingOutputTransform::GenericSrgbFull => self.config.processor_display(
+                ACESCG_COLOR_SPACE,
+                "sRGB - Display",
+                "ACES 2.0 - SDR 100 nits (Rec.709)",
+                TransformDirection::Inverse,
+            ),
+            RecordingOutputTransform::GenericRec709Full => self.config.processor_display(
+                ACESCG_COLOR_SPACE,
+                "Rec.1886 Rec.709 - Display",
+                "ACES 2.0 - SDR 100 nits (Rec.709)",
                 TransformDirection::Inverse,
             ),
         }

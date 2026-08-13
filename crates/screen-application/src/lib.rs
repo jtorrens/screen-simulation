@@ -23,7 +23,7 @@ pub use test_authoring::{
     TestAuthoringSelection, TestChoiceOption, TestControlRequirement, TestPageDescriptor,
     TestPhaseDescriptor, TestPreviewResult, WHITE_LUMINANCE_CONTROL_ID, apply_test_choice,
     apply_test_scalar, apply_test_toggle, default_test_authoring_selection,
-    resolve_test_authoring_selection, test_page_descriptor,
+    recording_output_transform_for_profile, resolve_test_authoring_selection, test_page_descriptor,
 };
 
 use core::fmt;
@@ -317,6 +317,8 @@ pub struct CaptureDevicePreset {
     pub sensor: SensorProfile,
     pub raster_modes: [CaptureRasterMode; 3],
     pub default_raster_mode_id: &'static str,
+    pub default_recording_profile_id: &'static str,
+    pub recommended_recording_profile_ids: &'static [&'static str],
     pub default_lens_evaluation_model: LensEvaluationModel,
     pub computational_capture: ComputationalCaptureProfile,
     pub rendering_intent: CameraRenderingIntent,
@@ -373,6 +375,8 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 2304×1582", 2_304, 1_582),
         ],
         default_raster_mode_id: CAPTURE_RASTER_FULL_ID,
+        default_recording_profile_id: screen_recording::GENERIC_PRORES_422_HQ_PROFILE_ID,
+        recommended_recording_profile_ids: &[screen_recording::GENERIC_PRORES_422_HQ_PROFILE_ID],
         default_lens_evaluation_model: LensEvaluationModel::ThinLens,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
@@ -431,6 +435,13 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 4032×3024", 4_032, 3_024),
         ],
         default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
+        default_recording_profile_id: screen_recording::IPHONE_HEIC_PHOTO_PROFILE_ID,
+        recommended_recording_profile_ids: &[
+            screen_recording::IPHONE_HEIC_PHOTO_PROFILE_ID,
+            screen_recording::GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
+            screen_recording::GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
+            screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
+        ],
         default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 8,
@@ -491,6 +502,8 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 1536×1152", 1_536, 1_152),
         ],
         default_raster_mode_id: CAPTURE_RASTER_FULL_ID,
+        default_recording_profile_id: screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
+        recommended_recording_profile_ids: &[screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID],
         default_lens_evaluation_model: LensEvaluationModel::ThinLens,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
@@ -538,6 +551,13 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 4032×3024", 4_032, 3_024),
         ],
         default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
+        default_recording_profile_id: screen_recording::IPHONE_HEIC_PHOTO_PROFILE_ID,
+        recommended_recording_profile_ids: &[
+            screen_recording::IPHONE_HEIC_PHOTO_PROFILE_ID,
+            screen_recording::GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
+            screen_recording::GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
+            screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
+        ],
         default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
@@ -594,6 +614,13 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 2016×1512", 2_016, 1_512),
         ],
         default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
+        default_recording_profile_id: screen_recording::IPHONE_HEIC_PHOTO_PROFILE_ID,
+        recommended_recording_profile_ids: &[
+            screen_recording::IPHONE_HEIC_PHOTO_PROFILE_ID,
+            screen_recording::GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
+            screen_recording::GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
+            screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
+        ],
         default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
@@ -7565,6 +7592,23 @@ mod tests {
     fn bundled_capture_presets_are_complete_unique_authoring_templates() {
         let mut ids = HashSet::new();
         for preset in CAPTURE_DEVICE_PRESETS {
+            assert!(
+                preset
+                    .recommended_recording_profile_ids
+                    .contains(&preset.default_recording_profile_id),
+                "{} recording default must be explicitly recommended",
+                preset.id
+            );
+            for profile_id in preset.recommended_recording_profile_ids {
+                assert!(
+                    screen_recording::bundled_profiles()
+                        .iter()
+                        .any(|profile| profile.id == *profile_id),
+                    "{} recommends unknown recording profile {}",
+                    preset.id,
+                    profile_id
+                );
+            }
             assert!(ids.insert(preset.id));
             preset.sensor.validate().expect("valid sensor profile");
             preset

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 18;
+pub const CURRENT_VERSION: u32 = 19;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -418,7 +418,6 @@ pub struct SceneLinearAdjustmentDocument {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordingSelectionDocument {
-    pub output_transform_id: OpaqueId,
     pub profile_id: OpaqueId,
     pub character: f32,
 }
@@ -600,8 +599,7 @@ impl ProjectPackage {
         {
             return Err(PersistenceError::InvalidCameraDevelopment);
         }
-        if validate_id(&self.shot.recording.output_transform_id).is_err()
-            || validate_id(&self.shot.recording.profile_id).is_err()
+        if validate_id(&self.shot.recording.profile_id).is_err()
             || !self.shot.recording.character.is_finite()
             || !(0.0..=4.0).contains(&self.shot.recording.character)
         {
@@ -1486,7 +1484,6 @@ mod tests {
                     background: DeliveryBackgroundDocument::Black,
                 },
                 recording: RecordingSelectionDocument {
-                    output_transform_id: id("iphone-heic-display-p3-srgb-full-v2"),
                     profile_id: id("iphone-heic-photo-v1"),
                     character: 1.0,
                 },
