@@ -47,6 +47,7 @@ pub struct ProjectScene {
     pub environment: ProceduralEnvironment,
     pub source_adjustment: SceneLinearAdjustment,
     pub environment_adjustment: SceneLinearAdjustment,
+    pub environment_projection: screen_cover::EnvironmentProjection,
     pub camera: CameraRig,
     pub screen: ScreenTrack,
     pub sensor: SensorProfile,
@@ -247,6 +248,16 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             saturation: package.shot.environment.saturation,
             temperature_kelvin: package.shot.environment.temperature_kelvin,
             tint: package.shot.environment.tint,
+        },
+        environment_projection: match package.shot.environment.projection {
+            screen_persistence::EnvironmentProjectionDocument::Distant => {
+                screen_cover::EnvironmentProjection::Distant
+            }
+            screen_persistence::EnvironmentProjectionDocument::FiniteSphere => {
+                screen_cover::EnvironmentProjection::FiniteSphere {
+                    radius_meters: package.shot.environment.sphere_radius_meters,
+                }
+            }
         },
         camera: CameraRig {
             transform: TransformTrack {
@@ -686,6 +697,8 @@ mod tests {
                     saturation: 1.0,
                     temperature_kelvin: 6500.0,
                     tint: 0.0,
+                    projection: screen_persistence::EnvironmentProjectionDocument::Distant,
+                    sphere_radius_meters: 5.0,
                     pattern: screen_persistence::EnvironmentPatternDocument::StudioSoftboxes,
                 },
             },

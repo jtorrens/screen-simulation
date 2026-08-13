@@ -6,6 +6,8 @@ Delivery Raster coverage proves exact centered `1:1` crop/pad, aspect-preserving
 
 Viewer validation proves that the Setup boundary is drawn after viewer scaling with a constant one-logical-pixel stroke and is absent from rendered textures and exports. Environment resource validation rejects a missing scene-referred IDT, non-positive unit radiance, non-finite/out-of-range exposure, undecodable media and any raster that is not exactly equirectangular 2:1; the prepared image resource must be passed to Cover/Environment and must be released when a procedural preset is selected.
 
+Environment Setup coverage requires the exact authored camera/Device projection, selected HDRI, X/Y rotation and distant/finite-sphere mode; its output is a perfect mirror independent of cover roughness, microtexture, panel and sensor. Dolly changes only finite-sphere radius, repeated input is deterministic, and the final physical evaluator consumes the same projection identity and radius.
+
 Source Adjustment validation requires exact neutral identity for negative and above-one ACEScg values, unchanged alpha, finite owner-published limits and CPU/Metal agreement. Environment adjustment requires a selected image source, non-negative finite output after chroma compression, unchanged radiometric ownership and deterministic preparation of the importance hierarchy. Hidden adjustment values on procedural environments are rejected rather than retained.
 
 Capture-preset coverage requires exactly three unique stable `Full`, `Half` and `Quarter` raster identities with explicit nonzero dimensions and an explicit contained default; unknown modes fail at the Application boundary.

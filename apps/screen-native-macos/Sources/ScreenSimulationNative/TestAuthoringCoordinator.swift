@@ -68,13 +68,15 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let coverAgMicrotextureAmount: Double
     let environmentSourceID: String
     let environmentAmount: Double
-    let environmentRotationXDegrees: Double
-    let environmentRotationYDegrees: Double
+    var environmentRotationXDegrees: Double
+    var environmentRotationYDegrees: Double
     let environmentExposureEV: Double
     let environmentContrast: Double
     let environmentSaturation: Double
     let environmentTemperatureKelvin: Double
     let environmentTint: Double
+    var environmentProjectionID: String
+    var environmentSphereRadiusMeters: Double
     let coverGlowAmount: Double
     let lensPresetID: String
     let lensAmount: Double
@@ -455,6 +457,8 @@ enum RustTestAuthoringCoordinator {
             environmentSaturation: Double(raw.environment_saturation),
             environmentTemperatureKelvin: Double(raw.environment_temperature_kelvin),
             environmentTint: Double(raw.environment_tint),
+            environmentProjectionID: string(raw.environment_projection_id),
+            environmentSphereRadiusMeters: Double(raw.environment_sphere_radius_meters),
             coverGlowAmount: Double(raw.cover_glow_amount),
             lensPresetID: string(raw.lens_preset_id),
             lensAmount: Double(raw.lens_amount),
@@ -508,6 +512,7 @@ enum RustTestAuthoringCoordinator {
                                             try withUTF8View(selection.deliveryBackgroundID) { deliveryBackgroundView in
                                             try withUTF8View(selection.recordingOutputTransformID) { recordingOutputView in
                                                 try withUTF8View(selection.recordingProfileID) { recordingProfileView in
+                                                try withUTF8View(selection.environmentProjectionID) { environmentProjectionView in
                                                     var raw = ScreenTestAuthoringSelectionV19()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
@@ -566,6 +571,8 @@ enum RustTestAuthoringCoordinator {
                                             raw.environment_saturation = Float(selection.environmentSaturation)
                                             raw.environment_temperature_kelvin = Float(selection.environmentTemperatureKelvin)
                                             raw.environment_tint = Float(selection.environmentTint)
+                                            raw.environment_projection_id = environmentProjectionView
+                                            raw.environment_sphere_radius_meters = Float(selection.environmentSphereRadiusMeters)
                                             raw.cover_glow_amount = Float(selection.coverGlowAmount)
                                             raw.lens_preset_id = lensView
                                             raw.lens_amount = Float(selection.lensAmount)
@@ -598,6 +605,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.recording_profile_id = recordingProfileView
                                             raw.recording_character = Float(selection.recordingCharacter)
                                                     return try withUnsafePointer(to: &raw, body)
+                                                }
                                                 }
                                                 }
                                                 }

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 16;
+pub const CURRENT_VERSION: u32 = 17;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -436,7 +436,16 @@ pub struct EnvironmentDocument {
     pub saturation: f32,
     pub temperature_kelvin: f32,
     pub tint: f32,
+    pub projection: EnvironmentProjectionDocument,
+    pub sphere_radius_meters: f32,
     pub pattern: EnvironmentPatternDocument,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentProjectionDocument {
+    Distant,
+    FiniteSphere,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1007,6 +1016,7 @@ fn validate_environment(environment: &EnvironmentDocument) -> Result<(), Persist
         environment.saturation,
         environment.temperature_kelvin,
         environment.tint,
+        environment.sphere_radius_meters,
     ]
     .into_iter()
     .all(f32::is_finite);
@@ -1021,6 +1031,9 @@ fn validate_environment(environment: &EnvironmentDocument) -> Result<(), Persist
         tint: environment.tint,
     })
     .map_err(|_| PersistenceError::InvalidEnvironment)?;
+    if !(0.1..=1_000.0).contains(&environment.sphere_radius_meters) {
+        return Err(PersistenceError::InvalidEnvironment);
+    }
     Ok(())
 }
 
@@ -1487,6 +1500,8 @@ mod tests {
                     saturation: 1.0,
                     temperature_kelvin: 6500.0,
                     tint: 0.0,
+                    projection: EnvironmentProjectionDocument::Distant,
+                    sphere_radius_meters: 5.0,
                     pattern: EnvironmentPatternDocument::StudioSoftboxes,
                 },
             },

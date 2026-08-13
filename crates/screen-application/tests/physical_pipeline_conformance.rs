@@ -450,6 +450,7 @@ fn image_environment_requires_its_exact_typed_raster_and_changes_cover_output() 
             exposure_stops: 0.0,
             rotation_x_degrees: 0.0,
             rotation_y_degrees: 0.0,
+            projection: screen_cover::EnvironmentProjection::Distant,
         },
     );
     assert!(evaluate_physical_pipeline_cpu_oracle(missing.clone()).is_err());

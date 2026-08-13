@@ -1124,14 +1124,18 @@ impl EnvironmentRadianceRaster {
         refractive_index: f32,
         sample_count: u32,
         sample_seed: [u32; 2],
+        cover_position_meters: [f32; 2],
+        projection: screen_cover::EnvironmentProjection,
     ) -> LinearRgb {
         let length = direction
             .into_iter()
             .map(|value| value * value)
             .sum::<f32>()
             .sqrt();
-        let reflected = direction.map(|value| value / length.max(1.0e-8));
+        let mut reflected = direction.map(|value| value / length.max(1.0e-8));
         if roughness <= 0.0 || refractive_index == 1.0 {
+            reflected =
+                finite_environment_source_direction(reflected, cover_position_meters, projection);
             return self.sample_equirectangular_direction(
                 reflected,
                 rotation_x_degrees,
@@ -1165,8 +1169,10 @@ impl EnvironmentRadianceRaster {
             let masking_ratio = (1.0 + lambda_outgoing) / (1.0 + lambda_outgoing + lambda_incident);
             let weight = dielectric_fresnel(outgoing_dot_micro, refractive_index) * masking_ratio
                 / smooth_fresnel;
+            let source_direction =
+                finite_environment_source_direction(incident, cover_position_meters, projection);
             let radiance = self.sample_equirectangular_direction(
-                incident,
+                source_direction,
                 rotation_x_degrees,
                 rotation_y_degrees,
             );
@@ -1229,6 +1235,37 @@ impl EnvironmentRadianceRaster {
         };
         LinearRgb::new(interpolate(0), interpolate(1), interpolate(2))
     }
+}
+
+fn finite_environment_source_direction(
+    direction: [f32; 3],
+    cover_position: [f32; 2],
+    projection: screen_cover::EnvironmentProjection,
+) -> [f32; 3] {
+    let screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } = projection else {
+        return direction;
+    };
+    let origin = [cover_position[0], cover_position[1], 0.0];
+    let b = origin
+        .into_iter()
+        .zip(direction)
+        .map(|(a, b)| a * b)
+        .sum::<f32>();
+    let c =
+        origin.into_iter().map(|value| value * value).sum::<f32>() - radius_meters * radius_meters;
+    let distance = -b + (b * b - c).max(0.0).sqrt();
+    let point = [
+        origin[0] + direction[0] * distance,
+        origin[1] + direction[1] * distance,
+        origin[2] + direction[2] * distance,
+    ];
+    let length = point
+        .into_iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt()
+        .max(1.0e-8);
+    point.map(|value| value / length)
 }
 
 fn dot3(first: [f32; 3], second: [f32; 3]) -> f32 {
@@ -2286,6 +2323,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         plan.cover.refractive_index,
                         physical_environment_reference_sample_count(plan.quality),
                         [x, y],
+                        cover_position_meters,
+                        environment.projection,
                     );
                     let scale = environment.radiance_scale();
                     cover.evaluate_with_incident_radiance(
@@ -6830,6 +6869,8 @@ mod tests {
                 1.5,
                 256,
                 [17, 29],
+                [0.0, 0.0],
+                screen_cover::EnvironmentProjection::Distant,
             );
             let second = raster.sample_equirectangular(
                 [0.3, -0.2, 0.9],
@@ -6840,6 +6881,8 @@ mod tests {
                 1.5,
                 256,
                 [17, 29],
+                [0.0, 0.0],
+                screen_cover::EnvironmentProjection::Distant,
             );
             assert_eq!(first, second);
             assert!(first.r.is_finite() && first.r >= 0.0);

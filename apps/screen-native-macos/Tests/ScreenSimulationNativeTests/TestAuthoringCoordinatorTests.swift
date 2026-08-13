@@ -63,6 +63,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         environmentSaturation: 1,
         environmentTemperatureKelvin: 6500,
         environmentTint: 0,
+        environmentProjectionID: "distant",
+        environmentSphereRadiusMeters: 5,
         coverGlowAmount: 1,
         lensPresetID: "iphone-16e-main-integrated",
         lensAmount: 1,

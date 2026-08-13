@@ -215,6 +215,12 @@ pub struct ProceduralEnvironment {
 /// The map pixels remain dimensionless source units until the explicit
 /// radiometric scale is applied at this boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EnvironmentProjection {
+    Distant,
+    FiniteSphere { radius_meters: f32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EquirectangularEnvironment {
     /// Zero emits no incident environment radiance, one is the authored calibration.
     pub character_strength: f32,
@@ -226,6 +232,7 @@ pub struct EquirectangularEnvironment {
     pub rotation_x_degrees: f32,
     /// Horizontal rotation of the latitude-longitude map around panel-local Y.
     pub rotation_y_degrees: f32,
+    pub projection: EnvironmentProjection,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -771,6 +778,11 @@ impl EquirectangularEnvironment {
             || !(-180.0..=180.0).contains(&self.rotation_y_degrees)
         {
             return Err(CoverError::InvalidEnvironmentRotation);
+        }
+        if let EnvironmentProjection::FiniteSphere { radius_meters } = self.projection {
+            if !radius_meters.is_finite() || !(0.1..=1_000.0).contains(&radius_meters) {
+                return Err(CoverError::InvalidEnvironmentSourceSize);
+            }
         }
         Ok(self)
     }
@@ -1548,6 +1560,7 @@ mod tests {
             exposure_stops: -2.0,
             rotation_x_degrees: 0.0,
             rotation_y_degrees: 15.0,
+            projection: EnvironmentProjection::Distant,
         };
         assert_eq!(environment.validate(), Ok(environment));
         assert_eq!(environment.radiance_scale(), 25.0);

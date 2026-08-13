@@ -535,6 +535,30 @@ inline float3 physical_sample_environment(float selector, float2 jitter,
     return physical_environment_direction(uv);
 }
 
+inline float3 physical_finite_sphere_incident(float3 source_direction,
+    float2 cover_position, float radius, thread float& jacobian) {
+    const float3 origin = float3(cover_position, 0.0f);
+    const float3 point = source_direction * radius;
+    const float3 delta = point - origin;
+    const float distance = length(delta);
+    jacobian = radius * radius * max(1.0e-8f, radius - dot(origin, source_direction))
+        / max(1.0e-8f, distance * distance * distance);
+    return delta / max(distance, 1.0e-8f);
+}
+
+inline float3 physical_finite_sphere_source(float3 incident,
+    float2 cover_position, float radius, thread float& jacobian) {
+    const float3 origin = float3(cover_position, 0.0f);
+    const float b = dot(origin, incident);
+    const float t = -b + sqrt(max(0.0f,
+        b * b - (dot(origin, origin) - radius * radius)));
+    const float3 source = normalize(origin + incident * t);
+    float ignored;
+    physical_finite_sphere_incident(source, cover_position, radius, ignored);
+    jacobian = ignored;
+    return source;
+}
+
 inline float physical_dielectric_fresnel(float cosine_i, float eta) {
     if (eta == 1.0f) return 0.0f;
     cosine_i = clamp(cosine_i, 0.0f, 1.0f);
@@ -595,6 +619,7 @@ inline float physical_microtexture_visibility(float2 cover_position_meters,
 
 inline float3 physical_reference_ggx_environment(
     float3 reflection_direction,
+    float2 cover_position_meters,
     texture2d<float, access::sample> environment,
     float rotation_x,
     float rotation_y,
@@ -609,6 +634,15 @@ inline float3 physical_reference_ggx_environment(
     const float roughness = p.cover_absorption_roughness.w;
     float3 mirror = normalize(reflection_direction);
     if (roughness <= 0.0f || p.cover_geometry.z == 1.0f) {
+        if (p.environment_rotation.z > 0.5f) {
+            const float3 origin = float3(cover_position_meters, 0.0f);
+            const float radius = p.environment_rotation.w;
+            const float b = dot(origin, mirror);
+            const float discriminant = b * b - (dot(origin, origin) - radius * radius);
+            if (discriminant > 0.0f) {
+                mirror = normalize(origin + mirror * (-b + sqrt(discriminant)));
+            }
+        }
         mirror = physical_environment_to_source(mirror, rotation_x, rotation_y);
         return environment.sample(
             environment_sampler, physical_environment_uv(mirror), level(0.0f)).rgb;
@@ -648,8 +682,13 @@ inline float3 physical_reference_ggx_environment(
             const float3 source_direction = physical_sample_environment(
                 random_sample.x, jitter, environment,
                 environment_top_level, environment_total);
+            float sphere_jacobian = 1.0f;
+            const float3 incident_from_surface = p.environment_rotation.z > 0.5f
+                ? physical_finite_sphere_incident(source_direction, cover_position_meters,
+                    p.environment_rotation.w, sphere_jacobian)
+                : source_direction;
             const float3 rotated_incident = physical_environment_to_local(
-                source_direction, rotation_x, rotation_y);
+                incident_from_surface, rotation_x, rotation_y);
             const float3 incident = float3(
                 rotated_incident.x,
                 rotated_incident.y * normal_sign,
@@ -663,7 +702,8 @@ inline float3 physical_reference_ggx_environment(
                     const float masking = 1.0f / (1.0f + lambda_outgoing + lambda_incident);
                     const float2 source_uv = physical_environment_uv(source_direction);
                     const float environment_pdf = physical_environment_pdf(
-                        source_uv, environment, environment_dimensions, environment_total);
+                        source_uv, environment, environment_dimensions, environment_total)
+                        / max(sphere_jacobian, 1.0e-8f);
                     const float ggx_pdf = distribution
                         / (4.0f * max(outgoing.z * (1.0f + lambda_outgoing), 1.0e-12f));
                     const float mixture_pdf = 0.5f * (environment_pdf + ggx_pdf);
@@ -682,8 +722,13 @@ inline float3 physical_reference_ggx_environment(
             const float3 incident = reflect(-outgoing, sampled_normal);
             const float3 rotated_incident = float3(
                 incident.x, incident.y * normal_sign, incident.z * normal_sign);
-            const float3 source_direction = physical_environment_to_source(
+            const float3 infinite_source_direction = physical_environment_to_source(
                 rotated_incident, rotation_x, rotation_y);
+            float sphere_jacobian = 1.0f;
+            const float3 source_direction = p.environment_rotation.z > 0.5f
+                ? physical_finite_sphere_source(infinite_source_direction,
+                    cover_position_meters, p.environment_rotation.w, sphere_jacobian)
+                : infinite_source_direction;
             if (incident.z > 0.0f) {
                 const float3 micro_normal = normalize(outgoing + incident);
                 const float outgoing_dot_micro = max(0.0f, dot(outgoing, micro_normal));
@@ -693,7 +738,8 @@ inline float3 physical_reference_ggx_environment(
                     const float masking = 1.0f / (1.0f + lambda_outgoing + lambda_incident);
                     const float2 source_uv = physical_environment_uv(source_direction);
                     const float environment_pdf = physical_environment_pdf(
-                        source_uv, environment, environment_dimensions, environment_total);
+                        source_uv, environment, environment_dimensions, environment_total)
+                        / max(sphere_jacobian, 1.0e-8f);
                     const float ggx_pdf = distribution
                         / (4.0f * max(outgoing.z * (1.0f + lambda_outgoing), 1.0e-12f));
                     const float mixture_pdf = 0.5f * (environment_pdf + ggx_pdf);
@@ -711,6 +757,7 @@ inline float3 physical_reference_ggx_environment(
 }
 
 inline float3 flat_environment_radiance(float3 reflection_direction_local,
+    float2 cover_position_meters,
     texture2d<float, access::sample> environment_acescg,
     float view_cosine,
     uint2 sample_seed,
@@ -720,7 +767,8 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
     const float rotation_y = p.environment_rotation.y;
     if (IMAGE_ENVIRONMENT) {
         return physical_reference_ggx_environment(
-            direction, environment_acescg, rotation_x, rotation_y, view_cosine, sample_seed, p)
+            direction, cover_position_meters, environment_acescg,
+            rotation_x, rotation_y, view_cosine, sample_seed, p)
             * p.environment_ambient_strength.x * p.environment_ambient_strength.w;
     }
     direction = physical_environment_to_source(direction, rotation_x, rotation_y);
@@ -808,7 +856,7 @@ inline float3 apply_flat_cover(float3 emitted, float view_cosine,
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
     return emitted * transmission
         + flat_environment_radiance(
-            reflection_direction_local, environment_acescg,
+            reflection_direction_local, cover_position_meters, environment_acescg,
             reflection_cosine, sample_seed, p) * reflection
             * reflection_visibility
             * lens_irradiance_weight / p.levels.z;

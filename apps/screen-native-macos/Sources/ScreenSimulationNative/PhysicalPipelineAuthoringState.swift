@@ -14,6 +14,8 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var keyAngularRadiusDegrees = 20.0
         var rotationXDegrees = 0.0
         var rotationYDegrees = 0.0
+        var projectionMode: UInt32 = 0
+        var sphereRadiusMeters = 5.0
         var pattern: UInt32 = 0
     }
 
@@ -161,6 +163,8 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         environmentABI.key_angular_radius_degrees = Float(environment.keyAngularRadiusDegrees)
         environmentABI.rotation_x_degrees = Float(environment.rotationXDegrees)
         environmentABI.rotation_y_degrees = Float(environment.rotationYDegrees)
+        environmentABI.projection_mode = environment.projectionMode
+        environmentABI.sphere_radius_meters = Float(environment.sphereRadiusMeters)
         environmentABI.pattern = environment.pattern
 
         var scene = ScreenSceneGeometryLensParametersV2()

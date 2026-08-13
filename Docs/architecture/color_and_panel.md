@@ -6,6 +6,8 @@ Spatial resolution and color meaning are independent. A device-native source est
 
 `Source Adjustment` is the Color-owned extended scene-linear ACEScg boundary between Origin and Feeder Output. It applies explicit exposure, contrast, saturation, temperature and tint while preserving alpha, negatives and values above one. Image-backed incident radiance uses the same operator before physical cd/m² calibration, with a typed incident-radiance policy that compresses chroma toward neutral only when necessary to keep every channel non-negative. It never silently clamps channels. Environment Character remains a separate multiplicative reflection contribution.
 
+An image Environment explicitly selects either a distant latitude-longitude field or a finite sphere centered on Device with an authored physical radius. Finite mode intersects each cover-local reflected ray with that sphere before resolving the source direction; changing radius produces geometric parallax rather than scaling radiance or applying a 2D zoom.
+
 The current boundary is:
 
 ```text

@@ -168,6 +168,8 @@ final class WorkspaceModel: ObservableObject {
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
     private var cameraNavigationLatestPose: CameraNavigationPose?
+    private var environmentNavigationStartSelection: TestAuthoringResolvedSelection?
+    private var environmentNavigationOperation: CameraNavigationOperation?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -686,6 +688,10 @@ final class WorkspaceModel: ObservableObject {
         _ operation: CameraNavigationOperation,
         viewportSize: CGSize
     ) {
+        if physicalModel.quality == .environmentSetup {
+            beginEnvironmentNavigation(operation)
+            return
+        }
         guard let authored = physicalAuthoringState,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
               let selection = testAuthoringSelection,
@@ -734,6 +740,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func updateCameraNavigation(delta: CGSize) {
+        if environmentNavigationStartSelection != nil {
+            updateEnvironmentNavigation(delta: delta)
+            return
+        }
         guard var gesture = cameraNavigationGesture else { return }
         let pose: CameraNavigationPose
         switch gesture.operation {
@@ -752,6 +762,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func endCameraNavigation(undoManager: UndoManager?) {
+        if environmentNavigationStartSelection != nil {
+            endEnvironmentNavigation()
+            return
+        }
         guard cameraNavigationGesture != nil else { return }
         cameraNavigationGesture = nil
         if let pose = cameraNavigationLatestPose {
@@ -771,6 +785,51 @@ final class WorkspaceModel: ObservableObject {
             undoManager?.setActionName("Navegar cámara")
         }
         cameraNavigationStartSelection = nil
+    }
+
+    private func beginEnvironmentNavigation(_ operation: CameraNavigationOperation) {
+        guard var selection = testAuthoringSelection,
+              selection.environmentSourceID == "environment-image"
+        else { return }
+        if selection.environmentProjectionID == "distant" {
+            selection.environmentProjectionID = "finite-sphere"
+        }
+        environmentNavigationStartSelection = selection
+        environmentNavigationOperation = operation
+    }
+
+    private func updateEnvironmentNavigation(delta: CGSize) {
+        guard var selection = environmentNavigationStartSelection else { return }
+        if environmentNavigationOperation == .dolly {
+            selection.environmentSphereRadiusMeters = min(1_000, max(0.1,
+                selection.environmentSphereRadiusMeters * exp(Double(delta.width) * 0.008)))
+        } else {
+            selection.environmentRotationYDegrees = min(180, max(-180,
+                selection.environmentRotationYDegrees + Double(delta.width) * 0.2))
+            selection.environmentRotationXDegrees = min(90, max(-90,
+                selection.environmentRotationXDegrees - Double(delta.height) * 0.2))
+        }
+        applyTransientEnvironmentSelection(selection)
+    }
+
+    private func endEnvironmentNavigation() {
+        let finalSelection = testAuthoringSelection
+        environmentNavigationStartSelection = nil
+        environmentNavigationOperation = nil
+        if var selection = finalSelection {
+            selection.previewQualityID = "environment-setup"
+            try? applyTestAuthoringSelection(selection)
+        }
+    }
+
+    private func applyTransientEnvironmentSelection(_ selection: TestAuthoringResolvedSelection) {
+        guard var authored = physicalAuthoringState else { return }
+        authored.environment.rotationXDegrees = selection.environmentRotationXDegrees
+        authored.environment.rotationYDegrees = selection.environmentRotationYDegrees
+        authored.environment.projectionMode = selection.environmentProjectionID == "finite-sphere" ? 1 : 0
+        authored.environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
+        testAuthoringSelection = selection
+        publishEnvironmentSetup(authoredOverride: authored)
     }
 
     private func applyTransientCameraNavigationPose(
@@ -1630,6 +1689,7 @@ final class WorkspaceModel: ObservableObject {
         panel.allowedContentTypes = [.png]
         let quality = switch physicalModel.quality {
         case .setup: "Setup"
+        case .environmentSetup: "Setup entorno"
         case .draft: "Draft"
         case .medium: "Media"
         case .high: "Alta"
@@ -2106,6 +2166,12 @@ final class WorkspaceModel: ObservableObject {
             publishSetupFraming()
             return
         }
+        if physicalModel.quality == .environmentSetup {
+            _ = physicalInteractiveJob?.cancel()
+            physicalInteractiveTask?.cancel()
+            publishEnvironmentSetup()
+            return
+        }
         guard physicalModel.quality != .native else { return }
         recordingCameraCheckpoint = nil
         deliveryRasterCheckpoint = nil
@@ -2190,6 +2256,42 @@ final class WorkspaceModel: ObservableObject {
                 status = "Setup · encuadre ideal · \(width)×\(height) · \(elapsedMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
                 physicalPublicationSummary = "Setup · fuente + Device + cámara + Delivery Raster · publicado"
             }
+        } catch {
+            setupDeviceBoundary = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func publishEnvironmentSetup(
+        authoredOverride: PhysicalPipelineAuthoringState? = nil
+    ) {
+        guard let environmentSourceACEScgFrame,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let authored = authoredOverride ?? physicalAuthoringState
+        else {
+            errorMessage = "Setup entorno necesita un HDRI / EXR seleccionado."
+            return
+        }
+        do {
+            if setupFramingRenderer == nil {
+                setupFramingRenderer = try SetupFramingRenderer(device: environmentSourceACEScgFrame.texture.device)
+            }
+            let selection = testAuthoringSelection
+            let width = Int(selection?.deliveryWidth ?? UInt32(environmentSourceACEScgFrame.width))
+            let height = Int(selection?.deliveryHeight ?? UInt32(environmentSourceACEScgFrame.height))
+            let result = try setupFramingRenderer!.renderEnvironment(
+                environment: environmentSourceACEScgFrame,
+                device: device,
+                pipeline: authored,
+                deliveryWidth: width,
+                deliveryHeight: height,
+                deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
+                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black"
+            )
+            metalFrame = result.frame
+            setupDeviceBoundary = result.boundary
+            status = "Setup entorno · reflexión ideal 100% · \(width)×\(height)"
+            physicalPublicationSummary = "Setup entorno · espejo ideal sin cristal, panel ni cámara"
         } catch {
             setupDeviceBoundary = []
             errorMessage = error.localizedDescription
@@ -2480,6 +2582,8 @@ final class WorkspaceModel: ObservableObject {
         authored.environment.rotationXDegrees = selection.environmentRotationXDegrees
         authored.environment.rotationYDegrees = selection.environmentRotationYDegrees
         authored.environment.exposureStops = selection.environmentExposureEV
+        authored.environment.projectionMode = selection.environmentProjectionID == "finite-sphere" ? 1 : 0
+        authored.environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
         authored.sceneLens.evaluationModel = selection.lensEvaluationModelID
@@ -2830,6 +2934,7 @@ final class WorkspaceModel: ObservableObject {
         }
         let scale: Double = switch quality {
         case .setup: 1
+        case .environmentSetup: 1
         case .draft: 0.5
         case .medium: 1
         case .high: 1.5
@@ -2899,6 +3004,7 @@ private extension PhysicalQuality {
     init?(stableID: String) {
         switch stableID {
         case "setup": self = .setup
+        case "environment-setup": self = .environmentSetup
         case "draft": self = .draft
         case "medium": self = .medium
         case "high": self = .high
@@ -2910,6 +3016,7 @@ private extension PhysicalQuality {
     var uiLabel: String {
         switch self {
         case .setup: "Setup"
+        case .environmentSetup: "Setup entorno"
         case .draft: "Draft"
         case .medium: "Media"
         case .high: "Alta"

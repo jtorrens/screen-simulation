@@ -36,6 +36,7 @@ final class SetupFramingRenderer {
         var previewRaster: SIMD4<UInt32>
         var sourceDevice: SIMD4<UInt32>
         var modes: SIMD4<UInt32>
+        var environment: SIMD4<Float>
     }
 
     private let queue: MTLCommandQueue
@@ -73,7 +74,8 @@ final class SetupFramingRenderer {
         deliveryPlacementID: String,
         deliveryBackgroundID: String,
         previewWidth: Int? = nil,
-        previewHeight: Int? = nil
+        previewHeight: Int? = nil,
+        environmentSetup: Bool = false
     ) throws -> Result {
         let outputWidth = previewWidth ?? deliveryWidth
         let outputHeight = previewHeight ?? deliveryHeight
@@ -147,7 +149,13 @@ final class SetupFramingRenderer {
                 Self.sourcePlacement(sourcePlacement),
                 deliveryPlacement,
                 deliveryBackgroundID == "transparent" ? 0 : 1,
-                0
+                environmentSetup ? 1 : 0
+            ),
+            environment: SIMD4(
+                Float(authored.environment.rotationXDegrees * .pi / 180),
+                Float(authored.environment.rotationYDegrees * .pi / 180),
+                Float(authored.environment.projectionMode),
+                Float(authored.environment.sphereRadiusMeters)
             )
         )
         parameters.cameraForward.w = Float(authored.sceneLens.lensShift[0])
@@ -175,6 +183,32 @@ final class SetupFramingRenderer {
             outputWidth: outputWidth, outputHeight: outputHeight
         )
         return Result(frame: frame, boundary: boundary)
+    }
+
+    func renderEnvironment(
+        environment: StudioColorMetalFrame,
+        device: DeviceDefinition,
+        pipeline authored: PhysicalPipelineAuthoringState,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        deliveryPlacementID: String,
+        deliveryBackgroundID: String,
+        previewWidth: Int? = nil,
+        previewHeight: Int? = nil
+    ) throws -> Result {
+        try render(
+            source: environment,
+            sourcePlacement: .stretch,
+            device: device,
+            pipeline: authored,
+            deliveryWidth: deliveryWidth,
+            deliveryHeight: deliveryHeight,
+            deliveryPlacementID: deliveryPlacementID,
+            deliveryBackgroundID: deliveryBackgroundID,
+            previewWidth: previewWidth,
+            previewHeight: previewHeight,
+            environmentSetup: true
+        )
     }
 
     private static func sourcePlacement(_ placement: WorkspaceModel.SourcePlacement) -> UInt32 {
@@ -267,6 +301,7 @@ final class SetupFramingRenderer {
         uint4 preview_raster;
         uint4 source_device;
         uint4 modes;
+        float4 environment;
     };
 
     inline float3 rotate_q(float4 q, float3 v) {
@@ -329,6 +364,51 @@ final class SetupFramingRenderer {
         return true;
     }
 
+    inline float3 camera_ray(float2 camera_uv, constant SetupParameters& s) {
+        const float2 observed = camera_uv * 2.0f - 1.0f;
+        const float2 ideal = float2(
+            observed.x + 2.0f * s.camera_forward_shift_x.w,
+            -observed.y - 2.0f * s.screen_height_shift_y.y);
+        return normalize(s.camera_forward_shift_x.xyz
+            + s.camera_right_sensor_width.xyz
+                * (ideal.x * s.camera_right_sensor_width.w / (2.0f * s.camera_position_focal.w))
+            + s.camera_up_sensor_height.xyz
+                * (ideal.y * s.camera_up_sensor_height.w / (2.0f * s.camera_position_focal.w)));
+    }
+
+    inline float3 rotate_environment(float3 d, float rx, float ry) {
+        const float sy = sin(ry), cy = cos(ry);
+        d = float3(d.x * cy + d.z * sy, d.y, -d.x * sy + d.z * cy);
+        const float sx = sin(rx), cx = cos(rx);
+        return float3(d.x, d.y * cx - d.z * sx, d.y * sx + d.z * cx);
+    }
+
+    inline bool environment_uv(float2 camera_uv, constant SetupParameters& s, thread float2& uv) {
+        const float3 ray = camera_ray(camera_uv, s);
+        const float3 screen_normal = rotate_q(s.screen_quaternion, float3(0, 0, 1));
+        const float denominator = dot(ray, screen_normal);
+        if (abs(denominator) < 1.0e-8f) return false;
+        const float distance = dot(s.screen_position_width.xyz - s.camera_position_focal.xyz,
+            screen_normal) / denominator;
+        if (distance <= 0.0f) return false;
+        const float3 point = s.camera_position_focal.xyz + ray * distance;
+        float3 reflected = reflect(ray, screen_normal);
+        if (s.environment.z > 0.5f) {
+            const float radius = s.environment.w;
+            const float b = dot(point, reflected);
+            const float c = dot(point, point) - radius * radius;
+            const float discriminant = b * b - c;
+            if (discriminant <= 0.0f) return false;
+            const float t = -b + sqrt(discriminant);
+            if (t <= 0.0f) return false;
+            reflected = normalize(point + reflected * t);
+        }
+        const float3 source = rotate_environment(reflected, s.environment.x, s.environment.y);
+        uv = float2(atan2(source.x, source.z) / (2.0f * M_PI_F) + 0.5f,
+            0.5f - asin(clamp(source.y, -1.0f, 1.0f)) / M_PI_F);
+        return true;
+    }
+
     inline float2 source_uv(float2 device_uv, constant SetupParameters& s) {
         const float source_aspect = float(s.source_device.x) / float(s.source_device.y);
         const float device_aspect = float(s.source_device.z) / float(s.source_device.w);
@@ -359,6 +439,16 @@ final class SetupFramingRenderer {
         const float4 background = s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1);
         float2 camera;
         if (!camera_uv(p, s, camera)) { output.write(background, p); return; }
+        if (s.modes.w == 1u) {
+            float2 environmentUV;
+            if (!environment_uv(camera, s, environmentUV)) {
+                output.write(background, p); return;
+            }
+            float4 reflected = source.sample(linear_sampler, environmentUV);
+            reflected.a = 1.0f;
+            output.write(reflected, p);
+            return;
+        }
         float2 panel;
         if (!screen_uv(camera, s, panel)) { output.write(background, p); return; }
         const bool inside = all(panel >= 0.0f) && all(panel <= 1.0f);

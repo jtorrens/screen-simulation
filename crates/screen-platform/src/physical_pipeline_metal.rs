@@ -1263,8 +1263,16 @@ impl MetalPhysicalPipeline {
                 IncidentEnvironment::Equirectangular(environment) => [
                     environment.rotation_x_degrees.to_radians(),
                     environment.rotation_y_degrees.to_radians(),
-                    0.0,
-                    0.0,
+                    match environment.projection {
+                        screen_cover::EnvironmentProjection::Distant => 0.0,
+                        screen_cover::EnvironmentProjection::FiniteSphere { .. } => 1.0,
+                    },
+                    match environment.projection {
+                        screen_cover::EnvironmentProjection::Distant => 1.0,
+                        screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } => {
+                            radius_meters
+                        }
+                    },
                 ],
             },
             camera_position_focal: [
@@ -2164,10 +2172,20 @@ mod tests {
             .prepare_equirectangular_environment(&environment_source)
             .expect("environment preparation");
 
-        for lens_evaluation_model in [
+        for (lens_evaluation_model, projection) in [
             screen_application::LensEvaluationModel::ThinLens,
             screen_application::LensEvaluationModel::VfxDepthBlur,
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|lens| {
+            [
+                (lens, screen_cover::EnvironmentProjection::Distant),
+                (
+                    lens,
+                    screen_cover::EnvironmentProjection::FiniteSphere { radius_meters: 2.0 },
+                ),
+            ]
+        }) {
             let (mut input, mut plan) = fixture(
                 RasterPlacement::Stretch,
                 FlatPanelQuality::High,
@@ -2188,6 +2206,7 @@ mod tests {
                     exposure_stops: 0.0,
                     rotation_x_degrees: 0.0,
                     rotation_y_degrees: 17.0,
+                    projection,
                 },
             );
             plan.lens_evaluation_model = lens_evaluation_model;

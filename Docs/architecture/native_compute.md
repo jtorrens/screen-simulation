@@ -4,6 +4,8 @@ Status: normative.
 
 The host-only `Setup` preview is deliberately outside the native physical frame ABI. It evaluates only ideal pinhole projection from the authored camera and screen geometry, samples the source with its authored placement, applies Delivery Raster placement, and draws the diagnostic Device boundary. No panel, cover, environment, lens-aberration, exposure, sensor or develop kernel is dispatched in Setup.
 
+`Setup entorno` is also host-only. Its Metal kernel uses the same pinhole camera, screen plane, Delivery Raster and distant/finite Environment projection contract, but replaces the complete material and capture pipeline with a perfect-mirror lookup solely for interactive placement.
+
 The Platform scene-adjustment adapter evaluates the Color-owned operator in RGBA32F Metal before Feeder Output and during one-time image-Environment preparation. Neutral values are exact identity, alpha is unchanged, and Environment adjustment uses the non-negative incident-radiance policy rather than a display transform.
 
 Native capture has one Application orchestration path and one result contract. Physical owners

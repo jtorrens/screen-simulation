@@ -82,7 +82,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 13u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 14u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
         "screen_physical_frame_submit",
@@ -91,7 +91,7 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 21u",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 23u",
         "ScreenTestAuthoringSelectionV19",
         "ScreenTestPhaseDescriptorV4",
         "ScreenTestControlDescriptorV5",
@@ -105,8 +105,8 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 13",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 21",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 14",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 23",
         "ScreenTestAuthoringSelectionV19",
         "ScreenTestPhaseDescriptorV4",
         "ScreenTestControlDescriptorV5",
@@ -136,7 +136,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v13 source/header/symbol gate passed")
+    print("native macOS physical ABI v14 source/header/symbol gate passed")
     return 0
 
 

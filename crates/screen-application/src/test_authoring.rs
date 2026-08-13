@@ -18,7 +18,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 21;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 22;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -86,6 +86,8 @@ pub const ENVIRONMENT_CONTRAST_CONTROL_ID: &str = "environment-contrast";
 pub const ENVIRONMENT_SATURATION_CONTROL_ID: &str = "environment-saturation";
 pub const ENVIRONMENT_TEMPERATURE_CONTROL_ID: &str = "environment-temperature-kelvin";
 pub const ENVIRONMENT_TINT_CONTROL_ID: &str = "environment-tint";
+pub const ENVIRONMENT_PROJECTION_CONTROL_ID: &str = "environment-projection";
+pub const ENVIRONMENT_RADIUS_CONTROL_ID: &str = "environment-sphere-radius-meters";
 pub const IMAGE_ENVIRONMENT_SOURCE_ID: &str = "environment-image";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
@@ -161,10 +163,14 @@ const DELIVERY_BACKGROUNDS: [TestChoiceOption; 2] = [
     },
 ];
 
-const PREVIEW_QUALITIES: [TestChoiceOption; 5] = [
+const PREVIEW_QUALITIES: [TestChoiceOption; 6] = [
     TestChoiceOption {
         id: "setup",
         label: "Setup",
+    },
+    TestChoiceOption {
+        id: "environment-setup",
+        label: "Setup entorno",
     },
     TestChoiceOption {
         id: "draft",
@@ -239,6 +245,8 @@ pub struct TestAuthoringSelection<'a> {
     pub environment_saturation: f32,
     pub environment_temperature_kelvin: f32,
     pub environment_tint: f32,
+    pub environment_projection_id: &'a str,
+    pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'a str,
     pub lens_evaluation_model_id: &'a str,
@@ -310,6 +318,8 @@ pub struct ResolvedTestAuthoringSelection {
     pub environment_saturation: f32,
     pub environment_temperature_kelvin: f32,
     pub environment_tint: f32,
+    pub environment_projection_id: &'static str,
+    pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'static str,
     pub lens_evaluation_model_id: &'static str,
@@ -733,6 +743,8 @@ pub fn default_test_authoring_selection(
         environment_saturation: 1.0,
         environment_temperature_kelvin: 6500.0,
         environment_tint: 0.0,
+        environment_projection_id: "distant",
+        environment_sphere_radius_meters: 5.0,
         cover_glow_amount: 1.0,
         lens_preset_id: capture.default_lens_preset_id,
         lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
@@ -923,6 +935,18 @@ pub fn resolve_test_authoring_selection(
     }
     .validate()
     .map_err(|_| TestAuthoringError::InvalidEnvironmentAmount)?;
+    let environment_projection_id = match selection.environment_projection_id {
+        "distant" => "distant",
+        "finite-sphere" => "finite-sphere",
+        _ => return Err(TestAuthoringError::InvalidEnvironmentAmount),
+    };
+    if !selection.environment_sphere_radius_meters.is_finite()
+        || !(0.1..=1_000.0).contains(&selection.environment_sphere_radius_meters)
+        || (selection.environment_source_id != IMAGE_ENVIRONMENT_SOURCE_ID
+            && selection.environment_projection_id != "distant")
+    {
+        return Err(TestAuthoringError::InvalidEnvironmentAmount);
+    }
     if !selection.cover_glow_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.cover_glow_amount)
     {
@@ -1074,6 +1098,8 @@ pub fn resolve_test_authoring_selection(
         environment_saturation: selection.environment_saturation,
         environment_temperature_kelvin: selection.environment_temperature_kelvin,
         environment_tint: selection.environment_tint,
+        environment_projection_id,
+        environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: lens.id,
         lens_evaluation_model_id,
@@ -1794,6 +1820,22 @@ pub fn test_page_descriptor(
                     ];
                     if selection.environment_source_id == IMAGE_ENVIRONMENT_SOURCE_ID {
                         controls.extend([
+                            choice_control(
+                                ENVIRONMENT_PROJECTION_CONTROL_ID,
+                                "Proyección",
+                                vec![
+                                    TestChoiceOption {
+                                        id: "distant",
+                                        label: "Distante",
+                                    },
+                                    TestChoiceOption {
+                                        id: "finite-sphere",
+                                        label: "Esfera finita",
+                                    },
+                                ],
+                                selection.environment_projection_id,
+                                "distant",
+                            ),
                             scalar_control(
                                 ENVIRONMENT_EXPOSURE_CONTROL_ID,
                                 "Exposición",
@@ -1840,6 +1882,17 @@ pub fn test_page_descriptor(
                                 "G/M",
                             ),
                         ]);
+                        if selection.environment_projection_id == "finite-sphere" {
+                            controls.push(scalar_control(
+                                ENVIRONMENT_RADIUS_CONTROL_ID,
+                                "Radio del entorno",
+                                selection.environment_sphere_radius_meters,
+                                0.1,
+                                1_000.0,
+                                5.0,
+                                "m",
+                            ));
+                        }
                     }
                     controls
                 },
@@ -2258,6 +2311,8 @@ pub fn apply_test_choice(
                 next.environment_saturation = 1.0;
                 next.environment_temperature_kelvin = 6500.0;
                 next.environment_tint = 0.0;
+                next.environment_projection_id = "distant";
+                next.environment_sphere_radius_meters = 5.0;
             } else {
                 let environment = environment_preset(option_id)
                     .ok_or(TestAuthoringError::UnknownEnvironmentPreset)?;
@@ -2270,6 +2325,8 @@ pub fn apply_test_choice(
                 next.environment_saturation = 1.0;
                 next.environment_temperature_kelvin = 6500.0;
                 next.environment_tint = 0.0;
+                next.environment_projection_id = "distant";
+                next.environment_sphere_radius_meters = 5.0;
             }
         }
         LENS_PRESET_CONTROL_ID => next.lens_preset_id = option_id,
@@ -2279,6 +2336,10 @@ pub fn apply_test_choice(
         },
         RECORDING_OUTPUT_TRANSFORM_CONTROL_ID => next.recording_output_transform_id = option_id,
         RECORDING_PROFILE_CONTROL_ID => next.recording_profile_id = option_id,
+        ENVIRONMENT_PROJECTION_CONTROL_ID => match option_id {
+            "distant" | "finite-sphere" => next.environment_projection_id = option_id,
+            _ => return Err(TestAuthoringError::UnknownControl),
+        },
         WHITE_LUMINANCE_CONTROL_ID
         | SUBPIXEL_GEOMETRY_CONTROL_ID
         | PANEL_UNIFORMITY_CONTROL_ID
@@ -2313,6 +2374,7 @@ pub fn apply_test_choice(
         | ENVIRONMENT_SATURATION_CONTROL_ID
         | ENVIRONMENT_TEMPERATURE_CONTROL_ID
         | ENVIRONMENT_TINT_CONTROL_ID
+        | ENVIRONMENT_RADIUS_CONTROL_ID
         | COVER_GLOW_AMOUNT_CONTROL_ID
         | LENS_AMOUNT_CONTROL_ID
         | AUTOFOCUS_CONTROL_ID
@@ -2391,6 +2453,8 @@ fn unresolved_test_selection(
         environment_saturation: current.environment_saturation,
         environment_temperature_kelvin: current.environment_temperature_kelvin,
         environment_tint: current.environment_tint,
+        environment_projection_id: current.environment_projection_id,
+        environment_sphere_radius_meters: current.environment_sphere_radius_meters,
         cover_glow_amount: current.cover_glow_amount,
         lens_preset_id: current.lens_preset_id,
         lens_amount: current.lens_amount,
@@ -2548,6 +2612,7 @@ pub fn apply_test_scalar(
         ENVIRONMENT_SATURATION_CONTROL_ID => next.environment_saturation = value,
         ENVIRONMENT_TEMPERATURE_CONTROL_ID => next.environment_temperature_kelvin = value,
         ENVIRONMENT_TINT_CONTROL_ID => next.environment_tint = value,
+        ENVIRONMENT_RADIUS_CONTROL_ID => next.environment_sphere_radius_meters = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
         F_STOP_CONTROL_ID => next.f_stop = value,
@@ -2660,6 +2725,8 @@ mod tests {
             environment_saturation: 1.0,
             environment_temperature_kelvin: 6500.0,
             environment_tint: 0.0,
+            environment_projection_id: "distant",
+            environment_sphere_radius_meters: 5.0,
             cover_glow_amount: 1.0,
             lens_preset_id: "iphone-16e-main-integrated",
             lens_amount: 1.0,
