@@ -68,6 +68,7 @@ final class SetupFramingRenderer {
 
     func render(
         source: StudioColorMetalFrame,
+        reference: StudioColorMetalFrame? = nil,
         sourcePlacement: WorkspaceModel.SourcePlacement,
         device: DeviceDefinition,
         pipeline authored: PhysicalPipelineAuthoringState,
@@ -176,6 +177,7 @@ final class SetupFramingRenderer {
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(source.texture, index: 0)
         encoder.setTexture(output, index: 1)
+        encoder.setTexture(reference?.texture ?? source.texture, index: 2)
         encoder.setSamplerState(sampler, index: 0)
         encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 0)
         let width = pipeline.threadExecutionWidth
@@ -197,6 +199,31 @@ final class SetupFramingRenderer {
             applyLensDistortion: diagnosticMode == 2
         )
         return Result(frame: frame, boundary: boundary)
+    }
+
+    func renderReferenceMatch(
+        source: StudioColorMetalFrame,
+        reference: StudioColorMetalFrame,
+        sourcePlacement: WorkspaceModel.SourcePlacement,
+        device: DeviceDefinition,
+        pipeline authored: PhysicalPipelineAuthoringState,
+        previewWidth: Int? = nil,
+        previewHeight: Int? = nil
+    ) throws -> Result {
+        try render(
+            source: source,
+            reference: reference,
+            sourcePlacement: sourcePlacement,
+            device: device,
+            pipeline: authored,
+            deliveryWidth: reference.width,
+            deliveryHeight: reference.height,
+            deliveryPlacementID: "fit",
+            deliveryBackgroundID: "black",
+            previewWidth: previewWidth,
+            previewHeight: previewHeight,
+            diagnosticMode: 3
+        )
     }
 
     func renderEnvironment(
@@ -567,12 +594,16 @@ final class SetupFramingRenderer {
     kernel void setup_framing(
         texture2d<float, access::sample> source [[texture(0)]],
         texture2d<float, access::write> output [[texture(1)]],
+        texture2d<float, access::sample> reference [[texture(2)]],
         sampler linear_sampler [[sampler(0)]],
         constant SetupParameters& s [[buffer(0)]],
         uint2 p [[thread_position_in_grid]]
     ) {
         if (any(p >= s.preview_raster.xy)) return;
-        const float4 background = s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1);
+        const float2 previewUV = (float2(p) + 0.5f) / float2(s.preview_raster.xy);
+        const float4 background = s.modes.w == 3u
+            ? reference.sample(linear_sampler, previewUV)
+            : (s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1));
         float2 camera;
         if (!camera_uv(p, s, camera)) { output.write(background, p); return; }
         if (s.modes.w == 1u) {
@@ -619,6 +650,7 @@ final class SetupFramingRenderer {
         }
         float4 value = source.sample(linear_sampler, uv);
         value.a = 1.0f;
+        if (s.modes.w == 3u) value = mix(background, value, 0.72f);
         output.write(value, p);
     }
     """#

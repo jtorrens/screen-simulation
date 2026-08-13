@@ -158,6 +158,10 @@ private func canonicalFrameContext(
         previewPhaseID: "recording-codec",
         environmentResource: .init(
             kind: .procedural, fileName: nil, sha256: nil, inputTransformID: nil
+        ),
+        referenceResource: .init(
+            kind: .none, fileName: nil, sha256: nil, inputTransformID: nil,
+            matchEnabled: false, corners: []
         )
     )
 }

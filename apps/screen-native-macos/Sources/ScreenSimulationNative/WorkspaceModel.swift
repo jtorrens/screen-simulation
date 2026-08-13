@@ -4,6 +4,7 @@ import Combine
 import CryptoKit
 import Foundation
 import OSLog
+import ScreenPhysicalBridge
 import ScreenSimulationPresentation
 import StudioColor
 import StudioMedia
@@ -34,6 +35,22 @@ enum NativeRenderButtonState: Equatable {
             return .complete
         }
         return .outdated
+    }
+}
+
+enum ReferenceMatchError: LocalizedError {
+    case incompatibleRasterAspect(
+        referenceWidth: Int, referenceHeight: Int, sensorWidth: Double, sensorHeight: Double
+    )
+    case unsolved(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .incompatibleRasterAspect(width, height, sensorWidth, sensorHeight):
+            "La referencia \(width)×\(height) no usa la relación de aspecto del gate seleccionado \(sensorWidth.formatted())×\(sensorHeight.formatted()) mm."
+        case let .unsolved(message):
+            "No se puede resolver una cámara rígida con estos cuatro puntos: \(message)."
+        }
     }
 }
 
@@ -104,6 +121,10 @@ final class WorkspaceModel: ObservableObject {
     @Published var status = "Preparado"
     @Published var metalFrame: StudioColorMetalFrame?
     @Published private(set) var setupDeviceBoundary: [CGPoint] = []
+    @Published private(set) var referenceFrameName: String?
+    @Published private(set) var referenceMatchCorners: [CGPoint] = []
+    @Published private(set) var referenceMatchErrorPixels: Double?
+    @Published var referenceMatchEnabled = false
     @Published private(set) var environmentSourceName: String?
     @Published private(set) var environmentSourceResolution: CGSize?
     @Published var jobs: [RenderJob] = []
@@ -165,6 +186,13 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceHash: String?
     private var environmentSourceInputTransformID: String?
     private var environmentSourceURL: URL?
+    private var referenceACEScgFrame: StudioColorMetalFrame?
+    private var referenceSourceURL: URL?
+    private var referenceInputTransformID: String?
+    private var referenceSourceHash: String?
+    private var referenceMatchStartSelection: TestAuthoringResolvedSelection?
+    private var referenceMatchPendingPose: CameraNavigationPose?
+    private var referenceRefreshTask: Task<Void, Never>?
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
     private var cameraNavigationLatestPose: CameraNavigationPose?
@@ -846,7 +874,9 @@ final class WorkspaceModel: ObservableObject {
             pose.orientation.imag.z, pose.orientation.real,
         ]
         authored.cameraLookAt = nil
-        if cameraNavigationPreviewQuality == .focusSetup {
+        if referenceMatchEnabled {
+            publishReferenceMatchSetup(resetTargetsFromProjection: false, authoredOverride: authored)
+        } else if cameraNavigationPreviewQuality == .focusSetup {
             publishFocusSetup(
                 interactiveViewportSize: viewportSize,
                 authoredOverride: authored
@@ -1379,6 +1409,142 @@ final class WorkspaceModel: ObservableObject {
         Task { await load(panel.urls) }
     }
 
+    func browseReferenceFrame() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.movie, .image]
+        panel.message = "Selecciona la imagen o película usada como referencia de encuadre."
+        let inputs = StudioColorInputTransform.catalog
+        let inputPicker = NSPopUpButton()
+        for input in inputs {
+            inputPicker.addItem(withTitle: input.label)
+            inputPicker.lastItem?.representedObject = input.id
+        }
+        inputPicker.selectItem(at: inputs.firstIndex { $0.id == "srgb-encoded-rec709" } ?? 0)
+        let accessory = NSStackView(views: [
+            NSTextField(labelWithString: "Input Transform de la referencia"), inputPicker,
+        ])
+        accessory.orientation = .vertical
+        accessory.alignment = .leading
+        accessory.spacing = 6
+        panel.accessoryView = accessory
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let inputID = inputPicker.selectedItem?.representedObject as? String else {
+            errorMessage = "La referencia necesita un Input Transform explícito."
+            return
+        }
+        Task { await loadReferenceFrame(url, inputTransformID: inputID) }
+    }
+
+    func removeReferenceFrame() {
+        referenceRefreshTask?.cancel()
+        referenceRefreshTask = nil
+        referenceACEScgFrame = nil
+        referenceSourceURL = nil
+        referenceInputTransformID = nil
+        referenceSourceHash = nil
+        referenceFrameName = nil
+        referenceMatchCorners = []
+        referenceMatchErrorPixels = nil
+        referenceMatchEnabled = false
+        rebuildPhysicalSelectedFrame()
+    }
+
+    func setReferenceMatchEnabled(_ enabled: Bool) {
+        guard referenceACEScgFrame != nil else { return }
+        referenceMatchEnabled = enabled
+        if enabled {
+            physicalModel.setQuality(.setup)
+            publishReferenceMatchSetup(resetTargetsFromProjection: referenceMatchCorners.count != 4)
+        } else {
+            rebuildPhysicalSelectedFrame()
+        }
+    }
+
+    private func loadReferenceFrame(_ url: URL, inputTransformID: String) async {
+        do {
+            let managed = try ReferenceAssetLibrary.importAsset(from: url)
+            let decoded = try await NativeMediaDecoder.decode(
+                url: managed.url,
+                time: CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
+            )
+            guard let input = StudioColorInputTransform.catalog.first(where: {
+                $0.id == inputTransformID
+            }) else { throw NativeMediaError.invalidRaster }
+            let frame = try metalDisplay.makeACEScgFrame(
+                width: decoded.width,
+                height: decoded.height,
+                encodedRGBA: decoded.rgba,
+                input: input,
+                alpha: .ignore
+            )
+            referenceACEScgFrame = frame
+            referenceSourceURL = managed.url
+            referenceInputTransformID = input.id
+            referenceSourceHash = managed.sha256
+            referenceFrameName = managed.originalFileName
+            referenceMatchCorners = []
+            referenceMatchErrorPixels = nil
+            referenceMatchEnabled = true
+            physicalModel.setQuality(.setup)
+            publishReferenceMatchSetup(resetTargetsFromProjection: true)
+            status = "Referencia · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func beginReferenceCornerDrag() {
+        guard referenceMatchEnabled else { return }
+        referenceMatchStartSelection = testAuthoringSelection
+        referenceMatchPendingPose = nil
+    }
+
+    func updateReferenceCorner(_ index: Int, to point: CGPoint) {
+        guard referenceMatchEnabled,
+              referenceMatchCorners.indices.contains(index),
+              let reference = referenceACEScgFrame
+        else { return }
+        referenceMatchCorners[index] = CGPoint(
+            x: min(CGFloat(reference.width) - 0.5, max(-0.5, point.x)),
+            y: min(CGFloat(reference.height) - 0.5, max(-0.5, point.y))
+        )
+        do {
+            let pose = try solveReferenceMatchPose()
+            referenceMatchPendingPose = pose
+            applyTransientReferenceMatchPose(pose)
+            if let error = referenceMatchErrorPixels {
+                status = "Match referencia · error máximo \(error.formatted(.number.precision(.fractionLength(2)))) px"
+            }
+        } catch {
+            referenceMatchErrorPixels = nil
+            status = error.localizedDescription
+        }
+    }
+
+    func endReferenceCornerDrag(undoManager: UndoManager?) {
+        guard let prior = referenceMatchStartSelection else { return }
+        if let pose = referenceMatchPendingPose {
+            cameraNavigationStartSelection = prior
+            cameraNavigationPreviewQuality = .setup
+            commitCameraNavigationPose(pose)
+            cameraNavigationStartSelection = nil
+        }
+        referenceMatchPendingPose = nil
+        referenceMatchStartSelection = nil
+        if prior != testAuthoringSelection {
+            let manager = UndoManagerBox(undoManager)
+            undoManager?.registerUndo(withTarget: self) { target in
+                Task { @MainActor in
+                    try? target.restoreCameraNavigationSelection(prior, undoManager: manager.value)
+                    target.publishReferenceMatchSetup(resetTargetsFromProjection: false)
+                }
+            }
+            undoManager?.setActionName("Ajustar cámara a referencia")
+        }
+    }
+
     func load(_ urls: [URL]) async {
         pause()
         status = "Leyendo medio y metadata…"
@@ -1508,12 +1674,14 @@ final class WorkspaceModel: ObservableObject {
         currentFrame = min(max(0, frame), max(0, frameCount - 1))
         if sourceIsPattern {
             renderPattern()
+            refreshReferenceFrameForCurrentTime()
         } else {
             Task {
                 do {
                     let time = session.time(forFrame: currentFrame)
                     try await session.seek(to: time)
                     try present(try await session.exactSample(at: time))
+                    refreshReferenceFrameForCurrentTime()
                 } catch { errorMessage = error.localizedDescription }
             }
         }
@@ -1879,6 +2047,16 @@ final class WorkspaceModel: ObservableObject {
                 fileName: environmentSourceName,
                 sha256: environmentSourceHash,
                 inputTransformID: environmentSourceInputTransformID
+            ),
+            referenceResource: .init(
+                kind: referenceACEScgFrame == nil ? .none : .imageOrVideo,
+                fileName: referenceFrameName,
+                sha256: referenceSourceHash,
+                inputTransformID: referenceInputTransformID,
+                matchEnabled: referenceMatchEnabled,
+                corners: referenceMatchCorners.map {
+                    .init(x: Double($0.x), y: Double($0.y))
+                }
             )
         )
     }
@@ -1896,6 +2074,16 @@ final class WorkspaceModel: ObservableObject {
                   ) != nil
             else {
                 throw PhysicalSettingsExchange.ImportError.unavailableEnvironmentResource(
+                    resource.fileName ?? "sin nombre"
+                )
+            }
+        }
+        if let resource = imported.context?.referenceResource,
+           resource.kind == .imageOrVideo {
+            guard let hash = resource.sha256, let name = resource.fileName,
+                  try ReferenceAssetLibrary.asset(sha256: hash, originalFileName: name) != nil
+            else {
+                throw PhysicalSettingsExchange.ImportError.unavailableReferenceResource(
                     resource.fileName ?? "sin nombre"
                 )
             }
@@ -1986,6 +2174,42 @@ final class WorkspaceModel: ObservableObject {
                     }
                 }
             }
+            switch context.referenceResource.kind {
+            case .none:
+                referenceACEScgFrame = nil
+                referenceSourceURL = nil
+                referenceInputTransformID = nil
+                referenceSourceHash = nil
+                referenceFrameName = nil
+                referenceMatchCorners = []
+                referenceMatchEnabled = false
+            case .imageOrVideo:
+                guard let hash = context.referenceResource.sha256,
+                      let name = context.referenceResource.fileName,
+                      let transform = context.referenceResource.inputTransformID,
+                      let asset = try ReferenceAssetLibrary.asset(
+                          sha256: hash, originalFileName: name
+                      )
+                else {
+                    throw PhysicalSettingsExchange.ImportError.unavailableReferenceResource(
+                        context.referenceResource.fileName ?? "sin nombre"
+                    )
+                }
+                referenceSourceURL = asset.url
+                referenceInputTransformID = transform
+                referenceSourceHash = hash
+                referenceFrameName = name
+                referenceMatchCorners = context.referenceResource.corners.map {
+                    CGPoint(x: $0.x, y: $0.y)
+                }
+                referenceMatchEnabled = context.referenceResource.matchEnabled
+                Task { [weak self] in
+                    await self?.loadManagedReferenceFrame(
+                        asset, inputTransformID: transform,
+                        keepAuthoredCorners: true
+                    )
+                }
+            }
             testAuthoringSelection = context.selection
             selectedCapturePresetID = context.selection.capturePresetID
             selectedCaptureRasterModeID = context.selection.captureRasterModeID
@@ -2000,6 +2224,31 @@ final class WorkspaceModel: ObservableObject {
         modelDeviceDefinition = state.device
         physicalAuthoringState = state.pipeline
         physicalModel.invalidateExternalParameters()
+    }
+
+    private func loadManagedReferenceFrame(
+        _ managed: ManagedReferenceAsset,
+        inputTransformID: String,
+        keepAuthoredCorners: Bool
+    ) async {
+        do {
+            let decoded = try await NativeMediaDecoder.decode(
+                url: managed.url,
+                time: CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
+            )
+            guard let input = StudioColorInputTransform.catalog.first(where: {
+                $0.id == inputTransformID
+            }) else { throw NativeMediaError.invalidRaster }
+            referenceACEScgFrame = try metalDisplay.makeACEScgFrame(
+                width: decoded.width, height: decoded.height,
+                encodedRGBA: decoded.rgba, input: input, alpha: .ignore
+            )
+            publishReferenceMatchSetup(
+                resetTargetsFromProjection: !keepAuthoredCorners || referenceMatchCorners.count != 4
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func confirmPhysicalSettingsImport(_ report: String) -> Bool {
@@ -2040,9 +2289,42 @@ final class WorkspaceModel: ObservableObject {
             let next = currentFrame + 1
             currentFrame = next
             renderPattern()
+            refreshReferenceFrameForCurrentTime()
             return
         }
         renderCurrentMediaFrame()
+        refreshReferenceFrameForCurrentTime()
+    }
+
+    private func refreshReferenceFrameForCurrentTime() {
+        guard referenceMatchEnabled,
+              let url = referenceSourceURL,
+              let inputID = referenceInputTransformID,
+              Self.isVideo(url)
+        else { return }
+        let seconds = requestedSeconds
+        referenceRefreshTask?.cancel()
+        referenceRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let decoded = try await NativeMediaDecoder.decode(
+                    url: url,
+                    time: CMTime(seconds: seconds, preferredTimescale: 60_000)
+                )
+                try Task.checkCancellation()
+                guard self.referenceSourceURL == url,
+                      let input = StudioColorInputTransform.catalog.first(where: { $0.id == inputID })
+                else { return }
+                self.referenceACEScgFrame = try self.metalDisplay.makeACEScgFrame(
+                    width: decoded.width, height: decoded.height,
+                    encodedRGBA: decoded.rgba, input: input, alpha: .ignore
+                )
+                self.publishReferenceMatchSetup(resetTargetsFromProjection: false)
+            } catch is CancellationError {
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func restartPlayback(at frame: Int) {
@@ -2172,6 +2454,12 @@ final class WorkspaceModel: ObservableObject {
             if !isTestPageActive, let sourceACEScgFrame { metalFrame = sourceACEScgFrame }
             return
         }
+        if referenceMatchEnabled, referenceACEScgFrame != nil {
+            _ = physicalInteractiveJob?.cancel()
+            physicalInteractiveTask?.cancel()
+            publishReferenceMatchSetup(resetTargetsFromProjection: referenceMatchCorners.count != 4)
+            return
+        }
         if physicalModel.quality == .setup {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
@@ -2278,6 +2566,118 @@ final class WorkspaceModel: ObservableObject {
             setupDeviceBoundary = []
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func publishReferenceMatchSetup(
+        resetTargetsFromProjection: Bool,
+        authoredOverride: PhysicalPipelineAuthoringState? = nil
+    ) {
+        guard referenceMatchEnabled,
+              let reference = referenceACEScgFrame,
+              let source = sourceACEScgFrame,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let authored = authoredOverride ?? physicalAuthoringState
+        else { return }
+        do {
+            if setupFramingRenderer == nil {
+                setupFramingRenderer = try SetupFramingRenderer(device: source.texture.device)
+            }
+            let result = try setupFramingRenderer!.renderReferenceMatch(
+                source: source,
+                reference: reference,
+                sourcePlacement: sourcePlacement,
+                device: device,
+                pipeline: authored
+            )
+            metalFrame = result.frame
+            setupDeviceBoundary = result.boundary
+            if resetTargetsFromProjection { referenceMatchCorners = result.boundary }
+            physicalPublicationSummary = "Match referencia · referencia + Device rígido + cámara"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func applyTransientReferenceMatchPose(_ pose: CameraNavigationPose) {
+        guard var authored = physicalAuthoringState else { return }
+        authored.cameraPose.position = [pose.position.x, pose.position.y, pose.position.z]
+        authored.cameraPose.quaternion = [
+            pose.orientation.imag.x, pose.orientation.imag.y,
+            pose.orientation.imag.z, pose.orientation.real,
+        ]
+        authored.cameraLookAt = nil
+        publishReferenceMatchSetup(resetTargetsFromProjection: false, authoredOverride: authored)
+    }
+
+    private func solveReferenceMatchPose() throws -> CameraNavigationPose {
+        guard let authored = physicalAuthoringState,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let reference = referenceACEScgFrame,
+              referenceMatchCorners.count == 4
+        else { throw NativeMediaError.invalidRaster }
+        let referenceAspect = Double(reference.width) / Double(reference.height)
+        let sensorAspect = authored.sceneLens.sensorWidthMillimeters
+            / authored.sceneLens.sensorHeightMillimeters
+        guard abs(referenceAspect / sensorAspect - 1) <= 0.01 else {
+            throw ReferenceMatchError.incompatibleRasterAspect(
+                referenceWidth: reference.width,
+                referenceHeight: reference.height,
+                sensorWidth: authored.sceneLens.sensorWidthMillimeters,
+                sensorHeight: authored.sceneLens.sensorHeightMillimeters
+            )
+        }
+        let screenQuaternion = simd_quatd(
+            ix: authored.screenPose.quaternion[0], iy: authored.screenPose.quaternion[1],
+            iz: authored.screenPose.quaternion[2], r: authored.screenPose.quaternion[3]
+        ).normalized
+        let geometry = CameraNavigationGeometry(
+            center: SIMD3(
+                authored.screenPose.position[0], authored.screenPose.position[1],
+                authored.screenPose.position[2]
+            ),
+            right: screenQuaternion.act(SIMD3(1, 0, 0)),
+            up: screenQuaternion.act(SIMD3(0, 1, 0)),
+            halfWidth: device.activeWidthMeters * 0.5,
+            halfHeight: device.activeHeightMeters * 0.5
+        )
+        var request = ScreenPlanarReferenceMatchV1()
+        request.abi_version = SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION
+        let deviceValues = geometry.corners.flatMap { [Float($0.x), Float($0.y), Float($0.z)] }
+        let imageValues = referenceMatchCorners.flatMap { [Float($0.x), Float($0.y)] }
+        withUnsafeMutableBytes(of: &request.device_corners_xyz) { destination in
+            deviceValues.withUnsafeBytes { source in destination.copyBytes(from: source) }
+        }
+        withUnsafeMutableBytes(of: &request.image_corners_xy) { destination in
+            imageValues.withUnsafeBytes { source in destination.copyBytes(from: source) }
+        }
+        request.image_width = UInt32(reference.width)
+        request.image_height = UInt32(reference.height)
+        request.focal_length_millimeters = Float(authored.sceneLens.focalLengthMillimeters)
+        request.sensor_width_millimeters = Float(authored.sceneLens.sensorWidthMillimeters)
+        request.sensor_height_millimeters = Float(authored.sceneLens.sensorHeightMillimeters)
+        let lensShift = [Float(authored.sceneLens.lensShift[0]), Float(authored.sceneLens.lensShift[1])]
+        withUnsafeMutableBytes(of: &request.lens_shift_xy) { destination in
+            lensShift.withUnsafeBytes { source in destination.copyBytes(from: source) }
+        }
+        var result = ScreenMatchedCameraPoseV1()
+        var message: UnsafePointer<CChar>?
+        guard screen_geometry_solve_planar_reference_v1(&request, &result, &message) else {
+            throw ReferenceMatchError.unsolved(message.map(String.init(cString:)) ?? "error desconocido")
+        }
+        let position = withUnsafeBytes(of: result.camera_position) {
+            Array($0.bindMemory(to: Float.self))
+        }
+        let quaternion = withUnsafeBytes(of: result.camera_rotation_xyzw) {
+            Array($0.bindMemory(to: Float.self))
+        }
+        referenceMatchErrorPixels = Double(result.maximum_reprojection_error_pixels)
+        return CameraNavigationPose(
+            position: SIMD3(Double(position[0]), Double(position[1]), Double(position[2])),
+            orientation: simd_quatd(
+                ix: Double(quaternion[0]), iy: Double(quaternion[1]),
+                iz: Double(quaternion[2]), r: Double(quaternion[3])
+            ).normalized
+        )
     }
 
     private func publishEnvironmentSetup(

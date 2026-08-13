@@ -1,7 +1,7 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.FrameSettings.v11"
+    static let schema = "ScreenSimulation.FrameSettings.v12"
 
     struct EnvironmentResource: Codable, Equatable, Sendable {
         enum Kind: String, Codable, Sendable { case procedural, image }
@@ -37,6 +37,37 @@ enum PhysicalSettingsExchange {
         let previewOutputTransformID: String
         let previewPhaseID: String
         let environmentResource: EnvironmentResource
+        let referenceResource: ReferenceResource
+    }
+
+    struct ReferenceResource: Codable, Equatable, Sendable {
+        enum Kind: String, Codable, Sendable { case none, imageOrVideo }
+        let kind: Kind
+        let fileName: String?
+        let sha256: String?
+        let inputTransformID: String?
+        let matchEnabled: Bool
+        let corners: [ReferenceCorner]
+
+        func validate() throws {
+            switch kind {
+            case .none:
+                guard fileName == nil, sha256 == nil, inputTransformID == nil,
+                      !matchEnabled, corners.isEmpty
+                else { throw ImportError.invalidReferenceResource }
+            case .imageOrVideo:
+                guard let fileName, !fileName.isEmpty,
+                      let sha256, sha256.count == 64, sha256.allSatisfy(\.isHexDigit),
+                      let inputTransformID, !inputTransformID.isEmpty,
+                      corners.count == 4, corners.allSatisfy({ $0.x.isFinite && $0.y.isFinite })
+                else { throw ImportError.invalidReferenceResource }
+            }
+        }
+    }
+
+    struct ReferenceCorner: Codable, Equatable, Sendable {
+        let x: Double
+        let y: Double
     }
 
     struct Imported: Sendable {
@@ -111,6 +142,7 @@ enum PhysicalSettingsExchange {
             from: try JSONSerialization.data(withJSONObject: requiredObject("context", in: settings))
         )
         try context.environmentResource.validate()
+        try context.referenceResource.validate()
 
         guard let screen = settings["screen"] as? [String: Any],
               let amount = number(screen["storedAmount"]),
@@ -217,6 +249,8 @@ enum PhysicalSettingsExchange {
         case invalidModel
         case invalidEnvironmentResource
         case unavailableEnvironmentResource(String)
+        case invalidReferenceResource
+        case unavailableReferenceResource(String)
 
         var errorDescription: String? {
             switch self {
@@ -232,6 +266,10 @@ enum PhysicalSettingsExchange {
                 "La identidad del entorno HDR del PNG es incompleta o inválida."
             case let .unavailableEnvironmentResource(name):
                 "El frame necesita el entorno HDR ‘\(name)’. Selecciona primero ese archivo con Browse; su SHA-256 debe coincidir y después repite la importación."
+            case .invalidReferenceResource:
+                "La identidad o los cuatro puntos de la referencia son inválidos."
+            case let .unavailableReferenceResource(name):
+                "El frame necesita la referencia ‘\(name)’, que no está en la biblioteca estable."
             }
         }
     }

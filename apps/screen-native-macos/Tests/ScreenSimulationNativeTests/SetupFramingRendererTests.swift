@@ -49,6 +49,44 @@ import Testing
     #expect(sourceInterior.count > 1_000)
 }
 
+@Test @MainActor func referenceMatchSetupKeepsTheReferenceBehindTheRigidDevice() throws {
+    let display = try StudioColorMetalDisplay()
+    let input = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    })
+    let sourcePixel: [Float] = [0.8, 0.1, 0.1, 1]
+    let referencePixel: [Float] = [0.05, 0.2, 0.05, 1]
+    let sourcePixels = Array(repeating: sourcePixel, count: 16 * 9).flatMap { $0 }
+    let referencePixels = Array(repeating: referencePixel, count: 320 * 180).flatMap { $0 }
+    let source = try display.makeACEScgFrame(
+        width: 16, height: 9, encodedRGBA: sourcePixels, input: input, alpha: .straight
+    )
+    let reference = try display.makeACEScgFrame(
+        width: 320, height: 180, encodedRGBA: referencePixels, input: input, alpha: .straight
+    )
+    let device = try #require(try RustDeviceCatalog.builtIns().first { $0.name.contains("ASUS ProArt") })
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    var authored = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
+    authored.cameraPose.position = [0, 0, 1]
+    authored.cameraPose.quaternion = [0, 0, 0, 1]
+    authored.screenPose.position = [0, 0, 0]
+    authored.screenPose.quaternion = [0, 0, 0, 1]
+    authored.sceneLens.sensorWidthMillimeters = 36
+    authored.sceneLens.sensorHeightMillimeters = 20.25
+    authored.sceneLens.focalLengthMillimeters = 45
+
+    let result = try SetupFramingRenderer(device: source.texture.device).renderReferenceMatch(
+        source: source, reference: reference, sourcePlacement: .stretch,
+        device: device, pipeline: authored
+    )
+    #expect(result.frame.width == 320)
+    #expect(result.frame.height == 180)
+    #expect(result.boundary.count == 4)
+    #expect(result.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+}
+
 @Test @MainActor func setupFramingRecomputesDeliveryPlacementWithoutLosingTheBoundary() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
