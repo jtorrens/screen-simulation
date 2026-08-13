@@ -14,16 +14,52 @@ struct ManagedEnvironmentAsset: Equatable, Sendable {
     }
 }
 
+struct EnvironmentAssetCalibration: Codable, Equatable, Sendable {
+    static let schema = "ScreenSimulation.EnvironmentCalibration.v1"
+
+    let schema: String
+    let inputTransformID: String
+    let sourceUnitRadianceCandelasPerSquareMeter: Double
+    let exposureEV: Double
+
+    init(
+        inputTransformID: String,
+        sourceUnitRadianceCandelasPerSquareMeter: Double,
+        exposureEV: Double
+    ) throws {
+        guard !inputTransformID.isEmpty,
+              sourceUnitRadianceCandelasPerSquareMeter.isFinite,
+              sourceUnitRadianceCandelasPerSquareMeter > 0,
+              exposureEV.isFinite, (-16 ... 16).contains(exposureEV)
+        else { throw EnvironmentAssetLibraryError.invalidCalibration }
+        schema = Self.schema
+        self.inputTransformID = inputTransformID
+        self.sourceUnitRadianceCandelasPerSquareMeter =
+            sourceUnitRadianceCandelasPerSquareMeter
+        self.exposureEV = exposureEV
+    }
+
+    func validate() throws {
+        guard schema == Self.schema, !inputTransformID.isEmpty,
+              sourceUnitRadianceCandelasPerSquareMeter.isFinite,
+              sourceUnitRadianceCandelasPerSquareMeter > 0,
+              exposureEV.isFinite, (-16 ... 16).contains(exposureEV)
+        else { throw EnvironmentAssetLibraryError.invalidCalibration }
+    }
+}
+
 enum EnvironmentAssetLibraryError: LocalizedError {
     case unreadable
     case invalidExtension
     case copyFailed(String)
+    case invalidCalibration
 
     var errorDescription: String? {
         switch self {
         case .unreadable: "No se puede leer el entorno seleccionado."
         case .invalidExtension: "El entorno debe ser OpenEXR o Radiance HDR."
         case let .copyFailed(message): "No se pudo guardar el entorno en la biblioteca: \(message)"
+        case .invalidCalibration: "La calibración guardada del entorno no es válida."
         }
     }
 }
@@ -95,6 +131,44 @@ enum EnvironmentAssetLibrary {
         return nil
     }
 
+    static func calibration(for asset: ManagedEnvironmentAsset) throws
+        -> EnvironmentAssetCalibration?
+    {
+        let url = calibrationURL(for: asset.url)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let dictionary = object as? [String: Any],
+              Set(dictionary.keys) == [
+                  "schema", "inputTransformID",
+                  "sourceUnitRadianceCandelasPerSquareMeter", "exposureEV",
+              ]
+        else { throw EnvironmentAssetLibraryError.invalidCalibration }
+        let value = try JSONDecoder().decode(EnvironmentAssetCalibration.self, from: data)
+        try value.validate()
+        return value
+    }
+
+    static func saveCalibration(
+        _ calibration: EnvironmentAssetCalibration,
+        for asset: ManagedEnvironmentAsset
+    ) throws {
+        try calibration.validate()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(calibration).write(
+            to: calibrationURL(for: asset.url), options: .atomic
+        )
+    }
+
+    static func managedAsset(at url: URL) -> ManagedEnvironmentAsset? {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard let separator = stem.range(of: "--", options: .backwards) else { return nil }
+        let hash = String(stem[separator.upperBound...])
+        guard hash.count == 64, hash.allSatisfy(\.isHexDigit) else { return nil }
+        return .init(url: url, originalFileName: url.lastPathComponent, sha256: hash)
+    }
+
     static func environmentDirectory(libraryRoot: URL? = nil) throws -> URL {
         let root = try libraryRoot ?? FileManager.default.url(
             for: .applicationSupportDirectory,
@@ -111,5 +185,9 @@ enum EnvironmentAssetLibrary {
             at: directory, withIntermediateDirectories: true
         )
         return directory
+    }
+
+    private static func calibrationURL(for assetURL: URL) -> URL {
+        assetURL.deletingPathExtension().appendingPathExtension("environment.json")
     }
 }

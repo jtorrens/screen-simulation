@@ -181,6 +181,7 @@ final class WorkspaceModel: ObservableObject {
             "Raster: \(Int(resolution.width))×\(Int(resolution.height)) · equirectangular 2:1",
             "Input Transform: \(input.label)",
             "Calibración: \(authored.environment.sourceUnitRadianceCandelasPerSquareMeter.formatted(.number.precision(.fractionLength(0 ... 3)))) cd/m² por unidad",
+            "Evaluación: reflejos visibles desde Draft; Setup muestra solo encuadre",
         ]
     }
     private let session = NativeMediaSession()
@@ -850,9 +851,9 @@ final class WorkspaceModel: ObservableObject {
             inputPicker.addItem(withTitle: input.label)
             inputPicker.lastItem?.representedObject = input.id
         }
-        inputPicker.selectItem(at: inputTransforms.firstIndex { $0.id == "acescg" } ?? 0)
-        let radianceField = NSTextField(string: "1")
-        let exposureField = NSTextField(string: "0")
+        inputPicker.selectItem(at: inputTransforms.firstIndex { $0.id == "linear-rec709" } ?? 0)
+        let radianceField = NSTextField(string: "100")
+        let exposureField = NSTextField(string: "-1")
         let accessory = NSGridView(views: [
             [NSTextField(labelWithString: "Input Transform"), inputPicker],
             [NSTextField(labelWithString: "cd/m² por unidad"), radianceField],
@@ -892,6 +893,12 @@ final class WorkspaceModel: ObservableObject {
             } else {
                 managed = try EnvironmentAssetLibrary.importAsset(from: url)
             }
+            let calibration = try EnvironmentAssetCalibration(
+                inputTransformID: inputTransformID,
+                sourceUnitRadianceCandelasPerSquareMeter: unitRadiance,
+                exposureEV: exposureStops
+            )
+            try EnvironmentAssetLibrary.saveCalibration(calibration, for: managed)
             let decoded = try await NativeMediaDecoder.decode(url: managed.url, time: .zero)
             guard decoded.width == decoded.height * 2 else {
                 throw EnvironmentRadianceFrameError.invalidEquirectangularRaster
@@ -940,7 +947,7 @@ final class WorkspaceModel: ObservableObject {
             )
             physicalModel.invalidateExternalParameters()
             try applyTestAuthoringSelection(selected)
-            status = "Entorno · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
+            status = "Entorno cargado · visible desde Draft · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
         } catch {
             errorMessage = error.localizedDescription
         }

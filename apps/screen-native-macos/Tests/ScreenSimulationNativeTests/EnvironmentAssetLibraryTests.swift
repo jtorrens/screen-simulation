@@ -24,4 +24,12 @@ import Testing
         originalFileName: first.originalFileName,
         libraryRoot: testRoot
     ) == first)
+
+    let calibration = try EnvironmentAssetCalibration(
+        inputTransformID: "linear-rec709",
+        sourceUnitRadianceCandelasPerSquareMeter: 100,
+        exposureEV: -1
+    )
+    try EnvironmentAssetLibrary.saveCalibration(calibration, for: first)
+    #expect(try EnvironmentAssetLibrary.calibration(for: first) == calibration)
 }
