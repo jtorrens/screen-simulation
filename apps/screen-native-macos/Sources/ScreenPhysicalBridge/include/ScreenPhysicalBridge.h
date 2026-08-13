@@ -16,7 +16,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 12u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 13u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u
 
@@ -76,8 +76,11 @@ typedef struct {
     ScreenUTF8View cover_glass_preset_id;
     float cover_glass_amount;
     float cover_ag_microtexture_amount;
-    ScreenUTF8View environment_preset_id;
+    ScreenUTF8View environment_source_id;
     float environment_amount;
+    float environment_rotation_x_degrees;
+    float environment_rotation_y_degrees;
+    float environment_exposure_ev;
     float cover_glow_amount;
     ScreenUTF8View lens_preset_id;
     float lens_amount;
@@ -471,7 +474,8 @@ typedef struct {
     float key_radiance_acescg[3];
     float key_direction_local[3];
     float key_angular_radius_degrees;
-    float rotation_degrees;
+    float rotation_x_degrees;
+    float rotation_y_degrees;
     uint32_t pattern;
 } ScreenEnvironmentParametersV2;
 

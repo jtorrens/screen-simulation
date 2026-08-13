@@ -36,7 +36,8 @@ struct SpatialParams {
     float4 cover_glow; // core support m, tail support m, scattered fraction, tail fraction
     float4 environment_ambient_strength; // ambient rgb, strength
     float4 environment_key_radius; // key rgb, angular radius radians
-    float4 environment_direction; // key direction xyz, environment rotation radians
+    float4 environment_direction; // key direction xyz
+    float4 environment_rotation; // panel-local X and Y radians
     float4 procedural_time;
     float4 pipeline_strengths; // panel, lens, reserved sensor, reserved
 };
@@ -265,13 +266,18 @@ inline float environment_circle(float3 direction, float3 center,
 
 inline float3 environment_radiance(float3 direction, constant SpatialParams& p) {
     direction = normalize(direction);
-    float rotation_sine = sin(p.environment_direction.w);
-    float rotation_cosine = cos(p.environment_direction.w);
+    float rotation_y_sine = sin(p.environment_rotation.y);
+    float rotation_y_cosine = cos(p.environment_rotation.y);
     direction = float3(
-        direction.x * rotation_cosine + direction.z * rotation_sine,
+        direction.x * rotation_y_cosine + direction.z * rotation_y_sine,
         direction.y,
-        -direction.x * rotation_sine + direction.z * rotation_cosine
+        -direction.x * rotation_y_sine + direction.z * rotation_y_cosine
     );
+    float rotation_x_sine = sin(p.environment_rotation.x);
+    float rotation_x_cosine = cos(p.environment_rotation.x);
+    direction = float3(direction.x,
+        direction.y * rotation_x_cosine - direction.z * rotation_x_sine,
+        direction.y * rotation_x_sine + direction.z * rotation_x_cosine);
     float alignment = clamp(dot(direction, p.environment_direction.xyz), -1.0f, 1.0f);
     float edge = cos(p.environment_key_radius.w);
     float softness = 0.005f + p.cover_absorption_roughness.w * 0.35f;

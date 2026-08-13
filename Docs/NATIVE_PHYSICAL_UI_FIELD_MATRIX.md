@@ -43,7 +43,8 @@ mean one native control per named component, not a summary-only display.
 | `environment.key_radiance_acescg[0..2]` | RGB sliders + inputs | nit / 0–100000 | Project base → override |
 | `environment.key_direction_local[0..2]` | XYZ sliders + inputs | normalized component / −1–1 | Project base → override |
 | `environment.key_angular_radius_degrees` | slider + input | degrees / 0.01–180 | Project base → override |
-| `environment.rotation_degrees` | slider + input | degrees / −360–360 | Project base → override |
+| `environment.rotation_x_degrees` | slider + input | degrees / −90–90
+| `environment.rotation_y_degrees` | slider + input | degrees / −180–180 | Project base → override |
 | `environment.pattern` | native picker | ABI enum 0–2 | Project base → override |
 | `scene.focal_length_millimeters` | slider + input | mm / 0.1–2000 | Project base → override |
 | `scene.sensor_width/height_millimeters` | slider + input | mm / 0.1–200 | Project base → override |

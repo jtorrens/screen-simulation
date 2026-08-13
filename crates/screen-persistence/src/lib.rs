@@ -418,7 +418,8 @@ pub struct EnvironmentDocument {
     pub key_radiance: [f32; 3],
     pub key_direction_local: [f32; 3],
     pub key_angular_radius_degrees: f32,
-    pub rotation_degrees: f32,
+    pub rotation_x_degrees: f32,
+    pub rotation_y_degrees: f32,
     pub pattern: EnvironmentPatternDocument,
 }
 
@@ -981,7 +982,8 @@ fn validate_environment(environment: &EnvironmentDocument) -> Result<(), Persist
         environment.key_direction_local[1],
         environment.key_direction_local[2],
         environment.key_angular_radius_degrees,
-        environment.rotation_degrees,
+        environment.rotation_x_degrees,
+        environment.rotation_y_degrees,
     ]
     .into_iter()
     .all(f32::is_finite);
@@ -1422,7 +1424,8 @@ mod tests {
                     key_radiance: [220.0; 3],
                     key_direction_local: [-0.45, 0.35, 0.821_584],
                     key_angular_radius_degrees: 24.0,
-                    rotation_degrees: 15.0,
+                    rotation_x_degrees: -10.0,
+                    rotation_y_degrees: 15.0,
                     pattern: EnvironmentPatternDocument::StudioSoftboxes,
                 },
             },

@@ -189,10 +189,15 @@ import Testing
             pipeline.environment.keyRadianceACEScg = [0, 0, 0]
             pipeline.environment.pattern = 0
         }
-        if let rotation = ProcessInfo.processInfo.environment[
-            "SCREEN_MOIRE_ENVIRONMENT_ROTATION_DEGREES"
+        if let rotationX = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ENVIRONMENT_ROTATION_X_DEGREES"
         ].flatMap(Double.init) {
-            pipeline.environment.rotationDegrees = rotation
+            pipeline.environment.rotationXDegrees = rotationX
+        }
+        if let rotationY = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ENVIRONMENT_ROTATION_Y_DEGREES"
+        ].flatMap(Double.init) {
+            pipeline.environment.rotationYDegrees = rotationY
         }
         if let exposureStops = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_ENVIRONMENT_EXPOSURE_STOPS"

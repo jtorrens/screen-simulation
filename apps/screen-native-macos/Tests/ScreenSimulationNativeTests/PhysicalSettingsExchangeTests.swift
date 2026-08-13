@@ -12,7 +12,8 @@ import Testing
         device: device,
         coverGlass: cover
     )
-    pipeline.environment.rotationDegrees = 23.5
+    pipeline.environment.rotationXDegrees = -7.25
+    pipeline.environment.rotationYDegrees = 23.5
     pipeline.cameraPose.position = [-0.1, 0.2, 0.75]
     pipeline.sceneLens.focalLengthMillimeters = 65
     pipeline.develop.exposureEV = -1.25

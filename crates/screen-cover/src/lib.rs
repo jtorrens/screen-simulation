@@ -203,8 +203,10 @@ pub struct ProceduralEnvironment {
     pub key_radiance: AcesCgRadiance,
     pub key_direction_local: [f32; 3],
     pub key_angular_radius_degrees: f32,
+    /// Vertical tilt of the complete synthetic latitude-longitude environment around panel-local X.
+    pub rotation_x_degrees: f32,
     /// Horizontal rotation of the complete synthetic latitude-longitude environment around panel-local Y.
-    pub rotation_degrees: f32,
+    pub rotation_y_degrees: f32,
     pub pattern: EnvironmentPattern,
 }
 
@@ -220,8 +222,10 @@ pub struct EquirectangularEnvironment {
     pub source_unit_radiance_candelas_per_square_meter: f32,
     /// Photometric adjustment applied before reflection, in stops.
     pub exposure_stops: f32,
+    /// Vertical tilt of the latitude-longitude map around panel-local X.
+    pub rotation_x_degrees: f32,
     /// Horizontal rotation of the latitude-longitude map around panel-local Y.
-    pub rotation_degrees: f32,
+    pub rotation_y_degrees: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -252,7 +256,8 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             key_radiance: AcesCgRadiance(rgb(0.0)),
             key_direction_local: [0.0, 0.0, 1.0],
             key_angular_radius_degrees: 20.0,
-            rotation_degrees: 0.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 0.0,
             pattern: EnvironmentPattern::UniformNeutral,
         },
     },
@@ -265,7 +270,8 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             key_radiance: AcesCgRadiance(LinearRgb::new(900.0, 940.0, 1_000.0)),
             key_direction_local: [-0.45, 0.35, 0.821_584],
             key_angular_radius_degrees: 24.0,
-            rotation_degrees: 0.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 0.0,
             pattern: EnvironmentPattern::StudioSoftboxes,
         },
     },
@@ -278,7 +284,8 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             key_radiance: AcesCgRadiance(rgb(1_000.0)),
             key_direction_local: [0.0, 0.0, 1.0],
             key_angular_radius_degrees: 10.0,
-            rotation_degrees: 0.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 0.0,
             pattern: EnvironmentPattern::CalibrationGrid,
         },
     },
@@ -291,7 +298,8 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             key_radiance: AcesCgRadiance(LinearRgb::new(420.0, 455.0, 500.0)),
             key_direction_local: [0.0, 0.8, 0.6],
             key_angular_radius_degrees: 16.0,
-            rotation_degrees: 0.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 0.0,
             pattern: EnvironmentPattern::OfficeCeiling,
         },
     },
@@ -304,7 +312,8 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             key_radiance: AcesCgRadiance(LinearRgb::new(2_800.0, 3_250.0, 4_000.0)),
             key_direction_local: [-0.58, 0.12, 0.805_977],
             key_angular_radius_degrees: 24.0,
-            rotation_degrees: 0.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 0.0,
             pattern: EnvironmentPattern::DaylightWindow,
         },
     },
@@ -317,7 +326,8 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             key_radiance: AcesCgRadiance(LinearRgb::new(780.0, 315.0, 92.0)),
             key_direction_local: [0.52, -0.18, 0.834_985],
             key_angular_radius_degrees: 7.0,
-            rotation_degrees: 0.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 0.0,
             pattern: EnvironmentPattern::WarmPracticals,
         },
     },
@@ -330,7 +340,8 @@ pub const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
             key_radiance: AcesCgRadiance(LinearRgb::new(1_150.0, 560.0, 210.0)),
             key_direction_local: [0.56, -0.08, 0.824_621],
             key_angular_radius_degrees: 10.0,
-            rotation_degrees: 0.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 0.0,
             pattern: EnvironmentPattern::MixedProduction,
         },
     },
@@ -688,7 +699,8 @@ impl ProceduralEnvironment {
         key_radiance: AcesCgRadiance(rgb(0.0)),
         key_direction_local: [0.0, 0.0, 1.0],
         key_angular_radius_degrees: 20.0,
-        rotation_degrees: 0.0,
+        rotation_x_degrees: 0.0,
+        rotation_y_degrees: 0.0,
         pattern: EnvironmentPattern::UniformNeutral,
     };
 
@@ -728,7 +740,10 @@ impl ProceduralEnvironment {
         {
             return Err(CoverError::InvalidEnvironmentSourceSize);
         }
-        if !self.rotation_degrees.is_finite() || !(-180.0..=180.0).contains(&self.rotation_degrees)
+        if !self.rotation_x_degrees.is_finite()
+            || !(-90.0..=90.0).contains(&self.rotation_x_degrees)
+            || !self.rotation_y_degrees.is_finite()
+            || !(-180.0..=180.0).contains(&self.rotation_y_degrees)
         {
             return Err(CoverError::InvalidEnvironmentRotation);
         }
@@ -750,7 +765,10 @@ impl EquirectangularEnvironment {
         {
             return Err(CoverError::InvalidEnvironmentRadiance);
         }
-        if !self.rotation_degrees.is_finite() || !(-180.0..=180.0).contains(&self.rotation_degrees)
+        if !self.rotation_x_degrees.is_finite()
+            || !(-90.0..=90.0).contains(&self.rotation_x_degrees)
+            || !self.rotation_y_degrees.is_finite()
+            || !(-180.0..=180.0).contains(&self.rotation_y_degrees)
         {
             return Err(CoverError::InvalidEnvironmentRotation);
         }
@@ -925,7 +943,11 @@ impl ValidatedCoverEvaluator {
     }
 
     fn environment_radiance(self, direction: [f32; 3]) -> LinearRgb {
-        let direction = rotate_environment(normalize(direction), self.environment.rotation_degrees);
+        let direction = rotate_environment(
+            normalize(direction),
+            self.environment.rotation_x_degrees,
+            self.environment.rotation_y_degrees,
+        );
         let alignment = direction
             .into_iter()
             .zip(self.environment.key_direction_local)
@@ -1003,13 +1025,22 @@ fn normalize(value: [f32; 3]) -> [f32; 3] {
     [value[0] / length, value[1] / length, value[2] / length]
 }
 
-fn rotate_environment(direction: [f32; 3], rotation_degrees: f32) -> [f32; 3] {
-    let angle = rotation_degrees.to_radians();
-    let (sine, cosine) = angle.sin_cos();
-    [
-        direction[0] * cosine + direction[2] * sine,
+fn rotate_environment(
+    direction: [f32; 3],
+    rotation_x_degrees: f32,
+    rotation_y_degrees: f32,
+) -> [f32; 3] {
+    let (sine_y, cosine_y) = rotation_y_degrees.to_radians().sin_cos();
+    let yawed = [
+        direction[0] * cosine_y + direction[2] * sine_y,
         direction[1],
-        -direction[0] * sine + direction[2] * cosine,
+        -direction[0] * sine_y + direction[2] * cosine_y,
+    ];
+    let (sine_x, cosine_x) = rotation_x_degrees.to_radians().sin_cos();
+    [
+        yawed[0],
+        yawed[1] * cosine_x - yawed[2] * sine_x,
+        yawed[1] * sine_x + yawed[2] * cosine_x,
     ]
 }
 
@@ -1405,12 +1436,12 @@ mod tests {
         let mut environment = environment_preset("environment-studio-softboxes")
             .unwrap()
             .environment;
-        environment.rotation_degrees = -90.0;
+        environment.rotation_y_degrees = -90.0;
         let rotated = COVER_GLASS_PRESETS[1]
             .profile
             .evaluator(environment)
             .expect("valid negative rotation");
-        environment.rotation_degrees = 0.0;
+        environment.rotation_y_degrees = 0.0;
         let unrotated = COVER_GLASS_PRESETS[1]
             .profile
             .evaluator(environment)
@@ -1422,6 +1453,16 @@ mod tests {
             rotated.evaluate(black, softbox),
             unrotated.evaluate(black, softbox)
         );
+    }
+
+    #[test]
+    fn synthetic_hdr_x_rotation_changes_elevation_without_changing_energy() {
+        let direction = normalize([0.0, 0.8, 0.6]);
+        let tilted = rotate_environment(direction, -35.0, 0.0);
+        let level = rotate_environment(direction, 0.0, 0.0);
+        assert_ne!(tilted, level);
+        let length = |value: [f32; 3]| value.into_iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((length(tilted) - length(level)).abs() <= 2.0 * f32::EPSILON);
     }
 
     #[test]
@@ -1505,7 +1546,8 @@ mod tests {
             character_strength: 1.0,
             source_unit_radiance_candelas_per_square_meter: 100.0,
             exposure_stops: -2.0,
-            rotation_degrees: 15.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 15.0,
         };
         assert_eq!(environment.validate(), Ok(environment));
         assert_eq!(environment.radiance_scale(), 25.0);

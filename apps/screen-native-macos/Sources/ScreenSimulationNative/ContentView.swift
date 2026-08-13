@@ -1235,6 +1235,19 @@ struct ContentView: View {
                         state: presentation,
                         onIntent: model.handleTestIntent
                     )
+                    if !model.environmentSourceEvidence.isEmpty {
+                        TestPhaseCard(label: "Entorno HDRI activo") {
+                            VStack(alignment: .leading, spacing: 5) {
+                                ForEach(model.environmentSourceEvidence, id: \.self) { line in
+                                    Text(line)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                 } else {
                     ContentUnavailableView(
                         "Esperando descriptor de fase",

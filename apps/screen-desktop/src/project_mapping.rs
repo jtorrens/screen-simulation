@@ -204,7 +204,8 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             )),
             key_direction_local: package.shot.environment.key_direction_local,
             key_angular_radius_degrees: package.shot.environment.key_angular_radius_degrees,
-            rotation_degrees: package.shot.environment.rotation_degrees,
+            rotation_x_degrees: package.shot.environment.rotation_x_degrees,
+            rotation_y_degrees: package.shot.environment.rotation_y_degrees,
             pattern: match package.shot.environment.pattern {
                 screen_persistence::EnvironmentPatternDocument::UniformNeutral => {
                     EnvironmentPattern::UniformNeutral
@@ -655,7 +656,8 @@ mod tests {
                     key_radiance: [220.0; 3],
                     key_direction_local: [-0.45, 0.35, 0.821_584],
                     key_angular_radius_degrees: 24.0,
-                    rotation_degrees: 15.0,
+                    rotation_x_degrees: -10.0,
+                    rotation_y_degrees: 15.0,
                     pattern: screen_persistence::EnvironmentPatternDocument::StudioSoftboxes,
                 },
             },
@@ -700,7 +702,8 @@ mod tests {
             LinearRgb::new(30.0, 30.0, 30.0)
         );
         assert_eq!(scene.environment.key_angular_radius_degrees, 24.0);
-        assert_eq!(scene.environment.rotation_degrees, 15.0);
+        assert_eq!(scene.environment.rotation_x_degrees, -10.0);
+        assert_eq!(scene.environment.rotation_y_degrees, 15.0);
         assert_eq!(
             scene.camera_development.white_balance,
             LinearRgb::new(2.0, 1.0, 1.5)

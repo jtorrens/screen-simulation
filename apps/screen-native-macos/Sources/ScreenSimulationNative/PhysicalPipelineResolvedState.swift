@@ -20,7 +20,8 @@ struct PhysicalPipelineResolvedState {
         environment.key_radiance_acescg = (0, 0, 0)
         environment.key_direction_local = (0, 0, 1)
         environment.key_angular_radius_degrees = 20
-        environment.rotation_degrees = 0
+        environment.rotation_x_degrees = 0
+        environment.rotation_y_degrees = 0
         environment.pattern = 0
 
         var scene = ScreenSceneGeometryLensParametersV2()

@@ -448,7 +448,8 @@ fn image_environment_requires_its_exact_typed_raster_and_changes_cover_output() 
             character_strength: 1.0,
             source_unit_radiance_candelas_per_square_meter: 100.0,
             exposure_stops: 0.0,
-            rotation_degrees: 0.0,
+            rotation_x_degrees: 0.0,
+            rotation_y_degrees: 0.0,
         },
     );
     assert!(evaluate_physical_pipeline_cpu_oracle(missing.clone()).is_err());

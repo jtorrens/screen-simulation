@@ -12,7 +12,8 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var keyRadianceACEScg = [0.0, 0.0, 0.0]
         var keyDirectionLocal = [0.0, 0.0, 1.0]
         var keyAngularRadiusDegrees = 20.0
-        var rotationDegrees = 0.0
+        var rotationXDegrees = 0.0
+        var rotationYDegrees = 0.0
         var pattern: UInt32 = 0
     }
 
@@ -158,7 +159,8 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         environmentABI.key_radiance_acescg = tuple3(environment.keyRadianceACEScg)
         environmentABI.key_direction_local = tuple3(environment.keyDirectionLocal)
         environmentABI.key_angular_radius_degrees = Float(environment.keyAngularRadiusDegrees)
-        environmentABI.rotation_degrees = Float(environment.rotationDegrees)
+        environmentABI.rotation_x_degrees = Float(environment.rotationXDegrees)
+        environmentABI.rotation_y_degrees = Float(environment.rotationYDegrees)
         environmentABI.pattern = environment.pattern
 
         var scene = ScreenSceneGeometryLensParametersV2()

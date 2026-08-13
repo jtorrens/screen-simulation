@@ -45,6 +45,7 @@ struct SpatialParams {
     environment_ambient_strength: [f32; 4],
     environment_key_radius: [f32; 4],
     environment_direction: [f32; 4],
+    environment_rotation: [f32; 4],
     procedural_time: [f32; 4],
     pipeline_strengths: [f32; 4],
 }
@@ -233,10 +234,13 @@ impl SpatialParams {
                 plan.environment.key_radiance.0.b,
                 plan.environment.key_angular_radius_degrees.to_radians(),
             ],
-            environment_direction: pad(
-                plan.environment.key_direction_local,
-                plan.environment.rotation_degrees.to_radians(),
-            ),
+            environment_direction: pad(plan.environment.key_direction_local, 0.0),
+            environment_rotation: [
+                plan.environment.rotation_x_degrees.to_radians(),
+                plan.environment.rotation_y_degrees.to_radians(),
+                0.0,
+                0.0,
+            ],
             procedural_time: [time_seconds, 0.0, 0.0, 0.0],
             pipeline_strengths: [
                 plan.panel_character_strength,
@@ -906,7 +910,7 @@ mod tests {
             let mut request = request();
             request.cover = COVER_GLASS_PRESETS[1].profile;
             request.environment = preset.environment;
-            request.environment.rotation_degrees = 37.0;
+            request.environment.rotation_y_degrees = 37.0;
             let cpu = evaluate_procedural_spatial_cpu_oracle(request.clone(), sensor, region)
                 .expect("CPU synthetic HDR oracle");
             let plan =

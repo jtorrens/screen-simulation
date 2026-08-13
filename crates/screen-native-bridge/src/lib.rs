@@ -99,8 +99,11 @@ pub struct ScreenTestAuthoringSelectionV19 {
     cover_glass_preset_id: ScreenUtf8View,
     cover_glass_amount: f32,
     cover_ag_microtexture_amount: f32,
-    environment_preset_id: ScreenUtf8View,
+    environment_source_id: ScreenUtf8View,
     environment_amount: f32,
+    environment_rotation_x_degrees: f32,
+    environment_rotation_y_degrees: f32,
+    environment_exposure_ev: f32,
     cover_glow_amount: f32,
     lens_preset_id: ScreenUtf8View,
     lens_amount: f32,
@@ -222,7 +225,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 12;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 13;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -1854,7 +1857,8 @@ pub struct ScreenEnvironmentParametersV2 {
     key_radiance_acescg: [f32; 3],
     key_direction_local: [f32; 3],
     key_angular_radius_degrees: f32,
-    rotation_degrees: f32,
+    rotation_x_degrees: f32,
+    rotation_y_degrees: f32,
     pattern: u32,
 }
 
@@ -2043,8 +2047,11 @@ unsafe fn test_selection<'a>(
         cover_glass_preset_id: unsafe { borrowed_utf8(selection.cover_glass_preset_id) }?,
         cover_glass_amount: selection.cover_glass_amount,
         cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
-        environment_preset_id: unsafe { borrowed_utf8(selection.environment_preset_id) }?,
+        environment_source_id: unsafe { borrowed_utf8(selection.environment_source_id) }?,
         environment_amount: selection.environment_amount,
+        environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
+        environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
+        environment_exposure_ev: selection.environment_exposure_ev,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
         lens_amount: selection.lens_amount,
@@ -2180,8 +2187,11 @@ fn resolved_test_selection(
         cover_glass_preset_id: utf8_view(selection.cover_glass_preset_id),
         cover_glass_amount: selection.cover_glass_amount,
         cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
-        environment_preset_id: utf8_view(selection.environment_preset_id),
+        environment_source_id: utf8_view(selection.environment_source_id),
         environment_amount: selection.environment_amount,
+        environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
+        environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
+        environment_exposure_ev: selection.environment_exposure_ev,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: utf8_view(selection.lens_preset_id),
         lens_amount: selection.lens_amount,
@@ -2740,7 +2750,8 @@ pub unsafe extern "C" fn screen_environment_preset_parameters(
         ],
         key_direction_local: environment.key_direction_local,
         key_angular_radius_degrees: environment.key_angular_radius_degrees,
-        rotation_degrees: environment.rotation_degrees,
+        rotation_x_degrees: environment.rotation_x_degrees,
+        rotation_y_degrees: environment.rotation_y_degrees,
         pattern: match environment.pattern {
             EnvironmentPattern::UniformNeutral => 0,
             EnvironmentPattern::StudioSoftboxes => 1,
@@ -2899,7 +2910,8 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
                 )),
                 key_direction_local: parameters.environment.key_direction_local,
                 key_angular_radius_degrees: parameters.environment.key_angular_radius_degrees,
-                rotation_degrees: parameters.environment.rotation_degrees,
+                rotation_x_degrees: parameters.environment.rotation_x_degrees,
+                rotation_y_degrees: parameters.environment.rotation_y_degrees,
                 pattern,
             })
         }
@@ -2922,7 +2934,8 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
                     .environment
                     .source_unit_radiance_candelas_per_square_meter,
                 exposure_stops: parameters.environment.exposure_stops,
-                rotation_degrees: parameters.environment.rotation_degrees,
+                rotation_x_degrees: parameters.environment.rotation_x_degrees,
+                rotation_y_degrees: parameters.environment.rotation_y_degrees,
             })
         }
         _ => {
@@ -4210,7 +4223,8 @@ mod tests {
                 key_radiance_acescg: [0.0; 3],
                 key_direction_local: [0.0, 0.0, 1.0],
                 key_angular_radius_degrees: 20.0,
-                rotation_degrees: 0.0,
+                rotation_x_degrees: 0.0,
+                rotation_y_degrees: 0.0,
                 pattern: 0,
             },
             scene_geometry_lens: ScreenSceneGeometryLensParametersV2 {

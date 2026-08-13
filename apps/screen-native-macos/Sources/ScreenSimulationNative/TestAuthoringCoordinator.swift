@@ -60,8 +60,11 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let coverGlassPresetID: String
     let coverGlassAmount: Double
     let coverAgMicrotextureAmount: Double
-    let environmentPresetID: String
+    let environmentSourceID: String
     let environmentAmount: Double
+    let environmentRotationXDegrees: Double
+    let environmentRotationYDegrees: Double
+    let environmentExposureEV: Double
     let coverGlowAmount: Double
     let lensPresetID: String
     let lensAmount: Double
@@ -428,8 +431,11 @@ enum RustTestAuthoringCoordinator {
             coverGlassPresetID: string(raw.cover_glass_preset_id),
             coverGlassAmount: Double(raw.cover_glass_amount),
             coverAgMicrotextureAmount: Double(raw.cover_ag_microtexture_amount),
-            environmentPresetID: string(raw.environment_preset_id),
+            environmentSourceID: string(raw.environment_source_id),
             environmentAmount: Double(raw.environment_amount),
+            environmentRotationXDegrees: Double(raw.environment_rotation_x_degrees),
+            environmentRotationYDegrees: Double(raw.environment_rotation_y_degrees),
+            environmentExposureEV: Double(raw.environment_exposure_ev),
             coverGlowAmount: Double(raw.cover_glow_amount),
             lensPresetID: string(raw.lens_preset_id),
             lensAmount: Double(raw.lens_amount),
@@ -477,7 +483,7 @@ enum RustTestAuthoringCoordinator {
                             try withUTF8View(selection.lensEvaluationModelID) { lensEvaluationModelView in
                                 try withUTF8View(selection.geometryModeID) { geometryModeView in
                                 try withUTF8View(selection.coverGlassPresetID) { coverView in
-                                    try withUTF8View(selection.environmentPresetID) { environmentView in
+                                    try withUTF8View(selection.environmentSourceID) { environmentView in
                                             try withUTF8View(selection.lensPresetID) { lensView in
                                             try withUTF8View(selection.deliveryPlacementID) { deliveryPlacementView in
                                             try withUTF8View(selection.deliveryBackgroundID) { deliveryBackgroundView in
@@ -521,8 +527,17 @@ enum RustTestAuthoringCoordinator {
                                             raw.cover_ag_microtexture_amount = Float(
                                                 selection.coverAgMicrotextureAmount
                                             )
-                                            raw.environment_preset_id = environmentView
+                                            raw.environment_source_id = environmentView
                                             raw.environment_amount = Float(selection.environmentAmount)
+                                            raw.environment_rotation_x_degrees = Float(
+                                                selection.environmentRotationXDegrees
+                                            )
+                                            raw.environment_rotation_y_degrees = Float(
+                                                selection.environmentRotationYDegrees
+                                            )
+                                            raw.environment_exposure_ev = Float(
+                                                selection.environmentExposureEV
+                                            )
                                             raw.cover_glow_amount = Float(selection.coverGlowAmount)
                                             raw.lens_preset_id = lensView
                                             raw.lens_amount = Float(selection.lensAmount)

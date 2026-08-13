@@ -152,7 +152,8 @@ export component MainWindow inherits Window {
     in property <[string]> environment-preset-ids;
     in-out property <string> environment-summary: "Synthetic latitude-longitude HDR · linear ACEScg";
     in-out property <float> environment-strength: 1;
-    in-out property <float> environment-rotation-degrees: 0;
+    in-out property <float> environment-rotation-x-degrees: 0;
+    in-out property <float> environment-rotation-y-degrees: 0;
     in-out property <int> render-quality-index: 1;
     in-out property <bool> capture-rendering: false;
     in-out property <bool> preview-rendering: false;
@@ -929,12 +930,21 @@ export component MainWindow inherits Window {
                         }
                         Text { text: root.environment-summary; color: #8794a9; font-size: 10px; overflow: elide; }
                         ValueRow {
-                            label: "Env rotation";
+                            label: "Env rotation X";
+                            minimum: -90;
+                            maximum: 90;
+                            step: 1;
+                            value <=> root.environment-rotation-x-degrees;
+                            numeric-value: round(root.environment-rotation-x-degrees * 10) / 10;
+                            suffix: "°";
+                        }
+                        ValueRow {
+                            label: "Env rotation Y";
                             minimum: -180;
                             maximum: 180;
                             step: 1;
-                            value <=> root.environment-rotation-degrees;
-                            numeric-value: round(root.environment-rotation-degrees * 10) / 10;
+                            value <=> root.environment-rotation-y-degrees;
+                            numeric-value: round(root.environment-rotation-y-degrees * 10) / 10;
                             suffix: "°";
                         }
 

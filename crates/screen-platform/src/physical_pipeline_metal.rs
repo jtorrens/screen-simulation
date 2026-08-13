@@ -74,7 +74,8 @@ struct PhysicalPipelineParams {
     cover_glow: [f32; 4],
     environment_ambient_strength: [f32; 4],
     environment_key_radius: [f32; 4],
-    environment_direction_rotation: [f32; 4],
+    environment_direction: [f32; 4],
+    environment_rotation: [f32; 4],
     camera_position_focal: [f32; 4],
     camera_right_sensor_width: [f32; 4],
     camera_up_sensor_height: [f32; 4],
@@ -1243,18 +1244,28 @@ impl MetalPhysicalPipeline {
                     image_environment_parameters.expect("prepared image environment parameters")
                 }
             },
-            environment_direction_rotation: match plan.environment {
+            environment_direction: match plan.environment {
                 IncidentEnvironment::Procedural(environment) => [
                     environment.key_direction_local[0],
                     environment.key_direction_local[1],
                     environment.key_direction_local[2],
-                    environment.rotation_degrees.to_radians(),
+                    0.0,
                 ],
-                IncidentEnvironment::Equirectangular(environment) => {
-                    let radians = environment.rotation_degrees.to_radians();
-                    let (sine, cosine) = radians.sin_cos();
-                    [sine, cosine, 0.0, radians]
-                }
+                IncidentEnvironment::Equirectangular(_) => [0.0; 4],
+            },
+            environment_rotation: match plan.environment {
+                IncidentEnvironment::Procedural(environment) => [
+                    environment.rotation_x_degrees.to_radians(),
+                    environment.rotation_y_degrees.to_radians(),
+                    0.0,
+                    0.0,
+                ],
+                IncidentEnvironment::Equirectangular(environment) => [
+                    environment.rotation_x_degrees.to_radians(),
+                    environment.rotation_y_degrees.to_radians(),
+                    0.0,
+                    0.0,
+                ],
             },
             camera_position_focal: [
                 camera.position.x,
@@ -2175,7 +2186,8 @@ mod tests {
                     character_strength: 1.0,
                     source_unit_radiance_candelas_per_square_meter: 100.0,
                     exposure_stops: 0.0,
-                    rotation_degrees: 17.0,
+                    rotation_x_degrees: 0.0,
+                    rotation_y_degrees: 17.0,
                 },
             );
             plan.lens_evaluation_model = lens_evaluation_model;

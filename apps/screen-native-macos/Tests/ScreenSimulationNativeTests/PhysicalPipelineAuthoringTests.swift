@@ -11,7 +11,8 @@ import Testing
         device: device,
         coverGlass: cover
     )
-    authored.environment.rotationDegrees = 37.5
+    authored.environment.rotationXDegrees = -12.5
+    authored.environment.rotationYDegrees = 37.5
     authored.coverGlass.agMicrotextureCharacterStrength = 1.25
     authored.coverGlass.agMicrotextureRMSSlope = 0.07
     authored.coverGlass.agMicrotextureCorrelationLengthMicrometers = 24
@@ -32,7 +33,8 @@ import Testing
     )
     #expect(restored == authored)
     let snapshot = try restored.resolvedPipeline().parameters
-    #expect(snapshot.environment.rotation_degrees == 37.5)
+    #expect(snapshot.environment.rotation_x_degrees == -12.5)
+    #expect(snapshot.environment.rotation_y_degrees == 37.5)
     #expect(snapshot.cover.ag_microtexture_character_strength == 1.25)
     #expect(snapshot.cover.ag_microtexture_rms_slope == 0.07)
     #expect(snapshot.cover.ag_microtexture_correlation_length_micrometers == 24)

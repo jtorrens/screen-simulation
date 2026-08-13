@@ -103,7 +103,8 @@ struct RenderControls {
     lens_character_strength: f32,
     environment_preset_index: i32,
     environment_strength: f32,
-    environment_rotation_degrees: f32,
+    environment_rotation_x_degrees: f32,
+    environment_rotation_y_degrees: f32,
     capture_sensor_width: f32,
     capture_sensor_height: f32,
     capture_gate_width_mm: f32,
@@ -163,7 +164,8 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         lens_character_strength: window.get_lens_character_strength(),
         environment_preset_index: window.get_environment_preset_index(),
         environment_strength: window.get_environment_strength(),
-        environment_rotation_degrees: window.get_environment_rotation_degrees(),
+        environment_rotation_x_degrees: window.get_environment_rotation_x_degrees(),
+        environment_rotation_y_degrees: window.get_environment_rotation_y_degrees(),
         capture_sensor_width: window.get_capture_sensor_width(),
         capture_sensor_height: window.get_capture_sensor_height(),
         capture_gate_width_mm: window.get_capture_gate_width_mm(),
@@ -760,7 +762,8 @@ fn simulation_request(
     cover.character_strength = window.get_cover_strength();
     let mut environment = authored_environment;
     environment.character_strength = window.get_environment_strength();
-    environment.rotation_degrees = window.get_environment_rotation_degrees();
+    environment.rotation_x_degrees = window.get_environment_rotation_x_degrees();
+    environment.rotation_y_degrees = window.get_environment_rotation_y_degrees();
     Ok(SimulationRequest {
         optics: OpticalRequest {
             time: frame_rate
@@ -960,7 +963,8 @@ fn apply_environment_preset(
     state.active_environment = preset.environment;
     window.set_environment_preset_index(index as i32);
     window.set_environment_strength(preset.environment.character_strength);
-    window.set_environment_rotation_degrees(preset.environment.rotation_degrees);
+    window.set_environment_rotation_x_degrees(preset.environment.rotation_x_degrees);
+    window.set_environment_rotation_y_degrees(preset.environment.rotation_y_degrees);
     window.set_environment_summary("Synthetic latitude-longitude HDR · linear ACEScg".into());
     Ok(())
 }

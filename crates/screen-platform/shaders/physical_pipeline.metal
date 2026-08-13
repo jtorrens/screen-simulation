@@ -27,7 +27,8 @@ struct PhysicalPipelineParams {
     float4 cover_glow; // core mm, tail mm, scattered fraction, tail fraction
     float4 environment_ambient_strength;
     float4 environment_key_radius;
-    float4 environment_direction_rotation;
+    float4 environment_direction;
+    float4 environment_rotation; // panel-local X and Y radians
     float4 camera_position_focal;
     float4 camera_right_sensor_width;
     float4 camera_up_sensor_height;
@@ -456,6 +457,36 @@ inline float3 physical_environment_direction(float2 uv) {
         cos(longitude) * latitude_cosine);
 }
 
+inline float3 physical_environment_to_source(float3 direction, float rotation_x, float rotation_y) {
+    const float sine_y = sin(rotation_y);
+    const float cosine_y = cos(rotation_y);
+    const float3 yawed = float3(
+        direction.x * cosine_y + direction.z * sine_y,
+        direction.y,
+        -direction.x * sine_y + direction.z * cosine_y);
+    const float sine_x = sin(rotation_x);
+    const float cosine_x = cos(rotation_x);
+    return float3(
+        yawed.x,
+        yawed.y * cosine_x - yawed.z * sine_x,
+        yawed.y * sine_x + yawed.z * cosine_x);
+}
+
+inline float3 physical_environment_to_local(float3 direction, float rotation_x, float rotation_y) {
+    const float sine_x = sin(rotation_x);
+    const float cosine_x = cos(rotation_x);
+    const float3 unpitched = float3(
+        direction.x,
+        direction.y * cosine_x + direction.z * sine_x,
+        -direction.y * sine_x + direction.z * cosine_x);
+    const float sine_y = sin(rotation_y);
+    const float cosine_y = cos(rotation_y);
+    return float3(
+        unpitched.x * cosine_y - unpitched.z * sine_y,
+        unpitched.y,
+        unpitched.x * sine_y + unpitched.z * cosine_y);
+}
+
 inline float physical_environment_pdf(float2 uv,
     texture2d<float, access::sample> environment,
     uint2 dimensions,
@@ -565,8 +596,8 @@ inline float physical_microtexture_visibility(float2 cover_position_meters,
 inline float3 physical_reference_ggx_environment(
     float3 reflection_direction,
     texture2d<float, access::sample> environment,
-    float sine,
-    float cosine,
+    float rotation_x,
+    float rotation_y,
     float view_cosine,
     uint2 sample_seed,
     constant PhysicalPipelineParams& p
@@ -578,8 +609,7 @@ inline float3 physical_reference_ggx_environment(
     const float roughness = p.cover_absorption_roughness.w;
     float3 mirror = normalize(reflection_direction);
     if (roughness <= 0.0f || p.cover_geometry.z == 1.0f) {
-        mirror = float3(mirror.x * cosine + mirror.z * sine, mirror.y,
-            -mirror.x * sine + mirror.z * cosine);
+        mirror = physical_environment_to_source(mirror, rotation_x, rotation_y);
         return environment.sample(
             environment_sampler, physical_environment_uv(mirror), level(0.0f)).rgb;
     }
@@ -618,10 +648,8 @@ inline float3 physical_reference_ggx_environment(
             const float3 source_direction = physical_sample_environment(
                 random_sample.x, jitter, environment,
                 environment_top_level, environment_total);
-            const float3 rotated_incident = float3(
-                source_direction.x * cosine - source_direction.z * sine,
-                source_direction.y,
-                source_direction.x * sine + source_direction.z * cosine);
+            const float3 rotated_incident = physical_environment_to_local(
+                source_direction, rotation_x, rotation_y);
             const float3 incident = float3(
                 rotated_incident.x,
                 rotated_incident.y * normal_sign,
@@ -654,10 +682,8 @@ inline float3 physical_reference_ggx_environment(
             const float3 incident = reflect(-outgoing, sampled_normal);
             const float3 rotated_incident = float3(
                 incident.x, incident.y * normal_sign, incident.z * normal_sign);
-            const float3 source_direction = float3(
-                rotated_incident.x * cosine + rotated_incident.z * sine,
-                rotated_incident.y,
-                -rotated_incident.x * sine + rotated_incident.z * cosine);
+            const float3 source_direction = physical_environment_to_source(
+                rotated_incident, rotation_x, rotation_y);
             if (incident.z > 0.0f) {
                 const float3 micro_normal = normalize(outgoing + incident);
                 const float outgoing_dot_micro = max(0.0f, dot(outgoing, micro_normal));
@@ -690,20 +716,15 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
     uint2 sample_seed,
     constant PhysicalPipelineParams& p) {
     float3 direction = normalize(reflection_direction_local);
-    const float sine = IMAGE_ENVIRONMENT
-        ? p.environment_direction_rotation.x
-        : sin(p.environment_direction_rotation.w);
-    const float cosine = IMAGE_ENVIRONMENT
-        ? p.environment_direction_rotation.y
-        : cos(p.environment_direction_rotation.w);
+    const float rotation_x = p.environment_rotation.x;
+    const float rotation_y = p.environment_rotation.y;
     if (IMAGE_ENVIRONMENT) {
         return physical_reference_ggx_environment(
-            direction, environment_acescg, sine, cosine, view_cosine, sample_seed, p)
+            direction, environment_acescg, rotation_x, rotation_y, view_cosine, sample_seed, p)
             * p.environment_ambient_strength.x * p.environment_ambient_strength.w;
     }
-    direction = float3(direction.x * cosine + direction.z * sine, direction.y,
-        -direction.x * sine + direction.z * cosine);
-    const float alignment = clamp(dot(direction, p.environment_direction_rotation.xyz), -1.0f, 1.0f);
+    direction = physical_environment_to_source(direction, rotation_x, rotation_y);
+    const float alignment = clamp(dot(direction, p.environment_direction.xyz), -1.0f, 1.0f);
     const float edge = cos(p.environment_key_radius.w);
     const float softness = 0.005f + p.cover_absorption_roughness.w * 0.35f;
     const float key_amount = smoothstep(edge - softness, edge + softness, alignment);

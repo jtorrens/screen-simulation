@@ -49,8 +49,11 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         coverGlassPresetID: "cover-matte-ar",
         coverGlassAmount: 1,
         coverAgMicrotextureAmount: 1,
-        environmentPresetID: "environment-none",
+        environmentSourceID: "environment-none",
         environmentAmount: 0,
+        environmentRotationXDegrees: 0,
+        environmentRotationYDegrees: 0,
+        environmentExposureEV: 0,
         coverGlowAmount: 1,
         lensPresetID: "iphone-16e-main-integrated",
         lensAmount: 1,
@@ -439,6 +442,31 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         to: current
     )
     #expect(edited.coverAgMicrotextureAmount == 2.5)
+}
+
+@Test func externalEnvironmentSelectionPublishesIndependentXYRotationAndExposure() throws {
+    let current = canonicalTestSelection()
+    let selected = try RustTestAuthoringCoordinator.apply(
+        .setChoice(controlID: "environment-source", optionID: "environment-image"),
+        to: current
+    )
+    let rotatedX = try RustTestAuthoringCoordinator.apply(
+        .setScalar(controlID: "environment-rotation-x-degrees", value: -25),
+        to: selected
+    )
+    let rotatedY = try RustTestAuthoringCoordinator.apply(
+        .setScalar(controlID: "environment-rotation-y-degrees", value: -57.3),
+        to: rotatedX
+    )
+    let exposed = try RustTestAuthoringCoordinator.apply(
+        .setScalar(controlID: "environment-exposure-ev", value: -1),
+        to: rotatedY
+    )
+
+    #expect(exposed.environmentSourceID == "environment-image")
+    #expect(exposed.environmentRotationXDegrees == -25)
+    #expect(abs(exposed.environmentRotationYDegrees + 57.3) < 0.0001)
+    #expect(exposed.environmentExposureEV == -1)
 }
 
 @Test @MainActor func everyTestPhaseSelectsItsOwnCumulativePreviewRoute() throws {

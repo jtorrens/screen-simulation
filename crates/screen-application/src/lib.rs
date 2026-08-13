@@ -1117,7 +1117,8 @@ impl EnvironmentRadianceRaster {
     fn sample_equirectangular(
         &self,
         direction: [f32; 3],
-        rotation_degrees: f32,
+        rotation_x_degrees: f32,
+        rotation_y_degrees: f32,
         roughness: f32,
         view_cosine: f32,
         refractive_index: f32,
@@ -1131,7 +1132,11 @@ impl EnvironmentRadianceRaster {
             .sqrt();
         let reflected = direction.map(|value| value / length.max(1.0e-8));
         if roughness <= 0.0 || refractive_index == 1.0 {
-            return self.sample_equirectangular_direction(reflected, rotation_degrees);
+            return self.sample_equirectangular_direction(
+                reflected,
+                rotation_x_degrees,
+                rotation_y_degrees,
+            );
         }
         let outgoing = [-reflected[0], -reflected[1], reflected[2]];
         let alpha = (roughness * roughness).max(1.0e-4);
@@ -1160,7 +1165,11 @@ impl EnvironmentRadianceRaster {
             let masking_ratio = (1.0 + lambda_outgoing) / (1.0 + lambda_outgoing + lambda_incident);
             let weight = dielectric_fresnel(outgoing_dot_micro, refractive_index) * masking_ratio
                 / smooth_fresnel;
-            let radiance = self.sample_equirectangular_direction(incident, rotation_degrees);
+            let radiance = self.sample_equirectangular_direction(
+                incident,
+                rotation_x_degrees,
+                rotation_y_degrees,
+            );
             sum[0] += radiance.r * weight;
             sum[1] += radiance.g * weight;
             sum[2] += radiance.b * weight;
@@ -1176,13 +1185,20 @@ impl EnvironmentRadianceRaster {
     fn sample_equirectangular_direction(
         &self,
         mut direction: [f32; 3],
-        rotation_degrees: f32,
+        rotation_x_degrees: f32,
+        rotation_y_degrees: f32,
     ) -> LinearRgb {
-        let (sine, cosine) = rotation_degrees.to_radians().sin_cos();
+        let (sine_y, cosine_y) = rotation_y_degrees.to_radians().sin_cos();
         direction = [
-            direction[0] * cosine + direction[2] * sine,
+            direction[0] * cosine_y + direction[2] * sine_y,
             direction[1],
-            -direction[0] * sine + direction[2] * cosine,
+            -direction[0] * sine_y + direction[2] * cosine_y,
+        ];
+        let (sine_x, cosine_x) = rotation_x_degrees.to_radians().sin_cos();
+        direction = [
+            direction[0],
+            direction[1] * cosine_x - direction[2] * sine_x,
+            direction[1] * sine_x + direction[2] * cosine_x,
         ];
         let u = (direction[0].atan2(direction[2]) / core::f32::consts::TAU + 0.5).rem_euclid(1.0);
         let v =
@@ -2263,7 +2279,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         .expect("validated image-backed environment owns its raster");
                     let sampled = raster.sample_equirectangular(
                         reflection_direction_local,
-                        environment.rotation_degrees,
+                        environment.rotation_x_degrees,
+                        environment.rotation_y_degrees,
                         plan.cover.roughness,
                         cover_sample.view_cosine,
                         plan.cover.refractive_index,
@@ -6806,6 +6823,7 @@ mod tests {
         for roughness in [0.0, 0.46, 1.0] {
             let first = raster.sample_equirectangular(
                 [0.3, -0.2, 0.9],
+                0.0,
                 37.0,
                 roughness,
                 0.9,
@@ -6815,6 +6833,7 @@ mod tests {
             );
             let second = raster.sample_equirectangular(
                 [0.3, -0.2, 0.9],
+                0.0,
                 37.0,
                 roughness,
                 0.9,

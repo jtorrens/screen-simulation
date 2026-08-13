@@ -105,6 +105,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var metalFrame: StudioColorMetalFrame?
     @Published private(set) var setupDeviceBoundary: [CGPoint] = []
     @Published private(set) var environmentSourceName: String?
+    @Published private(set) var environmentSourceResolution: CGSize?
     @Published var jobs: [RenderJob] = []
     @Published var errorMessage: String?
     @Published var currentFrame = 0
@@ -159,6 +160,7 @@ final class WorkspaceModel: ObservableObject {
     private var authoredImageEnvironment: PhysicalPipelineAuthoringState.Environment?
     private var environmentSourceHash: String?
     private var environmentSourceInputTransformID: String?
+    private var environmentSourceURL: URL?
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
     private var cameraNavigationLatestPose: CameraNavigationPose?
@@ -166,6 +168,21 @@ final class WorkspaceModel: ObservableObject {
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
     let physicalModel = PhysicalModelController()
+
+    var environmentSourceEvidence: [String] {
+        guard let name = environmentSourceName,
+              let resolution = environmentSourceResolution,
+              let inputID = environmentSourceInputTransformID,
+              let input = StudioColorInputTransform.catalog.first(where: { $0.id == inputID }),
+              let authored = physicalAuthoringState
+        else { return [] }
+        return [
+            "Archivo: \(name)",
+            "Raster: \(Int(resolution.width))×\(Int(resolution.height)) · equirectangular 2:1",
+            "Input Transform: \(input.label)",
+            "Calibración: \(authored.environment.sourceUnitRadianceCandelasPerSquareMeter.formatted(.number.precision(.fractionLength(0 ... 3)))) cd/m² por unidad",
+        ]
+    }
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
     private var tickSubscription: AnyCancellable?
@@ -613,13 +630,15 @@ final class WorkspaceModel: ObservableObject {
                         "Test necesita un Device resuelto."
                     )
                 }
-                if case let .setChoice(controlID, _) = intent,
-                   controlID == "environment-preset" {
+                if case let .setChoice(controlID, optionID) = intent,
+                   controlID == "environment-source", optionID != "environment-image" {
                     environmentRadianceFrame = nil
                     authoredImageEnvironment = nil
                     environmentSourceName = nil
+                    environmentSourceResolution = nil
                     environmentSourceHash = nil
                     environmentSourceInputTransformID = nil
+                    environmentSourceURL = nil
                 }
                 let phaseToReveal = testPhaseToReveal(for: intent)
                 let resolved = try RustTestAuthoringCoordinator.apply(intent, to: selection)
@@ -813,6 +832,12 @@ final class WorkspaceModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
+        do {
+            panel.directoryURL = try EnvironmentAssetLibrary.environmentDirectory()
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         panel.allowedContentTypes = [.image] + ["exr", "hdr"].compactMap {
             UTType(filenameExtension: $0)
         }
@@ -855,11 +880,19 @@ final class WorkspaceModel: ObservableObject {
         _ url: URL,
         inputTransformID: String,
         unitRadiance: Double,
-        exposureStops: Double
+        exposureStops: Double,
+        originalFileName: String? = nil,
+        knownHash: String? = nil
     ) async {
         do {
             status = "Decodificando entorno HDR…"
-            let decoded = try await NativeMediaDecoder.decode(url: url, time: .zero)
+            let managed: ManagedEnvironmentAsset
+            if let originalFileName, let knownHash {
+                managed = .init(url: url, originalFileName: originalFileName, sha256: knownHash)
+            } else {
+                managed = try EnvironmentAssetLibrary.importAsset(from: url)
+            }
+            let decoded = try await NativeMediaDecoder.decode(url: managed.url, time: .zero)
             guard decoded.width == decoded.height * 2 else {
                 throw EnvironmentRadianceFrameError.invalidEquirectangularRaster
             }
@@ -887,13 +920,27 @@ final class WorkspaceModel: ObservableObject {
             physicalAuthoringState = authored
             environmentRadianceFrame = environment
             authoredImageEnvironment = authored.environment
-            environmentSourceName = url.lastPathComponent
+            environmentSourceName = managed.originalFileName
+            environmentSourceResolution = CGSize(width: decoded.width, height: decoded.height)
             environmentSourceInputTransformID = inputTransformID
-            environmentSourceHash = SHA256.hash(data: try Data(contentsOf: url))
-                .map { String(format: "%02x", $0) }.joined()
-            try physicalModel.setContinuousAmount(1, stage: .screen(.environment))
+            environmentSourceHash = managed.sha256
+            environmentSourceURL = managed.url
+            guard let current = currentTestAuthoringSelection() else {
+                throw TestAuthoringCoordinatorError.malformedDescriptor(
+                    "Test no tiene una selección resuelta para el entorno externo."
+                )
+            }
+            var selected = try RustTestAuthoringCoordinator.apply(
+                .setChoice(controlID: "environment-source", optionID: "environment-image"),
+                to: current
+            )
+            selected = try RustTestAuthoringCoordinator.apply(
+                .setScalar(controlID: "environment-exposure-ev", value: exposureStops),
+                to: selected
+            )
             physicalModel.invalidateExternalParameters()
-            status = "Entorno · \(url.lastPathComponent) · \(decoded.width)×\(decoded.height) · \(input.label)"
+            try applyTestAuthoringSelection(selected)
+            status = "Entorno · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1745,12 +1792,17 @@ final class WorkspaceModel: ObservableObject {
         undoManager: UndoManager?
     ) throws {
         if let resource = imported.context?.environmentResource,
-           resource.kind == .image,
-           (environmentSourceHash != resource.sha256
-               || environmentSourceInputTransformID != resource.inputTransformID) {
-            throw PhysicalSettingsExchange.ImportError.unavailableEnvironmentResource(
-                resource.fileName ?? "sin nombre"
-            )
+           resource.kind == .image {
+            guard let hash = resource.sha256,
+                  let name = resource.fileName,
+                  try EnvironmentAssetLibrary.asset(
+                      sha256: hash, originalFileName: name
+                  ) != nil
+            else {
+                throw PhysicalSettingsExchange.ImportError.unavailableEnvironmentResource(
+                    resource.fileName ?? "sin nombre"
+                )
+            }
         }
         guard let priorDevice = modelDeviceDefinition ?? resolvedDevice?.definition,
               let priorPipeline = physicalAuthoringState
@@ -1809,13 +1861,34 @@ final class WorkspaceModel: ObservableObject {
                 environmentRadianceFrame = nil
                 authoredImageEnvironment = nil
                 environmentSourceName = nil
+                environmentSourceResolution = nil
                 environmentSourceHash = nil
                 environmentSourceInputTransformID = nil
+                environmentSourceURL = nil
             case .image:
                 authoredImageEnvironment = state.pipeline.environment
                 environmentSourceName = context.environmentResource.fileName
                 environmentSourceHash = context.environmentResource.sha256
                 environmentSourceInputTransformID = context.environmentResource.inputTransformID
+                if let hash = context.environmentResource.sha256,
+                   let name = context.environmentResource.fileName,
+                   let transform = context.environmentResource.inputTransformID,
+                   let asset = try EnvironmentAssetLibrary.asset(
+                       sha256: hash, originalFileName: name
+                   ) {
+                    environmentSourceURL = asset.url
+                    Task { [weak self] in
+                        await self?.loadEnvironment(
+                            asset.url,
+                            inputTransformID: transform,
+                            unitRadiance: state.pipeline.environment
+                                .sourceUnitRadianceCandelasPerSquareMeter,
+                            exposureStops: state.pipeline.environment.exposureStops,
+                            originalFileName: name,
+                            knownHash: hash
+                        )
+                    }
+                }
             }
             testAuthoringSelection = context.selection
             selectedCapturePresetID = context.selection.capturePresetID
@@ -2293,11 +2366,9 @@ final class WorkspaceModel: ObservableObject {
         )
         guard let capture = capturePresets.first(where: {
             $0.id == selection.capturePresetID
-        }), let environment = environmentPresets.first(where: {
-            $0.id == selection.environmentPresetID
         }) else {
             throw TestAuthoringCoordinatorError.malformedDescriptor(
-                "Rust devolvió una cámara o entorno que no existe en sus catálogos."
+                "Rust devolvió una cámara que no existe en sus catálogos."
             )
         }
         try apply(
@@ -2306,10 +2377,26 @@ final class WorkspaceModel: ObservableObject {
             lensID: selection.lensPresetID,
             to: &authored
         )
-        environment.apply(to: &authored)
-        if let authoredImageEnvironment {
+        if selection.environmentSourceID == "environment-image" {
+            guard environmentRadianceFrame != nil, let authoredImageEnvironment else {
+                throw TestAuthoringCoordinatorError.malformedDescriptor(
+                    "El entorno externo seleccionado no tiene un HDRI cargado."
+                )
+            }
             authored.environment = authoredImageEnvironment
+        } else {
+            guard let environment = environmentPresets.first(where: {
+                $0.id == selection.environmentSourceID
+            }) else {
+                throw TestAuthoringCoordinatorError.malformedDescriptor(
+                    "Rust devolvió un entorno que no existe en sus catálogos."
+                )
+            }
+            environment.apply(to: &authored)
         }
+        authored.environment.rotationXDegrees = selection.environmentRotationXDegrees
+        authored.environment.rotationYDegrees = selection.environmentRotationYDegrees
+        authored.environment.exposureStops = selection.environmentExposureEV
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
         authored.sceneLens.evaluationModel = selection.lensEvaluationModelID

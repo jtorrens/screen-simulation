@@ -36,7 +36,8 @@ struct EnvironmentPresetDefinition: Identifiable, Equatable, Sendable {
         state.environment.keyAngularRadiusDegrees = Double(
             parameters.key_angular_radius_degrees
         )
-        state.environment.rotationDegrees = Double(parameters.rotation_degrees)
+        state.environment.rotationXDegrees = Double(parameters.rotation_x_degrees)
+        state.environment.rotationYDegrees = Double(parameters.rotation_y_degrees)
         state.environment.pattern = parameters.pattern
     }
 

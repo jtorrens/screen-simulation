@@ -16,7 +16,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 19;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 20;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const FEEDER_SIGNAL_PHASE_ID: &str = "feeder-signal";
@@ -68,9 +68,13 @@ pub const SCREEN_ROTATION_Z_CONTROL_ID: &str = "screen-rotation-z-degrees";
 pub const COVER_GLASS_CONTROL_ID: &str = "cover-glass-preset";
 pub const COVER_GLASS_AMOUNT_CONTROL_ID: &str = "cover-glass-amount";
 pub const COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID: &str = "cover-ag-microtexture-amount";
-pub const ENVIRONMENT_CONTROL_ID: &str = "environment-preset";
+pub const ENVIRONMENT_CONTROL_ID: &str = "environment-source";
 pub const ENVIRONMENT_BROWSE_CONTROL_ID: &str = "environment-browse";
 pub const ENVIRONMENT_AMOUNT_CONTROL_ID: &str = "environment-amount";
+pub const ENVIRONMENT_ROTATION_X_CONTROL_ID: &str = "environment-rotation-x-degrees";
+pub const ENVIRONMENT_ROTATION_Y_CONTROL_ID: &str = "environment-rotation-y-degrees";
+pub const ENVIRONMENT_EXPOSURE_CONTROL_ID: &str = "environment-exposure-ev";
+pub const IMAGE_ENVIRONMENT_SOURCE_ID: &str = "environment-image";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
 pub const LENS_EVALUATION_MODEL_CONTROL_ID: &str = "lens-evaluation-model";
@@ -213,8 +217,11 @@ pub struct TestAuthoringSelection<'a> {
     pub cover_glass_preset_id: &'a str,
     pub cover_glass_amount: f32,
     pub cover_ag_microtexture_amount: f32,
-    pub environment_preset_id: &'a str,
+    pub environment_source_id: &'a str,
     pub environment_amount: f32,
+    pub environment_rotation_x_degrees: f32,
+    pub environment_rotation_y_degrees: f32,
+    pub environment_exposure_ev: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'a str,
     pub lens_evaluation_model_id: &'a str,
@@ -276,8 +283,11 @@ pub struct ResolvedTestAuthoringSelection {
     pub cover_glass_preset_id: &'static str,
     pub cover_glass_amount: f32,
     pub cover_ag_microtexture_amount: f32,
-    pub environment_preset_id: &'static str,
+    pub environment_source_id: &'static str,
     pub environment_amount: f32,
+    pub environment_rotation_x_degrees: f32,
+    pub environment_rotation_y_degrees: f32,
+    pub environment_exposure_ev: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'static str,
     pub lens_evaluation_model_id: &'static str,
@@ -687,8 +697,11 @@ pub fn default_test_authoring_selection(
             .profile
             .anti_glare_microtexture
             .character_strength,
-        environment_preset_id: "environment-none",
+        environment_source_id: "environment-none",
         environment_amount: 0.0,
+        environment_rotation_x_degrees: 0.0,
+        environment_rotation_y_degrees: 0.0,
+        environment_exposure_ev: 0.0,
         cover_glow_amount: 1.0,
         lens_preset_id: capture.default_lens_preset_id,
         lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
@@ -839,11 +852,25 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidCoverAgMicrotextureAmount);
     }
-    let environment = environment_preset(selection.environment_preset_id)
-        .ok_or(TestAuthoringError::UnknownEnvironmentPreset)?;
+    let environment = environment_preset(selection.environment_source_id);
+    if environment.is_none() && selection.environment_source_id != IMAGE_ENVIRONMENT_SOURCE_ID {
+        return Err(TestAuthoringError::UnknownEnvironmentPreset);
+    }
     if !selection.environment_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.environment_amount)
     {
+        return Err(TestAuthoringError::InvalidEnvironmentAmount);
+    }
+    if !selection.environment_rotation_x_degrees.is_finite()
+        || !(-90.0..=90.0).contains(&selection.environment_rotation_x_degrees)
+        || !selection.environment_rotation_y_degrees.is_finite()
+        || !(-180.0..=180.0).contains(&selection.environment_rotation_y_degrees)
+        || !selection.environment_exposure_ev.is_finite()
+        || !(-16.0..=16.0).contains(&selection.environment_exposure_ev)
+    {
+        return Err(TestAuthoringError::InvalidEnvironmentAmount);
+    }
+    if environment.is_some() && selection.environment_exposure_ev != 0.0 {
         return Err(TestAuthoringError::InvalidEnvironmentAmount);
     }
     if !selection.cover_glow_amount.is_finite()
@@ -985,8 +1012,13 @@ pub fn resolve_test_authoring_selection(
         cover_glass_preset_id: cover.id,
         cover_glass_amount: selection.cover_glass_amount,
         cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
-        environment_preset_id: environment.id,
+        environment_source_id: environment
+            .map(|environment| environment.id)
+            .unwrap_or(IMAGE_ENVIRONMENT_SOURCE_ID),
         environment_amount: selection.environment_amount,
+        environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
+        environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
+        environment_exposure_ev: selection.environment_exposure_ev,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: lens.id,
         lens_evaluation_model_id,
@@ -1123,13 +1155,17 @@ pub fn test_page_descriptor(
             label: preset.label,
         })
         .collect();
-    let environment_options = ENVIRONMENT_PRESETS
+    let mut environment_options: Vec<_> = ENVIRONMENT_PRESETS
         .iter()
         .map(|preset| TestChoiceOption {
             id: preset.id,
             label: preset.label,
         })
         .collect();
+    environment_options.push(TestChoiceOption {
+        id: IMAGE_ENVIRONMENT_SOURCE_ID,
+        label: "HDRI / EXR seleccionado",
+    });
     let recording_output_options = RecordingOutputTransform::ALL
         .into_iter()
         .map(|transform| TestChoiceOption {
@@ -1153,8 +1189,10 @@ pub fn test_page_descriptor(
         .ok_or(TestAuthoringError::UnknownCapturePreset)?;
     let selected_cover = cover_glass_preset(selection.cover_glass_preset_id)
         .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
-    let selected_environment = environment_preset(selection.environment_preset_id)
-        .ok_or(TestAuthoringError::UnknownEnvironmentPreset)?;
+    let selected_environment = environment_preset(selection.environment_source_id);
+    let environment_reset_amount = selected_environment
+        .map(|environment| environment.environment.character_strength)
+        .unwrap_or(1.0);
     let seed_distance = 0.15_f32;
     let seed_orbit_y = -5.0_f32;
     let seed_camera_x = seed_distance * seed_orbit_y.to_radians().sin();
@@ -1573,53 +1611,89 @@ pub fn test_page_descriptor(
                 input_artifact: "resolved-observation-geometry-v1",
                 output_artifact: "covered-directional-radiance-v1",
                 preview_result: TestPreviewResult::CoverEnvironment,
-                controls: vec![
-                    choice_control(
-                        COVER_GLASS_CONTROL_ID,
-                        "Cristal",
-                        cover_options,
-                        selection.cover_glass_preset_id,
-                        device.default_cover_glass_preset_id,
-                    ),
-                    scalar_control(
-                        COVER_GLASS_AMOUNT_CONTROL_ID,
-                        "Carácter del cristal",
-                        selection.cover_glass_amount,
-                        0.0,
-                        2.0,
-                        selected_cover.profile.character_strength,
-                        "×",
-                    ),
-                    scalar_control(
-                        COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID,
-                        "Microtextura antirreflejos",
-                        selection.cover_ag_microtexture_amount,
-                        0.0,
-                        4.0,
-                        selected_cover
-                            .profile
-                            .anti_glare_microtexture
-                            .character_strength,
-                        "×",
-                    ),
-                    choice_control(
-                        ENVIRONMENT_CONTROL_ID,
-                        "Entorno",
-                        environment_options,
-                        selection.environment_preset_id,
-                        "environment-none",
-                    ),
-                    action_control(ENVIRONMENT_BROWSE_CONTROL_ID, "Seleccionar HDRI / EXR…"),
-                    scalar_control(
-                        ENVIRONMENT_AMOUNT_CONTROL_ID,
-                        "Carácter del entorno",
-                        selection.environment_amount,
-                        0.0,
-                        1.5,
-                        selected_environment.environment.character_strength,
-                        "×",
-                    ),
-                ],
+                controls: {
+                    let mut controls = vec![
+                        choice_control(
+                            COVER_GLASS_CONTROL_ID,
+                            "Cristal",
+                            cover_options,
+                            selection.cover_glass_preset_id,
+                            device.default_cover_glass_preset_id,
+                        ),
+                        scalar_control(
+                            COVER_GLASS_AMOUNT_CONTROL_ID,
+                            "Carácter del cristal",
+                            selection.cover_glass_amount,
+                            0.0,
+                            2.0,
+                            selected_cover.profile.character_strength,
+                            "×",
+                        ),
+                        scalar_control(
+                            COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID,
+                            "Microtextura antirreflejos",
+                            selection.cover_ag_microtexture_amount,
+                            0.0,
+                            4.0,
+                            selected_cover
+                                .profile
+                                .anti_glare_microtexture
+                                .character_strength,
+                            "×",
+                        ),
+                        choice_control(
+                            ENVIRONMENT_CONTROL_ID,
+                            "Entorno",
+                            environment_options,
+                            selection.environment_source_id,
+                            "environment-none",
+                        ),
+                        action_control(ENVIRONMENT_BROWSE_CONTROL_ID, "Seleccionar HDRI / EXR…"),
+                        scalar_control(
+                            ENVIRONMENT_AMOUNT_CONTROL_ID,
+                            "Carácter del entorno",
+                            selection.environment_amount,
+                            0.0,
+                            1.5,
+                            environment_reset_amount,
+                            "×",
+                        ),
+                        scalar_control(
+                            ENVIRONMENT_ROTATION_X_CONTROL_ID,
+                            "Rotación X",
+                            selection.environment_rotation_x_degrees,
+                            -90.0,
+                            90.0,
+                            selected_environment
+                                .map(|environment| environment.environment.rotation_x_degrees)
+                                .unwrap_or(0.0),
+                            "°",
+                        ),
+                        scalar_control(
+                            ENVIRONMENT_ROTATION_Y_CONTROL_ID,
+                            "Rotación Y",
+                            selection.environment_rotation_y_degrees,
+                            -180.0,
+                            180.0,
+                            selected_environment
+                                .map(|environment| environment.environment.rotation_y_degrees)
+                                .unwrap_or(0.0),
+                            "°",
+                        ),
+                    ];
+                    if selection.environment_source_id == IMAGE_ENVIRONMENT_SOURCE_ID {
+                        controls.push(scalar_control(
+                            ENVIRONMENT_EXPOSURE_CONTROL_ID,
+                            "Exposición",
+                            selection.environment_exposure_ev,
+                            -16.0,
+                            16.0,
+                            0.0,
+                            "EV",
+                        ));
+                    }
+                    controls
+                },
             },
             TestPhaseDescriptor {
                 id: COVER_GLOW_PHASE_ID,
@@ -2025,10 +2099,21 @@ pub fn apply_test_choice(
             next.cover_glow_amount = cover.profile.glow.character_strength;
         }
         ENVIRONMENT_CONTROL_ID => {
-            let environment = environment_preset(option_id)
-                .ok_or(TestAuthoringError::UnknownEnvironmentPreset)?;
-            next.environment_preset_id = environment.id;
-            next.environment_amount = environment.environment.character_strength;
+            if option_id == IMAGE_ENVIRONMENT_SOURCE_ID {
+                next.environment_source_id = IMAGE_ENVIRONMENT_SOURCE_ID;
+                next.environment_amount = 1.0;
+                next.environment_rotation_x_degrees = 0.0;
+                next.environment_rotation_y_degrees = 0.0;
+                next.environment_exposure_ev = 0.0;
+            } else {
+                let environment = environment_preset(option_id)
+                    .ok_or(TestAuthoringError::UnknownEnvironmentPreset)?;
+                next.environment_source_id = environment.id;
+                next.environment_amount = environment.environment.character_strength;
+                next.environment_rotation_x_degrees = environment.environment.rotation_x_degrees;
+                next.environment_rotation_y_degrees = environment.environment.rotation_y_degrees;
+                next.environment_exposure_ev = 0.0;
+            }
         }
         LENS_PRESET_CONTROL_ID => next.lens_preset_id = option_id,
         LENS_EVALUATION_MODEL_CONTROL_ID => match option_id {
@@ -2059,6 +2144,9 @@ pub fn apply_test_choice(
         | COVER_GLASS_AMOUNT_CONTROL_ID
         | COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID
         | ENVIRONMENT_AMOUNT_CONTROL_ID
+        | ENVIRONMENT_ROTATION_X_CONTROL_ID
+        | ENVIRONMENT_ROTATION_Y_CONTROL_ID
+        | ENVIRONMENT_EXPOSURE_CONTROL_ID
         | COVER_GLOW_AMOUNT_CONTROL_ID
         | LENS_AMOUNT_CONTROL_ID
         | AUTOFOCUS_CONTROL_ID
@@ -2127,8 +2215,11 @@ fn unresolved_test_selection(
         cover_glass_preset_id: current.cover_glass_preset_id,
         cover_glass_amount: current.cover_glass_amount,
         cover_ag_microtexture_amount: current.cover_ag_microtexture_amount,
-        environment_preset_id: current.environment_preset_id,
+        environment_source_id: current.environment_source_id,
         environment_amount: current.environment_amount,
+        environment_rotation_x_degrees: current.environment_rotation_x_degrees,
+        environment_rotation_y_degrees: current.environment_rotation_y_degrees,
+        environment_exposure_ev: current.environment_exposure_ev,
         cover_glow_amount: current.cover_glow_amount,
         lens_preset_id: current.lens_preset_id,
         lens_amount: current.lens_amount,
@@ -2274,6 +2365,9 @@ pub fn apply_test_scalar(
         COVER_GLASS_AMOUNT_CONTROL_ID => next.cover_glass_amount = value,
         COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID => next.cover_ag_microtexture_amount = value,
         ENVIRONMENT_AMOUNT_CONTROL_ID => next.environment_amount = value,
+        ENVIRONMENT_ROTATION_X_CONTROL_ID => next.environment_rotation_x_degrees = value,
+        ENVIRONMENT_ROTATION_Y_CONTROL_ID => next.environment_rotation_y_degrees = value,
+        ENVIRONMENT_EXPOSURE_CONTROL_ID => next.environment_exposure_ev = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
         F_STOP_CONTROL_ID => next.f_stop = value,
@@ -2376,8 +2470,11 @@ mod tests {
             cover_glass_preset_id: "cover-matte-ar",
             cover_glass_amount: 1.0,
             cover_ag_microtexture_amount: 1.0,
-            environment_preset_id: "environment-none",
+            environment_source_id: "environment-none",
             environment_amount: 0.0,
+            environment_rotation_x_degrees: 0.0,
+            environment_rotation_y_degrees: 0.0,
+            environment_exposure_ev: 0.0,
             cover_glow_amount: 1.0,
             lens_preset_id: "iphone-16e-main-integrated",
             lens_amount: 1.0,
@@ -2407,7 +2504,7 @@ mod tests {
     #[test]
     fn page_separates_feeder_from_device_interpretation() {
         let page = test_page_descriptor(asus()).unwrap();
-        assert_eq!(page.schema_version, 19);
+        assert_eq!(page.schema_version, 20);
         assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
@@ -2514,6 +2611,52 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn image_environment_is_explicit_and_owns_xy_rotation_and_exposure_controls() {
+        let selected =
+            apply_test_choice(asus(), ENVIRONMENT_CONTROL_ID, IMAGE_ENVIRONMENT_SOURCE_ID).unwrap();
+        assert_eq!(selected.environment_source_id, IMAGE_ENVIRONMENT_SOURCE_ID);
+        let selected = apply_test_scalar(
+            unresolved_test_selection(selected),
+            ENVIRONMENT_ROTATION_X_CONTROL_ID,
+            -32.0,
+        )
+        .unwrap();
+        let selected = apply_test_scalar(
+            unresolved_test_selection(selected),
+            ENVIRONMENT_ROTATION_Y_CONTROL_ID,
+            78.0,
+        )
+        .unwrap();
+        let selected = apply_test_scalar(
+            unresolved_test_selection(selected),
+            ENVIRONMENT_EXPOSURE_CONTROL_ID,
+            -1.0,
+        )
+        .unwrap();
+        assert_eq!(selected.environment_rotation_x_degrees, -32.0);
+        assert_eq!(selected.environment_rotation_y_degrees, 78.0);
+        assert_eq!(selected.environment_exposure_ev, -1.0);
+
+        let page = test_page_descriptor(unresolved_test_selection(selected)).unwrap();
+        let controls = &page
+            .phases
+            .iter()
+            .find(|phase| phase.id == COVER_ENVIRONMENT_PHASE_ID)
+            .unwrap()
+            .controls;
+        for id in [
+            ENVIRONMENT_ROTATION_X_CONTROL_ID,
+            ENVIRONMENT_ROTATION_Y_CONTROL_ID,
+            ENVIRONMENT_EXPOSURE_CONTROL_ID,
+        ] {
+            assert!(controls.iter().any(|control| matches!(
+                control,
+                TestControlRequirement::Scalar { id: control_id, .. } if *control_id == id
+            )));
+        }
     }
 
     #[test]
