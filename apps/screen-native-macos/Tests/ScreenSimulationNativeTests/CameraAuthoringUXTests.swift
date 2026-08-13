@@ -129,6 +129,17 @@ import Testing
     #expect(text.contains("Divider()\n            transport\n            Divider()"))
 }
 
+@Test func setupNavigationRejectsWheelMomentumAndKeepsTheDeviceBoundary() throws {
+    let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let source = tests.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
+    let text = try String(contentsOf: source, encoding: .utf8)
+
+    #expect(text.contains("guard event.momentumPhase.isEmpty"))
+    #expect(text.contains("flushCameraGestureChange()"))
+    #expect(text.contains("model.physicalModel.quality == .environmentSetup"))
+}
+
 @Test func testAuthoringBeginsWithOneSourceAndColorRoute() throws {
     let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     let source = tests.deletingLastPathComponent().deletingLastPathComponent()

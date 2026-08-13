@@ -1589,6 +1589,7 @@ struct ContentView: View {
                         fitted: model.previewIsFitted,
                         metadataLines: model.previewMetadataLines,
                         deviceBoundary: model.physicalModel.quality == .setup
+                                || model.physicalModel.quality == .environmentSetup
                             ? model.setupDeviceBoundary : [],
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
@@ -1836,6 +1837,11 @@ final class MetalPreviewContainer: NSView {
     private var dragStartPan = CGSize.zero
     private var magnifyAnchor: CGPoint?
     private var cameraDragStart: CGPoint?
+    private var pendingCameraGestureDelta: CGSize?
+    private var deliveredCameraGestureDelta: CGSize?
+    private var cameraGestureUpdate: DispatchWorkItem?
+    private var wheelGestureActive = false
+    private var wheelGestureDelta = CGSize.zero
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1937,6 +1943,10 @@ final class MetalPreviewContainer: NSView {
         else if !flags.contains(.option), !flags.contains(.shift) { operation = .pan }
         else { return }
         cameraDragStart = convert(event.locationInWindow, from: nil)
+        pendingCameraGestureDelta = nil
+        deliveredCameraGestureDelta = nil
+        cameraGestureUpdate?.cancel()
+        cameraGestureUpdate = nil
         metalView.enableSetNeedsDisplay = false
         metalView.isPaused = false
         metalView.preferredFramesPerSecond = 60
@@ -1947,7 +1957,7 @@ final class MetalPreviewContainer: NSView {
     override func otherMouseDragged(with event: NSEvent) {
         guard event.buttonNumber == 2, let start = cameraDragStart else { return }
         let current = convert(event.locationInWindow, from: nil)
-        onCameraGestureChange?(CGSize(
+        enqueueCameraGestureChange(CGSize(
             width: current.x - start.x,
             height: current.y - start.y
         ))
@@ -1956,6 +1966,7 @@ final class MetalPreviewContainer: NSView {
     override func otherMouseUp(with event: NSEvent) {
         guard event.buttonNumber == 2, cameraDragStart != nil else { return }
         cameraDragStart = nil
+        flushCameraGestureChange()
         metalView.isPaused = true
         metalView.enableSetNeedsDisplay = true
         onCameraGestureEnd?()
@@ -1964,10 +1975,71 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        guard !event.hasPreciseScrollingDeltas || abs(event.scrollingDeltaY) > 0 else { return }
+        // AppKit continues publishing inertial momentum after the user has
+        // released a trackpad or Magic Mouse. Camera navigation represents
+        // authored physical movement, so momentum is never an input.
+        guard event.momentumPhase.isEmpty else {
+            endWheelGesture()
+            return
+        }
+        let delta = event.scrollingDeltaY * 8
+        let phasedGesture = !event.phase.isEmpty
+        if event.phase.contains(.began) || event.phase.contains(.mayBegin) {
+            beginWheelGesture()
+        }
+        if abs(delta) > 0 {
+            if !wheelGestureActive { beginWheelGesture() }
+            wheelGestureDelta.width += delta
+            enqueueCameraGestureChange(wheelGestureDelta)
+        }
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            endWheelGesture()
+        } else if !phasedGesture {
+            // A traditional detented wheel has no AppKit gesture phases.
+            endWheelGesture()
+        }
+    }
+
+    private func beginWheelGesture() {
+        guard !wheelGestureActive else { return }
+        wheelGestureActive = true
+        wheelGestureDelta = .zero
+        deliveredCameraGestureDelta = nil
         onCameraGestureBegin?(.dolly, contentViewportSize())
-        onCameraGestureChange?(CGSize(width: event.scrollingDeltaY * 8, height: 0))
+    }
+
+    private func endWheelGesture() {
+        guard wheelGestureActive else { return }
+        flushCameraGestureChange()
+        wheelGestureActive = false
+        wheelGestureDelta = .zero
         onCameraGestureEnd?()
+    }
+
+    private func enqueueCameraGestureChange(_ delta: CGSize) {
+        pendingCameraGestureDelta = delta
+        guard cameraGestureUpdate == nil else { return }
+        let update = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.cameraGestureUpdate = nil
+            self.deliverPendingCameraGestureChange()
+        }
+        cameraGestureUpdate = update
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60.0, execute: update)
+    }
+
+    private func flushCameraGestureChange() {
+        cameraGestureUpdate?.cancel()
+        cameraGestureUpdate = nil
+        deliverPendingCameraGestureChange()
+    }
+
+    private func deliverPendingCameraGestureChange() {
+        guard let delta = pendingCameraGestureDelta else { return }
+        pendingCameraGestureDelta = nil
+        guard deliveredCameraGestureDelta != delta else { return }
+        deliveredCameraGestureDelta = delta
+        onCameraGestureChange?(delta)
     }
 
     override func magnify(with event: NSEvent) {
