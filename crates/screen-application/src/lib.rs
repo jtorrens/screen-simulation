@@ -303,6 +303,7 @@ pub struct CaptureDevicePreset {
     pub sensor: SensorProfile,
     pub raster_modes: [CaptureRasterMode; 3],
     pub default_raster_mode_id: &'static str,
+    pub default_lens_evaluation_model: LensEvaluationModel,
     pub computational_capture: ComputationalCaptureProfile,
     pub rendering_intent: CameraRenderingIntent,
     pub gate_width: Millimeters,
@@ -358,6 +359,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 2304×1582", 2_304, 1_582),
         ],
         default_raster_mode_id: CAPTURE_RASTER_FULL_ID,
+        default_lens_evaluation_model: LensEvaluationModel::ThinLens,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
         gate_width: Millimeters(27.99),
@@ -415,6 +417,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 4032×3024", 4_032, 3_024),
         ],
         default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
+        default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 8,
             bracket_spacing_stops: 1.0,
@@ -474,6 +477,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 1536×1152", 1_536, 1_152),
         ],
         default_raster_mode_id: CAPTURE_RASTER_FULL_ID,
+        default_lens_evaluation_model: LensEvaluationModel::ThinLens,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
         gate_width: Millimeters(5.76),
@@ -520,6 +524,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 4032×3024", 4_032, 3_024),
         ],
         default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
+        default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
             bracket_spacing_stops: 1.0,
@@ -575,6 +580,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             CaptureRasterMode::new("quarter", "Quarter · 2016×1512", 2_016, 1_512),
         ],
         default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
+        default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
             bracket_spacing_stops: 1.0,

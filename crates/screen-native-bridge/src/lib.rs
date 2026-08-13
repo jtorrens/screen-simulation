@@ -55,14 +55,14 @@ pub struct ScreenUtf8View {
     count: usize,
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 18;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 19;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestAuthoringSelectionV18 {
+pub struct ScreenTestAuthoringSelectionV19 {
     abi_version: u32,
     input_transform_id: ScreenUtf8View,
     output_signal_id: ScreenUtf8View,
@@ -78,6 +78,7 @@ pub struct ScreenTestAuthoringSelectionV18 {
     panel_light_spread_amount: f32,
     capture_preset_id: ScreenUtf8View,
     capture_raster_mode_id: ScreenUtf8View,
+    lens_evaluation_model_id: ScreenUtf8View,
     geometry_mode_id: ScreenUtf8View,
     camera_distance_meters: f32,
     camera_orbit_x_degrees: f32,
@@ -184,7 +185,7 @@ pub struct ScreenCaptureRasterModeV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenCapturePresetParametersV3 {
+pub struct ScreenCapturePresetParametersV4 {
     abi_version: u32,
     sensor: ScreenSensorNoiseParametersV2,
     computational_capture: ScreenComputationalCaptureParametersV3,
@@ -201,6 +202,7 @@ pub struct ScreenCapturePresetParametersV3 {
     radiometric_calibration: ScreenCameraRadiometricCalibrationV2,
     raster_modes: [ScreenCaptureRasterModeV1; 3],
     default_raster_mode_id: ScreenUtf8View,
+    default_lens_evaluation_model: u32,
 }
 
 #[repr(C)]
@@ -220,7 +222,7 @@ pub struct ScreenLensPresetParametersV1 {
 }
 
 pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 12;
-pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 6;
+pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
 pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;
@@ -2000,7 +2002,7 @@ unsafe fn borrowed_utf8<'a>(view: ScreenUtf8View) -> Option<&'a str> {
 }
 
 unsafe fn test_selection<'a>(
-    selection: *const ScreenTestAuthoringSelectionV18,
+    selection: *const ScreenTestAuthoringSelectionV19,
 ) -> Option<TestAuthoringSelection<'a>> {
     let selection = unsafe { selection.as_ref() }?;
     if selection.abi_version != SCREEN_TEST_AUTHORING_ABI_VERSION {
@@ -2020,6 +2022,7 @@ unsafe fn test_selection<'a>(
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: unsafe { borrowed_utf8(selection.capture_preset_id) }?,
         capture_raster_mode_id: unsafe { borrowed_utf8(selection.capture_raster_mode_id) }?,
+        lens_evaluation_model_id: unsafe { borrowed_utf8(selection.lens_evaluation_model_id) }?,
         geometry_mode_id: unsafe { borrowed_utf8(selection.geometry_mode_id) }?,
         camera_distance_meters: selection.camera_distance_meters,
         camera_orbit_x_degrees: selection.camera_orbit_x_degrees,
@@ -2139,8 +2142,8 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
 
 fn resolved_test_selection(
     selection: screen_application::ResolvedTestAuthoringSelection,
-) -> ScreenTestAuthoringSelectionV18 {
-    ScreenTestAuthoringSelectionV18 {
+) -> ScreenTestAuthoringSelectionV19 {
+    ScreenTestAuthoringSelectionV19 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         input_transform_id: utf8_view(selection.input_transform_id),
         output_signal_id: utf8_view(selection.output_signal_id),
@@ -2156,6 +2159,7 @@ fn resolved_test_selection(
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: utf8_view(selection.capture_preset_id),
         capture_raster_mode_id: utf8_view(selection.capture_raster_mode_id),
+        lens_evaluation_model_id: utf8_view(selection.lens_evaluation_model_id),
         geometry_mode_id: utf8_view(selection.geometry_mode_id),
         camera_distance_meters: selection.camera_distance_meters,
         camera_orbit_x_degrees: selection.camera_orbit_x_degrees,
@@ -2212,7 +2216,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
     input_transform_id: ScreenUtf8View,
     device_id: ScreenUtf8View,
     frame_rate: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV18,
+    resolved: *mut ScreenTestAuthoringSelectionV19,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(input_transform_id) = (unsafe { borrowed_utf8(input_transform_id) }) else {
@@ -2247,7 +2251,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_page_descriptor_create(
-    selection: *const ScreenTestAuthoringSelectionV18,
+    selection: *const ScreenTestAuthoringSelectionV19,
     error_message: *mut *const c_char,
 ) -> *mut ScreenTestPageDescriptor {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2531,10 +2535,10 @@ pub unsafe extern "C" fn screen_test_page_preview_choice_option(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_choice(
-    selection: *const ScreenTestAuthoringSelectionV18,
+    selection: *const ScreenTestAuthoringSelectionV19,
     control_id: ScreenUtf8View,
     option_id: ScreenUtf8View,
-    resolved: *mut ScreenTestAuthoringSelectionV18,
+    resolved: *mut ScreenTestAuthoringSelectionV19,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2568,10 +2572,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_choice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
-    selection: *const ScreenTestAuthoringSelectionV18,
+    selection: *const ScreenTestAuthoringSelectionV19,
     control_id: ScreenUtf8View,
     value: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV18,
+    resolved: *mut ScreenTestAuthoringSelectionV19,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2601,10 +2605,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_toggle(
-    selection: *const ScreenTestAuthoringSelectionV18,
+    selection: *const ScreenTestAuthoringSelectionV19,
     control_id: ScreenUtf8View,
     value: bool,
-    resolved: *mut ScreenTestAuthoringSelectionV18,
+    resolved: *mut ScreenTestAuthoringSelectionV19,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -3267,7 +3271,7 @@ pub extern "C" fn screen_capture_preset_compatible_lens_id(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_capture_preset_parameters(
     index: usize,
-    parameters: *mut ScreenCapturePresetParametersV3,
+    parameters: *mut ScreenCapturePresetParametersV4,
 ) -> bool {
     let Some(preset) = CAPTURE_DEVICE_PRESETS.get(index) else {
         return false;
@@ -3277,7 +3281,7 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
     }
     let sensor = preset.sensor;
     unsafe {
-        *parameters = ScreenCapturePresetParametersV3 {
+        *parameters = ScreenCapturePresetParametersV4 {
             abi_version: SCREEN_AUTHORING_CATALOG_ABI_VERSION,
             sensor: ScreenSensorNoiseParametersV2 {
                 abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
@@ -3359,6 +3363,10 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
                 height: u32::from(mode.height),
             }),
             default_raster_mode_id: utf8_view(preset.default_raster_mode_id),
+            default_lens_evaluation_model: match preset.default_lens_evaluation_model {
+                screen_application::LensEvaluationModel::ThinLens => 0,
+                screen_application::LensEvaluationModel::VfxDepthBlur => 1,
+            },
         };
     }
     true
@@ -4700,7 +4708,7 @@ mod tests {
         assert_eq!(screen_capture_preset_count(), CAPTURE_DEVICE_PRESETS.len());
         assert_eq!(screen_capture_preset_count(), 5);
         for index in 0..screen_capture_preset_count() {
-            let mut parameters: ScreenCapturePresetParametersV3 = unsafe { std::mem::zeroed() };
+            let mut parameters: ScreenCapturePresetParametersV4 = unsafe { std::mem::zeroed() };
             assert!(unsafe { screen_capture_preset_parameters(index, &mut parameters) });
             assert_eq!(parameters.abi_version, SCREEN_AUTHORING_CATALOG_ABI_VERSION);
             assert!(parameters.sensor.native_width > 0);
@@ -4724,7 +4732,7 @@ mod tests {
                 );
             }
         }
-        let mut invalid: ScreenCapturePresetParametersV3 = unsafe { std::mem::zeroed() };
+        let mut invalid: ScreenCapturePresetParametersV4 = unsafe { std::mem::zeroed() };
         assert!(!unsafe {
             screen_capture_preset_parameters(screen_capture_preset_count(), &mut invalid)
         });

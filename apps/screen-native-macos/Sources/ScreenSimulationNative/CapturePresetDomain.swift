@@ -20,13 +20,14 @@ struct CapturePresetDefinition: Identifiable {
     let defaultLensID: String
     let compatibleLensIDs: [String]
     let lensAssociationPolicy: LensAssociationPolicy
-    let parameters: ScreenCapturePresetParametersV3
+    let parameters: ScreenCapturePresetParametersV4
     let rasterModes: [RasterMode]
     let defaultRasterModeID: String
+    let defaultLensEvaluationModelID: String
 
     static func catalog() throws -> [Self] {
         try (0..<screen_capture_preset_count()).map { index in
-            var parameters = ScreenCapturePresetParametersV3()
+            var parameters = ScreenCapturePresetParametersV4()
             guard screen_capture_preset_parameters(index, &parameters),
                   parameters.abi_version == SCREEN_AUTHORING_CATALOG_ABI_VERSION,
                   let policy = LensAssociationPolicy(
@@ -47,11 +48,17 @@ struct CapturePresetDefinition: Identifiable {
                 )
             }
             let defaultRasterModeID = text(parameters.default_raster_mode_id)
+            let defaultLensEvaluationModelID = switch parameters.default_lens_evaluation_model {
+            case 0: "thin-lens"
+            case 1: "vfx-2d-dof"
+            default: ""
+            }
             guard !compatibleLensIDs.isEmpty,
                   compatibleLensIDs.contains(defaultLensID),
                   Set(rasterModes.map(\.id)).count == rasterModes.count,
-                  rasterModes.allSatisfy { !$0.id.isEmpty && $0.width > 0 && $0.height > 0 },
-                  rasterModes.contains(where: { $0.id == defaultRasterModeID })
+                  rasterModes.allSatisfy({ !$0.id.isEmpty && $0.width > 0 && $0.height > 0 }),
+                  rasterModes.contains(where: { $0.id == defaultRasterModeID }),
+                  !defaultLensEvaluationModelID.isEmpty
             else { throw CapturePresetError.invalidCatalog(index) }
             return Self(
                 id: text(screen_capture_preset_id(index)),
@@ -62,7 +69,8 @@ struct CapturePresetDefinition: Identifiable {
                 lensAssociationPolicy: policy,
                 parameters: parameters,
                 rasterModes: rasterModes,
-                defaultRasterModeID: defaultRasterModeID
+                defaultRasterModeID: defaultRasterModeID,
+                defaultLensEvaluationModelID: defaultLensEvaluationModelID
             )
         }
     }
@@ -79,6 +87,7 @@ struct CapturePresetDefinition: Identifiable {
         state.sceneLens.sensorWidthMillimeters = Double(parameters.gate_width_millimeters)
         state.sceneLens.sensorHeightMillimeters = Double(parameters.gate_height_millimeters)
         state.sceneLens.fStop = Double(parameters.default_f_stop)
+        state.sceneLens.evaluationModel = defaultLensEvaluationModelID
         state.sensor.nativeWidth = rasterMode.width
         state.sensor.nativeHeight = rasterMode.height
         state.sensor.bayerPattern = sensor.bayer_pattern

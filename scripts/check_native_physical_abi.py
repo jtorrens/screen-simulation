@@ -91,12 +91,12 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 18u",
-        "ScreenTestAuthoringSelectionV18",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 19u",
+        "ScreenTestAuthoringSelectionV19",
         "ScreenTestPhaseDescriptorV4",
         "ScreenTestControlDescriptorV5",
-        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 6u",
-        "ScreenCapturePresetParametersV3",
+        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u",
+        "ScreenCapturePresetParametersV4",
     )
     missing = [token for token in required if token not in header]
     if missing:
@@ -106,12 +106,12 @@ def validate_sources() -> None:
     )
     for token in (
         "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 12",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 18",
-        "ScreenTestAuthoringSelectionV18",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 19",
+        "ScreenTestAuthoringSelectionV19",
         "ScreenTestPhaseDescriptorV4",
         "ScreenTestControlDescriptorV5",
-        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 6",
-        "ScreenCapturePresetParametersV3",
+        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7",
+        "ScreenCapturePresetParametersV4",
     ):
         if token not in rust_bridge:
             raise RuntimeError(f"current Test ABI Rust contract is incomplete: {token}")

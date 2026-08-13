@@ -1902,6 +1902,7 @@ final class WorkspaceModel: ObservableObject {
         environment.apply(to: &authored)
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
+        authored.sceneLens.evaluationModel = selection.lensEvaluationModelID
         authored.sceneLens.focusDistanceMeters = selection.focusDistanceMeters
         authored.sceneLens.fStop = selection.fStop
         authored.sensor.bloomCrosstalkFraction = selection.sensorBloomCrosstalkFraction

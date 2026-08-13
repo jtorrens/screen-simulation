@@ -72,6 +72,7 @@ pub const ENVIRONMENT_CONTROL_ID: &str = "environment-preset";
 pub const ENVIRONMENT_AMOUNT_CONTROL_ID: &str = "environment-amount";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
+pub const LENS_EVALUATION_MODEL_CONTROL_ID: &str = "lens-evaluation-model";
 pub const LENS_AMOUNT_CONTROL_ID: &str = "lens-amount";
 pub const AUTOFOCUS_CONTROL_ID: &str = "autofocus";
 pub const FOCUS_DISTANCE_CONTROL_ID: &str = "focus-distance-meters";
@@ -207,6 +208,7 @@ pub struct TestAuthoringSelection<'a> {
     pub environment_amount: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'a str,
+    pub lens_evaluation_model_id: &'a str,
     pub lens_amount: f32,
     pub autofocus_enabled: bool,
     pub focus_distance_meters: f32,
@@ -269,6 +271,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub environment_amount: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'static str,
+    pub lens_evaluation_model_id: &'static str,
     pub lens_amount: f32,
     pub autofocus_enabled: bool,
     pub focus_distance_meters: f32,
@@ -296,6 +299,13 @@ pub struct ResolvedTestAuthoringSelection {
 pub struct TestChoiceOption {
     pub id: &'static str,
     pub label: &'static str,
+}
+
+fn lens_evaluation_model_id(model: crate::LensEvaluationModel) -> &'static str {
+    match model {
+        crate::LensEvaluationModel::ThinLens => "thin-lens",
+        crate::LensEvaluationModel::VfxDepthBlur => "vfx-2d-dof",
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -664,6 +674,7 @@ pub fn default_test_authoring_selection(
         environment_amount: 0.0,
         cover_glow_amount: 1.0,
         lens_preset_id: capture.default_lens_preset_id,
+        lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
         lens_amount: 1.0,
         autofocus_enabled: true,
         focus_distance_meters: 0.15,
@@ -747,6 +758,11 @@ pub fn resolve_test_authoring_selection(
         .raster_mode(selection.capture_raster_mode_id)
         .ok_or(TestAuthoringError::InvalidCaptureRasterMode)?;
     let lens = lens(selection.lens_preset_id)?;
+    let lens_evaluation_model_id = match selection.lens_evaluation_model_id {
+        "thin-lens" => "thin-lens",
+        "vfx-2d-dof" => "vfx-2d-dof",
+        _ => return Err(TestAuthoringError::UnknownControl),
+    };
     if !capture.compatible_lens_preset_ids.contains(&lens.id) {
         return Err(TestAuthoringError::UnsupportedLensPreset);
     }
@@ -956,6 +972,7 @@ pub fn resolve_test_authoring_selection(
         environment_amount: selection.environment_amount,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: lens.id,
+        lens_evaluation_model_id,
         lens_amount: selection.lens_amount,
         autofocus_enabled: selection.autofocus_enabled,
         focus_distance_meters: resolved_focus_distance_meters,
@@ -1334,6 +1351,22 @@ pub fn test_page_descriptor(
         ]);
     }
     let mut lens_controls = vec![
+        choice_control(
+            LENS_EVALUATION_MODEL_CONTROL_ID,
+            "Modelo óptico",
+            vec![
+                TestChoiceOption {
+                    id: "thin-lens",
+                    label: "Lente física · 32 rayos",
+                },
+                TestChoiceOption {
+                    id: "vfx-2d-dof",
+                    label: "VFX 2D · footprint continuo",
+                },
+            ],
+            selection.lens_evaluation_model_id,
+            lens_evaluation_model_id(capture.default_lens_evaluation_model),
+        ),
         choice_control(
             LENS_PRESET_CONTROL_ID,
             "Objetivo",
@@ -1944,6 +1977,8 @@ pub fn apply_test_choice(
             next.capture_preset_id = capture.id;
             next.capture_raster_mode_id = capture.default_raster_mode_id;
             next.lens_preset_id = capture.default_lens_preset_id;
+            next.lens_evaluation_model_id =
+                lens_evaluation_model_id(capture.default_lens_evaluation_model);
             next.f_stop = capture.f_stop;
             next.exposure_time_seconds =
                 capture.default_shutter_angle_degrees / 360.0 / current.frame_rate;
@@ -1978,6 +2013,10 @@ pub fn apply_test_choice(
             next.environment_amount = environment.environment.character_strength;
         }
         LENS_PRESET_CONTROL_ID => next.lens_preset_id = option_id,
+        LENS_EVALUATION_MODEL_CONTROL_ID => match option_id {
+            "thin-lens" | "vfx-2d-dof" => next.lens_evaluation_model_id = option_id,
+            _ => return Err(TestAuthoringError::UnknownControl),
+        },
         RECORDING_OUTPUT_TRANSFORM_CONTROL_ID => next.recording_output_transform_id = option_id,
         RECORDING_PROFILE_CONTROL_ID => next.recording_profile_id = option_id,
         WHITE_LUMINANCE_CONTROL_ID
@@ -2047,6 +2086,7 @@ fn unresolved_test_selection(
         panel_light_spread_amount: current.panel_light_spread_amount,
         capture_preset_id: current.capture_preset_id,
         capture_raster_mode_id: current.capture_raster_mode_id,
+        lens_evaluation_model_id: current.lens_evaluation_model_id,
         geometry_mode_id: current.geometry_mode_id,
         camera_distance_meters: current.camera_distance_meters,
         camera_orbit_x_degrees: current.camera_orbit_x_degrees,
@@ -2293,6 +2333,7 @@ mod tests {
             panel_light_spread_amount: 1.0,
             capture_preset_id: "iphone-16e-main-48mp",
             capture_raster_mode_id: "half",
+            lens_evaluation_model_id: "vfx-2d-dof",
             geometry_mode_id: "look-at",
             camera_distance_meters: 0.15,
             camera_orbit_x_degrees: 0.0,
@@ -2390,6 +2431,14 @@ mod tests {
         ));
         assert!(matches!(
             &page.phases[9].controls[0],
+            TestControlRequirement::Choice {
+                id: LENS_EVALUATION_MODEL_CONTROL_ID,
+                selected_id: "vfx-2d-dof",
+                ..
+            }
+        ));
+        assert!(matches!(
+            &page.phases[9].controls[1],
             TestControlRequirement::Choice {
                 id: LENS_PRESET_CONTROL_ID,
                 options,
@@ -2591,6 +2640,7 @@ mod tests {
                 .bloom
                 .overflow_transfer_fraction
         );
+        assert_eq!(changed_camera.lens_evaluation_model_id, "thin-lens");
     }
 
     #[test]

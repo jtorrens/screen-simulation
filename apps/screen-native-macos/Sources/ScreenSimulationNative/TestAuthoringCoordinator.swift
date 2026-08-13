@@ -40,6 +40,7 @@ struct TestAuthoringResolvedSelection: Equatable, Sendable {
     let panelLightSpreadAmount: Double
     let capturePresetID: String
     let captureRasterModeID: String
+    let lensEvaluationModelID: String
     let geometryModeID: String
     let cameraDistanceMeters: Double
     let cameraOrbitXDegrees: Double
@@ -118,7 +119,7 @@ enum RustTestAuthoringCoordinator {
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV18()
+                var output = ScreenTestAuthoringSelectionV19()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
                     inputView, deviceView, Float(frameRate), &output, &error
@@ -235,7 +236,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV18()
+                        var output = ScreenTestAuthoringSelectionV19()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -252,7 +253,7 @@ enum RustTestAuthoringCoordinator {
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV18()
+                    var output = ScreenTestAuthoringSelectionV19()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -268,7 +269,7 @@ enum RustTestAuthoringCoordinator {
         case let .setToggle(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV18()
+                    var output = ScreenTestAuthoringSelectionV19()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_toggle(
                         rawSelection, controlView, value, &output, &error
@@ -388,7 +389,7 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV18
+        _ raw: ScreenTestAuthoringSelectionV19
     ) -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
@@ -405,6 +406,7 @@ enum RustTestAuthoringCoordinator {
             panelLightSpreadAmount: Double(raw.panel_light_spread_amount),
             capturePresetID: string(raw.capture_preset_id),
             captureRasterModeID: string(raw.capture_raster_mode_id),
+            lensEvaluationModelID: string(raw.lens_evaluation_model_id),
             geometryModeID: string(raw.geometry_mode_id),
             cameraDistanceMeters: Double(raw.camera_distance_meters),
             cameraOrbitXDegrees: Double(raw.camera_orbit_x_degrees),
@@ -460,7 +462,7 @@ enum RustTestAuthoringCoordinator {
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV18>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV19>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -470,6 +472,7 @@ enum RustTestAuthoringCoordinator {
                         try withUTF8View(selection.previewQualityID) { qualityView in
                             try withUTF8View(selection.capturePresetID) { captureView in
                             try withUTF8View(selection.captureRasterModeID) { captureRasterView in
+                            try withUTF8View(selection.lensEvaluationModelID) { lensEvaluationModelView in
                                 try withUTF8View(selection.geometryModeID) { geometryModeView in
                                 try withUTF8View(selection.coverGlassPresetID) { coverView in
                                     try withUTF8View(selection.environmentPresetID) { environmentView in
@@ -478,7 +481,7 @@ enum RustTestAuthoringCoordinator {
                                             try withUTF8View(selection.deliveryBackgroundID) { deliveryBackgroundView in
                                             try withUTF8View(selection.recordingOutputTransformID) { recordingOutputView in
                                                 try withUTF8View(selection.recordingProfileID) { recordingProfileView in
-                                                    var raw = ScreenTestAuthoringSelectionV18()
+                                                    var raw = ScreenTestAuthoringSelectionV19()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView
@@ -494,6 +497,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.panel_light_spread_amount = Float(selection.panelLightSpreadAmount)
                                             raw.capture_preset_id = captureView
                                             raw.capture_raster_mode_id = captureRasterView
+                                            raw.lens_evaluation_model_id = lensEvaluationModelView
                                             raw.geometry_mode_id = geometryModeView
                                             raw.camera_distance_meters = Float(selection.cameraDistanceMeters)
                                             raw.camera_orbit_x_degrees = Float(selection.cameraOrbitXDegrees)
@@ -549,6 +553,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.recording_profile_id = recordingProfileView
                                             raw.recording_character = Float(selection.recordingCharacter)
                                                     return try withUnsafePointer(to: &raw, body)
+                                                }
                                                 }
                                                 }
                                                 }

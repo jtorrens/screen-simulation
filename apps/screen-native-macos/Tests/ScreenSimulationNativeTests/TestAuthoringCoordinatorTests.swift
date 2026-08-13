@@ -19,6 +19,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         panelLightSpreadAmount: 1,
         capturePresetID: "iphone-16e-main-48mp",
         captureRasterModeID: "half",
+        lensEvaluationModelID: "vfx-2d-dof",
         geometryModeID: "look-at",
         cameraDistanceMeters: 0.15,
         cameraOrbitXDegrees: 0,
