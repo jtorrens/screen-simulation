@@ -2,6 +2,8 @@
 
 Status: normative.
 
+Capture-preset coverage requires exactly three unique stable `Full`, `Half` and `Quarter` raster identities with explicit nonzero dimensions and an explicit contained default; unknown modes fail at the Application boundary.
+
 Architecture is enforced rather than inferred from prose. `architecture/domains.json` is the exact current workspace package and local-dependency matrix. `architecture/validation-owners.json` assigns every repository path to one validation owner. An undeclared package, dependency or path is an error.
 
 Domain isolation is compiler-first. Rust crate dependencies and Swift target dependencies are the executable authority for which imports can exist. Core and Application targets cannot depend on host, UI, Platform implementation or OFX targets. Presentation targets depend only on presentation contracts and host UI frameworks; granting a Color, Media, Panel, Geometry, Camera, Sensor, Persistence or native-bridge dependency to a presentation target is an architecture failure. Source scanning is used only for invariants that the language dependency graph cannot express.

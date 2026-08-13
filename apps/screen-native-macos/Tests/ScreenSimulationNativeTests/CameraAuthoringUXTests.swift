@@ -86,12 +86,16 @@ import Testing
     let integrated = try #require(lenses.first { $0.id == iphone.defaultLensID })
     #expect(iphone.lensAssociationPolicy == .fixed)
     #expect(iphone.compatibleLensIDs == [integrated.id])
-    iphone.applyCamera(to: &authored, frameRate: 25)
+    try iphone.applyCamera(
+        rasterModeID: iphone.defaultRasterModeID,
+        to: &authored,
+        frameRate: 25
+    )
     integrated.apply(to: &authored)
 
     #expect(abs(authored.sceneLens.focalLengthMillimeters - 4.2) < 0.001)
-    #expect(authored.sensor.nativeWidth == 8_064)
-    #expect(authored.sensor.nativeHeight == 6_048)
+    #expect(authored.sensor.nativeWidth == 5_712)
+    #expect(authored.sensor.nativeHeight == 4_284)
     #expect(authored.shutterMotion.temporalSamples > 0)
     #expect(authored.shutterMotion.openOffsetNumerator < 0)
     #expect(authored.shutterMotion.closeOffsetNumerator > 0)
@@ -191,7 +195,7 @@ import Testing
     workspace.selectCapturePreset(iphone, undoManager: nil)
     #expect(workspace.physicalModel.parameterRevision == initialRevision + 1)
     #expect(workspace.physicalPreviewSurfaceAspect == 8_064.0 / 6_048.0)
-    #expect(workspace.physicalNativeOutputDescription == "Captura 8064×6048")
+    #expect(workspace.physicalNativeOutputDescription == "Captura 5712×4284")
 
     let arri = try #require(workspace.capturePresets.first { $0.name.contains("ARRI") })
     workspace.selectCapturePreset(arri, undoManager: nil)

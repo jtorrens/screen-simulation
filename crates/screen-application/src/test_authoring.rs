@@ -47,6 +47,7 @@ pub const SUBPIXEL_GEOMETRY_CONTROL_ID: &str = "subpixel-geometry-amount";
 pub const PANEL_UNIFORMITY_CONTROL_ID: &str = "panel-uniformity-amount";
 pub const PANEL_LIGHT_SPREAD_CONTROL_ID: &str = "panel-light-spread-amount";
 pub const CAPTURE_PRESET_CONTROL_ID: &str = "capture-preset";
+pub const CAPTURE_RASTER_MODE_CONTROL_ID: &str = "capture-raster-mode";
 pub const GEOMETRY_MODE_CONTROL_ID: &str = "geometry-mode";
 pub const CAMERA_DISTANCE_CONTROL_ID: &str = "camera-distance-meters";
 pub const CAMERA_ORBIT_X_CONTROL_ID: &str = "camera-orbit-x-degrees";
@@ -156,6 +157,7 @@ pub struct TestAuthoringSelection<'a> {
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'a str,
+    pub capture_raster_mode_id: &'a str,
     pub geometry_mode_id: &'a str,
     pub camera_distance_meters: f32,
     pub camera_orbit_x_degrees: f32,
@@ -213,6 +215,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'static str,
+    pub capture_raster_mode_id: &'static str,
     pub geometry_mode_id: &'static str,
     pub camera_distance_meters: f32,
     pub camera_orbit_x_degrees: f32,
@@ -414,6 +417,7 @@ pub enum TestAuthoringError {
     InvalidPanelUniformityAmount,
     InvalidPanelLightSpreadAmount,
     UnknownCapturePreset,
+    InvalidCaptureRasterMode,
     UnknownLensPreset,
     UnsupportedLensPreset,
     InvalidGeometry,
@@ -454,6 +458,7 @@ impl core::fmt::Display for TestAuthoringError {
             Self::InvalidPanelUniformityAmount => "Panel Uniformity amount is outside 0..=4",
             Self::InvalidPanelLightSpreadAmount => "Panel Light Spread amount is outside 0..=4",
             Self::UnknownCapturePreset => "unknown Test Capture preset",
+            Self::InvalidCaptureRasterMode => "invalid Test capture raster mode",
             Self::UnknownLensPreset => "unknown Test Lens preset",
             Self::UnsupportedLensPreset => "Lens preset is not compatible with the selected Camera",
             Self::InvalidGeometry => "Test relative geometry is invalid",
@@ -565,6 +570,7 @@ pub fn default_test_authoring_selection(
         panel_uniformity_amount: device.uniformity.character_strength,
         panel_light_spread_amount: device.light_spread.character_strength,
         capture_preset_id: capture.id,
+        capture_raster_mode_id: capture.default_raster_mode_id,
         geometry_mode_id: "look-at",
         camera_distance_meters: seed_distance,
         camera_orbit_x_degrees: 0.0,
@@ -667,6 +673,9 @@ pub fn resolve_test_authoring_selection(
         return Err(TestAuthoringError::InvalidPanelLightSpreadAmount);
     }
     let capture = capture(selection.capture_preset_id)?;
+    let capture_raster_mode = capture
+        .raster_mode(selection.capture_raster_mode_id)
+        .ok_or(TestAuthoringError::InvalidCaptureRasterMode)?;
     let lens = lens(selection.lens_preset_id)?;
     if !capture.compatible_lens_preset_ids.contains(&lens.id) {
         return Err(TestAuthoringError::UnsupportedLensPreset);
@@ -830,6 +839,7 @@ pub fn resolve_test_authoring_selection(
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: capture.id,
+        capture_raster_mode_id: capture_raster_mode.id,
         geometry_mode_id,
         camera_distance_meters: selection.camera_distance_meters,
         camera_orbit_x_degrees: selection.camera_orbit_x_degrees,
@@ -1029,6 +1039,20 @@ pub fn test_page_descriptor(
             capture_options,
             selection.capture_preset_id,
             reset_capture.id,
+        ),
+        choice_control(
+            CAPTURE_RASTER_MODE_CONTROL_ID,
+            "Resolución de captura",
+            capture
+                .raster_modes
+                .into_iter()
+                .map(|mode| TestChoiceOption {
+                    id: mode.id,
+                    label: mode.label,
+                })
+                .collect(),
+            selection.capture_raster_mode_id,
+            capture.default_raster_mode_id,
         ),
         choice_control(
             GEOMETRY_MODE_CONTROL_ID,
@@ -1782,6 +1806,7 @@ pub fn apply_test_choice(
         CAPTURE_PRESET_CONTROL_ID => {
             let capture = capture(option_id)?;
             next.capture_preset_id = capture.id;
+            next.capture_raster_mode_id = capture.default_raster_mode_id;
             next.lens_preset_id = capture.default_lens_preset_id;
             next.f_stop = capture.f_stop;
             next.exposure_time_seconds =
@@ -1797,6 +1822,7 @@ pub fn apply_test_choice(
                 capture.sensor.bloom.overflow_transfer_fraction;
             next.camera_rendering_intent = capture.rendering_intent;
         }
+        CAPTURE_RASTER_MODE_CONTROL_ID => next.capture_raster_mode_id = option_id,
         GEOMETRY_MODE_CONTROL_ID => apply_geometry_mode(&mut next, option_id)?,
         COVER_GLASS_CONTROL_ID => {
             let cover =
@@ -1880,6 +1906,7 @@ fn unresolved_test_selection(
         panel_uniformity_amount: current.panel_uniformity_amount,
         panel_light_spread_amount: current.panel_light_spread_amount,
         capture_preset_id: current.capture_preset_id,
+        capture_raster_mode_id: current.capture_raster_mode_id,
         geometry_mode_id: current.geometry_mode_id,
         camera_distance_meters: current.camera_distance_meters,
         camera_orbit_x_degrees: current.camera_orbit_x_degrees,
@@ -2072,6 +2099,7 @@ pub fn apply_test_scalar(
         | PLACEMENT_CONTROL_ID
         | PREVIEW_QUALITY_CONTROL_ID
         | CAPTURE_PRESET_CONTROL_ID
+        | CAPTURE_RASTER_MODE_CONTROL_ID
         | GEOMETRY_MODE_CONTROL_ID
         | COVER_GLASS_CONTROL_ID
         | ENVIRONMENT_CONTROL_ID
@@ -2116,6 +2144,7 @@ mod tests {
             panel_uniformity_amount: 1.0,
             panel_light_spread_amount: 1.0,
             capture_preset_id: "iphone-16e-main-48mp",
+            capture_raster_mode_id: "half",
             geometry_mode_id: "look-at",
             camera_distance_meters: 0.15,
             camera_orbit_x_degrees: 0.0,
@@ -2409,6 +2438,33 @@ mod tests {
                 .bloom
                 .overflow_transfer_fraction
         );
+    }
+
+    #[test]
+    fn capture_raster_modes_are_explicit_and_camera_defaults_are_authoritative() {
+        let iphone = CAPTURE_DEVICE_PRESETS
+            .iter()
+            .copied()
+            .find(|preset| preset.id == "iphone-16e-main-48mp")
+            .unwrap();
+        assert_eq!(iphone.default_raster_mode_id, "half");
+        let half = iphone.sensor_for_raster_mode("half").unwrap();
+        assert_eq!((half.native_width, half.native_height), (5_712, 4_284));
+        assert!(iphone.sensor_for_raster_mode("unknown").is_none());
+
+        let arri = CAPTURE_DEVICE_PRESETS
+            .iter()
+            .copied()
+            .find(|preset| preset.id == "arri-alexa-35-open-gate")
+            .unwrap();
+        assert_eq!(arri.default_raster_mode_id, "full");
+        let full = arri.sensor_for_raster_mode("full").unwrap();
+        assert_eq!((full.native_width, full.native_height), (4_608, 3_164));
+
+        let quarter = apply_test_choice(asus(), CAPTURE_RASTER_MODE_CONTROL_ID, "quarter").unwrap();
+        assert_eq!(quarter.capture_raster_mode_id, "quarter");
+        let invalid = apply_test_choice(asus(), CAPTURE_RASTER_MODE_CONTROL_ID, "unknown");
+        assert_eq!(invalid, Err(TestAuthoringError::InvalidCaptureRasterMode));
     }
 
     #[test]

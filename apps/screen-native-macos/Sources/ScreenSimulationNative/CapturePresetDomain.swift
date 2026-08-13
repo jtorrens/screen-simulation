@@ -2,6 +2,13 @@ import Foundation
 import ScreenPhysicalBridge
 
 struct CapturePresetDefinition: Identifiable {
+    struct RasterMode: Identifiable, Equatable, Sendable {
+        let id: String
+        let name: String
+        let width: UInt32
+        let height: UInt32
+    }
+
     enum LensAssociationPolicy: UInt16 {
         case interchangeable = 0
         case fixed = 1
@@ -13,11 +20,13 @@ struct CapturePresetDefinition: Identifiable {
     let defaultLensID: String
     let compatibleLensIDs: [String]
     let lensAssociationPolicy: LensAssociationPolicy
-    let parameters: ScreenCapturePresetParametersV2
+    let parameters: ScreenCapturePresetParametersV3
+    let rasterModes: [RasterMode]
+    let defaultRasterModeID: String
 
     static func catalog() throws -> [Self] {
         try (0..<screen_capture_preset_count()).map { index in
-            var parameters = ScreenCapturePresetParametersV2()
+            var parameters = ScreenCapturePresetParametersV3()
             guard screen_capture_preset_parameters(index, &parameters),
                   parameters.abi_version == SCREEN_AUTHORING_CATALOG_ABI_VERSION,
                   let policy = LensAssociationPolicy(
@@ -28,8 +37,21 @@ struct CapturePresetDefinition: Identifiable {
                 text(screen_capture_preset_compatible_lens_id(index, $0))
             }
             let defaultLensID = text(screen_capture_preset_default_lens_id(index))
+            let rawModes = parameters.raster_modes
+            let rasterModes = [rawModes.0, rawModes.1, rawModes.2].map { mode in
+                RasterMode(
+                    id: text(mode.id),
+                    name: text(mode.label),
+                    width: mode.width,
+                    height: mode.height
+                )
+            }
+            let defaultRasterModeID = text(parameters.default_raster_mode_id)
             guard !compatibleLensIDs.isEmpty,
-                  compatibleLensIDs.contains(defaultLensID)
+                  compatibleLensIDs.contains(defaultLensID),
+                  Set(rasterModes.map(\.id)).count == rasterModes.count,
+                  rasterModes.allSatisfy { !$0.id.isEmpty && $0.width > 0 && $0.height > 0 },
+                  rasterModes.contains(where: { $0.id == defaultRasterModeID })
             else { throw CapturePresetError.invalidCatalog(index) }
             return Self(
                 id: text(screen_capture_preset_id(index)),
@@ -38,18 +60,27 @@ struct CapturePresetDefinition: Identifiable {
                 defaultLensID: defaultLensID,
                 compatibleLensIDs: compatibleLensIDs,
                 lensAssociationPolicy: policy,
-                parameters: parameters
+                parameters: parameters,
+                rasterModes: rasterModes,
+                defaultRasterModeID: defaultRasterModeID
             )
         }
     }
 
-    func applyCamera(to state: inout PhysicalPipelineAuthoringState, frameRate: Double) {
+    func applyCamera(
+        rasterModeID: String,
+        to state: inout PhysicalPipelineAuthoringState,
+        frameRate: Double
+    ) throws {
+        guard let rasterMode = rasterModes.first(where: { $0.id == rasterModeID }) else {
+            throw CapturePresetError.invalidRasterMode(rasterModeID)
+        }
         let sensor = parameters.sensor
         state.sceneLens.sensorWidthMillimeters = Double(parameters.gate_width_millimeters)
         state.sceneLens.sensorHeightMillimeters = Double(parameters.gate_height_millimeters)
         state.sceneLens.fStop = Double(parameters.default_f_stop)
-        state.sensor.nativeWidth = sensor.native_width
-        state.sensor.nativeHeight = sensor.native_height
+        state.sensor.nativeWidth = rasterMode.width
+        state.sensor.nativeHeight = rasterMode.height
         state.sensor.bayerPattern = sensor.bayer_pattern
         state.sensor.acescgToSensor = [
             sensor.acescg_to_sensor.0, sensor.acescg_to_sensor.1, sensor.acescg_to_sensor.2,
@@ -182,4 +213,5 @@ struct LensPresetDefinition: Identifiable, Equatable, Sendable {
 enum CapturePresetError: Error {
     case invalidCatalog(Int)
     case invalidLensCatalog(Int)
+    case invalidRasterMode(String)
 }

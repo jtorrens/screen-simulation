@@ -38,6 +38,7 @@ struct TestAuthoringResolvedSelection: Equatable, Sendable {
     let panelUniformityAmount: Double
     let panelLightSpreadAmount: Double
     let capturePresetID: String
+    let captureRasterModeID: String
     let geometryModeID: String
     let cameraDistanceMeters: Double
     let cameraOrbitXDegrees: Double
@@ -112,7 +113,7 @@ enum RustTestAuthoringCoordinator {
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV16()
+                var output = ScreenTestAuthoringSelectionV17()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
                     inputView, deviceView, Float(frameRate), &output, &error
@@ -227,7 +228,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV16()
+                        var output = ScreenTestAuthoringSelectionV17()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -244,7 +245,7 @@ enum RustTestAuthoringCoordinator {
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV16()
+                    var output = ScreenTestAuthoringSelectionV17()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -260,7 +261,7 @@ enum RustTestAuthoringCoordinator {
         case let .setToggle(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV16()
+                    var output = ScreenTestAuthoringSelectionV17()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_toggle(
                         rawSelection, controlView, value, &output, &error
@@ -380,7 +381,7 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV16
+        _ raw: ScreenTestAuthoringSelectionV17
     ) -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
@@ -396,6 +397,7 @@ enum RustTestAuthoringCoordinator {
             panelUniformityAmount: Double(raw.panel_uniformity_amount),
             panelLightSpreadAmount: Double(raw.panel_light_spread_amount),
             capturePresetID: string(raw.capture_preset_id),
+            captureRasterModeID: string(raw.capture_raster_mode_id),
             geometryModeID: string(raw.geometry_mode_id),
             cameraDistanceMeters: Double(raw.camera_distance_meters),
             cameraOrbitXDegrees: Double(raw.camera_orbit_x_degrees),
@@ -447,7 +449,7 @@ enum RustTestAuthoringCoordinator {
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV16>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV17>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -462,7 +464,7 @@ enum RustTestAuthoringCoordinator {
                                         try withUTF8View(selection.lensPresetID) { lensView in
                                             try withUTF8View(selection.recordingOutputTransformID) { recordingOutputView in
                                                 try withUTF8View(selection.recordingProfileID) { recordingProfileView in
-                                                    var raw = ScreenTestAuthoringSelectionV16()
+                                                    var raw = ScreenTestAuthoringSelectionV17()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView

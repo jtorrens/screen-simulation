@@ -139,7 +139,11 @@ import Testing
         let lens = try #require(
             try LensPresetDefinition.catalog().first { $0.id == lensID }
         )
-        capture.applyCamera(to: &pipeline, frameRate: 24)
+        try capture.applyCamera(
+            rasterModeID: capture.defaultRasterModeID,
+            to: &pipeline,
+            frameRate: 24
+        )
         lens.apply(to: &pipeline)
         let captureWidth = ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_CAPTURE_WIDTH"

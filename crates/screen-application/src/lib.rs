@@ -175,11 +175,36 @@ impl CameraRadiometricCalibration {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaptureRasterMode {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl CaptureRasterMode {
+    pub const fn new(id: &'static str, label: &'static str, width: u16, height: u16) -> Self {
+        Self {
+            id,
+            label,
+            width,
+            height,
+        }
+    }
+}
+
+pub const CAPTURE_RASTER_FULL_ID: &str = "full";
+pub const CAPTURE_RASTER_HALF_ID: &str = "half";
+pub const CAPTURE_RASTER_QUARTER_ID: &str = "quarter";
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CaptureDevicePreset {
     pub id: &'static str,
     pub label: &'static str,
     pub calibration: &'static str,
     pub sensor: SensorProfile,
+    pub raster_modes: [CaptureRasterMode; 3],
+    pub default_raster_mode_id: &'static str,
     pub computational_capture: ComputationalCaptureProfile,
     pub rendering_intent: CameraRenderingIntent,
     pub gate_width: Millimeters,
@@ -194,6 +219,21 @@ pub struct CaptureDevicePreset {
     pub default_shutter_angle_degrees: f32,
     pub default_temporal_samples: u16,
     pub default_readout_duration_milliseconds: f32,
+}
+
+impl CaptureDevicePreset {
+    pub fn raster_mode(self, id: &str) -> Option<CaptureRasterMode> {
+        self.raster_modes.into_iter().find(|mode| mode.id == id)
+    }
+
+    pub fn sensor_for_raster_mode(self, id: &str) -> Option<SensorProfile> {
+        let mode = self.raster_mode(id)?;
+        Some(SensorProfile {
+            native_width: mode.width,
+            native_height: mode.height,
+            ..self.sensor
+        })
+    }
 }
 
 pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
@@ -214,6 +254,12 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 14,
             bloom: SensorBloomProfile::LARGE_CAMERA,
         },
+        raster_modes: [
+            CaptureRasterMode::new("full", "Full · 4608×3164", 4_608, 3_164),
+            CaptureRasterMode::new("half", "Half · 3264×2240", 3_264, 2_240),
+            CaptureRasterMode::new("quarter", "Quarter · 2304×1582", 2_304, 1_582),
+        ],
+        default_raster_mode_id: CAPTURE_RASTER_FULL_ID,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
         gate_width: Millimeters(27.99),
@@ -265,6 +311,12 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 12,
             bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
         },
+        raster_modes: [
+            CaptureRasterMode::new("full", "Full · 8064×6048", 8_064, 6_048),
+            CaptureRasterMode::new("half", "Half · 5712×4284", 5_712, 4_284),
+            CaptureRasterMode::new("quarter", "Quarter · 4032×3024", 4_032, 3_024),
+        ],
+        default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 8,
             bracket_spacing_stops: 1.0,
@@ -318,6 +370,12 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 12,
             bloom: SensorBloomProfile::REFERENCE,
         },
+        raster_modes: [
+            CaptureRasterMode::new("full", "Full · 3072×2304", 3_072, 2_304),
+            CaptureRasterMode::new("half", "Half · 2172×1628", 2_172, 1_628),
+            CaptureRasterMode::new("quarter", "Quarter · 1536×1152", 1_536, 1_152),
+        ],
+        default_raster_mode_id: CAPTURE_RASTER_FULL_ID,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
         gate_width: Millimeters(5.76),
@@ -358,6 +416,12 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 12,
             bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
         },
+        raster_modes: [
+            CaptureRasterMode::new("full", "Full · 8064×6048", 8_064, 6_048),
+            CaptureRasterMode::new("half", "Half · 5712×4284", 5_712, 4_284),
+            CaptureRasterMode::new("quarter", "Quarter · 4032×3024", 4_032, 3_024),
+        ],
+        default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
             bracket_spacing_stops: 1.0,
@@ -407,6 +471,12 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             adc_bits: 12,
             bloom: SensorBloomProfile::SMALL_PIXEL_PHONE,
         },
+        raster_modes: [
+            CaptureRasterMode::new("full", "Full · 4032×3024", 4_032, 3_024),
+            CaptureRasterMode::new("half", "Half · 2856×2142", 2_856, 2_142),
+            CaptureRasterMode::new("quarter", "Quarter · 2016×1512", 2_016, 1_512),
+        ],
+        default_raster_mode_id: CAPTURE_RASTER_HALF_ID,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
             bracket_spacing_stops: 1.0,

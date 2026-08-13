@@ -134,6 +134,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var modelViewerOneToOne = false
     @Published private(set) var armedPhysicalParameterIDs: Set<String> = []
     @Published private(set) var selectedCapturePresetID: String?
+    @Published private(set) var selectedCaptureRasterModeID: String?
     @Published private(set) var selectedLensPresetID: String?
     let capturePresets = try! CapturePresetDefinition.catalog()
     let lensPresets = try! LensPresetDefinition.catalog()
@@ -342,9 +343,15 @@ final class WorkspaceModel: ObservableObject {
             let capture = capturePresets.first { $0.id == selectedCapturePresetID }
                 ?? capturePresets.first
             if let capture {
-                try apply(capture: capture, lensID: capture.defaultLensID, to: &authored)
+                try apply(
+                    capture: capture,
+                    rasterModeID: capture.defaultRasterModeID,
+                    lensID: capture.defaultLensID,
+                    to: &authored
+                )
             }
             selectedCapturePresetID = capture?.id
+            selectedCaptureRasterModeID = capture?.defaultRasterModeID
             physicalAuthoringState = authored
             resolvedPhysicalPipeline = try authored.resolvedPipeline()
             baseModelDeviceDefinition = definition
@@ -359,19 +366,27 @@ final class WorkspaceModel: ObservableObject {
     func selectCapturePreset(_ preset: CapturePresetDefinition, undoManager: UndoManager?) {
         guard let prior = physicalAuthoringState else { return }
         let priorID = selectedCapturePresetID
+        let priorRasterModeID = selectedCaptureRasterModeID
         let priorLensID = selectedLensPresetID
         var next = prior
         do {
-            try apply(capture: preset, lensID: preset.defaultLensID, to: &next)
+            try apply(
+                capture: preset,
+                rasterModeID: preset.defaultRasterModeID,
+                lensID: preset.defaultLensID,
+                to: &next
+            )
             resolvedPhysicalPipeline = try next.resolvedPipeline()
             physicalAuthoringState = next
             basePhysicalAuthoringState = next
             selectedCapturePresetID = preset.id
+            selectedCaptureRasterModeID = preset.defaultRasterModeID
             undoManager?.registerUndo(withTarget: self) { target in
                 Task { @MainActor in
                     target.restoreCapturePresetState(
                         prior,
                         selectedID: priorID,
+                        selectedRasterModeID: priorRasterModeID,
                         selectedLensID: priorLensID
                     )
                 }
@@ -383,6 +398,7 @@ final class WorkspaceModel: ObservableObject {
 
     private func apply(
         capture: CapturePresetDefinition,
+        rasterModeID: String,
         lensID: String,
         to state: inout PhysicalPipelineAuthoringState
     ) throws {
@@ -393,7 +409,7 @@ final class WorkspaceModel: ObservableObject {
                 "La cámara no admite el objetivo seleccionado."
             )
         }
-        capture.applyCamera(to: &state, frameRate: frameRate)
+        try capture.applyCamera(rasterModeID: rasterModeID, to: &state, frameRate: frameRate)
         lens.apply(to: &state)
         selectedLensPresetID = lens.id
     }
@@ -401,6 +417,7 @@ final class WorkspaceModel: ObservableObject {
     private func restoreCapturePresetState(
         _ state: PhysicalPipelineAuthoringState,
         selectedID: String?,
+        selectedRasterModeID: String?,
         selectedLensID: String?
     ) {
         do {
@@ -408,6 +425,7 @@ final class WorkspaceModel: ObservableObject {
             physicalAuthoringState = state
             basePhysicalAuthoringState = state
             selectedCapturePresetID = selectedID
+            selectedCaptureRasterModeID = selectedRasterModeID
             selectedLensPresetID = selectedLensID
             physicalModel.invalidateExternalParameters()
         } catch { errorMessage = error.localizedDescription }
@@ -1865,7 +1883,12 @@ final class WorkspaceModel: ObservableObject {
                 "Rust devolvió una cámara o entorno que no existe en sus catálogos."
             )
         }
-        try apply(capture: capture, lensID: selection.lensPresetID, to: &authored)
+        try apply(
+            capture: capture,
+            rasterModeID: selection.captureRasterModeID,
+            lensID: selection.lensPresetID,
+            to: &authored
+        )
         environment.apply(to: &authored)
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
@@ -1960,6 +1983,7 @@ final class WorkspaceModel: ObservableObject {
             stage: .capture(.noise)
         )
         selectedCapturePresetID = capture.id
+        selectedCaptureRasterModeID = selection.captureRasterModeID
         selectedLensPresetID = selection.lensPresetID
         physicalAuthoringState = authored
         resolvedPhysicalPipeline = try authored.resolvedPipeline()

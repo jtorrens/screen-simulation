@@ -18,19 +18,26 @@ typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
 #define SCREEN_PHYSICAL_FRAME_ABI_VERSION 12u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
-#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 5u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 6u
 
 typedef struct {
     const uint8_t *bytes;
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 16u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 17u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
     SCREEN_TEST_CONTROL_SCALAR = 1,
 } ScreenTestControlKind;
+
+typedef struct {
+    ScreenUTF8View id;
+    ScreenUTF8View label;
+    uint32_t width;
+    uint32_t height;
+} ScreenCaptureRasterModeV1;
 
 typedef struct {
     uint32_t abi_version;
@@ -47,6 +54,7 @@ typedef struct {
     float panel_uniformity_amount;
     float panel_light_spread_amount;
     ScreenUTF8View capture_preset_id;
+    ScreenUTF8View capture_raster_mode_id;
     ScreenUTF8View geometry_mode_id;
     float camera_distance_meters;
     float camera_orbit_x_degrees;
@@ -91,7 +99,7 @@ typedef struct {
     ScreenUTF8View recording_output_transform_id;
     ScreenUTF8View recording_profile_id;
     float recording_character;
-} ScreenTestAuthoringSelectionV16;
+} ScreenTestAuthoringSelectionV17;
 
 typedef struct {
     uint32_t abi_version;
@@ -130,12 +138,12 @@ bool screen_test_authoring_default_selection(
     ScreenUTF8View input_transform_id,
     ScreenUTF8View device_id,
     float frame_rate,
-    ScreenTestAuthoringSelectionV16 *resolved,
+    ScreenTestAuthoringSelectionV17 *resolved,
     const char **error_message
 );
 
 ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
-    const ScreenTestAuthoringSelectionV16 *selection,
+    const ScreenTestAuthoringSelectionV17 *selection,
     const char **error_message
 );
 void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
@@ -187,24 +195,24 @@ bool screen_test_page_preview_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 bool screen_test_authoring_apply_choice(
-    const ScreenTestAuthoringSelectionV16 *selection,
+    const ScreenTestAuthoringSelectionV17 *selection,
     ScreenUTF8View control_id,
     ScreenUTF8View option_id,
-    ScreenTestAuthoringSelectionV16 *resolved,
+    ScreenTestAuthoringSelectionV17 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_scalar(
-    const ScreenTestAuthoringSelectionV16 *selection,
+    const ScreenTestAuthoringSelectionV17 *selection,
     ScreenUTF8View control_id,
     float value,
-    ScreenTestAuthoringSelectionV16 *resolved,
+    ScreenTestAuthoringSelectionV17 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_toggle(
-    const ScreenTestAuthoringSelectionV16 *selection,
+    const ScreenTestAuthoringSelectionV17 *selection,
     ScreenUTF8View control_id,
     bool value,
-    ScreenTestAuthoringSelectionV16 *resolved,
+    ScreenTestAuthoringSelectionV17 *resolved,
     const char **error_message
 );
 
@@ -559,7 +567,9 @@ typedef struct {
     uint16_t lens_association_policy;
     float default_readout_duration_milliseconds;
     ScreenCameraRadiometricCalibrationV2 radiometric_calibration;
-} ScreenCapturePresetParametersV2;
+    ScreenCaptureRasterModeV1 raster_modes[3];
+    ScreenUTF8View default_raster_mode_id;
+} ScreenCapturePresetParametersV3;
 
 typedef struct {
     uint32_t abi_version;
@@ -649,7 +659,7 @@ ScreenUTF8View screen_capture_preset_compatible_lens_id(
 );
 bool screen_capture_preset_parameters(
     size_t index,
-    ScreenCapturePresetParametersV2 *parameters
+    ScreenCapturePresetParametersV3 *parameters
 );
 size_t screen_lens_preset_count(void);
 ScreenUTF8View screen_lens_preset_id(size_t index);
