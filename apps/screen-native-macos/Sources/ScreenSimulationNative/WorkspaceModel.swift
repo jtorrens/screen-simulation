@@ -691,6 +691,7 @@ final class WorkspaceModel: ObservableObject {
         )
         cameraNavigationStartSelection = selection
         cameraNavigationLatestPose = nil
+        physicalModel.setQuality(.setup)
         cameraNavigationGesture = .init(
             operation: operation,
             startPose: .init(
@@ -759,9 +760,10 @@ final class WorkspaceModel: ObservableObject {
             pose.orientation.imag.z, pose.orientation.real,
         ]
         authored.cameraLookAt = nil
-        physicalAuthoringState = authored
-        physicalModel.setQuality(.setup)
-        publishSetupFraming(interactiveViewportSize: viewportSize)
+        publishSetupFraming(
+            interactiveViewportSize: viewportSize,
+            authoredOverride: authored
+        )
     }
 
     private func commitCameraNavigationPose(_ pose: CameraNavigationPose) {
@@ -2022,10 +2024,13 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func publishSetupFraming(interactiveViewportSize: CGSize? = nil) {
+    private func publishSetupFraming(
+        interactiveViewportSize: CGSize? = nil,
+        authoredOverride: PhysicalPipelineAuthoringState? = nil
+    ) {
         guard let sourceACEScgFrame,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = physicalAuthoringState
+              let authored = authoredOverride ?? physicalAuthoringState
         else { return }
         do {
             let started = CACurrentMediaTime()
@@ -2064,10 +2069,12 @@ final class WorkspaceModel: ObservableObject {
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
-            monitorOutput.update(frame: result.frame, display: metalDisplay)
-            let elapsedMilliseconds = (CACurrentMediaTime() - started) * 1_000
-            status = "Setup · encuadre ideal · \(width)×\(height) · \(elapsedMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
-            physicalPublicationSummary = "Setup · fuente + Device + cámara + Delivery Raster · publicado"
+            if interactiveViewportSize == nil {
+                monitorOutput.update(frame: result.frame, display: metalDisplay)
+                let elapsedMilliseconds = (CACurrentMediaTime() - started) * 1_000
+                status = "Setup · encuadre ideal · \(width)×\(height) · \(elapsedMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
+                physicalPublicationSummary = "Setup · fuente + Device + cámara + Delivery Raster · publicado"
+            }
         } catch {
             setupDeviceBoundary = []
             errorMessage = error.localizedDescription

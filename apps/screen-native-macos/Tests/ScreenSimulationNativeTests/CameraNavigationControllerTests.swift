@@ -49,6 +49,7 @@ private func navigationGesture(
     let farPose = CameraNavigationMath.pan(gesture: far, delta: drag)
     let nearDelta = nearPose.position.x - near.startPose.position.x
     let farDelta = farPose.position.x - far.startPose.position.x
+    #expect(nearDelta < 0)
     #expect(abs(farDelta / nearDelta - 10) < 1e-10)
     #expect(abs(nearDelta / 1 - farDelta / 10) < 1e-10)
 }
@@ -71,6 +72,7 @@ private func navigationGesture(
     #expect(horizontal.lockedAxis == .horizontal)
     #expect(abs(simd_length(horizontalPose.position) - 2) < 1e-10)
     #expect(abs(horizontalPose.position.y) < 1e-10)
+    #expect(horizontalPose.position.x < 0)
 
     var vertical = navigationGesture(distance: 2, operation: .orbit)
     let verticalPose = CameraNavigationMath.orbit(
@@ -79,6 +81,7 @@ private func navigationGesture(
     #expect(vertical.lockedAxis == .vertical)
     #expect(abs(simd_length(verticalPose.position) - 2) < 1e-10)
     #expect(abs(verticalPose.position.x) < 1e-10)
+    #expect(verticalPose.position.y > 0)
 }
 
 @Test func deviceGeometryExposesRigidWorldCornersWithoutMutation() {

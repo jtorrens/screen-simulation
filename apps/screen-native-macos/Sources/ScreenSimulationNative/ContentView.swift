@@ -1732,6 +1732,10 @@ struct MetalPreview: NSViewRepresentable {
         container.onCameraGestureChange = onCameraGestureChange
         container.onCameraGestureEnd = onCameraGestureEnd
         display.present(frame, output: output, in: container.metalView)
+        // AppKit may defer an MTKView's setNeedsDisplay while it is inside a
+        // mouse-tracking loop. Draw the newly published Setup texture now so
+        // the image and its CALayer boundary cannot visibly diverge.
+        container.metalView.draw()
     }
 
     @MainActor
@@ -1920,6 +1924,9 @@ final class MetalPreviewContainer: NSView {
         else if !flags.contains(.option), !flags.contains(.shift) { operation = .pan }
         else { return }
         cameraDragStart = convert(event.locationInWindow, from: nil)
+        metalView.enableSetNeedsDisplay = false
+        metalView.isPaused = false
+        metalView.preferredFramesPerSecond = 60
         onCameraGestureBegin?(operation, contentViewportSize())
         NSCursor.closedHand.push()
     }
@@ -1936,7 +1943,10 @@ final class MetalPreviewContainer: NSView {
     override func otherMouseUp(with event: NSEvent) {
         guard event.buttonNumber == 2, cameraDragStart != nil else { return }
         cameraDragStart = nil
+        metalView.isPaused = true
+        metalView.enableSetNeedsDisplay = true
         onCameraGestureEnd?()
+        metalView.draw()
         NSCursor.pop()
     }
 

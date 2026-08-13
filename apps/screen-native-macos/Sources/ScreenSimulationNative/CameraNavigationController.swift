@@ -61,8 +61,10 @@ enum CameraNavigationMath {
         let visibleHeight = 2 * opticalDepth * tan(gesture.verticalFovRadians * 0.5)
         let horizontalFov = 2 * atan(tan(gesture.verticalFovRadians * 0.5) * width / height)
         let visibleWidth = 2 * opticalDepth * tan(horizontalFov * 0.5)
-        let movement = right * (Double(delta.width) * visibleWidth / width)
-            + up * (Double(delta.height) * visibleHeight / height)
+        // Viewer navigation follows the projected Device under the cursor:
+        // moving the camera itself uses the opposite world-space direction.
+        let movement = right * (-Double(delta.width) * visibleWidth / width)
+            + up * (-Double(delta.height) * visibleHeight / height)
         return .init(
             position: gesture.startPose.position + movement,
             orientation: gesture.startPose.orientation
@@ -79,7 +81,7 @@ enum CameraNavigationMath {
         guard let axis = gesture.lockedAxis else { return gesture.startPose }
         let deviceAxis = axis == .horizontal ? gesture.geometry.up : gesture.geometry.right
         let pixels = axis == .horizontal ? Double(delta.width) : Double(delta.height)
-        let angle = pixels * orbitRadiansPerPixel
+        let angle = -pixels * orbitRadiansPerPixel
         let rotation = simd_quatd(angle: angle, axis: simd_normalize(deviceAxis))
         let offset = gesture.startPose.position - gesture.geometry.center
         return .init(
