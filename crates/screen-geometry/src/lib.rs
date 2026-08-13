@@ -1134,10 +1134,10 @@ pub fn vfx_rectangular_support_half_extent(
 pub const VFX_CARRIER_SENSOR_SCALE_X: f32 = 0.25;
 pub const VFX_CARRIER_SENSOR_SCALE_Y: f32 = 1.0;
 
-pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, _pupil_half_extent: Vec2) -> Vec2 {
+pub fn vfx_carrier_half_extent(sensor_half_extent: Vec2, pupil_half_extent: Vec2) -> Vec2 {
     Vec2 {
-        x: sensor_half_extent.x * VFX_CARRIER_SENSOR_SCALE_X,
-        y: sensor_half_extent.y * VFX_CARRIER_SENSOR_SCALE_Y,
+        x: sensor_half_extent.x * VFX_CARRIER_SENSOR_SCALE_X + pupil_half_extent.x,
+        y: sensor_half_extent.y * VFX_CARRIER_SENSOR_SCALE_Y + pupil_half_extent.y,
     }
 }
 
@@ -2110,15 +2110,17 @@ mod tests {
     }
 
     #[test]
-    fn vfx_carrier_core_prefilters_stripes_but_preserves_row_phase() {
+    fn vfx_carrier_core_prefilters_stripes_and_grows_with_defocus() {
         let sensor = Vec2 { x: 0.5, y: 0.25 };
         let pupil = Vec2 { x: 0.8, y: 0.4 };
         let carrier = vfx_carrier_half_extent(sensor, pupil);
-        assert_eq!(carrier, Vec2 { x: 0.125, y: 0.25 });
+        assert_eq!(carrier, Vec2 { x: 0.925, y: 0.65 });
         assert_eq!(
             vfx_carrier_half_extent(sensor, Vec2 { x: 0.0, y: 0.0 }),
-            carrier
+            Vec2 { x: 0.125, y: 0.25 }
         );
+        assert!(carrier.x > sensor.x * VFX_CARRIER_SENSOR_SCALE_X);
+        assert!(carrier.y > sensor.y * VFX_CARRIER_SENSOR_SCALE_Y);
     }
 
     #[test]
