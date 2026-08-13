@@ -2151,16 +2151,6 @@ final class WorkspaceModel: ObservableObject {
                     presentationFrame = frame
                 }
                 metalFrame = presentationFrame
-                if snapshot.returnedIntermediate == .cameraRenderedACEScg {
-                    recordingCameraCheckpoint = presentationFrame
-                    recordingOutputExecution = nil
-                    if selectedTestPreviewResult == .recordingOutput
-                        || selectedTestPreviewResult == .recordingCodec {
-                        publishRecordingPreview(result: selectedTestPreviewResult!)
-                        return
-                    }
-                }
-                monitorOutput.update(frame: presentationFrame, display: metalDisplay)
                 let duration = started.duration(to: .now)
                 let elapsed = Double(duration.components.seconds)
                     + Double(duration.components.attoseconds) / 1e18
@@ -2173,6 +2163,16 @@ final class WorkspaceModel: ObservableObject {
                 } else {
                     physicalModel.publishInteractive(snapshot, elapsedSeconds: elapsed)
                 }
+                if snapshot.returnedIntermediate == .cameraRenderedACEScg {
+                    recordingCameraCheckpoint = presentationFrame
+                    recordingOutputExecution = nil
+                    if selectedTestPreviewResult == .recordingOutput
+                        || selectedTestPreviewResult == .recordingCodec {
+                        publishRecordingPreview(result: selectedTestPreviewResult!)
+                        return
+                    }
+                }
+                monitorOutput.update(frame: presentationFrame, display: metalDisplay)
                 let diagnostic = snapshot.diagnostics
                     .filter { !$0.message.isEmpty }
                     .map(\.message)
