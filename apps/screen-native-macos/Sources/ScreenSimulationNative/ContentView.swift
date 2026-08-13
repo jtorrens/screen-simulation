@@ -1205,6 +1205,13 @@ struct ContentView: View {
             Button("Abrir", action: model.openMedia)
                 .disabled(page == .settings)
                 .help("Abrir un vídeo o una imagen")
+            Button {
+                model.importPhysicalSettings(undoManager: undoManager)
+            } label: {
+                Label("Recuperar ajustes", systemImage: "arrow.down.doc")
+            }
+            .disabled(page != .test)
+            .help("Recuperar desde un PNG guardado por SCREEN-SIMULATION los ajustes con los que se generó")
             Button("A cola", action: model.enqueueExport)
                 .disabled(page != .main || model.metalFrame == nil)
                 .help("Añadir la película o el rango completo a Render Queue")

@@ -14,6 +14,9 @@ struct ScreenSimulationNativeApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Abrir medio…", action: model.openMedia)
                     .keyboardShortcut("o")
+                Button("Recuperar ajustes desde PNG…") {
+                    model.importPhysicalSettings(undoManager: nil)
+                }
             }
             CommandMenu("Transporte") {
                 Button(model.isPlaying ? "Pausa" : "Reproducir", action: model.togglePlayback)
