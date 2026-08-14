@@ -237,6 +237,39 @@ import Testing
         return amount > 0.01 && amount < 0.99
             && simd_distance(pixel, reconstructed) < 0.002
     })
+
+    let alignedWidth = 200
+    let alignedHeight = 100
+    let alignedPixels = (0 ..< alignedHeight).flatMap { _ in
+        (0 ..< alignedWidth).flatMap { x in
+            [Float(x) / Float(alignedWidth - 1), Float(0.1), Float(0.2), Float(1)]
+        }
+    }
+    let aligned = try display.makeACEScgFrame(
+        width: alignedWidth, height: alignedHeight, encodedRGBA: alignedPixels,
+        input: input, alpha: .straight
+    )
+    let alignedComposite = try renderer.renderReferenceComposite(
+        cameraResult: aligned, reference: reference,
+        referencePlacement: .fit,
+        device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180, deliveryPlacementID: "fit",
+        deliveryAligned: true
+    )
+    let alignedSourceValues = try display.readLinearRGBA(aligned)
+    let alignedValues = try display.readLinearRGBA(alignedComposite.frame)
+    let fullyCovered = stride(from: 0, to: alignedValues.count, by: 4).first {
+        abs(alignedValues[$0 + 1] - alignedSourceValues[1]) < 0.005
+            && abs(alignedValues[$0 + 2] - alignedSourceValues[2]) < 0.005
+    }
+    let alignedOffset = try #require(fullyCovered)
+    let alignedX = (alignedOffset / 4) % 320
+    let sourceX = min(
+        alignedWidth - 1,
+        max(0, Int(((Float(alignedX) + 0.5) / 320 * Float(alignedWidth)).rounded(.down)))
+    )
+    let expectedRed = alignedSourceValues[sourceX * 4]
+    #expect(abs(alignedValues[alignedOffset] - expectedRed) < 0.02)
 }
 
 @Test @MainActor func setupFramingRecomputesDeliveryPlacementWithoutLosingTheBoundary() throws {

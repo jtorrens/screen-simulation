@@ -257,7 +257,8 @@ final class SetupFramingRenderer {
         pipeline authored: PhysicalPipelineAuthoringState,
         deliveryWidth: Int,
         deliveryHeight: Int,
-        deliveryPlacementID: String
+        deliveryPlacementID: String,
+        deliveryAligned: Bool = false
     ) throws -> Result {
         try render(
             source: cameraResult,
@@ -270,7 +271,7 @@ final class SetupFramingRenderer {
             deliveryHeight: deliveryHeight,
             deliveryPlacementID: deliveryPlacementID,
             deliveryBackgroundID: "black",
-            diagnosticMode: 4
+            diagnosticMode: deliveryAligned ? 5 : 4
         )
     }
 
@@ -728,22 +729,27 @@ final class SetupFramingRenderer {
         if (any(p >= s.preview_raster.xy)) return;
         float2 referenceUV;
         const bool hasReference = reference_uv(p, s, referenceUV);
-        const float4 background = (s.modes.w == 3u || s.modes.w == 4u)
+        const float4 background = (s.modes.w == 3u || s.modes.w == 4u || s.modes.w == 5u)
             ? (hasReference
                 ? reference.sample(linear_sampler, referenceUV)
                 : float4(0, 0, 0, 1))
             : (s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1));
         float2 camera;
         if (!camera_uv(p, s, camera)) { output.write(background, p); return; }
-        if (s.modes.w == 4u) {
+        if (s.modes.w == 4u || s.modes.w == 5u) {
             float2 panel;
             float unused_depth;
             float2 delivery;
             const bool center_valid = focus_screen_sample(camera, s, panel, unused_depth)
-                && delivery_uv(camera, s, delivery);
+                && (s.modes.w == 5u
+                    ? true
+                    : delivery_uv(camera, s, delivery));
             const float coverage = device_coverage(p, true, s);
             if (!center_valid || coverage == 0.0f) {
                 output.write(background, p); return;
+            }
+            if (s.modes.w == 5u) {
+                delivery = (float2(p) + 0.5f) / float2(s.preview_raster.xy);
             }
             float4 value = source.sample(linear_sampler, delivery);
             value.a = 1.0f;

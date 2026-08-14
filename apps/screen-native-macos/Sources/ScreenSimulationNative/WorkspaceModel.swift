@@ -285,6 +285,7 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceURL: URL?
     private var referenceACEScgFrame: StudioColorMetalFrame?
     private var referenceForegroundFrame: StudioColorMetalFrame?
+    private var referenceForegroundIsDeliveryAligned = false
     private var referenceSourceURL: URL?
     private var referenceInputTransformID: String?
     private var referenceSourceHash: String?
@@ -1811,6 +1812,7 @@ final class WorkspaceModel: ObservableObject {
         referenceRefreshTask = nil
         referenceACEScgFrame = nil
         referenceForegroundFrame = nil
+        referenceForegroundIsDeliveryAligned = false
         referenceSourceURL = nil
         referenceInputTransformID = nil
         referenceSourceHash = nil
@@ -1869,6 +1871,7 @@ final class WorkspaceModel: ObservableObject {
                 )
                 : try referenceSession.openImages([managed.url])
             referenceForegroundFrame = nil
+            referenceForegroundIsDeliveryAligned = false
             referenceSourceURL = managed.url
             referenceInputTransformID = referenceInputTransform.id
             referenceSourceHash = managed.sha256
@@ -2701,6 +2704,7 @@ final class WorkspaceModel: ObservableObject {
             case .none:
                 referenceACEScgFrame = nil
                 referenceForegroundFrame = nil
+                referenceForegroundIsDeliveryAligned = false
                 referenceSourceURL = nil
                 referenceInputTransformID = nil
                 referenceSourceHash = nil
@@ -2792,6 +2796,7 @@ final class WorkspaceModel: ObservableObject {
                 : try referenceSession.openImages([managed.url])
             try await rebuildReferenceFrame()
             referenceForegroundFrame = nil
+            referenceForegroundIsDeliveryAligned = false
             referenceFrameDetail = info.detail
             referenceTimelineInfo = isVideo
                 ? NativeVideoTimelineInfo(frameRate: info.frameRate, frameCount: info.frameCount)
@@ -3258,7 +3263,8 @@ final class WorkspaceModel: ObservableObject {
                 pipeline: authored,
                 deliveryWidth: delivery.width,
                 deliveryHeight: delivery.height,
-                deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
+                deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit",
+                deliveryAligned: referenceForegroundIsDeliveryAligned
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
@@ -4091,6 +4097,7 @@ final class WorkspaceModel: ObservableObject {
             }
             if result == .deliveryRaster {
                 referenceForegroundFrame = delivery
+                referenceForegroundIsDeliveryAligned = true
                 if referenceACEScgFrame != nil { publishReferenceComposite(delivery) }
                 else { metalFrame = delivery }
                 monitorOutput.update(frame: delivery, display: metalDisplay)
@@ -4124,6 +4131,7 @@ final class WorkspaceModel: ObservableObject {
                 recordingEncodedSHA256 = nil
             }
             referenceForegroundFrame = frame
+            referenceForegroundIsDeliveryAligned = true
             if referenceACEScgFrame != nil { publishReferenceComposite(frame) }
             else { metalFrame = frame }
             monitorOutput.update(frame: frame, display: metalDisplay)
@@ -4183,6 +4191,7 @@ final class WorkspaceModel: ObservableObject {
                     presentationFrame = frame
                 }
                 referenceForegroundFrame = presentationFrame
+                referenceForegroundIsDeliveryAligned = false
                 let duration = started.duration(to: .now)
                 let elapsed = Double(duration.components.seconds)
                     + Double(duration.components.attoseconds) / 1e18
