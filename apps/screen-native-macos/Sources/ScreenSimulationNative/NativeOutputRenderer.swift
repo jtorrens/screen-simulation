@@ -76,8 +76,16 @@ enum NativeOutputRenderer {
             if configuration.includeAudio, let audioSource {
                 try await muxAudio(
                     videoURL: writerURL, audioURL: audioSource,
-                    sourceStart: CMTime(seconds: Double(frameRange.lowerBound) / frameRate, preferredTimescale: 60_000),
-                    duration: CMTime(seconds: Double(frames.count) / frameRate, preferredTimescale: 60_000),
+                    sourceStart: CMTime(
+                        value: CMTimeValue(frameRange.lowerBound)
+                            * CMTimeValue(frameRate.denominator),
+                        timescale: CMTimeScale(frameRate.numerator)
+                    ),
+                    duration: CMTime(
+                        value: CMTimeValue(frames.count)
+                            * CMTimeValue(frameRate.denominator),
+                        timescale: CMTimeScale(frameRate.numerator)
+                    ),
                     outputURL: finalURL,
                     fileType: format.fileExtension == "mp4" ? .mp4 : .mov
                 )
@@ -347,7 +355,7 @@ private final class MovieWriter {
     private let writer: AVAssetWriter
     private let input: AVAssetWriterInput
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor
-    private let frameRate: Double
+    private let frameRate: StudioFrameRate
     private let format: StudioOutputFormat
     private let alpha: StudioColorAlphaAssociation
     private let signalRange: StudioSignalRange
@@ -355,7 +363,7 @@ private final class MovieWriter {
     private let usesTenBitYUV: Bool
 
     init(
-        url: URL, width: Int, height: Int, frameRate: Double,
+        url: URL, width: Int, height: Int, frameRate: StudioFrameRate,
         format: StudioOutputFormat, peakNits: Double,
         signalRange: StudioSignalRange,
         alpha: StudioColorAlphaAssociation,
@@ -381,7 +389,9 @@ private final class MovieWriter {
         }
         var compression: [String: Any] = [:]
         if let bpp = format.bitsPerPixelPerFrame {
-            compression[AVVideoAverageBitRateKey] = Int(Double(width * height) * frameRate * bpp)
+            compression[AVVideoAverageBitRateKey] = Int(
+                Double(width * height) * frameRate.framesPerSecond * bpp
+            )
         }
         if format == .proRes4444 || format == .proRes4444XQ {
             compression[kVTCompressionPropertyKey_AlphaChannelMode as String] = alpha == .premultiplied
@@ -408,6 +418,7 @@ private final class MovieWriter {
         }
         input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         input.expectsMediaDataInRealTime = false
+        input.mediaTimeScale = CMTimeScale(frameRate.numerator)
         let pixelFormat: OSType
         if format == .proRes4444 || format == .proRes4444XQ {
             pixelFormat = kCVPixelFormatType_64RGBAHalf
@@ -463,7 +474,10 @@ private final class MovieWriter {
         } else {
             try display.render(frame, output: output, into: buffer, alpha: alpha)
         }
-        let time = CMTime(seconds: Double(presentationFrame) / frameRate, preferredTimescale: 60_000)
+        let time = CMTime(
+            value: CMTimeValue(presentationFrame) * CMTimeValue(frameRate.denominator),
+            timescale: CMTimeScale(frameRate.numerator)
+        )
         guard adaptor.append(buffer, withPresentationTime: time) else {
             throw NativeOutputError.cannotAppend(presentationFrame)
         }

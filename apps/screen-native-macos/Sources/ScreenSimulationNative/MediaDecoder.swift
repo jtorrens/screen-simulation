@@ -12,43 +12,7 @@ struct DecodedNativeFrame: Sendable {
     let sourceDescription: String
 }
 
-struct ExactFrameRate: Codable, Equatable, Sendable {
-    private enum CodingKeys: String, CodingKey { case numerator, denominator }
-    static let fps24 = ExactFrameRate(validatedNumerator: 24, denominator: 1)
-    let numerator: UInt32
-    let denominator: UInt32
-
-    init(numerator: UInt32, denominator: UInt32) throws {
-        guard numerator > 0, denominator > 0 else {
-            throw NativeMediaError.invalidFrameRate
-        }
-        self.numerator = numerator
-        self.denominator = denominator
-    }
-
-    private init(validatedNumerator numerator: UInt32, denominator: UInt32) {
-        self.numerator = numerator
-        self.denominator = denominator
-    }
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        try self.init(
-            numerator: values.decode(UInt32.self, forKey: .numerator),
-            denominator: values.decode(UInt32.self, forKey: .denominator)
-        )
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(numerator, forKey: .numerator)
-        try values.encode(denominator, forKey: .denominator)
-    }
-
-    var framesPerSecond: Double {
-        Double(numerator) / Double(denominator)
-    }
-}
+typealias ExactFrameRate = StudioFrameRate
 
 struct NativeVideoTimelineInfo: Sendable, Equatable {
     let exactFrameRate: ExactFrameRate

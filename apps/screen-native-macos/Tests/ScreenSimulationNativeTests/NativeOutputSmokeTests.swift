@@ -128,7 +128,7 @@ import Testing
         #expect(result.detection.proposedInputTransformID == "display-rec709-gamma24-dcm")
         #expect(result.detection.hasAlpha)
         #expect(result.detection.alpha == (alpha == .straight ? .straight : .premultiplied))
-        #expect(result.frameRate == 24)
+        #expect(result.exactFrameRate == .fps24)
         #expect(result.frameCount == 3)
         #expect(result.maximumError <= 0.026, "ProRes \(alpha.rawValue) max \(result.maximumError)")
         #expect(result.rootMeanSquareError <= 0.003, "ProRes \(alpha.rawValue) RMSE \(result.rootMeanSquareError)")
@@ -145,7 +145,7 @@ import Testing
         #expect(!result.detection.hasAlpha)
         #expect(result.detection.matrix == .bt709)
         #expect(result.detection.range == range)
-        #expect(result.frameRate == 24)
+        #expect(result.exactFrameRate == .fps24)
         #expect(result.frameCount == 3)
         #expect(result.maximumError <= 0.20, "H.264 \(range.rawValue) max \(result.maximumError)")
         #expect(result.rootMeanSquareError <= 0.055,
@@ -155,6 +155,18 @@ import Testing
                 "H.264 \(range.rawValue) neutral/color-path RMSE \(result.neutralRootMeanSquareError)")
         print("H264 range=\(range.rawValue) max=\(result.maximumError) rmse=\(result.rootMeanSquareError) neutral_rmse=\(result.neutralRootMeanSquareError)")
     }
+}
+
+@Test @MainActor func movieOutputPreservesFractionalCadenceExactly() async throws {
+    let frameRate = try StudioFrameRate(numerator: 24_000, denominator: 1_001)
+    let result = try await movieRoundtrip(
+        format: .h264High,
+        alpha: .ignore,
+        signalRange: .video,
+        frameRate: frameRate
+    )
+    #expect(result.exactFrameRate == frameRate)
+    #expect(result.frameCount == 3)
 }
 
 @Test @MainActor func h265HDRWritesExplicitPQMatrixAndRange() async throws {
@@ -196,7 +208,7 @@ import Testing
 
 private struct MovieRoundtripResult {
     let detection: StudioMediaDetection
-    let frameRate: Double
+    let exactFrameRate: StudioFrameRate
     let frameCount: Int
     let maximumError: Float
     let rootMeanSquareError: Float
@@ -207,7 +219,8 @@ private struct MovieRoundtripResult {
 private func movieRoundtrip(
     format: StudioOutputFormat,
     alpha: StudioColorAlphaAssociation,
-    signalRange: StudioSignalRange? = nil
+    signalRange: StudioSignalRange? = nil,
+    frameRate: StudioFrameRate = .fps24
 ) async throws -> MovieRoundtripResult {
     let display = try StudioColorMetalDisplay()
     let width = 96
@@ -239,6 +252,7 @@ private func movieRoundtrip(
             signalRange: signalRange ?? (
                 format == .h264High || format == .proRes4444 ? .video : .full
             ),
+            frameRate: frameRate,
             frameRange: 0 ... 2
         ),
         destination: destination, audioSource: nil,
@@ -261,7 +275,10 @@ private func movieRoundtrip(
     var neutralSampleCount = 0
     var maximumError: Float = 0
     for frameIndex in 0 ..< 3 {
-        let time = CMTime(value: CMTimeValue(frameIndex), timescale: 24)
+        let time = CMTime(
+            value: CMTimeValue(frameIndex) * CMTimeValue(frameRate.denominator),
+            timescale: CMTimeScale(frameRate.numerator)
+        )
         let sample = try #require(try await session.exactSample(at: time))
         let decoded = try display.makeACEScgFrame(
             pixelBuffer: sample.pixelBuffer, input: inverse,
@@ -283,7 +300,7 @@ private func movieRoundtrip(
     }
     return MovieRoundtripResult(
         detection: detection,
-        frameRate: info.frameRate,
+        exactFrameRate: info.exactFrameRate,
         frameCount: info.frameCount,
         maximumError: maximumError,
         rootMeanSquareError: Float(sqrt(squaredError / Double(sampleCount))),
@@ -371,7 +388,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
         configuration: renderConfiguration(
             format: .proRes4444, preset: StudioRenderPreset.builtIns[0],
             alpha: alpha, signalRange: .video,
-            frameRate: sourceInfo.frameRate,
+            frameRate: sourceInfo.exactFrameRate,
             frameRange: 0 ... max(0, sourceInfo.frameCount - 1)
         ),
         destination: outputURL, audioSource: nil, display: display,
@@ -460,7 +477,7 @@ private func renderConfiguration(
     preset: StudioRenderPreset,
     alpha: StudioColorAlphaAssociation,
     signalRange: StudioSignalRange,
-    frameRate: Double = 24,
+    frameRate: StudioFrameRate = .fps24,
     frameRange: ClosedRange<Int>
 ) -> StudioResolvedRenderConfiguration {
     let alphaMode: StudioAlphaMode = switch alpha {

@@ -1,5 +1,6 @@
 import Metal
 import ScreenSimulationPresentation
+import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
 
@@ -109,7 +110,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
 
 @Test func exactFrameRateDecodingRejectsZeroDenominator() throws {
     let bytes = Data(#"{"numerator":24000,"denominator":0}"#.utf8)
-    #expect(throws: NativeMediaError.self) {
+    #expect(throws: StudioMediaContractError.self) {
         try JSONDecoder().decode(ExactFrameRate.self, from: bytes)
     }
 }

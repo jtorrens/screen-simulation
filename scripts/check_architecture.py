@@ -409,6 +409,15 @@ def validate_native_model_authority() -> None:
             f"Native media import silently authors metadata or defaults: {present}"
         )
 
+    output_contracts = (
+        ROOT / "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift"
+    ).read_text(encoding="utf-8")
+    if "public let frameRate: Double" in output_contracts:
+        raise ValidationError("Resolved output jobs transport frame rate as floating point")
+    for required in ("StudioFrameRate", "numerator", "denominator"):
+        if required not in output_contracts and required not in media_interpretation:
+            raise ValidationError(f"StudioMedia omits exact output cadence: {required}")
+
 
 def validate_phase_gated_workflow() -> None:
     rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")

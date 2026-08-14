@@ -3,6 +3,66 @@ import CoreMedia
 import Foundation
 import ImageIO
 
+public enum StudioMediaContractError: Error, LocalizedError, Sendable {
+    case invalidFrameRate
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidFrameRate: "La cadencia debe ser una fracción positiva exacta."
+        }
+    }
+}
+
+public struct StudioFrameRate: Codable, Equatable, Hashable, Sendable {
+    private enum CodingKeys: String, CodingKey { case numerator, denominator }
+    public static let fps24 = StudioFrameRate(validatedNumerator: 24, denominator: 1)
+    public let numerator: UInt32
+    public let denominator: UInt32
+
+    public init(numerator: UInt32, denominator: UInt32) throws {
+        guard numerator > 0,
+              numerator <= UInt32(Int32.max),
+              denominator > 0 else {
+            throw StudioMediaContractError.invalidFrameRate
+        }
+        let divisor = Self.greatestCommonDivisor(numerator, denominator)
+        self.numerator = numerator / divisor
+        self.denominator = denominator / divisor
+    }
+
+    private init(validatedNumerator numerator: UInt32, denominator: UInt32) {
+        self.numerator = numerator
+        self.denominator = denominator
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            numerator: values.decode(UInt32.self, forKey: .numerator),
+            denominator: values.decode(UInt32.self, forKey: .denominator)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(numerator, forKey: .numerator)
+        try values.encode(denominator, forKey: .denominator)
+    }
+
+    public var framesPerSecond: Double {
+        Double(numerator) / Double(denominator)
+    }
+
+    private static func greatestCommonDivisor(_ lhs: UInt32, _ rhs: UInt32) -> UInt32 {
+        var a = lhs
+        var b = rhs
+        while b != 0 {
+            (a, b) = (b, a % b)
+        }
+        return a
+    }
+}
+
 public enum StudioSignalMatrix: String, Codable, CaseIterable, Identifiable, Sendable {
     case bt601, bt709, bt2020
     public var id: String { rawValue }

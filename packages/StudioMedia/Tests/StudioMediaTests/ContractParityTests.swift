@@ -46,6 +46,7 @@ import Testing
 
 @Test func renderJobConfigurationIsAnEffectiveImmutableSnapshot() throws {
     var preset = StudioRenderPreset.builtIns[0]
+    let exactFrameRate = try StudioFrameRate(numerator: 24_000, denominator: 1_001)
     let configuration = StudioResolvedRenderConfiguration(
         format: .proRes4444,
         pipeline: preset.pipeline,
@@ -57,7 +58,7 @@ import Testing
         signalRange: .video,
         alpha: .straight,
         includeAudio: true,
-        frameRate: 24,
+        frameRate: exactFrameRate,
         firstFrame: 12,
         lastFrame: 47
     )
@@ -66,11 +67,25 @@ import Testing
     #expect(configuration.peakNits == 120)
     #expect(configuration.view == "ACES 2.0 - SDR 100 nits (Rec.709)")
     #expect(configuration.frameRange == 12 ... 47)
+    #expect(configuration.frameRate.numerator == 24_000)
+    #expect(configuration.frameRate.denominator == 1_001)
     let roundtrip = try JSONDecoder().decode(
         StudioResolvedRenderConfiguration.self,
         from: JSONEncoder().encode(configuration)
     )
     #expect(roundtrip == configuration)
+}
+
+@Test func frameRateRejectsValuesThatCannotBecomeExactMediaTimes() {
+    #expect(throws: StudioMediaContractError.self) {
+        try StudioFrameRate(numerator: 0, denominator: 1)
+    }
+    #expect(throws: StudioMediaContractError.self) {
+        try StudioFrameRate(numerator: 24_000, denominator: 0)
+    }
+    #expect(throws: StudioMediaContractError.self) {
+        try StudioFrameRate(numerator: UInt32(Int32.max) + 1, denominator: 1)
+    }
 }
 
 @Test func outputRangeSupportIsExplicitPerWriter() {

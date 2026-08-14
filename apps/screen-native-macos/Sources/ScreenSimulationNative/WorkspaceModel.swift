@@ -2398,6 +2398,11 @@ final class WorkspaceModel: ObservableObject {
         }
         guard let url else { return }
         let range = activeFrameRange
+        let exactFrameRate = ReferenceTimelineAuthority.resolve(
+            source: sourceTimelineInfo,
+            reference: referenceTimelineInfo,
+            referenceVisible: referenceControlsTimeline
+        ).exactFrameRate
         let configuration = StudioResolvedRenderConfiguration(
             format: outputFormat,
             pipeline: renderPreset.pipeline,
@@ -2409,7 +2414,7 @@ final class WorkspaceModel: ObservableObject {
             signalRange: outputSignalRange,
             alpha: outputFormat.supportsAlpha ? outputAlphaMode : .ignore,
             includeAudio: outputFormat.isMovie && includeAudio,
-            frameRate: frameRate,
+            frameRate: exactFrameRate,
             firstFrame: range.lowerBound,
             lastFrame: range.upperBound
         )

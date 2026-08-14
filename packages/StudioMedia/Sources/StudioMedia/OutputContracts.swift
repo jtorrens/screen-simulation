@@ -208,7 +208,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let signalRange: StudioSignalRange
     public let alpha: StudioAlphaMode
     public let includeAudio: Bool
-    public let frameRate: Double
+    public let frameRate: StudioFrameRate
     public let firstFrame: Int
     public let lastFrame: Int
 
@@ -223,7 +223,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         signalRange: StudioSignalRange,
         alpha: StudioAlphaMode,
         includeAudio: Bool,
-        frameRate: Double,
+        frameRate: StudioFrameRate,
         firstFrame: Int,
         lastFrame: Int
     ) {
