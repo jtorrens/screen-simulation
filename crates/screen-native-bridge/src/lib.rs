@@ -19,14 +19,15 @@ use screen_application::{
     CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, DeliveryRasterBackground,
     DeliveryRasterPlacement, DeliveryRasterRequest, PHYSICAL_STAGE_DESCRIPTORS,
     PhysicalIntermediate, PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot,
-    ProceduralTestPattern, RasterPlacement, ReflectionEmitter, ReflectionEnvironmentRig,
-    ReflectionLightAppearance, ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight,
-    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, RollingDirection,
-    SensorReadout, TestAuthoringError, TestAuthoringSelection, TestControlRequirement,
+    PhysicalStageControl, ProceduralTestPattern, RasterPlacement, ReflectionEmitter,
+    ReflectionEnvironmentRig, ReflectionLightAppearance, ReflectionPracticalLight,
+    ReflectionSunLight, ReflectionWindowLight, ResolvedSceneGeometryLensSnapshot,
+    ResolvedShutterMotionSnapshot, RollingDirection, SensorReadout, TestAuthoringError,
+    TestAuthoringSelection, TestControlRequirement,
     TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice, apply_test_scalar,
     apply_test_toggle, compile_reflection_environment, default_test_authoring_selection,
     diagnostic_signal, evaluate_delivery_raster_rgba32f, physical_shutter_schedule,
-    test_page_descriptor,
+    resolve_physical_stage_contributions, test_page_descriptor,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -977,71 +978,29 @@ fn intermediate(value: u32) -> Option<PhysicalIntermediate> {
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ResolvedContributionAmounts {
-    emission: f32,
-    subpixel_geometry: f32,
-    panel_uniformity: f32,
-    panel_light_spread: f32,
-    temporal_emission: f32,
-    scene_geometry: f32,
-    cover: f32,
-    environment: f32,
-    cover_glow: f32,
-    lens: f32,
-    shutter_motion: f32,
-    computational_capture: f32,
-    sensor_bloom: f32,
-    sensor_noise: f32,
-}
-
 fn contribution_amounts(
     contributions: &[ScreenPhysicalStageContributionV3],
-) -> Option<ResolvedContributionAmounts> {
+) -> Option<screen_application::ResolvedPhysicalStageContributions> {
     if contributions.len() != PHYSICAL_STAGE_DESCRIPTORS.len() {
         return None;
     }
-    for (index, contribution) in contributions.iter().enumerate() {
-        let descriptor = PHYSICAL_STAGE_DESCRIPTORS[index];
-        let discrete = descriptor.control_semantics as u32 == 1;
-        if contribution.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
-            || contribution.stage_id != descriptor.stage as u32
-        {
-            return None;
-        }
-        if discrete {
-            if contribution.amount != 0.0 {
+    let controls = contributions
+        .iter()
+        .zip(PHYSICAL_STAGE_DESCRIPTORS)
+        .map(|(contribution, descriptor)| {
+            if contribution.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
+                || contribution.stage_id != descriptor.stage as u32
+            {
                 return None;
             }
-        } else if !contribution.amount.is_finite()
-            || !(descriptor.visual_minimum..=descriptor.safe_maximum).contains(&contribution.amount)
-        {
-            return None;
-        }
-    }
-    if (contributions[12].amount != 0.0
-        || contributions[14].amount != 0.0
-        || contributions[15].discrete_enabled)
-        && !contributions[13].discrete_enabled
-    {
-        return None;
-    }
-    Some(ResolvedContributionAmounts {
-        emission: contributions[0].amount,
-        subpixel_geometry: contributions[1].amount,
-        panel_uniformity: contributions[2].amount,
-        panel_light_spread: contributions[3].amount,
-        temporal_emission: contributions[4].amount,
-        scene_geometry: contributions[5].amount,
-        cover: contributions[6].amount,
-        environment: contributions[7].amount,
-        cover_glow: contributions[8].amount,
-        lens: contributions[9].amount,
-        shutter_motion: contributions[10].amount,
-        computational_capture: contributions[11].amount,
-        sensor_bloom: contributions[12].amount,
-        sensor_noise: contributions[14].amount,
-    })
+            Some(PhysicalStageControl {
+                stage: descriptor.stage,
+                amount: contribution.amount,
+                enabled: contribution.discrete_enabled,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    resolve_physical_stage_contributions(&controls).ok()
 }
 
 fn diagnostic_snapshot(
@@ -1376,12 +1335,12 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         PhysicalIntermediate::SensorBloom
             | PhysicalIntermediate::SensorNoise
             | PhysicalIntermediate::RawMosaic
-    ) && !contributions[13].discrete_enabled
+    ) && !amounts.sensor_cfa_enabled
         || matches!(
             requested_intermediate,
             PhysicalIntermediate::DevelopedAcesCg | PhysicalIntermediate::CameraRenderedAcesCg
-        ) && contributions[13].discrete_enabled
-            && !contributions[15].discrete_enabled
+        ) && amounts.sensor_cfa_enabled
+            && !amounts.raw_develop_enabled
     {
         unsafe {
             set_error(
@@ -1525,10 +1484,10 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         computational_character_strength: amounts.computational_capture,
         sensor: pipeline.sensor,
         radiometric_calibration: pipeline.radiometric_calibration,
-        sensor_enabled: contributions[13].discrete_enabled,
+        sensor_enabled: amounts.sensor_cfa_enabled,
         sensor_noise_amount: amounts.sensor_noise,
         development: pipeline.development,
-        development_enabled: contributions[15].discrete_enabled,
+        development_enabled: amounts.raw_develop_enabled,
         rendering_intent: pipeline.rendering_intent,
         rendering_intent_enabled: requested_intermediate
             == PhysicalIntermediate::CameraRenderedAcesCg,
@@ -1670,9 +1629,9 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     }
     let capture_checkpoint = effective_capture_checkpoint(
         requested_intermediate,
-        contributions[13].discrete_enabled,
-        contributions[14].amount,
-        contributions[15].discrete_enabled,
+        amounts.sensor_cfa_enabled,
+        amounts.sensor_noise,
+        amounts.raw_develop_enabled,
     );
     let shared = Arc::new(PhysicalJobShared {
         outcome: Mutex::new(PhysicalJobOutcome::Rendering),
@@ -5033,9 +4992,8 @@ mod tests {
         };
         request.render_window_width = 2;
         let mut unsupported_error = std::ptr::null();
-        let unsupported_job = unsafe {
-            screen_physical_frame_submit(&request, &mut unsupported_error)
-        };
+        let unsupported_job =
+            unsafe { screen_physical_frame_submit(&request, &mut unsupported_error) };
         assert!(unsupported_job.is_null());
         assert!(
             unsafe { std::ffi::CStr::from_ptr(unsupported_error) }

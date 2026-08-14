@@ -238,6 +238,90 @@ pub struct PhysicalStageControl {
     pub enabled: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedPhysicalStageContributions {
+    pub emission: f32,
+    pub subpixel_geometry: f32,
+    pub panel_uniformity: f32,
+    pub panel_light_spread: f32,
+    pub temporal_emission: f32,
+    pub scene_geometry: f32,
+    pub cover: f32,
+    pub environment: f32,
+    pub cover_glow: f32,
+    pub lens: f32,
+    pub shutter_motion: f32,
+    pub computational_capture: f32,
+    pub sensor_bloom: f32,
+    pub sensor_cfa_enabled: bool,
+    pub sensor_noise: f32,
+    pub raw_develop_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicalStageContributionError {
+    WrongCount,
+    WrongOrder,
+    InvalidContinuousValue,
+    InvalidDiscreteValue,
+    CaptureStageRequiresSensorCfa,
+}
+
+pub fn resolve_physical_stage_contributions(
+    controls: &[PhysicalStageControl],
+) -> Result<ResolvedPhysicalStageContributions, PhysicalStageContributionError> {
+    if controls.len() != PHYSICAL_STAGE_DESCRIPTORS.len() {
+        return Err(PhysicalStageContributionError::WrongCount);
+    }
+    for (control, descriptor) in controls.iter().zip(PHYSICAL_STAGE_DESCRIPTORS) {
+        if control.stage != descriptor.stage {
+            return Err(PhysicalStageContributionError::WrongOrder);
+        }
+        match descriptor.control_semantics {
+            PhysicalStageControlSemantics::Continuous => {
+                if control.enabled
+                    || !control.amount.is_finite()
+                    || !(descriptor.visual_minimum..=descriptor.safe_maximum)
+                        .contains(&control.amount)
+                {
+                    return Err(PhysicalStageContributionError::InvalidContinuousValue);
+                }
+            }
+            PhysicalStageControlSemantics::Discrete => {
+                if control.amount != 0.0 {
+                    return Err(PhysicalStageContributionError::InvalidDiscreteValue);
+                }
+            }
+        }
+    }
+    let resolved = ResolvedPhysicalStageContributions {
+        emission: controls[0].amount,
+        subpixel_geometry: controls[1].amount,
+        panel_uniformity: controls[2].amount,
+        panel_light_spread: controls[3].amount,
+        temporal_emission: controls[4].amount,
+        scene_geometry: controls[5].amount,
+        cover: controls[6].amount,
+        environment: controls[7].amount,
+        cover_glow: controls[8].amount,
+        lens: controls[9].amount,
+        shutter_motion: controls[10].amount,
+        computational_capture: controls[11].amount,
+        sensor_bloom: controls[12].amount,
+        sensor_cfa_enabled: controls[13].enabled,
+        sensor_noise: controls[14].amount,
+        raw_develop_enabled: controls[15].enabled,
+    };
+    if (resolved.sensor_bloom != 0.0
+        || resolved.sensor_noise != 0.0
+        || resolved.raw_develop_enabled)
+        && !resolved.sensor_cfa_enabled
+    {
+        return Err(PhysicalStageContributionError::CaptureStageRequiresSensorCfa);
+    }
+    Ok(resolved)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceAcesCgRaster {
     pub width: u32,
@@ -373,6 +457,45 @@ pub struct PhysicalPipelineSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_stage_controls() -> Vec<PhysicalStageControl> {
+        PHYSICAL_STAGE_DESCRIPTORS
+            .iter()
+            .map(|descriptor| PhysicalStageControl {
+                stage: descriptor.stage,
+                amount: if descriptor.control_semantics == PhysicalStageControlSemantics::Continuous
+                {
+                    1.0
+                } else {
+                    0.0
+                },
+                enabled: descriptor.control_semantics == PhysicalStageControlSemantics::Discrete,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn application_alone_resolves_ordered_stage_contributions_and_dependencies() {
+        let controls = valid_stage_controls();
+        let resolved = resolve_physical_stage_contributions(&controls).expect("valid controls");
+        assert_eq!(resolved.panel_uniformity, 1.0);
+        assert!(resolved.sensor_cfa_enabled);
+        assert!(resolved.raw_develop_enabled);
+
+        let mut reordered = controls.clone();
+        reordered.swap(0, 1);
+        assert_eq!(
+            resolve_physical_stage_contributions(&reordered),
+            Err(PhysicalStageContributionError::WrongOrder)
+        );
+
+        let mut invalid_dependency = controls;
+        invalid_dependency[13].enabled = false;
+        assert_eq!(
+            resolve_physical_stage_contributions(&invalid_dependency),
+            Err(PhysicalStageContributionError::CaptureStageRequiresSensorCfa)
+        );
+    }
 
     fn resolved() -> ResolvedSceneGeometryLensSnapshot {
         ResolvedSceneGeometryLensSnapshot {

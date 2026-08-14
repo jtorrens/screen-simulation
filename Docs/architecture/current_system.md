@@ -131,7 +131,7 @@ screen-platform        replaceable OS, GPU, media and filesystem adapters
 screen-desktop         current composition root and Slint UI shell
 ```
 
-Domain packages expose narrow capabilities and do not depend on sibling implementation details. The exact allowed Rust package edges are executable in `architecture/domains.json`, and the exact Swift target edges are executable in `architecture/swift-domains.json`. Executable and host adapters are composition roots. `screen-desktop` and the native macOS host translate their boundaries into the same immutable Application requests; a later OFX adapter must do the same and cannot introduce another evaluator, domain semantics or UI types into the core.
+Domain packages expose narrow capabilities and do not depend on sibling implementation details. The exact allowed Rust package edges are executable in `architecture/domains.json`, and the exact Swift target edges are executable in `architecture/swift-domains.json`. Executable and host adapters are composition roots. `screen-desktop` and the native macOS host translate their boundaries into the same immutable Application requests; a later OFX adapter must do the same and cannot introduce another evaluator, domain semantics or UI types into the core. Application publishes and resolves the ordered physical contribution set by stable stage identity, control semantics and dependency; host bridges cannot index that array to rediscover named phase meaning.
 
 ## Current scope
 

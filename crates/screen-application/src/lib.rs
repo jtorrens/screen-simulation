@@ -9,9 +9,10 @@ mod test_authoring;
 
 pub use physical_pipeline::{
     PHYSICAL_STAGE_DESCRIPTORS, PHYSICAL_STAGE_ORDER, PhysicalDomain, PhysicalIntermediate,
-    PhysicalPipelineSnapshot, PhysicalStage, PhysicalStageControl, PhysicalStageControlSemantics,
-    PhysicalStageDescriptor, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
-    SourceAcesCgRaster,
+    PhysicalPipelineSnapshot, PhysicalStage, PhysicalStageContributionError, PhysicalStageControl,
+    PhysicalStageControlSemantics, PhysicalStageDescriptor, ResolvedPhysicalStageContributions,
+    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, SourceAcesCgRaster,
+    resolve_physical_stage_contributions,
 };
 pub use recording::{
     ConditionalRecordingControl, PreparedRecordingRequest, RecordingCharacterInterpretation,

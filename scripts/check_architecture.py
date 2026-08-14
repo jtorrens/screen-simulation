@@ -394,6 +394,32 @@ def validate_native_model_authority() -> None:
     if "pub struct PhysicalPipelineCpuResult {\n    pub acescg:" in application_pipeline:
         raise ValidationError("CPU physical publication relabels every artifact as ACEScg")
 
+    physical_pipeline_contract = (
+        ROOT / "crates/screen-application/src/physical_pipeline.rs"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "pub fn resolve_physical_stage_contributions(",
+        "pub struct ResolvedPhysicalStageContributions",
+    ):
+        if required not in physical_pipeline_contract:
+            raise ValidationError(
+                f"Application does not own physical contribution resolution: {required}"
+            )
+
+    native_bridge_product = (
+        ROOT / "crates/screen-native-bridge/src/lib.rs"
+    ).read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0]
+    for forbidden in (
+        "contributions[12]",
+        "contributions[13]",
+        "contributions[14]",
+        "contributions[15]",
+    ):
+        if forbidden in native_bridge_product:
+            raise ValidationError(
+                f"native bridge reinterprets physical stage order by index: {forbidden}"
+            )
+
     bridge = (ROOT / "crates/screen-native-bridge/src/lib.rs").read_text(encoding="utf-8")
     forbidden_bridge = (
         "EXPECTED_STAGE_IDS",
