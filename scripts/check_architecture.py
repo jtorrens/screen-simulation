@@ -355,6 +355,12 @@ def validate_native_model_authority() -> None:
         "raw: RawSensorRaster",
         "pub fn presentation_rgba(&self)",
         "pub artifact: PhysicalPipelineCpuArtifact",
+        "pub struct PhysicalRenderContext",
+        "pub window: PhysicalRenderWindow",
+        "pub scale_x: ExactPositiveRatio",
+        "pub scale_y: ExactPositiveRatio",
+        "pub pixel_aspect: ExactPositiveRatio",
+        "pub render_context: PhysicalRenderContext",
     ):
         if required not in application_pipeline:
             raise ValidationError(

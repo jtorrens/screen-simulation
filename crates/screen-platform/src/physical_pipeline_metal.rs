@@ -1823,6 +1823,11 @@ mod tests {
                             let cpu =
                                 evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
                                     input,
+                                    render_context:
+                                        screen_application::PhysicalRenderContext::full_frame(
+                                            plan.requested_width,
+                                            plan.requested_height,
+                                        ),
                                     plan,
                                 })
                                 .expect("CPU oracle");
@@ -1906,9 +1911,15 @@ mod tests {
                 .map(|value| [value.r, value.g, value.b, 1.0])
                 .collect::<Vec<_>>();
             let signal = texture(&device, input.width, input.height, &signal_values);
-            let cpu =
-                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-                    .expect("CPU oracle");
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input,
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    plan.requested_width,
+                    plan.requested_height,
+                ),
+                plan,
+            })
+            .expect("CPU oracle");
             let gpu = backend
                 .evaluate(&source, &signal, plan, |_| {}, || false)
                 .expect("Metal temporal result");
@@ -1964,6 +1975,10 @@ mod tests {
                     let signal = texture(&device, input.width, input.height, &signal_values);
                     let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
                         input,
+                        render_context: screen_application::PhysicalRenderContext::full_frame(
+                            plan.requested_width,
+                            plan.requested_height,
+                        ),
                         plan,
                     })
                     .expect("CPU cover oracle");
@@ -2011,9 +2026,15 @@ mod tests {
                 .map(|value| [value.r, value.g, value.b, 1.0])
                 .collect::<Vec<_>>();
             let signal = texture(&device, input.width, input.height, &signal_values);
-            let cpu =
-                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-                    .expect("CPU cover oracle");
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input,
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    plan.requested_width,
+                    plan.requested_height,
+                ),
+                plan,
+            })
+            .expect("CPU cover oracle");
             let gpu = backend
                 .evaluate(&source, &signal, plan, |_| {}, || false)
                 .expect("Metal cover result");
@@ -2075,8 +2096,15 @@ mod tests {
             .map(|value| [value.r, value.g, value.b, 1.0])
             .collect::<Vec<_>>();
         let signal = texture(&device, input.width, input.height, &signal_values);
-        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-            .expect("CPU tiled cover oracle");
+        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+            input,
+            render_context: screen_application::PhysicalRenderContext::full_frame(
+                plan.requested_width,
+                plan.requested_height,
+            ),
+            plan,
+        })
+        .expect("CPU tiled cover oracle");
         let gpu = backend
             .evaluate(&source, &signal, plan, |_| {}, || false)
             .expect("Metal tiled cover result");
@@ -2137,9 +2165,15 @@ mod tests {
                     .map(|value| [value.r, value.g, value.b, 1.0])
                     .collect::<Vec<_>>();
                 let signal = texture(&device, input.width, input.height, &signal_values);
-                let cpu =
-                    evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-                        .expect("CPU uniformity oracle");
+                let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                    input,
+                    render_context: screen_application::PhysicalRenderContext::full_frame(
+                        plan.requested_width,
+                        plan.requested_height,
+                    ),
+                    plan,
+                })
+                .expect("CPU uniformity oracle");
                 let gpu = backend
                     .evaluate(&source, &signal, plan, |_| {}, || false)
                     .expect("Metal uniformity result");
@@ -2219,9 +2253,15 @@ mod tests {
                 .map(|value| [value.r, value.g, value.b, 1.0])
                 .collect::<Vec<_>>();
             let signal = texture(&device, input.width, input.height, &signal_values);
-            let cpu =
-                evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-                    .expect("CPU image-environment oracle");
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input,
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    plan.requested_width,
+                    plan.requested_height,
+                ),
+                plan,
+            })
+            .expect("CPU image-environment oracle");
             let gpu = backend
                 .evaluate_with_environment(
                     &source,
@@ -2296,9 +2336,15 @@ mod tests {
                     .map(|value| [value.r, value.g, value.b, 1.0])
                     .collect::<Vec<_>>();
                 let signal = texture(&device, input.width, input.height, &signal_values);
-                let cpu =
-                    evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-                        .expect("CPU scene oracle");
+                let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                    input,
+                    render_context: screen_application::PhysicalRenderContext::full_frame(
+                        plan.requested_width,
+                        plan.requested_height,
+                    ),
+                    plan,
+                })
+                .expect("CPU scene oracle");
                 let gpu = backend
                     .evaluate(&source, &signal, plan, |_| {}, || false)
                     .expect("Metal scene result");
@@ -2344,8 +2390,15 @@ mod tests {
             .map(|value| [value.r, value.g, value.b, 1.0])
             .collect::<Vec<_>>();
         let signal = half_texture(&device, input.width, input.height, &signal_values);
-        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest { input, plan })
-            .expect("CPU oracle");
+        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+            input,
+            render_context: screen_application::PhysicalRenderContext::full_frame(
+                plan.requested_width,
+                plan.requested_height,
+            ),
+            plan,
+        })
+        .expect("CPU oracle");
         let gpu = backend
             .evaluate(&source, &signal, plan, |_| {}, || false)
             .expect("Metal result");
@@ -2466,6 +2519,10 @@ mod tests {
             let signal = texture(&device, input.width, input.height, &signal_values);
             let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
                 input: input.clone(),
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    plan.requested_width,
+                    plan.requested_height,
+                ),
                 plan,
             })
             .expect("CPU sensor oracle");
@@ -2691,6 +2748,10 @@ mod tests {
             let signal = texture(&device, input.width, input.height, &signal_values);
             let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
                 input: input.clone(),
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    plan.requested_width,
+                    plan.requested_height,
+                ),
                 plan,
             })
             .expect("CPU developed oracle");
@@ -2748,6 +2809,10 @@ mod tests {
         let signal = texture(&device, input.width, input.height, &signal_values);
         let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
             input: input.clone(),
+            render_context: screen_application::PhysicalRenderContext::full_frame(
+                plan.requested_width,
+                plan.requested_height,
+            ),
             plan,
         })
         .expect("CPU camera-rendered oracle");

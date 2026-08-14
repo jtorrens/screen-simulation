@@ -32,6 +32,7 @@ fn request(
             environment_acescg: None,
             acescg,
         },
+        render_context: screen_application::PhysicalRenderContext::full_frame(6, 3),
         plan: PhysicalPipelineExecutionPlan {
             panel,
             panel_uniformity: screen_panel::PanelUniformityProfile {
@@ -93,6 +94,46 @@ fn request(
             requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
         },
     }
+}
+
+#[test]
+fn physical_render_context_is_explicit_and_current_capabilities_fail_closed() {
+    let full = request(FlatPanelQuality::Draft, 1.0, 1.0, 1.0);
+    evaluate_physical_pipeline_cpu_oracle(full).expect("full-frame square-pixel request");
+
+    let mut tiled = request(FlatPanelQuality::Draft, 1.0, 1.0, 1.0);
+    tiled.render_context.window.width = 3;
+    assert_eq!(
+        evaluate_physical_pipeline_cpu_oracle(tiled),
+        Err(screen_application::ApplicationError::UnsupportedRenderContext)
+    );
+
+    let mut scaled = request(FlatPanelQuality::Draft, 1.0, 1.0, 1.0);
+    scaled.render_context.scale_x = screen_application::ExactPositiveRatio {
+        numerator: 1,
+        denominator: 2,
+    };
+    assert_eq!(
+        evaluate_physical_pipeline_cpu_oracle(scaled),
+        Err(screen_application::ApplicationError::UnsupportedRenderContext)
+    );
+
+    let mut anamorphic = request(FlatPanelQuality::Draft, 1.0, 1.0, 1.0);
+    anamorphic.render_context.pixel_aspect = screen_application::ExactPositiveRatio {
+        numerator: 2,
+        denominator: 1,
+    };
+    assert_eq!(
+        evaluate_physical_pipeline_cpu_oracle(anamorphic),
+        Err(screen_application::ApplicationError::UnsupportedRenderContext)
+    );
+
+    let mut malformed = request(FlatPanelQuality::Draft, 1.0, 1.0, 1.0);
+    malformed.render_context.scale_y.denominator = 0;
+    assert_eq!(
+        evaluate_physical_pipeline_cpu_oracle(malformed),
+        Err(screen_application::ApplicationError::InvalidRenderContext)
+    );
 }
 
 #[test]

@@ -740,7 +740,116 @@ pub struct EnvironmentRadianceRaster {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhysicalPipelineRequest {
     pub input: PhysicalPipelineInput,
+    pub render_context: PhysicalRenderContext,
     pub plan: PhysicalPipelineExecutionPlan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExactPositiveRatio {
+    pub numerator: u32,
+    pub denominator: u32,
+}
+
+impl ExactPositiveRatio {
+    pub const ONE: Self = Self {
+        numerator: 1,
+        denominator: 1,
+    };
+
+    pub const fn new(numerator: u32, denominator: u32) -> Option<Self> {
+        if numerator == 0 || denominator == 0 {
+            None
+        } else {
+            Some(Self {
+                numerator,
+                denominator,
+            })
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysicalRenderWindow {
+    pub origin_x: u32,
+    pub origin_y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysicalRenderContext {
+    pub full_width: u32,
+    pub full_height: u32,
+    pub window: PhysicalRenderWindow,
+    pub scale_x: ExactPositiveRatio,
+    pub scale_y: ExactPositiveRatio,
+    pub pixel_aspect: ExactPositiveRatio,
+}
+
+impl PhysicalRenderContext {
+    pub const fn full_frame(width: u32, height: u32) -> Self {
+        Self {
+            full_width: width,
+            full_height: height,
+            window: PhysicalRenderWindow {
+                origin_x: 0,
+                origin_y: 0,
+                width,
+                height,
+            },
+            scale_x: ExactPositiveRatio::ONE,
+            scale_y: ExactPositiveRatio::ONE,
+            pixel_aspect: ExactPositiveRatio::ONE,
+        }
+    }
+
+    fn validate_for_current_evaluator(
+        self,
+        requested_width: u32,
+        requested_height: u32,
+    ) -> Result<(), ApplicationError> {
+        let window_end_x = self
+            .window
+            .origin_x
+            .checked_add(self.window.width)
+            .ok_or(ApplicationError::InvalidRenderContext)?;
+        let window_end_y = self
+            .window
+            .origin_y
+            .checked_add(self.window.height)
+            .ok_or(ApplicationError::InvalidRenderContext)?;
+        if self.full_width == 0
+            || self.full_height == 0
+            || self.window.width == 0
+            || self.window.height == 0
+            || self.scale_x.numerator == 0
+            || self.scale_x.denominator == 0
+            || self.scale_y.numerator == 0
+            || self.scale_y.denominator == 0
+            || self.pixel_aspect.numerator == 0
+            || self.pixel_aspect.denominator == 0
+            || window_end_x > self.full_width
+            || window_end_y > self.full_height
+        {
+            return Err(ApplicationError::InvalidRenderContext);
+        }
+        if self.full_width != requested_width
+            || self.full_height != requested_height
+            || self.window
+                != (PhysicalRenderWindow {
+                    origin_x: 0,
+                    origin_y: 0,
+                    width: self.full_width,
+                    height: self.full_height,
+                })
+            || self.scale_x != ExactPositiveRatio::ONE
+            || self.scale_y != ExactPositiveRatio::ONE
+            || self.pixel_aspect != ExactPositiveRatio::ONE
+        {
+            return Err(ApplicationError::UnsupportedRenderContext);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1625,6 +1734,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     request: PhysicalPipelineRequest,
 ) -> Result<PhysicalPipelineCpuResult, ApplicationError> {
     request.input.validate()?;
+    request.render_context.validate_for_current_evaluator(
+        request.plan.requested_width,
+        request.plan.requested_height,
+    )?;
     let plan = request.plan.stopped_at_requested_intermediate();
     plan.environment
         .validate()
@@ -6769,6 +6882,8 @@ fn diagnostic_area_signal(
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApplicationError {
     InvalidDeliveryRaster,
+    InvalidRenderContext,
+    UnsupportedRenderContext,
     InvalidViewportAspect,
     InvalidCharacterStrength,
     UnsupportedPhysicalIntermediate,
@@ -6887,6 +7002,12 @@ impl fmt::Display for ApplicationError {
         match self {
             Self::InvalidDeliveryRaster => formatter.write_str(
                 "delivery raster requires finite RGBA and positive source/output dimensions",
+            ),
+            Self::InvalidRenderContext => formatter.write_str(
+                "render context requires a positive bounded window and positive exact ratios",
+            ),
+            Self::UnsupportedRenderContext => formatter.write_str(
+                "the current physical evaluator supports only a full-frame window, unit render scale, and square pixels",
             ),
             Self::InvalidViewportAspect => formatter.write_str("viewport aspect must be positive"),
             Self::InvalidCharacterStrength => formatter.write_str(
@@ -8606,6 +8727,7 @@ mod tests {
                 },
                 environment_acescg: None,
             },
+            render_context: PhysicalRenderContext::full_frame(4, 2),
             plan: PhysicalPipelineExecutionPlan {
                 panel,
                 panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
@@ -8787,6 +8909,7 @@ mod tests {
         request.plan.panel = panel;
         request.plan.requested_width = 8;
         request.plan.requested_height = 8;
+        request.render_context = PhysicalRenderContext::full_frame(8, 8);
         request.plan.subpixel_geometry_amount = 0.0;
         request.plan.panel_light_spread.character_strength = 0.0;
         request.plan.temporal_emission_amount = 0.0;

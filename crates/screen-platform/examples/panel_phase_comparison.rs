@@ -220,6 +220,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
             input: input.clone(),
+            render_context: screen_application::PhysicalRenderContext::full_frame(
+                anterior_plan.requested_width,
+                anterior_plan.requested_height,
+            ),
             plan: anterior_plan,
         })?;
         let pixels = cpu
