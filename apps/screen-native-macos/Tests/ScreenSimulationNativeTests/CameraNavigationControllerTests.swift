@@ -121,6 +121,19 @@ import Testing
     }
 }
 
+@Test @MainActor func initialReferenceTargetsAlwaysRemainInsideTheVisibleRaster() {
+    for size in [(32, 18), (1_920, 1_080), (5_712, 4_284)] {
+        let targets = WorkspaceModel.initialReferenceMatchTargets(
+            width: size.0, height: size.1
+        )
+        #expect(targets.count == 4)
+        #expect(targets.allSatisfy {
+            $0.x >= -0.5 && $0.x < CGFloat(size.0) - 0.5
+                && $0.y >= -0.5 && $0.y < CGFloat(size.1) - 0.5
+        })
+    }
+}
+
 @Test @MainActor func workspaceNavigationPublishesSetupWithoutPresentationFailure() throws {
     let workspace = WorkspaceModel()
     let device = try #require(try RustDeviceCatalog.builtIns().first)

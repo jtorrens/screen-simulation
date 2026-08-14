@@ -960,7 +960,7 @@ final class WorkspaceModel: ObservableObject {
         ]
         authored.cameraLookAt = nil
         if referenceACEScgFrame != nil {
-            publishReferenceMatchSetup(resetTargetsFromProjection: false, authoredOverride: authored)
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false, authoredOverride: authored)
         } else if cameraNavigationPreviewQuality == .focusSetup {
             publishFocusSetup(
                 interactiveViewportSize: viewportSize,
@@ -1548,9 +1548,12 @@ final class WorkspaceModel: ObservableObject {
         applyTimelineAuthority(resetRange: true)
         if enabled {
             physicalModel.setQuality(.setup)
-            publishReferenceMatchSetup(resetTargetsFromProjection: referenceMatchCorners.count != 4)
+            publishReferenceMatchSetup(
+                resetTargetsToVisibleFrame: referenceMatchCorners.count != 4
+                    || referenceMatchPinnedIndices.isEmpty
+            )
         } else {
-            publishReferenceMatchSetup(resetTargetsFromProjection: false)
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
         }
     }
 
@@ -1586,7 +1589,7 @@ final class WorkspaceModel: ObservableObject {
             referenceMatchEnabled = true
             applyTimelineAuthority(resetRange: true)
             physicalModel.setQuality(.setup)
-            publishReferenceMatchSetup(resetTargetsFromProjection: true)
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: true)
             status = "Referencia · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
         } catch {
             errorMessage = error.localizedDescription
@@ -1594,22 +1597,21 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func toggleReferenceMatchTarget(_ index: Int) {
-        guard referenceMatchEnabled, referenceMatchProjectedCorners.indices.contains(index)
+        guard referenceMatchEnabled, referenceMatchCorners.indices.contains(index)
         else { return }
         if referenceMatchPinnedIndices.contains(index) {
             referenceMatchPinnedIndices.remove(index)
         } else {
-            if referenceMatchCorners.count != 4 {
-                referenceMatchCorners = referenceMatchProjectedCorners
-            }
-            referenceMatchCorners[index] = referenceMatchProjectedCorners[index]
             referenceMatchPinnedIndices.insert(index)
         }
         referenceMatchErrorPixels = nil
     }
 
     func clearReferenceMatchTargets() {
-        referenceMatchCorners = referenceMatchProjectedCorners
+        guard let reference = referenceACEScgFrame else { return }
+        referenceMatchCorners = Self.initialReferenceMatchTargets(
+            width: reference.width, height: reference.height
+        )
         referenceMatchPinnedIndices = []
         referenceMatchErrorPixels = nil
         status = "Match referencia · objetivos borrados"
@@ -2368,7 +2370,7 @@ final class WorkspaceModel: ObservableObject {
             referenceTimelineInfo = timeline
             applyTimelineAuthority(resetRange: true)
             publishReferenceMatchSetup(
-                resetTargetsFromProjection: !keepAuthoredCorners || referenceMatchCorners.count != 4
+                resetTargetsToVisibleFrame: !keepAuthoredCorners || referenceMatchCorners.count != 4
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -2467,7 +2469,7 @@ final class WorkspaceModel: ObservableObject {
                     encodedRGBA: decoded.rgba, input: input, alpha: .ignore
                 )
                 if self.referenceMatchEnabled || self.physicalModel.quality == .setup {
-                    self.publishReferenceMatchSetup(resetTargetsFromProjection: false)
+                    self.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
                 } else if let foreground = self.referenceForegroundFrame {
                     self.publishReferenceComposite(foreground)
                 }
@@ -2626,14 +2628,14 @@ final class WorkspaceModel: ObservableObject {
         if referenceMatchEnabled, referenceACEScgFrame != nil {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
-            publishReferenceMatchSetup(resetTargetsFromProjection: referenceMatchCorners.count != 4)
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: referenceMatchCorners.count != 4)
             return
         }
         if physicalModel.quality == .setup {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
             if referenceACEScgFrame != nil {
-                publishReferenceMatchSetup(resetTargetsFromProjection: referenceMatchCorners.count != 4)
+                publishReferenceMatchSetup(resetTargetsToVisibleFrame: referenceMatchCorners.count != 4)
             } else {
                 publishSetupFraming()
             }
@@ -2742,7 +2744,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func publishReferenceMatchSetup(
-        resetTargetsFromProjection: Bool,
+        resetTargetsToVisibleFrame: Bool,
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
         guard let reference = referenceACEScgFrame,
@@ -2763,8 +2765,10 @@ final class WorkspaceModel: ObservableObject {
                 deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
             )
             referenceMatchProjectedCorners = result.corners
-            if resetTargetsFromProjection {
-                referenceMatchCorners = result.corners
+            if resetTargetsToVisibleFrame {
+                referenceMatchCorners = Self.initialReferenceMatchTargets(
+                    width: reference.width, height: reference.height
+                )
                 referenceMatchPinnedIndices = []
             }
             setupDeviceBoundary = result.boundary
@@ -2844,7 +2848,7 @@ final class WorkspaceModel: ObservableObject {
             commitCameraNavigationPose(solved.pose)
             cameraNavigationStartSelection = nil
             referenceMatchErrorPixels = solved.maximumErrorPixels
-            publishReferenceMatchSetup(resetTargetsFromProjection: false)
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
             status = "Match referencia · cámara resuelta · error máximo \(solved.maximumErrorPixels.formatted(.number.precision(.fractionLength(1)))) px"
             if priorSelection != testAuthoringSelection {
                 let manager = UndoManagerBox(undoManager)
@@ -2853,7 +2857,7 @@ final class WorkspaceModel: ObservableObject {
                         try? target.restoreCameraNavigationSelection(
                             priorSelection, undoManager: manager.value
                         )
-                        target.publishReferenceMatchSetup(resetTargetsFromProjection: false)
+                        target.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
                     }
                 }
                 undoManager?.setActionName("Resolver cámara con referencia")
@@ -2862,6 +2866,19 @@ final class WorkspaceModel: ObservableObject {
             referenceMatchErrorPixels = nil
             status = error.localizedDescription
         }
+    }
+
+    static func initialReferenceMatchTargets(width: Int, height: Int) -> [CGPoint] {
+        let insetX = max(16.0, Double(width) * 0.08)
+        let insetY = max(16.0, Double(height) * 0.08)
+        let left = min(Double(width) * 0.5 - 1, insetX)
+        let right = max(Double(width) * 0.5, Double(width) - insetX - 1)
+        let top = min(Double(height) * 0.5 - 1, insetY)
+        let bottom = max(Double(height) * 0.5, Double(height) - insetY - 1)
+        return [
+            CGPoint(x: left, y: top), CGPoint(x: right, y: top),
+            CGPoint(x: right, y: bottom), CGPoint(x: left, y: bottom),
+        ]
     }
 
     private func resolvedFourPointReferencePose() throws -> (

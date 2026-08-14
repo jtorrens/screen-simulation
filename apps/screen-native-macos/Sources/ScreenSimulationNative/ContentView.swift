@@ -1911,6 +1911,7 @@ final class MetalPreviewContainer: NSView {
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
     private let referenceProjectionLayer = CAShapeLayer()
+    private let referenceAvailableTargetLayer = CAShapeLayer()
     private let referenceTargetLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
         let layer = CATextLayer()
@@ -1965,6 +1966,11 @@ final class MetalPreviewContainer: NSView {
         referenceProjectionLayer.lineWidth = 1.5
         referenceProjectionLayer.zPosition = 120
         layer?.addSublayer(referenceProjectionLayer)
+        referenceAvailableTargetLayer.fillColor = NSColor.systemYellow.cgColor
+        referenceAvailableTargetLayer.strokeColor = NSColor.black.cgColor
+        referenceAvailableTargetLayer.lineWidth = 1
+        referenceAvailableTargetLayer.zPosition = 121
+        layer?.addSublayer(referenceAvailableTargetLayer)
         referenceTargetLayer.fillColor = NSColor.systemGreen.cgColor
         referenceTargetLayer.strokeColor = NSColor.black.cgColor
         referenceTargetLayer.lineWidth = 1
@@ -2351,26 +2357,30 @@ final class MetalPreviewContainer: NSView {
             projectedHandles.addLine(to: CGPoint(x: displayedPoint.x - 7, y: displayedPoint.y + 7))
         }
         let targetHandles = CGMutablePath()
-        for index in referencePinnedIndices.sorted() where referenceTargetCorners.indices.contains(index) {
+        let availableHandles = CGMutablePath()
+        for index in referenceTargetCorners.indices {
             let displayedPoint = displayedPoint(forRaster: referenceTargetCorners[index])
-            targetHandles.addEllipse(in: CGRect(
+            let path = referencePinnedIndices.contains(index) ? targetHandles : availableHandles
+            path.addEllipse(in: CGRect(
                 x: displayedPoint.x - 6, y: displayedPoint.y - 6, width: 12, height: 12
             ))
         }
         referenceProjectionLayer.frame = bounds
         referenceProjectionLayer.path = projectedHandles
+        referenceAvailableTargetLayer.frame = bounds
+        referenceAvailableTargetLayer.path = availableHandles
         referenceTargetLayer.frame = bounds
         referenceTargetLayer.path = targetHandles
         for (index, label) in referenceLabels.enumerated() {
-            let isPinned = referencePinnedIndices.contains(index)
-            let points = isPinned ? referenceTargetCorners : referenceProjectedCorners
-            guard points.indices.contains(index) else {
+            guard referenceTargetCorners.indices.contains(index) else {
                 label.isHidden = true
                 continue
             }
+            let isPinned = referencePinnedIndices.contains(index)
             label.isHidden = false
-            label.foregroundColor = isPinned ? NSColor.systemGreen.cgColor : NSColor.systemRed.cgColor
-            let point = displayedPoint(forRaster: points[index])
+            label.foregroundColor = isPinned
+                ? NSColor.systemGreen.cgColor : NSColor.systemYellow.cgColor
+            let point = displayedPoint(forRaster: referenceTargetCorners[index])
             label.frame = CGRect(x: point.x - 14, y: point.y + 8, width: 28, height: 14)
         }
         metadataLabel.frame = NSRect(
@@ -2427,20 +2437,14 @@ final class MetalPreviewContainer: NSView {
     }
 
     private func nearestReferenceCorner(to point: CGPoint) -> Int? {
-        referenceProjectedCorners.indices.min(by: {
-            let left = referencePinnedIndices.contains($0)
-                ? referenceTargetCorners[$0] : referenceProjectedCorners[$0]
-            let right = referencePinnedIndices.contains($1)
-                ? referenceTargetCorners[$1] : referenceProjectedCorners[$1]
-            return hypot(displayedPoint(forRaster: left).x - point.x,
-                         displayedPoint(forRaster: left).y - point.y)
-                < hypot(displayedPoint(forRaster: right).x - point.x,
-                        displayedPoint(forRaster: right).y - point.y)
+        referenceTargetCorners.indices.min(by: {
+            hypot(displayedPoint(forRaster: referenceTargetCorners[$0]).x - point.x,
+                  displayedPoint(forRaster: referenceTargetCorners[$0]).y - point.y)
+                < hypot(displayedPoint(forRaster: referenceTargetCorners[$1]).x - point.x,
+                        displayedPoint(forRaster: referenceTargetCorners[$1]).y - point.y)
         }).flatMap { index in
-            let corner = referencePinnedIndices.contains(index)
-                ? referenceTargetCorners[index] : referenceProjectedCorners[index]
-            return hypot(displayedPoint(forRaster: corner).x - point.x,
-                         displayedPoint(forRaster: corner).y - point.y) <= 12
+            return hypot(displayedPoint(forRaster: referenceTargetCorners[index]).x - point.x,
+                         displayedPoint(forRaster: referenceTargetCorners[index]).y - point.y) <= 12
                 ? index : nil
         }
     }
