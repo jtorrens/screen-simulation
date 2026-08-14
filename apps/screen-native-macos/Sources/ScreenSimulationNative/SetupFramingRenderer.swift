@@ -37,6 +37,7 @@ final class SetupFramingRenderer {
         var raster: SIMD4<UInt32>
         var previewRaster: SIMD4<UInt32>
         var sourceDevice: SIMD4<UInt32>
+        var referenceRaster: SIMD4<UInt32>
         var modes: SIMD4<UInt32>
         var environment: SIMD4<Float>
         var lensRadialTangential: SIMD4<Float>
@@ -72,6 +73,7 @@ final class SetupFramingRenderer {
         source: StudioColorMetalFrame,
         reference: StudioColorMetalFrame? = nil,
         sourcePlacement: WorkspaceModel.SourcePlacement,
+        referencePlacement: WorkspaceModel.SourcePlacement,
         device: DeviceDefinition,
         pipeline authored: PhysicalPipelineAuthoringState,
         deliveryWidth: Int,
@@ -150,6 +152,11 @@ final class SetupFramingRenderer {
                 UInt32(source.width), UInt32(source.height),
                 UInt32(device.nativeWidth), UInt32(device.nativeHeight)
             ),
+            referenceRaster: SIMD4(
+                UInt32(reference?.width ?? source.width),
+                UInt32(reference?.height ?? source.height),
+                Self.sourcePlacement(referencePlacement), 0
+            ),
             modes: SIMD4(
                 Self.sourcePlacement(sourcePlacement),
                 deliveryPlacement,
@@ -216,8 +223,11 @@ final class SetupFramingRenderer {
         source: StudioColorMetalFrame,
         reference: StudioColorMetalFrame,
         sourcePlacement: WorkspaceModel.SourcePlacement,
+        referencePlacement: WorkspaceModel.SourcePlacement,
         device: DeviceDefinition,
         pipeline authored: PhysicalPipelineAuthoringState,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
         deliveryPlacementID: String,
         previewWidth: Int? = nil,
         previewHeight: Int? = nil
@@ -226,10 +236,11 @@ final class SetupFramingRenderer {
             source: source,
             reference: reference,
             sourcePlacement: sourcePlacement,
+            referencePlacement: referencePlacement,
             device: device,
             pipeline: authored,
-            deliveryWidth: reference.width,
-            deliveryHeight: reference.height,
+            deliveryWidth: deliveryWidth,
+            deliveryHeight: deliveryHeight,
             deliveryPlacementID: deliveryPlacementID,
             deliveryBackgroundID: "black",
             previewWidth: previewWidth,
@@ -241,18 +252,22 @@ final class SetupFramingRenderer {
     func renderReferenceComposite(
         cameraResult: StudioColorMetalFrame,
         reference: StudioColorMetalFrame,
+        referencePlacement: WorkspaceModel.SourcePlacement,
         device: DeviceDefinition,
         pipeline authored: PhysicalPipelineAuthoringState,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
         deliveryPlacementID: String
     ) throws -> Result {
         try render(
             source: cameraResult,
             reference: reference,
             sourcePlacement: .stretch,
+            referencePlacement: referencePlacement,
             device: device,
             pipeline: authored,
-            deliveryWidth: reference.width,
-            deliveryHeight: reference.height,
+            deliveryWidth: deliveryWidth,
+            deliveryHeight: deliveryHeight,
             deliveryPlacementID: deliveryPlacementID,
             deliveryBackgroundID: "black",
             diagnosticMode: 4
@@ -273,6 +288,7 @@ final class SetupFramingRenderer {
         try render(
             source: environment,
             sourcePlacement: .stretch,
+            referencePlacement: .stretch,
             device: device,
             pipeline: authored,
             deliveryWidth: deliveryWidth,
@@ -298,6 +314,7 @@ final class SetupFramingRenderer {
     ) throws -> Result {
         try render(
             source: source, sourcePlacement: .stretch,
+            referencePlacement: .stretch,
             device: device, pipeline: authored,
             deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
             deliveryPlacementID: deliveryPlacementID,
@@ -431,6 +448,7 @@ final class SetupFramingRenderer {
         uint4 raster;
         uint4 preview_raster;
         uint4 source_device;
+        uint4 reference_raster;
         uint4 modes;
         float4 environment;
         float4 lens_radial_tangential;
@@ -645,6 +663,29 @@ final class SetupFramingRenderer {
         return (device_uv - 0.5f) * scale + 0.5f;
     }
 
+    inline bool reference_uv(
+        uint2 p, constant SetupParameters& s, thread float2& uv
+    ) {
+        const float2 output_size = float2(s.raster.xy);
+        const float2 reference_size = float2(s.reference_raster.xy);
+        const float2 output_pixel = (float2(p) + 0.5f)
+            * output_size / float2(s.preview_raster.xy) - 0.5f;
+        const uint placement = s.reference_raster.z;
+        if (placement == 2u) {
+            uv = (output_pixel + 0.5f) / output_size;
+            return true;
+        }
+        const float scale = placement == 0u
+            ? min(output_size.x / reference_size.x, output_size.y / reference_size.y)
+            : (placement == 1u
+                ? max(output_size.x / reference_size.x, output_size.y / reference_size.y)
+                : 1.0f);
+        const float2 offset = (output_size - reference_size * scale) * 0.5f;
+        const float2 reference_pixel = (output_pixel - offset) / scale;
+        uv = (reference_pixel + 0.5f) / reference_size;
+        return all(uv >= 0.0f) && all(uv <= 1.0f);
+    }
+
     kernel void setup_framing(
         texture2d<float, access::sample> source [[texture(0)]],
         texture2d<float, access::write> output [[texture(1)]],
@@ -654,9 +695,12 @@ final class SetupFramingRenderer {
         uint2 p [[thread_position_in_grid]]
     ) {
         if (any(p >= s.preview_raster.xy)) return;
-        const float2 previewUV = (float2(p) + 0.5f) / float2(s.preview_raster.xy);
+        float2 referenceUV;
+        const bool hasReference = reference_uv(p, s, referenceUV);
         const float4 background = (s.modes.w == 3u || s.modes.w == 4u)
-            ? reference.sample(linear_sampler, previewUV)
+            ? (hasReference
+                ? reference.sample(linear_sampler, referenceUV)
+                : float4(0, 0, 0, 1))
             : (s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1));
         float2 camera;
         if (!camera_uv(p, s, camera)) { output.write(background, p); return; }

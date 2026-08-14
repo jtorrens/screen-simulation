@@ -1231,6 +1231,9 @@ struct ContentView: View {
                 TestPhaseCard(label: "Origen") {
                     originAuthoringControls
                 }
+                TestPhaseCard(label: "Referencia") {
+                    referenceAuthoringControls
+                }
                 if let presentation = model.testPresentation {
                     TestAuthoringView(
                         state: presentation,
@@ -1395,6 +1398,123 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var referenceAuthoringControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                originRow("Medio") {
+                    Text(model.referenceFrameName ?? "Sin referencia").lineLimit(1)
+                }
+                if let detail = model.referenceFrameDetail {
+                    originRow("Detalle") { Text(detail).lineLimit(2) }
+                }
+                originRow("") {
+                    HStack {
+                        Button("Seleccionar imagen o vídeo…", action: model.browseReferenceFrame)
+                        if model.referenceFrameName != nil {
+                            Button("Quitar", role: .destructive) {
+                                referenceMatchPanel.hide(model: model)
+                                model.removeReferenceFrame()
+                            }
+                        }
+                    }
+                }
+            }
+            if model.referenceFrameName != nil {
+                Divider()
+                Text("Interpretación de entrada")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    originRow("Input Transform") {
+                        Picker("Input Transform", selection: Binding(
+                            get: { model.referenceInputTransform },
+                            set: { model.changeReferenceInput($0, undoManager: undoManager) }
+                        )) {
+                            ForEach(StudioColorInputTransform.catalog) { value in
+                                Text(value.label).tag(value)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                    originRow("Alpha") {
+                        Picker("Alpha", selection: Binding(
+                            get: { model.referenceAlphaMode },
+                            set: { model.changeReferenceAlpha($0) }
+                        )) {
+                            ForEach(StudioAlphaMode.allCases) { value in
+                                Text(value.label).tag(value)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                    originRow("Modelo de señal") {
+                        Text(model.referenceSignalColorModel.label)
+                    }
+                    originRow("Matriz YUV") {
+                        Picker("Matriz YUV", selection: Binding(
+                            get: { model.referenceSignalMatrix },
+                            set: { model.changeReferenceMatrix($0) }
+                        )) {
+                            ForEach(StudioSignalMatrix.allCases) { value in
+                                Text(value.label).tag(value)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                    originRow("Rango señal") {
+                        Picker("Rango señal", selection: Binding(
+                            get: { model.referenceSignalRange },
+                            set: { model.changeReferenceRange($0) }
+                        )) {
+                            ForEach(StudioSignalRange.allCases) { value in
+                                Text(value.label).tag(value)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                }
+                Divider()
+                Text("Working space")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    originRow("Espacio") { Text("ACEScg lineal") }
+                    originRow("Alpha") { Text("Premultiplicado") }
+                    originRow("Rango") { Text("Negativos y >1 preservados") }
+                }
+                Divider()
+                Text("Colocación en Raster de entrega")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    originRow("Escalado") {
+                        Picker("Escalado", selection: Binding(
+                            get: { model.referencePlacement },
+                            set: { model.changeReferencePlacement($0) }
+                        )) {
+                            ForEach(WorkspaceModel.SourcePlacement.allCases) { value in
+                                Text(value.rawValue).tag(value)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                    originRow("Match") {
+                        Button {
+                            referenceMatchPanel.toggle(model: model, undoManager: undoManager)
+                        } label: {
+                            Label(
+                                referenceMatchPanel.isVisible ? "Ocultar Match" : "Abrir Match",
+                                systemImage: referenceMatchPanel.isVisible
+                                    ? "viewfinder.circle.fill" : "viewfinder.circle"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func interpretationLabel(_ label: String, annotation: String?) -> Text {
         Text(label + (annotation.map { " · \($0)" } ?? ""))
             .fontWeight(annotation == nil ? .regular : .semibold)
@@ -1528,33 +1648,6 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
-                Button {
-                    model.browseReferenceFrame()
-                } label: {
-                    Label("Referencia…", systemImage: "photo.on.rectangle")
-                }
-                .help("Cargar una imagen o película detrás del Device")
-                if let referenceName = model.referenceFrameName {
-                    Text(referenceName)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: 130)
-                        .help(referenceName)
-                    Button {
-                        referenceMatchPanel.toggle(model: model, undoManager: undoManager)
-                    } label: {
-                        Label("Match", systemImage: referenceMatchPanel.isVisible
-                            ? "viewfinder.circle.fill" : "viewfinder.circle")
-                    }
-                    .help(referenceMatchPanel.isVisible
-                        ? "Ocultar controles de Match"
-                        : "Mostrar controles de Match")
-                    Button {
-                        referenceMatchPanel.hide(model: model)
-                        model.removeReferenceFrame()
-                    } label: { Image(systemName: "xmark.circle") }
-                    .help("Quitar referencia")
-                }
                 Button {
                     model.monitorOutput.toggle(
                         frame: model.metalFrame,

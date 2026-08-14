@@ -90,6 +90,7 @@ import Testing
     let renderer = try SetupFramingRenderer(device: source.texture.device)
     let result = try renderer.render(
         source: source, sourcePlacement: WorkspaceModel.SourcePlacement.stretch,
+        referencePlacement: .stretch,
         device: device, pipeline: authored,
         deliveryWidth: 320, deliveryHeight: 180,
         deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
@@ -117,12 +118,12 @@ import Testing
     let sourcePixel: [Float] = [0.8, 0.1, 0.1, 1]
     let referencePixel: [Float] = [0.05, 0.2, 0.05, 1]
     let sourcePixels = Array(repeating: sourcePixel, count: 16 * 9).flatMap { $0 }
-    let referencePixels = Array(repeating: referencePixel, count: 320 * 180).flatMap { $0 }
+    let referencePixels = Array(repeating: referencePixel, count: 160 * 180).flatMap { $0 }
     let source = try display.makeACEScgFrame(
         width: 16, height: 9, encodedRGBA: sourcePixels, input: input, alpha: .straight
     )
     let reference = try display.makeACEScgFrame(
-        width: 320, height: 180, encodedRGBA: referencePixels, input: input, alpha: .straight
+        width: 160, height: 180, encodedRGBA: referencePixels, input: input, alpha: .straight
     )
     let device = try #require(try RustDeviceCatalog.builtIns().first { $0.name.contains("ASUS ProArt") })
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
@@ -143,7 +144,9 @@ import Testing
     let renderer = try SetupFramingRenderer(device: source.texture.device)
     let result = try renderer.renderReferenceMatch(
         source: source, reference: reference, sourcePlacement: .stretch,
-        device: device, pipeline: authored, deliveryPlacementID: "fit"
+        referencePlacement: .fit,
+        device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180, deliveryPlacementID: "fit"
     )
     #expect(result.frame.width == 320)
     #expect(result.frame.height == 180)
@@ -155,7 +158,7 @@ import Testing
     let movingTarget = CGPoint(x: result.corners[1].x - 18, y: result.corners[1].y + 9)
     let gate = try ReferenceMatchRasterMapping.cameraGateCorners(
         [anchorTarget, movingTarget],
-        referenceWidth: reference.width, referenceHeight: reference.height,
+        referenceWidth: 320, referenceHeight: 180,
         cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
         deliveryPlacementID: "fit"
     )
@@ -191,7 +194,9 @@ import Testing
                                       moved.orientation.imag.z, moved.orientation.real]
     let movedResult = try renderer.renderReferenceMatch(
         source: source, reference: reference, sourcePlacement: .stretch,
-        device: device, pipeline: authored, deliveryPlacementID: "fit"
+        referencePlacement: .fit,
+        device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180, deliveryPlacementID: "fit"
     )
     #expect(hypot(movedResult.corners[0].x - anchorTarget.x,
                   movedResult.corners[0].y - anchorTarget.y) < 0.01)
@@ -207,7 +212,9 @@ import Testing
     )
     let composite = try renderer.renderReferenceComposite(
         cameraResult: cameraResult, reference: reference,
-        device: device, pipeline: authored, deliveryPlacementID: "fit"
+        referencePlacement: .fit,
+        device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180, deliveryPlacementID: "fit"
     )
     let compositeValues = try display.readLinearRGBA(composite.frame)
     let referenceValues = try display.readLinearRGBA(reference)
@@ -217,10 +224,11 @@ import Testing
     }
     let referenceColor = SIMD3(referenceValues[0], referenceValues[1], referenceValues[2])
     let cameraColor = SIMD3(cameraValues[0], cameraValues[1], cameraValues[2])
-    #expect(composite.frame.width == reference.width)
-    #expect(composite.frame.height == reference.height)
+    #expect(composite.frame.width == 320)
+    #expect(composite.frame.height == 180)
     #expect(compositePixels.contains { simd_distance($0, referenceColor) < 0.001 })
     #expect(compositePixels.contains { simd_distance($0, cameraColor) < 0.001 })
+    #expect(compositePixels.contains { simd_length($0) < 0.001 })
 }
 
 @Test @MainActor func setupFramingRecomputesDeliveryPlacementWithoutLosingTheBoundary() throws {
@@ -252,18 +260,21 @@ import Testing
     let renderer = try SetupFramingRenderer(device: source.texture.device)
     let fit = try renderer.render(
         source: source, sourcePlacement: .stretch,
+        referencePlacement: .stretch,
         device: device, pipeline: authored,
         deliveryWidth: 320, deliveryHeight: 240,
         deliveryPlacementID: "fit", deliveryBackgroundID: "black"
     )
     let oneToOne = try renderer.render(
         source: source, sourcePlacement: .stretch,
+        referencePlacement: .stretch,
         device: device, pipeline: authored,
         deliveryWidth: 320, deliveryHeight: 240,
         deliveryPlacementID: "one-to-one", deliveryBackgroundID: "black"
     )
     let interactive = try renderer.render(
         source: source, sourcePlacement: .stretch,
+        referencePlacement: .stretch,
         device: device, pipeline: authored,
         deliveryWidth: 320, deliveryHeight: 240,
         deliveryPlacementID: "fit", deliveryBackgroundID: "black",

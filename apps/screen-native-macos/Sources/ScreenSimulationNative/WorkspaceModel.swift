@@ -199,7 +199,16 @@ final class WorkspaceModel: ObservableObject {
     @Published var metalFrame: StudioColorMetalFrame?
     @Published private(set) var setupDeviceBoundary: [CGPoint] = []
     @Published private(set) var referenceFrameName: String?
-    /// Authored 2D targets in reference-raster pixels. They are independent of
+    @Published private(set) var referenceFrameDetail: String?
+    @Published private(set) var referenceInputTransform = StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    }!
+    @Published private(set) var referenceAlphaMode = StudioAlphaMode.ignore
+    @Published private(set) var referenceSignalColorModel = StudioSignalColorModel.rgb
+    @Published private(set) var referenceSignalMatrix = StudioSignalMatrix.bt709
+    @Published private(set) var referenceSignalRange = StudioSignalRange.full
+    @Published private(set) var referencePlacement = SourcePlacement.fit
+    /// Authored 2D targets in Delivery-Raster pixels. They are independent of
     /// the current rigid projection and therefore never move during a solve.
     @Published private(set) var referenceMatchCorners: [CGPoint] = []
     @Published private(set) var referenceMatchProjectedCorners: [CGPoint] = []
@@ -274,12 +283,14 @@ final class WorkspaceModel: ObservableObject {
     private var referenceSourceURL: URL?
     private var referenceInputTransformID: String?
     private var referenceSourceHash: String?
+    private var referenceDetection = SyntheticPattern.animatedCheckerboard.sourceDetection
     private var sourceTimelineInfo = NativeVideoTimelineInfo(frameRate: 24, frameCount: 1)
     private var referenceTimelineInfo: NativeVideoTimelineInfo?
     private var referencePlaybackStartedAt: CFTimeInterval?
     private var referencePlaybackStartFrame = 0
     private var referenceMatchStartSelection: TestAuthoringResolvedSelection?
     private var referenceRefreshTask: Task<Void, Never>?
+    private let referenceSession = NativeMediaSession()
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
     private var cameraNavigationLatestPose: CameraNavigationPose?
@@ -1378,6 +1389,29 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    private var referenceEffectiveAlpha: StudioColorAlphaAssociation {
+        switch referenceAlphaMode {
+        case .straight: .straight
+        case .premultiplied: .premultiplied
+        case .ignore: .ignore
+        }
+    }
+
+    private var referenceEffectiveMatrix: StudioColorSignalMatrix {
+        switch referenceSignalMatrix {
+        case .bt601: .bt601
+        case .bt2020: .bt2020
+        case .bt709: .bt709
+        }
+    }
+
+    private var referenceEffectiveRange: StudioColorSignalRange {
+        switch referenceSignalRange {
+        case .full: .full
+        case .video: .video
+        }
+    }
+
     var activeFrameRange: ClosedRange<Int> {
         renderRange == .inOut ? min(inFrame, outFrame) ... max(inFrame, outFrame) : 0 ... max(0, frameCount - 1)
     }
@@ -1503,26 +1537,8 @@ final class WorkspaceModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.movie, .image]
         panel.message = "Selecciona la imagen o película usada como referencia de encuadre."
-        let inputs = StudioColorInputTransform.catalog
-        let inputPicker = NSPopUpButton()
-        for input in inputs {
-            inputPicker.addItem(withTitle: input.label)
-            inputPicker.lastItem?.representedObject = input.id
-        }
-        inputPicker.selectItem(at: inputs.firstIndex { $0.id == "srgb-encoded-rec709" } ?? 0)
-        let accessory = NSStackView(views: [
-            NSTextField(labelWithString: "Input Transform de la referencia"), inputPicker,
-        ])
-        accessory.orientation = .vertical
-        accessory.alignment = .leading
-        accessory.spacing = 6
-        panel.accessoryView = accessory
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let inputID = inputPicker.selectedItem?.representedObject as? String else {
-            errorMessage = "La referencia necesita un Input Transform explícito."
-            return
-        }
-        Task { await loadReferenceFrame(url, inputTransformID: inputID) }
+        Task { await loadReferenceFrame(url) }
     }
 
     func removeReferenceFrame() {
@@ -1535,6 +1551,8 @@ final class WorkspaceModel: ObservableObject {
         referenceSourceHash = nil
         referenceTimelineInfo = nil
         referenceFrameName = nil
+        referenceFrameDetail = nil
+        referencePlacement = .fit
         referenceMatchCorners = []
         referenceMatchProjectedCorners = []
         referenceMatchErrorPixels = nil
@@ -1557,46 +1575,99 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func loadReferenceFrame(_ url: URL, inputTransformID: String) async {
+    private func loadReferenceFrame(_ url: URL) async {
         do {
             let managed = try ReferenceAssetLibrary.importAsset(from: url)
-            let timeline = try await NativeMediaDecoder.videoTimelineInfo(url: managed.url)
-            let decoded = try await NativeMediaDecoder.decode(
-                url: managed.url,
-                time: CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
+            let isVideo = Self.isVideo(managed.url)
+            referenceDetection = await StudioMediaMetadataDetector.detect(
+                url: managed.url, isVideo: isVideo
             )
+            let defaultInputID = isVideo
+                ? "display-rec709-gamma24-dcm" : "srgb-encoded-rec709"
+            let resolvedInputID = referenceDetection.proposedInputTransformID ?? defaultInputID
             guard let input = StudioColorInputTransform.catalog.first(where: {
-                $0.id == inputTransformID
+                $0.id == resolvedInputID
             }) else { throw NativeMediaError.invalidRaster }
-            let frame = try metalDisplay.makeACEScgFrame(
-                width: decoded.width,
-                height: decoded.height,
-                encodedRGBA: decoded.rgba,
-                input: input,
-                alpha: .ignore
-            )
-            referenceACEScgFrame = frame
+            referenceInputTransform = input
+            referenceAlphaMode = referenceDetection.alpha
+                ?? (referenceDetection.hasAlpha ? .straight : .ignore)
+            referenceSignalMatrix = referenceDetection.matrix ?? .bt709
+            referenceSignalRange = referenceDetection.range ?? (isVideo ? .video : .full)
+            referenceSignalColorModel = referenceDetection.colorModel ?? .rgb
+            referencePlacement = .fit
+            let info = isVideo
+                ? try await referenceSession.openVideo(
+                    managed.url,
+                    hasAlpha: referenceDetection.hasAlpha,
+                    colorModel: referenceSignalColorModel,
+                    decodedRange: referenceSignalRange
+                )
+                : try referenceSession.openImages([managed.url])
             referenceForegroundFrame = nil
             referenceSourceURL = managed.url
-            referenceInputTransformID = input.id
+            referenceInputTransformID = referenceInputTransform.id
             referenceSourceHash = managed.sha256
-            referenceTimelineInfo = timeline
+            referenceTimelineInfo = isVideo
+                ? NativeVideoTimelineInfo(frameRate: info.frameRate, frameCount: info.frameCount)
+                : nil
             referenceFrameName = managed.originalFileName
+            referenceFrameDetail = info.detail
             referenceMatchCorners = []
             referenceMatchProjectedCorners = []
             referenceMatchErrorPixels = nil
             applyTimelineAuthority(resetRange: true)
+            try await rebuildReferenceFrame()
             publishReferenceMatchSetup(resetTargetsToVisibleFrame: true)
-            status = "Referencia · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
+            status = "Referencia · \(managed.originalFileName) · \(info.detail) · \(input.label)"
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
+    func changeReferenceInput(
+        _ value: StudioColorInputTransform, undoManager: UndoManager?
+    ) {
+        let prior = referenceInputTransform
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in target.changeReferenceInput(prior, undoManager: nil) }
+        }
+        referenceInputTransform = value
+        referenceInputTransformID = value.id
+        refreshReferenceInterpretation()
+    }
+
+    func changeReferenceAlpha(_ value: StudioAlphaMode) {
+        referenceAlphaMode = value
+        refreshReferenceInterpretation()
+    }
+
+    func changeReferenceMatrix(_ value: StudioSignalMatrix) {
+        referenceSignalMatrix = value
+        refreshReferenceInterpretation()
+    }
+
+    func changeReferenceRange(_ value: StudioSignalRange) {
+        referenceSignalRange = value
+        refreshReferenceInterpretation()
+    }
+
+    func changeReferencePlacement(_ value: SourcePlacement) {
+        referencePlacement = value
+        publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+    }
+
+    private func refreshReferenceInterpretation() {
+        Task {
+            do { try await rebuildReferenceFrameAndPublish() }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
     func clearReferenceMatchTargets() {
-        guard let reference = referenceACEScgFrame else { return }
+        guard referenceACEScgFrame != nil else { return }
+        let size = referenceDeliveryRasterSize
         referenceMatchCorners = Self.initialReferenceMatchTargets(
-            width: reference.width, height: reference.height
+            width: size.width, height: size.height
         )
         referenceMatchErrorPixels = nil
         status = "Match referencia · objetivos reiniciados"
@@ -1611,11 +1682,12 @@ final class WorkspaceModel: ObservableObject {
     func updateReferenceCorner(_ index: Int, to point: CGPoint) {
         guard referenceMatchEnabled,
               referenceMatchCorners.indices.contains(index),
-              let reference = referenceACEScgFrame
+              referenceACEScgFrame != nil
         else { return }
+        let size = referenceDeliveryRasterSize
         referenceMatchCorners[index] = CGPoint(
-            x: min(CGFloat(reference.width) - 0.5, max(-0.5, point.x)),
-            y: min(CGFloat(reference.height) - 0.5, max(-0.5, point.y))
+            x: min(CGFloat(size.width) - 0.5, max(-0.5, point.x)),
+            y: min(CGFloat(size.height) - 0.5, max(-0.5, point.y))
         )
         referenceMatchErrorPixels = nil
         status = "Match referencia · objetivo \(["TL", "TR", "BR", "BL"][index])"
@@ -2234,6 +2306,12 @@ final class WorkspaceModel: ObservableObject {
                 fileName: referenceFrameName,
                 sha256: referenceSourceHash,
                 inputTransformID: referenceInputTransformID,
+                alphaMode: referenceACEScgFrame == nil ? nil : referenceAlphaMode.rawValue,
+                signalColorModel: referenceACEScgFrame == nil
+                    ? nil : referenceSignalColorModel.rawValue,
+                signalMatrix: referenceACEScgFrame == nil ? nil : referenceSignalMatrix.rawValue,
+                signalRange: referenceACEScgFrame == nil ? nil : referenceSignalRange.rawValue,
+                placementID: referenceACEScgFrame == nil ? nil : referencePlacement.stableID,
                 corners: referenceMatchCorners.map {
                     .init(x: Double($0.x), y: Double($0.y))
                 }
@@ -2363,6 +2441,8 @@ final class WorkspaceModel: ObservableObject {
                 referenceSourceHash = nil
                 referenceTimelineInfo = nil
                 referenceFrameName = nil
+                referenceFrameDetail = nil
+                referencePlacement = .fit
                 referenceMatchCorners = []
                 referenceMatchProjectedCorners = []
                 referenceMatchEnabled = false
@@ -2370,6 +2450,19 @@ final class WorkspaceModel: ObservableObject {
                 guard let hash = context.referenceResource.sha256,
                       let name = context.referenceResource.fileName,
                       let transform = context.referenceResource.inputTransformID,
+                      let input = StudioColorInputTransform.catalog.first(where: {
+                          $0.id == transform
+                      }),
+                      let alphaRaw = context.referenceResource.alphaMode,
+                      let alpha = StudioAlphaMode(rawValue: alphaRaw),
+                      let colorRaw = context.referenceResource.signalColorModel,
+                      let colorModel = StudioSignalColorModel(rawValue: colorRaw),
+                      let matrixRaw = context.referenceResource.signalMatrix,
+                      let matrix = StudioSignalMatrix(rawValue: matrixRaw),
+                      let rangeRaw = context.referenceResource.signalRange,
+                      let range = StudioSignalRange(rawValue: rangeRaw),
+                      let placementRaw = context.referenceResource.placementID,
+                      let referencePlacement = SourcePlacement(stableID: placementRaw),
                       let asset = try ReferenceAssetLibrary.asset(
                           sha256: hash, originalFileName: name
                       )
@@ -2380,6 +2473,12 @@ final class WorkspaceModel: ObservableObject {
                 }
                 referenceSourceURL = asset.url
                 referenceInputTransformID = transform
+                referenceInputTransform = input
+                referenceAlphaMode = alpha
+                referenceSignalColorModel = colorModel
+                referenceSignalMatrix = matrix
+                referenceSignalRange = range
+                self.referencePlacement = referencePlacement
                 referenceSourceHash = hash
                 referenceFrameName = name
                 referenceMatchCorners = context.referenceResource.corners.map {
@@ -2389,8 +2488,7 @@ final class WorkspaceModel: ObservableObject {
                 referenceMatchProjectedCorners = []
                 Task { [weak self] in
                     await self?.loadManagedReferenceFrame(
-                        asset, inputTransformID: transform,
-                        keepAuthoredCorners: true
+                        asset, keepAuthoredCorners: true
                     )
                 }
             }
@@ -2412,24 +2510,27 @@ final class WorkspaceModel: ObservableObject {
 
     private func loadManagedReferenceFrame(
         _ managed: ManagedReferenceAsset,
-        inputTransformID: String,
         keepAuthoredCorners: Bool
     ) async {
         do {
-            let timeline = try await NativeMediaDecoder.videoTimelineInfo(url: managed.url)
-            let decoded = try await NativeMediaDecoder.decode(
-                url: managed.url,
-                time: CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
+            let isVideo = Self.isVideo(managed.url)
+            referenceDetection = await StudioMediaMetadataDetector.detect(
+                url: managed.url, isVideo: isVideo
             )
-            guard let input = StudioColorInputTransform.catalog.first(where: {
-                $0.id == inputTransformID
-            }) else { throw NativeMediaError.invalidRaster }
-            referenceACEScgFrame = try metalDisplay.makeACEScgFrame(
-                width: decoded.width, height: decoded.height,
-                encodedRGBA: decoded.rgba, input: input, alpha: .ignore
-            )
+            let info = isVideo
+                ? try await referenceSession.openVideo(
+                    managed.url,
+                    hasAlpha: referenceDetection.hasAlpha,
+                    colorModel: referenceSignalColorModel,
+                    decodedRange: referenceSignalRange
+                )
+                : try referenceSession.openImages([managed.url])
+            try await rebuildReferenceFrame()
             referenceForegroundFrame = nil
-            referenceTimelineInfo = timeline
+            referenceFrameDetail = info.detail
+            referenceTimelineInfo = isVideo
+                ? NativeVideoTimelineInfo(frameRate: info.frameRate, frameCount: info.frameCount)
+                : nil
             applyTimelineAuthority(resetRange: true)
             publishReferenceMatchSetup(
                 resetTargetsToVisibleFrame: !keepAuthoredCorners || referenceMatchCorners.count != 4
@@ -2509,27 +2610,15 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func refreshReferenceFrameForCurrentTime() {
-        guard let url = referenceSourceURL,
-              let inputID = referenceInputTransformID,
-              Self.isVideo(url)
+        guard let url = referenceSourceURL, Self.isVideo(url)
         else { return }
-        let seconds = requestedSeconds
         referenceRefreshTask?.cancel()
         referenceRefreshTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let decoded = try await NativeMediaDecoder.decode(
-                    url: url,
-                    time: CMTime(seconds: seconds, preferredTimescale: 60_000)
-                )
+                try await self.rebuildReferenceFrame()
                 try Task.checkCancellation()
-                guard self.referenceSourceURL == url,
-                      let input = StudioColorInputTransform.catalog.first(where: { $0.id == inputID })
-                else { return }
-                self.referenceACEScgFrame = try self.metalDisplay.makeACEScgFrame(
-                    width: decoded.width, height: decoded.height,
-                    encodedRGBA: decoded.rgba, input: input, alpha: .ignore
-                )
+                guard self.referenceSourceURL == url else { return }
                 if self.referenceMatchEnabled || self.physicalModel.quality == .setup {
                     self.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
                 } else if let foreground = self.referenceForegroundFrame {
@@ -2539,6 +2628,30 @@ final class WorkspaceModel: ObservableObject {
             } catch {
                 self.errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func rebuildReferenceFrame() async throws {
+        guard let sample = try await referenceSession.exactSample(
+            at: CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
+        ) else { throw NativeMediaError.invalidRaster }
+        referenceACEScgFrame = try metalDisplay.makeACEScgFrame(
+            pixelBuffer: sample.pixelBuffer,
+            input: referenceInputTransform,
+            alpha: referenceEffectiveAlpha,
+            matrix: referenceEffectiveMatrix,
+            range: referenceEffectiveRange
+        )
+    }
+
+    private func rebuildReferenceFrameAndPublish() async throws {
+        try await rebuildReferenceFrame()
+        if referenceMatchEnabled || physicalModel.quality == .setup {
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+        } else if let foreground = referenceForegroundFrame {
+            publishReferenceComposite(foreground)
+        } else {
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
         }
     }
 
@@ -2782,6 +2895,7 @@ final class WorkspaceModel: ObservableObject {
             let result = try setupFramingRenderer!.render(
                 source: sourceACEScgFrame,
                 sourcePlacement: sourcePlacement,
+                referencePlacement: .stretch,
                 device: device,
                 pipeline: authored,
                 deliveryWidth: width,
@@ -2818,18 +2932,22 @@ final class WorkspaceModel: ObservableObject {
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: source.texture.device)
             }
+            let delivery = referenceDeliveryRasterSize
             let result = try setupFramingRenderer!.renderReferenceMatch(
                 source: source,
                 reference: reference,
                 sourcePlacement: sourcePlacement,
+                referencePlacement: referencePlacement,
                 device: device,
                 pipeline: authored,
+                deliveryWidth: delivery.width,
+                deliveryHeight: delivery.height,
                 deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
             )
             referenceMatchProjectedCorners = result.corners
             if resetTargetsToVisibleFrame {
                 referenceMatchCorners = Self.initialReferenceMatchTargets(
-                    width: reference.width, height: reference.height
+                    width: delivery.width, height: delivery.height
                 )
             }
             setupDeviceBoundary = result.boundary
@@ -2854,11 +2972,15 @@ final class WorkspaceModel: ObservableObject {
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: foreground.texture.device)
             }
+            let delivery = referenceDeliveryRasterSize
             let result = try setupFramingRenderer!.renderReferenceComposite(
                 cameraResult: foreground,
                 reference: reference,
+                referencePlacement: referencePlacement,
                 device: device,
                 pipeline: authored,
+                deliveryWidth: delivery.width,
+                deliveryHeight: delivery.height,
                 deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
             )
             metalFrame = result.frame
@@ -2870,6 +2992,16 @@ final class WorkspaceModel: ObservableObject {
 
     private var referenceControlsTimeline: Bool {
         referenceTimelineInfo != nil
+    }
+
+    private var referenceDeliveryRasterSize: (width: Int, height: Int) {
+        if let selection = testAuthoringSelection {
+            return (Int(selection.deliveryWidth), Int(selection.deliveryHeight))
+        }
+        if let reference = referenceACEScgFrame {
+            return (reference.width, reference.height)
+        }
+        return (1, 1)
     }
 
     private func applyTimelineAuthority(resetRange: Bool) {
@@ -2976,13 +3108,14 @@ final class WorkspaceModel: ObservableObject {
     ) {
         guard let authored = physicalAuthoringState,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let reference = referenceACEScgFrame,
+              referenceACEScgFrame != nil,
               referenceMatchCorners.count == 4
         else { throw NativeMediaError.invalidRaster }
+        let delivery = referenceDeliveryRasterSize
         let placementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
         let gateTargets = try ReferenceMatchRasterMapping.cameraGateCorners(
             referenceMatchCorners,
-            referenceWidth: reference.width, referenceHeight: reference.height,
+            referenceWidth: delivery.width, referenceHeight: delivery.height,
             cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
             deliveryPlacementID: placementID
         )
@@ -3078,7 +3211,7 @@ final class WorkspaceModel: ObservableObject {
         }
         let projectedReference = try ReferenceMatchRasterMapping.referenceCorners(
             projectedGate,
-            referenceWidth: reference.width, referenceHeight: reference.height,
+            referenceWidth: delivery.width, referenceHeight: delivery.height,
             cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
             deliveryPlacementID: placementID
         )
@@ -3332,6 +3465,19 @@ final class WorkspaceModel: ObservableObject {
                 || $0.environmentTemperatureKelvin != selection.environmentTemperatureKelvin
                 || $0.environmentTint != selection.environmentTint
         } ?? false
+        if let previous,
+           referenceMatchCorners.count == 4,
+           (previous.deliveryWidth != selection.deliveryWidth
+                || previous.deliveryHeight != selection.deliveryHeight) {
+            let scaleX = CGFloat(selection.deliveryWidth) / CGFloat(previous.deliveryWidth)
+            let scaleY = CGFloat(selection.deliveryHeight) / CGFloat(previous.deliveryHeight)
+            referenceMatchCorners = referenceMatchCorners.map {
+                CGPoint(
+                    x: ($0.x + 0.5) * scaleX - 0.5,
+                    y: ($0.y + 0.5) * scaleY - 0.5
+                )
+            }
+        }
         if previous?.deliveryWidth != selection.deliveryWidth
             || previous?.deliveryHeight != selection.deliveryHeight
             || previous?.deliveryPlacementID != selection.deliveryPlacementID

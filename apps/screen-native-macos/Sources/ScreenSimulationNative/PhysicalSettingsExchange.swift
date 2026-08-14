@@ -1,7 +1,7 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.FrameSettings.v13"
+    static let schema = "ScreenSimulation.FrameSettings.v14"
 
     struct EnvironmentResource: Codable, Equatable, Sendable {
         enum Kind: String, Codable, Sendable { case procedural, image }
@@ -46,18 +46,30 @@ enum PhysicalSettingsExchange {
         let fileName: String?
         let sha256: String?
         let inputTransformID: String?
+        let alphaMode: String?
+        let signalColorModel: String?
+        let signalMatrix: String?
+        let signalRange: String?
+        let placementID: String?
         let corners: [ReferenceCorner]
 
         func validate() throws {
             switch kind {
             case .none:
                 guard fileName == nil, sha256 == nil, inputTransformID == nil,
+                      alphaMode == nil, signalColorModel == nil, signalMatrix == nil,
+                      signalRange == nil, placementID == nil,
                       corners.isEmpty
                 else { throw ImportError.invalidReferenceResource }
             case .imageOrVideo:
                 guard let fileName, !fileName.isEmpty,
                       let sha256, sha256.count == 64, sha256.allSatisfy(\.isHexDigit),
                       let inputTransformID, !inputTransformID.isEmpty,
+                      let alphaMode, !alphaMode.isEmpty,
+                      let signalColorModel, !signalColorModel.isEmpty,
+                      let signalMatrix, !signalMatrix.isEmpty,
+                      let signalRange, !signalRange.isEmpty,
+                      let placementID, !placementID.isEmpty,
                       corners.count == 4, corners.allSatisfy({ $0.x.isFinite && $0.y.isFinite })
                 else { throw ImportError.invalidReferenceResource }
             }

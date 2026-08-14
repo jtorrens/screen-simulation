@@ -70,7 +70,7 @@ import Testing
     }
 }
 
-@Test @MainActor func physicalSettingsExchangeRejectsFrameSettingsVersionTwelve() throws {
+@Test @MainActor func physicalSettingsExchangeRejectsFrameSettingsVersionThirteen() throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
         $0.id == device.defaultCoverGlassPresetID
@@ -83,7 +83,7 @@ import Testing
         model: controller.authoringState,
         context: try canonicalFrameContext(deviceID: device.id)
     ))
-    settings["schema"] = "ScreenSimulation.FrameSettings.v12"
+    settings["schema"] = "ScreenSimulation.FrameSettings.v13"
 
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
         try PhysicalSettingsExchange.decode(from: ["settings": settings])
@@ -114,6 +114,27 @@ import Testing
         fileName: "room.exr",
         sha256: "not-a-sha",
         inputTransformID: "linear-rec709"
+    )
+    #expect(throws: PhysicalSettingsExchange.ImportError.self) {
+        try resource.validate()
+    }
+}
+
+@Test func frameSettingsRejectReferenceWithoutCompleteInterpretation() throws {
+    let resource = PhysicalSettingsExchange.ReferenceResource(
+        kind: .imageOrVideo,
+        fileName: "reference.mov",
+        sha256: String(repeating: "a", count: 64),
+        inputTransformID: "srgb-encoded-rec709",
+        alphaMode: "Ignorar",
+        signalColorModel: "RGB",
+        signalMatrix: "BT.709",
+        signalRange: "Completo",
+        placementID: nil,
+        corners: [
+            .init(x: 10, y: 10), .init(x: 100, y: 10),
+            .init(x: 100, y: 80), .init(x: 10, y: 80),
+        ]
     )
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
         try resource.validate()
@@ -161,6 +182,8 @@ private func canonicalFrameContext(
         ),
         referenceResource: .init(
             kind: .none, fileName: nil, sha256: nil, inputTransformID: nil,
+            alphaMode: nil, signalColorModel: nil, signalMatrix: nil,
+            signalRange: nil, placementID: nil,
             corners: []
         )
     )
