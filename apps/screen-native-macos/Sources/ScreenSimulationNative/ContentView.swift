@@ -1546,28 +1546,21 @@ struct ContentView: View {
                     .toggleStyle(.button)
                     .help("Activar o desactivar los controles de cámara; la referencia permanece visible")
                     if model.referenceMatchEnabled {
-                        Menu {
-                            ForEach(Array(["TL", "TR", "BR", "BL"].enumerated()), id: \.offset) {
-                                index, label in
-                                Button {
-                                    model.setReferenceMatchAnchor(index)
-                                } label: {
-                                    if model.referenceMatchAnchorIndex == index {
-                                        Label(label, systemImage: "checkmark")
-                                    } else {
-                                        Text(label)
-                                    }
-                                }
-                            }
-                        } label: {
-                            Label(
-                                model.referenceMatchAnchorIndex.map {
-                                    "Ancla \(["TL", "TR", "BR", "BL"][$0])"
-                                } ?? "Elegir ancla",
-                                systemImage: "scope"
-                            )
+                        Text("\(model.referenceMatchPinnedIndices.count)/4")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(model.referenceMatchPinnedIndices.count == 4
+                                ? .green : .secondary)
+                            .help("Objetivos 2D fijados con Shift+clic")
+                        Button("Resolver") {
+                            model.solveReferenceMatchTargets(undoManager: undoManager)
                         }
-                        .help("Seleccionar el ancla verde; Shift+clic sobre una esquina hace lo mismo")
+                        .disabled(model.referenceMatchPinnedIndices.count != 4)
+                        .help("Resolver una pose rígida con los cuatro objetivos verdes")
+                        Button {
+                            model.clearReferenceMatchTargets()
+                        } label: { Image(systemName: "scope") }
+                        .disabled(model.referenceMatchPinnedIndices.isEmpty)
+                        .help("Borrar todos los objetivos de Match")
                     }
                     Button {
                         model.removeReferenceFrame()
@@ -1644,10 +1637,12 @@ struct ContentView: View {
                                 || model.physicalModel.quality == .environmentSetup
                                 || model.physicalModel.quality == .focusSetup
                             ? model.setupDeviceBoundary : [],
-                        referenceMatchCorners: model.referenceMatchEnabled
+                        referenceProjectedCorners: model.referenceMatchEnabled
+                            ? model.referenceMatchProjectedCorners : [],
+                        referenceTargetCorners: model.referenceMatchEnabled
                             ? model.referenceMatchCorners : [],
-                        referenceAnchorIndex: model.referenceMatchEnabled
-                            ? model.referenceMatchAnchorIndex : nil,
+                        referencePinnedIndices: model.referenceMatchEnabled
+                            ? model.referenceMatchPinnedIndices : [],
                         cameraNavigationEnabled: !model.referenceMatchEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
@@ -1656,7 +1651,7 @@ struct ContentView: View {
                         onCameraGestureBegin: model.beginCameraNavigation,
                         onCameraGestureChange: model.updateCameraNavigation,
                         onCameraGestureEnd: { model.endCameraNavigation(undoManager: undoManager) },
-                        onReferenceAnchorChange: model.setReferenceMatchAnchor,
+                        onReferenceTargetToggle: model.toggleReferenceMatchTarget,
                         onReferenceCornerBegin: model.beginReferenceCornerDrag,
                         onReferenceCornerChange: model.updateReferenceCorner,
                         onReferenceCornerEnd: { model.endReferenceCornerDrag(undoManager: undoManager) }
@@ -1768,8 +1763,9 @@ struct MetalPreview: NSViewRepresentable {
     let fitted: Bool
     let metadataLines: [String]
     let deviceBoundary: [CGPoint]
-    let referenceMatchCorners: [CGPoint]
-    let referenceAnchorIndex: Int?
+    let referenceProjectedCorners: [CGPoint]
+    let referenceTargetCorners: [CGPoint]
+    let referencePinnedIndices: Set<Int>
     let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
@@ -1778,7 +1774,7 @@ struct MetalPreview: NSViewRepresentable {
     let onCameraGestureBegin: (CameraNavigationOperation, CGSize) -> Void
     let onCameraGestureChange: (CGSize) -> Void
     let onCameraGestureEnd: () -> Void
-    let onReferenceAnchorChange: (Int?) -> Void
+    let onReferenceTargetToggle: (Int) -> Void
     let onReferenceCornerBegin: (Int) -> Void
     let onReferenceCornerChange: (Int, CGPoint) -> Void
     let onReferenceCornerEnd: () -> Void
@@ -1805,8 +1801,9 @@ struct MetalPreview: NSViewRepresentable {
             fitted: fitted,
             metadataLines: metadataLines,
             deviceBoundary: deviceBoundary,
-            referenceMatchCorners: referenceMatchCorners,
-            referenceAnchorIndex: referenceAnchorIndex,
+            referenceProjectedCorners: referenceProjectedCorners,
+            referenceTargetCorners: referenceTargetCorners,
+            referencePinnedIndices: referencePinnedIndices,
             cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
             textureHeight: frame.height
@@ -1817,7 +1814,7 @@ struct MetalPreview: NSViewRepresentable {
         container.onCameraGestureBegin = onCameraGestureBegin
         container.onCameraGestureChange = onCameraGestureChange
         container.onCameraGestureEnd = onCameraGestureEnd
-        container.onReferenceAnchorChange = onReferenceAnchorChange
+        container.onReferenceTargetToggle = onReferenceTargetToggle
         container.onReferenceCornerBegin = onReferenceCornerBegin
         container.onReferenceCornerChange = onReferenceCornerChange
         container.onReferenceCornerEnd = onReferenceCornerEnd
@@ -1906,15 +1903,15 @@ final class MetalPreviewContainer: NSView {
     var onCameraGestureBegin: ((CameraNavigationOperation, CGSize) -> Void)?
     var onCameraGestureChange: ((CGSize) -> Void)?
     var onCameraGestureEnd: (() -> Void)?
-    var onReferenceAnchorChange: ((Int?) -> Void)?
+    var onReferenceTargetToggle: ((Int) -> Void)?
     var onReferenceCornerBegin: ((Int) -> Void)?
     var onReferenceCornerChange: ((Int, CGPoint) -> Void)?
     var onReferenceCornerEnd: (() -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
-    private let referenceMatchLayer = CAShapeLayer()
-    private let referenceAnchorLayer = CAShapeLayer()
+    private let referenceProjectionLayer = CAShapeLayer()
+    private let referenceTargetLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
         let layer = CATextLayer()
         layer.string = label
@@ -1926,8 +1923,9 @@ final class MetalPreviewContainer: NSView {
         return layer
     }
     private var deviceBoundary: [CGPoint] = []
-    private var referenceMatchCorners: [CGPoint] = []
-    private var referenceAnchorIndex: Int?
+    private var referenceProjectedCorners: [CGPoint] = []
+    private var referenceTargetCorners: [CGPoint] = []
+    private var referencePinnedIndices: Set<Int> = []
     private var referenceCornerDragIndex: Int?
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
@@ -1962,16 +1960,16 @@ final class MetalPreviewContainer: NSView {
         deviceBoundaryLayer.lineWidth = 1
         deviceBoundaryLayer.zPosition = 110
         layer?.addSublayer(deviceBoundaryLayer)
-        referenceMatchLayer.fillColor = NSColor.systemYellow.cgColor
-        referenceMatchLayer.strokeColor = NSColor.black.cgColor
-        referenceMatchLayer.lineWidth = 1
-        referenceMatchLayer.zPosition = 120
-        layer?.addSublayer(referenceMatchLayer)
-        referenceAnchorLayer.fillColor = NSColor.systemGreen.cgColor
-        referenceAnchorLayer.strokeColor = NSColor.black.cgColor
-        referenceAnchorLayer.lineWidth = 1
-        referenceAnchorLayer.zPosition = 122
-        layer?.addSublayer(referenceAnchorLayer)
+        referenceProjectionLayer.fillColor = NSColor.clear.cgColor
+        referenceProjectionLayer.strokeColor = NSColor.systemRed.cgColor
+        referenceProjectionLayer.lineWidth = 1.5
+        referenceProjectionLayer.zPosition = 120
+        layer?.addSublayer(referenceProjectionLayer)
+        referenceTargetLayer.fillColor = NSColor.systemGreen.cgColor
+        referenceTargetLayer.strokeColor = NSColor.black.cgColor
+        referenceTargetLayer.lineWidth = 1
+        referenceTargetLayer.zPosition = 122
+        layer?.addSublayer(referenceTargetLayer)
         referenceLabels.forEach { layer?.addSublayer($0) }
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
@@ -2007,8 +2005,9 @@ final class MetalPreviewContainer: NSView {
         fitted: Bool,
         metadataLines: [String],
         deviceBoundary: [CGPoint],
-        referenceMatchCorners: [CGPoint],
-        referenceAnchorIndex: Int?,
+        referenceProjectedCorners: [CGPoint],
+        referenceTargetCorners: [CGPoint],
+        referencePinnedIndices: Set<Int>,
         cameraNavigationEnabled: Bool,
         textureWidth: Int,
         textureHeight: Int
@@ -2019,8 +2018,9 @@ final class MetalPreviewContainer: NSView {
         metadataLabel.stringValue = metadataLines.joined(separator: "\n")
         metadataLabel.isHidden = metadataLines.isEmpty
         self.deviceBoundary = deviceBoundary
-        self.referenceMatchCorners = referenceMatchCorners
-        self.referenceAnchorIndex = referenceAnchorIndex
+        self.referenceProjectedCorners = referenceProjectedCorners
+        self.referenceTargetCorners = referenceTargetCorners
+        self.referencePinnedIndices = referencePinnedIndices
         self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
@@ -2033,12 +2033,10 @@ final class MetalPreviewContainer: NSView {
         if let index = nearestReferenceCorner(to: location) {
             let shift = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
             if shift {
-                let selected = referenceAnchorIndex == index ? nil : index
-                referenceAnchorIndex = selected
-                onReferenceAnchorChange?(selected)
+                onReferenceTargetToggle?(index)
                 applyPresentation()
-                guard selected == index else { return }
-            } else if referenceAnchorIndex == nil {
+                return
+            } else if !referencePinnedIndices.contains(index) {
                 return
             }
             referenceCornerDragIndex = index
@@ -2344,28 +2342,35 @@ final class MetalPreviewContainer: NSView {
         if !deviceBoundary.isEmpty { boundaryPath.closeSubpath() }
         deviceBoundaryLayer.frame = bounds
         deviceBoundaryLayer.path = boundaryPath
-        let handles = CGMutablePath()
-        let anchorHandle = CGMutablePath()
-        for (index, point) in referenceMatchCorners.enumerated() {
+        let projectedHandles = CGMutablePath()
+        for point in referenceProjectedCorners {
             let displayedPoint = displayedPoint(forRaster: point)
-            let target = index == referenceAnchorIndex ? anchorHandle : handles
-            target.addEllipse(in: CGRect(
+            projectedHandles.move(to: CGPoint(x: displayedPoint.x - 7, y: displayedPoint.y - 7))
+            projectedHandles.addLine(to: CGPoint(x: displayedPoint.x + 7, y: displayedPoint.y + 7))
+            projectedHandles.move(to: CGPoint(x: displayedPoint.x + 7, y: displayedPoint.y - 7))
+            projectedHandles.addLine(to: CGPoint(x: displayedPoint.x - 7, y: displayedPoint.y + 7))
+        }
+        let targetHandles = CGMutablePath()
+        for index in referencePinnedIndices.sorted() where referenceTargetCorners.indices.contains(index) {
+            let displayedPoint = displayedPoint(forRaster: referenceTargetCorners[index])
+            targetHandles.addEllipse(in: CGRect(
                 x: displayedPoint.x - 6, y: displayedPoint.y - 6, width: 12, height: 12
             ))
         }
-        referenceMatchLayer.frame = bounds
-        referenceMatchLayer.path = handles
-        referenceAnchorLayer.frame = bounds
-        referenceAnchorLayer.path = anchorHandle
+        referenceProjectionLayer.frame = bounds
+        referenceProjectionLayer.path = projectedHandles
+        referenceTargetLayer.frame = bounds
+        referenceTargetLayer.path = targetHandles
         for (index, label) in referenceLabels.enumerated() {
-            guard referenceMatchCorners.indices.contains(index) else {
+            let isPinned = referencePinnedIndices.contains(index)
+            let points = isPinned ? referenceTargetCorners : referenceProjectedCorners
+            guard points.indices.contains(index) else {
                 label.isHidden = true
                 continue
             }
             label.isHidden = false
-            label.foregroundColor = index == referenceAnchorIndex
-                ? NSColor.systemGreen.cgColor : NSColor.systemYellow.cgColor
-            let point = displayedPoint(forRaster: referenceMatchCorners[index])
+            label.foregroundColor = isPinned ? NSColor.systemGreen.cgColor : NSColor.systemRed.cgColor
+            let point = displayedPoint(forRaster: points[index])
             label.frame = CGRect(x: point.x - 14, y: point.y + 8, width: 28, height: 14)
         }
         metadataLabel.frame = NSRect(
@@ -2422,14 +2427,20 @@ final class MetalPreviewContainer: NSView {
     }
 
     private func nearestReferenceCorner(to point: CGPoint) -> Int? {
-        referenceMatchCorners.indices.min(by: {
-            hypot(displayedPoint(forRaster: referenceMatchCorners[$0]).x - point.x,
-                  displayedPoint(forRaster: referenceMatchCorners[$0]).y - point.y)
-                < hypot(displayedPoint(forRaster: referenceMatchCorners[$1]).x - point.x,
-                        displayedPoint(forRaster: referenceMatchCorners[$1]).y - point.y)
+        referenceProjectedCorners.indices.min(by: {
+            let left = referencePinnedIndices.contains($0)
+                ? referenceTargetCorners[$0] : referenceProjectedCorners[$0]
+            let right = referencePinnedIndices.contains($1)
+                ? referenceTargetCorners[$1] : referenceProjectedCorners[$1]
+            return hypot(displayedPoint(forRaster: left).x - point.x,
+                         displayedPoint(forRaster: left).y - point.y)
+                < hypot(displayedPoint(forRaster: right).x - point.x,
+                        displayedPoint(forRaster: right).y - point.y)
         }).flatMap { index in
-            hypot(displayedPoint(forRaster: referenceMatchCorners[index]).x - point.x,
-                  displayedPoint(forRaster: referenceMatchCorners[index]).y - point.y) <= 12
+            let corner = referencePinnedIndices.contains(index)
+                ? referenceTargetCorners[index] : referenceProjectedCorners[index]
+            return hypot(displayedPoint(forRaster: corner).x - point.x,
+                         displayedPoint(forRaster: corner).y - point.y) <= 12
                 ? index : nil
         }
     }

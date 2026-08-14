@@ -53,14 +53,13 @@ enum ReferenceMatchError: LocalizedError {
 }
 
 enum ReferenceMatchRasterMapping {
-    static func cameraGateCorners(
-        _ referenceCorners: [CGPoint],
+    private static func scaleAndOffset(
         referenceWidth: Int,
         referenceHeight: Int,
         cameraWidth: UInt32,
         cameraHeight: UInt32,
         deliveryPlacementID: String
-    ) throws -> [CGPoint] {
+    ) throws -> (scale: Double, offsetX: Double, offsetY: Double) {
         let gateWidth = Double(cameraWidth)
         let gateHeight = Double(cameraHeight)
         let outputWidth = Double(referenceWidth)
@@ -72,12 +71,51 @@ enum ReferenceMatchRasterMapping {
         case "one-to-one": scale = 1
         default: throw ReferenceMatchError.unknownDeliveryPlacement(deliveryPlacementID)
         }
-        let offsetX = (outputWidth - gateWidth * scale) * 0.5
-        let offsetY = (outputHeight - gateHeight * scale) * 0.5
+        return (
+            scale,
+            (outputWidth - gateWidth * scale) * 0.5,
+            (outputHeight - gateHeight * scale) * 0.5
+        )
+    }
+
+    static func cameraGateCorners(
+        _ referenceCorners: [CGPoint],
+        referenceWidth: Int,
+        referenceHeight: Int,
+        cameraWidth: UInt32,
+        cameraHeight: UInt32,
+        deliveryPlacementID: String
+    ) throws -> [CGPoint] {
+        let mapping = try scaleAndOffset(
+            referenceWidth: referenceWidth, referenceHeight: referenceHeight,
+            cameraWidth: cameraWidth, cameraHeight: cameraHeight,
+            deliveryPlacementID: deliveryPlacementID
+        )
         return referenceCorners.map { point in
             CGPoint(
-                x: (Double(point.x) + 0.5 - offsetX) / scale - 0.5,
-                y: (Double(point.y) + 0.5 - offsetY) / scale - 0.5
+                x: (Double(point.x) + 0.5 - mapping.offsetX) / mapping.scale - 0.5,
+                y: (Double(point.y) + 0.5 - mapping.offsetY) / mapping.scale - 0.5
+            )
+        }
+    }
+
+    static func referenceCorners(
+        _ cameraGateCorners: [CGPoint],
+        referenceWidth: Int,
+        referenceHeight: Int,
+        cameraWidth: UInt32,
+        cameraHeight: UInt32,
+        deliveryPlacementID: String
+    ) throws -> [CGPoint] {
+        let mapping = try scaleAndOffset(
+            referenceWidth: referenceWidth, referenceHeight: referenceHeight,
+            cameraWidth: cameraWidth, cameraHeight: cameraHeight,
+            deliveryPlacementID: deliveryPlacementID
+        )
+        return cameraGateCorners.map { point in
+            CGPoint(
+                x: (Double(point.x) + 0.5) * mapping.scale + mapping.offsetX - 0.5,
+                y: (Double(point.y) + 0.5) * mapping.scale + mapping.offsetY - 0.5
             )
         }
     }
@@ -161,8 +199,11 @@ final class WorkspaceModel: ObservableObject {
     @Published var metalFrame: StudioColorMetalFrame?
     @Published private(set) var setupDeviceBoundary: [CGPoint] = []
     @Published private(set) var referenceFrameName: String?
+    /// Authored 2D targets in reference-raster pixels. They are independent of
+    /// the current rigid projection and therefore never move during a solve.
     @Published private(set) var referenceMatchCorners: [CGPoint] = []
-    @Published private(set) var referenceMatchAnchorIndex: Int?
+    @Published private(set) var referenceMatchProjectedCorners: [CGPoint] = []
+    @Published private(set) var referenceMatchPinnedIndices: Set<Int> = []
     @Published private(set) var referenceMatchErrorPixels: Double?
     @Published var referenceMatchEnabled = false
     @Published private(set) var environmentSourceName: String?
@@ -236,7 +277,6 @@ final class WorkspaceModel: ObservableObject {
     private var referencePlaybackStartedAt: CFTimeInterval?
     private var referencePlaybackStartFrame = 0
     private var referenceMatchStartSelection: TestAuthoringResolvedSelection?
-    private var referenceMatchPendingPose: CameraNavigationPose?
     private var referenceRefreshTask: Task<Void, Never>?
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
@@ -1494,7 +1534,8 @@ final class WorkspaceModel: ObservableObject {
         referenceTimelineInfo = nil
         referenceFrameName = nil
         referenceMatchCorners = []
-        referenceMatchAnchorIndex = nil
+        referenceMatchProjectedCorners = []
+        referenceMatchPinnedIndices = []
         referenceMatchErrorPixels = nil
         referenceMatchEnabled = false
         applyTimelineAuthority(resetRange: true)
@@ -1504,7 +1545,6 @@ final class WorkspaceModel: ObservableObject {
     func setReferenceMatchEnabled(_ enabled: Bool) {
         guard referenceACEScgFrame != nil else { return }
         referenceMatchEnabled = enabled
-        if !enabled { referenceMatchAnchorIndex = nil }
         applyTimelineAuthority(resetRange: true)
         if enabled {
             physicalModel.setQuality(.setup)
@@ -1540,7 +1580,8 @@ final class WorkspaceModel: ObservableObject {
             referenceTimelineInfo = timeline
             referenceFrameName = managed.originalFileName
             referenceMatchCorners = []
-            referenceMatchAnchorIndex = nil
+            referenceMatchProjectedCorners = []
+            referenceMatchPinnedIndices = []
             referenceMatchErrorPixels = nil
             referenceMatchEnabled = true
             applyTimelineAuthority(resetRange: true)
@@ -1552,25 +1593,38 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    func setReferenceMatchAnchor(_ index: Int?) {
-        guard referenceMatchEnabled,
-              index == nil || referenceMatchCorners.indices.contains(index!)
+    func toggleReferenceMatchTarget(_ index: Int) {
+        guard referenceMatchEnabled, referenceMatchProjectedCorners.indices.contains(index)
         else { return }
-        referenceMatchAnchorIndex = index
+        if referenceMatchPinnedIndices.contains(index) {
+            referenceMatchPinnedIndices.remove(index)
+        } else {
+            if referenceMatchCorners.count != 4 {
+                referenceMatchCorners = referenceMatchProjectedCorners
+            }
+            referenceMatchCorners[index] = referenceMatchProjectedCorners[index]
+            referenceMatchPinnedIndices.insert(index)
+        }
         referenceMatchErrorPixels = nil
     }
 
+    func clearReferenceMatchTargets() {
+        referenceMatchCorners = referenceMatchProjectedCorners
+        referenceMatchPinnedIndices = []
+        referenceMatchErrorPixels = nil
+        status = "Match referencia · objetivos borrados"
+    }
+
     func beginReferenceCornerDrag(_ index: Int) {
-        guard referenceMatchEnabled, referenceMatchAnchorIndex != nil,
+        guard referenceMatchEnabled, referenceMatchPinnedIndices.contains(index),
               referenceMatchCorners.indices.contains(index)
         else { return }
         referenceMatchStartSelection = testAuthoringSelection
-        referenceMatchPendingPose = nil
     }
 
     func updateReferenceCorner(_ index: Int, to point: CGPoint) {
         guard referenceMatchEnabled,
-              let anchorIndex = referenceMatchAnchorIndex,
+              referenceMatchPinnedIndices.contains(index),
               referenceMatchCorners.indices.contains(index),
               let reference = referenceACEScgFrame
         else { return }
@@ -1578,48 +1632,21 @@ final class WorkspaceModel: ObservableObject {
             x: min(CGFloat(reference.width) - 0.5, max(-0.5, point.x)),
             y: min(CGFloat(reference.height) - 0.5, max(-0.5, point.y))
         )
-        do {
-            let pose = if index == anchorIndex {
-                try solveAnchoredReferencePose(index: index, target: referenceMatchCorners[index])
-            } else {
-                try solveReferenceRotationKeepingAnchor(
-                    anchorIndex: anchorIndex,
-                    movingIndex: index,
-                    movingTarget: referenceMatchCorners[index]
-                )
-            }
-            referenceMatchPendingPose = pose
-            applyTransientReferenceMatchPose(pose)
-            referenceMatchErrorPixels = 0
-            status = index == anchorIndex
-                ? "Match referencia · ancla \(["TL", "TR", "BR", "BL"][index]) fijada"
-                : "Match referencia · cámara rotada sobre ancla \(["TL", "TR", "BR", "BL"][anchorIndex])"
-        } catch {
-            referenceMatchErrorPixels = nil
-            status = error.localizedDescription
-        }
+        referenceMatchErrorPixels = nil
+        status = "Match referencia · objetivo \(["TL", "TR", "BR", "BL"][index])"
     }
 
     func endReferenceCornerDrag(undoManager: UndoManager?) {
         guard let prior = referenceMatchStartSelection else { return }
-        if let pose = referenceMatchPendingPose {
-            cameraNavigationStartSelection = prior
-            cameraNavigationPreviewQuality = .setup
-            commitCameraNavigationPose(pose)
-            cameraNavigationStartSelection = nil
+        if referenceMatchPinnedIndices.count == 4 {
+            solveReferenceMatchTargets(undoManager: undoManager, priorSelection: prior)
         }
-        referenceMatchPendingPose = nil
         referenceMatchStartSelection = nil
-        if prior != testAuthoringSelection {
-            let manager = UndoManagerBox(undoManager)
-            undoManager?.registerUndo(withTarget: self) { target in
-                Task { @MainActor in
-                    try? target.restoreCameraNavigationSelection(prior, undoManager: manager.value)
-                    target.publishReferenceMatchSetup(resetTargetsFromProjection: false)
-                }
-            }
-            undoManager?.setActionName("Ajustar cámara a referencia")
-        }
+    }
+
+    func solveReferenceMatchTargets(undoManager: UndoManager?) {
+        guard let prior = testAuthoringSelection else { return }
+        solveReferenceMatchTargets(undoManager: undoManager, priorSelection: prior)
     }
 
     func load(_ urls: [URL]) async {
@@ -2270,7 +2297,8 @@ final class WorkspaceModel: ObservableObject {
                 referenceTimelineInfo = nil
                 referenceFrameName = nil
                 referenceMatchCorners = []
-                referenceMatchAnchorIndex = nil
+                referenceMatchProjectedCorners = []
+                referenceMatchPinnedIndices = []
                 referenceMatchEnabled = false
             case .imageOrVideo:
                 guard let hash = context.referenceResource.sha256,
@@ -2292,7 +2320,9 @@ final class WorkspaceModel: ObservableObject {
                     CGPoint(x: $0.x, y: $0.y)
                 }
                 referenceMatchEnabled = context.referenceResource.matchEnabled
-                referenceMatchAnchorIndex = nil
+                referenceMatchProjectedCorners = []
+                referenceMatchPinnedIndices = context.referenceResource.matchEnabled
+                    ? Set(0..<4) : []
                 Task { [weak self] in
                     await self?.loadManagedReferenceFrame(
                         asset, inputTransformID: transform,
@@ -2734,7 +2764,11 @@ final class WorkspaceModel: ObservableObject {
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
-            if resetTargetsFromProjection { referenceMatchCorners = result.corners }
+            referenceMatchProjectedCorners = result.corners
+            if resetTargetsFromProjection {
+                referenceMatchCorners = result.corners
+                referenceMatchPinnedIndices = []
+            }
             physicalPublicationSummary = referenceMatchEnabled
                 ? "Match referencia · referencia + Device rígido + cámara"
                 : "Referencia visible · cámara libre"
@@ -2766,17 +2800,6 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func applyTransientReferenceMatchPose(_ pose: CameraNavigationPose) {
-        guard var authored = physicalAuthoringState else { return }
-        authored.cameraPose.position = [pose.position.x, pose.position.y, pose.position.z]
-        authored.cameraPose.quaternion = [
-            pose.orientation.imag.x, pose.orientation.imag.y,
-            pose.orientation.imag.z, pose.orientation.real,
-        ]
-        authored.cameraLookAt = nil
-        publishReferenceMatchSetup(resetTargetsFromProjection: true, authoredOverride: authored)
-    }
-
     private var referenceControlsTimeline: Bool {
         referenceTimelineInfo != nil
     }
@@ -2803,89 +2826,76 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func solveAnchoredReferencePose(
-        index: Int, target: CGPoint
-    ) throws -> CameraNavigationPose {
-        guard let authored = physicalAuthoringState,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let reference = referenceACEScgFrame,
-              (0..<4).contains(index)
-        else { throw NativeMediaError.invalidRaster }
-        let gatePoint = try ReferenceMatchRasterMapping.cameraGateCorners(
-            [target],
-            referenceWidth: reference.width,
-            referenceHeight: reference.height,
-            cameraWidth: authored.sensor.nativeWidth,
-            cameraHeight: authored.sensor.nativeHeight,
-            deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
-        )[0]
-        let screenQuaternion = simd_quatd(
-            ix: authored.screenPose.quaternion[0], iy: authored.screenPose.quaternion[1],
-            iz: authored.screenPose.quaternion[2], r: authored.screenPose.quaternion[3]
-        ).normalized
-        let geometry = CameraNavigationGeometry(
-            center: SIMD3(
-                authored.screenPose.position[0], authored.screenPose.position[1],
-                authored.screenPose.position[2]
-            ),
-            right: screenQuaternion.act(SIMD3(1, 0, 0)),
-            up: screenQuaternion.act(SIMD3(0, 1, 0)),
-            halfWidth: device.activeWidthMeters * 0.5,
-            halfHeight: device.activeHeightMeters * 0.5
-        )
-        let startPose = CameraNavigationPose(
-            position: SIMD3(
-                authored.cameraPose.position[0], authored.cameraPose.position[1],
-                authored.cameraPose.position[2]
-            ),
-            orientation: simd_quatd(
-                ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
-                iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
-            ).normalized
-        )
-        guard let pose = ReferenceAnchorCameraMath.translatedPose(
-            startPose: startPose,
-            anchorWorld: geometry.corners[index],
-            targetPixel: gatePoint,
-            imageSize: CGSize(
-                width: Int(authored.sensor.nativeWidth),
-                height: Int(authored.sensor.nativeHeight)
-            ),
-            focalLengthMillimeters: authored.sceneLens.focalLengthMillimeters,
-            sensorSizeMillimeters: CGSize(
-                width: authored.sceneLens.sensorWidthMillimeters,
-                height: authored.sceneLens.sensorHeightMillimeters
-            ),
-            lensShift: SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1]),
-            radialDistortion: SIMD3(
-                authored.sceneLens.radialDistortion[0], authored.sceneLens.radialDistortion[1],
-                authored.sceneLens.radialDistortion[2]
-            ),
-            tangentialDistortion: SIMD2(
-                authored.sceneLens.tangentialDistortion[0],
-                authored.sceneLens.tangentialDistortion[1]
-            )
-        ) else {
-            throw ReferenceMatchError.unsolved("el ancla no se puede proyectar con esta lente")
+    private func solveReferenceMatchTargets(
+        undoManager: UndoManager?,
+        priorSelection: TestAuthoringResolvedSelection
+    ) {
+        guard referenceMatchPinnedIndices.count == 4 else {
+            status = "Match referencia · fija los cuatro objetivos para resolver la cámara"
+            return
         }
-        return pose
+        do {
+            let solved = try resolvedFourPointReferencePose()
+            cameraNavigationStartSelection = priorSelection
+            cameraNavigationPreviewQuality = .setup
+            commitCameraNavigationPose(solved.pose)
+            cameraNavigationStartSelection = nil
+            referenceMatchErrorPixels = solved.maximumErrorPixels
+            publishReferenceMatchSetup(resetTargetsFromProjection: false)
+            status = "Match referencia · cámara resuelta · error máximo \(solved.maximumErrorPixels.formatted(.number.precision(.fractionLength(1)))) px"
+            if priorSelection != testAuthoringSelection {
+                let manager = UndoManagerBox(undoManager)
+                undoManager?.registerUndo(withTarget: self) { target in
+                    Task { @MainActor in
+                        try? target.restoreCameraNavigationSelection(
+                            priorSelection, undoManager: manager.value
+                        )
+                        target.publishReferenceMatchSetup(resetTargetsFromProjection: false)
+                    }
+                }
+                undoManager?.setActionName("Resolver cámara con referencia")
+            }
+        } catch {
+            referenceMatchErrorPixels = nil
+            status = error.localizedDescription
+        }
     }
 
-    private func solveReferenceRotationKeepingAnchor(
-        anchorIndex: Int, movingIndex: Int, movingTarget: CGPoint
-    ) throws -> CameraNavigationPose {
+    private func resolvedFourPointReferencePose() throws -> (
+        pose: CameraNavigationPose, maximumErrorPixels: Double
+    ) {
         guard let authored = physicalAuthoringState,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
               let reference = referenceACEScgFrame,
-              referenceMatchCorners.indices.contains(anchorIndex),
-              (0..<4).contains(movingIndex), movingIndex != anchorIndex
+              referenceMatchCorners.count == 4
         else { throw NativeMediaError.invalidRaster }
-        let gatePoints = try ReferenceMatchRasterMapping.cameraGateCorners(
-            [referenceMatchCorners[anchorIndex], movingTarget],
+        let placementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
+        let gateTargets = try ReferenceMatchRasterMapping.cameraGateCorners(
+            referenceMatchCorners,
             referenceWidth: reference.width, referenceHeight: reference.height,
             cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
-            deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
+            deliveryPlacementID: placementID
         )
+        let gateSize = CGSize(
+            width: Int(authored.sensor.nativeWidth), height: Int(authored.sensor.nativeHeight)
+        )
+        let shift = SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1])
+        let radial = SIMD3(
+            authored.sceneLens.radialDistortion[0], authored.sceneLens.radialDistortion[1],
+            authored.sceneLens.radialDistortion[2]
+        )
+        let tangential = SIMD2(
+            authored.sceneLens.tangentialDistortion[0], authored.sceneLens.tangentialDistortion[1]
+        )
+        let pinholeTargets = try gateTargets.map { target in
+            guard let point = ReferenceAnchorCameraMath.undistortedPinholePixel(
+                target, imageSize: gateSize, lensShift: shift,
+                radialDistortion: radial, tangentialDistortion: tangential
+            ) else {
+                throw ReferenceMatchError.unsolved("un objetivo queda fuera del dominio de la lente")
+            }
+            return point
+        }
         let screenQuaternion = simd_quatd(
             ix: authored.screenPose.quaternion[0], iy: authored.screenPose.quaternion[1],
             iz: authored.screenPose.quaternion[2], r: authored.screenPose.quaternion[3]
@@ -2900,43 +2910,72 @@ final class WorkspaceModel: ObservableObject {
             halfWidth: device.activeWidthMeters * 0.5,
             halfHeight: device.activeHeightMeters * 0.5
         )
-        let startPose = CameraNavigationPose(
+        var request = ScreenPlanarReferenceMatchV1()
+        request.abi_version = SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION
+        withUnsafeMutableBytes(of: &request.device_corners_xyz) { bytes in
+            let values = bytes.bindMemory(to: Float.self)
+            for (index, corner) in geometry.corners.enumerated() {
+                values[index * 3] = Float(corner.x)
+                values[index * 3 + 1] = Float(corner.y)
+                values[index * 3 + 2] = Float(corner.z)
+            }
+        }
+        withUnsafeMutableBytes(of: &request.image_corners_xy) { bytes in
+            let values = bytes.bindMemory(to: Float.self)
+            for (index, target) in pinholeTargets.enumerated() {
+                values[index * 2] = Float(target.x)
+                values[index * 2 + 1] = Float(target.y)
+            }
+        }
+        request.image_width = authored.sensor.nativeWidth
+        request.image_height = authored.sensor.nativeHeight
+        request.focal_length_millimeters = Float(authored.sceneLens.focalLengthMillimeters)
+        request.sensor_width_millimeters = Float(authored.sceneLens.sensorWidthMillimeters)
+        request.sensor_height_millimeters = Float(authored.sceneLens.sensorHeightMillimeters)
+        withUnsafeMutableBytes(of: &request.lens_shift_xy) { bytes in
+            let values = bytes.bindMemory(to: Float.self)
+            values[0] = Float(shift.x)
+            values[1] = Float(shift.y)
+        }
+        var result = ScreenMatchedCameraPoseV1()
+        var error: UnsafePointer<CChar>?
+        guard screen_geometry_solve_planar_reference_v1(&request, &result, &error) else {
+            throw ReferenceMatchError.unsolved(error.map(String.init(cString:)) ?? "solución degenerada")
+        }
+        let pose = CameraNavigationPose(
             position: SIMD3(
-                authored.cameraPose.position[0], authored.cameraPose.position[1],
-                authored.cameraPose.position[2]
+                Double(result.camera_position.0), Double(result.camera_position.1),
+                Double(result.camera_position.2)
             ),
             orientation: simd_quatd(
-                ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
-                iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
+                ix: Double(result.camera_rotation_xyzw.0),
+                iy: Double(result.camera_rotation_xyzw.1),
+                iz: Double(result.camera_rotation_xyzw.2),
+                r: Double(result.camera_rotation_xyzw.3)
             ).normalized
         )
-        guard let pose = ReferenceAnchorCameraMath.poseKeepingAnchor(
-            startPose: startPose,
-            anchorWorld: geometry.corners[anchorIndex],
-            movingWorld: geometry.corners[movingIndex],
-            anchorTargetPixel: gatePoints[0], movingTargetPixel: gatePoints[1],
-            imageSize: CGSize(
-                width: Int(authored.sensor.nativeWidth),
-                height: Int(authored.sensor.nativeHeight)
-            ),
-            focalLengthMillimeters: authored.sceneLens.focalLengthMillimeters,
-            sensorSizeMillimeters: CGSize(
-                width: authored.sceneLens.sensorWidthMillimeters,
-                height: authored.sceneLens.sensorHeightMillimeters
-            ),
-            lensShift: SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1]),
-            radialDistortion: SIMD3(
-                authored.sceneLens.radialDistortion[0], authored.sceneLens.radialDistortion[1],
-                authored.sceneLens.radialDistortion[2]
-            ),
-            tangentialDistortion: SIMD2(
-                authored.sceneLens.tangentialDistortion[0],
-                authored.sceneLens.tangentialDistortion[1]
-            )
-        ) else {
-            throw ReferenceMatchError.unsolved("la segunda esquina no admite una pose rígida")
+        let projectedGate = try geometry.corners.map { corner in
+            guard let projected = ReferenceAnchorCameraMath.project(
+                pose: pose, point: corner, imageSize: gateSize,
+                focalLengthMillimeters: authored.sceneLens.focalLengthMillimeters,
+                sensorSizeMillimeters: CGSize(
+                    width: authored.sceneLens.sensorWidthMillimeters,
+                    height: authored.sceneLens.sensorHeightMillimeters
+                ),
+                lensShift: shift, radialDistortion: radial, tangentialDistortion: tangential
+            ) else { throw ReferenceMatchError.unsolved("la pose resuelta no proyecta el Device") }
+            return projected
         }
-        return pose
+        let projectedReference = try ReferenceMatchRasterMapping.referenceCorners(
+            projectedGate,
+            referenceWidth: reference.width, referenceHeight: reference.height,
+            cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
+            deliveryPlacementID: placementID
+        )
+        let maximumError = zip(projectedReference, referenceMatchCorners).map {
+            hypot(Double($0.x - $1.x), Double($0.y - $1.y))
+        }.max() ?? 0
+        return (pose, maximumError)
     }
 
     private func publishEnvironmentSetup(

@@ -71,6 +71,56 @@ import Testing
     #expect(pose.orientation != start.orientation)
 }
 
+@Test func distortedReferenceTargetConvertsToTheEquivalentPinholePixel() throws {
+    let image = CGSize(width: 4_032, height: 3_024)
+    let sensor = CGSize(width: 36, height: 24)
+    let shift = SIMD2<Double>(0.03, -0.02)
+    let radial = SIMD3<Double>(-0.08, 0.015, -0.002)
+    let tangential = SIMD2<Double>(0.001, -0.0007)
+    let pose = CameraNavigationPose(
+        position: SIMD3<Double>(0, 0, 1),
+        orientation: simd_quatd(real: 1, imag: .zero)
+    )
+    let point = SIMD3<Double>(0.31, -0.17, 0)
+    let distorted = try #require(ReferenceAnchorCameraMath.project(
+        pose: pose, point: point, imageSize: image,
+        focalLengthMillimeters: 50, sensorSizeMillimeters: sensor,
+        lensShift: shift, radialDistortion: radial, tangentialDistortion: tangential
+    ))
+    let converted = try #require(ReferenceAnchorCameraMath.undistortedPinholePixel(
+        distorted, imageSize: image, lensShift: shift,
+        radialDistortion: radial, tangentialDistortion: tangential
+    ))
+    let pinhole = try #require(ReferenceAnchorCameraMath.project(
+        pose: pose, point: point, imageSize: image,
+        focalLengthMillimeters: 50, sensorSizeMillimeters: sensor,
+        lensShift: shift, radialDistortion: .zero, tangentialDistortion: .zero
+    ))
+    #expect(hypot(converted.x - pinhole.x, converted.y - pinhole.y) < 0.000_001)
+}
+
+@Test func referenceAndCameraGateMappingsAreExactInverses() throws {
+    let points = [
+        CGPoint(x: 100.25, y: 200.75), CGPoint(x: 1_500.5, y: 800.125),
+    ]
+    for placement in ["fit", "fill-crop", "one-to-one"] {
+        let gate = try ReferenceMatchRasterMapping.cameraGateCorners(
+            points, referenceWidth: 1_920, referenceHeight: 1_080,
+            cameraWidth: 4_032, cameraHeight: 3_024,
+            deliveryPlacementID: placement
+        )
+        let recovered = try ReferenceMatchRasterMapping.referenceCorners(
+            gate, referenceWidth: 1_920, referenceHeight: 1_080,
+            cameraWidth: 4_032, cameraHeight: 3_024,
+            deliveryPlacementID: placement
+        )
+        for (actual, expected) in zip(recovered, points) {
+            #expect(abs(actual.x - expected.x) < 0.000_001)
+            #expect(abs(actual.y - expected.y) < 0.000_001)
+        }
+    }
+}
+
 @Test @MainActor func workspaceNavigationPublishesSetupWithoutPresentationFailure() throws {
     let workspace = WorkspaceModel()
     let device = try #require(try RustDeviceCatalog.builtIns().first)

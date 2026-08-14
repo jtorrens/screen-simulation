@@ -116,6 +116,34 @@ enum CameraNavigationMath {
 }
 
 enum ReferenceAnchorCameraMath {
+    /// Converts a pixel from the rendered, distorted camera gate into the
+    /// equivalent pinhole pixel consumed by the planar pose solver.
+    static func undistortedPinholePixel(
+        _ pixel: CGPoint,
+        imageSize: CGSize,
+        lensShift: SIMD2<Double>,
+        radialDistortion: SIMD3<Double>,
+        tangentialDistortion: SIMD2<Double>
+    ) -> CGPoint? {
+        guard imageSize.width > 0, imageSize.height > 0 else { return nil }
+        let observed = SIMD2<Double>(
+            2 * (Double(pixel.x) + 0.5) / imageSize.width - 1,
+            2 * (Double(pixel.y) + 0.5) / imageSize.height - 1
+        )
+        guard let ideal = inverseDistortion(
+            SIMD2(observed.x + 2 * lensShift.x, -observed.y - 2 * lensShift.y),
+            radial: radialDistortion, tangential: tangentialDistortion
+        ) else { return nil }
+        let pinholeObserved = SIMD2(
+            ideal.x - 2 * lensShift.x,
+            -ideal.y - 2 * lensShift.y
+        )
+        return CGPoint(
+            x: (pinholeObserved.x + 1) * 0.5 * imageSize.width - 0.5,
+            y: (pinholeObserved.y + 1) * 0.5 * imageSize.height - 0.5
+        )
+    }
+
     static func poseKeepingAnchor(
         startPose: CameraNavigationPose,
         anchorWorld: SIMD3<Double>,
