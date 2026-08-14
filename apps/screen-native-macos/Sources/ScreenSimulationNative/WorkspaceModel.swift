@@ -2762,13 +2762,16 @@ final class WorkspaceModel: ObservableObject {
                 pipeline: authored,
                 deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
             )
-            metalFrame = result.frame
-            setupDeviceBoundary = result.boundary
             referenceMatchProjectedCorners = result.corners
             if resetTargetsFromProjection {
                 referenceMatchCorners = result.corners
                 referenceMatchPinnedIndices = []
             }
+            setupDeviceBoundary = result.boundary
+            // Publish the texture last. SwiftUI may render immediately on any
+            // @Published mutation; by making the frame the commit marker the
+            // Viewer can never observe a new texture with prior/empty handles.
+            metalFrame = result.frame
             physicalPublicationSummary = referenceMatchEnabled
                 ? "Match referencia · referencia + Device rígido + cámara"
                 : "Referencia visible · cámara libre"
