@@ -103,6 +103,28 @@ pub struct RawSensorRegion {
     pub adc_clipped: Vec<bool>,
 }
 
+/// Photosite charge collected from one exact optical-exposure region before
+/// neighbour coupling, overflow transfer, full-well clipping or ADC
+/// quantization. Read noise is retained separately because it is applied only
+/// after the physical charge well.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollectedSensorChargeRegion {
+    pub sensor_profile: SensorProfile,
+    pub region: SensorRegion,
+    pub collected_electrons: Vec<f64>,
+    pub read_noise_electrons: Vec<f64>,
+}
+
+/// Immutable result of calibrated neighbour coupling and non-recursive
+/// full-well overflow transfer over one exact sensor region.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoupledSensorChargeRegion {
+    pub sensor_profile: SensorProfile,
+    pub region: SensorRegion,
+    pub coupled_electrons: Vec<f64>,
+    pub read_noise_electrons: Vec<f64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SensorError {
     EmptyRaster,
@@ -437,16 +459,34 @@ pub fn expose_raw_region_with_noise_amount(
     output_region: SensorRegion,
     noise_amount: f32,
 ) -> Result<RawSensorRegion, SensorError> {
+    let collected = collect_sensor_charge_region_with_noise_amount(
+        profile,
+        exposure,
+        identity,
+        exposure_region,
+        noise_amount,
+    )?;
+    let coupled = couple_sensor_charge_region(collected)?;
+    quantize_sensor_charge_region(coupled, output_region)
+}
+
+/// Converts one explicitly integrated optical exposure into native photosite
+/// charge while preserving read noise as a separate downstream term.
+pub fn collect_sensor_charge_region_with_noise_amount(
+    profile: SensorProfile,
+    exposure: &IntegratedOpticalExposure,
+    identity: CaptureIdentity,
+    exposure_region: SensorRegion,
+    noise_amount: f32,
+) -> Result<CollectedSensorChargeRegion, SensorError> {
     let profile = profile.validate()?;
     exposure.validate()?;
     exposure_region.validate(profile)?;
-    output_region.validate(profile)?;
     if !noise_amount.is_finite() || !(0.0..=4.0).contains(&noise_amount) {
         return Err(SensorError::InvalidNoiseAmount);
     }
     if exposure.width != u32::from(exposure_region.width)
         || exposure.height != u32::from(exposure_region.height)
-        || !exposure_region.contains(output_region)
     {
         return Err(SensorError::RasterProfileMismatch);
     }
@@ -495,13 +535,75 @@ pub fn expose_raw_region_with_noise_amount(
             ((photoelectrons + dark_electrons).max(0.0), read_electrons)
         })
         .unzip();
-    let collected = redistribute_sensor_charge(
-        collected,
-        u32::from(exposure_region.width),
-        u32::from(exposure_region.height),
+    Ok(CollectedSensorChargeRegion {
+        sensor_profile: profile,
+        region: exposure_region,
+        collected_electrons: collected,
+        read_noise_electrons: read,
+    })
+}
+
+/// Applies the Sensor Bloom profile to one collected-charge artifact. The
+/// returned artifact is the sole input required by RAW quantization.
+pub fn couple_sensor_charge_region(
+    collected: CollectedSensorChargeRegion,
+) -> Result<CoupledSensorChargeRegion, SensorError> {
+    let profile = collected.sensor_profile.validate()?;
+    collected.region.validate(profile)?;
+    let expected = usize::from(collected.region.width) * usize::from(collected.region.height);
+    if collected.collected_electrons.len() != expected
+        || collected.read_noise_electrons.len() != expected
+    {
+        return Err(SensorError::PixelCountMismatch);
+    }
+    if collected
+        .collected_electrons
+        .iter()
+        .chain(&collected.read_noise_electrons)
+        .any(|value| !value.is_finite())
+    {
+        return Err(SensorError::NonFiniteExposure);
+    }
+    let coupled_electrons = redistribute_sensor_charge(
+        collected.collected_electrons,
+        u32::from(collected.region.width),
+        u32::from(collected.region.height),
         profile.full_well_electrons,
         profile.bloom,
     );
+    Ok(CoupledSensorChargeRegion {
+        sensor_profile: profile,
+        region: collected.region,
+        coupled_electrons,
+        read_noise_electrons: collected.read_noise_electrons,
+    })
+}
+
+/// Applies the physical well, read-noise, gain and ADC boundary to one coupled
+/// charge artifact and publishes the exact integer RAW crop requested.
+pub fn quantize_sensor_charge_region(
+    coupled: CoupledSensorChargeRegion,
+    output_region: SensorRegion,
+) -> Result<RawSensorRegion, SensorError> {
+    let profile = coupled.sensor_profile.validate()?;
+    coupled.region.validate(profile)?;
+    output_region.validate(profile)?;
+    if !coupled.region.contains(output_region) {
+        return Err(SensorError::RasterProfileMismatch);
+    }
+    let expected = usize::from(coupled.region.width) * usize::from(coupled.region.height);
+    if coupled.coupled_electrons.len() != expected || coupled.read_noise_electrons.len() != expected
+    {
+        return Err(SensorError::PixelCountMismatch);
+    }
+    if coupled
+        .coupled_electrons
+        .iter()
+        .chain(&coupled.read_noise_electrons)
+        .any(|value| !value.is_finite())
+    {
+        return Err(SensorError::NonFiniteExposure);
+    }
     let maximum_code = (1_u32 << profile.adc_bits) - 1;
     let full_well = f64::from(profile.full_well_electrons);
     let output_count = usize::from(output_region.width) * usize::from(output_region.height);
@@ -511,14 +613,15 @@ pub fn expose_raw_region_with_noise_amount(
     for output_y in 0..u32::from(output_region.height) {
         for output_x in 0..u32::from(output_region.width) {
             let support_x =
-                u32::from(output_region.origin_x) + output_x - u32::from(exposure_region.origin_x);
+                u32::from(output_region.origin_x) + output_x - u32::from(coupled.region.origin_x);
             let support_y =
-                u32::from(output_region.origin_y) + output_y - u32::from(exposure_region.origin_y);
-            let index = (support_y * u32::from(exposure_region.width) + support_x) as usize;
-            let collected_electrons = collected[index];
+                u32::from(output_region.origin_y) + output_y - u32::from(coupled.region.origin_y);
+            let index = (support_y * u32::from(coupled.region.width) + support_x) as usize;
+            let collected_electrons = coupled.coupled_electrons[index];
             let full_well_clipped = collected_electrons >= full_well;
             let well_electrons = collected_electrons.clamp(0.0, full_well);
-            let post_read_electrons = (well_electrons + read[index]).max(0.0);
+            let post_read_electrons =
+                (well_electrons + coupled.read_noise_electrons[index]).max(0.0);
             let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
             let adc_clipped = normalized >= 1.0;
             codes.push((normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16);
@@ -936,6 +1039,47 @@ mod tests {
         .expect("next capture");
         assert_eq!(first, repeated);
         assert_ne!(first.codes, next.codes);
+    }
+
+    #[test]
+    fn typed_charge_artifacts_chain_to_the_exact_raw_result() {
+        let profile = SensorProfile {
+            native_width: 8,
+            native_height: 6,
+            bloom: SensorBloomProfile::REFERENCE,
+            ..SensorProfile::REFERENCE
+        };
+        let exposure = IntegratedOpticalExposure {
+            width: 8,
+            height: 6,
+            duration_seconds: 1.0 / 37.0,
+            acescg_illuminance_seconds: (0..48)
+                .map(|index| {
+                    let value = 0.001 + index as f32 * 0.000_37;
+                    LinearRgb::new(value, value * 0.73, value * 1.19)
+                })
+                .collect(),
+        };
+        let identity = CaptureIdentity {
+            noise_seed: 0x51A7,
+            frame_index: 17,
+        };
+        let expected = expose_raw_with_noise_amount(profile, &exposure, identity, 1.75)
+            .expect("monolithic public capture");
+        let full = SensorRegion::full(profile);
+        let collected = collect_sensor_charge_region_with_noise_amount(
+            profile, &exposure, identity, full, 1.75,
+        )
+        .expect("typed collection artifact");
+        let coupled =
+            couple_sensor_charge_region(collected).expect("typed coupled-charge artifact");
+        let actual = quantize_sensor_charge_region(coupled, full).expect("typed RAW artifact");
+
+        assert_eq!(actual.codes, expected.codes);
+        assert_eq!(actual.full_well_clipped, expected.full_well_clipped);
+        assert_eq!(actual.adc_clipped, expected.adc_clipped);
+        assert_eq!(actual.sensor_profile, expected.sensor_profile);
+        assert_eq!(actual.region, full);
     }
 
     #[test]
