@@ -35,23 +35,178 @@ pub enum PhysicalStage {
     ComputationalCapture = 0x208,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum PhysicalDomain {
+    Screen = 0x100,
+    Capture = 0x200,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum PhysicalStageControlSemantics {
+    Continuous = 0,
+    Discrete = 1,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhysicalStageDescriptor {
+    pub stage: PhysicalStage,
+    pub domain: PhysicalDomain,
+    pub control_semantics: PhysicalStageControlSemantics,
+    pub visual_minimum: f32,
+    pub visual_maximum: f32,
+    pub safe_maximum: f32,
+    pub exact_identity_at_zero: bool,
+    pub general_overview: bool,
+}
+
+const fn continuous_stage(
+    stage: PhysicalStage,
+    domain: PhysicalDomain,
+    visual_maximum: f32,
+    safe_maximum: f32,
+    general_overview: bool,
+) -> PhysicalStageDescriptor {
+    PhysicalStageDescriptor {
+        stage,
+        domain,
+        control_semantics: PhysicalStageControlSemantics::Continuous,
+        visual_minimum: 0.0,
+        visual_maximum,
+        safe_maximum,
+        exact_identity_at_zero: true,
+        general_overview,
+    }
+}
+
+const fn discrete_stage(stage: PhysicalStage, domain: PhysicalDomain) -> PhysicalStageDescriptor {
+    PhysicalStageDescriptor {
+        stage,
+        domain,
+        control_semantics: PhysicalStageControlSemantics::Discrete,
+        visual_minimum: 0.0,
+        visual_maximum: 0.0,
+        safe_maximum: 0.0,
+        exact_identity_at_zero: false,
+        general_overview: false,
+    }
+}
+
+pub const PHYSICAL_STAGE_DESCRIPTORS: [PhysicalStageDescriptor; 16] = [
+    continuous_stage(
+        PhysicalStage::PanelEmission,
+        PhysicalDomain::Screen,
+        2.0,
+        4.0,
+        false,
+    ),
+    continuous_stage(
+        PhysicalStage::SubpixelGeometry,
+        PhysicalDomain::Screen,
+        2.0,
+        4.0,
+        false,
+    ),
+    continuous_stage(
+        PhysicalStage::PanelUniformity,
+        PhysicalDomain::Screen,
+        2.0,
+        4.0,
+        false,
+    ),
+    continuous_stage(
+        PhysicalStage::PanelLightSpread,
+        PhysicalDomain::Screen,
+        2.0,
+        4.0,
+        false,
+    ),
+    continuous_stage(
+        PhysicalStage::PanelTemporal,
+        PhysicalDomain::Screen,
+        2.0,
+        4.0,
+        true,
+    ),
+    continuous_stage(
+        PhysicalStage::SceneGeometry,
+        PhysicalDomain::Capture,
+        2.0,
+        4.0,
+        false,
+    ),
+    continuous_stage(
+        PhysicalStage::CoverGlass,
+        PhysicalDomain::Screen,
+        2.0,
+        2.0,
+        true,
+    ),
+    continuous_stage(
+        PhysicalStage::Environment,
+        PhysicalDomain::Screen,
+        2.0,
+        4.0,
+        true,
+    ),
+    continuous_stage(
+        PhysicalStage::CoverGlow,
+        PhysicalDomain::Screen,
+        2.0,
+        4.0,
+        true,
+    ),
+    continuous_stage(PhysicalStage::Lens, PhysicalDomain::Capture, 2.0, 4.0, true),
+    continuous_stage(
+        PhysicalStage::ShutterMotion,
+        PhysicalDomain::Capture,
+        2.0,
+        4.0,
+        true,
+    ),
+    continuous_stage(
+        PhysicalStage::ComputationalCapture,
+        PhysicalDomain::Capture,
+        1.5,
+        1.5,
+        true,
+    ),
+    continuous_stage(
+        PhysicalStage::SensorBloom,
+        PhysicalDomain::Capture,
+        2.0,
+        4.0,
+        true,
+    ),
+    discrete_stage(PhysicalStage::SensorCfa, PhysicalDomain::Capture),
+    continuous_stage(
+        PhysicalStage::SensorNoise,
+        PhysicalDomain::Capture,
+        2.0,
+        4.0,
+        true,
+    ),
+    discrete_stage(PhysicalStage::RawDevelop, PhysicalDomain::Capture),
+];
+
 pub const PHYSICAL_STAGE_ORDER: [PhysicalStage; 16] = [
-    PhysicalStage::PanelEmission,
-    PhysicalStage::SubpixelGeometry,
-    PhysicalStage::PanelUniformity,
-    PhysicalStage::PanelLightSpread,
-    PhysicalStage::PanelTemporal,
-    PhysicalStage::SceneGeometry,
-    PhysicalStage::CoverGlass,
-    PhysicalStage::Environment,
-    PhysicalStage::CoverGlow,
-    PhysicalStage::Lens,
-    PhysicalStage::ShutterMotion,
-    PhysicalStage::ComputationalCapture,
-    PhysicalStage::SensorBloom,
-    PhysicalStage::SensorCfa,
-    PhysicalStage::SensorNoise,
-    PhysicalStage::RawDevelop,
+    PHYSICAL_STAGE_DESCRIPTORS[0].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[1].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[2].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[3].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[4].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[5].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[6].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[7].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[8].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[9].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[10].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[11].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[12].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[13].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[14].stage,
+    PHYSICAL_STAGE_DESCRIPTORS[15].stage,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

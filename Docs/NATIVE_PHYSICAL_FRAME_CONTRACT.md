@@ -37,12 +37,12 @@ the physical Screen result, never either source encoding directly. The final
 physical output is linear ACEScg. Preview transforms, ColorSync, DeckLink and
 render ODTs are outside the physical engine and run only after its result.
 
-Version 10 is the only live binary contract and has two ordered domains:
+Version 15 is the only live binary contract and has two ordered domains:
 
-1. Screen: Emission, Subpixel Geometry, Panel Uniformity, Panel Light Spread, Temporal, Cover
-   Glass, Environment.
-2. Capture: Geometry, Lens, Exposure/Shutter, Sensor/CFA, Noise,
-   Develop/Demosaic.
+1. Screen: Emission, Subpixel Geometry, Panel Uniformity, Panel Light Spread,
+   Temporal, Cover Glass, Environment and Cover Glow.
+2. Capture: Geometry, Lens, Exposure/Shutter, Computational Capture, Sensor
+   Bloom, Sensor/CFA, Noise and Develop/Demosaic.
 
 Their numeric identifiers are stable and domain-partitioned. A new stage is
 appended to its owning typed section and to the same ABI version only when the
@@ -53,8 +53,15 @@ creates a second evaluator, compatibility reader, alias or runtime selector.
 
 ## Contribution semantics
 
-Continuous stages carry their authored safe limits. The initial authoring
-range is 0–4 and the visual slider range is 0–2:
+Application publishes one ordered `ScreenPhysicalStageDescriptorV1` catalog
+containing each stage's domain, control semantics, visual and safe limits,
+zero-identity promise and General-overview membership. Swift consumes this
+catalog and never declares or reconstructs those values. A submitted
+`ScreenPhysicalStageContributionV3` carries only the stable stage id and its
+authored continuous amount or discrete enabled state.
+
+The common initial authoring range is 0–4 and the common visual slider range
+is 0–2, with narrower owner-certified limits where published:
 
 - 0: bypass/ideal. `exact_identity_at_zero` states whether bit-exact identity
   is a valid promise for that particular stage.
@@ -82,8 +89,8 @@ parameter revision/hash. The snapshot materializes cover, procedural
 environment, resolved scene/camera/lens, shutter/readout/motion, sensor/noise
 and RAW development. Panel emission, the complete fixed spatial-uniformity profile, temporal
 behavior and complete light-spread radii and weights are materialized by the Device handle. The
-live Device layout is `ScreenDeviceParametersV3`; catalog ABI 4 and test-authoring ABI 12 are
-strict current-only companions to physical-frame ABI 9.
+live Device layout is `ScreenDeviceParametersV3`; catalog ABI 7 and test-authoring ABI 27 are
+strict current-only companions to physical-frame ABI 15.
 
 `ScreenPhysicalFrameResultV2` returns one borrowed texture and states which
 typed intermediate it contains, plus native/effective dimensions, calculated

@@ -310,6 +310,54 @@ def validate_presentation_boundaries() -> None:
         raise ValidationError(f"Test workspace hard-codes model controls: {present}")
 
 
+def validate_native_model_authority() -> None:
+    application = (
+        ROOT / "crates/screen-application/src/physical_pipeline.rs"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "pub const PHYSICAL_STAGE_DESCRIPTORS",
+        "pub struct PhysicalStageDescriptor",
+        "pub enum PhysicalStageControlSemantics",
+    ):
+        if required not in application:
+            raise ValidationError(
+                f"Application does not publish the physical-stage authority: {required}"
+            )
+
+    bridge = (ROOT / "crates/screen-native-bridge/src/lib.rs").read_text(encoding="utf-8")
+    forbidden_bridge = (
+        "EXPECTED_STAGE_IDS",
+        "ScreenPhysicalStageContributionV2",
+        "contribution.visual_minimum",
+        "contribution.visual_maximum",
+        "contribution.safe_maximum",
+    )
+    present = [value for value in forbidden_bridge if value in bridge]
+    if present:
+        raise ValidationError(f"Native bridge duplicates physical-stage semantics: {present}")
+
+    contract = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalFrameContract.swift"
+    ).read_text(encoding="utf-8")
+    required_contract = (
+        "screen_physical_stage_descriptor_count()",
+        "screen_physical_stage_descriptor(index, &raw)",
+        "PhysicalStageCatalog.descriptors.map(\\.stage)",
+    )
+    absent = [value for value in required_contract if value not in contract]
+    if absent:
+        raise ValidationError(f"Native host does not consume Application stage descriptors: {absent}")
+    if "static let ordered: [Self]" in contract:
+        raise ValidationError("Native host declares a second physical-stage order")
+
+    workspace = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+    ).read_text(encoding="utf-8")
+    if "private func physicalIntermediate(" in workspace:
+        raise ValidationError("Native host reconstructs phase-to-intermediate routing")
+
+
 def validate_phase_gated_workflow() -> None:
     rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     required = [
@@ -334,6 +382,7 @@ def main() -> int:
         validate_retired_surfaces(paths)
         validate_native_backend_composition(paths)
         validate_presentation_boundaries()
+        validate_native_model_authority()
         validate_phase_gated_workflow()
     except (ValidationError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)

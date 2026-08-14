@@ -65,15 +65,13 @@ final class PhysicalModelController: ObservableObject {
 
     init() {
         var values: [PhysicalStageID: StageValue] = [:]
-        for stage in PhysicalStageID.ordered {
-            let discrete = stage == .capture(.sensorCFA)
-                || stage == .capture(.developDemosaic)
-            values[stage] = StageValue(
-                stage: stage,
-                exactIdentityAtZero: !discrete,
-                control: discrete
-                    ? .discrete(enabled: true)
-                    : .continuous(amount: 1, limits: stage.contributionLimits),
+        for descriptor in PhysicalStageCatalog.descriptors {
+            values[descriptor.stage] = StageValue(
+                stage: descriptor.stage,
+                exactIdentityAtZero: descriptor.exactIdentityAtZero,
+                control: descriptor.continuous
+                    ? .continuous(amount: 1, limits: descriptor.limits)
+                    : .discrete(enabled: true),
                 isBypassed: false
             )
         }
@@ -195,27 +193,30 @@ final class PhysicalModelController: ObservableObject {
         }
         var restored: [PhysicalStageID: StageValue] = [:]
         for (stage, authored) in zip(PhysicalStageID.ordered, state.stages) {
-            let discrete = stage == .capture(.sensorCFA)
-                || stage == .capture(.developDemosaic)
+            let descriptor = PhysicalStageCatalog.descriptor(for: stage)
             let control: PhysicalControlSemantics
             let bypassed: Bool
             switch authored.control {
             case let .continuous(value):
-                guard !discrete else { throw PhysicalModelStateError.invalidAuthoringState }
-                try stage.contributionLimits.validate(value.storedAmount)
+                guard descriptor.continuous else {
+                    throw PhysicalModelStateError.invalidAuthoringState
+                }
+                try descriptor.limits.validate(value.storedAmount)
                 control = .continuous(
                     amount: value.storedAmount,
-                    limits: stage.contributionLimits
+                    limits: descriptor.limits
                 )
                 bypassed = value.isBypassed
             case let .discrete(enabled):
-                guard discrete else { throw PhysicalModelStateError.invalidAuthoringState }
+                guard !descriptor.continuous else {
+                    throw PhysicalModelStateError.invalidAuthoringState
+                }
                 control = .discrete(enabled: enabled)
                 bypassed = false
             }
             restored[stage] = StageValue(
                 stage: stage,
-                exactIdentityAtZero: !discrete,
+                exactIdentityAtZero: descriptor.exactIdentityAtZero,
                 control: control,
                 isBypassed: bypassed
             )

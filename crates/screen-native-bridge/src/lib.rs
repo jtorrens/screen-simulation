@@ -17,10 +17,10 @@ use metal::foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{MTLTexture, Texture, TextureRef};
 use screen_application::{
     CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, DeliveryRasterBackground,
-    DeliveryRasterPlacement, DeliveryRasterRequest, PhysicalIntermediate,
-    PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, ProceduralTestPattern,
-    RasterPlacement, ReflectionEmitter, ReflectionEnvironmentRig, ReflectionLightAppearance,
-    ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight,
+    DeliveryRasterPlacement, DeliveryRasterRequest, PHYSICAL_STAGE_DESCRIPTORS,
+    PhysicalIntermediate, PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot,
+    ProceduralTestPattern, RasterPlacement, ReflectionEmitter, ReflectionEnvironmentRig,
+    ReflectionLightAppearance, ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight,
     ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, RollingDirection,
     SensorReadout, TestAuthoringError, TestAuthoringSelection, TestControlRequirement,
     TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice, apply_test_scalar,
@@ -345,7 +345,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 14;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 15;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -429,17 +429,25 @@ pub struct ScreenPhysicalIdentity128 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenPhysicalStageContributionV2 {
+pub struct ScreenPhysicalStageDescriptorV1 {
     abi_version: u32,
     domain_id: u32,
     stage_id: u32,
     control_semantics: u32,
-    amount: f32,
     visual_minimum: f32,
     visual_maximum: f32,
     safe_maximum: f32,
-    discrete_enabled: bool,
     exact_identity_at_zero: bool,
+    general_overview: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalStageContributionV3 {
+    abi_version: u32,
+    stage_id: u32,
+    amount: f32,
+    discrete_enabled: bool,
 }
 
 #[repr(C)]
@@ -458,7 +466,7 @@ pub struct ScreenPhysicalFrameRequestV2 {
     resolved_pipeline: *const ScreenPhysicalPipelineSnapshot,
     quality: u32,
     screen_amount: f32,
-    stage_contributions: *const ScreenPhysicalStageContributionV2,
+    stage_contributions: *const ScreenPhysicalStageContributionV3,
     stage_contribution_count: usize,
     requested_width: u32,
     requested_height: u32,
@@ -503,19 +511,34 @@ const STATE_RENDERING: u32 = 2;
 const STATE_CANCELLED: u32 = 3;
 const STATE_FAILED: u32 = 4;
 const STATE_COMPLETE: u32 = 5;
-const DOMAIN_SCREEN: u32 = 0x100;
-const DOMAIN_CAPTURE: u32 = 0x200;
-const EXPECTED_STAGE_IDS: [u32; 16] = [
-    0x101, 0x102, 0x108, 0x103, 0x104, 0x201, 0x105, 0x106, 0x107, 0x202, 0x203, 0x208, 0x207,
-    0x204, 0x205, 0x206,
-];
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_physical_stage_descriptor_count() -> usize {
+    PHYSICAL_STAGE_DESCRIPTORS.len()
+}
 
-fn stage_domain(stage_id: u32) -> u32 {
-    if stage_id & 0xF00 == DOMAIN_SCREEN {
-        DOMAIN_SCREEN
-    } else {
-        DOMAIN_CAPTURE
-    }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_stage_descriptor(
+    index: usize,
+    destination: *mut ScreenPhysicalStageDescriptorV1,
+) -> bool {
+    let Some(source) = PHYSICAL_STAGE_DESCRIPTORS.get(index) else {
+        return false;
+    };
+    let Some(destination) = (unsafe { destination.as_mut() }) else {
+        return false;
+    };
+    *destination = ScreenPhysicalStageDescriptorV1 {
+        abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+        domain_id: source.domain as u32,
+        stage_id: source.stage as u32,
+        control_semantics: source.control_semantics as u32,
+        visual_minimum: source.visual_minimum,
+        visual_maximum: source.visual_maximum,
+        safe_maximum: source.safe_maximum,
+        exact_identity_at_zero: source.exact_identity_at_zero,
+        general_overview: source.general_overview,
+    };
+    true
 }
 
 #[cfg(target_os = "macos")]
@@ -960,27 +983,16 @@ struct ResolvedContributionAmounts {
 }
 
 fn contribution_amounts(
-    contributions: &[ScreenPhysicalStageContributionV2],
+    contributions: &[ScreenPhysicalStageContributionV3],
 ) -> Option<ResolvedContributionAmounts> {
-    if contributions.len() != EXPECTED_STAGE_IDS.len() {
+    if contributions.len() != PHYSICAL_STAGE_DESCRIPTORS.len() {
         return None;
     }
     for (index, contribution) in contributions.iter().enumerate() {
-        let expected_domain = stage_domain(EXPECTED_STAGE_IDS[index]);
-        let discrete = matches!(index, 13 | 15);
-        let expected_visual_maximum = if index == 11 { 1.5 } else { 2.0 };
-        let expected_safe_maximum = match index {
-            6 => 2.0,
-            11 => 1.5,
-            _ => 4.0,
-        };
+        let descriptor = PHYSICAL_STAGE_DESCRIPTORS[index];
+        let discrete = descriptor.control_semantics as u32 == 1;
         if contribution.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
-            || contribution.domain_id != expected_domain
-            || contribution.stage_id != EXPECTED_STAGE_IDS[index]
-            || contribution.control_semantics != u32::from(discrete)
-            || contribution.visual_minimum != 0.0
-            || contribution.visual_maximum != expected_visual_maximum
-            || contribution.safe_maximum != expected_safe_maximum
+            || contribution.stage_id != descriptor.stage as u32
         {
             return None;
         }
@@ -989,7 +1001,7 @@ fn contribution_amounts(
                 return None;
             }
         } else if !contribution.amount.is_finite()
-            || !(0.0..=contribution.safe_maximum).contains(&contribution.amount)
+            || !(descriptor.visual_minimum..=descriptor.safe_maximum).contains(&contribution.amount)
         {
             return None;
         }
@@ -1029,13 +1041,13 @@ fn diagnostic_snapshot(
         .into_iter()
         .map(|message| message.into_bytes().into_boxed_slice())
         .collect::<Vec<_>>();
-    let diagnostics = EXPECTED_STAGE_IDS
+    let diagnostics = PHYSICAL_STAGE_DESCRIPTORS
         .iter()
         .enumerate()
-        .map(|(index, stage_id)| ScreenPhysicalStageDiagnosticV2 {
+        .map(|(index, descriptor)| ScreenPhysicalStageDiagnosticV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-            domain_id: stage_domain(*stage_id),
-            stage_id: *stage_id,
+            domain_id: descriptor.domain as u32,
+            stage_id: descriptor.stage as u32,
             state,
             progress,
             elapsed_nanoseconds: stage_elapsed_nanoseconds[index],
@@ -4532,26 +4544,44 @@ mod tests {
         texture
     }
 
-    fn contributions() -> [ScreenPhysicalStageContributionV2; 16] {
-        core::array::from_fn(|index| {
-            let discrete = matches!(index, 13 | 15);
-            ScreenPhysicalStageContributionV2 {
-                abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
-                domain_id: stage_domain(EXPECTED_STAGE_IDS[index]),
-                stage_id: EXPECTED_STAGE_IDS[index],
-                control_semantics: u32::from(discrete),
-                amount: if index < 4 { 1.0 } else { 0.0 },
-                visual_minimum: 0.0,
-                visual_maximum: if index == 11 { 1.5 } else { 2.0 },
-                safe_maximum: match index {
-                    6 => 2.0,
-                    11 => 1.5,
-                    _ => 4.0,
-                },
-                discrete_enabled: false,
-                exact_identity_at_zero: !discrete,
-            }
+    fn contributions() -> [ScreenPhysicalStageContributionV3; 16] {
+        core::array::from_fn(|index| ScreenPhysicalStageContributionV3 {
+            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+            stage_id: PHYSICAL_STAGE_DESCRIPTORS[index].stage as u32,
+            amount: if index < 4 { 1.0 } else { 0.0 },
+            discrete_enabled: false,
         })
+    }
+
+    #[test]
+    fn physical_stage_descriptors_are_published_from_application_authority() {
+        assert_eq!(screen_physical_stage_descriptor_count(), 16);
+        for (index, expected) in PHYSICAL_STAGE_DESCRIPTORS.iter().enumerate() {
+            let mut actual = ScreenPhysicalStageDescriptorV1 {
+                abi_version: 0,
+                domain_id: 0,
+                stage_id: 0,
+                control_semantics: 0,
+                visual_minimum: 0.0,
+                visual_maximum: 0.0,
+                safe_maximum: 0.0,
+                exact_identity_at_zero: false,
+                general_overview: false,
+            };
+            assert!(unsafe { screen_physical_stage_descriptor(index, &mut actual) });
+            assert_eq!(actual.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);
+            assert_eq!(actual.domain_id, expected.domain as u32);
+            assert_eq!(actual.stage_id, expected.stage as u32);
+            assert_eq!(actual.control_semantics, expected.control_semantics as u32);
+            assert_eq!(actual.visual_minimum, expected.visual_minimum);
+            assert_eq!(actual.visual_maximum, expected.visual_maximum);
+            assert_eq!(actual.safe_maximum, expected.safe_maximum);
+            assert_eq!(
+                actual.exact_identity_at_zero,
+                expected.exact_identity_at_zero
+            );
+            assert_eq!(actual.general_overview, expected.general_overview);
+        }
     }
 
     #[test]

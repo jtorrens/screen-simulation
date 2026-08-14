@@ -17,7 +17,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 14u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 15u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u
@@ -280,6 +280,24 @@ typedef enum {
     SCREEN_PHYSICAL_CONTROL_DISCRETE = 1,
 } ScreenPhysicalControlSemantics;
 
+typedef struct {
+    uint32_t abi_version;
+    uint32_t domain_id;
+    uint32_t stage_id;
+    uint32_t control_semantics;
+    float visual_minimum;
+    float visual_maximum;
+    float safe_maximum;
+    bool exact_identity_at_zero;
+    bool general_overview;
+} ScreenPhysicalStageDescriptorV1;
+
+size_t screen_physical_stage_descriptor_count(void);
+bool screen_physical_stage_descriptor(
+    size_t index,
+    ScreenPhysicalStageDescriptorV1 *descriptor
+);
+
 typedef enum {
     SCREEN_PHYSICAL_STATE_IDLE = 0,
     SCREEN_PHYSICAL_STATE_STALE = 1,
@@ -335,16 +353,10 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
-    uint32_t domain_id;
     uint32_t stage_id;
-    uint32_t control_semantics;
     float amount;
-    float visual_minimum;
-    float visual_maximum;
-    float safe_maximum;
     bool discrete_enabled;
-    bool exact_identity_at_zero;
-} ScreenPhysicalStageContributionV2;
+} ScreenPhysicalStageContributionV3;
 
 typedef struct {
     uint32_t abi_version;
@@ -409,7 +421,7 @@ typedef struct {
     ScreenPhysicalPipelineSnapshotRef resolved_pipeline;
     uint32_t quality;
     float screen_amount;
-    const ScreenPhysicalStageContributionV2 *stage_contributions;
+    const ScreenPhysicalStageContributionV3 *stage_contributions;
     size_t stage_contribution_count;
     uint32_t requested_width;
     uint32_t requested_height;

@@ -373,28 +373,18 @@ final class PhysicalMetalFrameEngine {
 
     private func rawContribution(
         _ contribution: PhysicalStageContribution
-    ) -> ScreenPhysicalStageContributionV2 {
-        var raw = ScreenPhysicalStageContributionV2()
+    ) -> ScreenPhysicalStageContributionV3 {
+        var raw = ScreenPhysicalStageContributionV3()
         raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
-        raw.domain_id = contribution.stage.domain.rawValue
         raw.stage_id = contribution.stage.id
         switch contribution.control {
-        case let .continuous(amount, limits):
-            raw.control_semantics = UInt32(SCREEN_PHYSICAL_CONTROL_CONTINUOUS.rawValue)
+        case let .continuous(amount, _):
             raw.amount = Float(amount)
-            raw.visual_minimum = Float(limits.visualRange.lowerBound)
-            raw.visual_maximum = Float(limits.visualRange.upperBound)
-            raw.safe_maximum = Float(limits.safeRange.upperBound)
             raw.discrete_enabled = false
         case let .discrete(enabled):
-            raw.control_semantics = UInt32(SCREEN_PHYSICAL_CONTROL_DISCRETE.rawValue)
             raw.amount = 0
-            raw.visual_minimum = 0
-            raw.visual_maximum = 2
-            raw.safe_maximum = 4
             raw.discrete_enabled = enabled
         }
-        raw.exact_identity_at_zero = contribution.exactIdentityAtZero
         return raw
     }
 
@@ -416,18 +406,6 @@ enum PhysicalMetalFrameEngineError: Error, LocalizedError {
         case let .bridge(message): message
         case .invalidSnapshot: "El motor físico devolvió un snapshot ABI inválido."
         case .invalidOutputTexture: "El motor físico devolvió una textura Metal inválida."
-        }
-    }
-}
-
-private extension PhysicalStageID {
-    init?(rawValue: UInt32) {
-        if let section = ScreenPhysicalSection(rawValue: rawValue) {
-            self = .screen(section)
-        } else if let section = CapturePhysicalSection(rawValue: rawValue) {
-            self = .capture(section)
-        } else {
-            return nil
         }
     }
 }

@@ -14,40 +14,96 @@ enum PhysicalQuality: UInt32, CaseIterable, Identifiable, Sendable {
     var id: UInt32 { rawValue }
 }
 
-enum PhysicalDomainID: UInt32, CaseIterable, Identifiable, Sendable {
-    case screen = 0x100
-    case capture = 0x200
+enum PhysicalDomainID: CaseIterable, Identifiable, Sendable {
+    case screen
+    case capture
 
     var id: UInt32 { rawValue }
+
+    var rawValue: UInt32 {
+        switch self {
+        case .screen: UInt32(SCREEN_PHYSICAL_DOMAIN_SCREEN.rawValue)
+        case .capture: UInt32(SCREEN_PHYSICAL_DOMAIN_CAPTURE.rawValue)
+        }
+    }
+
+    init?(rawValue: UInt32) {
+        switch rawValue {
+        case UInt32(SCREEN_PHYSICAL_DOMAIN_SCREEN.rawValue): self = .screen
+        case UInt32(SCREEN_PHYSICAL_DOMAIN_CAPTURE.rawValue): self = .capture
+        default: return nil
+        }
+    }
 }
 
 protocol PhysicalSectionID: CaseIterable, Identifiable, RawRepresentable, Sendable
 where RawValue == UInt32, ID == UInt32 {}
 
-enum ScreenPhysicalSection: UInt32, PhysicalSectionID {
-    case emission = 0x101
-    case subpixelGeometry = 0x102
-    case panelUniformity = 0x108
-    case panelLightSpread = 0x103
-    case temporal = 0x104
-    case coverGlass = 0x105
-    case environment = 0x106
-    case coverGlow = 0x107
+enum ScreenPhysicalSection: CaseIterable, PhysicalSectionID {
+    case emission
+    case subpixelGeometry
+    case panelUniformity
+    case panelLightSpread
+    case temporal
+    case coverGlass
+    case environment
+    case coverGlow
 
     var id: UInt32 { rawValue }
+
+    var rawValue: UInt32 {
+        switch self {
+        case .emission: UInt32(SCREEN_PHYSICAL_STAGE_SCREEN_EMISSION.rawValue)
+        case .subpixelGeometry: UInt32(SCREEN_PHYSICAL_STAGE_SCREEN_SUBPIXEL_GEOMETRY.rawValue)
+        case .panelUniformity: UInt32(SCREEN_PHYSICAL_STAGE_SCREEN_UNIFORMITY.rawValue)
+        case .panelLightSpread: UInt32(SCREEN_PHYSICAL_STAGE_SCREEN_LIGHT_SPREAD.rawValue)
+        case .temporal: UInt32(SCREEN_PHYSICAL_STAGE_SCREEN_TEMPORAL.rawValue)
+        case .coverGlass: UInt32(SCREEN_PHYSICAL_STAGE_SCREEN_COVER_GLASS.rawValue)
+        case .environment: UInt32(SCREEN_PHYSICAL_STAGE_SCREEN_ENVIRONMENT.rawValue)
+        case .coverGlow: UInt32(SCREEN_PHYSICAL_STAGE_SCREEN_COVER_GLOW.rawValue)
+        }
+    }
+
+    init?(rawValue: UInt32) {
+        guard let value = Self.allCases.first(where: { $0.rawValue == rawValue }) else {
+            return nil
+        }
+        self = value
+    }
 }
 
-enum CapturePhysicalSection: UInt32, PhysicalSectionID {
-    case geometry = 0x201
-    case lens = 0x202
-    case exposureShutter = 0x203
-    case sensorCFA = 0x204
-    case noise = 0x205
-    case developDemosaic = 0x206
-    case sensorBloom = 0x207
-    case computationalCapture = 0x208
+enum CapturePhysicalSection: CaseIterable, PhysicalSectionID {
+    case geometry
+    case lens
+    case exposureShutter
+    case sensorCFA
+    case noise
+    case developDemosaic
+    case sensorBloom
+    case computationalCapture
 
     var id: UInt32 { rawValue }
+
+    var rawValue: UInt32 {
+        switch self {
+        case .geometry: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_GEOMETRY.rawValue)
+        case .lens: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_LENS.rawValue)
+        case .exposureShutter: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_EXPOSURE_SHUTTER.rawValue)
+        case .sensorCFA: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_CFA.rawValue)
+        case .noise: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_NOISE.rawValue)
+        case .developDemosaic: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_DEVELOP_DEMOSAIC.rawValue)
+        case .sensorBloom: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_BLOOM.rawValue)
+        case .computationalCapture:
+            UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_COMPUTATIONAL_CAPTURE.rawValue)
+        }
+    }
+
+    init?(rawValue: UInt32) {
+        guard let value = Self.allCases.first(where: { $0.rawValue == rawValue }) else {
+            return nil
+        }
+        self = value
+    }
 }
 
 enum PhysicalStageID: Hashable, Identifiable, Sendable {
@@ -61,55 +117,93 @@ enum PhysicalStageID: Hashable, Identifiable, Sendable {
         }
     }
 
-    var domain: PhysicalDomainID {
-        switch self {
-        case .screen: .screen
-        case .capture: .capture
+    init?(rawValue: UInt32) {
+        if let section = ScreenPhysicalSection(rawValue: rawValue) {
+            self = .screen(section)
+        } else if let section = CapturePhysicalSection(rawValue: rawValue) {
+            self = .capture(section)
+        } else {
+            return nil
         }
     }
 
-    static let ordered: [Self] = [
-        .screen(.emission),
-        .screen(.subpixelGeometry),
-        .screen(.panelUniformity),
-        .screen(.panelLightSpread),
-        .screen(.temporal),
-        .capture(.geometry),
-        .screen(.coverGlass),
-        .screen(.environment),
-        .screen(.coverGlow),
-        .capture(.lens),
-        .capture(.exposureShutter),
-        .capture(.computationalCapture),
-        .capture(.sensorBloom),
-        .capture(.sensorCFA),
-        .capture(.noise),
-        .capture(.developDemosaic),
-    ]
+    var domain: PhysicalDomainID {
+        PhysicalStageCatalog.descriptor(for: self).domain
+    }
+
+    static var ordered: [Self] { PhysicalStageCatalog.descriptors.map(\.stage) }
 
     /// Continuous stage amounts surfaced in General in pipeline order. These
     /// are the contract values themselves, not group masters or copied state.
-    static let generalOverviewContinuous: [Self] = [
-        .screen(.temporal),
-        .screen(.coverGlass),
-        .screen(.environment),
-        .screen(.coverGlow),
-        .capture(.lens),
-        .capture(.exposureShutter),
-        .capture(.computationalCapture),
-        .capture(.sensorBloom),
-        .capture(.noise),
-    ]
+    static var generalOverviewContinuous: [Self] {
+        PhysicalStageCatalog.descriptors.filter(\.generalOverview).map(\.stage)
+    }
 
     var contributionLimits: PhysicalContributionLimits {
-        switch self {
-        case .screen(.coverGlass):
-            .init(visualRange: 0 ... 2, safeRange: 0 ... 2)
-        case .capture(.computationalCapture):
-            .init(visualRange: 0 ... 1.5, safeRange: 0 ... 1.5)
-        default:
-            .standard
+        PhysicalStageCatalog.descriptor(for: self).limits
+    }
+}
+
+struct PhysicalStageDescriptor: Sendable {
+    let stage: PhysicalStageID
+    let domain: PhysicalDomainID
+    let continuous: Bool
+    let limits: PhysicalContributionLimits
+    let exactIdentityAtZero: Bool
+    let generalOverview: Bool
+}
+
+enum PhysicalStageCatalog {
+    static let descriptors: [PhysicalStageDescriptor] = {
+        let count = screen_physical_stage_descriptor_count()
+        precondition(count > 0, "Application published no physical stages")
+        var resolved: [PhysicalStageDescriptor] = []
+        resolved.reserveCapacity(count)
+        for index in 0..<count {
+            var raw = ScreenPhysicalStageDescriptorV1()
+            precondition(
+                screen_physical_stage_descriptor(index, &raw),
+                "Application omitted physical stage descriptor \(index)"
+            )
+            precondition(raw.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION)
+            guard let stage = PhysicalStageID(rawValue: raw.stage_id),
+                  let domain = PhysicalDomainID(rawValue: raw.domain_id)
+            else { preconditionFailure("Application published an unknown physical stage") }
+            let continuous: Bool
+            switch raw.control_semantics {
+            case UInt32(SCREEN_PHYSICAL_CONTROL_CONTINUOUS.rawValue): continuous = true
+            case UInt32(SCREEN_PHYSICAL_CONTROL_DISCRETE.rawValue): continuous = false
+            default: preconditionFailure("Application published unknown control semantics")
+            }
+            let limits = PhysicalContributionLimits(
+                visualRange: Double(raw.visual_minimum) ... Double(raw.visual_maximum),
+                safeRange: Double(raw.visual_minimum) ... Double(raw.safe_maximum)
+            )
+            precondition(!continuous || (
+                limits.visualRange.lowerBound.isFinite
+                    && limits.visualRange.upperBound.isFinite
+                    && limits.safeRange.upperBound.isFinite
+                    && limits.visualRange.lowerBound <= limits.visualRange.upperBound
+                    && limits.visualRange.upperBound <= limits.safeRange.upperBound
+            ))
+            resolved.append(.init(
+                stage: stage,
+                domain: domain,
+                continuous: continuous,
+                limits: limits,
+                exactIdentityAtZero: raw.exact_identity_at_zero,
+                generalOverview: raw.general_overview
+            ))
         }
+        precondition(Set(resolved.map(\.stage)).count == resolved.count)
+        return resolved
+    }()
+
+    static func descriptor(for stage: PhysicalStageID) -> PhysicalStageDescriptor {
+        guard let descriptor = descriptors.first(where: { $0.stage == stage }) else {
+            preconditionFailure("Unknown physical stage")
+        }
+        return descriptor
     }
 }
 

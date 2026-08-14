@@ -8,8 +8,9 @@ mod reflection_environment;
 mod test_authoring;
 
 pub use physical_pipeline::{
-    PHYSICAL_STAGE_ORDER, PhysicalIntermediate, PhysicalPipelineSnapshot, PhysicalStage,
-    PhysicalStageControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
+    PHYSICAL_STAGE_DESCRIPTORS, PHYSICAL_STAGE_ORDER, PhysicalDomain, PhysicalIntermediate,
+    PhysicalPipelineSnapshot, PhysicalStage, PhysicalStageControl, PhysicalStageControlSemantics,
+    PhysicalStageDescriptor, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
     SourceAcesCgRaster,
 };
 pub use recording::{
