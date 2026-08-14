@@ -68,10 +68,11 @@ use screen_panel::{
 #[cfg(test)]
 use screen_sensor::expose_raw_with_noise_amount;
 use screen_sensor::{
-    BayerPattern, CaptureIdentity, ComputationalCaptureProfile, CoupledSensorChargeRegion,
-    IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion, SensorBloomProfile, SensorError,
-    SensorProfile, SensorRegion, collect_sensor_charge_region_with_noise_amount,
-    couple_sensor_charge_region, expose_raw, expose_raw_region, quantize_sensor_charge_region,
+    BayerPattern, CaptureIdentity, ComputationalCaptureExposure, ComputationalCaptureProfile,
+    CoupledSensorChargeRegion, IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion,
+    SensorBloomProfile, SensorError, SensorProfile, SensorRegion,
+    collect_sensor_charge_region_with_noise_amount, couple_sensor_charge_region, expose_raw,
+    expose_raw_region, materialize_computational_capture, quantize_sensor_charge_region,
 };
 use std::time::{Duration, Instant};
 
@@ -1009,7 +1010,10 @@ pub enum PhysicalPipelineCpuArtifact {
     CoverGlow(PhysicalRgbaRaster),
     LensProjection(PhysicalRgbaRaster),
     ShutterMotion(PhysicalRgbaRaster),
-    ComputationalCapture(PhysicalRgbaRaster),
+    ComputationalCapture {
+        capture: ComputationalCaptureExposure,
+        diagnostic: PhysicalRgbaRaster,
+    },
     SensorBloom {
         charge: CoupledSensorChargeRegion,
         diagnostic: PhysicalRgbaRaster,
@@ -1040,10 +1044,10 @@ impl PhysicalPipelineCpuArtifact {
             | Self::CoverGlow(raster)
             | Self::LensProjection(raster)
             | Self::ShutterMotion(raster)
-            | Self::ComputationalCapture(raster)
             | Self::DevelopedAcesCg(raster)
             | Self::CameraRenderedAcesCg(raster) => &raster.rgba,
-            Self::SensorBloom { diagnostic, .. }
+            Self::ComputationalCapture { diagnostic, .. }
+            | Self::SensorBloom { diagnostic, .. }
             | Self::SensorCfa { diagnostic, .. }
             | Self::RawMosaic { diagnostic, .. } => &diagnostic.rgba,
         }
@@ -1077,9 +1081,11 @@ impl PhysicalPipelineCpuResult {
             | PhysicalPipelineCpuArtifact::CoverGlow(raster)
             | PhysicalPipelineCpuArtifact::LensProjection(raster)
             | PhysicalPipelineCpuArtifact::ShutterMotion(raster)
-            | PhysicalPipelineCpuArtifact::ComputationalCapture(raster)
             | PhysicalPipelineCpuArtifact::DevelopedAcesCg(raster)
             | PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(raster) => raster.width,
+            PhysicalPipelineCpuArtifact::ComputationalCapture { capture, .. } => {
+                capture.exposure.width
+            }
             PhysicalPipelineCpuArtifact::SensorBloom { charge, .. } => {
                 u32::from(charge.region.width)
             }
@@ -1101,9 +1107,11 @@ impl PhysicalPipelineCpuResult {
             | PhysicalPipelineCpuArtifact::CoverGlow(raster)
             | PhysicalPipelineCpuArtifact::LensProjection(raster)
             | PhysicalPipelineCpuArtifact::ShutterMotion(raster)
-            | PhysicalPipelineCpuArtifact::ComputationalCapture(raster)
             | PhysicalPipelineCpuArtifact::DevelopedAcesCg(raster)
             | PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(raster) => raster.height,
+            PhysicalPipelineCpuArtifact::ComputationalCapture { capture, .. } => {
+                capture.exposure.height
+            }
             PhysicalPipelineCpuArtifact::SensorBloom { charge, .. } => {
                 u32::from(charge.region.height)
             }
@@ -1161,7 +1169,7 @@ fn physical_rgba_artifact(
             Ok(PhysicalPipelineCpuArtifact::ShutterMotion(raster))
         }
         PhysicalIntermediate::ComputationalCapture => {
-            Ok(PhysicalPipelineCpuArtifact::ComputationalCapture(raster))
+            Err(ApplicationError::UnsupportedPhysicalIntermediate)
         }
         PhysicalIntermediate::DevelopedAcesCg => {
             Ok(PhysicalPipelineCpuArtifact::DevelopedAcesCg(raster))
@@ -1308,31 +1316,24 @@ pub fn expose_physical_pipeline_raw(
     shuttered_height: u32,
     plan: PhysicalPipelineExecutionPlan,
 ) -> Result<RawSensorRaster, ApplicationError> {
-    let (sensor, exposure) =
-        physical_pipeline_sensor_exposure(shuttered, shuttered_width, shuttered_height, plan)?;
-    let region = SensorRegion::full(sensor);
-    let collected = collect_sensor_charge_region_with_noise_amount(
-        sensor,
-        &exposure,
-        CaptureIdentity {
-            noise_seed: plan.shutter_motion.noise_seed,
-            frame_index: plan.frame_index,
-        },
-        region,
-        plan.sensor_noise_amount,
-    )
-    .map_err(ApplicationError::Sensor)?;
-    let coupled = couple_sensor_charge_region(collected).map_err(ApplicationError::Sensor)?;
+    let capture = physical_pipeline_computational_capture(
+        shuttered,
+        shuttered_width,
+        shuttered_height,
+        plan,
+    )?;
+    let coupled = couple_physical_pipeline_capture(capture, plan)?;
+    let region = coupled.region;
     let raw = quantize_sensor_charge_region(coupled, region).map_err(ApplicationError::Sensor)?;
     Ok(complete_raw_raster(raw))
 }
 
-fn physical_pipeline_sensor_exposure(
+fn physical_pipeline_computational_capture(
     shuttered: &[[f32; 4]],
     shuttered_width: u32,
     shuttered_height: u32,
     plan: PhysicalPipelineExecutionPlan,
-) -> Result<(SensorProfile, IntegratedOpticalExposure), ApplicationError> {
+) -> Result<ComputationalCaptureExposure, ApplicationError> {
     let expected = u64::from(shuttered_width) * u64::from(shuttered_height);
     if shuttered_width == 0
         || shuttered_height == 0
@@ -1340,7 +1341,8 @@ fn physical_pipeline_sensor_exposure(
         || !plan.sensor_enabled
         || !matches!(
             plan.requested_intermediate,
-            PhysicalIntermediate::SensorBloom
+            PhysicalIntermediate::ComputationalCapture
+                | PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
                 | PhysicalIntermediate::DevelopedAcesCg
@@ -1349,10 +1351,7 @@ fn physical_pipeline_sensor_exposure(
     {
         return Err(ApplicationError::OpticalSampleRasterMismatch);
     }
-    let sensor = plan
-        .computational_capture
-        .effective_sensor(plan.sensor, plan.computational_character_strength)
-        .map_err(ApplicationError::Sensor)?;
+    let sensor = plan.sensor.validate().map_err(ApplicationError::Sensor)?;
     plan.radiometric_calibration
         .validate()
         .map_err(ApplicationError::InvalidRadiometricCalibration)?;
@@ -1373,8 +1372,10 @@ fn physical_pipeline_sensor_exposure(
         parameters.white_level_nits * plan.radiometric_calibration.effective_sensor_exposure_scale;
     let sensor_width = u32::from(sensor.native_width);
     let sensor_height = u32::from(sensor.native_height);
-    Ok((
+    materialize_computational_capture(
         sensor,
+        plan.computational_capture,
+        plan.computational_character_strength,
         IntegratedOpticalExposure {
             width: sensor_width,
             height: sensor_height,
@@ -1388,20 +1389,18 @@ fn physical_pipeline_sensor_exposure(
                 exposure_scale,
             ),
         },
-    ))
+    )
+    .map_err(ApplicationError::Sensor)
 }
 
-fn expose_physical_pipeline_coupled_charge(
-    shuttered: &[[f32; 4]],
-    shuttered_width: u32,
-    shuttered_height: u32,
+fn couple_physical_pipeline_capture(
+    capture: ComputationalCaptureExposure,
     plan: PhysicalPipelineExecutionPlan,
 ) -> Result<CoupledSensorChargeRegion, ApplicationError> {
-    let (sensor, exposure) =
-        physical_pipeline_sensor_exposure(shuttered, shuttered_width, shuttered_height, plan)?;
+    let sensor = capture.sensor_profile;
     let collected = collect_sensor_charge_region_with_noise_amount(
         sensor,
-        &exposure,
+        &capture.exposure,
         CaptureIdentity {
             noise_seed: plan.shutter_motion.noise_seed,
             frame_index: plan.frame_index,
@@ -2816,6 +2815,26 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             output.push([selected[0], selected[1], selected[2], ideal[3]]);
         }
     }
+    if plan.requested_intermediate == PhysicalIntermediate::ComputationalCapture {
+        let capture = physical_pipeline_computational_capture(
+            &output,
+            sampling.effective_width,
+            sampling.effective_height,
+            plan,
+        )?;
+        return Ok(PhysicalPipelineCpuResult {
+            artifact: PhysicalPipelineCpuArtifact::ComputationalCapture {
+                capture,
+                diagnostic: PhysicalRgbaRaster {
+                    width: sampling.effective_width,
+                    height: sampling.effective_height,
+                    rgba: output,
+                },
+            },
+            diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
+        });
+    }
+
     // Capture owns only the sensor/noise, RAW, and developed intermediates.
     // Earlier diagnostics must publish the selected screen/camera-domain raster
     // directly instead of being silently reinterpreted as sensor illuminance.
@@ -2836,12 +2855,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::RawMosaic
         ) {
             if plan.requested_intermediate == PhysicalIntermediate::SensorBloom {
-                let charge = expose_physical_pipeline_coupled_charge(
+                let capture = physical_pipeline_computational_capture(
                     &output,
                     sampling.effective_width,
                     sampling.effective_height,
                     plan,
                 )?;
+                let charge = couple_physical_pipeline_capture(capture, plan)?;
                 // Presentation remains the established normalized clean-RAW
                 // diagnostic, while the canonical checkpoint is now the
                 // coupled-charge artifact itself.
@@ -9188,6 +9208,63 @@ mod tests {
                 assert_eq!(u32::from(charge.region.height), diagnostic.height);
             }
             artifact => panic!("unexpected Sensor Bloom artifact: {artifact:?}"),
+        }
+    }
+
+    #[test]
+    fn computational_capture_checkpoint_publishes_the_effective_sensor_exposure() {
+        let mut request = radiometric_request(
+            100.0,
+            RationalTime::new(-1, 96).expect("open"),
+            RationalTime::new(1, 96).expect("close"),
+            0.0,
+            1.0,
+            PhysicalIntermediate::ComputationalCapture,
+        );
+        request.plan.computational_capture = ComputationalCaptureProfile {
+            exposure_count: 2,
+            bracket_spacing_stops: 0.5,
+        };
+        request.plan.computational_character_strength = 1.0;
+        request.plan.sensor.full_well_electrons *= 0.25;
+        request.plan.sensor.saturation_illuminance_seconds = LinearRgb::new(
+            request.plan.sensor.saturation_illuminance_seconds.r * 0.25,
+            request.plan.sensor.saturation_illuminance_seconds.g * 0.25,
+            request.plan.sensor.saturation_illuminance_seconds.b * 0.25,
+        );
+        let original_sensor = request.plan.sensor;
+        let expected_sensor = request
+            .plan
+            .computational_capture
+            .effective_sensor(
+                original_sensor,
+                request.plan.computational_character_strength,
+            )
+            .expect("effective sensor");
+        let result = evaluate_physical_pipeline_cpu_oracle(request).expect("capture checkpoint");
+
+        assert!(result.raw_sensor().is_none());
+        match &result.artifact {
+            PhysicalPipelineCpuArtifact::ComputationalCapture {
+                capture,
+                diagnostic,
+            } => {
+                assert_eq!(
+                    capture.exposure.width,
+                    u32::from(capture.sensor_profile.native_width)
+                );
+                assert_eq!(
+                    capture.exposure.height,
+                    u32::from(capture.sensor_profile.native_height)
+                );
+                assert!(!diagnostic.rgba.is_empty());
+                assert!(
+                    capture.sensor_profile.full_well_electrons
+                        > original_sensor.full_well_electrons
+                );
+                assert_eq!(capture.sensor_profile, expected_sensor);
+            }
+            artifact => panic!("unexpected Computational Capture artifact: {artifact:?}"),
         }
     }
 
