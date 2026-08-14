@@ -600,14 +600,69 @@ fn action_control(id: &'static str, label: &'static str) -> TestControlRequireme
     TestControlRequirement::Action { id, label }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PhysicalArtifactId {
+    EncodedSourceRasterV1,
+    LinearAcesCgRasterV1,
+    SourceGradedAcesCgV1,
+    PlacedFeederSignalV1,
+    PanelEmissionRadianceV1,
+    SubpixelRadianceV1,
+    UniformPanelRadianceV1,
+    SpreadPanelRadianceV1,
+    ResolvedObservationGeometryV1,
+    CoveredDirectionalRadianceV1,
+    GlassScatteredRadianceV1,
+    ImagePlaneIlluminanceAcesCgV1,
+    IntegratedOpticalExposureV1,
+    ComputationalCaptureExposureV2,
+    CoupledSensorChargeV1,
+    RawMosaicCleanV1,
+    RawMosaicNoisyV1,
+    DevelopedCameraAcesCgV1,
+    CameraRenderedAcesCgV1,
+    DeliveryAcesCgRasterV1,
+    RecordingOutputSignalV2,
+    DecodedRecordingSignalV1,
+}
+
+impl PhysicalArtifactId {
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::EncodedSourceRasterV1 => "encoded-source-raster-v1",
+            Self::LinearAcesCgRasterV1 => "linear-acescg-raster-v1",
+            Self::SourceGradedAcesCgV1 => "source-graded-acescg-v1",
+            Self::PlacedFeederSignalV1 => "placed-feeder-signal-v1",
+            Self::PanelEmissionRadianceV1 => "panel-emission-radiance-v1",
+            Self::SubpixelRadianceV1 => "subpixel-radiance-v1",
+            Self::UniformPanelRadianceV1 => "uniform-panel-radiance-v1",
+            Self::SpreadPanelRadianceV1 => "spread-panel-radiance-v1",
+            Self::ResolvedObservationGeometryV1 => "resolved-observation-geometry-v1",
+            Self::CoveredDirectionalRadianceV1 => "covered-directional-radiance-v1",
+            Self::GlassScatteredRadianceV1 => "glass-scattered-radiance-v1",
+            Self::ImagePlaneIlluminanceAcesCgV1 => "image-plane-illuminance-acescg-v1",
+            Self::IntegratedOpticalExposureV1 => "integrated-optical-exposure-v1",
+            Self::ComputationalCaptureExposureV2 => "computational-capture-exposure-v2",
+            Self::CoupledSensorChargeV1 => "coupled-sensor-charge-v1",
+            Self::RawMosaicCleanV1 => "raw-mosaic-clean-v1",
+            Self::RawMosaicNoisyV1 => "raw-mosaic-noisy-v1",
+            Self::DevelopedCameraAcesCgV1 => "developed-camera-acescg-v1",
+            Self::CameraRenderedAcesCgV1 => "camera-rendered-acescg-v1",
+            Self::DeliveryAcesCgRasterV1 => "delivery-acescg-raster-v1",
+            Self::RecordingOutputSignalV2 => "recording-output-signal-v2",
+            Self::DecodedRecordingSignalV1 => "decoded-recording-signal-v1",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TestPhaseDescriptor {
     pub id: &'static str,
     pub label: &'static str,
     pub effect_summary: &'static str,
     pub header_control_id: Option<&'static str>,
-    pub input_artifact: &'static str,
-    pub output_artifact: &'static str,
+    pub input_artifact: PhysicalArtifactId,
+    pub output_artifact: PhysicalArtifactId,
     pub preview_result: TestPreviewResult,
     pub controls: Vec<TestControlRequirement>,
 }
@@ -1738,8 +1793,8 @@ pub fn test_page_descriptor(
                 label: "Origen",
                 effect_summary: "Interpreta la fuente y establece el raster lineal ACEScg canónico.",
                 header_control_id: None,
-                input_artifact: "encoded-source-raster-v1",
-                output_artifact: "linear-acescg-raster-v1",
+                input_artifact: PhysicalArtifactId::EncodedSourceRasterV1,
+                output_artifact: PhysicalArtifactId::LinearAcesCgRasterV1,
                 preview_result: TestPreviewResult::SourceAcesCg,
                 controls: Vec::new(),
             },
@@ -1748,8 +1803,8 @@ pub fn test_page_descriptor(
                 label: "Ajuste de fuente",
                 effect_summary: "Ajusta únicamente el contenido que alimentará el Device antes de codificarlo.",
                 header_control_id: None,
-                input_artifact: "linear-acescg-raster-v1",
-                output_artifact: "source-graded-acescg-v1",
+                input_artifact: PhysicalArtifactId::LinearAcesCgRasterV1,
+                output_artifact: PhysicalArtifactId::SourceGradedAcesCgV1,
                 preview_result: TestPreviewResult::SourceAdjustment,
                 controls: vec![
                     scalar_control(
@@ -1804,8 +1859,8 @@ pub fn test_page_descriptor(
                 label: "Salida del feeder",
                 effect_summary: "Codifica y coloca la señal que recibe el dispositivo.",
                 header_control_id: None,
-                input_artifact: "source-graded-acescg-v1",
-                output_artifact: "placed-feeder-signal-v1",
+                input_artifact: PhysicalArtifactId::SourceGradedAcesCgV1,
+                output_artifact: PhysicalArtifactId::PlacedFeederSignalV1,
                 preview_result: TestPreviewResult::FeederSignal,
                 controls: vec![
                     choice_control(
@@ -1829,8 +1884,8 @@ pub fn test_page_descriptor(
                 label: "Mapeo e interpretación del dispositivo",
                 effect_summary: "Interpreta la señal según el modo de color y luminancia del dispositivo.",
                 header_control_id: None,
-                input_artifact: "placed-feeder-signal-v1",
-                output_artifact: "panel-emission-radiance-v1",
+                input_artifact: PhysicalArtifactId::PlacedFeederSignalV1,
+                output_artifact: PhysicalArtifactId::PanelEmissionRadianceV1,
                 preview_result: TestPreviewResult::DeviceInterpretation,
                 controls: vec![
                     choice_control(
@@ -1863,8 +1918,8 @@ pub fn test_page_descriptor(
                 label: "Trama del panel",
                 effect_summary: "Introduce trama RGB/BGR, subpíxeles y matriz negra; determina el moiré espacial.",
                 header_control_id: Some(SUBPIXEL_GEOMETRY_CONTROL_ID),
-                input_artifact: "panel-emission-radiance-v1",
-                output_artifact: "subpixel-radiance-v1",
+                input_artifact: PhysicalArtifactId::PanelEmissionRadianceV1,
+                output_artifact: PhysicalArtifactId::SubpixelRadianceV1,
                 preview_result: TestPreviewResult::PanelStructure,
                 controls: vec![scalar_control(
                     SUBPIXEL_GEOMETRY_CONTROL_ID,
@@ -1881,8 +1936,8 @@ pub fn test_page_descriptor(
                 label: "Uniformidad del panel",
                 effect_summary: "Introduce la variación espacial fija de luminancia y color residual del dispositivo.",
                 header_control_id: Some(PANEL_UNIFORMITY_CONTROL_ID),
-                input_artifact: "subpixel-radiance-v1",
-                output_artifact: "uniform-panel-radiance-v1",
+                input_artifact: PhysicalArtifactId::SubpixelRadianceV1,
+                output_artifact: PhysicalArtifactId::UniformPanelRadianceV1,
                 preview_result: TestPreviewResult::PanelUniformity,
                 controls: vec![scalar_control(
                     PANEL_UNIFORMITY_CONTROL_ID,
@@ -1899,8 +1954,8 @@ pub fn test_page_descriptor(
                 label: "Dispersión de luz del panel",
                 effect_summary: "Difunde la emisión entre celdas y suaviza la estructura fina del panel.",
                 header_control_id: Some(PANEL_LIGHT_SPREAD_CONTROL_ID),
-                input_artifact: "uniform-panel-radiance-v1",
-                output_artifact: "spread-panel-radiance-v1",
+                input_artifact: PhysicalArtifactId::UniformPanelRadianceV1,
+                output_artifact: PhysicalArtifactId::SpreadPanelRadianceV1,
                 preview_result: TestPreviewResult::PanelLightSpread,
                 controls: vec![scalar_control(
                     PANEL_LIGHT_SPREAD_CONTROL_ID,
@@ -1917,8 +1972,8 @@ pub fn test_page_descriptor(
                 label: "Geometría relativa",
                 effect_summary: "Sitúa cámara y pantalla y determina perspectiva, encuadre e incidencia.",
                 header_control_id: None,
-                input_artifact: "spread-panel-radiance-v1",
-                output_artifact: "resolved-observation-geometry-v1",
+                input_artifact: PhysicalArtifactId::SpreadPanelRadianceV1,
+                output_artifact: PhysicalArtifactId::ResolvedObservationGeometryV1,
                 preview_result: TestPreviewResult::RelativeGeometry,
                 controls: geometry_controls,
             },
@@ -1927,8 +1982,8 @@ pub fn test_page_descriptor(
                 label: "Cristal y entorno",
                 effect_summary: "Añade transmisión, reflejos, contraste angular y carácter superficial.",
                 header_control_id: Some(COVER_GLASS_AMOUNT_CONTROL_ID),
-                input_artifact: "resolved-observation-geometry-v1",
-                output_artifact: "covered-directional-radiance-v1",
+                input_artifact: PhysicalArtifactId::ResolvedObservationGeometryV1,
+                output_artifact: PhysicalArtifactId::CoveredDirectionalRadianceV1,
                 preview_result: TestPreviewResult::CoverEnvironment,
                 controls: {
                     let mut controls = vec![
@@ -2084,8 +2139,8 @@ pub fn test_page_descriptor(
                 label: "Resplandor del cristal",
                 effect_summary: "Redistribuye luz intensa dentro del cristal, incluso fuera del área activa.",
                 header_control_id: Some(COVER_GLOW_AMOUNT_CONTROL_ID),
-                input_artifact: "covered-directional-radiance-v1",
-                output_artifact: "glass-scattered-radiance-v1",
+                input_artifact: PhysicalArtifactId::CoveredDirectionalRadianceV1,
+                output_artifact: PhysicalArtifactId::GlassScatteredRadianceV1,
                 preview_result: TestPreviewResult::CoverGlow,
                 controls: vec![scalar_control(
                     COVER_GLOW_AMOUNT_CONTROL_ID,
@@ -2102,8 +2157,8 @@ pub fn test_page_descriptor(
                 label: "Objetivo y proyección",
                 effect_summary: "Aplica proyección, foco, distorsión, aberración cromática, viñeteo y PSF.",
                 header_control_id: Some(LENS_AMOUNT_CONTROL_ID),
-                input_artifact: "glass-scattered-radiance-v1",
-                output_artifact: "image-plane-illuminance-acescg-v1",
+                input_artifact: PhysicalArtifactId::GlassScatteredRadianceV1,
+                output_artifact: PhysicalArtifactId::ImagePlaneIlluminanceAcesCgV1,
                 preview_result: TestPreviewResult::LensProjection,
                 controls: lens_controls,
             },
@@ -2112,8 +2167,8 @@ pub fn test_page_descriptor(
                 label: "Exposición y obturador",
                 effect_summary: "Integra diafragma, tiempo de exposición, ND y comportamiento temporal.",
                 header_control_id: Some(SHUTTER_AMOUNT_CONTROL_ID),
-                input_artifact: "image-plane-illuminance-acescg-v1",
-                output_artifact: "integrated-optical-exposure-v1",
+                input_artifact: PhysicalArtifactId::ImagePlaneIlluminanceAcesCgV1,
+                output_artifact: PhysicalArtifactId::IntegratedOpticalExposureV1,
                 preview_result: TestPreviewResult::ShutterExposure,
                 controls: vec![
                     scalar_control(
@@ -2151,8 +2206,8 @@ pub fn test_page_descriptor(
                 label: "Captura computacional",
                 effect_summary: "Combina analíticamente una horquilla de exposiciones sin repetir la óptica.",
                 header_control_id: Some(COMPUTATIONAL_CAPTURE_AMOUNT_CONTROL_ID),
-                input_artifact: "integrated-optical-exposure-v1",
-                output_artifact: "computational-capture-exposure-v2",
+                input_artifact: PhysicalArtifactId::IntegratedOpticalExposureV1,
+                output_artifact: PhysicalArtifactId::ComputationalCaptureExposureV2,
                 preview_result: TestPreviewResult::ComputationalCapture,
                 controls: vec![
                     scalar_control(
@@ -2189,8 +2244,8 @@ pub fn test_page_descriptor(
                 label: "Crosstalk y bloom del sensor",
                 effect_summary: "Transfiere carga entre fotositos y desborda altas luces saturadas.",
                 header_control_id: Some(SENSOR_BLOOM_AMOUNT_CONTROL_ID),
-                input_artifact: "computational-capture-exposure-v2",
-                output_artifact: "coupled-sensor-charge-v1",
+                input_artifact: PhysicalArtifactId::ComputationalCaptureExposureV2,
+                output_artifact: PhysicalArtifactId::CoupledSensorChargeV1,
                 preview_result: TestPreviewResult::SensorBloom,
                 controls: vec![
                     scalar_control(
@@ -2227,8 +2282,8 @@ pub fn test_page_descriptor(
                 label: "Sensor y CFA",
                 effect_summary: "Convierte la exposición óptica en carga mosaico Bayer limpia.",
                 header_control_id: None,
-                input_artifact: "coupled-sensor-charge-v1",
-                output_artifact: "raw-mosaic-clean-v1",
+                input_artifact: PhysicalArtifactId::CoupledSensorChargeV1,
+                output_artifact: PhysicalArtifactId::RawMosaicCleanV1,
                 preview_result: TestPreviewResult::SensorCfa,
                 controls: Vec::new(),
             },
@@ -2237,8 +2292,8 @@ pub fn test_page_descriptor(
                 label: "Ruido del sensor",
                 effect_summary: "Añade ruido físico de lectura, corriente oscura y cuantización.",
                 header_control_id: Some(SENSOR_NOISE_AMOUNT_CONTROL_ID),
-                input_artifact: "raw-mosaic-clean-v1",
-                output_artifact: "raw-mosaic-noisy-v1",
+                input_artifact: PhysicalArtifactId::RawMosaicCleanV1,
+                output_artifact: PhysicalArtifactId::RawMosaicNoisyV1,
                 preview_result: TestPreviewResult::SensorNoise,
                 controls: vec![scalar_control(
                     SENSOR_NOISE_AMOUNT_CONTROL_ID,
@@ -2255,8 +2310,8 @@ pub fn test_page_descriptor(
                 label: "Revelado y demosaico",
                 effect_summary: "Aplica balance, revelado y demosaico para obtener ACEScg de cámara.",
                 header_control_id: None,
-                input_artifact: "raw-mosaic-noisy-v1",
-                output_artifact: "developed-camera-acescg-v1",
+                input_artifact: PhysicalArtifactId::RawMosaicNoisyV1,
+                output_artifact: PhysicalArtifactId::DevelopedCameraAcesCgV1,
                 preview_result: TestPreviewResult::DevelopDemosaic,
                 controls: Vec::new(),
             },
@@ -2265,8 +2320,8 @@ pub fn test_page_descriptor(
                 label: "Intención de render de cámara",
                 effect_summary: "Aplica el acabado del fabricante a la imagen desarrollada lineal.",
                 header_control_id: None,
-                input_artifact: "developed-camera-acescg-v1",
-                output_artifact: "camera-rendered-acescg-v1",
+                input_artifact: PhysicalArtifactId::DevelopedCameraAcesCgV1,
+                output_artifact: PhysicalArtifactId::CameraRenderedAcesCgV1,
                 preview_result: TestPreviewResult::CameraRenderingIntent,
                 controls: vec![
                     scalar_control(
@@ -2321,8 +2376,8 @@ pub fn test_page_descriptor(
                 label: "Raster de entrega",
                 effect_summary: "Ajusta el resultado de cámara al raster final sin cambiar óptica, sensor ni look.",
                 header_control_id: None,
-                input_artifact: "camera-rendered-acescg-v1",
-                output_artifact: "delivery-acescg-raster-v1",
+                input_artifact: PhysicalArtifactId::CameraRenderedAcesCgV1,
+                output_artifact: PhysicalArtifactId::DeliveryAcesCgRasterV1,
                 preview_result: TestPreviewResult::DeliveryRaster,
                 controls: vec![
                     choice_control(
@@ -2371,8 +2426,8 @@ pub fn test_page_descriptor(
                 label: "Señal de grabación · diagnóstico",
                 effect_summary: "Muestra la señal interna que recibirá el códec; la previsualización normal vuelve después al monitor.",
                 header_control_id: None,
-                input_artifact: "delivery-acescg-raster-v1",
-                output_artifact: "recording-output-signal-v2",
+                input_artifact: PhysicalArtifactId::DeliveryAcesCgRasterV1,
+                output_artifact: PhysicalArtifactId::RecordingOutputSignalV2,
                 preview_result: TestPreviewResult::RecordingOutput,
                 controls: Vec::new(),
             },
@@ -2381,8 +2436,8 @@ pub fn test_page_descriptor(
                 label: "Códec de grabación",
                 effect_summary: "Codifica y decodifica la señal con el perfil seleccionado para mostrar su degradación acumulada.",
                 header_control_id: Some(RECORDING_CHARACTER_CONTROL_ID),
-                input_artifact: "recording-output-signal-v2",
-                output_artifact: "decoded-recording-signal-v1",
+                input_artifact: PhysicalArtifactId::RecordingOutputSignalV2,
+                output_artifact: PhysicalArtifactId::DecodedRecordingSignalV1,
                 preview_result: TestPreviewResult::RecordingCodec,
                 controls: vec![
                     choice_control(
@@ -3532,6 +3587,47 @@ mod tests {
         assert_eq!(
             apply_test_scalar(asus(), SUBPIXEL_GEOMETRY_CONTROL_ID, 4.1),
             Err(TestAuthoringError::InvalidSubpixelGeometryAmount)
+        );
+    }
+
+    #[test]
+    fn physical_artifact_identities_are_typed_stable_and_unique() {
+        let artifacts = [
+            PhysicalArtifactId::EncodedSourceRasterV1,
+            PhysicalArtifactId::LinearAcesCgRasterV1,
+            PhysicalArtifactId::SourceGradedAcesCgV1,
+            PhysicalArtifactId::PlacedFeederSignalV1,
+            PhysicalArtifactId::PanelEmissionRadianceV1,
+            PhysicalArtifactId::SubpixelRadianceV1,
+            PhysicalArtifactId::UniformPanelRadianceV1,
+            PhysicalArtifactId::SpreadPanelRadianceV1,
+            PhysicalArtifactId::ResolvedObservationGeometryV1,
+            PhysicalArtifactId::CoveredDirectionalRadianceV1,
+            PhysicalArtifactId::GlassScatteredRadianceV1,
+            PhysicalArtifactId::ImagePlaneIlluminanceAcesCgV1,
+            PhysicalArtifactId::IntegratedOpticalExposureV1,
+            PhysicalArtifactId::ComputationalCaptureExposureV2,
+            PhysicalArtifactId::CoupledSensorChargeV1,
+            PhysicalArtifactId::RawMosaicCleanV1,
+            PhysicalArtifactId::RawMosaicNoisyV1,
+            PhysicalArtifactId::DevelopedCameraAcesCgV1,
+            PhysicalArtifactId::CameraRenderedAcesCgV1,
+            PhysicalArtifactId::DeliveryAcesCgRasterV1,
+            PhysicalArtifactId::RecordingOutputSignalV2,
+            PhysicalArtifactId::DecodedRecordingSignalV1,
+        ];
+        let stable_ids = artifacts
+            .iter()
+            .map(|artifact| artifact.stable_id())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(stable_ids.len(), artifacts.len());
+        assert_eq!(
+            PhysicalArtifactId::RawMosaicCleanV1.stable_id(),
+            "raw-mosaic-clean-v1"
+        );
+        assert_eq!(
+            PhysicalArtifactId::RecordingOutputSignalV2.stable_id(),
+            "recording-output-signal-v2"
         );
     }
 

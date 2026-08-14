@@ -2,6 +2,8 @@
 
 Status: normative.
 
+Application owns every phase boundary as a `PhysicalArtifactId`: the typed identity proves adjacency, while host adapters receive only its stable versioned string for presentation and serialization. Swift and the native bridge cannot declare, infer or reorder artifact identities.
+
 ## Product boundary
 
 The application consumes an explicitly interpreted animated raster and evaluates a physical fixed-pixel LCD through animated screen/camera geometry and phase-preserving photosite-footprint sampling. The FFmpeg adapter accepts the video and still-image formats enabled in the one shipped decoder configuration, including H.264 and ProRes. ProRes 4444 is a recommended high-quality production source, not an input restriction. OpenEXR sequences use the explicit OpenEXR adapter. No codec or container chooses color interpretation.

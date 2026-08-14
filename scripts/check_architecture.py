@@ -324,6 +324,28 @@ def validate_native_model_authority() -> None:
                 f"Application does not publish the physical-stage authority: {required}"
             )
 
+    test_authoring = (
+        ROOT / "crates/screen-application/src/test_authoring.rs"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "pub enum PhysicalArtifactId",
+        "pub const fn stable_id(self) -> &'static str",
+        "pub input_artifact: PhysicalArtifactId",
+        "pub output_artifact: PhysicalArtifactId",
+    ):
+        if required not in test_authoring:
+            raise ValidationError(
+                f"Application does not publish typed physical artifacts: {required}"
+            )
+    for forbidden in (
+        "pub input_artifact: &'static str",
+        "pub output_artifact: &'static str",
+    ):
+        if forbidden in test_authoring:
+            raise ValidationError(
+                f"Application publishes an untyped physical artifact identity: {forbidden}"
+            )
+
     bridge = (ROOT / "crates/screen-native-bridge/src/lib.rs").read_text(encoding="utf-8")
     forbidden_bridge = (
         "EXPECTED_STAGE_IDS",
