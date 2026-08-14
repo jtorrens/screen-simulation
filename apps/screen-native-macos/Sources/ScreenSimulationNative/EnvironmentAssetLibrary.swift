@@ -110,6 +110,29 @@ enum EnvironmentAssetLibrary {
         )
     }
 
+    static func storeGeneratedEXR(
+        _ data: Data,
+        suggestedName: String,
+        libraryRoot: URL? = nil
+    ) throws -> ManagedEnvironmentAsset {
+        guard !data.isEmpty else { throw EnvironmentAssetLibraryError.unreadable }
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let directory = try environmentDirectory(libraryRoot: libraryRoot)
+        let cleanName = suggestedName
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let destination = directory.appendingPathComponent("\(cleanName)--\(hash).exr")
+        if !FileManager.default.fileExists(atPath: destination.path) {
+            do { try data.write(to: destination, options: .atomic) }
+            catch { throw EnvironmentAssetLibraryError.copyFailed(error.localizedDescription) }
+        }
+        return .init(
+            url: destination,
+            originalFileName: "\(cleanName).exr",
+            sha256: hash
+        )
+    }
+
     static func asset(
         sha256: String,
         originalFileName: String,

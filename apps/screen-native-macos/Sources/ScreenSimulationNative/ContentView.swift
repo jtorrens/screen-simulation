@@ -80,6 +80,7 @@ struct ContentView: View {
     @ObservedObject var model: WorkspaceModel
     @StateObject private var library = GlobalLibraryController()
     @StateObject private var referenceMatchPanel = ReferenceMatchPanelController()
+    @StateObject private var reflectionEnvironmentPanel = ReflectionEnvironmentPanelController()
     @State private var tab = SidebarTab.output
     @State private var page = WorkspacePage.main
     @State private var settingsSection = SettingsSection.application
@@ -1685,6 +1686,17 @@ struct ContentView: View {
                     .help("Aumentar zoom")
                     .accessibilityLabel("Aumentar zoom")
                 Button {
+                    referenceMatchPanel.hide(model: model)
+                    reflectionEnvironmentPanel.toggle(model: model)
+                } label: {
+                    Label(
+                        reflectionEnvironmentPanel.isVisible ? "Ocultar reflejos" : "Crear reflejos",
+                        systemImage: reflectionEnvironmentPanel.isVisible
+                            ? "lightbulb.max.fill" : "lightbulb.max"
+                    )
+                }
+                .help("Dibujar fuentes y generar un entorno OpenEXR")
+                Button {
                     model.renderCurrentFrame()
                 } label: {
                     Label("Guardar frame", systemImage: "square.and.arrow.down")
@@ -1717,7 +1729,10 @@ struct ContentView: View {
                             ? model.referenceMatchProjectedCorners : [],
                         referenceTargetCorners: model.referenceMatchEnabled
                             ? model.referenceMatchCorners : [],
-                        cameraNavigationEnabled: !model.referenceMatchEnabled,
+                        reflectionHandles: model.selectedReflectionEmitterHandles,
+                        reflectionShapeClosed: model.selectedReflectionEmitter?.kind != .sun,
+                        cameraNavigationEnabled: !model.referenceMatchEnabled
+                            && !model.reflectionEnvironmentEditorEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
                         onZoomChange: model.setInteractiveZoom,
@@ -1727,7 +1742,10 @@ struct ContentView: View {
                         onCameraGestureEnd: { model.endCameraNavigation(undoManager: undoManager) },
                         onReferenceCornerBegin: model.beginReferenceCornerDrag,
                         onReferenceCornerChange: model.updateReferenceCorner,
-                        onReferenceCornerEnd: { model.endReferenceCornerDrag(undoManager: undoManager) }
+                        onReferenceCornerEnd: { model.endReferenceCornerDrag(undoManager: undoManager) },
+                        onReflectionHandleBegin: model.beginReflectionHandleDrag,
+                        onReflectionHandleChange: model.updateReflectionHandle,
+                        onReflectionHandleEnd: model.endReflectionHandleDrag
                     )
                     .accessibilityLabel("Preview OCIO del resultado")
                     image
@@ -1838,6 +1856,8 @@ struct MetalPreview: NSViewRepresentable {
     let deviceBoundary: [CGPoint]
     let referenceProjectedCorners: [CGPoint]
     let referenceTargetCorners: [CGPoint]
+    let reflectionHandles: [CGPoint]
+    let reflectionShapeClosed: Bool
     let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
@@ -1849,6 +1869,9 @@ struct MetalPreview: NSViewRepresentable {
     let onReferenceCornerBegin: (Int) -> Void
     let onReferenceCornerChange: (Int, CGPoint) -> Void
     let onReferenceCornerEnd: () -> Void
+    let onReflectionHandleBegin: (Int) -> Void
+    let onReflectionHandleChange: (Int, CGPoint) -> Void
+    let onReflectionHandleEnd: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onDisplayChange: onDisplayChange)
@@ -1874,6 +1897,8 @@ struct MetalPreview: NSViewRepresentable {
             deviceBoundary: deviceBoundary,
             referenceProjectedCorners: referenceProjectedCorners,
             referenceTargetCorners: referenceTargetCorners,
+            reflectionHandles: reflectionHandles,
+            reflectionShapeClosed: reflectionShapeClosed,
             cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
             textureHeight: frame.height
@@ -1887,6 +1912,9 @@ struct MetalPreview: NSViewRepresentable {
         container.onReferenceCornerBegin = onReferenceCornerBegin
         container.onReferenceCornerChange = onReferenceCornerChange
         container.onReferenceCornerEnd = onReferenceCornerEnd
+        container.onReflectionHandleBegin = onReflectionHandleBegin
+        container.onReflectionHandleChange = onReflectionHandleChange
+        container.onReflectionHandleEnd = onReflectionHandleEnd
         display.present(frame, output: output, in: container.metalView)
         // AppKit may defer an MTKView's setNeedsDisplay while it is inside a
         // mouse-tracking loop. Draw the newly published Setup texture now so
@@ -1975,12 +2003,17 @@ final class MetalPreviewContainer: NSView {
     var onReferenceCornerBegin: ((Int) -> Void)?
     var onReferenceCornerChange: ((Int, CGPoint) -> Void)?
     var onReferenceCornerEnd: (() -> Void)?
+    var onReflectionHandleBegin: ((Int) -> Void)?
+    var onReflectionHandleChange: ((Int, CGPoint) -> Void)?
+    var onReflectionHandleEnd: (() -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
     private let referenceProjectionLayer = CAShapeLayer()
     private let referenceTargetBoundaryLayer = CAShapeLayer()
     private let referenceTargetLayer = CAShapeLayer()
+    private let reflectionBoundaryLayer = CAShapeLayer()
+    private let reflectionHandleLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
         let layer = CATextLayer()
         layer.string = label
@@ -1994,7 +2027,10 @@ final class MetalPreviewContainer: NSView {
     private var deviceBoundary: [CGPoint] = []
     private var referenceProjectedCorners: [CGPoint] = []
     private var referenceTargetCorners: [CGPoint] = []
+    private var reflectionHandles: [CGPoint] = []
+    private var reflectionShapeClosed = false
     private var referenceCornerDragIndex: Int?
+    private var reflectionHandleDragIndex: Int?
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
     private var magnifyAnchor: CGPoint?
@@ -2043,6 +2079,16 @@ final class MetalPreviewContainer: NSView {
         referenceTargetLayer.lineWidth = 1
         referenceTargetLayer.zPosition = 121
         layer?.addSublayer(referenceTargetLayer)
+        reflectionBoundaryLayer.fillColor = NSColor.systemOrange.withAlphaComponent(0.12).cgColor
+        reflectionBoundaryLayer.strokeColor = NSColor.systemOrange.cgColor
+        reflectionBoundaryLayer.lineWidth = 1.5
+        reflectionBoundaryLayer.zPosition = 122
+        layer?.addSublayer(reflectionBoundaryLayer)
+        reflectionHandleLayer.fillColor = NSColor.systemOrange.cgColor
+        reflectionHandleLayer.strokeColor = NSColor.black.cgColor
+        reflectionHandleLayer.lineWidth = 1
+        reflectionHandleLayer.zPosition = 123
+        layer?.addSublayer(reflectionHandleLayer)
         referenceLabels.forEach { layer?.addSublayer($0) }
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
@@ -2080,6 +2126,8 @@ final class MetalPreviewContainer: NSView {
         deviceBoundary: [CGPoint],
         referenceProjectedCorners: [CGPoint],
         referenceTargetCorners: [CGPoint],
+        reflectionHandles: [CGPoint],
+        reflectionShapeClosed: Bool,
         cameraNavigationEnabled: Bool,
         textureWidth: Int,
         textureHeight: Int
@@ -2092,6 +2140,8 @@ final class MetalPreviewContainer: NSView {
         self.deviceBoundary = deviceBoundary
         self.referenceProjectedCorners = referenceProjectedCorners
         self.referenceTargetCorners = referenceTargetCorners
+        self.reflectionHandles = reflectionHandles
+        self.reflectionShapeClosed = reflectionShapeClosed
         self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
@@ -2101,6 +2151,12 @@ final class MetalPreviewContainer: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
+        if let index = nearestReflectionHandle(to: location) {
+            reflectionHandleDragIndex = index
+            onReflectionHandleBegin?(index)
+            NSCursor.crosshair.push()
+            return
+        }
         if let index = nearestReferenceCorner(to: location) {
             referenceCornerDragIndex = index
             onReferenceCornerBegin?(index)
@@ -2113,6 +2169,10 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if let index = reflectionHandleDragIndex {
+            onReflectionHandleChange?(index, rasterPoint(fromViewer: convert(event.locationInWindow, from: nil)))
+            return
+        }
         if let index = referenceCornerDragIndex {
             onReferenceCornerChange?(index, rasterPoint(fromViewer: convert(event.locationInWindow, from: nil)))
             return
@@ -2127,6 +2187,12 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func mouseUp(with _: NSEvent) {
+        if reflectionHandleDragIndex != nil {
+            reflectionHandleDragIndex = nil
+            onReflectionHandleEnd?()
+            NSCursor.pop()
+            return
+        }
         if referenceCornerDragIndex != nil {
             referenceCornerDragIndex = nil
             onReferenceCornerEnd?()
@@ -2435,6 +2501,27 @@ final class MetalPreviewContainer: NSView {
         referenceTargetBoundaryLayer.path = targetBoundary
         referenceTargetLayer.frame = bounds
         referenceTargetLayer.path = targetHandles
+        let reflectionBoundary = CGMutablePath()
+        if let first = reflectionHandles.first {
+            reflectionBoundary.move(to: displayedPoint(forRaster: first))
+            for point in reflectionHandles.dropFirst() {
+                reflectionBoundary.addLine(to: displayedPoint(forRaster: point))
+            }
+            if reflectionShapeClosed, reflectionHandles.count > 2 {
+                reflectionBoundary.closeSubpath()
+            }
+        }
+        let reflectionHandlePath = CGMutablePath()
+        for point in reflectionHandles {
+            let displayed = displayedPoint(forRaster: point)
+            reflectionHandlePath.addEllipse(in: CGRect(
+                x: displayed.x - 7, y: displayed.y - 7, width: 14, height: 14
+            ))
+        }
+        reflectionBoundaryLayer.frame = bounds
+        reflectionBoundaryLayer.path = reflectionBoundary
+        reflectionHandleLayer.frame = bounds
+        reflectionHandleLayer.path = reflectionHandlePath
         for (index, label) in referenceLabels.enumerated() {
             guard referenceTargetCorners.indices.contains(index) else {
                 label.isHidden = true
@@ -2507,6 +2594,19 @@ final class MetalPreviewContainer: NSView {
         }).flatMap { index in
             return hypot(displayedPoint(forRaster: referenceTargetCorners[index]).x - point.x,
                          displayedPoint(forRaster: referenceTargetCorners[index]).y - point.y) <= 12
+                ? index : nil
+        }
+    }
+
+    private func nearestReflectionHandle(to point: CGPoint) -> Int? {
+        reflectionHandles.indices.min(by: {
+            hypot(displayedPoint(forRaster: reflectionHandles[$0]).x - point.x,
+                  displayedPoint(forRaster: reflectionHandles[$0]).y - point.y)
+                < hypot(displayedPoint(forRaster: reflectionHandles[$1]).x - point.x,
+                        displayedPoint(forRaster: reflectionHandles[$1]).y - point.y)
+        }).flatMap { index in
+            hypot(displayedPoint(forRaster: reflectionHandles[index]).x - point.x,
+                  displayedPoint(forRaster: reflectionHandles[index]).y - point.y) <= 14
                 ? index : nil
         }
     }

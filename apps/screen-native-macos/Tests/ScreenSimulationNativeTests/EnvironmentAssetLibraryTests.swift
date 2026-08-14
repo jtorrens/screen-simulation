@@ -33,3 +33,22 @@ import Testing
     try EnvironmentAssetLibrary.saveCalibration(calibration, for: first)
     #expect(try EnvironmentAssetLibrary.calibration(for: first) == calibration)
 }
+
+@Test func generatedEnvironmentsUseTheSameContentAddressedLibrary() throws {
+    let testRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-generated-environment-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: testRoot) }
+
+    let data = Data([0x76, 0x2f, 0x31, 0x01, 0x02, 0x03])
+    let first = try EnvironmentAssetLibrary.storeGeneratedEXR(
+        data, suggestedName: "Reflejos creados", libraryRoot: testRoot
+    )
+    let second = try EnvironmentAssetLibrary.storeGeneratedEXR(
+        data, suggestedName: "Reflejos creados", libraryRoot: testRoot
+    )
+
+    #expect(first == second)
+    #expect(first.url.path.contains("/SCREEN-SIMULATION/Library/Environments/HDRI/"))
+    #expect(first.url.lastPathComponent == "Reflejos creados--\(first.sha256).exr")
+    #expect(try Data(contentsOf: first.url) == data)
+}

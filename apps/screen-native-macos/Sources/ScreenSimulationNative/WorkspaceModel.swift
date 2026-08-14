@@ -217,6 +217,11 @@ final class WorkspaceModel: ObservableObject {
         testAuthoringSelection?.focalLengthMillimeters
     }
     @Published var referenceMatchEnabled = false
+    @Published private(set) var reflectionEnvironmentEditorEnabled = false
+    @Published private(set) var reflectionEmitters: [AuthoredReflectionEmitter] = []
+    @Published private(set) var selectedReflectionEmitterID: UUID?
+    @Published var reflectionEnvironmentWidth = 2048
+    @Published private(set) var reflectionEnvironmentIsGenerating = false
     @Published private(set) var environmentSourceName: String?
     @Published private(set) var environmentSourceResolution: CGSize?
     @Published var jobs: [RenderJob] = []
@@ -297,6 +302,7 @@ final class WorkspaceModel: ObservableObject {
     private var cameraNavigationPreviewQuality = PhysicalQuality.setup
     private var environmentNavigationStartSelection: TestAuthoringResolvedSelection?
     private var environmentNavigationOperation: CameraNavigationOperation?
+    private var reflectionHandleDragIndex: Int?
 
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
@@ -1077,6 +1083,268 @@ final class WorkspaceModel: ObservableObject {
                 unitRadiance: unitRadiance, exposureStops: exposureStops
             )
         }
+    }
+
+    var selectedReflectionEmitter: AuthoredReflectionEmitter? {
+        guard let selectedReflectionEmitterID else { return nil }
+        return reflectionEmitters.first { $0.id == selectedReflectionEmitterID }
+    }
+
+    var selectedReflectionEmitterHandles: [CGPoint] {
+        reflectionEnvironmentEditorEnabled ? selectedReflectionEmitter?.handles ?? [] : []
+    }
+
+    func setReflectionEnvironmentEditorEnabled(_ enabled: Bool) {
+        reflectionEnvironmentEditorEnabled = enabled
+        reflectionHandleDragIndex = nil
+        guard enabled else { return }
+        referenceMatchEnabled = false
+        physicalModel.setQuality(.environmentSetup)
+        if reflectionEmitters.isEmpty { addReflectionEmitter(.area) }
+        rebuildPhysicalSelectedFrame()
+    }
+
+    func addReflectionEmitter(_ kind: AuthoredReflectionEmitterKind) {
+        let frameWidth = max(1, metalFrame?.width ?? Int(testAuthoringSelection?.deliveryWidth ?? 1920))
+        let frameHeight = max(1, metalFrame?.height ?? Int(testAuthoringSelection?.deliveryHeight ?? 1080))
+        let usable = reflectionEditorBounds(width: frameWidth, height: frameHeight)
+        let center = CGPoint(x: usable.midX, y: usable.midY)
+        let handles: [CGPoint]
+        switch kind {
+        case .area:
+            handles = rectangleHandles(center: center, width: usable.width * 0.12, height: usable.height * 0.08)
+        case .window:
+            handles = rectangleHandles(center: center, width: usable.width * 0.28, height: usable.height * 0.34)
+        case .sun:
+            handles = [center]
+        }
+        let emitter = AuthoredReflectionEmitter(
+            id: UUID(), kind: kind, handles: handles,
+            distanceMeters: kind == .sun ? 1_000 : 3,
+            radianceCandelasPerSquareMeter: kind == .sun ? 15_000 : 2_500,
+            temperatureKelvin: kind == .window ? 6_500 : 3_200,
+            tint: 0, softnessDegrees: kind == .sun ? 0.1 : 0.5,
+            sunAngularDiameterDegrees: 0.53
+        )
+        reflectionEmitters.append(emitter)
+        selectedReflectionEmitterID = emitter.id
+    }
+
+    func selectReflectionEmitter(_ id: UUID?) {
+        selectedReflectionEmitterID = id
+    }
+
+    func updateSelectedReflectionEmitter(
+        _ keyPath: WritableKeyPath<AuthoredReflectionEmitter, Double>, value: Double
+    ) {
+        guard value.isFinite, let id = selectedReflectionEmitterID,
+              let index = reflectionEmitters.firstIndex(where: { $0.id == id })
+        else { return }
+        reflectionEmitters[index][keyPath: keyPath] = value
+    }
+
+    func deleteSelectedReflectionEmitter() {
+        guard let id = selectedReflectionEmitterID,
+              let index = reflectionEmitters.firstIndex(where: { $0.id == id })
+        else { return }
+        reflectionEmitters.remove(at: index)
+        selectedReflectionEmitterID = reflectionEmitters.first?.id
+    }
+
+    func beginReflectionHandleDrag(_ index: Int) {
+        guard reflectionEnvironmentEditorEnabled,
+              selectedReflectionEmitterHandles.indices.contains(index)
+        else { return }
+        reflectionHandleDragIndex = index
+    }
+
+    func updateReflectionHandle(_ index: Int, point: CGPoint) {
+        guard reflectionHandleDragIndex == index,
+              let id = selectedReflectionEmitterID,
+              let emitterIndex = reflectionEmitters.firstIndex(where: { $0.id == id }),
+              reflectionEmitters[emitterIndex].handles.indices.contains(index),
+              let frame = metalFrame
+        else { return }
+        reflectionEmitters[emitterIndex].handles[index] = CGPoint(
+            x: min(CGFloat(frame.width - 1), max(0, point.x)),
+            y: min(CGFloat(frame.height - 1), max(0, point.y))
+        )
+    }
+
+    func endReflectionHandleDrag() {
+        reflectionHandleDragIndex = nil
+    }
+
+    func generateAndUseReflectionEnvironment() async {
+        guard !reflectionEnvironmentIsGenerating else { return }
+        reflectionEnvironmentIsGenerating = true
+        defer { reflectionEnvironmentIsGenerating = false }
+        do {
+            let emitters = try reflectionEmitters.map(reflectionBridgeEmitter)
+            let width = reflectionEnvironmentWidth
+            let height = width / 2
+            status = "Creando entorno de reflejos…"
+            let pixels = try ReflectionEnvironmentCompiler.compile(
+                emitters: emitters, width: width, height: height
+            )
+            let data = try ReflectionEnvironmentCompiler.encodeEXR(
+                pixels, width: width, height: height
+            )
+            let asset = try EnvironmentAssetLibrary.storeGeneratedEXR(
+                data, suggestedName: "Reflejos creados"
+            )
+            try resetGeneratedEnvironmentPlacement()
+            await loadEnvironment(
+                asset.url, inputTransformID: "acescg", unitRadiance: 1,
+                exposureStops: 0, originalFileName: asset.originalFileName,
+                knownHash: asset.sha256
+            )
+            status = "Entorno de reflejos generado · \(width)×\(height) · \(asset.originalFileName)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func reflectionEditorBounds(width: Int, height: Int) -> CGRect {
+        if setupDeviceBoundary.count == 4 {
+            let xs = setupDeviceBoundary.map(\.x)
+            let ys = setupDeviceBoundary.map(\.y)
+            let bounds = CGRect(
+                x: xs.min() ?? 0, y: ys.min() ?? 0,
+                width: max(1, (xs.max() ?? CGFloat(width)) - (xs.min() ?? 0)),
+                height: max(1, (ys.max() ?? CGFloat(height)) - (ys.min() ?? 0))
+            )
+            return bounds.insetBy(dx: bounds.width * 0.08, dy: bounds.height * 0.08)
+        }
+        return CGRect(x: 0, y: 0, width: width, height: height)
+            .insetBy(dx: CGFloat(width) * 0.2, dy: CGFloat(height) * 0.2)
+    }
+
+    private func rectangleHandles(center: CGPoint, width: CGFloat, height: CGFloat) -> [CGPoint] {
+        [
+            CGPoint(x: center.x - width * 0.5, y: center.y - height * 0.5),
+            CGPoint(x: center.x + width * 0.5, y: center.y - height * 0.5),
+            CGPoint(x: center.x + width * 0.5, y: center.y + height * 0.5),
+            CGPoint(x: center.x - width * 0.5, y: center.y + height * 0.5),
+        ]
+    }
+
+    private func reflectionBridgeEmitter(
+        _ emitter: AuthoredReflectionEmitter
+    ) throws -> ScreenReflectionEmitterV1 {
+        let directions = try reflectionDirections(for: emitter.handles)
+        guard !directions.isEmpty else { throw ReflectionEnvironmentEditorError.invalidGeometry }
+        var value = ScreenReflectionEmitterV1()
+        value.abi_version = SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION
+        value.kind = switch emitter.kind { case .area: 0; case .window: 1; case .sun: 2 }
+        withUnsafeMutableBytes(of: &value.directions_xyz) { bytes in
+            let output = bytes.bindMemory(to: Float.self)
+            for index in 0 ..< min(4, directions.count) {
+                output[index * 3] = Float(directions[index].x)
+                output[index * 3 + 1] = Float(directions[index].y)
+                output[index * 3 + 2] = Float(directions[index].z)
+            }
+        }
+        if emitter.kind == .area, directions.count == 4 {
+            let summed = directions.reduce(SIMD3<Double>.zero, +)
+            let resolvedCenter = simd_normalize(summed)
+            withUnsafeMutableBytes(of: &value.directions_xyz) { bytes in
+                let output = bytes.bindMemory(to: Float.self)
+                output[0] = Float(resolvedCenter.x)
+                output[1] = Float(resolvedCenter.y)
+                output[2] = Float(resolvedCenter.z)
+            }
+            value.angular_width_degrees = Float(
+                0.5 * (angleDegrees(directions[0], directions[1]) + angleDegrees(directions[3], directions[2]))
+            )
+            value.angular_height_degrees = Float(
+                0.5 * (angleDegrees(directions[0], directions[3]) + angleDegrees(directions[1], directions[2]))
+            )
+            let reference = abs(resolvedCenter.y) < 0.95
+                ? SIMD3<Double>(0, 1, 0) : SIMD3<Double>(1, 0, 0)
+            let tangent0 = simd_normalize(simd_cross(reference, resolvedCenter))
+            let bitangent0 = simd_normalize(simd_cross(resolvedCenter, tangent0))
+            let horizontal = (directions[1] + directions[2])
+                - (directions[0] + directions[3])
+            let projected = horizontal - resolvedCenter * simd_dot(horizontal, resolvedCenter)
+            if simd_length_squared(projected) > 1.0e-12 {
+                let tangent = simd_normalize(projected)
+                value.roll_degrees = Float(
+                    atan2(simd_dot(tangent, bitangent0), simd_dot(tangent, tangent0))
+                        * 180 / .pi
+                )
+            }
+        } else if emitter.kind == .sun {
+            value.angular_width_degrees = Float(emitter.sunAngularDiameterDegrees)
+        }
+        value.distance_meters = Float(emitter.distanceMeters)
+        value.radiance_candelas_per_square_meter = Float(emitter.radianceCandelasPerSquareMeter)
+        value.temperature_kelvin = Float(emitter.temperatureKelvin)
+        value.tint = Float(emitter.tint)
+        value.edge_softness_degrees = Float(emitter.softnessDegrees)
+        return value
+    }
+
+    private func reflectionDirections(for points: [CGPoint]) throws -> [SIMD3<Double>] {
+        guard let authored = physicalAuthoringState, let selection = testAuthoringSelection else {
+            throw ReflectionEnvironmentEditorError.invalidGeometry
+        }
+        let gatePoints = try ReferenceMatchRasterMapping.cameraGateCorners(
+            points,
+            referenceWidth: Int(selection.deliveryWidth),
+            referenceHeight: Int(selection.deliveryHeight),
+            cameraWidth: authored.sensor.nativeWidth,
+            cameraHeight: authored.sensor.nativeHeight,
+            deliveryPlacementID: selection.deliveryPlacementID
+        )
+        let camera = simd_quatd(
+            ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
+            iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
+        ).normalized
+        let forward = camera.act(SIMD3<Double>(0, 0, -1))
+        let right = camera.act(SIMD3<Double>(1, 0, 0))
+        let up = camera.act(SIMD3<Double>(0, 1, 0))
+        let screen = simd_quatd(
+            ix: authored.screenPose.quaternion[0], iy: authored.screenPose.quaternion[1],
+            iz: authored.screenPose.quaternion[2], r: authored.screenPose.quaternion[3]
+        ).normalized
+        let normal = screen.act(SIMD3<Double>(0, 0, 1))
+        let gateWidth = Double(authored.sensor.nativeWidth)
+        let gateHeight = Double(authored.sensor.nativeHeight)
+        var result: [SIMD3<Double>] = []
+        result.reserveCapacity(gatePoints.count)
+        for point in gatePoints {
+            let observedX = (Double(point.x) + 0.5) / gateWidth * 2 - 1
+            let observedY = (Double(point.y) + 0.5) / gateHeight * 2 - 1
+            let idealX = observedX + 2 * authored.sceneLens.lensShift[0]
+            let idealY = -observedY - 2 * authored.sceneLens.lensShift[1]
+            let horizontalScale = idealX * authored.sceneLens.sensorWidthMillimeters
+                / (2 * authored.sceneLens.focalLengthMillimeters)
+            let verticalScale = idealY * authored.sceneLens.sensorHeightMillimeters
+                / (2 * authored.sceneLens.focalLengthMillimeters)
+            let unnormalizedRay = forward + right * horizontalScale + up * verticalScale
+            let ray = simd_normalize(unnormalizedRay)
+            let reflected = ray - normal * (2 * simd_dot(ray, normal))
+            result.append(simd_normalize(reflected))
+        }
+        return result
+    }
+
+    private func angleDegrees(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Double {
+        acos(min(1, max(-1, simd_dot(a, b)))) * 180 / .pi
+    }
+
+    private func resetGeneratedEnvironmentPlacement() throws {
+        guard var selection = currentTestAuthoringSelection() else {
+            throw TestAuthoringCoordinatorError.malformedDescriptor("No existe autoría de entorno.")
+        }
+        selection = try RustTestAuthoringCoordinator.apply(
+            .setScalar(controlID: "environment-rotation-x-degrees", value: 0), to: selection
+        )
+        selection = try RustTestAuthoringCoordinator.apply(
+            .setScalar(controlID: "environment-rotation-y-degrees", value: 0), to: selection
+        )
+        try applyTestAuthoringSelection(selection)
     }
 
     private func loadEnvironment(
