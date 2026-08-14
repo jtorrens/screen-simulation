@@ -1240,6 +1240,25 @@ struct ContentView: View {
                         state: presentation,
                         onIntent: model.handleTestIntent
                     )
+                    TestPhaseCard(label: "Autoría de reflejos") {
+                        HStack {
+                            Button {
+                                referenceMatchPanel.hide(model: model)
+                                reflectionEnvironmentPanel.toggle(model: model)
+                            } label: {
+                                Label(
+                                    reflectionEnvironmentPanel.isVisible
+                                        ? "Ocultar editor" : "Crear reflejos…",
+                                    systemImage: reflectionEnvironmentPanel.isVisible
+                                        ? "lightbulb.max.fill" : "lightbulb.max"
+                                )
+                            }
+                            Spacer()
+                            Text("genera EXR 2:1")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     if !model.environmentSourceEvidence.isEmpty {
                         TestPhaseCard(label: "Entorno HDRI activo") {
                             VStack(alignment: .leading, spacing: 5) {
@@ -1685,17 +1704,6 @@ struct ContentView: View {
                 Button { model.zoomBy(1.25) } label: { Image(systemName: "plus.magnifyingglass") }
                     .help("Aumentar zoom")
                     .accessibilityLabel("Aumentar zoom")
-                Button {
-                    referenceMatchPanel.hide(model: model)
-                    reflectionEnvironmentPanel.toggle(model: model)
-                } label: {
-                    Label(
-                        reflectionEnvironmentPanel.isVisible ? "Ocultar reflejos" : "Crear reflejos",
-                        systemImage: reflectionEnvironmentPanel.isVisible
-                            ? "lightbulb.max.fill" : "lightbulb.max"
-                    )
-                }
-                .help("Dibujar fuentes y generar un entorno OpenEXR")
                 Button {
                     model.renderCurrentFrame()
                 } label: {
