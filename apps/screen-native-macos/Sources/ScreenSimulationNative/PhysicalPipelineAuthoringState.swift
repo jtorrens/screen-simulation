@@ -430,23 +430,23 @@ extension PhysicalPipelineAuthoringState {
             shutterMotion = base.shutterMotion
         case .computationalCapture:
             computationalCapture = base.computationalCapture
-        case .sensorCFA:
+        case .sensorCollection:
             sensor.nativeWidth = base.sensor.nativeWidth
             sensor.nativeHeight = base.sensor.nativeHeight
             sensor.bayerPattern = base.sensor.bayerPattern
             sensor.acescgToSensor = base.sensor.acescgToSensor
             sensor.saturationIlluminanceSeconds = base.sensor.saturationIlluminanceSeconds
-            sensor.fullWellElectrons = base.sensor.fullWellElectrons
-            sensor.adcBits = base.sensor.adcBits
+            sensor.darkCurrentElectronsPerSecond = base.sensor.darkCurrentElectronsPerSecond
+            shutterMotion.noiseSeed = base.shutterMotion.noiseSeed
         case .sensorBloom:
             sensor.bloomCharacterStrength = base.sensor.bloomCharacterStrength
             sensor.bloomCrosstalkFraction = base.sensor.bloomCrosstalkFraction
             sensor.bloomOverflowTransferFraction = base.sensor.bloomOverflowTransferFraction
-        case .noise:
-            sensor.darkCurrentElectronsPerSecond = base.sensor.darkCurrentElectronsPerSecond
+        case .sensorReadout:
+            sensor.fullWellElectrons = base.sensor.fullWellElectrons
+            sensor.adcBits = base.sensor.adcBits
             sensor.readNoiseElectronsRMS = base.sensor.readNoiseElectronsRMS
             sensor.analogGain = base.sensor.analogGain
-            shutterMotion.noiseSeed = base.shutterMotion.noiseSeed
         case .developDemosaic:
             develop = base.develop
         }

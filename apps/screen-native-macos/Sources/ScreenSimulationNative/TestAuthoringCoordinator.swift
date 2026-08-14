@@ -16,9 +16,9 @@ enum TestPreviewResultKind: UInt32, Sendable {
     case lensProjection = 10
     case shutterExposure = 11
     case computationalCapture = 12
-    case sensorBloom = 13
-    case sensorCfa = 14
-    case sensorNoise = 15
+    case sensorCollection = 13
+    case sensorBloom = 14
+    case sensorReadoutRaw = 15
     case developDemosaic = 16
     case cameraRenderingIntent = 17
     case deliveryRaster = 18

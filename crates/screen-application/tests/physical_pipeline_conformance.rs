@@ -452,7 +452,7 @@ fn rolling_schedule_is_row_ordered_and_direction_reversible() {
 fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
     let mut hashes = Vec::new();
     for intermediate in [
-        PhysicalIntermediate::RawMosaic,
+        PhysicalIntermediate::SensorReadoutRaw,
         PhysicalIntermediate::DevelopedAcesCg,
     ] {
         let mut value = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);

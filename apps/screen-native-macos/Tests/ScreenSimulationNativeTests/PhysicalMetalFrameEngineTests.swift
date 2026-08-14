@@ -192,7 +192,7 @@ import Testing
 @Test @MainActor func unifiedPhysicalABIExecutesEveryAuthoredAmountAndEnable() async throws {
     let fixture = try makePhysicalFixture()
     let continuous = PhysicalStageID.ordered.filter {
-        $0 != .capture(.sensorCFA) && $0 != .capture(.developDemosaic)
+        $0 != .capture(.sensorReadout) && $0 != .capture(.developDemosaic)
     }
     var identity: UInt64 = 400
     for stage in continuous {
@@ -224,9 +224,9 @@ import Testing
     }
     for enabled in [false, true] {
         var cfa = try contributions()
-        let cfaIndex = try #require(cfa.firstIndex { $0.stage == .capture(.sensorCFA) })
+        let cfaIndex = try #require(cfa.firstIndex { $0.stage == .capture(.sensorReadout) })
         cfa[cfaIndex] = try PhysicalStageContribution(
-            stage: .capture(.sensorCFA),
+            stage: .capture(.sensorReadout),
             control: .discrete(enabled: enabled),
             exactIdentityAtZero: false
         )
@@ -237,9 +237,9 @@ import Testing
                 control: .continuous(amount: 0, limits: .standard),
                 exactIdentityAtZero: true
             )
-            let noiseIndex = try #require(cfa.firstIndex { $0.stage == .capture(.noise) })
+            let noiseIndex = try #require(cfa.firstIndex { $0.stage == .capture(.sensorCollection) })
             cfa[noiseIndex] = try PhysicalStageContribution(
-                stage: .capture(.noise),
+                stage: .capture(.sensorCollection),
                 control: .continuous(amount: 0, limits: .standard),
                 exactIdentityAtZero: true
             )
@@ -257,7 +257,7 @@ import Testing
             fixture: fixture,
             screenAmount: 1,
             contributions: cfa,
-            intermediate: enabled ? .rawMosaic : .shutterMotion,
+            intermediate: enabled ? .sensorReadoutRaw : .shutterMotion,
             identity: identity
         ))
         #expect(cfaResult.state == .complete)
@@ -276,7 +276,7 @@ import Testing
             fixture: fixture,
             screenAmount: 1,
             contributions: develop,
-            intermediate: enabled ? .developedACEScg : .rawMosaic,
+            intermediate: enabled ? .developedACEScg : .sensorReadoutRaw,
             identity: identity
         ))
         #expect(developResult.state == .complete)
@@ -401,7 +401,7 @@ private func contributions(
     active: Bool = true
 ) throws -> [PhysicalStageContribution] {
     try PhysicalStageID.ordered.map { stage in
-        let discrete = stage == .capture(.sensorCFA)
+        let discrete = stage == .capture(.sensorReadout)
             || stage == .capture(.developDemosaic)
         let amount = stage == .screen(.panelLightSpread) && active
             ? spreadAmount : active ? 1 : 0

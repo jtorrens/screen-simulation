@@ -366,7 +366,8 @@ final class WorkspaceModel: ObservableObject {
              .coverEnvironment, .coverGlow, .lensProjection:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return Double(device.nativeWidth) / Double(device.nativeHeight)
-        case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg, .cameraRenderedACEScg:
+        case .sensorCollection, .sensorBloom, .sensorReadoutRaw,
+             .developedACEScg, .cameraRenderedACEScg:
             guard let sensor = physicalAuthoringState?.sensor,
                   sensor.nativeWidth > 0, sensor.nativeHeight > 0
             else { return nil }
@@ -382,7 +383,8 @@ final class WorkspaceModel: ObservableObject {
 
     var physicalNativeOutputDescription: String? {
         switch requestedPhysicalIntermediate {
-        case .sensorBloom, .sensorNoise, .rawMosaic, .developedACEScg, .cameraRenderedACEScg:
+        case .sensorCollection, .sensorBloom, .sensorReadoutRaw,
+             .developedACEScg, .cameraRenderedACEScg:
             guard let sensor = physicalAuthoringState?.sensor else { return nil }
             return "Captura \(sensor.nativeWidth)×\(sensor.nativeHeight)"
         case .panelEmission, .subpixelRadiance, .panelUniformity, .panelLightSpread,
@@ -4308,7 +4310,7 @@ final class WorkspaceModel: ObservableObject {
         )
         try physicalModel.setContinuousAmount(
             selection.sensorNoiseAmount,
-            stage: .capture(.noise)
+            stage: .capture(.sensorCollection)
         )
         selectedCapturePresetID = capture.id
         selectedCaptureRasterModeID = selection.captureRasterModeID
@@ -4367,7 +4369,8 @@ final class WorkspaceModel: ObservableObject {
             return
         case .deviceInterpretation, .panelStructure, .panelUniformity, .panelLightSpread,
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
-             .shutterExposure, .computationalCapture, .sensorBloom, .sensorCfa, .sensorNoise,
+             .shutterExposure, .computationalCapture, .sensorCollection, .sensorBloom,
+             .sensorReadoutRaw,
              .developDemosaic, .cameraRenderingIntent, .deliveryRaster, .recordingOutput, .recordingCodec:
             guard let intermediate = selectedTestPhysicalIntermediate else {
                 errorMessage = "Application no publicó el checkpoint físico de esta fase."

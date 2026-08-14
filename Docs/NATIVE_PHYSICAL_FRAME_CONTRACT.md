@@ -42,7 +42,7 @@ Version 16 is the only live binary contract and has two ordered domains:
 1. Screen: Emission, Subpixel Geometry, Panel Uniformity, Panel Light Spread,
    Temporal, Cover Glass, Environment and Cover Glow.
 2. Capture: Geometry, Lens, Exposure/Shutter, Computational Capture, Sensor
-   Bloom, Sensor/CFA, Noise and Develop/Demosaic.
+   Photosite/CFA Collection and Noise, Bloom, Sensor Readout/RAW and Develop/Demosaic.
 
 Their numeric identifiers are stable and domain-partitioned. A new stage is
 appended to its owning typed section and to the same ABI version only when the

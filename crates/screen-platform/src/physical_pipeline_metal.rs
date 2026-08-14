@@ -183,9 +183,9 @@ impl MetalPhysicalPipeline {
     fn requests_sensor_evaluation(intermediate: PhysicalIntermediate) -> bool {
         matches!(
             intermediate,
-            PhysicalIntermediate::SensorBloom
-                | PhysicalIntermediate::SensorNoise
-                | PhysicalIntermediate::RawMosaic
+            PhysicalIntermediate::SensorCollection
+                | PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorReadoutRaw
                 | PhysicalIntermediate::DevelopedAcesCg
                 | PhysicalIntermediate::CameraRenderedAcesCg
         )
@@ -1034,7 +1034,9 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::LensProjection
                 | PhysicalIntermediate::ShutterMotion
                 | PhysicalIntermediate::ComputationalCapture
+                | PhysicalIntermediate::SensorCollection
                 | PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorReadoutRaw
                 | PhysicalIntermediate::DevelopedAcesCg
                 | PhysicalIntermediate::CameraRenderedAcesCg
         ) {
@@ -2508,7 +2510,7 @@ mod tests {
             plan.sensor_enabled = true;
             plan.sensor_noise_amount = noise_amount;
             plan.shutter_motion_amount = 1.0;
-            plan.requested_intermediate = PhysicalIntermediate::RawMosaic;
+            plan.requested_intermediate = PhysicalIntermediate::SensorReadoutRaw;
             let source = texture(&device, input.width, input.height, &input.acescg);
             let signal_values = input
                 .device_signal
@@ -2557,8 +2559,8 @@ mod tests {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
         for (intermediate, noise_amount) in [
-            (PhysicalIntermediate::SensorNoise, 0.0),
-            (PhysicalIntermediate::RawMosaic, 1.0),
+            (PhysicalIntermediate::SensorCollection, 1.0),
+            (PhysicalIntermediate::SensorReadoutRaw, 1.0),
         ] {
             let (input, mut plan) = fixture(
                 RasterPlacement::FillCrop,
@@ -2624,7 +2626,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_backend_enforces_clean_sensor_cfa_before_the_noisy_raw_phase() {
+    fn direct_backend_preserves_authored_noise_from_collection_through_raw_readout() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
         let (input, mut authored) = fixture(
@@ -2642,7 +2644,7 @@ mod tests {
         };
         authored.sensor_enabled = true;
         authored.sensor_noise_amount = 1.0;
-        authored.requested_intermediate = PhysicalIntermediate::SensorNoise;
+        authored.requested_intermediate = PhysicalIntermediate::SensorCollection;
         let source = texture(&device, input.width, input.height, &input.acescg);
         let signal_values = input
             .device_signal
@@ -2651,22 +2653,25 @@ mod tests {
             .map(|value| [value.r, value.g, value.b, 1.0])
             .collect::<Vec<_>>();
         let signal = texture(&device, input.width, input.height, &signal_values);
-        let clean = backend
+        let collected = backend
             .evaluate(&source, &signal, authored, |_| {}, || false)
-            .expect("clean Sensor/CFA checkpoint");
+            .expect("collected charge checkpoint");
         let mut explicit_zero = authored;
         explicit_zero.sensor_noise_amount = 0.0;
         let zero = backend
             .evaluate(&source, &signal, explicit_zero, |_| {}, || false)
             .expect("explicit zero-noise checkpoint");
-        assert_eq!(read(&clean.texture), read(&zero.texture));
+        assert_ne!(read(&collected.texture), read(&zero.texture));
 
         let mut noisy = authored;
-        noisy.requested_intermediate = PhysicalIntermediate::RawMosaic;
+        noisy.requested_intermediate = PhysicalIntermediate::SensorReadoutRaw;
         let noisy = backend
             .evaluate(&source, &signal, noisy, |_| {}, || false)
             .expect("authored noisy RAW checkpoint");
-        assert_ne!(read(&clean.texture), read(&noisy.texture));
+        // Both charge checkpoints intentionally present through the same
+        // normalized RAW diagnostic; their canonical typed artifacts differ in
+        // Application and are covered there.
+        assert_eq!(read(&collected.texture), read(&noisy.texture));
     }
 
     #[test]

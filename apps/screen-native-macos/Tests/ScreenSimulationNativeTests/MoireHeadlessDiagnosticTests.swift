@@ -633,7 +633,7 @@ import Testing
             identity: 7,
             editModel: { try $0.setContinuousAmount(
                 0,
-                stage: .capture(.noise)
+                stage: .capture(.sensorCollection)
             ) }
         ),
         renderMoireVariant(
@@ -685,9 +685,9 @@ private func moireBaselineIntermediate() throws -> PhysicalIntermediate {
         "lens-projection": .lensProjection,
         "shutter-motion": .shutterMotion,
         "computational-capture": .computationalCapture,
+        "sensor-collection": .sensorCollection,
         "sensor-bloom": .sensorBloom,
-        "sensor-noise": .sensorNoise,
-        "raw-mosaic": .rawMosaic,
+        "sensor-readout-raw": .sensorReadoutRaw,
         "developed-acescg": .developedACEScg,
         "camera-rendered-acescg": .cameraRenderedACEScg,
     ][authored])
@@ -724,7 +724,7 @@ private func moireResolvedModel(
     )
     try controller.setContinuousAmount(
         try moireRequiredDouble("SCREEN_MOIRE_SENSOR_NOISE_AMOUNT"),
-        stage: .capture(.noise)
+        stage: .capture(.sensorCollection)
     )
     try controller.setContinuousAmount(
         try moireRequiredDouble("SCREEN_MOIRE_LENS_AMOUNT"),

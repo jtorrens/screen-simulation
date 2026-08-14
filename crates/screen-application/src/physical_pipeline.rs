@@ -28,8 +28,8 @@ pub enum PhysicalStage {
     SceneGeometry = 0x201,
     Lens = 0x202,
     ShutterMotion = 0x203,
-    SensorCfa = 0x204,
-    SensorNoise = 0x205,
+    SensorCollection = 0x204,
+    SensorReadout = 0x205,
     RawDevelop = 0x206,
     SensorBloom = 0x207,
     ComputationalCapture = 0x208,
@@ -173,20 +173,20 @@ pub const PHYSICAL_STAGE_DESCRIPTORS: [PhysicalStageDescriptor; 16] = [
         true,
     ),
     continuous_stage(
+        PhysicalStage::SensorCollection,
+        PhysicalDomain::Capture,
+        2.0,
+        4.0,
+        true,
+    ),
+    continuous_stage(
         PhysicalStage::SensorBloom,
         PhysicalDomain::Capture,
         2.0,
         4.0,
         true,
     ),
-    discrete_stage(PhysicalStage::SensorCfa, PhysicalDomain::Capture),
-    continuous_stage(
-        PhysicalStage::SensorNoise,
-        PhysicalDomain::Capture,
-        2.0,
-        4.0,
-        true,
-    ),
+    discrete_stage(PhysicalStage::SensorReadout, PhysicalDomain::Capture),
     discrete_stage(PhysicalStage::RawDevelop, PhysicalDomain::Capture),
 ];
 
@@ -224,9 +224,9 @@ pub enum PhysicalIntermediate {
     LensProjection = 9,
     ShutterMotion = 10,
     ComputationalCapture = 11,
-    SensorBloom = 12,
-    SensorNoise = 13,
-    RawMosaic = 14,
+    SensorCollection = 12,
+    SensorBloom = 13,
+    SensorReadoutRaw = 14,
     DevelopedAcesCg = 15,
     CameraRenderedAcesCg = 16,
 }
@@ -248,9 +248,9 @@ impl TryFrom<u32> for PhysicalIntermediate {
             9 => Ok(Self::LensProjection),
             10 => Ok(Self::ShutterMotion),
             11 => Ok(Self::ComputationalCapture),
-            12 => Ok(Self::SensorBloom),
-            13 => Ok(Self::SensorNoise),
-            14 => Ok(Self::RawMosaic),
+            12 => Ok(Self::SensorCollection),
+            13 => Ok(Self::SensorBloom),
+            14 => Ok(Self::SensorReadoutRaw),
             15 => Ok(Self::DevelopedAcesCg),
             16 => Ok(Self::CameraRenderedAcesCg),
             _ => Err(()),
@@ -279,9 +279,9 @@ pub struct ResolvedPhysicalStageContributions {
     pub lens: f32,
     pub shutter_motion: f32,
     pub computational_capture: f32,
+    pub sensor_collection: f32,
     pub sensor_bloom: f32,
-    pub sensor_cfa_enabled: bool,
-    pub sensor_noise: f32,
+    pub sensor_readout_enabled: bool,
     pub raw_develop_enabled: bool,
 }
 
@@ -291,7 +291,7 @@ pub enum PhysicalStageContributionError {
     WrongOrder,
     InvalidContinuousValue,
     InvalidDiscreteValue,
-    CaptureStageRequiresSensorCfa,
+    CaptureStageRequiresSensorReadout,
 }
 
 pub fn resolve_physical_stage_contributions(
@@ -334,17 +334,17 @@ pub fn resolve_physical_stage_contributions(
         lens: controls[9].amount,
         shutter_motion: controls[10].amount,
         computational_capture: controls[11].amount,
-        sensor_bloom: controls[12].amount,
-        sensor_cfa_enabled: controls[13].enabled,
-        sensor_noise: controls[14].amount,
+        sensor_collection: controls[12].amount,
+        sensor_bloom: controls[13].amount,
+        sensor_readout_enabled: controls[14].enabled,
         raw_develop_enabled: controls[15].enabled,
     };
-    if (resolved.sensor_bloom != 0.0
-        || resolved.sensor_noise != 0.0
+    if (resolved.sensor_collection != 0.0
+        || resolved.sensor_bloom != 0.0
         || resolved.raw_develop_enabled)
-        && !resolved.sensor_cfa_enabled
+        && !resolved.sensor_readout_enabled
     {
-        return Err(PhysicalStageContributionError::CaptureStageRequiresSensorCfa);
+        return Err(PhysicalStageContributionError::CaptureStageRequiresSensorReadout);
     }
     Ok(resolved)
 }
@@ -506,7 +506,7 @@ mod tests {
         let controls = valid_stage_controls();
         let resolved = resolve_physical_stage_contributions(&controls).expect("valid controls");
         assert_eq!(resolved.panel_uniformity, 1.0);
-        assert!(resolved.sensor_cfa_enabled);
+        assert!(resolved.sensor_readout_enabled);
         assert!(resolved.raw_develop_enabled);
 
         let mut reordered = controls.clone();
@@ -517,10 +517,10 @@ mod tests {
         );
 
         let mut invalid_dependency = controls;
-        invalid_dependency[13].enabled = false;
+        invalid_dependency[14].enabled = false;
         assert_eq!(
             resolve_physical_stage_contributions(&invalid_dependency),
-            Err(PhysicalStageContributionError::CaptureStageRequiresSensorCfa)
+            Err(PhysicalStageContributionError::CaptureStageRequiresSensorReadout)
         );
     }
 

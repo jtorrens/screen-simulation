@@ -76,8 +76,8 @@ enum CapturePhysicalSection: CaseIterable, PhysicalSectionID {
     case geometry
     case lens
     case exposureShutter
-    case sensorCFA
-    case noise
+    case sensorCollection
+    case sensorReadout
     case developDemosaic
     case sensorBloom
     case computationalCapture
@@ -89,8 +89,8 @@ enum CapturePhysicalSection: CaseIterable, PhysicalSectionID {
         case .geometry: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_GEOMETRY.rawValue)
         case .lens: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_LENS.rawValue)
         case .exposureShutter: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_EXPOSURE_SHUTTER.rawValue)
-        case .sensorCFA: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_CFA.rawValue)
-        case .noise: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_NOISE.rawValue)
+        case .sensorCollection: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_COLLECTION.rawValue)
+        case .sensorReadout: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_READOUT.rawValue)
         case .developDemosaic: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_DEVELOP_DEMOSAIC.rawValue)
         case .sensorBloom: UInt32(SCREEN_PHYSICAL_STAGE_CAPTURE_SENSOR_BLOOM.rawValue)
         case .computationalCapture:
@@ -367,9 +367,9 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case lensProjection = 9
     case shutterMotion = 10
     case computationalCapture = 11
-    case sensorBloom = 12
-    case sensorNoise = 13
-    case rawMosaic = 14
+    case sensorCollection = 12
+    case sensorBloom = 13
+    case sensorReadoutRaw = 14
     case developedACEScg = 15
     case cameraRenderedACEScg = 16
 
@@ -388,9 +388,9 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         .lensProjection,
         .shutterMotion,
         .computationalCapture,
+        .sensorCollection,
         .sensorBloom,
-        .sensorNoise,
-        .rawMosaic,
+        .sensorReadoutRaw,
         .developedACEScg,
         .cameraRenderedACEScg,
     ]
@@ -411,9 +411,9 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         case .lensProjection: "Lens / Projection"
         case .shutterMotion: "Shutter / Motion"
         case .computationalCapture: "Computational Capture"
+        case .sensorCollection: "Photosite / CFA Collection"
         case .sensorBloom: "Sensor Bloom"
-        case .sensorNoise: "Sensor / Noise"
-        case .rawMosaic: "RAW Mosaic"
+        case .sensorReadoutRaw: "Sensor Readout / RAW"
         }
     }
 }

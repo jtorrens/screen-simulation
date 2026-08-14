@@ -21,7 +21,7 @@ use screen_recording::{
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 28;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 29;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -36,9 +36,9 @@ pub const COVER_GLOW_PHASE_ID: &str = "cover-glow";
 pub const LENS_PROJECTION_PHASE_ID: &str = "lens-projection";
 pub const SHUTTER_EXPOSURE_PHASE_ID: &str = "shutter-exposure";
 pub const COMPUTATIONAL_CAPTURE_PHASE_ID: &str = "computational-capture";
+pub const SENSOR_COLLECTION_PHASE_ID: &str = "sensor-collection";
 pub const SENSOR_BLOOM_PHASE_ID: &str = "sensor-bloom";
-pub const SENSOR_CFA_PHASE_ID: &str = "sensor-cfa";
-pub const SENSOR_NOISE_PHASE_ID: &str = "sensor-noise";
+pub const SENSOR_READOUT_RAW_PHASE_ID: &str = "sensor-readout-raw";
 pub const DEVELOP_DEMOSAIC_PHASE_ID: &str = "develop-demosaic";
 pub const CAMERA_RENDERING_INTENT_PHASE_ID: &str = "camera-rendering-intent";
 pub const DELIVERY_RASTER_PHASE_ID: &str = "delivery-raster";
@@ -616,8 +616,8 @@ pub enum PhysicalArtifactId {
     ImagePlaneIlluminanceAcesCgV1,
     IntegratedOpticalExposureV1,
     ComputationalCaptureExposureV2,
+    CollectedSensorChargeV1,
     CoupledSensorChargeV1,
-    RawMosaicCleanV1,
     RawMosaicNoisyV1,
     DevelopedCameraAcesCgV1,
     CameraRenderedAcesCgV1,
@@ -643,8 +643,8 @@ impl PhysicalArtifactId {
             Self::ImagePlaneIlluminanceAcesCgV1 => "image-plane-illuminance-acescg-v1",
             Self::IntegratedOpticalExposureV1 => "integrated-optical-exposure-v1",
             Self::ComputationalCaptureExposureV2 => "computational-capture-exposure-v2",
+            Self::CollectedSensorChargeV1 => "collected-sensor-charge-v1",
             Self::CoupledSensorChargeV1 => "coupled-sensor-charge-v1",
-            Self::RawMosaicCleanV1 => "raw-mosaic-clean-v1",
             Self::RawMosaicNoisyV1 => "raw-mosaic-noisy-v1",
             Self::DevelopedCameraAcesCgV1 => "developed-camera-acescg-v1",
             Self::CameraRenderedAcesCgV1 => "camera-rendered-acescg-v1",
@@ -685,8 +685,8 @@ impl TestPhaseDescriptor {
             RELATIVE_GEOMETRY_PHASE_ID => "Geometría física",
             LENS_PROJECTION_PHASE_ID => "Iluminancia ACEScg",
             SHUTTER_EXPOSURE_PHASE_ID | COMPUTATIONAL_CAPTURE_PHASE_ID => "Exposición ACEScg",
-            SENSOR_BLOOM_PHASE_ID => "Carga de fotositos",
-            SENSOR_CFA_PHASE_ID | SENSOR_NOISE_PHASE_ID => "RAW mosaico",
+            SENSOR_COLLECTION_PHASE_ID | SENSOR_BLOOM_PHASE_ID => "Carga de fotositos",
+            SENSOR_READOUT_RAW_PHASE_ID => "RAW mosaico",
             RECORDING_OUTPUT_PHASE_ID | RECORDING_CODEC_PHASE_ID => "Señal de grabación",
             _ => unreachable!("all Test phases own a calculation domain"),
         }
@@ -720,9 +720,9 @@ pub enum TestPreviewResult {
     LensProjection = 10,
     ShutterExposure = 11,
     ComputationalCapture = 12,
-    SensorBloom = 13,
-    SensorCfa = 14,
-    SensorNoise = 15,
+    SensorCollection = 13,
+    SensorBloom = 14,
+    SensorReadoutRaw = 15,
     DevelopDemosaic = 16,
     CameraRenderingIntent = 17,
     DeliveryRaster = 18,
@@ -745,9 +745,9 @@ impl TestPreviewResult {
             Self::LensProjection => Some(PhysicalIntermediate::LensProjection),
             Self::ShutterExposure => Some(PhysicalIntermediate::ShutterMotion),
             Self::ComputationalCapture => Some(PhysicalIntermediate::ComputationalCapture),
+            Self::SensorCollection => Some(PhysicalIntermediate::SensorCollection),
             Self::SensorBloom => Some(PhysicalIntermediate::SensorBloom),
-            Self::SensorCfa => Some(PhysicalIntermediate::SensorNoise),
-            Self::SensorNoise => Some(PhysicalIntermediate::RawMosaic),
+            Self::SensorReadoutRaw => Some(PhysicalIntermediate::SensorReadoutRaw),
             Self::DevelopDemosaic => Some(PhysicalIntermediate::DevelopedAcesCg),
             Self::CameraRenderingIntent
             | Self::DeliveryRaster
@@ -2240,11 +2240,29 @@ pub fn test_page_descriptor(
                 ],
             },
             TestPhaseDescriptor {
+                id: SENSOR_COLLECTION_PHASE_ID,
+                label: "Colección del fotosito, CFA y ruido",
+                effect_summary: "Selecciona el canal Bayer y convierte la exposición en carga con ruido físico.",
+                header_control_id: Some(SENSOR_NOISE_AMOUNT_CONTROL_ID),
+                input_artifact: PhysicalArtifactId::ComputationalCaptureExposureV2,
+                output_artifact: PhysicalArtifactId::CollectedSensorChargeV1,
+                preview_result: TestPreviewResult::SensorCollection,
+                controls: vec![scalar_control(
+                    SENSOR_NOISE_AMOUNT_CONTROL_ID,
+                    "Carácter del ruido",
+                    selection.sensor_noise_amount,
+                    0.0,
+                    4.0,
+                    1.0,
+                    "×",
+                )],
+            },
+            TestPhaseDescriptor {
                 id: SENSOR_BLOOM_PHASE_ID,
                 label: "Crosstalk y bloom del sensor",
                 effect_summary: "Transfiere carga entre fotositos y desborda altas luces saturadas.",
                 header_control_id: Some(SENSOR_BLOOM_AMOUNT_CONTROL_ID),
-                input_artifact: PhysicalArtifactId::ComputationalCaptureExposureV2,
+                input_artifact: PhysicalArtifactId::CollectedSensorChargeV1,
                 output_artifact: PhysicalArtifactId::CoupledSensorChargeV1,
                 preview_result: TestPreviewResult::SensorBloom,
                 controls: vec![
@@ -2278,32 +2296,14 @@ pub fn test_page_descriptor(
                 ],
             },
             TestPhaseDescriptor {
-                id: SENSOR_CFA_PHASE_ID,
-                label: "Sensor y CFA",
-                effect_summary: "Convierte la exposición óptica en carga mosaico Bayer limpia.",
+                id: SENSOR_READOUT_RAW_PHASE_ID,
+                label: "Lectura del sensor y RAW",
+                effect_summary: "Aplica full-well, ruido de lectura, ganancia analógica y cuantización ADC.",
                 header_control_id: None,
                 input_artifact: PhysicalArtifactId::CoupledSensorChargeV1,
-                output_artifact: PhysicalArtifactId::RawMosaicCleanV1,
-                preview_result: TestPreviewResult::SensorCfa,
-                controls: Vec::new(),
-            },
-            TestPhaseDescriptor {
-                id: SENSOR_NOISE_PHASE_ID,
-                label: "Ruido del sensor",
-                effect_summary: "Añade ruido físico de lectura, corriente oscura y cuantización.",
-                header_control_id: Some(SENSOR_NOISE_AMOUNT_CONTROL_ID),
-                input_artifact: PhysicalArtifactId::RawMosaicCleanV1,
                 output_artifact: PhysicalArtifactId::RawMosaicNoisyV1,
-                preview_result: TestPreviewResult::SensorNoise,
-                controls: vec![scalar_control(
-                    SENSOR_NOISE_AMOUNT_CONTROL_ID,
-                    "Carácter del ruido",
-                    selection.sensor_noise_amount,
-                    0.0,
-                    4.0,
-                    1.0,
-                    "×",
-                )],
+                preview_result: TestPreviewResult::SensorReadoutRaw,
+                controls: Vec::new(),
             },
             TestPhaseDescriptor {
                 id: DEVELOP_DEMOSAIC_PHASE_ID,
@@ -3047,9 +3047,9 @@ mod tests {
                 LENS_PROJECTION_PHASE_ID,
                 SHUTTER_EXPOSURE_PHASE_ID,
                 COMPUTATIONAL_CAPTURE_PHASE_ID,
+                SENSOR_COLLECTION_PHASE_ID,
                 SENSOR_BLOOM_PHASE_ID,
-                SENSOR_CFA_PHASE_ID,
-                SENSOR_NOISE_PHASE_ID,
+                SENSOR_READOUT_RAW_PHASE_ID,
                 DEVELOP_DEMOSAIC_PHASE_ID,
                 CAMERA_RENDERING_INTENT_PHASE_ID,
                 DELIVERY_RASTER_PHASE_ID,
@@ -3086,9 +3086,9 @@ mod tests {
                 Some(PhysicalIntermediate::LensProjection),
                 Some(PhysicalIntermediate::ShutterMotion),
                 Some(PhysicalIntermediate::ComputationalCapture),
+                Some(PhysicalIntermediate::SensorCollection),
                 Some(PhysicalIntermediate::SensorBloom),
-                Some(PhysicalIntermediate::SensorNoise),
-                Some(PhysicalIntermediate::RawMosaic),
+                Some(PhysicalIntermediate::SensorReadoutRaw),
                 Some(PhysicalIntermediate::DevelopedAcesCg),
                 Some(PhysicalIntermediate::CameraRenderedAcesCg),
                 Some(PhysicalIntermediate::CameraRenderedAcesCg),
@@ -3428,7 +3428,7 @@ mod tests {
     #[test]
     fn sensor_bloom_publishes_and_restores_the_selected_camera_profile() {
         let page = test_page_descriptor(asus()).unwrap();
-        let ids = page.phases[13]
+        let ids = page.phases[14]
             .controls
             .iter()
             .map(|control| match control {
@@ -3607,8 +3607,8 @@ mod tests {
             PhysicalArtifactId::ImagePlaneIlluminanceAcesCgV1,
             PhysicalArtifactId::IntegratedOpticalExposureV1,
             PhysicalArtifactId::ComputationalCaptureExposureV2,
+            PhysicalArtifactId::CollectedSensorChargeV1,
             PhysicalArtifactId::CoupledSensorChargeV1,
-            PhysicalArtifactId::RawMosaicCleanV1,
             PhysicalArtifactId::RawMosaicNoisyV1,
             PhysicalArtifactId::DevelopedCameraAcesCgV1,
             PhysicalArtifactId::CameraRenderedAcesCgV1,
@@ -3622,8 +3622,8 @@ mod tests {
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(stable_ids.len(), artifacts.len());
         assert_eq!(
-            PhysicalArtifactId::RawMosaicCleanV1.stable_id(),
-            "raw-mosaic-clean-v1"
+            PhysicalArtifactId::CollectedSensorChargeV1.stable_id(),
+            "collected-sensor-charge-v1"
         );
         assert_eq!(
             PhysicalArtifactId::RecordingOutputSignalV2.stable_id(),

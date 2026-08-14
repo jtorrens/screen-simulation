@@ -29,10 +29,10 @@ import Testing
         .capture(.lens),
         .capture(.exposureShutter),
         .capture(.computationalCapture),
+        .capture(.sensorCollection),
         .capture(.sensorBloom),
-        .capture(.noise),
     ])
-    #expect(!PhysicalStageID.generalOverviewContinuous.contains(.capture(.sensorCFA)))
+    #expect(!PhysicalStageID.generalOverviewContinuous.contains(.capture(.sensorReadout)))
     #expect(!PhysicalStageID.generalOverviewContinuous.contains(.capture(.developDemosaic)))
 }
 
@@ -62,7 +62,7 @@ import Testing
     #expect(PhysicalDomainID.allCases.map(\.rawValue) == [0x100, 0x200])
     #expect(PhysicalStageID.ordered.map(\.id) == [
         0x101, 0x102, 0x108, 0x103, 0x104, 0x201, 0x105,
-        0x106, 0x107, 0x202, 0x203, 0x208, 0x207, 0x204, 0x205, 0x206,
+        0x106, 0x107, 0x202, 0x203, 0x208, 0x204, 0x207, 0x205, 0x206,
     ])
     #expect(PhysicalStageID.ordered.map(\.domain) == [
         .screen, .screen, .screen, .screen, .screen, .capture, .screen,
@@ -103,7 +103,7 @@ import Testing
 
 @Test func discreteContributionHasNoInventedContinuousAmount() throws {
     let cfa = try PhysicalStageContribution(
-        stage: .capture(.sensorCFA),
+        stage: .capture(.sensorReadout),
         control: .discrete(enabled: true),
         exactIdentityAtZero: false
     )

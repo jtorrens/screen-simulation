@@ -52,7 +52,7 @@ codes required by demosaic and does not allocate an unobservable duplicate clipp
 The complete physical-frame optical kernel evaluates 32 direct equal-weight pupil rays independently
 for every sensor-footprint and PSF sample. CPU and Metal rotate the same nested pupil pattern with
 the same deterministic per-pixel integer hash, retain identical ray order and preserve the separate
-per-channel focus and chromatic geometry before shutter and Sensor/CFA. This route deliberately
+per-channel focus and chromatic geometry before shutter and photosite/CFA collection. This route deliberately
 keeps resolved panel phase, RGB fringe and defocus in the same thin-lens integration.
 The one owned Metal source is specialized at backend creation by the resolved lens evaluator and
 incident-environment source kind. Thin Lens and VFX 2D are each combined with procedural and

@@ -161,7 +161,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 28;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 29;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -347,7 +347,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 16;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 17;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -1075,15 +1075,18 @@ fn effective_capture_checkpoint(
     let sensor_enabled = authored_sensor_enabled
         && matches!(
             intermediate,
-            PhysicalIntermediate::SensorBloom
-                | PhysicalIntermediate::SensorNoise
-                | PhysicalIntermediate::RawMosaic
+            PhysicalIntermediate::SensorCollection
+                | PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorReadoutRaw
                 | PhysicalIntermediate::DevelopedAcesCg
         );
     let sensor_noise_amount = if sensor_enabled
         && matches!(
             intermediate,
-            PhysicalIntermediate::RawMosaic | PhysicalIntermediate::DevelopedAcesCg
+            PhysicalIntermediate::SensorCollection
+                | PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorReadoutRaw
+                | PhysicalIntermediate::DevelopedAcesCg
         ) {
         authored_sensor_noise_amount
     } else {
@@ -1285,9 +1288,9 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::LensProjection
             | PhysicalIntermediate::ShutterMotion
             | PhysicalIntermediate::ComputationalCapture
+            | PhysicalIntermediate::SensorCollection
             | PhysicalIntermediate::SensorBloom
-            | PhysicalIntermediate::SensorNoise
-            | PhysicalIntermediate::RawMosaic
+            | PhysicalIntermediate::SensorReadoutRaw
             | PhysicalIntermediate::DevelopedAcesCg
             | PhysicalIntermediate::CameraRenderedAcesCg
     ) {
@@ -1301,14 +1304,14 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     }
     if matches!(
         requested_intermediate,
-        PhysicalIntermediate::SensorBloom
-            | PhysicalIntermediate::SensorNoise
-            | PhysicalIntermediate::RawMosaic
-    ) && !amounts.sensor_cfa_enabled
+        PhysicalIntermediate::SensorCollection
+            | PhysicalIntermediate::SensorBloom
+            | PhysicalIntermediate::SensorReadoutRaw
+    ) && !amounts.sensor_readout_enabled
         || matches!(
             requested_intermediate,
             PhysicalIntermediate::DevelopedAcesCg | PhysicalIntermediate::CameraRenderedAcesCg
-        ) && amounts.sensor_cfa_enabled
+        ) && amounts.sensor_readout_enabled
             && !amounts.raw_develop_enabled
     {
         unsafe {
@@ -1453,8 +1456,8 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         computational_character_strength: amounts.computational_capture,
         sensor: pipeline.sensor,
         radiometric_calibration: pipeline.radiometric_calibration,
-        sensor_enabled: amounts.sensor_cfa_enabled,
-        sensor_noise_amount: amounts.sensor_noise,
+        sensor_enabled: amounts.sensor_readout_enabled,
+        sensor_noise_amount: amounts.sensor_collection,
         development: pipeline.development,
         development_enabled: amounts.raw_develop_enabled,
         rendering_intent: pipeline.rendering_intent,
@@ -1598,8 +1601,8 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     }
     let capture_checkpoint = effective_capture_checkpoint(
         requested_intermediate,
-        amounts.sensor_cfa_enabled,
-        amounts.sensor_noise,
+        amounts.sensor_readout_enabled,
+        amounts.sensor_collection,
         amounts.raw_develop_enabled,
     );
     let shared = Arc::new(PhysicalJobShared {
@@ -4602,14 +4605,14 @@ mod tests {
             }
         );
 
-        let clean_raw =
-            effective_capture_checkpoint(PhysicalIntermediate::SensorNoise, true, 1.0, true);
-        assert_eq!(clean_raw.sensor_noise_amount, 0.0);
-        assert!(clean_raw.sensor_enabled);
-        assert!(!clean_raw.development_enabled);
+        let collected =
+            effective_capture_checkpoint(PhysicalIntermediate::SensorCollection, true, 1.0, true);
+        assert_eq!(collected.sensor_noise_amount, 1.0);
+        assert!(collected.sensor_enabled);
+        assert!(!collected.development_enabled);
 
         let noisy_raw =
-            effective_capture_checkpoint(PhysicalIntermediate::RawMosaic, true, 1.0, true);
+            effective_capture_checkpoint(PhysicalIntermediate::SensorReadoutRaw, true, 1.0, true);
         assert_eq!(noisy_raw.sensor_noise_amount, 1.0);
         assert!(noisy_raw.sensor_enabled);
         assert!(!noisy_raw.development_enabled);
@@ -4917,8 +4920,8 @@ mod tests {
         contributions[10].amount = 1.0;
         contributions[11].amount = 1.0;
         contributions[12].amount = 1.0;
-        contributions[13].discrete_enabled = true;
-        contributions[14].amount = 1.0;
+        contributions[13].amount = 1.0;
+        contributions[14].discrete_enabled = true;
         contributions[15].discrete_enabled = true;
         assert!(contribution_amounts(&contributions).is_some());
         let identity = ScreenPhysicalIdentity128 { high: 7, low: 9 };

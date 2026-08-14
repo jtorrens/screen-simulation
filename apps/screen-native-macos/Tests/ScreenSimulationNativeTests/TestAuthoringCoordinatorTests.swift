@@ -159,8 +159,9 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         "Trama del panel", "Uniformidad del panel", "Dispersión de luz del panel",
         "Geometría relativa",
         "Cristal y entorno", "Resplandor del cristal", "Objetivo y proyección",
-        "Exposición y obturador", "Captura computacional", "Crosstalk y bloom del sensor",
-        "Sensor y CFA", "Ruido del sensor", "Revelado y demosaico",
+        "Exposición y obturador", "Captura computacional",
+        "Colección del fotosito, CFA y ruido", "Crosstalk y bloom del sensor",
+        "Lectura del sensor y RAW", "Revelado y demosaico",
         "Intención de render de cámara", "Raster de entrega", "Señal de grabación · diagnóstico",
         "Códec de grabación",
     ])
@@ -196,11 +197,11 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[12].id]
         == .computationalCapture)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[13].id]
-        == .sensorBloom)
+        == .sensorCollection)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[14].id]
-        == .sensorCfa)
+        == .sensorBloom)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[15].id]
-        == .sensorNoise)
+        == .sensorReadoutRaw)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[16].id]
         == .developDemosaic)
     #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[0].id] == nil)
@@ -208,9 +209,9 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[2].id]
         == .deviceSignal)
     #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[14].id]
-        == .sensorNoise)
+        == .sensorBloom)
     #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[15].id]
-        == .rawMosaic)
+        == .sensorReadoutRaw)
     #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[16].id]
         == .developedACEScg)
     for index in 17..<snapshot.presentation.phases.count {
@@ -257,7 +258,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(uniformity.value == 1)
     #expect(uniformity.minimum == 0)
     #expect(uniformity.maximum == 4)
-    let bloomControls = snapshot.presentation.phases[13].sections.flatMap(\.controls)
+    let bloomControls = snapshot.presentation.phases[14].sections.flatMap(\.controls)
     #expect(bloomControls.map(\.id) == [
         "sensor-bloom-amount",
         "sensor-bloom-crosstalk-fraction",
@@ -542,9 +543,9 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         .lensProjection,
         .shutterMotion,
         .computationalCapture,
+        .sensorCollection,
         .sensorBloom,
-        .sensorNoise,
-        .rawMosaic,
+        .sensorReadoutRaw,
         .developedACEScg,
         .cameraRenderedACEScg,
         .cameraRenderedACEScg,

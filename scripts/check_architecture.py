@@ -351,7 +351,9 @@ def validate_native_model_authority() -> None:
     )
     for required in (
         "pub enum PhysicalPipelineCpuArtifact",
-        "RawMosaic {",
+        "SensorCollection {",
+        "SensorBloom {",
+        "SensorReadoutRaw {",
         "raw: RawSensorRaster",
         "pub fn presentation_rgba(&self)",
         "pub artifact: PhysicalPipelineCpuArtifact",

@@ -161,8 +161,8 @@ final class PhysicalModelController: ObservableObject {
     }
 
     func setContinuousAmount(_ amount: Double, stage: PhysicalStageID) throws {
-        if stage == .capture(.noise), amount > 0,
-           stageValue(.capture(.sensorCFA)).control == .discrete(enabled: false)
+        if stage == .capture(.sensorCollection), amount > 0,
+           stageValue(.capture(.sensorReadout)).control == .discrete(enabled: false)
         {
             throw PhysicalModelStateError.invalidStageCombination
         }
@@ -229,7 +229,7 @@ final class PhysicalModelController: ObservableObject {
 
     func setDiscreteEnabled(_ enabled: Bool, stage: PhysicalStageID) throws {
         if stage == .capture(.developDemosaic), enabled,
-           stageValue(.capture(.sensorCFA)).control == .discrete(enabled: false)
+           stageValue(.capture(.sensorReadout)).control == .discrete(enabled: false)
         {
             throw PhysicalModelStateError.invalidStageCombination
         }
@@ -239,12 +239,12 @@ final class PhysicalModelController: ObservableObject {
         value.control = .discrete(enabled: enabled)
         guard stages[stage] != value else { return }
         stages[stage] = value
-        if stage == .capture(.sensorCFA), !enabled {
-            if var noise = stages[.capture(.noise)],
+        if stage == .capture(.sensorReadout), !enabled {
+            if var noise = stages[.capture(.sensorCollection)],
                case let .continuous(_, limits) = noise.control
             {
                 noise.control = .continuous(amount: 0, limits: limits)
-                stages[.capture(.noise)] = noise
+                stages[.capture(.sensorCollection)] = noise
             }
             if var develop = stages[.capture(.developDemosaic)] {
                 develop.control = .discrete(enabled: false)

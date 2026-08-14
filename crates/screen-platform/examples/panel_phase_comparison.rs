@@ -176,8 +176,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let backend = MetalPhysicalPipeline::new(&metal_device)?;
     let capture_intermediate = matches!(
         arguments.intermediate,
-        PhysicalIntermediate::SensorNoise
-            | PhysicalIntermediate::RawMosaic
+        PhysicalIntermediate::SensorCollection
+            | PhysicalIntermediate::SensorReadoutRaw
             | PhysicalIntermediate::DevelopedAcesCg
     );
     let (anterior_width, anterior_height, cpu_pixels) = if capture_intermediate {
@@ -270,7 +270,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn arguments() -> Result<Arguments, Box<dyn Error>> {
     let values = std::env::args().skip(1).collect::<Vec<_>>();
     if values.len() != 10 {
-        return Err("usage: panel_phase_comparison <rgba16f.bin> <input-width> <input-height> <device-id> <white-nits> <fit|fill-crop|stretch|one-to-one> <draft|medium|high|native> <subpixel-radiance|panel-uniformity|panel-light-spread|relative-geometry|cover-environment|lens-projection|shutter-motion|sensor-noise|raw-mosaic|developed-acescg> <output-stem> <output-directory>".into());
+        return Err("usage: panel_phase_comparison <rgba16f.bin> <input-width> <input-height> <device-id> <white-nits> <fit|fill-crop|stretch|one-to-one> <draft|medium|high|native> <subpixel-radiance|panel-uniformity|panel-light-spread|relative-geometry|cover-environment|lens-projection|shutter-motion|sensor-collection|sensor-readout-raw|developed-acescg> <output-stem> <output-directory>".into());
     }
     let placement = match values[5].as_str() {
         "fit" => RasterPlacement::Fit,
@@ -294,8 +294,8 @@ fn arguments() -> Result<Arguments, Box<dyn Error>> {
         "cover-environment" => PhysicalIntermediate::CoverEnvironment,
         "lens-projection" => PhysicalIntermediate::LensProjection,
         "shutter-motion" => PhysicalIntermediate::ShutterMotion,
-        "sensor-noise" => PhysicalIntermediate::SensorNoise,
-        "raw-mosaic" => PhysicalIntermediate::RawMosaic,
+        "sensor-collection" => PhysicalIntermediate::SensorCollection,
+        "sensor-readout-raw" => PhysicalIntermediate::SensorReadoutRaw,
         "developed-acescg" => PhysicalIntermediate::DevelopedAcesCg,
         _ => return Err(format!("unknown intermediate: {}", values[7]).into()),
     };
