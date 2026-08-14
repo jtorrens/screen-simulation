@@ -132,8 +132,8 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             refractive_index: 1.50,
             anti_reflective_efficiency: 0.45,
             absorption_per_millimeter: rgb(0.010),
-            roughness: 0.20,
-            haze: 0.012,
+            roughness: 0.09,
+            haze: 0.015,
             anti_glare_microtexture: AntiGlareMicrotextureProfile::SEMI_GLOSS,
             glow: CoverGlowProfile::SEMI_GLOSS,
         },
@@ -164,8 +164,8 @@ pub const COVER_GLASS_PRESETS: &[CoverGlassPreset] = &[
             refractive_index: 1.50,
             anti_reflective_efficiency: 0.40,
             absorption_per_millimeter: rgb(0.018),
-            roughness: 0.72,
-            haze: 0.075,
+            roughness: 0.36,
+            haze: 0.060,
             anti_glare_microtexture: AntiGlareMicrotextureProfile::HEAVY_MATTE,
             glow: CoverGlowProfile::HEAVY_MATTE,
         },
@@ -465,8 +465,8 @@ impl AntiGlareMicrotextureProfile {
     };
     pub const SEMI_GLOSS: Self = Self {
         character_strength: 1.0,
-        rms_slope: 0.018,
-        correlation_length_micrometers: 14.0,
+        rms_slope: 0.015,
+        correlation_length_micrometers: 30.0,
         anisotropy: 0.08,
         seed: 0x207a_0103,
     };
@@ -481,8 +481,8 @@ impl AntiGlareMicrotextureProfile {
     };
     pub const HEAVY_MATTE: Self = Self {
         character_strength: 1.0,
-        rms_slope: 0.090,
-        correlation_length_micrometers: 28.0,
+        rms_slope: 0.060,
+        correlation_length_micrometers: 90.0,
         anisotropy: 0.18,
         seed: 0x4fc9_0105,
     };
@@ -1227,6 +1227,48 @@ mod tests {
     }
 
     #[test]
+    fn display_cover_family_is_ordered_around_the_calibrated_matte_anchor() {
+        let strong = cover_glass_preset("cover-glossy-strong-ar")
+            .expect("strong AR preset")
+            .profile;
+        let standard = cover_glass_preset("cover-glossy-standard-ar")
+            .expect("standard AR preset")
+            .profile;
+        let semi = cover_glass_preset("cover-semi-gloss")
+            .expect("semi-gloss preset")
+            .profile;
+        let matte = cover_glass_preset("cover-matte-ar")
+            .expect("matte AR preset")
+            .profile;
+        let heavy = cover_glass_preset("cover-heavy-matte")
+            .expect("heavy matte preset")
+            .profile;
+
+        assert!(strong.roughness < standard.roughness);
+        assert!(standard.roughness < semi.roughness);
+        assert!(semi.roughness < matte.roughness);
+        assert!(matte.roughness < heavy.roughness);
+        assert!(strong.haze < standard.haze);
+        assert!(standard.haze < semi.haze);
+        assert!(semi.haze < matte.haze);
+        assert!(matte.haze < heavy.haze);
+        assert!(
+            strong.anti_glare_microtexture.rms_slope < standard.anti_glare_microtexture.rms_slope
+        );
+        assert!(
+            standard.anti_glare_microtexture.rms_slope < semi.anti_glare_microtexture.rms_slope
+        );
+        assert!(semi.anti_glare_microtexture.rms_slope < matte.anti_glare_microtexture.rms_slope);
+        assert!(matte.anti_glare_microtexture.rms_slope < heavy.anti_glare_microtexture.rms_slope);
+        assert_eq!(semi.roughness, matte.roughness * 0.5);
+        assert_eq!(semi.haze, matte.haze * 0.5);
+        assert_eq!(semi.anti_glare_microtexture.rms_slope, 0.015);
+        assert_eq!(heavy.roughness, matte.roughness * 2.0);
+        assert_eq!(heavy.haze, matte.haze * 2.0);
+        assert_eq!(heavy.anti_glare_microtexture.rms_slope, 0.060);
+    }
+
+    #[test]
     fn every_cover_preset_explicitly_owns_a_valid_microtexture_realization() {
         let mut seeds = HashSet::new();
         for preset in COVER_GLASS_PRESETS {
@@ -1283,7 +1325,7 @@ mod tests {
                 ..base
             };
             let mut sum = 0.0_f64;
-            let sample_count = 256_u32;
+            let sample_count = 512_u32;
             for y in 0..sample_count {
                 for x in 0..sample_count {
                     let position = [(x as f32 + 0.37) * 7.1e-6, (y as f32 + 0.61) * 7.9e-6];
