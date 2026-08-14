@@ -374,6 +374,26 @@ def validate_native_model_authority() -> None:
     for required in ("final class ViewerNavigationController", "func fit()", "func restore("):
         if required not in viewer_navigation:
             raise ValidationError(f"Viewer-navigation owner omits contract: {required}")
+    forbidden_output_queue_state = (
+        "struct RenderJob: Identifiable",
+        "@Published var jobs:",
+        "private var renderTask:",
+    )
+    present = [value for value in forbidden_output_queue_state if value in workspace]
+    if present:
+        raise ValidationError(f"WorkspaceModel reclaims output-queue lifecycle: {present}")
+    output_queue = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputQueueController.swift"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "final class NativeOutputQueueController",
+        "struct RenderJob: Identifiable",
+        "func enqueue(",
+        "func cancel()",
+    ):
+        if required not in output_queue:
+            raise ValidationError(f"Native output-queue owner omits contract: {required}")
 
     frame_check = (
         ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/FrameCheckPNG.swift"

@@ -170,16 +170,6 @@ final class WorkspaceModel: ObservableObject {
             }
         }
     }
-    struct RenderJob: Identifiable {
-        enum State: String { case pending, rendering, completed, failed, cancelled }
-        let id = UUID()
-        let destination: URL
-        let configuration: StudioResolvedRenderConfiguration
-        var state: State = .pending
-        var progress = 0.0
-        var detail = "Pendiente"
-    }
-
     @Published var inputTransform = StudioColorInputTransform.catalog.first {
         $0.id == "srgb-encoded-rec709"
     }!
@@ -225,7 +215,6 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var reflectionEnvironmentIsGenerating = false
     @Published private(set) var environmentSourceName: String?
     @Published private(set) var environmentSourceResolution: CGSize?
-    @Published var jobs: [RenderJob] = []
     @Published var errorMessage: String?
     @Published var currentFrame = 0
     @Published var frameCount = 1
@@ -304,7 +293,9 @@ final class WorkspaceModel: ObservableObject {
     let monitorOutput = MonitorOutputController()
     let physicalModel = PhysicalModelController()
     let viewerNavigation = ViewerNavigationController()
+    let outputQueue = NativeOutputQueueController()
     private var viewerNavigationSubscription: AnyCancellable?
+    private var outputQueueSubscription: AnyCancellable?
 
     var zoom: Double { viewerNavigation.zoom }
     var previewIsFitted: Bool { viewerNavigation.isFitted }
@@ -313,6 +304,7 @@ final class WorkspaceModel: ObservableObject {
         set { viewerNavigation.setPan(newValue) }
     }
     var modelViewerOneToOne: Bool { viewerNavigation.modelOneToOne }
+    var jobs: [NativeOutputQueueController.RenderJob] { outputQueue.jobs }
 
     var environmentSourceEvidence: [String] {
         guard let name = environmentSourceName,
@@ -334,7 +326,6 @@ final class WorkspaceModel: ObservableObject {
     private var missingMediaSource: SavedSceneSource?
     private var tickSubscription: AnyCancellable?
     private var physicalSubscription: AnyCancellable?
-    private var renderTask: Task<Void, Never>?
     private var physicalNativeTask: Task<Void, Never>?
     private var physicalInteractiveTask: Task<Void, Never>?
     private var physicalNativeJob: PhysicalMetalFrameJob?
@@ -420,6 +411,9 @@ final class WorkspaceModel: ObservableObject {
             self?.objectWillChange.send()
         }
         viewerNavigationSubscription = viewerNavigation.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        outputQueueSubscription = outputQueue.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         renderPattern()
@@ -2418,60 +2412,32 @@ final class WorkspaceModel: ObservableObject {
             firstFrame: range.lowerBound,
             lastFrame: range.upperBound
         )
-        jobs.append(RenderJob(destination: url, configuration: configuration))
+        outputQueue.enqueue(destination: url, configuration: configuration)
     }
 
     func runQueue() {
-        guard renderTask == nil,
-              let index = jobs.firstIndex(where: { $0.state == .pending })
-        else { return }
         pause()
-        jobs[index].state = .rendering
-        jobs[index].detail = "Preparando grafo Metal"
-        let job = jobs[index]
-        renderTask = Task {
-            do {
-                let url = try await NativeOutputRenderer.render(
+        outputQueue.run(
+            operation: { [weak self] job, progress in
+                guard let self else { throw CancellationError() }
+                return try await NativeOutputRenderer.render(
                     configuration: job.configuration,
                     destination: job.destination,
-                    audioSource: session.sourceURL,
-                    display: metalDisplay,
+                    audioSource: self.session.sourceURL,
+                    display: self.metalDisplay,
                     frameProvider: { [weak self] frame in
                         guard let self else { throw CancellationError() }
                         return try await self.renderFrame(frame)
                     },
-                    progress: { [weak self] completed, total in
-                        guard let self,
-                              let live = self.jobs.firstIndex(where: { $0.id == job.id })
-                        else { return }
-                        self.jobs[live].progress = Double(completed) / Double(total)
-                        self.jobs[live].detail = "\(completed) / \(total)"
-                    }
+                    progress: progress
                 )
-                if let live = jobs.firstIndex(where: { $0.id == job.id }) {
-                    jobs[live].state = .completed
-                    jobs[live].progress = 1
-                    jobs[live].detail = url.lastPathComponent
-                }
-            } catch is CancellationError {
-                if let live = jobs.firstIndex(where: { $0.id == job.id }) {
-                    jobs[live].state = .cancelled
-                    jobs[live].detail = "Cancelado"
-                }
-            } catch {
-                if let live = jobs.firstIndex(where: { $0.id == job.id }) {
-                    jobs[live].state = .failed
-                    jobs[live].detail = error.localizedDescription
-                }
-                errorMessage = error.localizedDescription
-            }
-            renderTask = nil
-            runQueue()
-        }
+            },
+            onFailure: { [weak self] message in self?.errorMessage = message }
+        )
     }
 
     func cancelRender() {
-        renderTask?.cancel()
+        outputQueue.cancel()
     }
 
     func renderCurrentFrame() {
