@@ -2894,6 +2894,8 @@ final class WorkspaceModel: ObservableObject {
                     self.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
                 } else if let foreground = self.referenceForegroundFrame {
                     self.publishReferenceComposite(foreground)
+                } else {
+                    self.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
                 }
             } catch is CancellationError {
             } catch {
@@ -3290,7 +3292,7 @@ final class WorkspaceModel: ObservableObject {
         let timeline = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
             reference: referenceTimelineInfo,
-            referenceVisible: referenceACEScgFrame != nil
+            referenceVisible: referenceControlsTimeline
         )
         frameRate = timeline.frameRate
         frameCount = max(1, timeline.frameCount)
@@ -4030,8 +4032,12 @@ final class WorkspaceModel: ObservableObject {
               let presentation = testPresentation,
               let result = testPreviewResultByPhaseID[presentation.selectedPhaseID]
         else {
-            metalFrame = sourceACEScgFrame
-            monitorOutput.update(frame: sourceACEScgFrame, display: metalDisplay)
+            if referenceACEScgFrame != nil {
+                publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            } else {
+                metalFrame = sourceACEScgFrame
+                monitorOutput.update(frame: sourceACEScgFrame, display: metalDisplay)
+            }
             return
         }
         let presentationFrame: StudioColorMetalFrame
@@ -4052,6 +4058,10 @@ final class WorkspaceModel: ObservableObject {
              .developDemosaic, .cameraRenderingIntent, .deliveryRaster, .recordingOutput, .recordingCodec:
             updateRequestedPhysicalIntermediate(physicalIntermediate(for: result)!)
             rebuildPhysicalSelectedFrame()
+            return
+        }
+        if referenceACEScgFrame != nil {
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
             return
         }
         metalFrame = presentationFrame
