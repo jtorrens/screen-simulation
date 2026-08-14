@@ -205,6 +205,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var referenceMatchProjectedCorners: [CGPoint] = []
     @Published private(set) var referenceMatchPinnedIndices: Set<Int> = []
     @Published private(set) var referenceMatchErrorPixels: Double?
+    var referenceMatchFocalLengthMillimeters: Double? {
+        testAuthoringSelection?.focalLengthMillimeters
+    }
     @Published var referenceMatchEnabled = false
     @Published private(set) var environmentSourceName: String?
     @Published private(set) var environmentSourceResolution: CGSize?

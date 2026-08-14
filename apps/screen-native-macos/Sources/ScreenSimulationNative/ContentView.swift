@@ -79,6 +79,7 @@ struct ContentView: View {
     @Environment(\.undoManager) private var undoManager
     @ObservedObject var model: WorkspaceModel
     @StateObject private var library = GlobalLibraryController()
+    @StateObject private var referenceMatchPanel = ReferenceMatchPanelController()
     @State private var tab = SidebarTab.output
     @State private var page = WorkspacePage.main
     @State private var settingsSection = SettingsSection.application
@@ -1539,43 +1540,20 @@ struct ContentView: View {
                         .truncationMode(.middle)
                         .frame(maxWidth: 130)
                         .help(referenceName)
-                    Toggle("Match", isOn: Binding(
-                        get: { model.referenceMatchEnabled },
-                        set: { model.setReferenceMatchEnabled($0) }
-                    ))
-                    .toggleStyle(.button)
-                    .help("Activar o desactivar los controles de cámara; la referencia permanece visible")
-                    if model.referenceMatchEnabled {
-                        Text("\(model.referenceMatchPinnedIndices.count)/4")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(model.referenceMatchPinnedIndices.count == 4
-                                ? .green : .secondary)
-                            .help("Objetivos 2D fijados con Shift+clic")
-                        Button("Resolver") {
-                            model.solveReferenceMatchTargets(undoManager: undoManager)
-                        }
-                        .disabled(model.referenceMatchPinnedIndices.count != 4)
-                        .help("Resolver una pose rígida con los cuatro objetivos verdes")
-                        Button("Buscar focal") {
-                            model.searchReferenceMatchFocalLength(undoManager: undoManager)
-                        }
-                        .disabled(model.referenceMatchPinnedIndices.count != 4)
-                        .help("Buscar la distancia focal y la pose con menor error de reproyección")
-                        Button {
-                            model.clearReferenceMatchTargets()
-                        } label: { Image(systemName: "scope") }
-                        .disabled(model.referenceMatchPinnedIndices.isEmpty)
-                        .help("Borrar todos los objetivos de Match")
-                    }
                     Button {
+                        referenceMatchPanel.toggle(model: model, undoManager: undoManager)
+                    } label: {
+                        Label("Match", systemImage: referenceMatchPanel.isVisible
+                            ? "viewfinder.circle.fill" : "viewfinder.circle")
+                    }
+                    .help(referenceMatchPanel.isVisible
+                        ? "Ocultar controles de Match"
+                        : "Mostrar controles de Match")
+                    Button {
+                        referenceMatchPanel.hide()
                         model.removeReferenceFrame()
                     } label: { Image(systemName: "xmark.circle") }
                     .help("Quitar referencia")
-                    if let error = model.referenceMatchErrorPixels {
-                        Text("±\(error.formatted(.number.precision(.fractionLength(1)))) px")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 Button {
                     model.monitorOutput.toggle(
