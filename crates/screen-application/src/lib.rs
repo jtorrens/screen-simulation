@@ -65,10 +65,13 @@ use screen_panel::{
     FlatPanelGeometry, FlatPanelQuality, FlatPanelSampling, LcdProfile, PanelError,
     PanelLightSpreadProfile, PanelUniformityProfile, ValidatedPanelEvaluator,
 };
+#[cfg(test)]
+use screen_sensor::expose_raw_with_noise_amount;
 use screen_sensor::{
-    BayerPattern, CaptureIdentity, ComputationalCaptureProfile, IntegratedOpticalExposure,
-    RawSensorRaster, RawSensorRegion, SensorBloomProfile, SensorError, SensorProfile, SensorRegion,
-    expose_raw, expose_raw_region, expose_raw_with_noise_amount,
+    BayerPattern, CaptureIdentity, ComputationalCaptureProfile, CoupledSensorChargeRegion,
+    IntegratedOpticalExposure, RawSensorRaster, RawSensorRegion, SensorBloomProfile, SensorError,
+    SensorProfile, SensorRegion, collect_sensor_charge_region_with_noise_amount,
+    couple_sensor_charge_region, expose_raw, expose_raw_region, quantize_sensor_charge_region,
 };
 use std::time::{Duration, Instant};
 
@@ -1008,10 +1011,10 @@ pub enum PhysicalPipelineCpuArtifact {
     ShutterMotion(PhysicalRgbaRaster),
     ComputationalCapture(PhysicalRgbaRaster),
     SensorBloom {
-        raw: RawSensorRaster,
+        charge: CoupledSensorChargeRegion,
         diagnostic: PhysicalRgbaRaster,
     },
-    SensorNoise {
+    SensorCfa {
         raw: RawSensorRaster,
         diagnostic: PhysicalRgbaRaster,
     },
@@ -1041,16 +1044,14 @@ impl PhysicalPipelineCpuArtifact {
             | Self::DevelopedAcesCg(raster)
             | Self::CameraRenderedAcesCg(raster) => &raster.rgba,
             Self::SensorBloom { diagnostic, .. }
-            | Self::SensorNoise { diagnostic, .. }
+            | Self::SensorCfa { diagnostic, .. }
             | Self::RawMosaic { diagnostic, .. } => &diagnostic.rgba,
         }
     }
 
     pub fn raw_sensor(&self) -> Option<&RawSensorRaster> {
         match self {
-            Self::SensorBloom { raw, .. }
-            | Self::SensorNoise { raw, .. }
-            | Self::RawMosaic { raw, .. } => Some(raw),
+            Self::SensorCfa { raw, .. } | Self::RawMosaic { raw, .. } => Some(raw),
             _ => None,
         }
     }
@@ -1079,8 +1080,10 @@ impl PhysicalPipelineCpuResult {
             | PhysicalPipelineCpuArtifact::ComputationalCapture(raster)
             | PhysicalPipelineCpuArtifact::DevelopedAcesCg(raster)
             | PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(raster) => raster.width,
-            PhysicalPipelineCpuArtifact::SensorBloom { raw, .. }
-            | PhysicalPipelineCpuArtifact::SensorNoise { raw, .. }
+            PhysicalPipelineCpuArtifact::SensorBloom { charge, .. } => {
+                u32::from(charge.region.width)
+            }
+            PhysicalPipelineCpuArtifact::SensorCfa { raw, .. }
             | PhysicalPipelineCpuArtifact::RawMosaic { raw, .. } => raw.width,
         }
     }
@@ -1101,8 +1104,10 @@ impl PhysicalPipelineCpuResult {
             | PhysicalPipelineCpuArtifact::ComputationalCapture(raster)
             | PhysicalPipelineCpuArtifact::DevelopedAcesCg(raster)
             | PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(raster) => raster.height,
-            PhysicalPipelineCpuArtifact::SensorBloom { raw, .. }
-            | PhysicalPipelineCpuArtifact::SensorNoise { raw, .. }
+            PhysicalPipelineCpuArtifact::SensorBloom { charge, .. } => {
+                u32::from(charge.region.height)
+            }
+            PhysicalPipelineCpuArtifact::SensorCfa { raw, .. }
             | PhysicalPipelineCpuArtifact::RawMosaic { raw, .. } => raw.height,
         }
     }
@@ -1303,6 +1308,31 @@ pub fn expose_physical_pipeline_raw(
     shuttered_height: u32,
     plan: PhysicalPipelineExecutionPlan,
 ) -> Result<RawSensorRaster, ApplicationError> {
+    let (sensor, exposure) =
+        physical_pipeline_sensor_exposure(shuttered, shuttered_width, shuttered_height, plan)?;
+    let region = SensorRegion::full(sensor);
+    let collected = collect_sensor_charge_region_with_noise_amount(
+        sensor,
+        &exposure,
+        CaptureIdentity {
+            noise_seed: plan.shutter_motion.noise_seed,
+            frame_index: plan.frame_index,
+        },
+        region,
+        plan.sensor_noise_amount,
+    )
+    .map_err(ApplicationError::Sensor)?;
+    let coupled = couple_sensor_charge_region(collected).map_err(ApplicationError::Sensor)?;
+    let raw = quantize_sensor_charge_region(coupled, region).map_err(ApplicationError::Sensor)?;
+    Ok(complete_raw_raster(raw))
+}
+
+fn physical_pipeline_sensor_exposure(
+    shuttered: &[[f32; 4]],
+    shuttered_width: u32,
+    shuttered_height: u32,
+    plan: PhysicalPipelineExecutionPlan,
+) -> Result<(SensorProfile, IntegratedOpticalExposure), ApplicationError> {
     let expected = u64::from(shuttered_width) * u64::from(shuttered_height);
     if shuttered_width == 0
         || shuttered_height == 0
@@ -1343,29 +1373,79 @@ pub fn expose_physical_pipeline_raw(
         parameters.white_level_nits * plan.radiometric_calibration.effective_sensor_exposure_scale;
     let sensor_width = u32::from(sensor.native_width);
     let sensor_height = u32::from(sensor.native_height);
-    let exposure = IntegratedOpticalExposure {
-        width: sensor_width,
-        height: sensor_height,
-        duration_seconds: duration.as_seconds() as f32,
-        acescg_illuminance_seconds: sensor_exposure_pixels(
-            shuttered,
-            shuttered_width,
-            shuttered_height,
-            sensor_width,
-            sensor_height,
-            exposure_scale,
-        ),
-    };
-    expose_raw_with_noise_amount(
+    Ok((
+        sensor,
+        IntegratedOpticalExposure {
+            width: sensor_width,
+            height: sensor_height,
+            duration_seconds: duration.as_seconds() as f32,
+            acescg_illuminance_seconds: sensor_exposure_pixels(
+                shuttered,
+                shuttered_width,
+                shuttered_height,
+                sensor_width,
+                sensor_height,
+                exposure_scale,
+            ),
+        },
+    ))
+}
+
+fn expose_physical_pipeline_coupled_charge(
+    shuttered: &[[f32; 4]],
+    shuttered_width: u32,
+    shuttered_height: u32,
+    plan: PhysicalPipelineExecutionPlan,
+) -> Result<CoupledSensorChargeRegion, ApplicationError> {
+    let (sensor, exposure) =
+        physical_pipeline_sensor_exposure(shuttered, shuttered_width, shuttered_height, plan)?;
+    let collected = collect_sensor_charge_region_with_noise_amount(
         sensor,
         &exposure,
         CaptureIdentity {
             noise_seed: plan.shutter_motion.noise_seed,
             frame_index: plan.frame_index,
         },
+        SensorRegion::full(sensor),
         plan.sensor_noise_amount,
     )
-    .map_err(ApplicationError::Sensor)
+    .map_err(ApplicationError::Sensor)?;
+    couple_sensor_charge_region(collected).map_err(ApplicationError::Sensor)
+}
+
+fn complete_raw_raster(raw: RawSensorRegion) -> RawSensorRaster {
+    RawSensorRaster {
+        width: u32::from(raw.region.width),
+        height: u32::from(raw.region.height),
+        bayer_pattern: raw.bayer_pattern,
+        adc_bits: raw.adc_bits,
+        sensor_profile: raw.sensor_profile,
+        codes: raw.codes,
+        full_well_clipped: raw.full_well_clipped,
+        adc_clipped: raw.adc_clipped,
+    }
+}
+
+fn raw_diagnostic(raw: &RawSensorRaster) -> PhysicalRgbaRaster {
+    let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
+    PhysicalRgbaRaster {
+        width: raw.width,
+        height: raw.height,
+        rgba: raw
+            .codes
+            .iter()
+            .zip(&raw.full_well_clipped)
+            .zip(&raw.adc_clipped)
+            .map(|((&code, &well), &adc)| {
+                [
+                    code as f32 / maximum_code,
+                    f32::from(well),
+                    f32::from(adc),
+                    1.0,
+                ]
+            })
+            .collect(),
+    }
 }
 
 impl DeviceSignalRaster {
@@ -2749,43 +2829,45 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::CameraRenderedAcesCg
         )
     {
-        let raw = expose_physical_pipeline_raw(
-            &output,
-            sampling.effective_width,
-            sampling.effective_height,
-            plan,
-        )?;
         if matches!(
             plan.requested_intermediate,
             PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::SensorNoise
                 | PhysicalIntermediate::RawMosaic
         ) {
-            let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
-            let diagnostic = PhysicalRgbaRaster {
-                width: raw.width,
-                height: raw.height,
-                rgba: raw
-                    .codes
-                    .iter()
-                    .zip(&raw.full_well_clipped)
-                    .zip(&raw.adc_clipped)
-                    .map(|((&code, &well), &adc)| {
-                        [
-                            code as f32 / maximum_code,
-                            f32::from(well),
-                            f32::from(adc),
-                            1.0,
-                        ]
-                    })
-                    .collect(),
-            };
+            if plan.requested_intermediate == PhysicalIntermediate::SensorBloom {
+                let charge = expose_physical_pipeline_coupled_charge(
+                    &output,
+                    sampling.effective_width,
+                    sampling.effective_height,
+                    plan,
+                )?;
+                // Presentation remains the established normalized clean-RAW
+                // diagnostic, while the canonical checkpoint is now the
+                // coupled-charge artifact itself.
+                let region = charge.region;
+                let diagnostic_raw = complete_raw_raster(
+                    quantize_sensor_charge_region(charge.clone(), region)
+                        .map_err(ApplicationError::Sensor)?,
+                );
+                return Ok(PhysicalPipelineCpuResult {
+                    artifact: PhysicalPipelineCpuArtifact::SensorBloom {
+                        charge,
+                        diagnostic: raw_diagnostic(&diagnostic_raw),
+                    },
+                    diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
+                });
+            }
+            let raw = expose_physical_pipeline_raw(
+                &output,
+                sampling.effective_width,
+                sampling.effective_height,
+                plan,
+            )?;
+            let diagnostic = raw_diagnostic(&raw);
             let artifact = match plan.requested_intermediate {
-                PhysicalIntermediate::SensorBloom => {
-                    PhysicalPipelineCpuArtifact::SensorBloom { raw, diagnostic }
-                }
                 PhysicalIntermediate::SensorNoise => {
-                    PhysicalPipelineCpuArtifact::SensorNoise { raw, diagnostic }
+                    PhysicalPipelineCpuArtifact::SensorCfa { raw, diagnostic }
                 }
                 PhysicalIntermediate::RawMosaic => {
                     PhysicalPipelineCpuArtifact::RawMosaic { raw, diagnostic }
@@ -2797,6 +2879,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
             });
         }
+        let raw = expose_physical_pipeline_raw(
+            &output,
+            sampling.effective_width,
+            sampling.effective_height,
+            plan,
+        )?;
         if !plan.development_enabled {
             return Err(ApplicationError::UnsupportedPhysicalIntermediate);
         }
@@ -9078,6 +9166,29 @@ mod tests {
             (noisy.width(), noisy.height())
         );
         assert_ne!(clean.presentation_rgba(), noisy.presentation_rgba());
+    }
+
+    #[test]
+    fn sensor_bloom_checkpoint_publishes_coupled_charge_not_a_relabeled_raw() {
+        let request = radiometric_request(
+            100.0,
+            RationalTime::new(-1, 96).expect("open"),
+            RationalTime::new(1, 96).expect("close"),
+            0.0,
+            1.0,
+            PhysicalIntermediate::SensorBloom,
+        );
+        let result = evaluate_physical_pipeline_cpu_oracle(request).expect("Sensor Bloom");
+
+        assert!(result.raw_sensor().is_none());
+        match &result.artifact {
+            PhysicalPipelineCpuArtifact::SensorBloom { charge, diagnostic } => {
+                assert_eq!(charge.coupled_electrons.len(), diagnostic.rgba.len());
+                assert_eq!(u32::from(charge.region.width), diagnostic.width);
+                assert_eq!(u32::from(charge.region.height), diagnostic.height);
+            }
+            artifact => panic!("unexpected Sensor Bloom artifact: {artifact:?}"),
+        }
     }
 
     #[test]
