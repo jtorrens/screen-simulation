@@ -1,4 +1,5 @@
 import CoreGraphics
+import simd
 import StudioColor
 import Testing
 @testable import ScreenSimulationNative
@@ -103,6 +104,7 @@ import Testing
     #expect(frame.width == 320)
     #expect(frame.height == 180)
     #expect(result.boundary.count == 4)
+    #expect(result.corners.count == 4)
     #expect(result.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
     #expect(sourceInterior.count > 1_000)
 }
@@ -134,15 +136,67 @@ import Testing
     authored.sceneLens.sensorWidthMillimeters = 36
     authored.sceneLens.sensorHeightMillimeters = 20.25
     authored.sceneLens.focalLengthMillimeters = 45
+    authored.sceneLens.lensShift = [0.025, -0.015]
+    authored.sceneLens.radialDistortion = [-0.12, 0.025, -0.003]
+    authored.sceneLens.tangentialDistortion = [0.001, -0.0008]
 
-    let result = try SetupFramingRenderer(device: source.texture.device).renderReferenceMatch(
+    let renderer = try SetupFramingRenderer(device: source.texture.device)
+    let result = try renderer.renderReferenceMatch(
         source: source, reference: reference, sourcePlacement: .stretch,
         device: device, pipeline: authored, deliveryPlacementID: "fit"
     )
     #expect(result.frame.width == 320)
     #expect(result.frame.height == 180)
-    #expect(result.boundary.count == 4)
+    #expect(result.boundary.count == 256)
+    #expect(result.corners.count == 4)
     #expect(result.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+
+    let anchorTarget = result.corners[0]
+    let movingTarget = CGPoint(x: result.corners[1].x - 18, y: result.corners[1].y + 9)
+    let gate = try ReferenceMatchRasterMapping.cameraGateCorners(
+        [anchorTarget, movingTarget],
+        referenceWidth: reference.width, referenceHeight: reference.height,
+        cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
+        deliveryPlacementID: "fit"
+    )
+    let halfWidth = device.activeWidthMeters * 0.5
+    let halfHeight = device.activeHeightMeters * 0.5
+    let startPose = CameraNavigationPose(
+        position: SIMD3(authored.cameraPose.position[0], authored.cameraPose.position[1],
+                        authored.cameraPose.position[2]),
+        orientation: simd_quatd(ix: authored.cameraPose.quaternion[0],
+                                iy: authored.cameraPose.quaternion[1],
+                                iz: authored.cameraPose.quaternion[2],
+                                r: authored.cameraPose.quaternion[3])
+    )
+    let moved = try #require(ReferenceAnchorCameraMath.poseKeepingAnchor(
+        startPose: startPose,
+        anchorWorld: SIMD3(-halfWidth, halfHeight, 0),
+        movingWorld: SIMD3(halfWidth, halfHeight, 0),
+        anchorTargetPixel: gate[0], movingTargetPixel: gate[1],
+        imageSize: CGSize(width: Int(authored.sensor.nativeWidth),
+                          height: Int(authored.sensor.nativeHeight)),
+        focalLengthMillimeters: authored.sceneLens.focalLengthMillimeters,
+        sensorSizeMillimeters: CGSize(width: authored.sceneLens.sensorWidthMillimeters,
+                                      height: authored.sceneLens.sensorHeightMillimeters),
+        lensShift: SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1]),
+        radialDistortion: SIMD3(authored.sceneLens.radialDistortion[0],
+                                authored.sceneLens.radialDistortion[1],
+                                authored.sceneLens.radialDistortion[2]),
+        tangentialDistortion: SIMD2(authored.sceneLens.tangentialDistortion[0],
+                                    authored.sceneLens.tangentialDistortion[1])
+    ))
+    authored.cameraPose.position = [moved.position.x, moved.position.y, moved.position.z]
+    authored.cameraPose.quaternion = [moved.orientation.imag.x, moved.orientation.imag.y,
+                                      moved.orientation.imag.z, moved.orientation.real]
+    let movedResult = try renderer.renderReferenceMatch(
+        source: source, reference: reference, sourcePlacement: .stretch,
+        device: device, pipeline: authored, deliveryPlacementID: "fit"
+    )
+    #expect(hypot(movedResult.corners[0].x - anchorTarget.x,
+                  movedResult.corners[0].y - anchorTarget.y) < 0.01)
+    #expect(hypot(movedResult.corners[1].x - movingTarget.x,
+                  movedResult.corners[1].y - movingTarget.y) < 0.01)
 }
 
 @Test @MainActor func setupFramingRecomputesDeliveryPlacementWithoutLosingTheBoundary() throws {

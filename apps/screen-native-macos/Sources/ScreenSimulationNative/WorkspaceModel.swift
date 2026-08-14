@@ -2723,7 +2723,7 @@ final class WorkspaceModel: ObservableObject {
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
-            if resetTargetsFromProjection { referenceMatchCorners = result.boundary }
+            if resetTargetsFromProjection { referenceMatchCorners = result.corners }
             physicalPublicationSummary = "Match referencia · referencia + Device rígido + cámara"
         } catch {
             errorMessage = error.localizedDescription

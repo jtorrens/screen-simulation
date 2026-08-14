@@ -21,8 +21,10 @@ enum SetupFramingError: Error, LocalizedError {
 final class SetupFramingRenderer {
     struct Result {
         let frame: StudioColorMetalFrame
-        /// Device corners in Delivery Raster coordinates, clockwise from top-left.
+        /// Complete projected perimeter used by the red diagnostic stroke.
         let boundary: [CGPoint]
+        /// Four rigid Device corners, clockwise from top-left.
+        let corners: [CGPoint]
     }
     private struct Parameters {
         var cameraPositionFocal: SIMD4<Float>
@@ -196,9 +198,18 @@ final class SetupFramingRenderer {
             deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
             deliveryPlacement: deliveryPlacement,
             outputWidth: outputWidth, outputHeight: outputHeight,
-            applyLensDistortion: diagnosticMode == 2
+            applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3,
+            sampleDistortedEdges: diagnosticMode == 2 || diagnosticMode == 3
         )
-        return Result(frame: frame, boundary: boundary)
+        let corners = Self.projectedBoundary(
+            authored: authored, device: device,
+            deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
+            deliveryPlacement: deliveryPlacement,
+            outputWidth: outputWidth, outputHeight: outputHeight,
+            applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3,
+            sampleDistortedEdges: false
+        )
+        return Result(frame: frame, boundary: boundary, corners: corners)
     }
 
     func renderReferenceMatch(
@@ -298,7 +309,8 @@ final class SetupFramingRenderer {
         deliveryPlacement: UInt32,
         outputWidth: Int,
         outputHeight: Int,
-        applyLensDistortion: Bool
+        applyLensDistortion: Bool,
+        sampleDistortedEdges: Bool
     ) -> [CGPoint] {
         let cameraQ = authored.cameraPose.quaternion.map(Float.init)
         let screenQ = authored.screenPose.quaternion.map(Float.init)
@@ -330,7 +342,7 @@ final class SetupFramingRenderer {
         let shiftY = Float(authored.sceneLens.lensShift[1])
         let halfWidth = Float(device.activeWidthMeters) * 0.5
         let halfHeight = Float(device.activeHeightMeters) * 0.5
-        let edgeSamples = applyLensDistortion ? 64 : 1
+        let edgeSamples = sampleDistortedEdges ? 64 : 1
         let corners: [(Float, Float)] = [(-1, 1), (1, 1), (1, -1), (-1, -1)]
         let perimeter = corners.indices.flatMap { edge -> [(Float, Float)] in
             let start = corners[edge]
@@ -640,7 +652,14 @@ final class SetupFramingRenderer {
             return;
         }
         float2 panel;
-        if (!screen_uv(camera, s, panel)) { output.write(background, p); return; }
+        if (s.modes.w == 3u) {
+            float unused_depth;
+            if (!focus_screen_sample(camera, s, panel, unused_depth)) {
+                output.write(background, p); return;
+            }
+        } else if (!screen_uv(camera, s, panel)) {
+            output.write(background, p); return;
+        }
         const bool inside = all(panel >= 0.0f) && all(panel <= 1.0f);
         if (!inside) { output.write(background, p); return; }
 
