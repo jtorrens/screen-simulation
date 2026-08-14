@@ -356,6 +356,24 @@ def validate_native_model_authority() -> None:
     ).read_text(encoding="utf-8")
     if "private func physicalIntermediate(" in workspace:
         raise ValidationError("Native host reconstructs phase-to-intermediate routing")
+    forbidden_viewer_state = (
+        "@Published var zoom",
+        "@Published var pan",
+        "@Published private(set) var previewIsFitted",
+        "@Published var modelViewerOneToOne",
+    )
+    present = [value for value in forbidden_viewer_state if value in workspace]
+    if present:
+        raise ValidationError(
+            f"WorkspaceModel reclaims Viewer-navigation state: {present}"
+        )
+    viewer_navigation = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/ViewerNavigationController.swift"
+    ).read_text(encoding="utf-8")
+    for required in ("final class ViewerNavigationController", "func fit()", "func restore("):
+        if required not in viewer_navigation:
+            raise ValidationError(f"Viewer-navigation owner omits contract: {required}")
 
     frame_check = (
         ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/FrameCheckPNG.swift"

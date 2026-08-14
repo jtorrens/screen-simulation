@@ -243,9 +243,6 @@ final class WorkspaceModel: ObservableObject {
     @Published var outputAlphaMode = StudioAlphaMode.premultiplied
     @Published var outputSignalRange = StudioSignalRange.video
     @Published var decodeToPreviewMilliseconds = 0.0
-    @Published var zoom = 1.0
-    @Published private(set) var previewIsFitted = true
-    @Published var pan = CGSize.zero
     @Published private(set) var resolvedDevice: ResolvedDevice?
     @Published private(set) var modelDeviceDefinition: DeviceDefinition?
     @Published private(set) var physicalAuthoringState: PhysicalPipelineAuthoringState?
@@ -254,7 +251,6 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var originACEScgFrame: StudioColorMetalFrame?
     @Published private(set) var deviceSignalCheckpoint: DeviceSignalCheckpoint?
     @Published var sourcePlacement = SourcePlacement.fit
-    @Published var modelViewerOneToOne = false
     @Published private(set) var armedPhysicalParameterIDs: Set<String> = []
     @Published private(set) var selectedCapturePresetID: String?
     @Published private(set) var selectedCaptureRasterModeID: String?
@@ -307,6 +303,16 @@ final class WorkspaceModel: ObservableObject {
     let metalDisplay: StudioColorMetalDisplay
     let monitorOutput = MonitorOutputController()
     let physicalModel = PhysicalModelController()
+    let viewerNavigation = ViewerNavigationController()
+    private var viewerNavigationSubscription: AnyCancellable?
+
+    var zoom: Double { viewerNavigation.zoom }
+    var previewIsFitted: Bool { viewerNavigation.isFitted }
+    var pan: CGSize {
+        get { viewerNavigation.pan }
+        set { viewerNavigation.setPan(newValue) }
+    }
+    var modelViewerOneToOne: Bool { viewerNavigation.modelOneToOne }
 
     var environmentSourceEvidence: [String] {
         guard let name = environmentSourceName,
@@ -411,6 +417,9 @@ final class WorkspaceModel: ObservableObject {
             _ = self?.physicalNativeJob?.cancel()
         }
         physicalSubscription = physicalModel.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        viewerNavigationSubscription = viewerNavigation.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         renderPattern()
@@ -2306,41 +2315,32 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func fitPreview() {
-        previewIsFitted = true
-        pan = .zero
+        viewerNavigation.fit()
     }
     func showPreviewOneToOne() {
-        previewIsFitted = false
-        zoom = 1
-        pan = .zero
+        viewerNavigation.showOneToOne()
     }
     func updateFittedZoom(_ value: Double) {
-        guard previewIsFitted, value.isFinite, value > 0,
-              abs(zoom - value) > 0.000_001
-        else { return }
-        zoom = value
+        viewerNavigation.updateFittedZoom(value)
     }
     func setInteractiveZoom(_ value: Double) {
-        previewIsFitted = false
-        zoom = min(16, max(0.01, value))
+        viewerNavigation.setInteractiveZoom(value)
     }
     func resetView() { fitPreview() }
     func fitModelPreview() {
-        modelViewerOneToOne = false
-        resetView()
+        viewerNavigation.fitModelPreview()
     }
     func showModelPreviewOneToOne() {
-        modelViewerOneToOne = true
-        resetView()
+        viewerNavigation.showModelPreviewOneToOne()
     }
     func zoomBy(_ factor: Double) {
-        setInteractiveZoom(zoom * factor)
+        viewerNavigation.zoom(by: factor)
     }
     var zoomPercentage: Double {
         zoom * 100
     }
     func setZoomPercentage(_ percentage: Double) {
-        setInteractiveZoom(percentage / 100)
+        viewerNavigation.setZoomPercentage(percentage)
     }
 
     func physicalAnimationArmBinding(_ id: String) -> Binding<Bool> {
@@ -2627,9 +2627,11 @@ final class WorkspaceModel: ObservableObject {
                 try applyPhysicalSettings(imported, undoManager: undoManager)
             }
             currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
-            zoom = scene.snapshot.viewerZoom
-            pan = .init(width: scene.snapshot.viewerPanX, height: scene.snapshot.viewerPanY)
-            previewIsFitted = scene.snapshot.viewerIsFitted
+            viewerNavigation.restore(
+                zoom: scene.snapshot.viewerZoom,
+                pan: .init(width: scene.snapshot.viewerPanX, height: scene.snapshot.viewerPanY),
+                isFitted: scene.snapshot.viewerIsFitted
+            )
             rebuildPhysicalSelectedFrame()
             status = missingMediaSource == nil
                 ? "Escena abierta · \(scene.name)"
