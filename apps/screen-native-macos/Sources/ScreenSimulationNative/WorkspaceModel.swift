@@ -327,6 +327,7 @@ final class WorkspaceModel: ObservableObject {
     }
     private let session = NativeMediaSession()
     private var sourceIsPattern = true
+    private var missingMediaSource: SavedSceneSource?
     private var tickSubscription: AnyCancellable?
     private var physicalSubscription: AnyCancellable?
     private var renderTask: Task<Void, Never>?
@@ -1778,6 +1779,7 @@ final class WorkspaceModel: ObservableObject {
         pause()
         selectedPattern = pattern
         sourceIsPattern = true
+        missingMediaSource = nil
         sourceName = pattern.label
         sourceDetail = "Patrón SCREEN canónico"
         detection = pattern.sourceDetection
@@ -2151,6 +2153,7 @@ final class WorkspaceModel: ObservableObject {
                 )
                 : try session.openImages(expanded.filter(Self.isImage))
             sourceIsPattern = false
+            missingMediaSource = nil
             sourceName = info.name
             sourceDetail = info.detail + (detection.note.map { " · Metadata: \($0)" } ?? "")
             sourceTimelineInfo = NativeVideoTimelineInfo(
@@ -2229,7 +2232,7 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         isPlaying = true
-        if sourceIsPattern { return }
+        if sourceIsPattern || missingMediaSource != nil { return }
         session.play()
     }
 
@@ -2244,6 +2247,8 @@ final class WorkspaceModel: ObservableObject {
         currentFrame = min(max(0, frame), max(0, frameCount - 1))
         if sourceIsPattern {
             renderPattern()
+            refreshReferenceFrameForCurrentTime()
+        } else if missingMediaSource != nil {
             refreshReferenceFrameForCurrentTime()
         } else {
             Task {
@@ -2461,6 +2466,209 @@ final class WorkspaceModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    func captureSavedScene() throws -> SavedSceneCapture {
+        guard let frame = metalFrame,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let pipeline = physicalAuthoringState,
+              let context = currentSettingsContext(),
+              let settings = PhysicalSettingsExchange.metadata(
+                device: device,
+                pipeline: pipeline,
+                model: physicalModel.authoringState,
+                context: context
+              )
+        else { throw SceneLibraryError.invalidDocument("La escena todavía no tiene un estado completo.") }
+        let settingsDocument = try JSONSerialization.data(
+            withJSONObject: ["settings": settings],
+            options: [.sortedKeys]
+        )
+        let source: SavedSceneSource
+        if sourceIsPattern {
+            source = .init(
+                kind: .syntheticPattern,
+                patternRawValue: selectedPattern.rawValue,
+                assets: [],
+                missingMedia: nil
+            )
+        } else if let missingMediaSource {
+            source = missingMediaSource
+        } else {
+            let urls = session.sourceURLs
+            guard !urls.isEmpty else {
+                throw SceneLibraryError.invalidDocument("La fuente externa no está disponible.")
+            }
+            let assets = try urls.map { url in
+                let managed = try SourceAssetLibrary.importAsset(from: url)
+                return SavedSceneAsset(
+                    fileName: managed.originalFileName,
+                    sha256: managed.sha256
+                )
+            }
+            let raster = originACEScgFrame ?? frame
+            source = .init(
+                kind: .managedMedia,
+                patternRawValue: nil,
+                assets: assets,
+                missingMedia: .init(
+                    originalName: sourceName,
+                    width: raster.width,
+                    height: raster.height,
+                    frameRate: sourceTimelineInfo.frameRate,
+                    frameCount: sourceTimelineInfo.frameCount,
+                    durationSeconds: Double(sourceTimelineInfo.frameCount)
+                        / sourceTimelineInfo.frameRate
+                )
+            )
+        }
+        let snapshot = SavedSceneSnapshot(
+            source: source,
+            currentFrame: currentFrame,
+            viewerZoom: zoom,
+            viewerPanX: pan.width,
+            viewerPanY: pan.height,
+            viewerIsFitted: previewIsFitted,
+            settingsDocument: settingsDocument
+        )
+        try snapshot.validate()
+        let thumbnail = try SceneThumbnailRenderer.render(
+            frame: frame,
+            output: previewTransform,
+            display: metalDisplay
+        )
+        return .init(snapshot: snapshot, thumbnailPNG: thumbnail)
+    }
+
+    func openSavedScene(
+        _ scene: SavedScene,
+        undoManager: UndoManager?
+    ) async {
+        do {
+            try scene.validate()
+            guard let document = try JSONSerialization.jsonObject(
+                with: scene.snapshot.settingsDocument
+            ) as? [String: Any] else {
+                throw SceneLibraryError.invalidDocument("Los ajustes de la escena no son legibles.")
+            }
+            let imported = try PhysicalSettingsExchange.decode(from: document)
+            try validatePhysicalSettingsResources(imported)
+            let source = scene.snapshot.source
+            switch source.kind {
+            case .syntheticPattern:
+                guard let rawValue = source.patternRawValue,
+                      let pattern = SyntheticPattern(rawValue: rawValue)
+                else { throw SceneLibraryError.invalidDocument("El patrón de la escena no existe.") }
+                choosePattern(pattern, undoManager: nil)
+            case .managedMedia:
+                var urls: [URL] = []
+                for identity in source.assets {
+                    guard let managed = try SourceAssetLibrary.asset(
+                        sha256: identity.sha256,
+                        originalFileName: identity.fileName
+                    ) else { continue }
+                    urls.append(managed.url)
+                }
+                if urls.count == source.assets.count {
+                    errorMessage = nil
+                    await load(urls)
+                    guard errorMessage == nil, !sourceIsPattern,
+                          session.sourceURLs.count == urls.count else {
+                        throw SceneLibraryError.invalidDocument(
+                            "No se pudo reconstruir la fuente guardada."
+                        )
+                    }
+                } else {
+                    try applyPhysicalSettings(imported, undoManager: undoManager)
+                    guard let descriptor = source.missingMedia else {
+                        throw SceneLibraryError.invalidDocument(
+                            "La escena no describe el medio ausente."
+                        )
+                    }
+                    try publishMissingMedia(descriptor, source: source)
+                }
+            }
+            if missingMediaSource == nil {
+                try applyPhysicalSettings(imported, undoManager: undoManager)
+            }
+            currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
+            zoom = scene.snapshot.viewerZoom
+            pan = .init(width: scene.snapshot.viewerPanX, height: scene.snapshot.viewerPanY)
+            previewIsFitted = scene.snapshot.viewerIsFitted
+            rebuildPhysicalSelectedFrame()
+            status = missingMediaSource == nil
+                ? "Escena abierta · \(scene.name)"
+                : "Escena abierta · \(scene.name) · MEDIA MISSING"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func publishMissingMedia(
+        _ descriptor: SavedMissingMediaDescriptor,
+        source: SavedSceneSource,
+        resetTimeline: Bool = true
+    ) throws {
+        try descriptor.validate()
+        pause()
+        session.reset()
+        sourceIsPattern = false
+        missingMediaSource = source
+        sourceName = "MEDIA MISSING · \(descriptor.originalName)"
+        sourceDetail = "Medio ausente · \(descriptor.width) × \(descriptor.height) · \(descriptor.frameCount) frames · \(descriptor.frameRate.formatted(.number.precision(.fractionLength(0 ... 3)))) fps"
+        sourceTimelineInfo = .init(
+            frameRate: descriptor.frameRate,
+            frameCount: descriptor.frameCount
+        )
+        if resetTimeline { applyTimelineAuthority(resetRange: true) }
+        let decoded = Self.missingMediaFrame(
+            width: descriptor.width,
+            height: descriptor.height
+        )
+        let base = try metalDisplay.makeACEScgFrame(
+            width: decoded.width,
+            height: decoded.height,
+            encodedRGBA: decoded.rgba,
+            input: inputTransform,
+            alpha: effectiveAlpha
+        )
+        originACEScgFrame = base
+        sourceACEScgFrame = try adjustedSourceFrame(base)
+        metalFrame = base
+        physicalModel.invalidateExternalParameters()
+        rebuildPhysicalSelectedFrame()
+        publishSelectedTestPreview()
+    }
+
+    private static func missingMediaFrame(width: Int, height: Int) -> DecodedNativeFrame {
+        var rgba = [Float](repeating: 0, count: width * height * 4)
+        let stripe = max(8, min(width, height) / 18)
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                let index = (y * width + x) * 4
+                let checker = ((x / stripe) + (y / stripe)).isMultiple(of: 2)
+                let diagonal = abs(x * height - y * width) < stripe * max(width, height)
+                    || abs((width - 1 - x) * height - y * width)
+                        < stripe * max(width, height)
+                if diagonal {
+                    rgba[index] = 0.9
+                    rgba[index + 1] = 0.05
+                    rgba[index + 2] = 0.08
+                } else {
+                    let level: Float = checker ? 0.18 : 0.08
+                    rgba[index] = level
+                    rgba[index + 1] = level
+                    rgba[index + 2] = level
+                }
+                rgba[index + 3] = 1
+            }
+        }
+        return .init(
+            width: width,
+            height: height,
+            rgba: rgba,
+            sourceDescription: "MEDIA MISSING"
+        )
+    }
+
     private func currentFrameCheckMetadata(
         quality: String, frame: StudioColorMetalFrame
     ) -> [String: Any] {
@@ -2642,6 +2850,31 @@ final class WorkspaceModel: ObservableObject {
         _ imported: PhysicalSettingsExchange.Imported,
         undoManager: UndoManager?
     ) throws {
+        try validatePhysicalSettingsResources(imported)
+        guard let priorDevice = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let priorPipeline = physicalAuthoringState
+        else { throw PhysicalSettingsExchange.ImportError.invalidModel }
+        let prior = ImportedPhysicalState(
+            device: priorDevice,
+            pipeline: priorPipeline,
+            model: physicalModel.authoringState,
+            context: currentSettingsContext()
+        )
+        try restoreImportedPhysicalState(.init(
+            device: imported.device,
+            pipeline: imported.pipeline,
+            model: imported.model,
+            context: imported.context
+        ))
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in try? target.restoreImportedPhysicalState(prior) }
+        }
+        undoManager?.setActionName("Importar ajustes físicos")
+    }
+
+    private func validatePhysicalSettingsResources(
+        _ imported: PhysicalSettingsExchange.Imported
+    ) throws {
         if let resource = imported.context?.environmentResource,
            resource.kind == .image {
             guard let hash = resource.sha256,
@@ -2665,25 +2898,6 @@ final class WorkspaceModel: ObservableObject {
                 )
             }
         }
-        guard let priorDevice = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let priorPipeline = physicalAuthoringState
-        else { throw PhysicalSettingsExchange.ImportError.invalidModel }
-        let prior = ImportedPhysicalState(
-            device: priorDevice,
-            pipeline: priorPipeline,
-            model: physicalModel.authoringState,
-            context: currentSettingsContext()
-        )
-        try restoreImportedPhysicalState(.init(
-            device: imported.device,
-            pipeline: imported.pipeline,
-            model: imported.model,
-            context: imported.context
-        ))
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in try? target.restoreImportedPhysicalState(prior) }
-        }
-        undoManager?.setActionName("Importar ajustes físicos")
     }
 
     private func restoreImportedPhysicalState(_ state: ImportedPhysicalState) throws {
@@ -2903,6 +3117,7 @@ final class WorkspaceModel: ObservableObject {
             currentFrame = target
             if sourceIsPattern {
                 renderPattern()
+            } else if missingMediaSource != nil {
             } else {
                 renderCurrentMediaFrame(at: CMTime(
                     seconds: requestedSeconds, preferredTimescale: 60_000
@@ -2923,6 +3138,11 @@ final class WorkspaceModel: ObservableObject {
             let next = currentFrame + 1
             currentFrame = next
             renderPattern()
+            refreshReferenceFrameForCurrentTime()
+            return
+        }
+        if missingMediaSource != nil {
+            currentFrame += 1
             refreshReferenceFrameForCurrentTime()
             return
         }
@@ -2986,6 +3206,7 @@ final class WorkspaceModel: ObservableObject {
             isPlaying = true
             if sourceIsPattern {
                 renderPattern()
+            } else if missingMediaSource != nil {
             } else {
                 renderCurrentMediaFrame(at: CMTime(
                     seconds: requestedSeconds, preferredTimescale: 60_000
@@ -2997,6 +3218,10 @@ final class WorkspaceModel: ObservableObject {
         if sourceIsPattern {
             isPlaying = true
             renderPattern()
+            return
+        }
+        if missingMediaSource != nil {
+            isPlaying = true
             return
         }
         Task {
@@ -3014,9 +3239,23 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func rebuildCurrent() {
-        sourceIsPattern ? renderPattern() : renderCurrentMediaFrame(at: CMTime(
-            seconds: requestedSeconds, preferredTimescale: 60_000
-        ))
+        if sourceIsPattern {
+            renderPattern()
+        } else if let missingMediaSource,
+                  let descriptor = missingMediaSource.missingMedia {
+            do {
+                try publishMissingMedia(
+                    descriptor,
+                    source: missingMediaSource,
+                    resetTimeline: false
+                )
+            } catch { errorMessage = error.localizedDescription }
+        } else {
+            renderCurrentMediaFrame(at: CMTime(
+                seconds: requestedSeconds,
+                preferredTimescale: 60_000
+            ))
+        }
     }
 
     private func renderPattern() {
@@ -3099,6 +3338,9 @@ final class WorkspaceModel: ObservableObject {
                 encodedRGBA: decoded.rgba, input: inputTransform, alpha: effectiveAlpha
             )
             return try adjustedSourceFrame(base)
+        }
+        if missingMediaSource != nil, let originACEScgFrame {
+            return try adjustedSourceFrame(originACEScgFrame)
         }
         let time = CMTime(
             seconds: Double(index) / frameRate, preferredTimescale: 60_000

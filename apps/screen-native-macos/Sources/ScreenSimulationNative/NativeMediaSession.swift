@@ -36,6 +36,24 @@ final class NativeMediaSession {
     private var videoTrack: AVAssetTrack?
     private var videoPixelAttributes: [String: Any] = [:]
 
+    var sourceURLs: [URL] {
+        switch source {
+        case .none: []
+        case .video: sourceURL.map { [$0] } ?? []
+        case let .images(urls): urls
+        }
+    }
+
+    func reset() {
+        if case let .video(player, _) = source { player.pause() }
+        source = .none
+        info = nil
+        sourceURL = nil
+        videoAsset = nil
+        videoTrack = nil
+        videoPixelAttributes = [:]
+    }
+
     var isPlaying: Bool {
         if case let .video(player, _) = source { return player.rate != 0 }
         return false

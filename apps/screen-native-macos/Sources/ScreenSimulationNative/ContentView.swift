@@ -15,6 +15,9 @@ enum NativeTheme {
 }
 
 struct ContentView: View {
+    enum PendingSceneAction {
+        case open, update, delete
+    }
     enum LibraryDeletion: String {
         case pattern = "patrón"
         case testImage = "imagen de test"
@@ -79,6 +82,7 @@ struct ContentView: View {
     @Environment(\.undoManager) private var undoManager
     @ObservedObject var model: WorkspaceModel
     @StateObject private var library = GlobalLibraryController()
+    @StateObject private var scenes = SceneLibraryController()
     @StateObject private var referenceMatchPanel = ReferenceMatchPanelController()
     @StateObject private var reflectionEnvironmentPanel = ReflectionEnvironmentPanelController()
     @State private var tab = SidebarTab.output
@@ -86,6 +90,9 @@ struct ContentView: View {
     @State private var settingsSection = SettingsSection.application
     @State private var libraryCollection = LibraryCollection.patterns
     @State private var pendingLibraryDeletion: LibraryDeletion?
+    @State private var sidebarIsVisible = true
+    @State private var pendingSceneAction: PendingSceneAction?
+    @State private var pendingScene: SavedScene?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -168,19 +175,56 @@ struct ContentView: View {
             }
             Button("Cancelar", role: .cancel) { pendingLibraryDeletion = nil }
         }
+        .confirmationDialog(
+            sceneConfirmationTitle,
+            isPresented: Binding(
+                get: { pendingSceneAction != nil && pendingScene != nil },
+                set: {
+                    if !$0 {
+                        pendingSceneAction = nil
+                        pendingScene = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let action = pendingSceneAction, let scene = pendingScene {
+                Button(sceneConfirmationButton(action), role: action == .delete ? .destructive : nil) {
+                    performConfirmedSceneAction(action, scene: scene)
+                }
+            }
+            Button("Cancelar", role: .cancel) {
+                pendingSceneAction = nil
+                pendingScene = nil
+            }
+        } message: {
+            if pendingSceneAction == .open {
+                Text("Se sustituirá la escena cargada actualmente por el snapshot guardado.")
+            } else if pendingSceneAction == .update {
+                Text("Se reemplazarán los datos y la miniatura guardados por el estado activo.")
+            } else {
+                Text("Esta operación elimina la escena de la biblioteca.")
+            }
+        }
     }
 
     private var mainWorkspace: some View {
         HSplitView {
-            VStack(spacing: 0) {
-                TabView(selection: $tab) {
-                    outputPanel.tabItem { Label("Output", systemImage: "square.and.arrow.up") }.tag(SidebarTab.output)
-                    queuePanel.tabItem { Label("Queue", systemImage: "list.bullet.rectangle") }.tag(SidebarTab.queue)
+            if sidebarIsVisible {
+                VSplitView {
+                    sceneLibraryPanel
+                        .frame(minHeight: 170, idealHeight: 230, maxHeight: 360)
+                    VStack(spacing: 0) {
+                        TabView(selection: $tab) {
+                            outputPanel.tabItem { Label("Output", systemImage: "square.and.arrow.up") }.tag(SidebarTab.output)
+                            queuePanel.tabItem { Label("Queue", systemImage: "list.bullet.rectangle") }.tag(SidebarTab.queue)
+                        }
+                        Divider()
+                        contextualInspector
+                    }
                 }
-                Divider()
-                contextualInspector
+                .frame(minWidth: 360, idealWidth: 400, maxWidth: 560)
             }
-            .frame(minWidth: 360, idealWidth: 400, maxWidth: 560)
 
             preview()
                 .frame(minWidth: 640, minHeight: 480)
@@ -268,8 +312,14 @@ struct ContentView: View {
 
     private var testWorkspace: some View {
         HSplitView {
-            testSetupPanel
+            if sidebarIsVisible {
+                VSplitView {
+                    sceneLibraryPanel
+                        .frame(minHeight: 170, idealHeight: 230, maxHeight: 360)
+                    testSetupPanel
+                }
                 .frame(minWidth: 380, idealWidth: 430, maxWidth: 620)
+            }
 
             preview(showTestPhasePicker: true)
             .frame(minWidth: 640, minHeight: 480)
@@ -1203,6 +1253,17 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var workspaceToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                sidebarIsVisible.toggle()
+            } label: {
+                Label(
+                    sidebarIsVisible ? "Ocultar barra lateral" : "Mostrar barra lateral",
+                    systemImage: "sidebar.left"
+                )
+            }
+            .help(sidebarIsVisible ? "Ocultar panel izquierdo" : "Mostrar panel izquierdo")
+        }
         ToolbarItemGroup {
             Button("Abrir", action: model.openMedia)
                 .disabled(page == .settings)
@@ -1223,6 +1284,110 @@ struct ContentView: View {
             Button("Render", action: model.runQueue)
                 .disabled(page != .main || !model.jobs.contains { $0.state == .pending })
                 .help("Procesar los trabajos en cola")
+        }
+    }
+
+    private var sceneLibraryPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("Escenas", systemImage: "rectangle.stack")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    saveNewScene()
+                } label: {
+                    Label("Guardar escena", systemImage: "plus.square.on.square")
+                        .labelStyle(.iconOnly)
+                }
+                .disabled(model.metalFrame == nil || scenes.blockedError != nil)
+                .help("Guardar la escena completa activa")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            Divider()
+            if let blocked = scenes.blockedError {
+                ContentUnavailableView(
+                    "Biblioteca bloqueada",
+                    systemImage: "exclamationmark.lock",
+                    description: Text(blocked)
+                )
+            } else if scenes.document.scenes.isEmpty {
+                ContentUnavailableView(
+                    "Sin escenas",
+                    systemImage: "rectangle.stack.badge.plus",
+                    description: Text("Guarda el estado activo con el botón +.")
+                )
+            } else {
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 10) {
+                        ForEach(scenes.document.scenes) { scene in
+                            SceneLibraryItemView(
+                                scene: scene,
+                                thumbnailURL: scenes.thumbnailURL(for: scene),
+                                onRename: { name in
+                                    do { try scenes.rename(scene, to: name) }
+                                    catch { model.errorMessage = error.localizedDescription }
+                                },
+                                onOpen: { requestSceneAction(.open, scene: scene) },
+                                onUpdate: { requestSceneAction(.update, scene: scene) },
+                                onDelete: { requestSceneAction(.delete, scene: scene) }
+                            )
+                        }
+                    }
+                    .padding(10)
+                }
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var sceneConfirmationTitle: String {
+        guard let action = pendingSceneAction, let scene = pendingScene else { return "Escena" }
+        return switch action {
+        case .open: "¿Abrir ‘\(scene.name)’?"
+        case .update: "¿Actualizar ‘\(scene.name)’?"
+        case .delete: "¿Eliminar ‘\(scene.name)’?"
+        }
+    }
+
+    private func sceneConfirmationButton(_ action: PendingSceneAction) -> String {
+        switch action {
+        case .open: "Abrir escena"
+        case .update: "Actualizar escena"
+        case .delete: "Eliminar escena"
+        }
+    }
+
+    private func requestSceneAction(_ action: PendingSceneAction, scene: SavedScene) {
+        pendingScene = scene
+        pendingSceneAction = action
+    }
+
+    private func saveNewScene() {
+        do {
+            let capture = try model.captureSavedScene()
+            try scenes.add(snapshot: capture.snapshot, thumbnail: capture.thumbnailPNG)
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func performConfirmedSceneAction(_ action: PendingSceneAction, scene: SavedScene) {
+        pendingSceneAction = nil
+        pendingScene = nil
+        switch action {
+        case .open:
+            Task { await model.openSavedScene(scene, undoManager: undoManager) }
+        case .update:
+            do {
+                let capture = try model.captureSavedScene()
+                try scenes.update(
+                    scene,
+                    snapshot: capture.snapshot,
+                    thumbnail: capture.thumbnailPNG
+                )
+            } catch { model.errorMessage = error.localizedDescription }
+        case .delete:
+            do { try scenes.delete(scene) }
+            catch { model.errorMessage = error.localizedDescription }
         }
     }
 
@@ -2766,6 +2931,75 @@ struct SplitAutosaveProbe: NSViewRepresentable {
                 }
             }
         }
+    }
+}
+
+private struct SceneLibraryItemView: View {
+    let scene: SavedScene
+    let thumbnailURL: URL?
+    let onRename: (String) -> Void
+    let onOpen: () -> Void
+    let onUpdate: () -> Void
+    let onDelete: () -> Void
+    @State private var draftName: String
+
+    init(
+        scene: SavedScene,
+        thumbnailURL: URL?,
+        onRename: @escaping (String) -> Void,
+        onOpen: @escaping () -> Void,
+        onUpdate: @escaping () -> Void,
+        onDelete: @escaping () -> Void
+    ) {
+        self.scene = scene
+        self.thumbnailURL = thumbnailURL
+        self.onRename = onRename
+        self.onOpen = onOpen
+        self.onUpdate = onUpdate
+        self.onDelete = onDelete
+        _draftName = State(initialValue: scene.name)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Group {
+                if let thumbnailURL, let image = NSImage(contentsOf: thumbnailURL) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    Rectangle()
+                        .fill(.quaternary)
+                        .overlay { Image(systemName: "photo") }
+                }
+            }
+            .frame(width: 150, height: 84)
+            .background(.black)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay { RoundedRectangle(cornerRadius: 5).stroke(.separator) }
+            TextField("Nombre de escena", text: $draftName)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .frame(width: 150)
+                .onSubmit(commitName)
+                .onChange(of: scene.name) { _, name in draftName = name }
+        }
+        .contextMenu {
+            Button("Abrir escena", action: onOpen)
+            Button("Actualizar con el estado actual", action: onUpdate)
+            Divider()
+            Button("Eliminar escena", role: .destructive, action: onDelete)
+        }
+        .onDisappear(perform: commitName)
+    }
+
+    private func commitName() {
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != scene.name else {
+            draftName = scene.name
+            return
+        }
+        onRename(name)
     }
 }
 
