@@ -3,6 +3,74 @@ import simd
 import Testing
 @testable import ScreenSimulationNative
 
+@Test func referenceAnchorTranslationIsExactAndPreservesOpticalDepth() throws {
+    let orientation = simd_quatd(angle: 0.14, axis: simd_normalize(SIMD3(0.2, 1, 0.1)))
+    let start = CameraNavigationPose(position: SIMD3(0.1, -0.04, 1.2), orientation: orientation)
+    let anchor = SIMD3<Double>(-0.35, 0.2, 0)
+    let target = CGPoint(x: 3_100.25, y: 920.75)
+    let image = CGSize(width: 4_032, height: 3_024)
+    let sensor = CGSize(width: 36, height: 24)
+    let shift = SIMD2<Double>(0.03, -0.02)
+    let radial = SIMD3<Double>(-0.08, 0.015, -0.002)
+    let tangential = SIMD2<Double>(0.001, -0.0007)
+    let pose = try #require(ReferenceAnchorCameraMath.translatedPose(
+        startPose: start, anchorWorld: anchor, targetPixel: target,
+        imageSize: image, focalLengthMillimeters: 50,
+        sensorSizeMillimeters: sensor, lensShift: shift,
+        radialDistortion: radial, tangentialDistortion: tangential
+    ))
+    let projected = try #require(ReferenceAnchorCameraMath.project(
+        pose: pose, point: anchor, imageSize: image,
+        focalLengthMillimeters: 50, sensorSizeMillimeters: sensor,
+        lensShift: shift, radialDistortion: radial,
+        tangentialDistortion: tangential
+    ))
+    let forward = start.orientation.act(SIMD3<Double>(0, 0, -1))
+    #expect(abs(projected.x - target.x) < 0.000_001)
+    #expect(abs(projected.y - target.y) < 0.000_001)
+    #expect(abs(simd_dot(anchor - start.position, forward)
+        - simd_dot(anchor - pose.position, forward)) < 0.000_000_001)
+    #expect(pose.orientation == start.orientation)
+}
+
+@Test func secondReferenceCornerRotatesCameraWhileKeepingAnchorExact() throws {
+    let start = CameraNavigationPose(
+        position: SIMD3<Double>(0.05, -0.02, 1.4),
+        orientation: simd_quatd(angle: 0.08, axis: SIMD3(0, 1, 0))
+    )
+    let anchor = SIMD3<Double>(-0.35, 0.2, 0)
+    let moving = SIMD3<Double>(0.35, 0.2, 0)
+    let image = CGSize(width: 4_032, height: 3_024)
+    let sensor = CGSize(width: 36, height: 24)
+    let shift = SIMD2<Double>(0.01, -0.015)
+    let radial = SIMD3<Double>(-0.04, 0.006, 0)
+    let tangential = SIMD2<Double>(0.0004, -0.0002)
+    let anchorTarget = CGPoint(x: 1_020.25, y: 910.5)
+    let movingTarget = CGPoint(x: 3_120.75, y: 1_040.25)
+    let pose = try #require(ReferenceAnchorCameraMath.poseKeepingAnchor(
+        startPose: start, anchorWorld: anchor, movingWorld: moving,
+        anchorTargetPixel: anchorTarget, movingTargetPixel: movingTarget,
+        imageSize: image, focalLengthMillimeters: 50,
+        sensorSizeMillimeters: sensor, lensShift: shift,
+        radialDistortion: radial, tangentialDistortion: tangential
+    ))
+    let projectedAnchor = try #require(ReferenceAnchorCameraMath.project(
+        pose: pose, point: anchor, imageSize: image, focalLengthMillimeters: 50,
+        sensorSizeMillimeters: sensor, lensShift: shift,
+        radialDistortion: radial, tangentialDistortion: tangential
+    ))
+    let projectedMoving = try #require(ReferenceAnchorCameraMath.project(
+        pose: pose, point: moving, imageSize: image, focalLengthMillimeters: 50,
+        sensorSizeMillimeters: sensor, lensShift: shift,
+        radialDistortion: radial, tangentialDistortion: tangential
+    ))
+    #expect(hypot(projectedAnchor.x - anchorTarget.x,
+                  projectedAnchor.y - anchorTarget.y) < 0.000_001)
+    #expect(hypot(projectedMoving.x - movingTarget.x,
+                  projectedMoving.y - movingTarget.y) < 0.000_001)
+    #expect(pose.orientation != start.orientation)
+}
+
 @Test @MainActor func workspaceNavigationPublishesSetupWithoutPresentationFailure() throws {
     let workspace = WorkspaceModel()
     let device = try #require(try RustDeviceCatalog.builtIns().first)

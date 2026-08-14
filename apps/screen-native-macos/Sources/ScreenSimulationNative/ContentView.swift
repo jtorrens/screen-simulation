@@ -1617,6 +1617,8 @@ struct ContentView: View {
                             ? model.setupDeviceBoundary : [],
                         referenceMatchCorners: model.referenceMatchEnabled
                             ? model.referenceMatchCorners : [],
+                        referenceAnchorIndex: model.referenceMatchEnabled
+                            ? model.referenceMatchAnchorIndex : nil,
                         cameraNavigationEnabled: !model.referenceMatchEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
@@ -1625,6 +1627,7 @@ struct ContentView: View {
                         onCameraGestureBegin: model.beginCameraNavigation,
                         onCameraGestureChange: model.updateCameraNavigation,
                         onCameraGestureEnd: { model.endCameraNavigation(undoManager: undoManager) },
+                        onReferenceAnchorChange: model.setReferenceMatchAnchor,
                         onReferenceCornerBegin: model.beginReferenceCornerDrag,
                         onReferenceCornerChange: model.updateReferenceCorner,
                         onReferenceCornerEnd: { model.endReferenceCornerDrag(undoManager: undoManager) }
@@ -1737,6 +1740,7 @@ struct MetalPreview: NSViewRepresentable {
     let metadataLines: [String]
     let deviceBoundary: [CGPoint]
     let referenceMatchCorners: [CGPoint]
+    let referenceAnchorIndex: Int?
     let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
@@ -1745,7 +1749,8 @@ struct MetalPreview: NSViewRepresentable {
     let onCameraGestureBegin: (CameraNavigationOperation, CGSize) -> Void
     let onCameraGestureChange: (CGSize) -> Void
     let onCameraGestureEnd: () -> Void
-    let onReferenceCornerBegin: () -> Void
+    let onReferenceAnchorChange: (Int?) -> Void
+    let onReferenceCornerBegin: (Int) -> Void
     let onReferenceCornerChange: (Int, CGPoint) -> Void
     let onReferenceCornerEnd: () -> Void
 
@@ -1772,6 +1777,7 @@ struct MetalPreview: NSViewRepresentable {
             metadataLines: metadataLines,
             deviceBoundary: deviceBoundary,
             referenceMatchCorners: referenceMatchCorners,
+            referenceAnchorIndex: referenceAnchorIndex,
             cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
             textureHeight: frame.height
@@ -1782,6 +1788,7 @@ struct MetalPreview: NSViewRepresentable {
         container.onCameraGestureBegin = onCameraGestureBegin
         container.onCameraGestureChange = onCameraGestureChange
         container.onCameraGestureEnd = onCameraGestureEnd
+        container.onReferenceAnchorChange = onReferenceAnchorChange
         container.onReferenceCornerBegin = onReferenceCornerBegin
         container.onReferenceCornerChange = onReferenceCornerChange
         container.onReferenceCornerEnd = onReferenceCornerEnd
@@ -1870,13 +1877,15 @@ final class MetalPreviewContainer: NSView {
     var onCameraGestureBegin: ((CameraNavigationOperation, CGSize) -> Void)?
     var onCameraGestureChange: ((CGSize) -> Void)?
     var onCameraGestureEnd: (() -> Void)?
-    var onReferenceCornerBegin: (() -> Void)?
+    var onReferenceAnchorChange: ((Int?) -> Void)?
+    var onReferenceCornerBegin: ((Int) -> Void)?
     var onReferenceCornerChange: ((Int, CGPoint) -> Void)?
     var onReferenceCornerEnd: (() -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
     private let referenceMatchLayer = CAShapeLayer()
+    private let referenceAnchorLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
         let layer = CATextLayer()
         layer.string = label
@@ -1889,6 +1898,7 @@ final class MetalPreviewContainer: NSView {
     }
     private var deviceBoundary: [CGPoint] = []
     private var referenceMatchCorners: [CGPoint] = []
+    private var referenceAnchorIndex: Int?
     private var referenceCornerDragIndex: Int?
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
@@ -1896,6 +1906,10 @@ final class MetalPreviewContainer: NSView {
     private var cameraDragStart: CGPoint?
     private var viewerMiddleDragStart: CGPoint?
     private var viewerMiddleDragStartPan = CGSize.zero
+    private var viewerMiddleZoomStart: CGPoint?
+    private var viewerMiddleZoomStartScale = 1.0
+    private var viewerMiddleZoomStartPan = CGSize.zero
+    private var viewerMiddleZoomAnchor = CGPoint.zero
     private var pendingCameraGestureDelta: CGSize?
     private var deliveredCameraGestureDelta: CGSize?
     private var cameraGestureUpdate: DispatchWorkItem?
@@ -1924,6 +1938,11 @@ final class MetalPreviewContainer: NSView {
         referenceMatchLayer.lineWidth = 1
         referenceMatchLayer.zPosition = 120
         layer?.addSublayer(referenceMatchLayer)
+        referenceAnchorLayer.fillColor = NSColor.systemGreen.cgColor
+        referenceAnchorLayer.strokeColor = NSColor.black.cgColor
+        referenceAnchorLayer.lineWidth = 1
+        referenceAnchorLayer.zPosition = 122
+        layer?.addSublayer(referenceAnchorLayer)
         referenceLabels.forEach { layer?.addSublayer($0) }
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
@@ -1960,6 +1979,7 @@ final class MetalPreviewContainer: NSView {
         metadataLines: [String],
         deviceBoundary: [CGPoint],
         referenceMatchCorners: [CGPoint],
+        referenceAnchorIndex: Int?,
         cameraNavigationEnabled: Bool,
         textureWidth: Int,
         textureHeight: Int
@@ -1971,6 +1991,7 @@ final class MetalPreviewContainer: NSView {
         metadataLabel.isHidden = metadataLines.isEmpty
         self.deviceBoundary = deviceBoundary
         self.referenceMatchCorners = referenceMatchCorners
+        self.referenceAnchorIndex = referenceAnchorIndex
         self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
@@ -1981,8 +2002,18 @@ final class MetalPreviewContainer: NSView {
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
         if let index = nearestReferenceCorner(to: location) {
+            let shift = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
+            if shift {
+                let selected = referenceAnchorIndex == index ? nil : index
+                referenceAnchorIndex = selected
+                onReferenceAnchorChange?(selected)
+                applyPresentation()
+                guard selected == index else { return }
+            } else if referenceAnchorIndex == nil {
+                return
+            }
             referenceCornerDragIndex = index
-            onReferenceCornerBegin?()
+            onReferenceCornerBegin?(index)
             NSCursor.crosshair.push()
             return
         }
@@ -2023,6 +2054,15 @@ final class MetalPreviewContainer: NSView {
         guard event.buttonNumber == 2 else { return }
         window?.makeFirstResponder(self)
         if !cameraNavigationEnabled {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.contains(.shift) {
+                viewerMiddleZoomStart = event.locationInWindow
+                viewerMiddleZoomStartScale = Double(effectiveScale())
+                viewerMiddleZoomStartPan = presentationPan
+                viewerMiddleZoomAnchor = convert(event.locationInWindow, from: nil)
+                NSCursor.resizeLeftRight.push()
+                return
+            }
             viewerMiddleDragStart = event.locationInWindow
             viewerMiddleDragStartPan = presentationPan
             NSCursor.closedHand.push()
@@ -2047,6 +2087,22 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func otherMouseDragged(with event: NSEvent) {
+        if let start = viewerMiddleZoomStart {
+            let delta = event.locationInWindow.x - start.x
+            let newZoom = min(16, max(0.1, viewerMiddleZoomStartScale * exp(delta * 0.01)))
+            let ratio = CGFloat(newZoom / max(0.01, viewerMiddleZoomStartScale))
+            let anchoredPan = PreviewNavigationMath.anchoredPan(
+                previous: viewerMiddleZoomStartPan,
+                anchor: viewerMiddleZoomAnchor,
+                viewportCenter: CGPoint(x: bounds.midX, y: contentCenterY()),
+                scaleRatio: ratio
+            )
+            presentationZoom = newZoom
+            presentationFitted = false
+            onZoomChange?(newZoom)
+            publishPan(clampedPan(anchoredPan))
+            return
+        }
         if let start = viewerMiddleDragStart {
             let location = event.locationInWindow
             publishPan(clampedPan(CGSize(
@@ -2064,6 +2120,12 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func otherMouseUp(with event: NSEvent) {
+        if viewerMiddleZoomStart != nil {
+            viewerMiddleZoomStart = nil
+            publishPan(clampedPan(presentationPan))
+            NSCursor.pop()
+            return
+        }
         if viewerMiddleDragStart != nil {
             viewerMiddleDragStart = nil
             publishPan(clampedPan(presentationPan))
@@ -2254,20 +2316,26 @@ final class MetalPreviewContainer: NSView {
         deviceBoundaryLayer.frame = bounds
         deviceBoundaryLayer.path = boundaryPath
         let handles = CGMutablePath()
-        for point in referenceMatchCorners {
+        let anchorHandle = CGMutablePath()
+        for (index, point) in referenceMatchCorners.enumerated() {
             let displayedPoint = displayedPoint(forRaster: point)
-            handles.addEllipse(in: CGRect(
+            let target = index == referenceAnchorIndex ? anchorHandle : handles
+            target.addEllipse(in: CGRect(
                 x: displayedPoint.x - 6, y: displayedPoint.y - 6, width: 12, height: 12
             ))
         }
         referenceMatchLayer.frame = bounds
         referenceMatchLayer.path = handles
+        referenceAnchorLayer.frame = bounds
+        referenceAnchorLayer.path = anchorHandle
         for (index, label) in referenceLabels.enumerated() {
             guard referenceMatchCorners.indices.contains(index) else {
                 label.isHidden = true
                 continue
             }
             label.isHidden = false
+            label.foregroundColor = index == referenceAnchorIndex
+                ? NSColor.systemGreen.cgColor : NSColor.systemYellow.cgColor
             let point = displayedPoint(forRaster: referenceMatchCorners[index])
             label.frame = CGRect(x: point.x - 14, y: point.y + 8, width: 28, height: 14)
         }
