@@ -62,6 +62,15 @@ pub struct IntegratedOpticalExposure {
     pub acescg_illuminance_seconds: Vec<LinearRgb>,
 }
 
+/// Accepted Computational Capture checkpoint: the immutable integrated
+/// exposure together with the explicitly resolved effective sensor capacity
+/// and precision used by every downstream sensor operation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComputationalCaptureExposure {
+    pub sensor_profile: SensorProfile,
+    pub exposure: IntegratedOpticalExposure,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureIdentity {
     pub noise_seed: u64,
@@ -200,6 +209,25 @@ impl ComputationalCaptureProfile {
         }
         .validate()
     }
+}
+
+pub fn materialize_computational_capture(
+    sensor_profile: SensorProfile,
+    capture_profile: ComputationalCaptureProfile,
+    character_strength: f32,
+    exposure: IntegratedOpticalExposure,
+) -> Result<ComputationalCaptureExposure, SensorError> {
+    exposure.validate()?;
+    let sensor_profile = capture_profile.effective_sensor(sensor_profile, character_strength)?;
+    if exposure.width != u32::from(sensor_profile.native_width)
+        || exposure.height != u32::from(sensor_profile.native_height)
+    {
+        return Err(SensorError::RasterProfileMismatch);
+    }
+    Ok(ComputationalCaptureExposure {
+        sensor_profile,
+        exposure,
+    })
 }
 
 impl SensorProfile {
@@ -1435,6 +1463,26 @@ mod tests {
             .effective_sensor(sensor, 1.5)
             .is_ok()
         );
+
+        let small_sensor = SensorProfile {
+            native_width: 2,
+            native_height: 2,
+            ..sensor
+        };
+        let exposure = IntegratedOpticalExposure {
+            width: 2,
+            height: 2,
+            duration_seconds: 1.0 / 48.0,
+            acescg_illuminance_seconds: vec![LinearRgb::new(0.01, 0.02, 0.03); 4],
+        };
+        let artifact =
+            materialize_computational_capture(small_sensor, bracket, 1.0, exposure.clone())
+                .expect("typed Computational Capture artifact");
+        assert_eq!(
+            artifact.sensor_profile,
+            bracket.effective_sensor(small_sensor, 1.0).unwrap()
+        );
+        assert_eq!(artifact.exposure, exposure);
     }
 
     #[test]
