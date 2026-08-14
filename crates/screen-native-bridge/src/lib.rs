@@ -19,11 +19,14 @@ use screen_application::{
     CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, DeliveryRasterBackground,
     DeliveryRasterPlacement, DeliveryRasterRequest, PhysicalIntermediate,
     PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, ProceduralTestPattern,
-    RasterPlacement, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
-    RollingDirection, SensorReadout, TestAuthoringError, TestAuthoringSelection,
-    TestControlRequirement, TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice,
-    apply_test_scalar, apply_test_toggle, default_test_authoring_selection, diagnostic_signal,
-    evaluate_delivery_raster_rgba32f, physical_shutter_schedule, test_page_descriptor,
+    RasterPlacement, ReflectionAreaLight, ReflectionEmitter, ReflectionEnvironmentRig,
+    ReflectionLightAppearance, ReflectionSunLight, ReflectionWindowLight,
+    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, RollingDirection,
+    SensorReadout, TestAuthoringError, TestAuthoringSelection, TestControlRequirement,
+    TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice, apply_test_scalar,
+    apply_test_toggle, compile_reflection_environment, default_test_authoring_selection,
+    diagnostic_signal, evaluate_delivery_raster_rgba32f, physical_shutter_schedule,
+    test_page_descriptor,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -42,6 +45,26 @@ use screen_panel::{
     PanelLightSpreadProfile, PanelTechnology, PanelTemporalEmission, PanelUniformityProfile,
     ResidualFlicker, StripeLayout,
 };
+
+pub const SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenReflectionEmitterV1 {
+    pub abi_version: u32,
+    /// 0 practical/area, 1 convex window, 2 distant sun.
+    pub kind: u32,
+    /// Area/sun use the first direction; window uses four ordered directions.
+    pub directions_xyz: [f32; 12],
+    pub angular_width_degrees: f32,
+    pub angular_height_degrees: f32,
+    pub roll_degrees: f32,
+    pub distance_meters: f32,
+    pub radiance_candelas_per_square_meter: f32,
+    pub temperature_kelvin: f32,
+    pub tint: f32,
+    pub edge_softness_degrees: f32,
+}
 #[cfg(target_os = "macos")]
 use screen_platform::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
@@ -4304,6 +4327,88 @@ pub unsafe extern "C" fn screen_recording_output_inverse_rgba32f(
     true
 }
 
+/// Compiles a typed reflection-light rig into a caller-owned 2:1 linear ACEScg raster.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_reflection_environment_compile_rgba32f(
+    emitters: *const ScreenReflectionEmitterV1,
+    emitter_count: usize,
+    output_rgba: *mut f32,
+    width: u32,
+    height: u32,
+    error_message: *mut *const c_char,
+) -> bool {
+    unsafe { set_error(error_message, b"\0") };
+    if emitters.is_null() || emitter_count == 0 || output_rgba.is_null() {
+        unsafe { set_error(error_message, b"reflection environment input is missing\0") };
+        return false;
+    }
+    let raw = unsafe { std::slice::from_raw_parts(emitters, emitter_count) };
+    let mut resolved = Vec::with_capacity(raw.len());
+    for emitter in raw {
+        if emitter.abi_version != SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION {
+            unsafe {
+                set_error(
+                    error_message,
+                    b"reflection environment ABI version is unsupported\0",
+                )
+            };
+            return false;
+        }
+        let direction = |index: usize| Vec3 {
+            x: emitter.directions_xyz[index * 3],
+            y: emitter.directions_xyz[index * 3 + 1],
+            z: emitter.directions_xyz[index * 3 + 2],
+        };
+        let appearance = ReflectionLightAppearance {
+            radiance_candelas_per_square_meter: emitter.radiance_candelas_per_square_meter,
+            temperature_kelvin: emitter.temperature_kelvin,
+            tint: emitter.tint,
+            edge_softness_degrees: emitter.edge_softness_degrees,
+        };
+        resolved.push(match emitter.kind {
+            0 => ReflectionEmitter::Area(ReflectionAreaLight {
+                center_direction: direction(0),
+                angular_width_degrees: emitter.angular_width_degrees,
+                angular_height_degrees: emitter.angular_height_degrees,
+                roll_degrees: emitter.roll_degrees,
+                distance_meters: emitter.distance_meters,
+                appearance,
+            }),
+            1 => ReflectionEmitter::Window(ReflectionWindowLight {
+                corner_directions: [direction(0), direction(1), direction(2), direction(3)],
+                distance_meters: emitter.distance_meters,
+                appearance,
+            }),
+            2 => ReflectionEmitter::Sun(ReflectionSunLight {
+                direction: direction(0),
+                angular_diameter_degrees: emitter.angular_width_degrees,
+                appearance,
+            }),
+            _ => {
+                unsafe { set_error(error_message, b"reflection emitter kind is unsupported\0") };
+                return false;
+            }
+        });
+    }
+    let rig = ReflectionEnvironmentRig {
+        emitters: resolved,
+        background_radiance_acescg: LinearRgb::new(0.0, 0.0, 0.0),
+    };
+    let raster = match compile_reflection_environment(&rig, width, height) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"reflection environment rig is invalid\0") };
+            return false;
+        }
+    };
+    let component_count = raster.rgba_acescg.len() * 4;
+    let output = unsafe { std::slice::from_raw_parts_mut(output_rgba, component_count) };
+    for (destination, source) in output.chunks_exact_mut(4).zip(raster.rgba_acescg) {
+        destination.copy_from_slice(&source);
+    }
+    true
+}
+
 unsafe fn set_error(destination: *mut *const c_char, message: &'static [u8]) {
     if !destination.is_null() {
         // SAFETY: the optional out parameter is writable for the call.
@@ -4320,6 +4425,58 @@ unsafe fn set_error(destination: *mut *const c_char, message: &'static [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reflection_environment_bridge_compiles_typed_emitters_and_rejects_old_abi() {
+        let emitter = ScreenReflectionEmitterV1 {
+            abi_version: SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION,
+            kind: 0,
+            directions_xyz: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            angular_width_degrees: 12.0,
+            angular_height_degrees: 8.0,
+            roll_degrees: 0.0,
+            distance_meters: 2.0,
+            radiance_candelas_per_square_meter: 1_000.0,
+            temperature_kelvin: 3_200.0,
+            tint: 0.0,
+            edge_softness_degrees: 0.5,
+        };
+        let mut pixels = vec![0.0_f32; 64 * 32 * 4];
+        let mut error = core::ptr::null();
+        assert!(unsafe {
+            screen_reflection_environment_compile_rgba32f(
+                &emitter,
+                1,
+                pixels.as_mut_ptr(),
+                64,
+                32,
+                &mut error,
+            )
+        });
+        assert!(
+            pixels
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0)
+        );
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 0.0 || pixel[1] > 0.0 || pixel[2] > 0.0)
+        );
+
+        let mut obsolete = emitter;
+        obsolete.abi_version -= 1;
+        assert!(!unsafe {
+            screen_reflection_environment_compile_rgba32f(
+                &obsolete,
+                1,
+                pixels.as_mut_ptr(),
+                64,
+                32,
+                &mut error,
+            )
+        });
+    }
 
     #[test]
     fn planar_reference_bridge_returns_only_a_rigid_camera_pose() {
