@@ -346,6 +346,25 @@ def validate_native_model_authority() -> None:
                 f"Application publishes an untyped physical artifact identity: {forbidden}"
             )
 
+    application_pipeline = (ROOT / "crates/screen-application/src/lib.rs").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "pub enum PhysicalPipelineCpuArtifact",
+        "RawMosaic {",
+        "raw: RawSensorRaster",
+        "pub fn presentation_rgba(&self)",
+        "pub artifact: PhysicalPipelineCpuArtifact",
+    ):
+        if required not in application_pipeline:
+            raise ValidationError(
+                f"CPU physical publication is not a typed artifact: {required}"
+            )
+    if "pub struct PhysicalPipelineCpuResult {\n    pub width:" in application_pipeline:
+        raise ValidationError("CPU physical publication exposes an untyped raster result")
+    if "pub struct PhysicalPipelineCpuResult {\n    pub acescg:" in application_pipeline:
+        raise ValidationError("CPU physical publication relabels every artifact as ACEScg")
+
     bridge = (ROOT / "crates/screen-native-bridge/src/lib.rs").read_text(encoding="utf-8")
     forbidden_bridge = (
         "EXPECTED_STAGE_IDS",

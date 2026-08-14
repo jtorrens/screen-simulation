@@ -101,7 +101,7 @@ fn domain_and_stage_amounts_have_independent_continuous_meaning() {
         evaluate_physical_pipeline_cpu_oracle(request(FlatPanelQuality::Native, 0.0, 4.0, 4.0))
             .expect("screen identity");
     assert_eq!(
-        identity.acescg,
+        identity.presentation_rgba(),
         request(FlatPanelQuality::Native, 0.0, 4.0, 4.0)
             .input
             .acescg
@@ -116,10 +116,10 @@ fn domain_and_stage_amounts_have_independent_continuous_meaning() {
     let physical =
         evaluate_physical_pipeline_cpu_oracle(request(FlatPanelQuality::Native, 1.0, 1.0, 1.0))
             .expect("physical geometry");
-    assert_ne!(ideal.acescg, continuous.acescg);
-    assert_ne!(continuous.acescg, physical.acescg);
-    for pixel in &continuous.acescg[0..3] {
-        for (sample, reference) in pixel.iter().zip(&continuous.acescg[0]) {
+    assert_ne!(ideal.presentation_rgba(), continuous.presentation_rgba());
+    assert_ne!(continuous.presentation_rgba(), physical.presentation_rgba());
+    for pixel in &continuous.presentation_rgba()[0..3] {
+        for (sample, reference) in pixel.iter().zip(&continuous.presentation_rgba()[0]) {
             assert!((sample - reference).abs() <= 1.0e-6);
         }
     }
@@ -128,7 +128,7 @@ fn domain_and_stage_amounts_have_independent_continuous_meaning() {
             .expect("artistic extension");
     assert!(
         artistic
-            .acescg
+            .presentation_rgba()
             .iter()
             .flatten()
             .all(|value| value.is_finite())
@@ -143,8 +143,8 @@ fn rgb_and_bgr_are_discrete_topologies_with_the_same_frame() {
     let mut bgr_request = request(FlatPanelQuality::Native, 1.0, 1.0, 1.0);
     bgr_request.plan.panel.stripe_layout = StripeLayout::Bgr;
     let bgr = evaluate_physical_pipeline_cpu_oracle(bgr_request).expect("BGR");
-    assert_eq!((rgb.width, rgb.height), (bgr.width, bgr.height));
-    assert_ne!(rgb.acescg, bgr.acescg);
+    assert_eq!((rgb.width(), rgb.height()), (bgr.width(), bgr.height()));
+    assert_ne!(rgb.presentation_rgba(), bgr.presentation_rgba());
     assert_eq!(rgb.diagnostic.geometry.stripe_layout, StripeLayout::Rgb);
     assert_eq!(bgr.diagnostic.geometry.stripe_layout, StripeLayout::Bgr);
 }
@@ -164,7 +164,7 @@ fn quality_lattices_keep_frame_and_reach_the_native_authority() {
     assert!(
         results
             .iter()
-            .all(|value| (value.width, value.height) == (6, 3))
+            .all(|value| (value.width(), value.height()) == (6, 3))
     );
     assert_eq!(
         results
@@ -173,9 +173,9 @@ fn quality_lattices_keep_frame_and_reach_the_native_authority() {
         [1, 4, 16, 1]
     );
     let high_native_maximum = results[2]
-        .acescg
+        .presentation_rgba()
         .iter()
-        .zip(&results[3].acescg)
+        .zip(results[3].presentation_rgba())
         .flat_map(|(high, native)| {
             high.iter()
                 .zip(native)
@@ -204,8 +204,8 @@ fn light_spread_zero_is_exact_and_calibrated_and_artistic_are_finite() {
     assert_eq!(
         evaluate_physical_pipeline_cpu_oracle(zero)
             .expect("spread identity")
-            .acescg,
-        baseline.acescg
+            .presentation_rgba(),
+        baseline.presentation_rgba()
     );
 
     for amount in [1.0, 2.5] {
@@ -217,19 +217,19 @@ fn light_spread_zero_is_exact_and_calibrated_and_artistic_are_finite() {
         let result = evaluate_physical_pipeline_cpu_oracle(spread).expect("spread result");
         assert!(
             result
-                .acescg
+                .presentation_rgba()
                 .iter()
                 .flatten()
                 .all(|value| value.is_finite())
         );
         assert_eq!(
             result
-                .acescg
+                .presentation_rgba()
                 .iter()
                 .map(|pixel| pixel[3])
                 .collect::<Vec<_>>(),
             baseline
-                .acescg
+                .presentation_rgba()
                 .iter()
                 .map(|pixel| pixel[3])
                 .collect::<Vec<_>>()
@@ -262,14 +262,17 @@ fn requested_checkpoint_neutralizes_every_later_physical_stage() {
     );
     let stopped = evaluate_physical_pipeline_cpu_oracle(later_stages_enabled)
         .expect("stopped panel-spread checkpoint");
-    assert_eq!(stopped.acescg, expected.acescg);
+    assert_eq!(stopped.presentation_rgba(), expected.presentation_rgba());
 
     let mut geometry = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
     geometry.plan.requested_intermediate = PhysicalIntermediate::RelativeGeometry;
     geometry.plan.scene_geometry_amount = 1.0;
     let expected_geometry = evaluate_physical_pipeline_cpu_oracle(geometry.clone())
         .expect("relative-geometry checkpoint");
-    assert_ne!(expected_geometry.acescg, expected.acescg);
+    assert_ne!(
+        expected_geometry.presentation_rgba(),
+        expected.presentation_rgba()
+    );
     geometry.plan.lens_amount = 1.0;
     geometry.plan.scene_geometry_lens.lens.radial_distortion = [0.2, -0.05, 0.01];
     geometry.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
@@ -280,7 +283,10 @@ fn requested_checkpoint_neutralizes_every_later_physical_stage() {
     );
     let stopped_geometry = evaluate_physical_pipeline_cpu_oracle(geometry)
         .expect("geometry checkpoint with later stages enabled");
-    assert_eq!(stopped_geometry.acescg, expected_geometry.acescg);
+    assert_eq!(
+        stopped_geometry.presentation_rgba(),
+        expected_geometry.presentation_rgba()
+    );
 
     let mut cover_without_lens = request(FlatPanelQuality::High, 1.0, 1.0, 1.0);
     cover_without_lens.plan.requested_intermediate = PhysicalIntermediate::CoverEnvironment;
@@ -296,7 +302,10 @@ fn requested_checkpoint_neutralizes_every_later_physical_stage() {
         .radial_distortion = [0.2, -0.05, 0.01];
     let stopped_cover = evaluate_physical_pipeline_cpu_oracle(cover_without_lens)
         .expect("cover checkpoint with later lens enabled");
-    assert_eq!(stopped_cover.acescg, expected_cover.acescg);
+    assert_eq!(
+        stopped_cover.presentation_rgba(),
+        expected_cover.presentation_rgba()
+    );
 }
 
 #[test]
@@ -320,7 +329,7 @@ fn supported_intermediate_outputs_match_frozen_domain_goldens() {
         value.plan.requested_intermediate = intermediate;
         let result = evaluate_physical_pipeline_cpu_oracle(value).expect("intermediate");
         let hash = result
-            .acescg
+            .presentation_rgba()
             .iter()
             .flatten()
             .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
@@ -423,13 +432,12 @@ fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
         value.plan.requested_intermediate = intermediate;
         let result = evaluate_physical_pipeline_cpu_oracle(value).expect("capture intermediate");
         hashes.push(
-            result
-                .acescg
-                .iter()
-                .flatten()
-                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+            result.presentation_rgba().iter().flatten().fold(
+                0xcbf2_9ce4_8422_2325_u64,
+                |hash, sample| {
                     (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
-                }),
+                },
+            ),
         );
     }
     // Sensor input restores absolute panel luminance after the lens has
@@ -470,9 +478,9 @@ fn image_environment_requires_its_exact_typed_raster_and_changes_cover_output() 
     let clean = evaluate_physical_pipeline_cpu_oracle(absent).expect("absent environment");
     assert!(
         reflected
-            .acescg
+            .presentation_rgba()
             .iter()
-            .zip(clean.acescg)
+            .zip(clean.presentation_rgba())
             .any(|(left, right)| { left[0] > right[0] && left[0] - right[0] > left[1] - right[1] })
     );
 }

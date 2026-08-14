@@ -15,7 +15,7 @@ use screen_application::{
     ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, SensorReadout,
     capture_device_preset, evaluate_physical_pipeline_cpu_oracle, expose_physical_pipeline_raw,
 };
-use screen_camera::{CameraDevelopment, develop_raw_to_acescg};
+use screen_camera::{CameraDevelopment, CameraRenderingIntent, develop_raw_to_acescg};
 use screen_color::CameraOutputTransform;
 use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, ProceduralEnvironment, cover_glass_preset};
@@ -223,11 +223,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             plan: anterior_plan,
         })?;
         let pixels = cpu
-            .acescg
+            .presentation_rgba()
             .iter()
             .map(|pixel| LinearRgb::new(pixel[0], pixel[1], pixel[2]))
             .collect::<Vec<_>>();
-        (cpu.width, cpu.height, pixels)
+        (cpu.width(), cpu.height(), pixels)
     };
     let metal = backend.evaluate(
         &source_texture,
@@ -379,6 +379,8 @@ fn plan(
         sensor_noise_amount: 1.0,
         development: CameraDevelopment::NEUTRAL,
         development_enabled: true,
+        rendering_intent: CameraRenderingIntent::NEUTRAL,
+        rendering_intent_enabled: false,
         frame_index: 0,
         requested_intermediate: intermediate,
     }

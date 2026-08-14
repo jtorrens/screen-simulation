@@ -2,7 +2,7 @@
 
 Status: normative.
 
-Application owns every phase boundary as a `PhysicalArtifactId`: the typed identity proves adjacency, while host adapters receive only its stable versioned string for presentation and serialization. Swift and the native bridge cannot declare, infer or reorder artifact identities.
+Application owns every phase boundary as a `PhysicalArtifactId`: the typed identity proves adjacency, while host adapters receive only its stable versioned string for presentation and serialization. Swift and the native bridge cannot declare, infer or reorder artifact identities. The CPU evaluator publishes a closed `PhysicalPipelineCpuArtifact`; sensor checkpoints contain the actual integer RAW artifact and expose their normalized code/clipping image only through a separately named diagnostic presentation view. RAW, Device signal and physical radiance are never stored in a field named ACEScg.
 
 ## Product boundary
 

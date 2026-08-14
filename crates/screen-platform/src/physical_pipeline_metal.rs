@@ -1838,13 +1838,13 @@ mod tests {
                                 .expect("Metal result");
                             assert_eq!(
                                 (gpu.texture.width(), gpu.texture.height()),
-                                (u64::from(cpu.width), u64::from(cpu.height))
+                                (u64::from(cpu.width()), u64::from(cpu.height()))
                             );
                             assert_eq!(progress.last().copied(), Some(1.0));
                             let actual = read(&gpu.texture);
                             let maximum = actual
                                 .iter()
-                                .zip(&cpu.acescg)
+                                .zip(cpu.presentation_rgba())
                                 .flat_map(|(gpu, cpu)| {
                                     gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs())
                                 })
@@ -1914,7 +1914,7 @@ mod tests {
                 .expect("Metal temporal result");
             let maximum = read(&gpu.texture)
                 .iter()
-                .zip(&cpu.acescg)
+                .zip(cpu.presentation_rgba())
                 .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                 .fold(0.0_f32, f32::max);
             assert!(maximum <= 2.0e-3, "temporal CPU/Metal deviation {maximum}");
@@ -1972,7 +1972,7 @@ mod tests {
                         .expect("Metal cover result");
                     let maximum = read(&gpu.texture)
                         .iter()
-                        .zip(&cpu.acescg)
+                        .zip(cpu.presentation_rgba())
                         .flat_map(|(gpu, cpu)| {
                             gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs())
                         })
@@ -2017,7 +2017,7 @@ mod tests {
             let gpu = backend
                 .evaluate(&source, &signal, plan, |_| {}, || false)
                 .expect("Metal cover result");
-            (cpu.acescg, read(&gpu.texture))
+            (cpu.presentation_rgba().to_vec(), read(&gpu.texture))
         };
 
         let mut disabled = screen_cover::COVER_GLASS_PRESETS[3].profile;
@@ -2084,7 +2084,7 @@ mod tests {
         let second_tile_start = (TILE_ROWS * plan.requested_width) as usize;
         let maximum = actual[second_tile_start..]
             .iter()
-            .zip(&cpu.acescg[second_tile_start..])
+            .zip(&cpu.presentation_rgba()[second_tile_start..])
             .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
             .fold(0.0_f32, f32::max);
         assert!(
@@ -2145,7 +2145,7 @@ mod tests {
                     .expect("Metal uniformity result");
                 let maximum = read(&gpu.texture)
                     .iter()
-                    .zip(&cpu.acescg)
+                    .zip(cpu.presentation_rgba())
                     .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                     .fold(0.0_f32, f32::max);
                 assert!(
@@ -2249,7 +2249,7 @@ mod tests {
             );
             let maximum = read(&gpu.texture)
                 .iter()
-                .zip(&cpu.acescg)
+                .zip(cpu.presentation_rgba())
                 .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                 .fold(0.0_f32, f32::max);
             assert!(
@@ -2304,7 +2304,7 @@ mod tests {
                     .expect("Metal scene result");
                 let maximum = read(&gpu.texture)
                     .iter()
-                    .zip(&cpu.acescg)
+                    .zip(cpu.presentation_rgba())
                     .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                     .fold(0.0_f32, f32::max);
                 assert!(
@@ -2352,7 +2352,7 @@ mod tests {
         assert_eq!(gpu.texture.pixel_format(), MTLPixelFormat::RGBA32Float);
         let maximum = read(&gpu.texture)
             .iter()
-            .zip(&cpu.acescg)
+            .zip(cpu.presentation_rgba())
             .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
             .fold(0.0_f32, f32::max);
         eprintln!("physical pipeline half-input CPU/Metal maximum absolute deviation: {maximum}");
@@ -2473,10 +2473,10 @@ mod tests {
                 .evaluate(&source, &signal, plan, |_| {}, || false)
                 .expect("Metal sensor result");
             let gpu = read(&gpu.texture);
-            assert_eq!(gpu.len(), cpu.acescg.len());
+            assert_eq!(gpu.len(), cpu.presentation_rgba().len());
             let maximum_code_error = gpu
                 .iter()
-                .zip(&cpu.acescg)
+                .zip(cpu.presentation_rgba())
                 .map(|(gpu, cpu)| {
                     ((gpu[0] - cpu[0]).abs() * ((1_u32 << plan.sensor.adc_bits) - 1) as f32).round()
                         as u32
@@ -2699,7 +2699,7 @@ mod tests {
                 .expect("Metal developed result");
             let maximum = read(&gpu.texture)
                 .iter()
-                .zip(&cpu.acescg)
+                .zip(cpu.presentation_rgba())
                 .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                 .fold(0.0_f32, f32::max);
             // The calibrated nits-to-sensor boundary raises the meaningful
@@ -2756,7 +2756,7 @@ mod tests {
             .expect("Metal camera-rendered result");
         let maximum = read(&gpu.texture)
             .iter()
-            .zip(&cpu.acescg)
+            .zip(cpu.presentation_rgba())
             .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
             .fold(0.0_f32, f32::max);
         assert!(

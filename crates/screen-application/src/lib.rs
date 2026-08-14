@@ -862,11 +862,187 @@ pub struct PhysicalPipelineDiagnostic {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct PhysicalPipelineCpuResult {
+pub struct PhysicalRgbaRaster {
     pub width: u32,
     pub height: u32,
-    pub acescg: Vec<[f32; 4]>,
+    pub rgba: Vec<[f32; 4]>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PhysicalPipelineCpuArtifact {
+    SourceAcesCg(PhysicalRgbaRaster),
+    DeviceSignal(PhysicalRgbaRaster),
+    PanelEmission(PhysicalRgbaRaster),
+    SubpixelRadiance(PhysicalRgbaRaster),
+    PanelUniformity(PhysicalRgbaRaster),
+    PanelLightSpread(PhysicalRgbaRaster),
+    RelativeGeometry(PhysicalRgbaRaster),
+    CoverEnvironment(PhysicalRgbaRaster),
+    CoverGlow(PhysicalRgbaRaster),
+    LensProjection(PhysicalRgbaRaster),
+    ShutterMotion(PhysicalRgbaRaster),
+    ComputationalCapture(PhysicalRgbaRaster),
+    SensorBloom {
+        raw: RawSensorRaster,
+        diagnostic: PhysicalRgbaRaster,
+    },
+    SensorNoise {
+        raw: RawSensorRaster,
+        diagnostic: PhysicalRgbaRaster,
+    },
+    RawMosaic {
+        raw: RawSensorRaster,
+        diagnostic: PhysicalRgbaRaster,
+    },
+    DevelopedAcesCg(PhysicalRgbaRaster),
+    CameraRenderedAcesCg(PhysicalRgbaRaster),
+}
+
+impl PhysicalPipelineCpuArtifact {
+    pub fn presentation_rgba(&self) -> &[[f32; 4]] {
+        match self {
+            Self::SourceAcesCg(raster)
+            | Self::DeviceSignal(raster)
+            | Self::PanelEmission(raster)
+            | Self::SubpixelRadiance(raster)
+            | Self::PanelUniformity(raster)
+            | Self::PanelLightSpread(raster)
+            | Self::RelativeGeometry(raster)
+            | Self::CoverEnvironment(raster)
+            | Self::CoverGlow(raster)
+            | Self::LensProjection(raster)
+            | Self::ShutterMotion(raster)
+            | Self::ComputationalCapture(raster)
+            | Self::DevelopedAcesCg(raster)
+            | Self::CameraRenderedAcesCg(raster) => &raster.rgba,
+            Self::SensorBloom { diagnostic, .. }
+            | Self::SensorNoise { diagnostic, .. }
+            | Self::RawMosaic { diagnostic, .. } => &diagnostic.rgba,
+        }
+    }
+
+    pub fn raw_sensor(&self) -> Option<&RawSensorRaster> {
+        match self {
+            Self::SensorBloom { raw, .. }
+            | Self::SensorNoise { raw, .. }
+            | Self::RawMosaic { raw, .. } => Some(raw),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhysicalPipelineCpuResult {
+    pub artifact: PhysicalPipelineCpuArtifact,
     pub diagnostic: PhysicalPipelineDiagnostic,
+}
+
+impl PhysicalPipelineCpuResult {
+    pub fn width(&self) -> u32 {
+        match &self.artifact {
+            PhysicalPipelineCpuArtifact::SourceAcesCg(raster)
+            | PhysicalPipelineCpuArtifact::DeviceSignal(raster)
+            | PhysicalPipelineCpuArtifact::PanelEmission(raster)
+            | PhysicalPipelineCpuArtifact::SubpixelRadiance(raster)
+            | PhysicalPipelineCpuArtifact::PanelUniformity(raster)
+            | PhysicalPipelineCpuArtifact::PanelLightSpread(raster)
+            | PhysicalPipelineCpuArtifact::RelativeGeometry(raster)
+            | PhysicalPipelineCpuArtifact::CoverEnvironment(raster)
+            | PhysicalPipelineCpuArtifact::CoverGlow(raster)
+            | PhysicalPipelineCpuArtifact::LensProjection(raster)
+            | PhysicalPipelineCpuArtifact::ShutterMotion(raster)
+            | PhysicalPipelineCpuArtifact::ComputationalCapture(raster)
+            | PhysicalPipelineCpuArtifact::DevelopedAcesCg(raster)
+            | PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(raster) => raster.width,
+            PhysicalPipelineCpuArtifact::SensorBloom { raw, .. }
+            | PhysicalPipelineCpuArtifact::SensorNoise { raw, .. }
+            | PhysicalPipelineCpuArtifact::RawMosaic { raw, .. } => raw.width,
+        }
+    }
+
+    pub fn height(&self) -> u32 {
+        match &self.artifact {
+            PhysicalPipelineCpuArtifact::SourceAcesCg(raster)
+            | PhysicalPipelineCpuArtifact::DeviceSignal(raster)
+            | PhysicalPipelineCpuArtifact::PanelEmission(raster)
+            | PhysicalPipelineCpuArtifact::SubpixelRadiance(raster)
+            | PhysicalPipelineCpuArtifact::PanelUniformity(raster)
+            | PhysicalPipelineCpuArtifact::PanelLightSpread(raster)
+            | PhysicalPipelineCpuArtifact::RelativeGeometry(raster)
+            | PhysicalPipelineCpuArtifact::CoverEnvironment(raster)
+            | PhysicalPipelineCpuArtifact::CoverGlow(raster)
+            | PhysicalPipelineCpuArtifact::LensProjection(raster)
+            | PhysicalPipelineCpuArtifact::ShutterMotion(raster)
+            | PhysicalPipelineCpuArtifact::ComputationalCapture(raster)
+            | PhysicalPipelineCpuArtifact::DevelopedAcesCg(raster)
+            | PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(raster) => raster.height,
+            PhysicalPipelineCpuArtifact::SensorBloom { raw, .. }
+            | PhysicalPipelineCpuArtifact::SensorNoise { raw, .. }
+            | PhysicalPipelineCpuArtifact::RawMosaic { raw, .. } => raw.height,
+        }
+    }
+
+    pub fn presentation_rgba(&self) -> &[[f32; 4]] {
+        self.artifact.presentation_rgba()
+    }
+
+    pub fn raw_sensor(&self) -> Option<&RawSensorRaster> {
+        self.artifact.raw_sensor()
+    }
+}
+
+fn physical_rgba_artifact(
+    intermediate: PhysicalIntermediate,
+    width: u32,
+    height: u32,
+    rgba: Vec<[f32; 4]>,
+) -> Result<PhysicalPipelineCpuArtifact, ApplicationError> {
+    let raster = PhysicalRgbaRaster {
+        width,
+        height,
+        rgba,
+    };
+    match intermediate {
+        PhysicalIntermediate::SourceAcesCg => Ok(PhysicalPipelineCpuArtifact::SourceAcesCg(raster)),
+        PhysicalIntermediate::DeviceSignal => Ok(PhysicalPipelineCpuArtifact::DeviceSignal(raster)),
+        PhysicalIntermediate::PanelEmission => {
+            Ok(PhysicalPipelineCpuArtifact::PanelEmission(raster))
+        }
+        PhysicalIntermediate::SubpixelRadiance => {
+            Ok(PhysicalPipelineCpuArtifact::SubpixelRadiance(raster))
+        }
+        PhysicalIntermediate::PanelUniformity => {
+            Ok(PhysicalPipelineCpuArtifact::PanelUniformity(raster))
+        }
+        PhysicalIntermediate::PanelLightSpread => {
+            Ok(PhysicalPipelineCpuArtifact::PanelLightSpread(raster))
+        }
+        PhysicalIntermediate::RelativeGeometry => {
+            Ok(PhysicalPipelineCpuArtifact::RelativeGeometry(raster))
+        }
+        PhysicalIntermediate::CoverEnvironment => {
+            Ok(PhysicalPipelineCpuArtifact::CoverEnvironment(raster))
+        }
+        PhysicalIntermediate::CoverGlow => Ok(PhysicalPipelineCpuArtifact::CoverGlow(raster)),
+        PhysicalIntermediate::LensProjection => {
+            Ok(PhysicalPipelineCpuArtifact::LensProjection(raster))
+        }
+        PhysicalIntermediate::ShutterMotion => {
+            Ok(PhysicalPipelineCpuArtifact::ShutterMotion(raster))
+        }
+        PhysicalIntermediate::ComputationalCapture => {
+            Ok(PhysicalPipelineCpuArtifact::ComputationalCapture(raster))
+        }
+        PhysicalIntermediate::DevelopedAcesCg => {
+            Ok(PhysicalPipelineCpuArtifact::DevelopedAcesCg(raster))
+        }
+        PhysicalIntermediate::CameraRenderedAcesCg => {
+            Ok(PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(raster))
+        }
+        PhysicalIntermediate::SensorBloom
+        | PhysicalIntermediate::SensorNoise
+        | PhysicalIntermediate::RawMosaic => Err(ApplicationError::UnsupportedPhysicalIntermediate),
+    }
 }
 
 fn resample_physical_exposure_area(
@@ -1520,9 +1696,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         )
     {
         return Ok(PhysicalPipelineCpuResult {
-            width: request.input.width,
-            height: request.input.height,
-            acescg: request.input.acescg,
+            artifact: physical_rgba_artifact(
+                plan.requested_intermediate,
+                request.input.width,
+                request.input.height,
+                request.input.acescg,
+            )?,
             diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
         });
     }
@@ -2454,10 +2633,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::RawMosaic
         ) {
             let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
-            return Ok(PhysicalPipelineCpuResult {
+            let diagnostic = PhysicalRgbaRaster {
                 width: raw.width,
                 height: raw.height,
-                acescg: raw
+                rgba: raw
                     .codes
                     .iter()
                     .zip(&raw.full_well_clipped)
@@ -2471,6 +2650,21 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         ]
                     })
                     .collect(),
+            };
+            let artifact = match plan.requested_intermediate {
+                PhysicalIntermediate::SensorBloom => {
+                    PhysicalPipelineCpuArtifact::SensorBloom { raw, diagnostic }
+                }
+                PhysicalIntermediate::SensorNoise => {
+                    PhysicalPipelineCpuArtifact::SensorNoise { raw, diagnostic }
+                }
+                PhysicalIntermediate::RawMosaic => {
+                    PhysicalPipelineCpuArtifact::RawMosaic { raw, diagnostic }
+                }
+                _ => return Err(ApplicationError::UnsupportedPhysicalIntermediate),
+            };
+            return Ok(PhysicalPipelineCpuResult {
+                artifact,
                 diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
             });
         }
@@ -2490,30 +2684,37 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(ApplicationError::CameraDevelopment)?;
             return Ok(PhysicalPipelineCpuResult {
-                width: developed.width,
-                height: developed.height,
-                acescg: acescg
-                    .into_iter()
-                    .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
-                    .collect(),
+                artifact: PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(PhysicalRgbaRaster {
+                    width: developed.width,
+                    height: developed.height,
+                    rgba: acescg
+                        .into_iter()
+                        .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
+                        .collect(),
+                }),
                 diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
             });
         }
         return Ok(PhysicalPipelineCpuResult {
-            width: developed.width,
-            height: developed.height,
-            acescg: developed
-                .acescg
-                .into_iter()
-                .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
-                .collect(),
+            artifact: PhysicalPipelineCpuArtifact::DevelopedAcesCg(PhysicalRgbaRaster {
+                width: developed.width,
+                height: developed.height,
+                rgba: developed
+                    .acescg
+                    .into_iter()
+                    .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
+                    .collect(),
+            }),
             diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
         });
     }
     Ok(PhysicalPipelineCpuResult {
-        width: sampling.effective_width,
-        height: sampling.effective_height,
-        acescg: output,
+        artifact: physical_rgba_artifact(
+            plan.requested_intermediate,
+            sampling.effective_width,
+            sampling.effective_height,
+            output,
+        )?,
         diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
     })
 }
@@ -8519,12 +8720,12 @@ mod tests {
 
     fn raw_code_fraction(request: PhysicalPipelineRequest) -> f32 {
         let result = evaluate_physical_pipeline_cpu_oracle(request).expect("radiometric RAW");
-        result.acescg[0][0]
+        result.presentation_rgba()[0][0]
     }
 
     fn developed_luminance(request: PhysicalPipelineRequest) -> f32 {
         let result = evaluate_physical_pipeline_cpu_oracle(request).expect("radiometric developed");
-        let pixel = result.acescg[0];
+        let pixel = result.presentation_rgba()[0];
         0.272_228_72 * pixel[0] + 0.674_081_74 * pixel[1] + 0.053_689_517 * pixel[2]
     }
 
@@ -8654,16 +8855,24 @@ mod tests {
             PhysicalIntermediate::RawMosaic,
         ))
         .expect("production RAW patch");
-        let count = raw.acescg.len() as f32;
-        let raw_mean = raw.acescg.iter().map(|pixel| pixel[0]).sum::<f32>() / count;
-        let raw_maximum = raw
-            .acescg
+        let raw = raw.raw_sensor().expect("typed RAW artifact");
+        let count = raw.codes.len() as f32;
+        let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
+        let raw_mean = raw
+            .codes
             .iter()
-            .map(|pixel| pixel[0])
+            .map(|code| f32::from(*code) / maximum_code)
+            .sum::<f32>()
+            / count;
+        let raw_maximum = raw
+            .codes
+            .iter()
+            .map(|code| f32::from(*code) / maximum_code)
             .fold(0.0_f32, f32::max);
         let full_well_clipped_fraction =
-            raw.acescg.iter().map(|pixel| pixel[1]).sum::<f32>() / count;
-        let adc_clipped_fraction = raw.acescg.iter().map(|pixel| pixel[2]).sum::<f32>() / count;
+            raw.full_well_clipped.iter().filter(|value| **value).count() as f32 / count;
+        let adc_clipped_fraction =
+            raw.adc_clipped.iter().filter(|value| **value).count() as f32 / count;
 
         let developed = evaluate_physical_pipeline_cpu_oracle(production_patch_request(
             capture_id,
@@ -8676,13 +8885,13 @@ mod tests {
         ))
         .expect("production developed patch");
         let developed_luminance = developed
-            .acescg
+            .presentation_rgba()
             .iter()
             .map(|pixel| {
                 0.272_228_72 * pixel[0] + 0.674_081_74 * pixel[1] + 0.053_689_517 * pixel[2]
             })
             .sum::<f32>()
-            / developed.acescg.len() as f32;
+            / developed.presentation_rgba().len() as f32;
 
         ProductionPatchObservation {
             raw_mean,
@@ -8725,8 +8934,11 @@ mod tests {
 
         let clean = evaluate_physical_pipeline_cpu_oracle(clean_request).expect("clean RAW");
         let noisy = evaluate_physical_pipeline_cpu_oracle(noisy_request).expect("noisy RAW");
-        assert_eq!((clean.width, clean.height), (noisy.width, noisy.height));
-        assert_ne!(clean.acescg, noisy.acescg);
+        assert_eq!(
+            (clean.width(), clean.height()),
+            (noisy.width(), noisy.height())
+        );
+        assert_ne!(clean.presentation_rgba(), noisy.presentation_rgba());
     }
 
     #[test]
@@ -8752,29 +8964,18 @@ mod tests {
         let shuttered = evaluate_physical_pipeline_cpu_oracle(shutter_request)
             .expect("canonical shutter checkpoint");
         let raw = expose_physical_pipeline_raw(
-            &shuttered.acescg,
-            shuttered.width,
-            shuttered.height,
+            &shuttered.presentation_rgba(),
+            shuttered.width(),
+            shuttered.height(),
             request.plan.stopped_at_requested_intermediate(),
         )
         .expect("canonical sensor transition");
-        let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
-        let published = raw
-            .codes
-            .iter()
-            .zip(&raw.full_well_clipped)
-            .zip(&raw.adc_clipped)
-            .map(|((&code, &well), &adc)| {
-                [
-                    code as f32 / maximum_code,
-                    f32::from(well),
-                    f32::from(adc),
-                    1.0,
-                ]
-            })
-            .collect::<Vec<_>>();
-        assert_eq!((raw.width, raw.height), (expected.width, expected.height));
-        assert_eq!(published, expected.acescg);
+        let expected_raw = expected.raw_sensor().expect("typed CPU RAW artifact");
+        assert_eq!(
+            (raw.width, raw.height),
+            (expected.width(), expected.height())
+        );
+        assert_eq!(&raw, expected_raw);
     }
 
     #[test]
@@ -8974,7 +9175,11 @@ mod tests {
     fn computational_capture_protects_phone_highlights_and_is_exact_for_single_exposure_cameras() {
         let clipped_fraction = |request: PhysicalPipelineRequest| {
             let raw = evaluate_physical_pipeline_cpu_oracle(request).expect("RAW patch");
-            raw.acescg.iter().map(|pixel| pixel[1]).sum::<f32>() / raw.acescg.len() as f32
+            raw.presentation_rgba()
+                .iter()
+                .map(|pixel| pixel[1])
+                .sum::<f32>()
+                / raw.presentation_rgba().len() as f32
         };
         let mut iphone_single = production_patch_request(
             "iphone-16e-main-48mp",
@@ -9203,7 +9408,11 @@ mod tests {
             PhysicalIntermediate::PanelEmission,
         ))
         .expect("emission");
-        assert!((emission_100.acescg[0][0] - emission_1000.acescg[0][0]).abs() < 1.0e-6);
+        assert!(
+            (emission_100.presentation_rgba()[0][0] - emission_1000.presentation_rgba()[0][0])
+                .abs()
+                < 1.0e-6
+        );
 
         let developed_100 = developed_luminance(radiometric_request(
             100.0,
@@ -9290,10 +9499,10 @@ mod tests {
             .map(|value| value.to_bits())
             .collect::<Vec<_>>();
         let result = evaluate_physical_pipeline_cpu_oracle(request).expect("identity result");
-        assert_eq!((result.width, result.height), (2, 1));
+        assert_eq!((result.width(), result.height()), (2, 1));
         assert_eq!(
             result
-                .acescg
+                .presentation_rgba()
                 .iter()
                 .flatten()
                 .map(|value| value.to_bits())
@@ -9323,8 +9532,13 @@ mod tests {
             ))
             .expect("second result");
             assert_eq!(first, second);
-            assert!(first.acescg.iter().all(|pixel| pixel[3].is_finite()));
-            assert!(first.acescg.iter().any(|pixel| pixel[3] > 0.0));
+            assert!(
+                first
+                    .presentation_rgba()
+                    .iter()
+                    .all(|pixel| pixel[3].is_finite())
+            );
+            assert!(first.presentation_rgba().iter().any(|pixel| pixel[3] > 0.0));
         }
     }
 
@@ -9347,20 +9561,20 @@ mod tests {
         let rgb = evaluate_physical_pipeline_cpu_oracle(rgb_request.clone()).expect("RGB native");
         rgb_request.plan.panel.stripe_layout = screen_panel::StripeLayout::Bgr;
         let bgr = evaluate_physical_pipeline_cpu_oracle(rgb_request.clone()).expect("BGR native");
-        assert_eq!((rgb.width, rgb.height), (3, 3));
-        assert!(rgb.acescg[0][0] > rgb.acescg[2][0]);
-        assert!(bgr.acescg[0][2] > bgr.acescg[2][2]);
-        assert_ne!(rgb.acescg, bgr.acescg);
+        assert_eq!((rgb.width(), rgb.height()), (3, 3));
+        assert!(rgb.presentation_rgba()[0][0] > rgb.presentation_rgba()[2][0]);
+        assert!(bgr.presentation_rgba()[0][2] > bgr.presentation_rgba()[2][2]);
+        assert_ne!(rgb.presentation_rgba(), bgr.presentation_rgba());
 
         rgb_request.plan.panel.black_matrix_fraction = 0.5;
         let matrix = evaluate_physical_pipeline_cpu_oracle(rgb_request).expect("matrix result");
         let rgb_energy = rgb
-            .acescg
+            .presentation_rgba()
             .iter()
             .map(|pixel| pixel[0] + pixel[1] + pixel[2])
             .sum::<f32>();
         let matrix_energy = matrix
-            .acescg
+            .presentation_rgba()
             .iter()
             .map(|pixel| pixel[0] + pixel[1] + pixel[2])
             .sum::<f32>();
@@ -9389,9 +9603,9 @@ mod tests {
             1.0,
         ))
         .expect("high");
-        assert_eq!((draft.width, draft.height), (4, 2));
-        assert_eq!((medium.width, medium.height), (4, 2));
-        assert_eq!((high.width, high.height), (4, 2));
+        assert_eq!((draft.width(), draft.height()), (4, 2));
+        assert_eq!((medium.width(), medium.height()), (4, 2));
+        assert_eq!((high.width(), high.height()), (4, 2));
         assert_eq!(
             [
                 draft.diagnostic.sampling.samples_per_output_pixel,
@@ -9409,7 +9623,7 @@ mod tests {
         .expect("continuous extrapolation");
         assert!(
             artistic
-                .acescg
+                .presentation_rgba()
                 .iter()
                 .flatten()
                 .all(|value| value.is_finite())
@@ -9436,8 +9650,8 @@ mod tests {
         assert_eq!(
             evaluate_physical_pipeline_cpu_oracle(zero)
                 .expect("temporal identity")
-                .acescg,
-            baseline.acescg
+                .presentation_rgba(),
+            baseline.presentation_rgba()
         );
 
         let mut calibrated =
@@ -9452,22 +9666,22 @@ mod tests {
         artistic.plan.temporal_emission_gain = 0.75;
         let artistic =
             evaluate_physical_pipeline_cpu_oracle(artistic).expect("artistic temporal emission");
-        assert_ne!(calibrated.acescg, baseline.acescg);
+        assert_ne!(calibrated.presentation_rgba(), baseline.presentation_rgba());
         assert!(
             artistic
-                .acescg
+                .presentation_rgba()
                 .iter()
                 .flatten()
                 .all(|value| value.is_finite())
         );
         assert_eq!(
             artistic
-                .acescg
+                .presentation_rgba()
                 .iter()
                 .map(|pixel| pixel[3])
                 .collect::<Vec<_>>(),
             baseline
-                .acescg
+                .presentation_rgba()
                 .iter()
                 .map(|pixel| pixel[3])
                 .collect::<Vec<_>>()
@@ -9487,7 +9701,7 @@ mod tests {
         covered_request.plan.cover = screen_cover::COVER_GLASS_PRESETS[1].profile;
         let covered = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
             .expect("cover transmission");
-        assert_ne!(covered.acescg, baseline.acescg);
+        assert_ne!(covered.presentation_rgba(), baseline.presentation_rgba());
 
         covered_request.plan.environment = screen_cover::IncidentEnvironment::Procedural(
             screen_cover::environment_preset("environment-studio-softboxes")
@@ -9496,7 +9710,7 @@ mod tests {
         );
         let composite = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
             .expect("cover plus environment");
-        assert_ne!(composite.acescg, covered.acescg);
+        assert_ne!(composite.presentation_rgba(), covered.presentation_rgba());
         covered_request.plan.temporal_emission_amount = 1.0;
         covered_request.plan.temporal_emission_gain = 0.8;
         let temporal_composite = evaluate_physical_pipeline_cpu_oracle(covered_request.clone())
@@ -9505,11 +9719,11 @@ mod tests {
         let temporal_covered = evaluate_physical_pipeline_cpu_oracle(covered_request)
             .expect("temporal cover without environment");
         for (((composite, covered), temporal_composite), temporal_covered) in composite
-            .acescg
+            .presentation_rgba()
             .iter()
-            .zip(&covered.acescg)
-            .zip(&temporal_composite.acescg)
-            .zip(&temporal_covered.acescg)
+            .zip(covered.presentation_rgba())
+            .zip(temporal_composite.presentation_rgba())
+            .zip(temporal_covered.presentation_rgba())
         {
             assert_eq!(composite[3].to_bits(), temporal_composite[3].to_bits());
             for channel in 0..3 {
@@ -9542,8 +9756,13 @@ mod tests {
         first.plan.panel.active_width = Meters(0.004);
         let wide = evaluate_physical_pipeline_cpu_oracle(first)
             .expect("same pose with wider physical device");
-        assert_ne!(narrow.acescg, wide.acescg);
-        assert!(wide.acescg.iter().flatten().all(|value| value.is_finite()));
+        assert_ne!(narrow.presentation_rgba(), wide.presentation_rgba());
+        assert!(
+            wide.presentation_rgba()
+                .iter()
+                .flatten()
+                .all(|value| value.is_finite())
+        );
     }
 
     #[test]

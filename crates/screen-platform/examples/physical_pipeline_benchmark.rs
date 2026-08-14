@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use screen_application::{
         PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
     };
+    use screen_camera::CameraRenderingIntent;
     use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile};
     use screen_platform::MetalPhysicalPipeline;
 
@@ -128,6 +129,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sensor_noise_amount: 0.0,
                 development: screen_camera::CameraDevelopment::NEUTRAL,
                 development_enabled: false,
+                rendering_intent: CameraRenderingIntent::NEUTRAL,
+                rendering_intent_enabled: false,
                 frame_index: 0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             };
