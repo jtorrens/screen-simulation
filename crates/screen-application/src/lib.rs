@@ -4,6 +4,7 @@
 
 mod physical_pipeline;
 mod recording;
+mod reflection_environment;
 mod test_authoring;
 
 pub use physical_pipeline::{
@@ -15,6 +16,12 @@ pub use recording::{
     ConditionalRecordingControl, PreparedRecordingRequest, RecordingCharacterInterpretation,
     RecordingControlAvailability, RecordingPreparationError, RecordingSelection,
     prepare_recording_request,
+};
+pub use reflection_environment::{
+    REFLECTION_ENVIRONMENT_RIG_ID, ReflectionAreaLight, ReflectionEmitter,
+    ReflectionEnvironmentError, ReflectionEnvironmentRaster, ReflectionEnvironmentRig,
+    ReflectionLightAppearance, ReflectionSunLight, ReflectionWindowLight,
+    compile_reflection_environment,
 };
 pub use test_authoring::{
     COLOR_MODE_CONTROL_ID, DEVICE_CONTROL_ID, DEVICE_INTERPRETATION_PHASE_ID,
