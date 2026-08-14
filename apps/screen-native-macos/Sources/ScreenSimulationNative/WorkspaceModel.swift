@@ -1099,7 +1099,10 @@ final class WorkspaceModel: ObservableObject {
         reflectionHandleDragIndex = nil
         guard enabled else { return }
         referenceMatchEnabled = false
-        physicalModel.setQuality(.environmentSetup)
+        // Reflection authoring is drawn over the camera/reference framing. It
+        // must not enter Environment Setup: that diagnostic replaces the
+        // reference with a selected HDRI and cannot exist before generation.
+        physicalModel.setQuality(.setup)
         if reflectionEmitters.isEmpty { addReflectionEmitter(.area) }
         rebuildPhysicalSelectedFrame()
     }
@@ -3072,6 +3075,16 @@ final class WorkspaceModel: ObservableObject {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
             publishReferenceMatchSetup(resetTargetsToVisibleFrame: referenceMatchCorners.count != 4)
+            return
+        }
+        if reflectionEnvironmentEditorEnabled {
+            _ = physicalInteractiveJob?.cancel()
+            physicalInteractiveTask?.cancel()
+            if referenceACEScgFrame != nil {
+                publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            } else {
+                publishSetupFraming()
+            }
             return
         }
         if physicalModel.quality == .setup {
