@@ -17,7 +17,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 15u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 16u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u
@@ -427,6 +427,18 @@ typedef struct {
     size_t stage_contribution_count;
     uint32_t requested_width;
     uint32_t requested_height;
+    uint32_t render_full_width;
+    uint32_t render_full_height;
+    uint32_t render_window_x;
+    uint32_t render_window_y;
+    uint32_t render_window_width;
+    uint32_t render_window_height;
+    uint32_t render_scale_x_numerator;
+    uint32_t render_scale_x_denominator;
+    uint32_t render_scale_y_numerator;
+    uint32_t render_scale_y_denominator;
+    uint32_t pixel_aspect_numerator;
+    uint32_t pixel_aspect_denominator;
     uint32_t requested_intermediate;
     ScreenPhysicalIdentity128 cancellation_identity;
     ScreenPhysicalIdentity128 progress_identity;

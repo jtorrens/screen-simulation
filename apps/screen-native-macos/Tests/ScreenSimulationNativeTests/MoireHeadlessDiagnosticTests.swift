@@ -812,6 +812,10 @@ private func renderMoireVariant(
     )
     let frameIdentity = PhysicalFrameIdentity(high: 0x4D4F4952, low: identity)
     let metalStarted = DispatchTime.now().uptimeNanoseconds
+    let requestedDimensions = try PhysicalDimensions(
+        width: context.imported.device.nativeWidth,
+        height: context.imported.device.nativeHeight
+    )
     let job = try PhysicalMetalFrameEngine().submit(
         sourceACEScg: context.source,
         deviceSignal: context.deviceSignal,
@@ -824,10 +828,8 @@ private func renderMoireVariant(
         quality: .native,
         screenAmount: controller.effectiveScreenAmount,
         contributions: contributions,
-        requestedDimensions: try PhysicalDimensions(
-            width: context.imported.device.nativeWidth,
-            height: context.imported.device.nativeHeight
-        ),
+        requestedDimensions: requestedDimensions,
+        renderContext: .fullFrame(requestedDimensions),
         cancellationIdentity: frameIdentity,
         progressIdentity: frameIdentity,
         parameterRevision: identity,

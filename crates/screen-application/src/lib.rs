@@ -842,9 +842,9 @@ impl PhysicalRenderContext {
                     width: self.full_width,
                     height: self.full_height,
                 })
-            || self.scale_x != ExactPositiveRatio::ONE
-            || self.scale_y != ExactPositiveRatio::ONE
-            || self.pixel_aspect != ExactPositiveRatio::ONE
+            || self.scale_x.numerator != self.scale_x.denominator
+            || self.scale_y.numerator != self.scale_y.denominator
+            || self.pixel_aspect.numerator != self.pixel_aspect.denominator
         {
             return Err(ApplicationError::UnsupportedRenderContext);
         }

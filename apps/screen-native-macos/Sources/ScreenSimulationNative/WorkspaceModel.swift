@@ -3984,6 +3984,10 @@ final class WorkspaceModel: ObservableObject {
             timeNumerator: timeNumerator,
             timeDenominator: exactFrameRate.numerator
         )
+        let requestedDimensions = try physicalRequestedDimensions(
+            quality: quality,
+            device: resolvedDevice.definition
+        )
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
@@ -3994,10 +3998,8 @@ final class WorkspaceModel: ObservableObject {
             quality: quality,
             screenAmount: physicalModel.effectiveScreenAmount,
             contributions: contributions,
-            requestedDimensions: try physicalRequestedDimensions(
-                quality: quality,
-                device: resolvedDevice.definition
-            ),
+            requestedDimensions: requestedDimensions,
+            renderContext: .fullFrame(requestedDimensions),
             cancellationIdentity: identity,
             progressIdentity: identity,
             parameterRevision: physicalModel.parameterRevision,

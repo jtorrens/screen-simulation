@@ -2,6 +2,24 @@ import ScreenPhysicalBridge
 import Testing
 @testable import ScreenSimulationNative
 
+@Test func hostRenderContextPreservesExactWindowScaleAndPixelAspect() throws {
+    let dimensions = try PhysicalDimensions(width: 3840, height: 2160)
+    let context = PhysicalRenderContext.fullFrame(dimensions)
+    #expect(context.fullDimensions == dimensions)
+    #expect(context.window == PhysicalRenderWindow(
+        originX: 0,
+        originY: 0,
+        width: 3840,
+        height: 2160
+    ))
+    #expect(context.scaleX == .one)
+    #expect(context.scaleY == .one)
+    #expect(context.pixelAspect == .one)
+    #expect(throws: PhysicalContractError.self) {
+        try PhysicalExactPositiveRatio(numerator: 0, denominator: 1)
+    }
+}
+
 @Test func generalOverviewContainsEveryAuthoritativeContinuousCategoryWithoutCaptureMaster() {
     #expect(PhysicalStageID.generalOverviewContinuous == [
         .screen(.temporal),

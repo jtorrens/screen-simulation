@@ -283,6 +283,56 @@ struct PhysicalDimensions: Equatable, Sendable {
     }
 }
 
+struct PhysicalExactPositiveRatio: Equatable, Sendable {
+    static let one = PhysicalExactPositiveRatio(uncheckedNumerator: 1, denominator: 1)
+
+    let numerator: UInt32
+    let denominator: UInt32
+
+    init(numerator: UInt32, denominator: UInt32) throws {
+        guard numerator > 0, denominator > 0 else {
+            throw PhysicalContractError.invalidRenderContext
+        }
+        self.numerator = numerator
+        self.denominator = denominator
+    }
+
+    private init(uncheckedNumerator numerator: UInt32, denominator: UInt32) {
+        self.numerator = numerator
+        self.denominator = denominator
+    }
+}
+
+struct PhysicalRenderWindow: Equatable, Sendable {
+    let originX: UInt32
+    let originY: UInt32
+    let width: UInt32
+    let height: UInt32
+}
+
+struct PhysicalRenderContext: Equatable, Sendable {
+    let fullDimensions: PhysicalDimensions
+    let window: PhysicalRenderWindow
+    let scaleX: PhysicalExactPositiveRatio
+    let scaleY: PhysicalExactPositiveRatio
+    let pixelAspect: PhysicalExactPositiveRatio
+
+    static func fullFrame(_ dimensions: PhysicalDimensions) -> Self {
+        Self(
+            fullDimensions: dimensions,
+            window: PhysicalRenderWindow(
+                originX: 0,
+                originY: 0,
+                width: UInt32(dimensions.width),
+                height: UInt32(dimensions.height)
+            ),
+            scaleX: .one,
+            scaleY: .one,
+            pixelAspect: .one
+        )
+    }
+}
+
 struct PhysicalParameterHash: Equatable, Sendable {
     static let byteCount = Int(SCREEN_PHYSICAL_PARAMETER_HASH_SIZE)
     let bytes: [UInt8]
@@ -422,6 +472,7 @@ struct PhysicalFrameRequest: @unchecked Sendable {
     let screenAmount: Double
     let stageContributions: [PhysicalStageContribution]
     let requestedDimensions: PhysicalDimensions
+    let renderContext: PhysicalRenderContext
     let requestedIntermediate: PhysicalIntermediate
     let cancellationIdentity: PhysicalFrameIdentity
     let progressIdentity: PhysicalFrameIdentity
@@ -440,6 +491,7 @@ struct PhysicalFrameRequest: @unchecked Sendable {
         screenAmount: Double,
         stageContributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
+        renderContext: PhysicalRenderContext,
         requestedIntermediate: PhysicalIntermediate,
         cancellationIdentity: PhysicalFrameIdentity,
         progressIdentity: PhysicalFrameIdentity,
@@ -461,6 +513,7 @@ struct PhysicalFrameRequest: @unchecked Sendable {
         self.screenAmount = screenAmount
         self.stageContributions = stageContributions
         self.requestedDimensions = requestedDimensions
+        self.renderContext = renderContext
         self.requestedIntermediate = requestedIntermediate
         self.cancellationIdentity = cancellationIdentity
         self.progressIdentity = progressIdentity
@@ -519,6 +572,7 @@ enum PhysicalContractError: Error, Equatable {
     case invalidFrameIndex
     case invalidFrameTime
     case invalidDimensions
+    case invalidRenderContext
     case invalidParameterHash
     case invalidStageOrder
 }

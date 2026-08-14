@@ -471,6 +471,8 @@ private func submit(
     } else {
         orchestration = baseOrchestration
     }
+    let requestedDimensions = try dimensions
+        ?? PhysicalDimensions(width: 4, height: 4)
     return try PhysicalMetalFrameEngine().submit(
         sourceACEScg: fixture.source,
         deviceSignal: fixture.deviceSignal,
@@ -484,8 +486,8 @@ private func submit(
         quality: quality,
         screenAmount: screenAmount,
         contributions: contributions,
-        requestedDimensions: try dimensions
-            ?? PhysicalDimensions(width: 4, height: 4),
+        requestedDimensions: requestedDimensions,
+        renderContext: .fullFrame(requestedDimensions),
         cancellationIdentity: .init(high: identity, low: identity),
         progressIdentity: .init(high: identity, low: identity),
         parameterRevision: identity,

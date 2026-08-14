@@ -37,7 +37,7 @@ the physical Screen result, never either source encoding directly. The final
 physical output is linear ACEScg. Preview transforms, ColorSync, DeckLink and
 render ODTs are outside the physical engine and run only after its result.
 
-Version 15 is the only live binary contract and has two ordered domains:
+Version 16 is the only live binary contract and has two ordered domains:
 
 1. Screen: Emission, Subpixel Geometry, Panel Uniformity, Panel Light Spread,
    Temporal, Cover Glass, Environment and Cover Glow.
@@ -83,14 +83,18 @@ Per-stage diagnostics report the same stable identifiers.
 `ScreenPhysicalFrameRequestV2` names one selected rational frame, an immutable
 ordered timed input set, exact camera/screen pose tracks and shutter interval,
 resolved Device handle, complete `ScreenPhysicalPipelineSnapshot`, quality,
-Screen master and ordered stage contributions, requested dimensions, one
+Screen master and ordered stage contributions, requested dimensions, a required
+host render context containing full-raster dimensions, bounded render window,
+exact rational X/Y render scale and exact rational pixel aspect, one
 typed intermediate selector, cancellation/progress identities and the exact
 parameter revision/hash. The snapshot materializes cover, procedural
 environment, resolved scene/camera/lens, shutter/readout/motion, sensor/noise
 and RAW development. Panel emission, the complete fixed spatial-uniformity profile, temporal
 behavior and complete light-spread radii and weights are materialized by the Device handle. The
 live Device layout is `ScreenDeviceParametersV3`; catalog ABI 7 and test-authoring ABI 28 are
-strict current-only companions to physical-frame ABI 15.
+strict current-only companions to physical-frame ABI 16. The current executor
+accepts only the complete window, unit scale and square pixels; every other valid
+context is rejected as unsupported rather than ignored or coerced.
 
 `ScreenPhysicalFrameResultV2` returns one borrowed texture and states which
 typed intermediate it contains, plus native/effective dimensions, calculated

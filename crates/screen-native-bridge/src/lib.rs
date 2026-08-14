@@ -346,7 +346,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 15;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 16;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -471,6 +471,18 @@ pub struct ScreenPhysicalFrameRequestV2 {
     stage_contribution_count: usize,
     requested_width: u32,
     requested_height: u32,
+    render_full_width: u32,
+    render_full_height: u32,
+    render_window_x: u32,
+    render_window_y: u32,
+    render_window_width: u32,
+    render_window_height: u32,
+    render_scale_x_numerator: u32,
+    render_scale_x_denominator: u32,
+    render_scale_y_numerator: u32,
+    render_scale_y_denominator: u32,
+    pixel_aspect_numerator: u32,
+    pixel_aspect_denominator: u32,
     requested_intermediate: u32,
     cancellation_identity: ScreenPhysicalIdentity128,
     progress_identity: ScreenPhysicalIdentity128,
@@ -1171,6 +1183,12 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     }
     // SAFETY: the non-null request is immutable for this call.
     let request = unsafe { &*request };
+    let render_window_end_x = request
+        .render_window_x
+        .checked_add(request.render_window_width);
+    let render_window_end_y = request
+        .render_window_y
+        .checked_add(request.render_window_height);
     if request.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
         || request.frame_index < 0
         || request.timed_inputs.is_null()
@@ -1183,6 +1201,20 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         || quality(request.quality).is_none()
         || request.requested_width == 0
         || request.requested_height == 0
+        || request.render_full_width == 0
+        || request.render_full_height == 0
+        || request.render_window_width == 0
+        || request.render_window_height == 0
+        || request.render_scale_x_numerator == 0
+        || request.render_scale_x_denominator == 0
+        || request.render_scale_y_numerator == 0
+        || request.render_scale_y_denominator == 0
+        || request.pixel_aspect_numerator == 0
+        || request.pixel_aspect_denominator == 0
+        || render_window_end_x.is_none()
+        || render_window_end_y.is_none()
+        || render_window_end_x.is_some_and(|end| end > request.render_full_width)
+        || render_window_end_y.is_some_and(|end| end > request.render_full_height)
         || !request.screen_amount.is_finite()
         || !(0.0..=4.0).contains(&request.screen_amount)
         || request.stage_contributions.is_null()
@@ -1191,6 +1223,24 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             set_error(
                 error_message,
                 b"invalid or unsupported physical frame request\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
+    if request.render_full_width != request.requested_width
+        || request.render_full_height != request.requested_height
+        || request.render_window_x != 0
+        || request.render_window_y != 0
+        || request.render_window_width != request.render_full_width
+        || request.render_window_height != request.render_full_height
+        || request.render_scale_x_numerator != request.render_scale_x_denominator
+        || request.render_scale_y_numerator != request.render_scale_y_denominator
+        || request.pixel_aspect_numerator != request.pixel_aspect_denominator
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"unsupported render window, scale, or pixel aspect\0",
             )
         };
         return std::ptr::null_mut();
@@ -4944,7 +4994,7 @@ mod tests {
         contributions[15].discrete_enabled = true;
         assert!(contribution_amounts(&contributions).is_some());
         let identity = ScreenPhysicalIdentity128 { high: 7, low: 9 };
-        let request = ScreenPhysicalFrameRequestV2 {
+        let mut request = ScreenPhysicalFrameRequestV2 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             frame_index: 0,
             timed_inputs: input,
@@ -4963,12 +5013,36 @@ mod tests {
             stage_contribution_count: contributions.len(),
             requested_width: 4,
             requested_height: 2,
+            render_full_width: 4,
+            render_full_height: 2,
+            render_window_x: 0,
+            render_window_y: 0,
+            render_window_width: 4,
+            render_window_height: 2,
+            render_scale_x_numerator: 1,
+            render_scale_x_denominator: 1,
+            render_scale_y_numerator: 1,
+            render_scale_y_denominator: 1,
+            pixel_aspect_numerator: 1,
+            pixel_aspect_denominator: 1,
             requested_intermediate: PhysicalIntermediate::DevelopedAcesCg as u32,
             cancellation_identity: identity,
             progress_identity: ScreenPhysicalIdentity128 { high: 1, low: 2 },
             parameter_revision: 42,
             parameter_hash: [0x5a; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
         };
+        request.render_window_width = 2;
+        let mut unsupported_error = std::ptr::null();
+        let unsupported_job = unsafe {
+            screen_physical_frame_submit(&request, &mut unsupported_error)
+        };
+        assert!(unsupported_job.is_null());
+        assert!(
+            unsafe { std::ffi::CStr::from_ptr(unsupported_error) }
+                .to_string_lossy()
+                .contains("unsupported render window")
+        );
+        request.render_window_width = 4;
         let mut error = std::ptr::null();
         let job = unsafe { screen_physical_frame_submit(&request, &mut error) };
         let message = if error.is_null() {

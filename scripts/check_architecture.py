@@ -366,6 +366,29 @@ def validate_native_model_authority() -> None:
             raise ValidationError(
                 f"CPU physical publication is not a typed artifact: {required}"
             )
+
+    physical_header = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "render_full_width",
+        "render_full_height",
+        "render_window_x",
+        "render_window_y",
+        "render_window_width",
+        "render_window_height",
+        "render_scale_x_numerator",
+        "render_scale_x_denominator",
+        "render_scale_y_numerator",
+        "render_scale_y_denominator",
+        "pixel_aspect_numerator",
+        "pixel_aspect_denominator",
+    ):
+        if required not in physical_header:
+            raise ValidationError(
+                f"physical host ABI omits explicit render context field: {required}"
+            )
     if "pub struct PhysicalPipelineCpuResult {\n    pub width:" in application_pipeline:
         raise ValidationError("CPU physical publication exposes an untyped raster result")
     if "pub struct PhysicalPipelineCpuResult {\n    pub acescg:" in application_pipeline:

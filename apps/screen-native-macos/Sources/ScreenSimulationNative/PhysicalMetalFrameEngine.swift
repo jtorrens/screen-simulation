@@ -189,6 +189,7 @@ final class PhysicalMetalFrameEngine {
         screenAmount: Double,
         contributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
+        renderContext: PhysicalRenderContext,
         cancellationIdentity: PhysicalFrameIdentity,
         progressIdentity: PhysicalFrameIdentity,
         parameterRevision: UInt64,
@@ -314,6 +315,18 @@ final class PhysicalMetalFrameEngine {
         raw.screen_amount = Float(screenAmount)
         raw.requested_width = UInt32(requestedDimensions.width)
         raw.requested_height = UInt32(requestedDimensions.height)
+        raw.render_full_width = UInt32(renderContext.fullDimensions.width)
+        raw.render_full_height = UInt32(renderContext.fullDimensions.height)
+        raw.render_window_x = renderContext.window.originX
+        raw.render_window_y = renderContext.window.originY
+        raw.render_window_width = renderContext.window.width
+        raw.render_window_height = renderContext.window.height
+        raw.render_scale_x_numerator = renderContext.scaleX.numerator
+        raw.render_scale_x_denominator = renderContext.scaleX.denominator
+        raw.render_scale_y_numerator = renderContext.scaleY.numerator
+        raw.render_scale_y_denominator = renderContext.scaleY.denominator
+        raw.pixel_aspect_numerator = renderContext.pixelAspect.numerator
+        raw.pixel_aspect_denominator = renderContext.pixelAspect.denominator
         raw.requested_intermediate = requestedIntermediate.rawValue
         raw.cancellation_identity = ScreenPhysicalIdentity128(
             high: cancellationIdentity.high,
