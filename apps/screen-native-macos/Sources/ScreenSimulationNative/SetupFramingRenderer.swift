@@ -460,10 +460,12 @@ final class SetupFramingRenderer {
         return v + q.w * t + cross(q.xyz, t);
     }
 
-    inline bool camera_uv(uint2 p, constant SetupParameters& s, thread float2& uv) {
+    inline bool camera_uv_at(
+        float2 preview_sample, constant SetupParameters& s, thread float2& uv
+    ) {
         const float2 output_size = float2(s.raster.xy);
         const float2 camera_size = float2(s.raster.zw);
-        const float2 output_pixel = (float2(p) + 0.5f)
+        const float2 output_pixel = preview_sample
             * output_size / float2(s.preview_raster.xy) - 0.5f;
         float2 camera_pixel;
         if (s.modes.y == 0 || s.modes.y == 2) {
@@ -479,6 +481,10 @@ final class SetupFramingRenderer {
         if (any(camera_pixel < -0.5f) || any(camera_pixel >= camera_size - 0.5f)) return false;
         uv = (camera_pixel + 0.5f) / camera_size;
         return true;
+    }
+
+    inline bool camera_uv(uint2 p, constant SetupParameters& s, thread float2& uv) {
+        return camera_uv_at(float2(p) + 0.5f, s, uv);
     }
 
     inline bool delivery_uv(float2 camera_uv, constant SetupParameters& s, thread float2& uv) {
@@ -686,6 +692,31 @@ final class SetupFramingRenderer {
         return all(uv >= 0.0f) && all(uv <= 1.0f);
     }
 
+    inline float device_coverage(
+        uint2 p, bool apply_lens_distortion, constant SetupParameters& s
+    ) {
+        constexpr float OFFSETS[4] = {0.125f, 0.375f, 0.625f, 0.875f};
+        float covered = 0.0f;
+        for (uint y = 0; y < 4; ++y) {
+            for (uint x = 0; x < 4; ++x) {
+                float2 camera;
+                float2 panel;
+                if (!camera_uv_at(float2(p) + float2(OFFSETS[x], OFFSETS[y]), s, camera)) {
+                    continue;
+                }
+                bool valid;
+                if (apply_lens_distortion) {
+                    float unused_depth;
+                    valid = focus_screen_sample(camera, s, panel, unused_depth);
+                } else {
+                    valid = screen_uv(camera, s, panel);
+                }
+                if (valid && all(panel >= 0.0f) && all(panel <= 1.0f)) covered += 1.0f;
+            }
+        }
+        return covered * (1.0f / 16.0f);
+    }
+
     kernel void setup_framing(
         texture2d<float, access::sample> source [[texture(0)]],
         texture2d<float, access::write> output [[texture(1)]],
@@ -708,14 +739,15 @@ final class SetupFramingRenderer {
             float2 panel;
             float unused_depth;
             float2 delivery;
-            if (!focus_screen_sample(camera, s, panel, unused_depth)
-                || any(panel < 0.0f) || any(panel > 1.0f)
-                || !delivery_uv(camera, s, delivery)) {
+            const bool center_valid = focus_screen_sample(camera, s, panel, unused_depth)
+                && delivery_uv(camera, s, delivery);
+            const float coverage = device_coverage(p, true, s);
+            if (!center_valid || coverage == 0.0f) {
                 output.write(background, p); return;
             }
             float4 value = source.sample(linear_sampler, delivery);
             value.a = 1.0f;
-            output.write(value, p);
+            output.write(mix(background, value, coverage), p);
             return;
         }
         if (s.modes.w == 1u) {
@@ -760,17 +792,20 @@ final class SetupFramingRenderer {
             output.write(background, p); return;
         }
         const bool inside = all(panel >= 0.0f) && all(panel <= 1.0f);
-        if (!inside) { output.write(background, p); return; }
+        const float coverage = (s.modes.w == 3u)
+            ? device_coverage(p, true, s)
+            : (s.modes.w == 0u ? device_coverage(p, false, s) : (inside ? 1.0f : 0.0f));
+        if (coverage == 0.0f) { output.write(background, p); return; }
 
-        const float2 uv = source_uv(panel, s);
+        const float2 uv = source_uv(clamp(panel, 0.0f, 1.0f), s);
         if (any(uv < 0.0f) || any(uv > 1.0f)) {
             output.write(float4(0, 0, 0, 1), p);
             return;
         }
         float4 value = source.sample(linear_sampler, uv);
         value.a = 1.0f;
-        if (s.modes.w == 3u) value = mix(background, value, 0.72f);
-        output.write(value, p);
+        const float opacity = coverage * (s.modes.w == 3u ? 0.72f : 1.0f);
+        output.write(mix(background, value, opacity), p);
     }
     """#
 }

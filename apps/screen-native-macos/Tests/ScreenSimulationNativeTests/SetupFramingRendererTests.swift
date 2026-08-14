@@ -224,11 +224,19 @@ import Testing
     }
     let referenceColor = SIMD3(referenceValues[0], referenceValues[1], referenceValues[2])
     let cameraColor = SIMD3(cameraValues[0], cameraValues[1], cameraValues[2])
+    let cameraDelta = cameraColor - referenceColor
+    let cameraDeltaSquared = simd_length_squared(cameraDelta)
     #expect(composite.frame.width == 320)
     #expect(composite.frame.height == 180)
     #expect(compositePixels.contains { simd_distance($0, referenceColor) < 0.001 })
     #expect(compositePixels.contains { simd_distance($0, cameraColor) < 0.001 })
     #expect(compositePixels.contains { simd_length($0) < 0.001 })
+    #expect(compositePixels.contains { pixel in
+        let amount = simd_dot(pixel - referenceColor, cameraDelta) / cameraDeltaSquared
+        let reconstructed = referenceColor + cameraDelta * amount
+        return amount > 0.01 && amount < 0.99
+            && simd_distance(pixel, reconstructed) < 0.002
+    })
 }
 
 @Test @MainActor func setupFramingRecomputesDeliveryPlacementWithoutLosingTheBoundary() throws {
