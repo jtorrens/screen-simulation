@@ -1,6 +1,7 @@
 import StudioColor
 import Testing
 import AppKit
+import Metal
 
 @Test func buildIdentityIsPinned() {
     #expect(StudioColorBuildIdentity.ocioVersion == "2.5.2")
@@ -245,6 +246,47 @@ import AppKit
         let cpu = try pipeline.cpuOracleRGBA8(cpuFrame, output: output)
         #expect(zip(gpu, cpu).map { abs(Int($0) - Int($1)) }.max() ?? 0 <= 1)
     }
+}
+
+@Test @MainActor func returnedMetalInputFrameIsReadyForAnIndependentQueue() throws {
+    let display = try StudioColorMetalDisplay()
+    let input = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescg" })
+    let frame = try display.makeACEScgFrame(
+        width: 64,
+        height: 64,
+        encodedRGBA: [Float](repeating: 1, count: 64 * 64 * 4),
+        input: input,
+        alpha: .straight
+    )
+    let rowBytes = 64 * 4 * MemoryLayout<Float16>.size
+    let alignedRowBytes = (rowBytes + 255) & ~255
+    guard let queue = frame.texture.device.makeCommandQueue(),
+          let command = queue.makeCommandBuffer(),
+          let encoder = command.makeBlitCommandEncoder(),
+          let buffer = frame.texture.device.makeBuffer(
+              length: alignedRowBytes * 64, options: .storageModeShared
+          )
+    else { throw StudioColorMetalError.unavailableQueue }
+    encoder.copy(
+        from: frame.texture,
+        sourceSlice: 0,
+        sourceLevel: 0,
+        sourceOrigin: .init(x: 0, y: 0, z: 0),
+        sourceSize: .init(width: 64, height: 64, depth: 1),
+        to: buffer,
+        destinationOffset: 0,
+        destinationBytesPerRow: alignedRowBytes,
+        destinationBytesPerImage: alignedRowBytes * 64
+    )
+    encoder.endEncoding()
+    command.commit()
+    command.waitUntilCompleted()
+    #expect(command.status == .completed)
+    let firstPixel = buffer.contents().assumingMemoryBound(to: UInt16.self)
+    #expect(abs(Float(Float16(bitPattern: firstPixel[0])) - 1) <= 0.001)
+    #expect(abs(Float(Float16(bitPattern: firstPixel[1])) - 1) <= 0.001)
+    #expect(abs(Float(Float16(bitPattern: firstPixel[2])) - 1) <= 0.001)
+    #expect(abs(Float(Float16(bitPattern: firstPixel[3])) - 1) <= 0.001)
 }
 
 private func assertDisplayRoundtrip(

@@ -706,6 +706,14 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         encoder.endEncoding()
         command.commit()
+        // The returned frame is a public boundary consumed by queues owned by
+        // other adapters (Setup, the physical renderer and output). Metal only
+        // orders work within one command queue, so returning before this IDT
+        // completes lets an independent queue sample an uninitialised texture.
+        command.waitUntilCompleted()
+        guard command.status == .completed else {
+            throw StudioColorMetalError.commandFailure
+        }
         return StudioColorMetalFrame(texture: target, submittedAt: submittedAt)
     }
 
