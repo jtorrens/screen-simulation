@@ -105,9 +105,43 @@ import Testing
     #expect(frame.width == 320)
     #expect(frame.height == 180)
     #expect(result.boundary.count == 4)
+    #expect(result.sensorGateBoundary.count == 4)
     #expect(result.corners.count == 4)
     #expect(result.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
     #expect(sourceInterior.count > 1_000)
+}
+
+@Test @MainActor func setupSensorGateShowsFitFillCropAndOneToOneInsideTheDeliveryRaster() {
+    let fit = SetupFramingRenderer.sensorGateBoundary(
+        cameraWidth: 4_032, cameraHeight: 3_024,
+        deliveryWidth: 3_840, deliveryHeight: 2_160,
+        deliveryPlacement: 0, outputWidth: 3_840, outputHeight: 2_160
+    )
+    #expect(fit.count == 4)
+    #expect(abs(fit[0].x - 479.5) < 0.001)
+    #expect(abs(fit[0].y - (-0.5)) < 0.001)
+    #expect(abs(fit[2].x - 3_359.5) < 0.001)
+    #expect(abs(fit[2].y - 2_159.5) < 0.001)
+
+    let fillCrop = SetupFramingRenderer.sensorGateBoundary(
+        cameraWidth: 4_032, cameraHeight: 3_024,
+        deliveryWidth: 3_840, deliveryHeight: 2_160,
+        deliveryPlacement: 2, outputWidth: 3_840, outputHeight: 2_160
+    )
+    #expect(abs(fillCrop[0].x - (-0.5)) < 0.001)
+    #expect(abs(fillCrop[0].y - (-360.5)) < 0.001)
+    #expect(abs(fillCrop[2].x - 3_839.5) < 0.001)
+    #expect(abs(fillCrop[2].y - 2_519.5) < 0.001)
+
+    let oneToOne = SetupFramingRenderer.sensorGateBoundary(
+        cameraWidth: 1_920, cameraHeight: 1_080,
+        deliveryWidth: 3_840, deliveryHeight: 2_160,
+        deliveryPlacement: 1, outputWidth: 3_840, outputHeight: 2_160
+    )
+    #expect(abs(oneToOne[0].x - 959.5) < 0.001)
+    #expect(abs(oneToOne[0].y - 539.5) < 0.001)
+    #expect(abs(oneToOne[2].x - 2_879.5) < 0.001)
+    #expect(abs(oneToOne[2].y - 1_619.5) < 0.001)
 }
 
 @Test @MainActor func referenceMatchSetupKeepsTheReferenceBehindTheRigidDevice() throws {

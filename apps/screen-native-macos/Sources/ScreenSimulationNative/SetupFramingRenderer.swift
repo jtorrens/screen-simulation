@@ -23,6 +23,8 @@ final class SetupFramingRenderer {
         let frame: StudioColorMetalFrame
         /// Complete projected perimeter used by the red diagnostic stroke.
         let boundary: [CGPoint]
+        /// Capture-sensor gate mapped into the Delivery Raster.
+        let sensorGateBoundary: [CGPoint]
         /// Four rigid Device corners, clockwise from top-left.
         let corners: [CGPoint]
     }
@@ -216,7 +218,21 @@ final class SetupFramingRenderer {
             applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
             sampleDistortedEdges: false
         )
-        return Result(frame: frame, boundary: boundary, corners: corners)
+        let sensorGateBoundary = Self.sensorGateBoundary(
+            cameraWidth: Int(cameraRaster.nativeWidth),
+            cameraHeight: Int(cameraRaster.nativeHeight),
+            deliveryWidth: deliveryWidth,
+            deliveryHeight: deliveryHeight,
+            deliveryPlacement: deliveryPlacement,
+            outputWidth: outputWidth,
+            outputHeight: outputHeight
+        )
+        return Result(
+            frame: frame,
+            boundary: boundary,
+            sensorGateBoundary: sensorGateBoundary,
+            corners: corners
+        )
     }
 
     func renderReferenceMatch(
@@ -338,6 +354,55 @@ final class SetupFramingRenderer {
         let xyz = SIMD3(q[0], q[1], q[2])
         let t = 2 * simd_cross(xyz, vector)
         return vector + q[3] * t + simd_cross(xyz, t)
+    }
+
+    static func sensorGateBoundary(
+        cameraWidth: Int,
+        cameraHeight: Int,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        deliveryPlacement: UInt32,
+        outputWidth: Int,
+        outputHeight: Int
+    ) -> [CGPoint] {
+        guard cameraWidth > 0, cameraHeight > 0,
+              deliveryWidth > 0, deliveryHeight > 0,
+              outputWidth > 0, outputHeight > 0
+        else { return [] }
+
+        let cameraSize = SIMD2<Double>(Double(cameraWidth), Double(cameraHeight))
+        let deliverySize = SIMD2<Double>(Double(deliveryWidth), Double(deliveryHeight))
+        let scale: Double
+        let offset: SIMD2<Double>
+        switch deliveryPlacement {
+        case 0, 2:
+            scale = deliveryPlacement == 0
+                ? min(deliverySize.x / cameraSize.x, deliverySize.y / cameraSize.y)
+                : max(deliverySize.x / cameraSize.x, deliverySize.y / cameraSize.y)
+            offset = (deliverySize - cameraSize * scale) * 0.5
+        case 1:
+            scale = 1
+            // Match the integer-centered placement used by the Metal evaluator.
+            offset = SIMD2(
+                Double((deliveryWidth - cameraWidth) / 2),
+                Double((deliveryHeight - cameraHeight) / 2)
+            )
+        default:
+            return []
+        }
+
+        let previewScale = SIMD2<Double>(
+            Double(outputWidth) / Double(deliveryWidth),
+            Double(outputHeight) / Double(deliveryHeight)
+        )
+        let minimum = offset * previewScale - 0.5
+        let maximum = (offset + cameraSize * scale) * previewScale - 0.5
+        return [
+            CGPoint(x: minimum.x, y: minimum.y),
+            CGPoint(x: maximum.x, y: minimum.y),
+            CGPoint(x: maximum.x, y: maximum.y),
+            CGPoint(x: minimum.x, y: maximum.y),
+        ]
     }
 
     private static func projectedBoundary(

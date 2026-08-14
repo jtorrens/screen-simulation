@@ -198,6 +198,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var status = "Preparado"
     @Published var metalFrame: StudioColorMetalFrame?
     @Published private(set) var setupDeviceBoundary: [CGPoint] = []
+    @Published private(set) var setupSensorGateBoundary: [CGPoint] = []
     @Published private(set) var referenceFrameName: String?
     @Published private(set) var referenceFrameDetail: String?
     @Published private(set) var referenceInputTransform = StudioColorInputTransform.catalog.first {
@@ -3189,6 +3190,7 @@ final class WorkspaceModel: ObservableObject {
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
+            setupSensorGateBoundary = result.sensorGateBoundary
             if interactiveViewportSize == nil {
                 monitorOutput.update(frame: result.frame, display: metalDisplay)
                 let elapsedMilliseconds = (CACurrentMediaTime() - started) * 1_000
@@ -3197,6 +3199,7 @@ final class WorkspaceModel: ObservableObject {
             }
         } catch {
             setupDeviceBoundary = []
+            setupSensorGateBoundary = []
             errorMessage = error.localizedDescription
         }
     }
@@ -3233,6 +3236,7 @@ final class WorkspaceModel: ObservableObject {
                 )
             }
             setupDeviceBoundary = result.boundary
+            setupSensorGateBoundary = result.sensorGateBoundary
             // Publish the texture last. SwiftUI may render immediately on any
             // @Published mutation; by making the frame the commit marker the
             // Viewer can never observe a new texture with prior/empty handles.
@@ -3268,6 +3272,7 @@ final class WorkspaceModel: ObservableObject {
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
+            setupSensorGateBoundary = result.sensorGateBoundary
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -3534,10 +3539,12 @@ final class WorkspaceModel: ObservableObject {
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
+            setupSensorGateBoundary = result.sensorGateBoundary
             status = "Setup entorno · reflexión ideal 100% · \(width)×\(height)"
             physicalPublicationSummary = "Setup entorno · espejo ideal sin cristal, panel ni cámara"
         } catch {
             setupDeviceBoundary = []
+            setupSensorGateBoundary = []
             errorMessage = error.localizedDescription
         }
     }
@@ -3574,12 +3581,14 @@ final class WorkspaceModel: ObservableObject {
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
+            setupSensorGateBoundary = result.sensorGateBoundary
             if interactiveViewportSize == nil {
                 status = "Setup foco · blanco máximo foco · retícula y borde ópticos"
                 physicalPublicationSummary = "Setup foco · círculo de confusión + distorsión de lente"
             }
         } catch {
             setupDeviceBoundary = []
+            setupSensorGateBoundary = []
             errorMessage = error.localizedDescription
         }
     }

@@ -1733,6 +1733,11 @@ struct ContentView: View {
                                 || model.physicalModel.quality == .environmentSetup
                                 || model.physicalModel.quality == .focusSetup
                             ? model.setupDeviceBoundary : [],
+                        sensorGateBoundary: model.physicalModel.quality == .setup
+                                || model.physicalModel.quality == .environmentSetup
+                                || model.physicalModel.quality == .focusSetup
+                                || model.referenceMatchEnabled
+                            ? model.setupSensorGateBoundary : [],
                         referenceProjectedCorners: model.referenceMatchEnabled
                             ? model.referenceMatchProjectedCorners : [],
                         referenceTargetCorners: model.referenceMatchEnabled
@@ -1863,6 +1868,7 @@ struct MetalPreview: NSViewRepresentable {
     let fitted: Bool
     let metadataLines: [String]
     let deviceBoundary: [CGPoint]
+    let sensorGateBoundary: [CGPoint]
     let referenceProjectedCorners: [CGPoint]
     let referenceTargetCorners: [CGPoint]
     let reflectionHandles: [CGPoint]
@@ -1905,6 +1911,7 @@ struct MetalPreview: NSViewRepresentable {
             fitted: fitted,
             metadataLines: metadataLines,
             deviceBoundary: deviceBoundary,
+            sensorGateBoundary: sensorGateBoundary,
             referenceProjectedCorners: referenceProjectedCorners,
             referenceTargetCorners: referenceTargetCorners,
             reflectionHandles: reflectionHandles,
@@ -2017,6 +2024,7 @@ final class MetalPreviewContainer: NSView {
     private let metadataLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
+    private let sensorGateBoundaryLayer = CAShapeLayer()
     private let referenceProjectionLayer = CAShapeLayer()
     private let referenceTargetBoundaryLayer = CAShapeLayer()
     private let referenceTargetLayer = CAShapeLayer()
@@ -2033,6 +2041,7 @@ final class MetalPreviewContainer: NSView {
         return layer
     }
     private var deviceBoundary: [CGPoint] = []
+    private var sensorGateBoundary: [CGPoint] = []
     private var referenceProjectedCorners: [CGPoint] = []
     private var referenceTargetCorners: [CGPoint] = []
     private var reflectionHandles: [CGPoint] = []
@@ -2074,6 +2083,12 @@ final class MetalPreviewContainer: NSView {
         deviceBoundaryLayer.lineWidth = 1
         deviceBoundaryLayer.zPosition = 110
         layer?.addSublayer(deviceBoundaryLayer)
+        sensorGateBoundaryLayer.fillColor = NSColor.clear.cgColor
+        sensorGateBoundaryLayer.strokeColor = NSColor.systemCyan.cgColor
+        sensorGateBoundaryLayer.lineWidth = 1
+        sensorGateBoundaryLayer.lineDashPattern = [6, 4]
+        sensorGateBoundaryLayer.zPosition = 109
+        layer?.addSublayer(sensorGateBoundaryLayer)
         referenceProjectionLayer.fillColor = NSColor.clear.cgColor
         referenceProjectionLayer.strokeColor = NSColor.systemRed.cgColor
         referenceProjectionLayer.lineWidth = 1.5
@@ -2149,6 +2164,7 @@ final class MetalPreviewContainer: NSView {
         fitted: Bool,
         metadataLines: [String],
         deviceBoundary: [CGPoint],
+        sensorGateBoundary: [CGPoint],
         referenceProjectedCorners: [CGPoint],
         referenceTargetCorners: [CGPoint],
         reflectionHandles: [CGPoint],
@@ -2164,6 +2180,7 @@ final class MetalPreviewContainer: NSView {
         metadataLabel.stringValue = metadataLines.joined(separator: "\n")
         metadataLabel.isHidden = metadataLines.isEmpty
         self.deviceBoundary = deviceBoundary
+        self.sensorGateBoundary = sensorGateBoundary
         self.referenceProjectedCorners = referenceProjectedCorners
         self.referenceTargetCorners = referenceTargetCorners
         self.reflectionHandles = reflectionHandles
@@ -2498,6 +2515,18 @@ final class MetalPreviewContainer: NSView {
         if !deviceBoundary.isEmpty { boundaryPath.closeSubpath() }
         deviceBoundaryLayer.frame = bounds
         deviceBoundaryLayer.path = boundaryPath
+        let sensorGatePath = CGMutablePath()
+        for (index, point) in sensorGateBoundary.enumerated() {
+            let displayedPoint = CGPoint(
+                x: displayedOriginX + point.x * scale,
+                y: displayedOriginY + (CGFloat(textureHeight) - point.y) * scale
+            )
+            if index == 0 { sensorGatePath.move(to: displayedPoint) }
+            else { sensorGatePath.addLine(to: displayedPoint) }
+        }
+        if !sensorGateBoundary.isEmpty { sensorGatePath.closeSubpath() }
+        sensorGateBoundaryLayer.frame = bounds
+        sensorGateBoundaryLayer.path = sensorGatePath
         let projectedHandles = CGMutablePath()
         for point in referenceProjectedCorners {
             let displayedPoint = displayedPoint(forRaster: point)
