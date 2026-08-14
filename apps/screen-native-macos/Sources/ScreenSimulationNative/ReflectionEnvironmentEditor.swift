@@ -39,6 +39,30 @@ struct AuthoredReflectionEmitter: Identifiable, Equatable, Sendable {
     var sunAngularDiameterDegrees: Double
 }
 
+enum ReflectionEditorRasterMapping {
+    static func presentationPoints(
+        _ points: [CGPoint], deliverySize: CGSize, previewSize: CGSize
+    ) -> [CGPoint] {
+        guard deliverySize.width > 0, deliverySize.height > 0 else { return [] }
+        return points.map {
+            CGPoint(
+                x: $0.x * previewSize.width / deliverySize.width,
+                y: $0.y * previewSize.height / deliverySize.height
+            )
+        }
+    }
+
+    static func deliveryPoint(
+        _ point: CGPoint, deliverySize: CGSize, previewSize: CGSize
+    ) -> CGPoint {
+        guard previewSize.width > 0, previewSize.height > 0 else { return .zero }
+        return CGPoint(
+            x: point.x * deliverySize.width / previewSize.width,
+            y: point.y * deliverySize.height / previewSize.height
+        )
+    }
+}
+
 enum ReflectionEnvironmentEditorError: LocalizedError {
     case noEmitters
     case invalidGeometry
@@ -205,6 +229,10 @@ private struct ReflectionEnvironmentPanel: View {
                         }
                     }
                 }
+                Text("El contorno continuo marca el tamaño nominal del reflejo; el discontinuo muestra hasta dónde llega su transición suave.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Button("Eliminar fuente", role: .destructive) {
                     model.deleteSelectedReflectionEmitter()
                 }
@@ -235,11 +263,23 @@ private struct ReflectionEnvironmentPanel: View {
         _ label: String, value: Double, range: ClosedRange<Double>, unit: String,
         onChange: @escaping (Double) -> Void
     ) -> some View {
-        GridRow {
+        let binding = Binding(
+            get: { value },
+            set: { onChange(min(range.upperBound, max(range.lowerBound, $0))) }
+        )
+        let step = (range.upperBound - range.lowerBound) * 0.05
+        return GridRow {
             Text(label)
-            Slider(value: Binding(get: { value }, set: onChange), in: range)
-            Text(value.formatted(.number.precision(.fractionLength(0 ... 2))))
-                .monospacedDigit().frame(width: 58, alignment: .trailing)
+            Slider(value: binding, in: range, step: step)
+            TextField(
+                label,
+                value: binding,
+                format: .number.precision(.fractionLength(0 ... 2))
+            )
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.trailing)
+            .monospacedDigit()
+            .frame(width: 72)
             Text(unit).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
         }
     }

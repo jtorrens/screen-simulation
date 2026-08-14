@@ -144,6 +144,25 @@ import Testing
     #expect(abs(oneToOne[2].y - 1_619.5) < 0.001)
 }
 
+@Test func reflectionAuthoringKeepsDeliveryRasterGeometryAcrossPreviewResolution() {
+    let delivery = CGSize(width: 3_840, height: 2_160)
+    let preview = CGSize(width: 1_920, height: 1_080)
+    let authored = [
+        CGPoint(x: 960, y: 540),
+        CGPoint(x: 1_440, y: 540),
+    ]
+    let presented = ReflectionEditorRasterMapping.presentationPoints(
+        authored, deliverySize: delivery, previewSize: preview
+    )
+    #expect(presented == [CGPoint(x: 480, y: 270), CGPoint(x: 720, y: 270)])
+    for index in presented.indices {
+        let recovered = ReflectionEditorRasterMapping.deliveryPoint(
+            presented[index], deliverySize: delivery, previewSize: preview
+        )
+        #expect(recovered == authored[index])
+    }
+}
+
 @Test @MainActor func referenceMatchSetupKeepsTheReferenceBehindTheRigidDevice() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {

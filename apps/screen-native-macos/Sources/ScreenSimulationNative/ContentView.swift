@@ -1743,6 +1743,7 @@ struct ContentView: View {
                         referenceTargetCorners: model.referenceMatchEnabled
                             ? model.referenceMatchCorners : [],
                         reflectionHandles: model.selectedReflectionEmitterHandles,
+                        reflectionSoftnessPixels: model.selectedReflectionEmitterSoftnessPixels,
                         reflectionShapeClosed: model.selectedReflectionEmitter?.kind == .window,
                         reflectionShapeCircular: model.selectedReflectionEmitter?.kind == .practical,
                         cameraNavigationEnabled: !model.referenceMatchEnabled
@@ -1872,6 +1873,7 @@ struct MetalPreview: NSViewRepresentable {
     let referenceProjectedCorners: [CGPoint]
     let referenceTargetCorners: [CGPoint]
     let reflectionHandles: [CGPoint]
+    let reflectionSoftnessPixels: CGFloat
     let reflectionShapeClosed: Bool
     let reflectionShapeCircular: Bool
     let cameraNavigationEnabled: Bool
@@ -1915,6 +1917,7 @@ struct MetalPreview: NSViewRepresentable {
             referenceProjectedCorners: referenceProjectedCorners,
             referenceTargetCorners: referenceTargetCorners,
             reflectionHandles: reflectionHandles,
+            reflectionSoftnessPixels: reflectionSoftnessPixels,
             reflectionShapeClosed: reflectionShapeClosed,
             reflectionShapeCircular: reflectionShapeCircular,
             cameraNavigationEnabled: cameraNavigationEnabled,
@@ -2029,6 +2032,7 @@ final class MetalPreviewContainer: NSView {
     private let referenceTargetBoundaryLayer = CAShapeLayer()
     private let referenceTargetLayer = CAShapeLayer()
     private let reflectionBoundaryLayer = CAShapeLayer()
+    private let reflectionSoftnessBoundaryLayer = CAShapeLayer()
     private let reflectionHandleLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
         let layer = CATextLayer()
@@ -2045,6 +2049,7 @@ final class MetalPreviewContainer: NSView {
     private var referenceProjectedCorners: [CGPoint] = []
     private var referenceTargetCorners: [CGPoint] = []
     private var reflectionHandles: [CGPoint] = []
+    private var reflectionSoftnessPixels: CGFloat = 0
     private var reflectionShapeClosed = false
     private var reflectionShapeCircular = false
     private var referenceCornerDragIndex: Int?
@@ -2109,6 +2114,12 @@ final class MetalPreviewContainer: NSView {
         reflectionBoundaryLayer.lineWidth = 1.5
         reflectionBoundaryLayer.zPosition = 122
         layer?.addSublayer(reflectionBoundaryLayer)
+        reflectionSoftnessBoundaryLayer.fillColor = NSColor.clear.cgColor
+        reflectionSoftnessBoundaryLayer.strokeColor = NSColor.systemOrange.withAlphaComponent(0.9).cgColor
+        reflectionSoftnessBoundaryLayer.lineWidth = 1.25
+        reflectionSoftnessBoundaryLayer.lineDashPattern = [7, 5]
+        reflectionSoftnessBoundaryLayer.zPosition = 121.5
+        layer?.addSublayer(reflectionSoftnessBoundaryLayer)
         reflectionHandleLayer.fillColor = NSColor.systemOrange.cgColor
         reflectionHandleLayer.strokeColor = NSColor.black.cgColor
         reflectionHandleLayer.lineWidth = 1
@@ -2168,6 +2179,7 @@ final class MetalPreviewContainer: NSView {
         referenceProjectedCorners: [CGPoint],
         referenceTargetCorners: [CGPoint],
         reflectionHandles: [CGPoint],
+        reflectionSoftnessPixels: CGFloat,
         reflectionShapeClosed: Bool,
         reflectionShapeCircular: Bool,
         cameraNavigationEnabled: Bool,
@@ -2184,6 +2196,7 @@ final class MetalPreviewContainer: NSView {
         self.referenceProjectedCorners = referenceProjectedCorners
         self.referenceTargetCorners = referenceTargetCorners
         self.reflectionHandles = reflectionHandles
+        self.reflectionSoftnessPixels = max(0, reflectionSoftnessPixels)
         self.reflectionShapeClosed = reflectionShapeClosed
         self.reflectionShapeCircular = reflectionShapeCircular
         self.cameraNavigationEnabled = cameraNavigationEnabled
@@ -2558,6 +2571,7 @@ final class MetalPreviewContainer: NSView {
         referenceTargetLayer.frame = bounds
         referenceTargetLayer.path = targetHandles
         let reflectionBoundary = CGMutablePath()
+        let reflectionSoftnessBoundary = CGMutablePath()
         if reflectionShapeCircular, reflectionHandles.count == 2 {
             let center = displayedPoint(forRaster: reflectionHandles[0])
             let radiusPoint = displayedPoint(forRaster: reflectionHandles[1])
@@ -2566,13 +2580,42 @@ final class MetalPreviewContainer: NSView {
                 x: center.x - radius, y: center.y - radius,
                 width: radius * 2, height: radius * 2
             ))
+            let outerRadius = radius + reflectionSoftnessPixels * scale
+            reflectionSoftnessBoundary.addEllipse(in: CGRect(
+                x: center.x - outerRadius, y: center.y - outerRadius,
+                width: outerRadius * 2, height: outerRadius * 2
+            ))
         } else if let first = reflectionHandles.first {
+            let displayedHandles = reflectionHandles.map(displayedPoint(forRaster:))
             reflectionBoundary.move(to: displayedPoint(forRaster: first))
-            for point in reflectionHandles.dropFirst() {
-                reflectionBoundary.addLine(to: displayedPoint(forRaster: point))
+            for point in displayedHandles.dropFirst() {
+                reflectionBoundary.addLine(to: point)
             }
             if reflectionShapeClosed, reflectionHandles.count > 2 {
                 reflectionBoundary.closeSubpath()
+                let center = displayedHandles.reduce(CGPoint.zero) {
+                    CGPoint(x: $0.x + $1.x, y: $0.y + $1.y)
+                }.applying(CGAffineTransform(
+                    scaleX: 1 / CGFloat(displayedHandles.count),
+                    y: 1 / CGFloat(displayedHandles.count)
+                ))
+                let expanded = displayedHandles.map { point -> CGPoint in
+                    let dx = point.x - center.x
+                    let dy = point.y - center.y
+                    let length = max(0.001, hypot(dx, dy))
+                    let amount = reflectionSoftnessPixels * scale
+                    return CGPoint(
+                        x: center.x + dx * (length + amount) / length,
+                        y: center.y + dy * (length + amount) / length
+                    )
+                }
+                if let firstExpanded = expanded.first {
+                    reflectionSoftnessBoundary.move(to: firstExpanded)
+                    for point in expanded.dropFirst() {
+                        reflectionSoftnessBoundary.addLine(to: point)
+                    }
+                    reflectionSoftnessBoundary.closeSubpath()
+                }
             }
         }
         let reflectionHandlePath = CGMutablePath()
@@ -2584,6 +2627,8 @@ final class MetalPreviewContainer: NSView {
         }
         reflectionBoundaryLayer.frame = bounds
         reflectionBoundaryLayer.path = reflectionBoundary
+        reflectionSoftnessBoundaryLayer.frame = bounds
+        reflectionSoftnessBoundaryLayer.path = reflectionSoftnessBoundary
         reflectionHandleLayer.frame = bounds
         reflectionHandleLayer.path = reflectionHandlePath
         for (index, label) in referenceLabels.enumerated() {

@@ -1093,7 +1093,48 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var selectedReflectionEmitterHandles: [CGPoint] {
-        reflectionEnvironmentEditorEnabled ? selectedReflectionEmitter?.handles ?? [] : []
+        guard reflectionEnvironmentEditorEnabled,
+              let emitter = selectedReflectionEmitter,
+              let frame = metalFrame,
+              let selection = testAuthoringSelection
+        else { return [] }
+        return ReflectionEditorRasterMapping.presentationPoints(
+            emitter.handles,
+            deliverySize: CGSize(
+                width: Int(selection.deliveryWidth), height: Int(selection.deliveryHeight)
+            ),
+            previewSize: CGSize(width: frame.width, height: frame.height)
+        )
+    }
+
+    var selectedReflectionEmitterSoftnessPixels: CGFloat {
+        guard reflectionEnvironmentEditorEnabled,
+              let emitter = selectedReflectionEmitter,
+              let authored = physicalAuthoringState,
+              let selection = testAuthoringSelection,
+              let frame = metalFrame
+        else { return 0 }
+        let cameraWidth = Double(authored.sensor.nativeWidth)
+        let cameraHeight = Double(authored.sensor.nativeHeight)
+        let deliveryWidth = Double(selection.deliveryWidth)
+        let deliveryHeight = Double(selection.deliveryHeight)
+        let placementScale: Double = switch selection.deliveryPlacementID {
+        case "fit": min(deliveryWidth / cameraWidth, deliveryHeight / cameraHeight)
+        case "fill-crop": max(deliveryWidth / cameraWidth, deliveryHeight / cameraHeight)
+        case "one-to-one": 1
+        default: 1
+        }
+        let xPixelsPerRadian = authored.sceneLens.focalLengthMillimeters
+            / authored.sceneLens.sensorWidthMillimeters * cameraWidth
+        let yPixelsPerRadian = authored.sceneLens.focalLengthMillimeters
+            / authored.sceneLens.sensorHeightMillimeters * cameraHeight
+        let deliveryPixelsPerRadian = sqrt(xPixelsPerRadian * yPixelsPerRadian) * placementScale
+        let previewScale = sqrt(
+            Double(frame.width) / deliveryWidth * Double(frame.height) / deliveryHeight
+        )
+        return CGFloat(
+            emitter.softnessDegrees * .pi / 180 * deliveryPixelsPerRadian * previewScale
+        )
     }
 
     func setReflectionEnvironmentEditorEnabled(_ enabled: Bool) {
@@ -1110,8 +1151,8 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func addReflectionEmitter(_ kind: AuthoredReflectionEmitterKind) {
-        let frameWidth = max(1, metalFrame?.width ?? Int(testAuthoringSelection?.deliveryWidth ?? 1920))
-        let frameHeight = max(1, metalFrame?.height ?? Int(testAuthoringSelection?.deliveryHeight ?? 1080))
+        let frameWidth = max(1, Int(testAuthoringSelection?.deliveryWidth ?? 1920))
+        let frameHeight = max(1, Int(testAuthoringSelection?.deliveryHeight ?? 1080))
         let usable = reflectionEditorBounds(width: frameWidth, height: frameHeight)
         let center = CGPoint(x: usable.midX, y: usable.midY)
         let handles: [CGPoint]
@@ -1171,11 +1212,20 @@ final class WorkspaceModel: ObservableObject {
               let id = selectedReflectionEmitterID,
               let emitterIndex = reflectionEmitters.firstIndex(where: { $0.id == id }),
               reflectionEmitters[emitterIndex].handles.indices.contains(index),
-              let frame = metalFrame
+              let frame = metalFrame,
+              let selection = testAuthoringSelection
         else { return }
+        let deliverySize = CGSize(
+            width: Int(selection.deliveryWidth), height: Int(selection.deliveryHeight)
+        )
+        let deliveryPoint = ReflectionEditorRasterMapping.deliveryPoint(
+            point,
+            deliverySize: deliverySize,
+            previewSize: CGSize(width: frame.width, height: frame.height)
+        )
         let constrained = CGPoint(
-            x: min(CGFloat(frame.width - 1), max(0, point.x)),
-            y: min(CGFloat(frame.height - 1), max(0, point.y))
+            x: min(deliverySize.width - 1, max(0, deliveryPoint.x)),
+            y: min(deliverySize.height - 1, max(0, deliveryPoint.y))
         )
         if reflectionEmitters[emitterIndex].kind == .practical,
            index == 0,
@@ -1184,8 +1234,8 @@ final class WorkspaceModel: ObservableObject {
             let delta = CGPoint(x: constrained.x - prior.x, y: constrained.y - prior.y)
             let priorRadius = reflectionEmitters[emitterIndex].handles[1]
             reflectionEmitters[emitterIndex].handles[1] = CGPoint(
-                x: min(CGFloat(frame.width - 1), max(0, priorRadius.x + delta.x)),
-                y: min(CGFloat(frame.height - 1), max(0, priorRadius.y + delta.y))
+                x: min(deliverySize.width - 1, max(0, priorRadius.x + delta.x)),
+                y: min(deliverySize.height - 1, max(0, priorRadius.y + delta.y))
             )
         }
         reflectionEmitters[emitterIndex].handles[index] = constrained
