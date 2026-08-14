@@ -1554,10 +1554,16 @@ struct ContentView: View {
             .labelsHidden()
         }
         originRow("Modelo de señal") {
-            interpretationLabel(
-                model.signalColorModel.label,
-                annotation: model.colorModelAnnotation(model.signalColorModel)
-            )
+            Picker("Modelo de señal", selection: Binding(
+                get: { model.signalColorModel }, set: { model.changeColorModel($0) }
+            )) {
+                ForEach(StudioSignalColorModel.allCases) { value in
+                    interpretationLabel(
+                        value.label, annotation: model.colorModelAnnotation(value)
+                    ).tag(value)
+                }
+            }
+            .labelsHidden()
         }
         originRow("Matriz YUV") {
             Picker("Matriz YUV", selection: Binding(
@@ -1634,7 +1640,15 @@ struct ContentView: View {
                         .labelsHidden()
                     }
                     originRow("Modelo de señal") {
-                        Text(model.referenceSignalColorModel.label)
+                        Picker("Modelo de señal", selection: Binding(
+                            get: { model.referenceSignalColorModel },
+                            set: { model.changeReferenceColorModel($0) }
+                        )) {
+                            ForEach(StudioSignalColorModel.allCases) { value in
+                                Text(value.label).tag(value)
+                            }
+                        }
+                        .labelsHidden()
                     }
                     originRow("Matriz YUV") {
                         Picker("Matriz YUV", selection: Binding(

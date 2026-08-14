@@ -64,8 +64,8 @@ final class NativeMediaSession {
     func openVideo(
         _ url: URL,
         hasAlpha: Bool,
-        colorModel: StudioSignalColorModel = .ycbcr,
-        decodedRange: StudioSignalRange = .video
+        colorModel: StudioSignalColorModel,
+        decodedRange: StudioSignalRange
     ) async throws -> NativeSourceInfo {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
@@ -129,7 +129,7 @@ final class NativeMediaSession {
 
     func openImages(
         _ urls: [URL],
-        frameRate: ExactFrameRate = .fps24
+        frameRate: ExactFrameRate
     ) throws -> NativeSourceInfo {
         let ordered = urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         guard !ordered.isEmpty else { throw NativeMediaError.invalidRaster }

@@ -246,11 +246,6 @@ final class WorkspaceModel: ObservableObject {
     @Published var zoom = 1.0
     @Published private(set) var previewIsFitted = true
     @Published var pan = CGSize.zero
-    @Published private(set) var defaultInputTransformID = "srgb-encoded-rec709"
-    @Published private(set) var defaultAlphaMode = StudioAlphaMode.ignore
-    @Published private(set) var defaultSignalColorModel = StudioSignalColorModel.rgb
-    @Published private(set) var defaultSignalMatrix = StudioSignalMatrix.bt709
-    @Published private(set) var defaultSignalRange = StudioSignalRange.full
     @Published private(set) var resolvedDevice: ResolvedDevice?
     @Published private(set) var modelDeviceDefinition: DeviceDefinition?
     @Published private(set) var physicalAuthoringState: PhysicalPipelineAuthoringState?
@@ -1740,37 +1735,35 @@ final class WorkspaceModel: ObservableObject {
         if value.id == detection.proposedInputTransformID {
             return detection.inputTransformProvenance?.feminineLabel ?? "Propuesta"
         }
-        return detection.proposedInputTransformID == nil && value.id == defaultInputTransformID
-            ? "Predeterminada" : nil
+        return nil
     }
 
     func alphaAnnotation(_ value: StudioAlphaMode) -> String? {
         if value == detection.alpha {
             return detection.alphaProvenance?.masculineLabel ?? "Propuesto"
         }
-        return detection.alpha == nil && value == defaultAlphaMode ? "Predeterminado" : nil
+        return nil
     }
 
     func matrixAnnotation(_ value: StudioSignalMatrix) -> String? {
         if value == detection.matrix {
             return detection.matrixProvenance?.feminineLabel ?? "Propuesta"
         }
-        return detection.matrix == nil && value == defaultSignalMatrix ? "Predeterminada" : nil
+        return nil
     }
 
     func rangeAnnotation(_ value: StudioSignalRange) -> String? {
         if value == detection.range {
             return detection.rangeProvenance?.masculineLabel ?? "Propuesto"
         }
-        return detection.range == nil && value == defaultSignalRange ? "Predeterminado" : nil
+        return nil
     }
 
     func colorModelAnnotation(_ value: StudioSignalColorModel) -> String? {
         if value == detection.colorModel {
             return detection.colorModelProvenance?.masculineLabel ?? "Propuesto"
         }
-        return detection.colorModel == nil && value == defaultSignalColorModel
-            ? "Predeterminado" : nil
+        return nil
     }
 
     func choosePattern(_ pattern: SyntheticPattern, undoManager: UndoManager?) {
@@ -1801,11 +1794,6 @@ final class WorkspaceModel: ObservableObject {
         signalMatrix = resolvedMatrix
         signalRange = resolvedRange
         signalColorModel = resolvedColorModel
-        defaultInputTransformID = inputID
-        defaultAlphaMode = resolvedAlpha
-        defaultSignalMatrix = resolvedMatrix
-        defaultSignalRange = resolvedRange
-        defaultSignalColorModel = resolvedColorModel
         sourceTimelineInfo = NativeVideoTimelineInfo(
             exactFrameRate: .fps24,
             frameCount: pattern == .animatedCheckerboard ? 240 : 1
@@ -1904,18 +1892,6 @@ final class WorkspaceModel: ObservableObject {
             referenceDetection = await StudioMediaMetadataDetector.detect(
                 url: managed.url, isVideo: isVideo
             )
-            let defaultInputID = isVideo
-                ? "display-rec709-gamma24-dcm" : "srgb-encoded-rec709"
-            let resolvedInputID = referenceDetection.proposedInputTransformID ?? defaultInputID
-            guard let input = StudioColorInputTransform.catalog.first(where: {
-                $0.id == resolvedInputID
-            }) else { throw NativeMediaError.invalidRaster }
-            referenceInputTransform = input
-            referenceAlphaMode = referenceDetection.alpha
-                ?? (referenceDetection.hasAlpha ? .straight : .ignore)
-            referenceSignalMatrix = referenceDetection.matrix ?? .bt709
-            referenceSignalRange = referenceDetection.range ?? (isVideo ? .video : .full)
-            referenceSignalColorModel = referenceDetection.colorModel ?? .rgb
             referencePlacement = .fit
             let info = isVideo
                 ? try await referenceSession.openVideo(
@@ -1924,7 +1900,7 @@ final class WorkspaceModel: ObservableObject {
                     colorModel: referenceSignalColorModel,
                     decodedRange: referenceSignalRange
                 )
-                : try referenceSession.openImages([managed.url])
+                : try referenceSession.openImages([managed.url], frameRate: .fps24)
             referenceForegroundFrame = nil
             referenceForegroundIsDeliveryAligned = false
             referenceSourceURL = managed.url
@@ -1944,7 +1920,7 @@ final class WorkspaceModel: ObservableObject {
             applyTimelineAuthority(resetRange: true)
             try await rebuildReferenceFrame()
             publishReferenceMatchSetup(resetTargetsToVisibleFrame: true)
-            status = "Referencia · \(managed.originalFileName) · \(info.detail) · \(input.label)"
+            status = "Referencia · \(managed.originalFileName) · \(info.detail) · interpretación explícita conservada"
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1974,7 +1950,12 @@ final class WorkspaceModel: ObservableObject {
 
     func changeReferenceRange(_ value: StudioSignalRange) {
         referenceSignalRange = value
-        refreshReferenceInterpretation()
+        reconfigureReferenceDecode()
+    }
+
+    func changeReferenceColorModel(_ value: StudioSignalColorModel) {
+        referenceSignalColorModel = value
+        reconfigureReferenceDecode()
     }
 
     func changeReferencePlacement(_ value: SourcePlacement) {
@@ -1986,6 +1967,23 @@ final class WorkspaceModel: ObservableObject {
         Task {
             do { try await rebuildReferenceFrameAndPublish() }
             catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    private func reconfigureReferenceDecode() {
+        guard let url = referenceSourceURL else { return }
+        Task {
+            do {
+                if Self.isVideo(url) {
+                    _ = try await referenceSession.openVideo(
+                        url,
+                        hasAlpha: referenceDetection.hasAlpha,
+                        colorModel: referenceSignalColorModel,
+                        decodedRange: referenceSignalRange
+                    )
+                }
+                try await rebuildReferenceFrameAndPublish()
+            } catch { errorMessage = error.localizedDescription }
         }
     }
 
@@ -2132,22 +2130,6 @@ final class WorkspaceModel: ObservableObject {
         }
         let isVideo = Self.isVideo(first) && expanded.count == 1
         detection = await StudioMediaMetadataDetector.detect(url: first, isVideo: isVideo)
-        let defaultInputID = isVideo
-            ? "display-rec709-gamma24-dcm"
-            : "srgb-encoded-rec709"
-        defaultInputTransformID = defaultInputID
-        defaultAlphaMode = detection.hasAlpha ? .straight : .ignore
-        defaultSignalMatrix = .bt709
-        defaultSignalRange = isVideo ? .video : .full
-        defaultSignalColorModel = .rgb
-        let resolvedInputID = detection.proposedInputTransformID ?? defaultInputID
-        inputTransform = StudioColorInputTransform.catalog.first {
-            $0.id == resolvedInputID
-        }!
-        alphaMode = detection.alpha ?? defaultAlphaMode
-        signalMatrix = detection.matrix ?? defaultSignalMatrix
-        signalRange = detection.range ?? defaultSignalRange
-        signalColorModel = detection.colorModel ?? defaultSignalColorModel
         do {
             let info = isVideo
                 ? try await session.openVideo(
@@ -2156,7 +2138,10 @@ final class WorkspaceModel: ObservableObject {
                     colorModel: signalColorModel,
                     decodedRange: signalRange
                 )
-                : try session.openImages(expanded.filter(Self.isImage))
+                : try session.openImages(
+                    expanded.filter(Self.isImage),
+                    frameRate: sourceTimelineInfo.exactFrameRate
+                )
             sourceIsPattern = false
             missingMediaSource = nil
             sourceName = info.name
@@ -2171,6 +2156,7 @@ final class WorkspaceModel: ObservableObject {
             try await Task.sleep(for: .milliseconds(20))
             session.pause()
             try present(try await session.exactSample(at: .zero))
+            status = "Medio abierto con la interpretación explícita activa; las etiquetas de metadata son solo propuestas."
         } catch {
             errorMessage = error.localizedDescription
             status = "No se pudo abrir el medio"
@@ -2202,7 +2188,45 @@ final class WorkspaceModel: ObservableObject {
 
     func changeRange(_ value: StudioSignalRange) {
         signalRange = value
-        rebuildCurrent()
+        reconfigureSourceDecode()
+    }
+
+    func changeColorModel(_ value: StudioSignalColorModel) {
+        signalColorModel = value
+        reconfigureSourceDecode()
+    }
+
+    private func reconfigureSourceDecode() {
+        guard !sourceIsPattern, missingMediaSource == nil else {
+            rebuildCurrent()
+            return
+        }
+        let urls = session.sourceURLs
+        guard let first = urls.first else { return }
+        let requestedRate = sourceTimelineInfo.exactFrameRate
+        let requestedTime = CMTime(
+            value: CMTimeValue(currentFrame) * CMTimeValue(requestedRate.denominator),
+            timescale: CMTimeScale(requestedRate.numerator)
+        )
+        Task {
+            do {
+                let info = if Self.isVideo(first), urls.count == 1 {
+                    try await session.openVideo(
+                        first,
+                        hasAlpha: detection.hasAlpha,
+                        colorModel: signalColorModel,
+                        decodedRange: signalRange
+                    )
+                } else {
+                    try session.openImages(urls, frameRate: requestedRate)
+                }
+                sourceTimelineInfo = .init(
+                    exactFrameRate: info.exactFrameRate,
+                    frameCount: info.frameCount
+                )
+                try present(try await session.exactSample(at: requestedTime))
+            } catch { errorMessage = error.localizedDescription }
+        }
     }
 
     func changePreview(_ value: StudioColorOutputTransform, undoManager: UndoManager?) {
@@ -3043,6 +3067,9 @@ final class WorkspaceModel: ObservableObject {
             testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
             testPhysicalIntermediateByPhaseID = snapshot.physicalIntermediateByPhaseID
             physicalModel.setQuality(quality)
+            if !sourceIsPattern, missingMediaSource == nil, !session.sourceURLs.isEmpty {
+                reconfigureSourceDecode()
+            }
         }
         resolvedDevice = try state.device.resolved()
         resolvedPhysicalPipeline = try state.pipeline.resolvedPipeline()
@@ -3068,7 +3095,7 @@ final class WorkspaceModel: ObservableObject {
                     colorModel: referenceSignalColorModel,
                     decodedRange: referenceSignalRange
                 )
-                : try referenceSession.openImages([managed.url])
+                : try referenceSession.openImages([managed.url], frameRate: .fps24)
             try await rebuildReferenceFrame()
             referenceForegroundFrame = nil
             referenceForegroundIsDeliveryAligned = false

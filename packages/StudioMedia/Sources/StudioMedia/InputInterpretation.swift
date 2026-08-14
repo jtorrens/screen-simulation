@@ -47,13 +47,11 @@ public enum StudioAlphaMode: String, Codable, CaseIterable, Identifiable, Sendab
 public enum StudioMetadataProvenance: String, Codable, Sendable {
     case detected
     case proposed
-    case defaulted
 
     public var feminineLabel: String {
         switch self {
         case .detected: "Detectada"
         case .proposed: "Propuesta"
-        case .defaulted: "Predeterminada"
         }
     }
 
@@ -61,7 +59,6 @@ public enum StudioMetadataProvenance: String, Codable, Sendable {
         switch self {
         case .detected: "Detectado"
         case .proposed: "Propuesto"
-        case .defaulted: "Predeterminado"
         }
     }
 }
@@ -128,8 +125,8 @@ public struct StudioMediaDetection: Equatable, Sendable {
     }
 }
 
-/// Extracted from CREDITOS-HDR's metadata detector; absence or malformed metadata
-/// produces a partial proposal and never prevents media from opening.
+/// Metadata detection publishes only evidence and proposals. It never authors an
+/// interpretation or replaces the explicit selection owned by the caller.
 public enum StudioMediaMetadataDetector {
     public static func detect(url: URL, isVideo: Bool) async -> StudioMediaDetection {
         do {

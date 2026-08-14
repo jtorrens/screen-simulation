@@ -386,6 +386,29 @@ def validate_native_model_authority() -> None:
         if required not in native_header:
             raise ValidationError(f"Native Test authoring ABI omits exact cadence: {required}")
 
+    media_interpretation = (
+        ROOT / "packages/StudioMedia/Sources/StudioMedia/InputInterpretation.swift"
+    ).read_text(encoding="utf-8")
+    if "case defaulted" in media_interpretation:
+        raise ValidationError("Media metadata exposes a silent default provenance")
+    forbidden_media_authoring = (
+        "detection.proposedInputTransformID ??",
+        "detection.alpha ??",
+        "detection.matrix ??",
+        "detection.range ??",
+        "detection.colorModel ??",
+        "referenceDetection.proposedInputTransformID ??",
+        "referenceDetection.alpha ??",
+        "referenceDetection.matrix ??",
+        "referenceDetection.range ??",
+        "referenceDetection.colorModel ??",
+    )
+    present = [value for value in forbidden_media_authoring if value in workspace]
+    if present:
+        raise ValidationError(
+            f"Native media import silently authors metadata or defaults: {present}"
+        )
+
 
 def validate_phase_gated_workflow() -> None:
     rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")

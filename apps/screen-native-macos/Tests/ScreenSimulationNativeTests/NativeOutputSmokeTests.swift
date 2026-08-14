@@ -110,7 +110,7 @@ import Testing
     )
     let url = root.appendingPathComponent("ScreenSimulation-00000012.exr")
     let session = NativeMediaSession()
-    _ = try session.openImages([url])
+    _ = try session.openImages([url], frameRate: .fps24)
     let sample = try #require(try await session.exactSample(at: .zero))
     let decoded = try display.makeACEScgFrame(
         pixelBuffer: sample.pixelBuffer,
@@ -246,7 +246,12 @@ private func movieRoundtrip(
     )
     let detection = await StudioMediaMetadataDetector.detect(url: url, isVideo: true)
     let session = NativeMediaSession()
-    let info = try await session.openVideo(url, hasAlpha: detection.hasAlpha)
+    let info = try await session.openVideo(
+        url,
+        hasAlpha: detection.hasAlpha,
+        colorModel: .ycbcr,
+        decodedRange: .video
+    )
     let inverse = StudioColorInputTransform.catalog.first {
         $0.id == "display-rec709-aces2-sdr"
     }!
@@ -330,19 +335,32 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     let sourceURL = URL(fileURLWithPath: path)
     let detection = await StudioMediaMetadataDetector.detect(url: sourceURL, isVideo: true)
     let sourceSession = NativeMediaSession()
-    let sourceInfo = try await sourceSession.openVideo(sourceURL, hasAlpha: detection.hasAlpha)
+    let colorModel = try #require(detection.colorModel)
+    let detectedRange = try #require(detection.range)
+    let sourceInfo = try await sourceSession.openVideo(
+        sourceURL,
+        hasAlpha: detection.hasAlpha,
+        colorModel: colorModel,
+        decodedRange: detectedRange
+    )
     let display = try StudioColorMetalDisplay()
-    let input = StudioColorInputTransform.catalog.first {
-        $0.id == (detection.proposedInputTransformID ?? "display-rec709-gamma24-dcm")
-    }!
-    let alpha: StudioColorAlphaAssociation = switch detection.alpha {
+    let proposedInputTransformID = try #require(detection.proposedInputTransformID)
+    let input = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == proposedInputTransformID
+    })
+    let detectedAlpha = try #require(detection.alpha)
+    let alpha: StudioColorAlphaAssociation = switch detectedAlpha {
     case .premultiplied: .premultiplied
     case .ignore: .ignore
-    case .straight, nil: detection.hasAlpha ? .straight : .ignore
+    case .straight: .straight
     }
-    let matrix: StudioColorSignalMatrix = detection.matrix == .bt2020 ? .bt2020
-        : (detection.matrix == .bt601 ? .bt601 : .bt709)
-    let range: StudioColorSignalRange = detection.range == .video ? .video : .full
+    let detectedMatrix = try #require(detection.matrix)
+    let matrix: StudioColorSignalMatrix = switch detectedMatrix {
+    case .bt601: .bt601
+    case .bt709: .bt709
+    case .bt2020: .bt2020
+    }
+    let range: StudioColorSignalRange = detectedRange == .video ? .video : .full
     let outputURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("golden-\(UUID().uuidString).mov")
     let playbackP95 = try await sequentialPlaybackP95(
@@ -359,8 +377,9 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
         destination: outputURL, audioSource: nil, display: display,
         frameProvider: { frameIndex in
             let time = CMTime(
-                value: CMTimeValue(frameIndex),
-                timescale: CMTimeScale(sourceInfo.frameRate.rounded())
+                value: CMTimeValue(frameIndex)
+                    * CMTimeValue(sourceInfo.exactFrameRate.denominator),
+                timescale: CMTimeScale(sourceInfo.exactFrameRate.numerator)
             )
             let sample = try #require(try await sourceSession.exactSample(at: time))
             let frame = try display.makeACEScgFrame(
@@ -373,7 +392,12 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     )
     let outputDetection = await StudioMediaMetadataDetector.detect(url: renderedURL, isVideo: true)
     let outputSession = NativeMediaSession()
-    let outputInfo = try await outputSession.openVideo(renderedURL, hasAlpha: outputDetection.hasAlpha)
+    let outputInfo = try await outputSession.openVideo(
+        renderedURL,
+        hasAlpha: outputDetection.hasAlpha,
+        colorModel: try #require(outputDetection.colorModel),
+        decodedRange: try #require(outputDetection.range)
+    )
     var maximum: Float = 0
     var squared: Double = 0
     var count = 0
