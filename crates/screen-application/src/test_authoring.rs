@@ -1,8 +1,8 @@
 //! Host-neutral authoring descriptors for the ordered Test surface.
 
 use crate::{
-    CAPTURE_DEVICE_PRESETS, CaptureDevicePreset, RecordingSelection, capture_device_preset,
-    prepare_recording_request,
+    CAPTURE_DEVICE_PRESETS, CaptureDevicePreset, PhysicalIntermediate, RecordingSelection,
+    capture_device_preset, prepare_recording_request,
 };
 use screen_camera::CameraRenderingIntent;
 use screen_color::{
@@ -21,7 +21,7 @@ use screen_recording::{
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 26;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 27;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -640,6 +640,13 @@ impl TestPhaseDescriptor {
     pub const fn preview_route(&self) -> &'static str {
         "Preview ODT seleccionado"
     }
+
+    /// Returns the exact physical checkpoint required to publish this phase.
+    /// Application is the sole authority for this mapping; hosts must not
+    /// reconstruct it from phase labels, ids, order, or preview result values.
+    pub const fn physical_intermediate(&self) -> Option<PhysicalIntermediate> {
+        self.preview_result.physical_intermediate()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -666,6 +673,33 @@ pub enum TestPreviewResult {
     DeliveryRaster = 18,
     RecordingOutput = 19,
     RecordingCodec = 20,
+}
+
+impl TestPreviewResult {
+    pub const fn physical_intermediate(self) -> Option<PhysicalIntermediate> {
+        match self {
+            Self::SourceAcesCg | Self::SourceAdjustment => None,
+            Self::FeederSignal => Some(PhysicalIntermediate::DeviceSignal),
+            Self::DeviceInterpretation => Some(PhysicalIntermediate::PanelEmission),
+            Self::PanelStructure => Some(PhysicalIntermediate::SubpixelRadiance),
+            Self::PanelUniformity => Some(PhysicalIntermediate::PanelUniformity),
+            Self::PanelLightSpread => Some(PhysicalIntermediate::PanelLightSpread),
+            Self::RelativeGeometry => Some(PhysicalIntermediate::RelativeGeometry),
+            Self::CoverEnvironment => Some(PhysicalIntermediate::CoverEnvironment),
+            Self::CoverGlow => Some(PhysicalIntermediate::CoverGlow),
+            Self::LensProjection => Some(PhysicalIntermediate::LensProjection),
+            Self::ShutterExposure => Some(PhysicalIntermediate::ShutterMotion),
+            Self::ComputationalCapture => Some(PhysicalIntermediate::ComputationalCapture),
+            Self::SensorBloom => Some(PhysicalIntermediate::SensorBloom),
+            Self::SensorCfa => Some(PhysicalIntermediate::SensorNoise),
+            Self::SensorNoise => Some(PhysicalIntermediate::RawMosaic),
+            Self::DevelopDemosaic => Some(PhysicalIntermediate::DevelopedAcesCg),
+            Self::CameraRenderingIntent
+            | Self::DeliveryRaster
+            | Self::RecordingOutput
+            | Self::RecordingCodec => Some(PhysicalIntermediate::CameraRenderedAcesCg),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2982,6 +3016,35 @@ mod tests {
         for adjacent in page.phases.windows(2) {
             assert_eq!(adjacent[0].output_artifact, adjacent[1].input_artifact);
         }
+        assert_eq!(
+            page.phases
+                .iter()
+                .map(TestPhaseDescriptor::physical_intermediate)
+                .collect::<Vec<_>>(),
+            [
+                None,
+                None,
+                Some(PhysicalIntermediate::DeviceSignal),
+                Some(PhysicalIntermediate::PanelEmission),
+                Some(PhysicalIntermediate::SubpixelRadiance),
+                Some(PhysicalIntermediate::PanelUniformity),
+                Some(PhysicalIntermediate::PanelLightSpread),
+                Some(PhysicalIntermediate::RelativeGeometry),
+                Some(PhysicalIntermediate::CoverEnvironment),
+                Some(PhysicalIntermediate::CoverGlow),
+                Some(PhysicalIntermediate::LensProjection),
+                Some(PhysicalIntermediate::ShutterMotion),
+                Some(PhysicalIntermediate::ComputationalCapture),
+                Some(PhysicalIntermediate::SensorBloom),
+                Some(PhysicalIntermediate::SensorNoise),
+                Some(PhysicalIntermediate::RawMosaic),
+                Some(PhysicalIntermediate::DevelopedAcesCg),
+                Some(PhysicalIntermediate::CameraRenderedAcesCg),
+                Some(PhysicalIntermediate::CameraRenderedAcesCg),
+                Some(PhysicalIntermediate::CameraRenderedAcesCg),
+                Some(PhysicalIntermediate::CameraRenderedAcesCg),
+            ]
+        );
         assert!(matches!(
             &page.phases[7].controls[0],
             TestControlRequirement::Choice {

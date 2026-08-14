@@ -27,7 +27,7 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 26u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 27u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -134,9 +134,11 @@ typedef struct {
     ScreenUTF8View input_artifact;
     ScreenUTF8View output_artifact;
     uint32_t preview_result;
+    bool has_physical_intermediate;
+    uint32_t physical_intermediate;
     ScreenUTF8View calculation_domain;
     ScreenUTF8View preview_route;
-} ScreenTestPhaseDescriptorV4;
+} ScreenTestPhaseDescriptorV5;
 
 typedef struct {
     uint32_t abi_version;
@@ -180,7 +182,7 @@ ScreenUTF8View screen_test_page_default_preview_phase_id(
 bool screen_test_page_phase_descriptor(
     ScreenTestPageDescriptorRef descriptor,
     size_t phase_index,
-    ScreenTestPhaseDescriptorV4 *phase
+    ScreenTestPhaseDescriptorV5 *phase
 );
 size_t screen_test_page_control_count(
     ScreenTestPageDescriptorRef descriptor,

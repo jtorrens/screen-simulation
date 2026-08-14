@@ -111,6 +111,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
 struct TestAuthoringSnapshot: Sendable {
     let presentation: TestPagePresentation
     let previewResultByPhaseID: [String: TestPreviewResultKind]
+    let physicalIntermediateByPhaseID: [String: PhysicalIntermediate]
     let resolvedSelection: TestAuthoringResolvedSelection
 }
 
@@ -170,9 +171,10 @@ enum RustTestAuthoringCoordinator {
             let phaseCount = screen_test_page_phase_count(descriptor)
             var phases: [TestPhasePresentation] = []
             var previewResults: [String: TestPreviewResultKind] = [:]
+            var physicalIntermediates: [String: PhysicalIntermediate] = [:]
             phases.reserveCapacity(phaseCount)
             for phaseIndex in 0..<phaseCount {
-                var rawPhase = ScreenTestPhaseDescriptorV4()
+                var rawPhase = ScreenTestPhaseDescriptorV5()
                 guard screen_test_page_phase_descriptor(
                     descriptor, phaseIndex, &rawPhase
                 ) else {
@@ -217,6 +219,16 @@ enum RustTestAuthoringCoordinator {
                     sections: sections
                 ))
                 previewResults[phaseID] = previewResult
+                if rawPhase.has_physical_intermediate {
+                    guard let intermediate = PhysicalIntermediate(
+                        rawValue: rawPhase.physical_intermediate
+                    ) else {
+                        throw TestAuthoringCoordinatorError.malformedDescriptor(
+                            "La fase \(phaseID) solicita un checkpoint físico desconocido."
+                        )
+                    }
+                    physicalIntermediates[phaseID] = intermediate
+                }
             }
             let selectedPhaseID = selectedPreviewPhaseID ?? defaultPhaseID
             guard phases.contains(where: { $0.id == selectedPhaseID }) else {
@@ -234,6 +246,7 @@ enum RustTestAuthoringCoordinator {
                     previewControls: previewControls
                 ),
                 previewResultByPhaseID: previewResults,
+                physicalIntermediateByPhaseID: physicalIntermediates,
                 resolvedSelection: selection
             )
         }

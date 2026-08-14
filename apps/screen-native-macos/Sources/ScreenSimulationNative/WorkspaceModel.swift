@@ -343,6 +343,7 @@ final class WorkspaceModel: ObservableObject {
     private var isModelPageActive = false
     private var isTestPageActive = false
     private var testPreviewResultByPhaseID: [String: TestPreviewResultKind] = [:]
+    private var testPhysicalIntermediateByPhaseID: [String: PhysicalIntermediate] = [:]
     private var resolvedPhysicalPipeline: PhysicalPipelineResolvedState?
     private var baseModelDeviceDefinition: DeviceDefinition?
     private var basePhysicalAuthoringState: PhysicalPipelineAuthoringState?
@@ -753,15 +754,14 @@ final class WorkspaceModel: ObservableObject {
                 )
                 testPresentation = snapshot.presentation
                 testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+                testPhysicalIntermediateByPhaseID = snapshot.physicalIntermediateByPhaseID
                 let selectedResult = snapshot.previewResultByPhaseID[phaseID]
                 if (selectedResult == .recordingOutput || selectedResult == .recordingCodec),
                    recordingCameraCheckpoint != nil {
                     publishRecordingPreview(result: selectedResult!)
                     return
                 }
-                if let intermediate = physicalIntermediate(
-                    for: selectedResult
-                ) {
+                if let intermediate = snapshot.physicalIntermediateByPhaseID[phaseID] {
                     updateRequestedPhysicalIntermediate(intermediate)
                     rebuildPhysicalSelectedFrame()
                 } else {
@@ -794,15 +794,14 @@ final class WorkspaceModel: ObservableObject {
                     )
                     testPresentation = snapshot.presentation
                     testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+                    testPhysicalIntermediateByPhaseID = snapshot.physicalIntermediateByPhaseID
                     let revealResult = snapshot.previewResultByPhaseID[phaseToReveal]
                     if (revealResult == .recordingOutput || revealResult == .recordingCodec),
                        recordingCameraCheckpoint != nil {
                         publishRecordingPreview(result: revealResult!)
                         return
                     }
-                    if let intermediate = physicalIntermediate(
-                        for: revealResult
-                    ) {
+                    if let intermediate = snapshot.physicalIntermediateByPhaseID[phaseToReveal] {
                         updateRequestedPhysicalIntermediate(intermediate)
                         rebuildPhysicalSelectedFrame()
                     } else {
@@ -3032,6 +3031,7 @@ final class WorkspaceModel: ObservableObject {
             selectedLensPresetID = context.selection.lensPresetID
             testPresentation = snapshot.presentation
             testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+            testPhysicalIntermediateByPhaseID = snapshot.physicalIntermediateByPhaseID
             physicalModel.setQuality(quality)
         }
         resolvedDevice = try state.device.resolved()
@@ -4029,6 +4029,7 @@ final class WorkspaceModel: ObservableObject {
         )
         testPresentation = snapshot.presentation
         testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
+        testPhysicalIntermediateByPhaseID = snapshot.physicalIntermediateByPhaseID
         publishSelectedTestPreview()
     }
 
@@ -4303,32 +4304,8 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private var selectedTestPhysicalIntermediate: PhysicalIntermediate? {
-        physicalIntermediate(for: selectedTestPreviewResult)
-    }
-
-    private func physicalIntermediate(
-        for result: TestPreviewResultKind?
-    ) -> PhysicalIntermediate? {
-        switch result {
-        case .sourceAdjustment: nil
-        case .feederSignal: .deviceSignal
-        case .deviceInterpretation: .panelEmission
-        case .panelStructure: .subpixelRadiance
-        case .panelUniformity: .panelUniformity
-        case .panelLightSpread: .panelLightSpread
-        case .relativeGeometry: .relativeGeometry
-        case .coverEnvironment: .coverEnvironment
-        case .coverGlow: .coverGlow
-        case .lensProjection: .lensProjection
-        case .shutterExposure: .shutterMotion
-        case .computationalCapture: .computationalCapture
-        case .sensorBloom: .sensorBloom
-        case .sensorCfa: .sensorNoise
-        case .sensorNoise: .rawMosaic
-        case .developDemosaic: .developedACEScg
-        case .cameraRenderingIntent, .deliveryRaster, .recordingOutput, .recordingCodec: .cameraRenderedACEScg
-        case .sourceACEScg, nil: nil
-        }
+        guard let phaseID = testPresentation?.selectedPhaseID else { return nil }
+        return testPhysicalIntermediateByPhaseID[phaseID]
     }
 
     private func publishSelectedTestPreview() {
@@ -4361,7 +4338,11 @@ final class WorkspaceModel: ObservableObject {
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
              .shutterExposure, .computationalCapture, .sensorBloom, .sensorCfa, .sensorNoise,
              .developDemosaic, .cameraRenderingIntent, .deliveryRaster, .recordingOutput, .recordingCodec:
-            updateRequestedPhysicalIntermediate(physicalIntermediate(for: result)!)
+            guard let intermediate = selectedTestPhysicalIntermediate else {
+                errorMessage = "Application no publicó el checkpoint físico de esta fase."
+                return
+            }
+            updateRequestedPhysicalIntermediate(intermediate)
             rebuildPhysicalSelectedFrame()
             return
         }

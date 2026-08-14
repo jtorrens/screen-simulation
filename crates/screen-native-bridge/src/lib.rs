@@ -160,7 +160,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 26;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 27;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -253,7 +253,7 @@ pub struct ScreenTestAuthoringSelectionV21 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestPhaseDescriptorV4 {
+pub struct ScreenTestPhaseDescriptorV5 {
     abi_version: u32,
     id: ScreenUtf8View,
     label: ScreenUtf8View,
@@ -262,6 +262,8 @@ pub struct ScreenTestPhaseDescriptorV4 {
     input_artifact: ScreenUtf8View,
     output_artifact: ScreenUtf8View,
     preview_result: u32,
+    has_physical_intermediate: bool,
+    physical_intermediate: u32,
     calculation_domain: ScreenUtf8View,
     preview_route: ScreenUtf8View,
 }
@@ -2542,7 +2544,7 @@ pub unsafe extern "C" fn screen_test_page_default_preview_phase_id(
 pub unsafe extern "C" fn screen_test_page_phase_descriptor(
     descriptor: *const ScreenTestPageDescriptor,
     phase_index: usize,
-    phase: *mut ScreenTestPhaseDescriptorV4,
+    phase: *mut ScreenTestPhaseDescriptorV5,
 ) -> bool {
     let Some(source) =
         unsafe { descriptor.as_ref() }.and_then(|value| value.page.phases.get(phase_index))
@@ -2552,7 +2554,8 @@ pub unsafe extern "C" fn screen_test_page_phase_descriptor(
     let Some(destination) = (unsafe { phase.as_mut() }) else {
         return false;
     };
-    *destination = ScreenTestPhaseDescriptorV4 {
+    let physical_intermediate = source.physical_intermediate();
+    *destination = ScreenTestPhaseDescriptorV5 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         id: utf8_view(source.id),
         label: utf8_view(source.label),
@@ -2561,6 +2564,8 @@ pub unsafe extern "C" fn screen_test_page_phase_descriptor(
         input_artifact: utf8_view(source.input_artifact),
         output_artifact: utf8_view(source.output_artifact),
         preview_result: source.preview_result as u32,
+        has_physical_intermediate: physical_intermediate.is_some(),
+        physical_intermediate: physical_intermediate.map_or(0, |value| value as u32),
         calculation_domain: utf8_view(source.calculation_domain()),
         preview_route: utf8_view(source.preview_route()),
     };

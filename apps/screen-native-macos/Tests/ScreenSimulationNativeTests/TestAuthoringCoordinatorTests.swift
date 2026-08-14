@@ -185,6 +185,20 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         == .sensorNoise)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[16].id]
         == .developDemosaic)
+    #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[0].id] == nil)
+    #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[1].id] == nil)
+    #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[2].id]
+        == .deviceSignal)
+    #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[14].id]
+        == .sensorNoise)
+    #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[15].id]
+        == .rawMosaic)
+    #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[16].id]
+        == .developedACEScg)
+    for index in 17..<snapshot.presentation.phases.count {
+        #expect(snapshot.physicalIntermediateByPhaseID[snapshot.presentation.phases[index].id]
+            == .cameraRenderedACEScg)
+    }
 
     let controls = snapshot.presentation.phases[2].sections.flatMap(\.controls)
     #expect(controls.count == 2)
