@@ -67,6 +67,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         environmentSphereRadiusMeters: 5,
         coverGlowAmount: 1,
         lensPresetID: "iphone-16e-main-integrated",
+        focalLengthMillimeters: 4.2,
         lensAmount: 1,
         autofocusEnabled: true,
         focusDistanceMeters: 0.15,

@@ -1651,6 +1651,76 @@ final class WorkspaceModel: ObservableObject {
         solveReferenceMatchTargets(undoManager: undoManager, priorSelection: prior)
     }
 
+    func searchReferenceMatchFocalLength(undoManager: UndoManager?) {
+        guard referenceMatchPinnedIndices.count == 4,
+              let prior = testAuthoringSelection
+        else {
+            status = "Match referencia · fija los cuatro objetivos para buscar focal"
+            return
+        }
+        do {
+            // Search uniformly in log focal length so wide and telephoto ranges receive
+            // comparable resolution. Then refine only the best neighboring interval.
+            let lower = log(1.0)
+            let upper = log(300.0)
+            let coarseCount = 72
+            var candidates: [(logFocal: Double, solved: (pose: CameraNavigationPose, maximumErrorPixels: Double, rmsErrorPixels: Double))] = []
+            for index in 0..<coarseCount {
+                let amount = Double(index) / Double(coarseCount - 1)
+                let logFocal = lower + (upper - lower) * amount
+                if let solved = try? resolvedFourPointReferencePose(
+                    focalLengthMillimeters: exp(logFocal)
+                ) {
+                    candidates.append((logFocal, solved))
+                }
+            }
+            guard let coarseBestIndex = candidates.indices.min(by: {
+                candidates[$0].solved.rmsErrorPixels < candidates[$1].solved.rmsErrorPixels
+            }) else {
+                throw ReferenceMatchError.unsolved("ninguna focal produce una pose válida")
+            }
+            var left = coarseBestIndex > candidates.startIndex
+                ? candidates[coarseBestIndex - 1].logFocal : lower
+            var right = coarseBestIndex + 1 < candidates.endIndex
+                ? candidates[coarseBestIndex + 1].logFocal : upper
+            let golden = (sqrt(5.0) - 1.0) * 0.5
+            var x1 = right - golden * (right - left)
+            var x2 = left + golden * (right - left)
+            var s1 = try resolvedFourPointReferencePose(focalLengthMillimeters: exp(x1))
+            var s2 = try resolvedFourPointReferencePose(focalLengthMillimeters: exp(x2))
+            for _ in 0..<28 {
+                if s1.rmsErrorPixels <= s2.rmsErrorPixels {
+                    right = x2
+                    x2 = x1
+                    s2 = s1
+                    x1 = right - golden * (right - left)
+                    s1 = try resolvedFourPointReferencePose(focalLengthMillimeters: exp(x1))
+                } else {
+                    left = x1
+                    x1 = x2
+                    s1 = s2
+                    x2 = left + golden * (right - left)
+                    s2 = try resolvedFourPointReferencePose(focalLengthMillimeters: exp(x2))
+                }
+            }
+            let refined = s1.rmsErrorPixels <= s2.rmsErrorPixels ? (x1, s1) : (x2, s2)
+            let coarse = candidates[coarseBestIndex]
+            let best = refined.1.rmsErrorPixels <= coarse.solved.rmsErrorPixels
+                ? (exp(refined.0), refined.1) : (exp(coarse.logFocal), coarse.solved)
+            try commitReferenceMatch(
+                focalLengthMillimeters: best.0,
+                solved: best.1,
+                priorSelection: prior,
+                undoManager: undoManager,
+                actionName: "Buscar focal con referencia"
+            )
+            status = "Match referencia · focal \(best.0.formatted(.number.precision(.fractionLength(2)))) mm · RMS \(best.1.rmsErrorPixels.formatted(.number.precision(.fractionLength(2)))) px · máximo \(best.1.maximumErrorPixels.formatted(.number.precision(.fractionLength(2)))) px"
+        } catch {
+            referenceMatchErrorPixels = nil
+            status = error.localizedDescription
+        }
+    }
+
     func load(_ urls: [URL]) async {
         pause()
         status = "Leyendo medio y metadata…"
@@ -2842,26 +2912,17 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         do {
-            let solved = try resolvedFourPointReferencePose()
-            cameraNavigationStartSelection = priorSelection
-            cameraNavigationPreviewQuality = .setup
-            commitCameraNavigationPose(solved.pose)
-            cameraNavigationStartSelection = nil
-            referenceMatchErrorPixels = solved.maximumErrorPixels
-            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            let solved = try resolvedFourPointReferencePose(
+                focalLengthMillimeters: priorSelection.focalLengthMillimeters
+            )
+            try commitReferenceMatch(
+                focalLengthMillimeters: priorSelection.focalLengthMillimeters,
+                solved: solved,
+                priorSelection: priorSelection,
+                undoManager: undoManager,
+                actionName: "Resolver cámara con referencia"
+            )
             status = "Match referencia · cámara resuelta · error máximo \(solved.maximumErrorPixels.formatted(.number.precision(.fractionLength(1)))) px"
-            if priorSelection != testAuthoringSelection {
-                let manager = UndoManagerBox(undoManager)
-                undoManager?.registerUndo(withTarget: self) { target in
-                    Task { @MainActor in
-                        try? target.restoreCameraNavigationSelection(
-                            priorSelection, undoManager: manager.value
-                        )
-                        target.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
-                    }
-                }
-                undoManager?.setActionName("Resolver cámara con referencia")
-            }
         } catch {
             referenceMatchErrorPixels = nil
             status = error.localizedDescription
@@ -2881,8 +2942,46 @@ final class WorkspaceModel: ObservableObject {
         ]
     }
 
-    private func resolvedFourPointReferencePose() throws -> (
-        pose: CameraNavigationPose, maximumErrorPixels: Double
+    private func commitReferenceMatch(
+        focalLengthMillimeters: Double,
+        solved: (pose: CameraNavigationPose, maximumErrorPixels: Double, rmsErrorPixels: Double),
+        priorSelection: TestAuthoringResolvedSelection,
+        undoManager: UndoManager?,
+        actionName: String
+    ) throws {
+        var selection = priorSelection
+        let degrees = PoseRotationProjection.degrees(from: [
+            solved.pose.orientation.imag.x, solved.pose.orientation.imag.y,
+            solved.pose.orientation.imag.z, solved.pose.orientation.real,
+        ])
+        selection.geometryModeID = "free"
+        selection.focalLengthMillimeters = focalLengthMillimeters
+        selection.cameraPositionXMeters = solved.pose.position.x
+        selection.cameraPositionYMeters = solved.pose.position.y
+        selection.cameraPositionZMeters = solved.pose.position.z
+        selection.cameraRotationXDegrees = degrees[0]
+        selection.cameraRotationYDegrees = degrees[1]
+        selection.cameraRotationZDegrees = degrees[2]
+        try applyTestAuthoringSelection(selection)
+        referenceMatchErrorPixels = solved.maximumErrorPixels
+        publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+        guard priorSelection != testAuthoringSelection else { return }
+        let manager = UndoManagerBox(undoManager)
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in
+                try? target.restoreCameraNavigationSelection(
+                    priorSelection, undoManager: manager.value
+                )
+                target.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            }
+        }
+        undoManager?.setActionName(actionName)
+    }
+
+    private func resolvedFourPointReferencePose(
+        focalLengthMillimeters: Double
+    ) throws -> (
+        pose: CameraNavigationPose, maximumErrorPixels: Double, rmsErrorPixels: Double
     ) {
         guard let authored = physicalAuthoringState,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
@@ -2949,7 +3048,7 @@ final class WorkspaceModel: ObservableObject {
         }
         request.image_width = authored.sensor.nativeWidth
         request.image_height = authored.sensor.nativeHeight
-        request.focal_length_millimeters = Float(authored.sceneLens.focalLengthMillimeters)
+        request.focal_length_millimeters = Float(focalLengthMillimeters)
         request.sensor_width_millimeters = Float(authored.sceneLens.sensorWidthMillimeters)
         request.sensor_height_millimeters = Float(authored.sceneLens.sensorHeightMillimeters)
         withUnsafeMutableBytes(of: &request.lens_shift_xy) { bytes in
@@ -2977,7 +3076,7 @@ final class WorkspaceModel: ObservableObject {
         let projectedGate = try geometry.corners.map { corner in
             guard let projected = ReferenceAnchorCameraMath.project(
                 pose: pose, point: corner, imageSize: gateSize,
-                focalLengthMillimeters: authored.sceneLens.focalLengthMillimeters,
+                focalLengthMillimeters: focalLengthMillimeters,
                 sensorSizeMillimeters: CGSize(
                     width: authored.sceneLens.sensorWidthMillimeters,
                     height: authored.sceneLens.sensorHeightMillimeters
@@ -2992,10 +3091,12 @@ final class WorkspaceModel: ObservableObject {
             cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
             deliveryPlacementID: placementID
         )
-        let maximumError = zip(projectedReference, referenceMatchCorners).map {
+        let errors = zip(projectedReference, referenceMatchCorners).map {
             hypot(Double($0.x - $1.x), Double($0.y - $1.y))
-        }.max() ?? 0
-        return (pose, maximumError)
+        }
+        let maximumError = errors.max() ?? 0
+        let rmsError = sqrt(errors.reduce(0) { $0 + $1 * $1 } / Double(max(1, errors.count)))
+        return (pose, maximumError, rmsError)
     }
 
     private func publishEnvironmentSetup(
@@ -3365,6 +3466,7 @@ final class WorkspaceModel: ObservableObject {
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
         authored.sceneLens.evaluationModel = selection.lensEvaluationModelID
+        authored.sceneLens.focalLengthMillimeters = selection.focalLengthMillimeters
         authored.sceneLens.focusDistanceMeters = selection.focusDistanceMeters
         authored.sceneLens.fStop = selection.fStop
         authored.sensor.bloomCrosstalkFraction = selection.sensorBloomCrosstalkFraction

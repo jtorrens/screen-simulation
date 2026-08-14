@@ -139,7 +139,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 25;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 26;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -201,6 +201,7 @@ pub struct ScreenTestAuthoringSelectionV21 {
     environment_sphere_radius_meters: f32,
     cover_glow_amount: f32,
     lens_preset_id: ScreenUtf8View,
+    focal_length_millimeters: f32,
     lens_amount: f32,
     autofocus_enabled: bool,
     focus_distance_meters: f32,
@@ -2247,6 +2248,7 @@ unsafe fn test_selection<'a>(
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
+        focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
         autofocus_enabled: selection.autofocus_enabled,
         focus_distance_meters: selection.focus_distance_meters,
@@ -2400,6 +2402,7 @@ fn resolved_test_selection(
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: utf8_view(selection.lens_preset_id),
+        focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
         autofocus_enabled: selection.autofocus_enabled,
         focus_distance_meters: selection.focus_distance_meters,

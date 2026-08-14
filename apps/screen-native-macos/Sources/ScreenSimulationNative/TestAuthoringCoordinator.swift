@@ -79,6 +79,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     var environmentSphereRadiusMeters: Double
     let coverGlowAmount: Double
     let lensPresetID: String
+    var focalLengthMillimeters: Double
     let lensAmount: Double
     let autofocusEnabled: Bool
     let focusDistanceMeters: Double
@@ -462,6 +463,7 @@ enum RustTestAuthoringCoordinator {
             environmentSphereRadiusMeters: Double(raw.environment_sphere_radius_meters),
             coverGlowAmount: Double(raw.cover_glow_amount),
             lensPresetID: string(raw.lens_preset_id),
+            focalLengthMillimeters: Double(raw.focal_length_millimeters),
             lensAmount: Double(raw.lens_amount),
             autofocusEnabled: raw.autofocus_enabled,
             focusDistanceMeters: Double(raw.focus_distance_meters),
@@ -578,6 +580,9 @@ enum RustTestAuthoringCoordinator {
                                             raw.environment_sphere_radius_meters = Float(selection.environmentSphereRadiusMeters)
                                             raw.cover_glow_amount = Float(selection.coverGlowAmount)
                                             raw.lens_preset_id = lensView
+                                            raw.focal_length_millimeters = Float(
+                                                selection.focalLengthMillimeters
+                                            )
                                             raw.lens_amount = Float(selection.lensAmount)
                                             raw.autofocus_enabled = selection.autofocusEnabled
                                             raw.focus_distance_meters = Float(selection.focusDistanceMeters)

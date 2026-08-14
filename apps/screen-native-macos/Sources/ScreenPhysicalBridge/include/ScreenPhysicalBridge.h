@@ -27,7 +27,7 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 25u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 26u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -96,6 +96,7 @@ typedef struct {
     float environment_sphere_radius_meters;
     float cover_glow_amount;
     ScreenUTF8View lens_preset_id;
+    float focal_length_millimeters;
     float lens_amount;
     bool autofocus_enabled;
     float focus_distance_meters;

@@ -21,7 +21,7 @@ use screen_recording::{
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 25;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 26;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -94,6 +94,7 @@ pub const ENVIRONMENT_RADIUS_CONTROL_ID: &str = "environment-sphere-radius-meter
 pub const IMAGE_ENVIRONMENT_SOURCE_ID: &str = "environment-image";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
+pub const FOCAL_LENGTH_CONTROL_ID: &str = "focal-length-millimeters";
 pub const LENS_EVALUATION_MODEL_CONTROL_ID: &str = "lens-evaluation-model";
 pub const LENS_AMOUNT_CONTROL_ID: &str = "lens-amount";
 pub const AUTOFOCUS_CONTROL_ID: &str = "autofocus";
@@ -374,6 +375,7 @@ pub struct TestAuthoringSelection<'a> {
     pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'a str,
+    pub focal_length_millimeters: f32,
     pub lens_evaluation_model_id: &'a str,
     pub lens_amount: f32,
     pub autofocus_enabled: bool,
@@ -448,6 +450,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'static str,
+    pub focal_length_millimeters: f32,
     pub lens_evaluation_model_id: &'static str,
     pub lens_amount: f32,
     pub autofocus_enabled: bool,
@@ -866,6 +869,7 @@ pub fn default_test_authoring_selection(
         environment_sphere_radius_meters: 5.0,
         cover_glow_amount: 1.0,
         lens_preset_id: capture.default_lens_preset_id,
+        focal_length_millimeters: lens(capture.default_lens_preset_id)?.nominal_focal_length.0,
         lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
         lens_amount: 1.0,
         autofocus_enabled: true,
@@ -955,6 +959,11 @@ pub fn resolve_test_authoring_selection(
         .raster_mode(selection.capture_raster_mode_id)
         .ok_or(TestAuthoringError::InvalidCaptureRasterMode)?;
     let lens = lens(selection.lens_preset_id)?;
+    if !selection.focal_length_millimeters.is_finite()
+        || !(1.0..=300.0).contains(&selection.focal_length_millimeters)
+    {
+        return Err(TestAuthoringError::InvalidGeometry);
+    }
     let lens_evaluation_model_id = match selection.lens_evaluation_model_id {
         "thin-lens" => "thin-lens",
         "vfx-2d-dof" => "vfx-2d-dof",
@@ -1242,6 +1251,7 @@ pub fn resolve_test_authoring_selection(
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: lens.id,
+        focal_length_millimeters: selection.focal_length_millimeters,
         lens_evaluation_model_id,
         lens_amount: selection.lens_amount,
         autofocus_enabled: selection.autofocus_enabled,
@@ -1636,6 +1646,15 @@ pub fn test_page_descriptor(
             lens_options,
             selection.lens_preset_id,
             capture.default_lens_preset_id,
+        ),
+        scalar_control(
+            FOCAL_LENGTH_CONTROL_ID,
+            "Distancia focal",
+            selection.focal_length_millimeters,
+            1.0,
+            300.0,
+            lens(selection.lens_preset_id)?.nominal_focal_length.0,
+            "mm",
         ),
         scalar_control(
             LENS_AMOUNT_CONTROL_ID,
@@ -2399,6 +2418,8 @@ pub fn apply_test_choice(
             next.capture_preset_id = capture.id;
             next.capture_raster_mode_id = capture.default_raster_mode_id;
             next.lens_preset_id = capture.default_lens_preset_id;
+            next.focal_length_millimeters =
+                lens(capture.default_lens_preset_id)?.nominal_focal_length.0;
             next.lens_evaluation_model_id =
                 lens_evaluation_model_id(capture.default_lens_evaluation_model);
             next.f_stop = capture.f_stop;
@@ -2468,7 +2489,10 @@ pub fn apply_test_choice(
                 next.environment_sphere_radius_meters = 5.0;
             }
         }
-        LENS_PRESET_CONTROL_ID => next.lens_preset_id = option_id,
+        LENS_PRESET_CONTROL_ID => {
+            next.lens_preset_id = option_id;
+            next.focal_length_millimeters = lens(option_id)?.nominal_focal_length.0;
+        }
         LENS_EVALUATION_MODEL_CONTROL_ID => match option_id {
             "thin-lens" | "vfx-2d-dof" => next.lens_evaluation_model_id = option_id,
             _ => return Err(TestAuthoringError::UnknownControl),
@@ -2519,6 +2543,7 @@ pub fn apply_test_choice(
         | ENVIRONMENT_RADIUS_CONTROL_ID
         | COVER_GLOW_AMOUNT_CONTROL_ID
         | LENS_AMOUNT_CONTROL_ID
+        | FOCAL_LENGTH_CONTROL_ID
         | AUTOFOCUS_CONTROL_ID
         | F_STOP_CONTROL_ID
         | SHUTTER_ANGLE_CONTROL_ID
@@ -2599,6 +2624,7 @@ fn unresolved_test_selection(
         environment_sphere_radius_meters: current.environment_sphere_radius_meters,
         cover_glow_amount: current.cover_glow_amount,
         lens_preset_id: current.lens_preset_id,
+        focal_length_millimeters: current.focal_length_millimeters,
         lens_amount: current.lens_amount,
         autofocus_enabled: current.autofocus_enabled,
         focus_distance_meters: current.focus_distance_meters,
@@ -2758,6 +2784,7 @@ pub fn apply_test_scalar(
         ENVIRONMENT_RADIUS_CONTROL_ID => next.environment_sphere_radius_meters = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
+        FOCAL_LENGTH_CONTROL_ID => next.focal_length_millimeters = value,
         F_STOP_CONTROL_ID => next.f_stop = value,
         SHUTTER_ANGLE_CONTROL_ID => next.exposure_time_seconds = value / 360.0 / current.frame_rate,
         SHUTTER_RECIPROCAL_CONTROL_ID => next.exposure_time_seconds = 1.0 / value,
@@ -2879,6 +2906,7 @@ mod tests {
             environment_sphere_radius_meters: 5.0,
             cover_glow_amount: 1.0,
             lens_preset_id: "iphone-16e-main-integrated",
+            focal_length_millimeters: 4.2,
             lens_amount: 1.0,
             autofocus_enabled: true,
             focus_distance_meters: 0.15,
@@ -3194,6 +3222,19 @@ mod tests {
             lens.iter().find(|control| matches!(
                 control,
                 TestControlRequirement::Scalar {
+                    id: FOCAL_LENGTH_CONTROL_ID,
+                    minimum: 1.0,
+                    maximum: 300.0,
+                    unit: "mm",
+                    ..
+                }
+            )),
+            Some(_)
+        ));
+        assert!(matches!(
+            lens.iter().find(|control| matches!(
+                control,
+                TestControlRequirement::Scalar {
                     id: F_STOP_CONTROL_ID,
                     ..
                 }
@@ -3207,6 +3248,8 @@ mod tests {
                 ..
             }
         )));
+        let authored = apply_test_scalar(asus(), FOCAL_LENGTH_CONTROL_ID, 73.5).unwrap();
+        assert!((authored.focal_length_millimeters - 73.5).abs() < 1.0e-6);
         assert!(page.phases[11].controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Scalar {

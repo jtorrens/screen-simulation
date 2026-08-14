@@ -1556,6 +1556,11 @@ struct ContentView: View {
                         }
                         .disabled(model.referenceMatchPinnedIndices.count != 4)
                         .help("Resolver una pose rígida con los cuatro objetivos verdes")
+                        Button("Buscar focal") {
+                            model.searchReferenceMatchFocalLength(undoManager: undoManager)
+                        }
+                        .disabled(model.referenceMatchPinnedIndices.count != 4)
+                        .help("Buscar la distancia focal y la pose con menor error de reproyección")
                         Button {
                             model.clearReferenceMatchTargets()
                         } label: { Image(systemName: "scope") }

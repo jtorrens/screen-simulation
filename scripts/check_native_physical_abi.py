@@ -91,7 +91,7 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 25u",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 26u",
         "ScreenTestAuthoringSelectionV21",
         "ScreenTestPhaseDescriptorV4",
         "ScreenTestControlDescriptorV5",
@@ -106,7 +106,7 @@ def validate_sources() -> None:
     )
     for token in (
         "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 14",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 25",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 26",
         "ScreenTestAuthoringSelectionV21",
         "ScreenTestPhaseDescriptorV4",
         "ScreenTestControlDescriptorV5",
