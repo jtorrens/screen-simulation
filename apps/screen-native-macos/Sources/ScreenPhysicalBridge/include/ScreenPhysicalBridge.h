@@ -379,20 +379,18 @@ typedef struct {
     float maximum_reprojection_error_pixels;
 } ScreenMatchedCameraPoseV1;
 
-#define SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION 1u
+#define SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION 2u
 typedef struct {
     uint32_t abi_version;
     uint32_t kind;
     float directions_xyz[12];
-    float angular_width_degrees;
-    float angular_height_degrees;
-    float roll_degrees;
+    float angular_diameter_degrees;
     float distance_meters;
     float radiance_candelas_per_square_meter;
     float temperature_kelvin;
     float tint;
     float edge_softness_degrees;
-} ScreenReflectionEmitterV1;
+} ScreenReflectionEmitterV2;
 
 typedef struct {
     uint32_t abi_version;
@@ -856,7 +854,7 @@ bool screen_recording_output_inverse_rgba32f(
     const char **error_message
 );
 bool screen_reflection_environment_compile_rgba32f(
-    const ScreenReflectionEmitterV1 *emitters,
+    const ScreenReflectionEmitterV2 *emitters,
     size_t emitter_count,
     float *output_rgba,
     uint32_t width,

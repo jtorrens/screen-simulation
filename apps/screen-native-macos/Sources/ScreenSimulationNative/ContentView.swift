@@ -1738,7 +1738,8 @@ struct ContentView: View {
                         referenceTargetCorners: model.referenceMatchEnabled
                             ? model.referenceMatchCorners : [],
                         reflectionHandles: model.selectedReflectionEmitterHandles,
-                        reflectionShapeClosed: model.selectedReflectionEmitter?.kind != .sun,
+                        reflectionShapeClosed: model.selectedReflectionEmitter?.kind == .window,
+                        reflectionShapeCircular: model.selectedReflectionEmitter?.kind == .practical,
                         cameraNavigationEnabled: !model.referenceMatchEnabled
                             && !model.reflectionEnvironmentEditorEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
@@ -1866,6 +1867,7 @@ struct MetalPreview: NSViewRepresentable {
     let referenceTargetCorners: [CGPoint]
     let reflectionHandles: [CGPoint]
     let reflectionShapeClosed: Bool
+    let reflectionShapeCircular: Bool
     let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
@@ -1907,6 +1909,7 @@ struct MetalPreview: NSViewRepresentable {
             referenceTargetCorners: referenceTargetCorners,
             reflectionHandles: reflectionHandles,
             reflectionShapeClosed: reflectionShapeClosed,
+            reflectionShapeCircular: reflectionShapeCircular,
             cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
             textureHeight: frame.height
@@ -2037,6 +2040,7 @@ final class MetalPreviewContainer: NSView {
     private var referenceTargetCorners: [CGPoint] = []
     private var reflectionHandles: [CGPoint] = []
     private var reflectionShapeClosed = false
+    private var reflectionShapeCircular = false
     private var referenceCornerDragIndex: Int?
     private var reflectionHandleDragIndex: Int?
     private var dragStartLocation: CGPoint?
@@ -2136,6 +2140,7 @@ final class MetalPreviewContainer: NSView {
         referenceTargetCorners: [CGPoint],
         reflectionHandles: [CGPoint],
         reflectionShapeClosed: Bool,
+        reflectionShapeCircular: Bool,
         cameraNavigationEnabled: Bool,
         textureWidth: Int,
         textureHeight: Int
@@ -2150,6 +2155,7 @@ final class MetalPreviewContainer: NSView {
         self.referenceTargetCorners = referenceTargetCorners
         self.reflectionHandles = reflectionHandles
         self.reflectionShapeClosed = reflectionShapeClosed
+        self.reflectionShapeCircular = reflectionShapeCircular
         self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
@@ -2510,7 +2516,15 @@ final class MetalPreviewContainer: NSView {
         referenceTargetLayer.frame = bounds
         referenceTargetLayer.path = targetHandles
         let reflectionBoundary = CGMutablePath()
-        if let first = reflectionHandles.first {
+        if reflectionShapeCircular, reflectionHandles.count == 2 {
+            let center = displayedPoint(forRaster: reflectionHandles[0])
+            let radiusPoint = displayedPoint(forRaster: reflectionHandles[1])
+            let radius = hypot(radiusPoint.x - center.x, radiusPoint.y - center.y)
+            reflectionBoundary.addEllipse(in: CGRect(
+                x: center.x - radius, y: center.y - radius,
+                width: radius * 2, height: radius * 2
+            ))
+        } else if let first = reflectionHandles.first {
             reflectionBoundary.move(to: displayedPoint(forRaster: first))
             for point in reflectionHandles.dropFirst() {
                 reflectionBoundary.addLine(to: displayedPoint(forRaster: point))

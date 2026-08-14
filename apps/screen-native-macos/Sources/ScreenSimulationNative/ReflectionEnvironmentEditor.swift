@@ -4,21 +4,21 @@ import simd
 import SwiftUI
 
 enum AuthoredReflectionEmitterKind: String, CaseIterable, Identifiable, Sendable {
-    case area
+    case practical
     case window
     case sun
 
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .area: "Luz práctica"
+        case .practical: "Luz práctica"
         case .window: "Ventana / puerta"
         case .sun: "Fuente lejana"
         }
     }
     var systemImage: String {
         switch self {
-        case .area: "lightbulb.max"
+        case .practical: "lightbulb.max"
         case .window: "rectangle.on.rectangle"
         case .sun: "sun.max"
         }
@@ -28,8 +28,8 @@ enum AuthoredReflectionEmitterKind: String, CaseIterable, Identifiable, Sendable
 struct AuthoredReflectionEmitter: Identifiable, Equatable, Sendable {
     let id: UUID
     var kind: AuthoredReflectionEmitterKind
-    /// Delivery-Raster pixel coordinates. Area/window use four ordered points;
-    /// sun uses one point.
+    /// Delivery-Raster pixel coordinates. Practical uses center/radius,
+    /// window uses four ordered corners and sun uses one center point.
     var handles: [CGPoint]
     var distanceMeters: Double
     var radianceCandelasPerSquareMeter: Double
@@ -57,7 +57,7 @@ enum ReflectionEnvironmentEditorError: LocalizedError {
 
 enum ReflectionEnvironmentCompiler {
     static func compile(
-        emitters: [ScreenReflectionEmitterV1], width: Int, height: Int
+        emitters: [ScreenReflectionEmitterV2], width: Int, height: Int
     ) throws -> [Float] {
         guard !emitters.isEmpty else { throw ReflectionEnvironmentEditorError.noEmitters }
         var pixels = [Float](repeating: 0, count: width * height * 4)

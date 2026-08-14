@@ -18,9 +18,9 @@ pub use recording::{
     prepare_recording_request,
 };
 pub use reflection_environment::{
-    REFLECTION_ENVIRONMENT_RIG_ID, ReflectionAreaLight, ReflectionEmitter,
-    ReflectionEnvironmentError, ReflectionEnvironmentRaster, ReflectionEnvironmentRig,
-    ReflectionLightAppearance, ReflectionSunLight, ReflectionWindowLight,
+    REFLECTION_ENVIRONMENT_RIG_ID, ReflectionEmitter, ReflectionEnvironmentError,
+    ReflectionEnvironmentRaster, ReflectionEnvironmentRig, ReflectionLightAppearance,
+    ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight,
     compile_reflection_environment,
 };
 pub use test_authoring::{

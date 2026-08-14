@@ -1103,7 +1103,7 @@ final class WorkspaceModel: ObservableObject {
         // must not enter Environment Setup: that diagnostic replaces the
         // reference with a selected HDRI and cannot exist before generation.
         physicalModel.setQuality(.setup)
-        if reflectionEmitters.isEmpty { addReflectionEmitter(.area) }
+        if reflectionEmitters.isEmpty { addReflectionEmitter(.practical) }
         rebuildPhysicalSelectedFrame()
     }
 
@@ -1114,8 +1114,11 @@ final class WorkspaceModel: ObservableObject {
         let center = CGPoint(x: usable.midX, y: usable.midY)
         let handles: [CGPoint]
         switch kind {
-        case .area:
-            handles = rectangleHandles(center: center, width: usable.width * 0.12, height: usable.height * 0.08)
+        case .practical:
+            handles = [
+                center,
+                CGPoint(x: center.x + usable.width * 0.06, y: center.y),
+            ]
         case .window:
             handles = rectangleHandles(center: center, width: usable.width * 0.28, height: usable.height * 0.34)
         case .sun:
@@ -1168,10 +1171,22 @@ final class WorkspaceModel: ObservableObject {
               reflectionEmitters[emitterIndex].handles.indices.contains(index),
               let frame = metalFrame
         else { return }
-        reflectionEmitters[emitterIndex].handles[index] = CGPoint(
+        let constrained = CGPoint(
             x: min(CGFloat(frame.width - 1), max(0, point.x)),
             y: min(CGFloat(frame.height - 1), max(0, point.y))
         )
+        if reflectionEmitters[emitterIndex].kind == .practical,
+           index == 0,
+           reflectionEmitters[emitterIndex].handles.count == 2 {
+            let prior = reflectionEmitters[emitterIndex].handles[0]
+            let delta = CGPoint(x: constrained.x - prior.x, y: constrained.y - prior.y)
+            let priorRadius = reflectionEmitters[emitterIndex].handles[1]
+            reflectionEmitters[emitterIndex].handles[1] = CGPoint(
+                x: min(CGFloat(frame.width - 1), max(0, priorRadius.x + delta.x)),
+                y: min(CGFloat(frame.height - 1), max(0, priorRadius.y + delta.y))
+            )
+        }
+        reflectionEmitters[emitterIndex].handles[index] = constrained
     }
 
     func endReflectionHandleDrag() {
@@ -1234,12 +1249,12 @@ final class WorkspaceModel: ObservableObject {
 
     private func reflectionBridgeEmitter(
         _ emitter: AuthoredReflectionEmitter
-    ) throws -> ScreenReflectionEmitterV1 {
+    ) throws -> ScreenReflectionEmitterV2 {
         let directions = try reflectionDirections(for: emitter.handles)
         guard !directions.isEmpty else { throw ReflectionEnvironmentEditorError.invalidGeometry }
-        var value = ScreenReflectionEmitterV1()
+        var value = ScreenReflectionEmitterV2()
         value.abi_version = SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION
-        value.kind = switch emitter.kind { case .area: 0; case .window: 1; case .sun: 2 }
+        value.kind = switch emitter.kind { case .practical: 0; case .window: 1; case .sun: 2 }
         withUnsafeMutableBytes(of: &value.directions_xyz) { bytes in
             let output = bytes.bindMemory(to: Float.self)
             for index in 0 ..< min(4, directions.count) {
@@ -1248,37 +1263,12 @@ final class WorkspaceModel: ObservableObject {
                 output[index * 3 + 2] = Float(directions[index].z)
             }
         }
-        if emitter.kind == .area, directions.count == 4 {
-            let summed = directions.reduce(SIMD3<Double>.zero, +)
-            let resolvedCenter = simd_normalize(summed)
-            withUnsafeMutableBytes(of: &value.directions_xyz) { bytes in
-                let output = bytes.bindMemory(to: Float.self)
-                output[0] = Float(resolvedCenter.x)
-                output[1] = Float(resolvedCenter.y)
-                output[2] = Float(resolvedCenter.z)
-            }
-            value.angular_width_degrees = Float(
-                0.5 * (angleDegrees(directions[0], directions[1]) + angleDegrees(directions[3], directions[2]))
+        if emitter.kind == .practical, directions.count == 2 {
+            value.angular_diameter_degrees = Float(
+                2 * angleDegrees(directions[0], directions[1])
             )
-            value.angular_height_degrees = Float(
-                0.5 * (angleDegrees(directions[0], directions[3]) + angleDegrees(directions[1], directions[2]))
-            )
-            let reference = abs(resolvedCenter.y) < 0.95
-                ? SIMD3<Double>(0, 1, 0) : SIMD3<Double>(1, 0, 0)
-            let tangent0 = simd_normalize(simd_cross(reference, resolvedCenter))
-            let bitangent0 = simd_normalize(simd_cross(resolvedCenter, tangent0))
-            let horizontal = (directions[1] + directions[2])
-                - (directions[0] + directions[3])
-            let projected = horizontal - resolvedCenter * simd_dot(horizontal, resolvedCenter)
-            if simd_length_squared(projected) > 1.0e-12 {
-                let tangent = simd_normalize(projected)
-                value.roll_degrees = Float(
-                    atan2(simd_dot(tangent, bitangent0), simd_dot(tangent, tangent0))
-                        * 180 / .pi
-                )
-            }
         } else if emitter.kind == .sun {
-            value.angular_width_degrees = Float(emitter.sunAngularDiameterDegrees)
+            value.angular_diameter_degrees = Float(emitter.sunAngularDiameterDegrees)
         }
         value.distance_meters = Float(emitter.distanceMeters)
         value.radiance_candelas_per_square_meter = Float(emitter.radianceCandelasPerSquareMeter)

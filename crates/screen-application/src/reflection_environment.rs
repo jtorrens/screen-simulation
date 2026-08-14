@@ -71,36 +71,27 @@ impl ReflectionLightAppearance {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ReflectionAreaLight {
+pub struct ReflectionPracticalLight {
     pub center_direction: Vec3,
-    pub angular_width_degrees: f32,
-    pub angular_height_degrees: f32,
-    pub roll_degrees: f32,
+    pub angular_diameter_degrees: f32,
     /// Derives plausible physical dimensions; it does not add HDRI parallax.
     pub distance_meters: f32,
     pub appearance: ReflectionLightAppearance,
 }
 
-impl ReflectionAreaLight {
-    pub fn physical_size_meters(self) -> Result<(f32, f32), ReflectionEnvironmentError> {
+impl ReflectionPracticalLight {
+    pub fn physical_diameter_meters(self) -> Result<f32, ReflectionEnvironmentError> {
         self.validate()?;
-        Ok((
-            2.0 * self.distance_meters * (self.angular_width_degrees.to_radians() * 0.5).tan(),
-            2.0 * self.distance_meters * (self.angular_height_degrees.to_radians() * 0.5).tan(),
-        ))
+        Ok(2.0 * self.distance_meters * (self.angular_diameter_degrees.to_radians() * 0.5).tan())
     }
     fn validate(self) -> Result<Self, ReflectionEnvironmentError> {
         unit(self.center_direction)?;
-        if !self.angular_width_degrees.is_finite()
-            || !(0.05..=170.0).contains(&self.angular_width_degrees)
-            || !self.angular_height_degrees.is_finite()
-            || !(0.05..=170.0).contains(&self.angular_height_degrees)
-            || !self.roll_degrees.is_finite()
-            || !(-180.0..=180.0).contains(&self.roll_degrees)
+        if !self.angular_diameter_degrees.is_finite()
+            || !(0.05..=170.0).contains(&self.angular_diameter_degrees)
             || !self.distance_meters.is_finite()
             || !(0.01..=10_000.0).contains(&self.distance_meters)
         {
-            return Err(ReflectionEnvironmentError::InvalidAreaLight);
+            return Err(ReflectionEnvironmentError::InvalidPracticalLight);
         }
         self.appearance.validate()?;
         Ok(self)
@@ -158,7 +149,7 @@ impl ReflectionSunLight {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReflectionEmitter {
-    Area(ReflectionAreaLight),
+    Practical(ReflectionPracticalLight),
     Window(ReflectionWindowLight),
     Sun(ReflectionSunLight),
 }
@@ -166,7 +157,7 @@ pub enum ReflectionEmitter {
 impl ReflectionEmitter {
     fn validate(self) -> Result<Self, ReflectionEnvironmentError> {
         match self {
-            Self::Area(v) => v.validate().map(Self::Area),
+            Self::Practical(v) => v.validate().map(Self::Practical),
             Self::Window(v) => v.validate().map(Self::Window),
             Self::Sun(v) => v.validate().map(Self::Sun),
         }
@@ -253,12 +244,9 @@ pub fn compile_reflection_environment(
 
 #[derive(Clone, Copy)]
 enum Shape {
-    Area {
+    Practical {
         center: Vec3,
-        tangent: Vec3,
-        bitangent: Vec3,
-        half_width: f32,
-        half_height: f32,
+        radius: f32,
         softness: f32,
     },
     Window {
@@ -283,36 +271,14 @@ impl PreparedEmitter {
     fn new(emitter: ReflectionEmitter) -> Result<Self, ReflectionEnvironmentError> {
         emitter.validate()?;
         let (shape, appearance) = match emitter {
-            ReflectionEmitter::Area(v) => {
-                let center = unit(v.center_direction)?;
-                let reference = if center.y.abs() < 0.95 {
-                    Vec3 {
-                        x: 0.0,
-                        y: 1.0,
-                        z: 0.0,
-                    }
-                } else {
-                    Vec3 {
-                        x: 1.0,
-                        y: 0.0,
-                        z: 0.0,
-                    }
-                };
-                let t0 = unit(cross(reference, center))?;
-                let b0 = unit(cross(center, t0))?;
-                let (s, c) = v.roll_degrees.to_radians().sin_cos();
-                (
-                    Shape::Area {
-                        center,
-                        tangent: add(scale(t0, c), scale(b0, s)),
-                        bitangent: add(scale(b0, c), scale(t0, -s)),
-                        half_width: v.angular_width_degrees.to_radians() * 0.5,
-                        half_height: v.angular_height_degrees.to_radians() * 0.5,
-                        softness: v.appearance.edge_softness_degrees.to_radians(),
-                    },
-                    v.appearance,
-                )
-            }
+            ReflectionEmitter::Practical(v) => (
+                Shape::Practical {
+                    center: unit(v.center_direction)?,
+                    radius: v.angular_diameter_degrees.to_radians() * 0.5,
+                    softness: v.appearance.edge_softness_degrees.to_radians(),
+                },
+                v.appearance,
+            ),
             ReflectionEmitter::Window(v) => {
                 let corners = normalized_corners(v.corner_directions)?;
                 let center = unit(corners.into_iter().fold(
@@ -352,25 +318,11 @@ impl PreparedEmitter {
 
     fn weight(self, d: Vec3) -> f32 {
         match self.shape {
-            Shape::Area {
+            Shape::Practical {
                 center,
-                tangent,
-                bitangent,
-                half_width,
-                half_height,
+                radius,
                 softness,
-            } => {
-                let forward = dot(d, center);
-                if forward <= 0.0 {
-                    return 0.0;
-                }
-                edge(dot(d, tangent).atan2(forward).abs(), half_width, softness)
-                    * edge(
-                        dot(d, bitangent).atan2(forward).abs(),
-                        half_height,
-                        softness,
-                    )
-            }
+            } => edge(dot(center, d).clamp(-1.0, 1.0).acos(), radius, softness),
             Shape::Window {
                 edges,
                 signs,
@@ -446,7 +398,7 @@ pub enum ReflectionEnvironmentError {
     InvalidRig,
     InvalidAppearance,
     InvalidDirection,
-    InvalidAreaLight,
+    InvalidPracticalLight,
     InvalidWindowLight,
     InvalidSunLight,
     InvalidRaster,
@@ -457,7 +409,7 @@ impl fmt::Display for ReflectionEnvironmentError {
             Self::InvalidRig => "reflection environment rig is invalid",
             Self::InvalidAppearance => "reflection light appearance is invalid",
             Self::InvalidDirection => "reflection light direction is invalid",
-            Self::InvalidAreaLight => "reflection area light is invalid",
+            Self::InvalidPracticalLight => "reflection practical light is invalid",
             Self::InvalidWindowLight => "reflection window light is invalid",
             Self::InvalidSunLight => "reflection sun light is invalid",
             Self::InvalidRaster => "reflection environment raster must be a bounded 2:1 image",
@@ -504,28 +456,24 @@ mod tests {
         );
     }
     #[test]
-    fn distance_derives_physical_size() {
-        let light = ReflectionAreaLight {
+    fn distance_derives_practical_diameter() {
+        let light = ReflectionPracticalLight {
             center_direction: forward(),
-            angular_width_degrees: 20.0,
-            angular_height_degrees: 10.0,
-            roll_degrees: 0.0,
+            angular_diameter_degrees: 20.0,
             distance_meters: 2.0,
             appearance: ReflectionLightAppearance::WARM_PRACTICAL,
         };
-        let size = light.physical_size_meters().unwrap();
-        assert!((size.0 - 4.0 * 10.0_f32.to_radians().tan()).abs() < 1.0e-6);
+        let diameter = light.physical_diameter_meters().unwrap();
+        assert!((diameter - 4.0 * 10.0_f32.to_radians().tan()).abs() < 1.0e-6);
     }
     #[test]
-    fn compiles_non_negative_centered_area() {
+    fn compiles_non_negative_centered_practical_disk() {
         let rig = ReflectionEnvironmentRig {
-            emitters: vec![ReflectionEmitter::Area(ReflectionAreaLight {
+            emitters: vec![ReflectionEmitter::Practical(ReflectionPracticalLight {
                 center_direction: forward(),
-                angular_width_degrees: 24.0,
-                angular_height_degrees: 12.0,
-                roll_degrees: 0.0,
+                angular_diameter_degrees: 24.0,
                 distance_meters: 3.0,
-                appearance: ReflectionLightAppearance::DAYLIGHT_WINDOW,
+                appearance: ReflectionLightAppearance::WARM_PRACTICAL,
             })],
             background_radiance_acescg: LinearRgb::new(0.0, 0.0, 0.0),
         };
@@ -539,6 +487,30 @@ mod tests {
         );
         assert!(raster.rgba_acescg[64 * 256 + 128][1] > 1_000.0);
         assert_eq!(raster.rgba_acescg[64 * 256], [0.0, 0.0, 0.0, 1.0]);
+    }
+    #[test]
+    fn practical_source_is_angularly_circular() {
+        let prepared =
+            PreparedEmitter::new(ReflectionEmitter::Practical(ReflectionPracticalLight {
+                center_direction: forward(),
+                angular_diameter_degrees: 24.0,
+                distance_meters: 3.0,
+                appearance: ReflectionLightAppearance::WARM_PRACTICAL,
+            }))
+            .unwrap();
+        let direction = |longitude: f32, latitude: f32| {
+            let (slon, clon) = longitude.to_radians().sin_cos();
+            let (slat, clat) = latitude.to_radians().sin_cos();
+            Vec3 {
+                x: slon * clat,
+                y: slat,
+                z: clon * clat,
+            }
+        };
+        assert!(
+            (prepared.weight(direction(8.0, 0.0)) - prepared.weight(direction(0.0, 8.0))).abs()
+                < 1.0e-6
+        );
     }
     #[test]
     fn spherical_window_is_bounded() {

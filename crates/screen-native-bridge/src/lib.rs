@@ -19,8 +19,8 @@ use screen_application::{
     CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, DeliveryRasterBackground,
     DeliveryRasterPlacement, DeliveryRasterRequest, PhysicalIntermediate,
     PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, ProceduralTestPattern,
-    RasterPlacement, ReflectionAreaLight, ReflectionEmitter, ReflectionEnvironmentRig,
-    ReflectionLightAppearance, ReflectionSunLight, ReflectionWindowLight,
+    RasterPlacement, ReflectionEmitter, ReflectionEnvironmentRig, ReflectionLightAppearance,
+    ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight,
     ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, RollingDirection,
     SensorReadout, TestAuthoringError, TestAuthoringSelection, TestControlRequirement,
     TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice, apply_test_scalar,
@@ -46,19 +46,17 @@ use screen_panel::{
     ResidualFlicker, StripeLayout,
 };
 
-pub const SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION: u32 = 1;
+pub const SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenReflectionEmitterV1 {
+pub struct ScreenReflectionEmitterV2 {
     pub abi_version: u32,
-    /// 0 practical/area, 1 convex window, 2 distant sun.
+    /// 0 circular practical, 1 convex window, 2 distant sun.
     pub kind: u32,
-    /// Area/sun use the first direction; window uses four ordered directions.
+    /// Practical/sun use the first direction; window uses four ordered corners.
     pub directions_xyz: [f32; 12],
-    pub angular_width_degrees: f32,
-    pub angular_height_degrees: f32,
-    pub roll_degrees: f32,
+    pub angular_diameter_degrees: f32,
     pub distance_meters: f32,
     pub radiance_candelas_per_square_meter: f32,
     pub temperature_kelvin: f32,
@@ -4330,7 +4328,7 @@ pub unsafe extern "C" fn screen_recording_output_inverse_rgba32f(
 /// Compiles a typed reflection-light rig into a caller-owned 2:1 linear ACEScg raster.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_reflection_environment_compile_rgba32f(
-    emitters: *const ScreenReflectionEmitterV1,
+    emitters: *const ScreenReflectionEmitterV2,
     emitter_count: usize,
     output_rgba: *mut f32,
     width: u32,
@@ -4366,11 +4364,9 @@ pub unsafe extern "C" fn screen_reflection_environment_compile_rgba32f(
             edge_softness_degrees: emitter.edge_softness_degrees,
         };
         resolved.push(match emitter.kind {
-            0 => ReflectionEmitter::Area(ReflectionAreaLight {
+            0 => ReflectionEmitter::Practical(ReflectionPracticalLight {
                 center_direction: direction(0),
-                angular_width_degrees: emitter.angular_width_degrees,
-                angular_height_degrees: emitter.angular_height_degrees,
-                roll_degrees: emitter.roll_degrees,
+                angular_diameter_degrees: emitter.angular_diameter_degrees,
                 distance_meters: emitter.distance_meters,
                 appearance,
             }),
@@ -4381,7 +4377,7 @@ pub unsafe extern "C" fn screen_reflection_environment_compile_rgba32f(
             }),
             2 => ReflectionEmitter::Sun(ReflectionSunLight {
                 direction: direction(0),
-                angular_diameter_degrees: emitter.angular_width_degrees,
+                angular_diameter_degrees: emitter.angular_diameter_degrees,
                 appearance,
             }),
             _ => {
@@ -4428,13 +4424,11 @@ mod tests {
 
     #[test]
     fn reflection_environment_bridge_compiles_typed_emitters_and_rejects_old_abi() {
-        let emitter = ScreenReflectionEmitterV1 {
+        let emitter = ScreenReflectionEmitterV2 {
             abi_version: SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION,
             kind: 0,
             directions_xyz: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            angular_width_degrees: 12.0,
-            angular_height_degrees: 8.0,
-            roll_degrees: 0.0,
+            angular_diameter_degrees: 12.0,
             distance_meters: 2.0,
             radiance_candelas_per_square_meter: 1_000.0,
             temperature_kelvin: 3_200.0,
