@@ -12,6 +12,11 @@ struct DecodedNativeFrame: Sendable {
     let sourceDescription: String
 }
 
+struct NativeVideoTimelineInfo: Sendable, Equatable {
+    let frameRate: Double
+    let frameCount: Int
+}
+
 enum NativeMediaError: Error, LocalizedError {
     case unsupportedType(String)
     case unreadable(String)
@@ -49,6 +54,22 @@ enum NativeMediaDecoder {
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { throw NativeMediaError.unreadable(url.lastPathComponent) }
         return try decode(image: image, description: url.lastPathComponent)
+    }
+
+    static func videoTimelineInfo(url: URL) async throws -> NativeVideoTimelineInfo? {
+        guard videoExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration)
+        let track = try await asset.loadTracks(withMediaType: .video).first
+        guard let track, duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0 else {
+            throw NativeMediaError.unreadable(url.lastPathComponent)
+        }
+        let nominalRate = Double(try await track.load(.nominalFrameRate))
+        let frameRate = nominalRate.isFinite && nominalRate > 0 ? nominalRate : 24
+        return NativeVideoTimelineInfo(
+            frameRate: frameRate,
+            frameCount: max(1, Int((duration.seconds * frameRate).rounded()))
+        )
     }
 
     private static func decodeOpenEXR(_ url: URL) throws -> DecodedNativeFrame {

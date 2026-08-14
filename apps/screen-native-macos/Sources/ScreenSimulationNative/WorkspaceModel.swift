@@ -83,6 +83,16 @@ enum ReferenceMatchRasterMapping {
     }
 }
 
+enum ReferenceTimelineAuthority {
+    static func resolve(
+        source: NativeVideoTimelineInfo,
+        reference: NativeVideoTimelineInfo?,
+        matchEnabled: Bool
+    ) -> NativeVideoTimelineInfo {
+        matchEnabled ? reference ?? source : source
+    }
+}
+
 @MainActor
 final class WorkspaceModel: ObservableObject {
     private final class UndoManagerBox: @unchecked Sendable {
@@ -219,6 +229,10 @@ final class WorkspaceModel: ObservableObject {
     private var referenceSourceURL: URL?
     private var referenceInputTransformID: String?
     private var referenceSourceHash: String?
+    private var sourceTimelineInfo = NativeVideoTimelineInfo(frameRate: 24, frameCount: 1)
+    private var referenceTimelineInfo: NativeVideoTimelineInfo?
+    private var referencePlaybackStartedAt: CFTimeInterval?
+    private var referencePlaybackStartFrame = 0
     private var referenceMatchStartSelection: TestAuthoringResolvedSelection?
     private var referenceMatchPendingPose: CameraNavigationPose?
     private var referenceRefreshTask: Task<Void, Never>?
@@ -1393,10 +1407,11 @@ final class WorkspaceModel: ObservableObject {
         defaultSignalMatrix = resolvedMatrix
         defaultSignalRange = resolvedRange
         defaultSignalColorModel = resolvedColorModel
-        currentFrame = 0
-        frameRate = 24
-        frameCount = pattern == .animatedCheckerboard ? 240 : 1
-        outFrame = frameCount - 1
+        sourceTimelineInfo = NativeVideoTimelineInfo(
+            frameRate: 24,
+            frameCount: pattern == .animatedCheckerboard ? 240 : 1
+        )
+        applyTimelineAuthority(resetRange: true)
         do {
             if let selection = currentTestAuthoringSelection() {
                 let resolved = try RustTestAuthoringCoordinator.apply(
@@ -1473,16 +1488,19 @@ final class WorkspaceModel: ObservableObject {
         referenceSourceURL = nil
         referenceInputTransformID = nil
         referenceSourceHash = nil
+        referenceTimelineInfo = nil
         referenceFrameName = nil
         referenceMatchCorners = []
         referenceMatchErrorPixels = nil
         referenceMatchEnabled = false
+        applyTimelineAuthority(resetRange: true)
         rebuildPhysicalSelectedFrame()
     }
 
     func setReferenceMatchEnabled(_ enabled: Bool) {
         guard referenceACEScgFrame != nil else { return }
         referenceMatchEnabled = enabled
+        applyTimelineAuthority(resetRange: true)
         if enabled {
             physicalModel.setQuality(.setup)
             publishReferenceMatchSetup(resetTargetsFromProjection: referenceMatchCorners.count != 4)
@@ -1494,6 +1512,7 @@ final class WorkspaceModel: ObservableObject {
     private func loadReferenceFrame(_ url: URL, inputTransformID: String) async {
         do {
             let managed = try ReferenceAssetLibrary.importAsset(from: url)
+            let timeline = try await NativeMediaDecoder.videoTimelineInfo(url: managed.url)
             let decoded = try await NativeMediaDecoder.decode(
                 url: managed.url,
                 time: CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
@@ -1512,10 +1531,12 @@ final class WorkspaceModel: ObservableObject {
             referenceSourceURL = managed.url
             referenceInputTransformID = input.id
             referenceSourceHash = managed.sha256
+            referenceTimelineInfo = timeline
             referenceFrameName = managed.originalFileName
             referenceMatchCorners = []
             referenceMatchErrorPixels = nil
             referenceMatchEnabled = true
+            applyTimelineAuthority(resetRange: true)
             physicalModel.setQuality(.setup)
             publishReferenceMatchSetup(resetTargetsFromProjection: true)
             status = "Referencia · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
@@ -1619,11 +1640,10 @@ final class WorkspaceModel: ObservableObject {
             sourceIsPattern = false
             sourceName = info.name
             sourceDetail = info.detail + (detection.note.map { " · Metadata: \($0)" } ?? "")
-            frameRate = info.frameRate
-            frameCount = info.frameCount
-            currentFrame = 0
-            inFrame = 0
-            outFrame = max(0, info.frameCount - 1)
+            sourceTimelineInfo = NativeVideoTimelineInfo(
+                frameRate: info.frameRate, frameCount: info.frameCount
+            )
+            applyTimelineAuthority(resetRange: true)
             includeAudio = info.hasAudio
             session.play()
             try await Task.sleep(for: .milliseconds(20))
@@ -1688,6 +1708,13 @@ final class WorkspaceModel: ObservableObject {
             restartPlayback(at: activeFrameRange.lowerBound)
             return
         }
+        if referenceControlsTimeline {
+            referencePlaybackStartFrame = currentFrame
+            referencePlaybackStartedAt = CACurrentMediaTime()
+            session.pause()
+            isPlaying = true
+            return
+        }
         isPlaying = true
         if sourceIsPattern { return }
         session.play()
@@ -1695,6 +1722,7 @@ final class WorkspaceModel: ObservableObject {
 
     func pause() {
         isPlaying = false
+        referencePlaybackStartedAt = nil
         session.pause()
     }
 
@@ -1707,7 +1735,9 @@ final class WorkspaceModel: ObservableObject {
         } else {
             Task {
                 do {
-                    let time = session.time(forFrame: currentFrame)
+                    let time = CMTime(
+                        seconds: requestedSeconds, preferredTimescale: 60_000
+                    )
                     try await session.seek(to: time)
                     try present(try await session.exactSample(at: time))
                     refreshReferenceFrameForCurrentTime()
@@ -2209,6 +2239,7 @@ final class WorkspaceModel: ObservableObject {
                 referenceSourceURL = nil
                 referenceInputTransformID = nil
                 referenceSourceHash = nil
+                referenceTimelineInfo = nil
                 referenceFrameName = nil
                 referenceMatchCorners = []
                 referenceMatchEnabled = false
@@ -2261,6 +2292,7 @@ final class WorkspaceModel: ObservableObject {
         keepAuthoredCorners: Bool
     ) async {
         do {
+            let timeline = try await NativeMediaDecoder.videoTimelineInfo(url: managed.url)
             let decoded = try await NativeMediaDecoder.decode(
                 url: managed.url,
                 time: CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
@@ -2272,6 +2304,8 @@ final class WorkspaceModel: ObservableObject {
                 width: decoded.width, height: decoded.height,
                 encodedRGBA: decoded.rgba, input: input, alpha: .ignore
             )
+            referenceTimelineInfo = timeline
+            applyTimelineAuthority(resetRange: true)
             publishReferenceMatchSetup(
                 resetTargetsFromProjection: !keepAuthoredCorners || referenceMatchCorners.count != 4
             )
@@ -2306,6 +2340,30 @@ final class WorkspaceModel: ObservableObject {
             decodeToPreviewMilliseconds = completedMilliseconds
         }
         guard isPlaying else { return }
+        if referenceControlsTimeline, let started = referencePlaybackStartedAt {
+            let elapsed = max(0, CACurrentMediaTime() - started)
+            let target = referencePlaybackStartFrame + Int((elapsed * frameRate).rounded(.down))
+            if target > activeFrameRange.upperBound {
+                if loopPlayback {
+                    restartPlayback(at: activeFrameRange.lowerBound)
+                } else {
+                    currentFrame = activeFrameRange.upperBound
+                    pause()
+                }
+                return
+            }
+            guard target != currentFrame else { return }
+            currentFrame = target
+            if sourceIsPattern {
+                renderPattern()
+            } else {
+                renderCurrentMediaFrame(at: CMTime(
+                    seconds: requestedSeconds, preferredTimescale: 60_000
+                ))
+            }
+            refreshReferenceFrameForCurrentTime()
+            return
+        }
         if currentFrame >= activeFrameRange.upperBound {
             if loopPlayback {
                 restartPlayback(at: activeFrameRange.lowerBound)
@@ -2358,6 +2416,20 @@ final class WorkspaceModel: ObservableObject {
 
     private func restartPlayback(at frame: Int) {
         currentFrame = frame
+        if referenceControlsTimeline {
+            referencePlaybackStartFrame = frame
+            referencePlaybackStartedAt = CACurrentMediaTime()
+            isPlaying = true
+            if sourceIsPattern {
+                renderPattern()
+            } else {
+                renderCurrentMediaFrame(at: CMTime(
+                    seconds: requestedSeconds, preferredTimescale: 60_000
+                ))
+            }
+            refreshReferenceFrameForCurrentTime()
+            return
+        }
         if sourceIsPattern {
             isPlaying = true
             renderPattern()
@@ -2365,7 +2437,7 @@ final class WorkspaceModel: ObservableObject {
         }
         Task {
             do {
-                let time = session.time(forFrame: frame)
+                let time = CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
                 try await session.seek(to: time)
                 try present(try await session.exactSample(at: time))
                 session.play()
@@ -2378,7 +2450,9 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func rebuildCurrent() {
-        sourceIsPattern ? renderPattern() : renderCurrentMediaFrame(at: session.time(forFrame: currentFrame))
+        sourceIsPattern ? renderPattern() : renderCurrentMediaFrame(at: CMTime(
+            seconds: requestedSeconds, preferredTimescale: 60_000
+        ))
     }
 
     private func renderPattern() {
@@ -2462,7 +2536,9 @@ final class WorkspaceModel: ObservableObject {
             )
             return try adjustedSourceFrame(base)
         }
-        let time = session.time(forFrame: index)
+        let time = CMTime(
+            seconds: Double(index) / frameRate, preferredTimescale: 60_000
+        )
         try Task.checkCancellation()
         guard let sample = try await session.exactSample(at: time) else {
             throw NativeMediaError.unreadable("frame \(index)")
@@ -2636,7 +2712,33 @@ final class WorkspaceModel: ObservableObject {
             pose.orientation.imag.z, pose.orientation.real,
         ]
         authored.cameraLookAt = nil
-        publishReferenceMatchSetup(resetTargetsFromProjection: false, authoredOverride: authored)
+        publishReferenceMatchSetup(resetTargetsFromProjection: true, authoredOverride: authored)
+    }
+
+    private var referenceControlsTimeline: Bool {
+        referenceMatchEnabled && referenceTimelineInfo != nil
+    }
+
+    private func applyTimelineAuthority(resetRange: Bool) {
+        let previousSeconds = Double(currentFrame) / max(frameRate, 1)
+        let timeline = ReferenceTimelineAuthority.resolve(
+            source: sourceTimelineInfo,
+            reference: referenceTimelineInfo,
+            matchEnabled: referenceMatchEnabled
+        )
+        frameRate = timeline.frameRate
+        frameCount = max(1, timeline.frameCount)
+        currentFrame = min(
+            frameCount - 1,
+            max(0, Int((previousSeconds * frameRate).rounded()))
+        )
+        if resetRange {
+            inFrame = 0
+            outFrame = frameCount - 1
+        } else {
+            inFrame = min(inFrame, frameCount - 1)
+            outFrame = min(max(inFrame, outFrame), frameCount - 1)
+        }
     }
 
     private func solveReferenceMatchPose() throws -> CameraNavigationPose {

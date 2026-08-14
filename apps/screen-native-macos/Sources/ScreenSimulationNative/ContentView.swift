@@ -1617,6 +1617,7 @@ struct ContentView: View {
                             ? model.setupDeviceBoundary : [],
                         referenceMatchCorners: model.referenceMatchEnabled
                             ? model.referenceMatchCorners : [],
+                        cameraNavigationEnabled: !model.referenceMatchEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
                         onZoomChange: model.setInteractiveZoom,
@@ -1736,6 +1737,7 @@ struct MetalPreview: NSViewRepresentable {
     let metadataLines: [String]
     let deviceBoundary: [CGPoint]
     let referenceMatchCorners: [CGPoint]
+    let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
     let onZoomChange: (Double) -> Void
@@ -1770,6 +1772,7 @@ struct MetalPreview: NSViewRepresentable {
             metadataLines: metadataLines,
             deviceBoundary: deviceBoundary,
             referenceMatchCorners: referenceMatchCorners,
+            cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
             textureHeight: frame.height
         )
@@ -1860,6 +1863,7 @@ final class MetalPreviewContainer: NSView {
     private var presentationFitted = true
     private var textureWidth = 1
     private var textureHeight = 1
+    private var cameraNavigationEnabled = true
     var onPanChange: ((CGSize) -> Void)?
     var onZoomChange: ((Double) -> Void)?
     var onFittedZoomChange: ((Double) -> Void)?
@@ -1890,6 +1894,8 @@ final class MetalPreviewContainer: NSView {
     private var dragStartPan = CGSize.zero
     private var magnifyAnchor: CGPoint?
     private var cameraDragStart: CGPoint?
+    private var viewerMiddleDragStart: CGPoint?
+    private var viewerMiddleDragStartPan = CGSize.zero
     private var pendingCameraGestureDelta: CGSize?
     private var deliveredCameraGestureDelta: CGSize?
     private var cameraGestureUpdate: DispatchWorkItem?
@@ -1954,6 +1960,7 @@ final class MetalPreviewContainer: NSView {
         metadataLines: [String],
         deviceBoundary: [CGPoint],
         referenceMatchCorners: [CGPoint],
+        cameraNavigationEnabled: Bool,
         textureWidth: Int,
         textureHeight: Int
     ) {
@@ -1964,6 +1971,7 @@ final class MetalPreviewContainer: NSView {
         metadataLabel.isHidden = metadataLines.isEmpty
         self.deviceBoundary = deviceBoundary
         self.referenceMatchCorners = referenceMatchCorners
+        self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
         applyPresentation()
@@ -2014,6 +2022,12 @@ final class MetalPreviewContainer: NSView {
     override func otherMouseDown(with event: NSEvent) {
         guard event.buttonNumber == 2 else { return }
         window?.makeFirstResponder(self)
+        if !cameraNavigationEnabled {
+            viewerMiddleDragStart = event.locationInWindow
+            viewerMiddleDragStartPan = presentationPan
+            NSCursor.closedHand.push()
+            return
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let operation: CameraNavigationOperation
         if flags.contains(.option), !flags.contains(.shift) { operation = .orbit }
@@ -2033,6 +2047,14 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func otherMouseDragged(with event: NSEvent) {
+        if let start = viewerMiddleDragStart {
+            let location = event.locationInWindow
+            publishPan(clampedPan(CGSize(
+                width: viewerMiddleDragStartPan.width + location.x - start.x,
+                height: viewerMiddleDragStartPan.height + location.y - start.y
+            )))
+            return
+        }
         guard event.buttonNumber == 2, let start = cameraDragStart else { return }
         let current = convert(event.locationInWindow, from: nil)
         enqueueCameraGestureChange(CGSize(
@@ -2042,6 +2064,12 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func otherMouseUp(with event: NSEvent) {
+        if viewerMiddleDragStart != nil {
+            viewerMiddleDragStart = nil
+            publishPan(clampedPan(presentationPan))
+            NSCursor.pop()
+            return
+        }
         guard event.buttonNumber == 2, cameraDragStart != nil else { return }
         cameraDragStart = nil
         flushCameraGestureChange()
@@ -2053,6 +2081,10 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        if !cameraNavigationEnabled {
+            zoomViewer(with: event)
+            return
+        }
         // AppKit continues publishing inertial momentum after the user has
         // released a trackpad or Magic Mouse. Camera navigation represents
         // authored physical movement, so momentum is never an input.
@@ -2076,6 +2108,24 @@ final class MetalPreviewContainer: NSView {
             // A traditional detented wheel has no AppKit gesture phases.
             endWheelGesture()
         }
+    }
+
+    private func zoomViewer(with event: NSEvent) {
+        let anchor = convert(event.locationInWindow, from: nil)
+        let oldZoom = effectiveScale()
+        let newZoom = min(16, max(0.1, oldZoom * exp(event.scrollingDeltaY * 0.01)))
+        let ratio = CGFloat(newZoom / max(0.01, oldZoom))
+        let center = CGPoint(x: bounds.midX, y: contentCenterY())
+        let anchoredPan = PreviewNavigationMath.anchoredPan(
+            previous: presentationPan,
+            anchor: anchor,
+            viewportCenter: center,
+            scaleRatio: ratio
+        )
+        presentationZoom = newZoom
+        presentationFitted = false
+        onZoomChange?(newZoom)
+        publishPan(clampedPan(anchoredPan))
     }
 
     private func beginWheelGesture() {
