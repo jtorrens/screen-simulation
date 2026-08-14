@@ -203,7 +203,6 @@ final class WorkspaceModel: ObservableObject {
     /// the current rigid projection and therefore never move during a solve.
     @Published private(set) var referenceMatchCorners: [CGPoint] = []
     @Published private(set) var referenceMatchProjectedCorners: [CGPoint] = []
-    @Published private(set) var referenceMatchPinnedIndices: Set<Int> = []
     @Published private(set) var referenceMatchErrorPixels: Double?
     var referenceMatchFocalLengthMillimeters: Double? {
         testAuthoringSelection?.focalLengthMillimeters
@@ -1538,7 +1537,6 @@ final class WorkspaceModel: ObservableObject {
         referenceFrameName = nil
         referenceMatchCorners = []
         referenceMatchProjectedCorners = []
-        referenceMatchPinnedIndices = []
         referenceMatchErrorPixels = nil
         referenceMatchEnabled = false
         applyTimelineAuthority(resetRange: true)
@@ -1553,7 +1551,6 @@ final class WorkspaceModel: ObservableObject {
             physicalModel.setQuality(.setup)
             publishReferenceMatchSetup(
                 resetTargetsToVisibleFrame: referenceMatchCorners.count != 4
-                    || referenceMatchPinnedIndices.isEmpty
             )
         } else {
             publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
@@ -1587,11 +1584,8 @@ final class WorkspaceModel: ObservableObject {
             referenceFrameName = managed.originalFileName
             referenceMatchCorners = []
             referenceMatchProjectedCorners = []
-            referenceMatchPinnedIndices = []
             referenceMatchErrorPixels = nil
-            referenceMatchEnabled = true
             applyTimelineAuthority(resetRange: true)
-            physicalModel.setQuality(.setup)
             publishReferenceMatchSetup(resetTargetsToVisibleFrame: true)
             status = "Referencia · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
         } catch {
@@ -1599,37 +1593,23 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    func toggleReferenceMatchTarget(_ index: Int) {
-        guard referenceMatchEnabled, referenceMatchCorners.indices.contains(index)
-        else { return }
-        if referenceMatchPinnedIndices.contains(index) {
-            referenceMatchPinnedIndices.remove(index)
-        } else {
-            referenceMatchPinnedIndices.insert(index)
-        }
-        referenceMatchErrorPixels = nil
-    }
-
     func clearReferenceMatchTargets() {
         guard let reference = referenceACEScgFrame else { return }
         referenceMatchCorners = Self.initialReferenceMatchTargets(
             width: reference.width, height: reference.height
         )
-        referenceMatchPinnedIndices = []
         referenceMatchErrorPixels = nil
-        status = "Match referencia · objetivos borrados"
+        status = "Match referencia · objetivos reiniciados"
     }
 
     func beginReferenceCornerDrag(_ index: Int) {
-        guard referenceMatchEnabled, referenceMatchPinnedIndices.contains(index),
-              referenceMatchCorners.indices.contains(index)
+        guard referenceMatchEnabled, referenceMatchCorners.indices.contains(index)
         else { return }
         referenceMatchStartSelection = testAuthoringSelection
     }
 
     func updateReferenceCorner(_ index: Int, to point: CGPoint) {
         guard referenceMatchEnabled,
-              referenceMatchPinnedIndices.contains(index),
               referenceMatchCorners.indices.contains(index),
               let reference = referenceACEScgFrame
         else { return }
@@ -1643,7 +1623,7 @@ final class WorkspaceModel: ObservableObject {
 
     func endReferenceCornerDrag(undoManager: UndoManager?) {
         guard let prior = referenceMatchStartSelection else { return }
-        if referenceMatchPinnedIndices.count == 4 {
+        if referenceMatchCorners.count == 4 {
             solveReferenceMatchTargets(undoManager: undoManager, priorSelection: prior)
         }
         referenceMatchStartSelection = nil
@@ -1655,10 +1635,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func searchReferenceMatchFocalLength(undoManager: UndoManager?) {
-        guard referenceMatchPinnedIndices.count == 4,
+        guard referenceMatchCorners.count == 4,
               let prior = testAuthoringSelection
         else {
-            status = "Match referencia · fija los cuatro objetivos para buscar focal"
+            status = "Match referencia · se necesitan cuatro objetivos para buscar focal"
             return
         }
         do {
@@ -2254,7 +2234,6 @@ final class WorkspaceModel: ObservableObject {
                 fileName: referenceFrameName,
                 sha256: referenceSourceHash,
                 inputTransformID: referenceInputTransformID,
-                matchEnabled: referenceMatchEnabled,
                 corners: referenceMatchCorners.map {
                     .init(x: Double($0.x), y: Double($0.y))
                 }
@@ -2386,7 +2365,6 @@ final class WorkspaceModel: ObservableObject {
                 referenceFrameName = nil
                 referenceMatchCorners = []
                 referenceMatchProjectedCorners = []
-                referenceMatchPinnedIndices = []
                 referenceMatchEnabled = false
             case .imageOrVideo:
                 guard let hash = context.referenceResource.sha256,
@@ -2407,10 +2385,8 @@ final class WorkspaceModel: ObservableObject {
                 referenceMatchCorners = context.referenceResource.corners.map {
                     CGPoint(x: $0.x, y: $0.y)
                 }
-                referenceMatchEnabled = context.referenceResource.matchEnabled
+                referenceMatchEnabled = false
                 referenceMatchProjectedCorners = []
-                referenceMatchPinnedIndices = context.referenceResource.matchEnabled
-                    ? Set(0..<4) : []
                 Task { [weak self] in
                     await self?.loadManagedReferenceFrame(
                         asset, inputTransformID: transform,
@@ -2855,7 +2831,6 @@ final class WorkspaceModel: ObservableObject {
                 referenceMatchCorners = Self.initialReferenceMatchTargets(
                     width: reference.width, height: reference.height
                 )
-                referenceMatchPinnedIndices = []
             }
             setupDeviceBoundary = result.boundary
             // Publish the texture last. SwiftUI may render immediately on any
@@ -2923,8 +2898,8 @@ final class WorkspaceModel: ObservableObject {
         undoManager: UndoManager?,
         priorSelection: TestAuthoringResolvedSelection
     ) {
-        guard referenceMatchPinnedIndices.count == 4 else {
-            status = "Match referencia · fija los cuatro objetivos para resolver la cámara"
+        guard referenceMatchCorners.count == 4 else {
+            status = "Match referencia · se necesitan cuatro objetivos para resolver la cámara"
             return
         }
         do {

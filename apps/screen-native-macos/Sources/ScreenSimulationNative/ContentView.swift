@@ -1550,7 +1550,7 @@ struct ContentView: View {
                         ? "Ocultar controles de Match"
                         : "Mostrar controles de Match")
                     Button {
-                        referenceMatchPanel.hide()
+                        referenceMatchPanel.hide(model: model)
                         model.removeReferenceFrame()
                     } label: { Image(systemName: "xmark.circle") }
                     .help("Quitar referencia")
@@ -1624,8 +1624,6 @@ struct ContentView: View {
                             ? model.referenceMatchProjectedCorners : [],
                         referenceTargetCorners: model.referenceMatchEnabled
                             ? model.referenceMatchCorners : [],
-                        referencePinnedIndices: model.referenceMatchEnabled
-                            ? model.referenceMatchPinnedIndices : [],
                         cameraNavigationEnabled: !model.referenceMatchEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
@@ -1634,7 +1632,6 @@ struct ContentView: View {
                         onCameraGestureBegin: model.beginCameraNavigation,
                         onCameraGestureChange: model.updateCameraNavigation,
                         onCameraGestureEnd: { model.endCameraNavigation(undoManager: undoManager) },
-                        onReferenceTargetToggle: model.toggleReferenceMatchTarget,
                         onReferenceCornerBegin: model.beginReferenceCornerDrag,
                         onReferenceCornerChange: model.updateReferenceCorner,
                         onReferenceCornerEnd: { model.endReferenceCornerDrag(undoManager: undoManager) }
@@ -1748,7 +1745,6 @@ struct MetalPreview: NSViewRepresentable {
     let deviceBoundary: [CGPoint]
     let referenceProjectedCorners: [CGPoint]
     let referenceTargetCorners: [CGPoint]
-    let referencePinnedIndices: Set<Int>
     let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
@@ -1757,7 +1753,6 @@ struct MetalPreview: NSViewRepresentable {
     let onCameraGestureBegin: (CameraNavigationOperation, CGSize) -> Void
     let onCameraGestureChange: (CGSize) -> Void
     let onCameraGestureEnd: () -> Void
-    let onReferenceTargetToggle: (Int) -> Void
     let onReferenceCornerBegin: (Int) -> Void
     let onReferenceCornerChange: (Int, CGPoint) -> Void
     let onReferenceCornerEnd: () -> Void
@@ -1786,7 +1781,6 @@ struct MetalPreview: NSViewRepresentable {
             deviceBoundary: deviceBoundary,
             referenceProjectedCorners: referenceProjectedCorners,
             referenceTargetCorners: referenceTargetCorners,
-            referencePinnedIndices: referencePinnedIndices,
             cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
             textureHeight: frame.height
@@ -1797,7 +1791,6 @@ struct MetalPreview: NSViewRepresentable {
         container.onCameraGestureBegin = onCameraGestureBegin
         container.onCameraGestureChange = onCameraGestureChange
         container.onCameraGestureEnd = onCameraGestureEnd
-        container.onReferenceTargetToggle = onReferenceTargetToggle
         container.onReferenceCornerBegin = onReferenceCornerBegin
         container.onReferenceCornerChange = onReferenceCornerChange
         container.onReferenceCornerEnd = onReferenceCornerEnd
@@ -1886,7 +1879,6 @@ final class MetalPreviewContainer: NSView {
     var onCameraGestureBegin: ((CameraNavigationOperation, CGSize) -> Void)?
     var onCameraGestureChange: ((CGSize) -> Void)?
     var onCameraGestureEnd: (() -> Void)?
-    var onReferenceTargetToggle: ((Int) -> Void)?
     var onReferenceCornerBegin: ((Int) -> Void)?
     var onReferenceCornerChange: ((Int, CGPoint) -> Void)?
     var onReferenceCornerEnd: (() -> Void)?
@@ -1895,7 +1887,6 @@ final class MetalPreviewContainer: NSView {
     private let deviceBoundaryLayer = CAShapeLayer()
     private let referenceProjectionLayer = CAShapeLayer()
     private let referenceTargetBoundaryLayer = CAShapeLayer()
-    private let referenceAvailableTargetLayer = CAShapeLayer()
     private let referenceTargetLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
         let layer = CATextLayer()
@@ -1910,7 +1901,6 @@ final class MetalPreviewContainer: NSView {
     private var deviceBoundary: [CGPoint] = []
     private var referenceProjectedCorners: [CGPoint] = []
     private var referenceTargetCorners: [CGPoint] = []
-    private var referencePinnedIndices: Set<Int> = []
     private var referenceCornerDragIndex: Int?
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
@@ -1951,19 +1941,14 @@ final class MetalPreviewContainer: NSView {
         referenceProjectionLayer.zPosition = 120
         layer?.addSublayer(referenceProjectionLayer)
         referenceTargetBoundaryLayer.fillColor = NSColor.clear.cgColor
-        referenceTargetBoundaryLayer.strokeColor = NSColor.systemGreen.cgColor
+        referenceTargetBoundaryLayer.strokeColor = NSColor.systemYellow.cgColor
         referenceTargetBoundaryLayer.lineWidth = 1.5
         referenceTargetBoundaryLayer.zPosition = 120.5
         layer?.addSublayer(referenceTargetBoundaryLayer)
-        referenceAvailableTargetLayer.fillColor = NSColor.systemYellow.cgColor
-        referenceAvailableTargetLayer.strokeColor = NSColor.black.cgColor
-        referenceAvailableTargetLayer.lineWidth = 1
-        referenceAvailableTargetLayer.zPosition = 121
-        layer?.addSublayer(referenceAvailableTargetLayer)
-        referenceTargetLayer.fillColor = NSColor.systemGreen.cgColor
+        referenceTargetLayer.fillColor = NSColor.systemYellow.cgColor
         referenceTargetLayer.strokeColor = NSColor.black.cgColor
         referenceTargetLayer.lineWidth = 1
-        referenceTargetLayer.zPosition = 122
+        referenceTargetLayer.zPosition = 121
         layer?.addSublayer(referenceTargetLayer)
         referenceLabels.forEach { layer?.addSublayer($0) }
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
@@ -2002,7 +1987,6 @@ final class MetalPreviewContainer: NSView {
         deviceBoundary: [CGPoint],
         referenceProjectedCorners: [CGPoint],
         referenceTargetCorners: [CGPoint],
-        referencePinnedIndices: Set<Int>,
         cameraNavigationEnabled: Bool,
         textureWidth: Int,
         textureHeight: Int
@@ -2015,7 +1999,6 @@ final class MetalPreviewContainer: NSView {
         self.deviceBoundary = deviceBoundary
         self.referenceProjectedCorners = referenceProjectedCorners
         self.referenceTargetCorners = referenceTargetCorners
-        self.referencePinnedIndices = referencePinnedIndices
         self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
@@ -2026,14 +2009,6 @@ final class MetalPreviewContainer: NSView {
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
         if let index = nearestReferenceCorner(to: location) {
-            let shift = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
-            if shift {
-                onReferenceTargetToggle?(index)
-                applyPresentation()
-                return
-            } else if !referencePinnedIndices.contains(index) {
-                return
-            }
             referenceCornerDragIndex = index
             onReferenceCornerBegin?(index)
             NSCursor.crosshair.push()
@@ -2346,10 +2321,8 @@ final class MetalPreviewContainer: NSView {
             projectedHandles.addLine(to: CGPoint(x: displayedPoint.x - 7, y: displayedPoint.y + 7))
         }
         let targetHandles = CGMutablePath()
-        let availableHandles = CGMutablePath()
         let targetBoundary = CGMutablePath()
-        if referenceTargetCorners.count == 4,
-           referencePinnedIndices.count == 4 {
+        if referenceTargetCorners.count == 4 {
             for (index, point) in referenceTargetCorners.enumerated() {
                 let displayedPoint = displayedPoint(forRaster: point)
                 if index == 0 { targetBoundary.move(to: displayedPoint) }
@@ -2359,8 +2332,7 @@ final class MetalPreviewContainer: NSView {
         }
         for index in referenceTargetCorners.indices {
             let displayedPoint = displayedPoint(forRaster: referenceTargetCorners[index])
-            let path = referencePinnedIndices.contains(index) ? targetHandles : availableHandles
-            path.addEllipse(in: CGRect(
+            targetHandles.addEllipse(in: CGRect(
                 x: displayedPoint.x - 6, y: displayedPoint.y - 6, width: 12, height: 12
             ))
         }
@@ -2368,8 +2340,6 @@ final class MetalPreviewContainer: NSView {
         referenceProjectionLayer.path = projectedHandles
         referenceTargetBoundaryLayer.frame = bounds
         referenceTargetBoundaryLayer.path = targetBoundary
-        referenceAvailableTargetLayer.frame = bounds
-        referenceAvailableTargetLayer.path = availableHandles
         referenceTargetLayer.frame = bounds
         referenceTargetLayer.path = targetHandles
         for (index, label) in referenceLabels.enumerated() {
@@ -2377,10 +2347,8 @@ final class MetalPreviewContainer: NSView {
                 label.isHidden = true
                 continue
             }
-            let isPinned = referencePinnedIndices.contains(index)
             label.isHidden = false
-            label.foregroundColor = isPinned
-                ? NSColor.systemGreen.cgColor : NSColor.systemYellow.cgColor
+            label.foregroundColor = NSColor.systemYellow.cgColor
             let point = displayedPoint(forRaster: referenceTargetCorners[index])
             label.frame = CGRect(x: point.x - 14, y: point.y + 8, width: 28, height: 14)
         }

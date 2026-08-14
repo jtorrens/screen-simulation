@@ -70,7 +70,7 @@ import Testing
     }
 }
 
-@Test @MainActor func physicalSettingsExchangeRejectsRetiredSchemaWithoutAReader() throws {
+@Test @MainActor func physicalSettingsExchangeRejectsFrameSettingsVersionTwelve() throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
         $0.id == device.defaultCoverGlassPresetID
@@ -83,7 +83,7 @@ import Testing
         model: controller.authoringState,
         context: try canonicalFrameContext(deviceID: device.id)
     ))
-    settings["schema"] = "ScreenSimulation.PhysicalSettings.v7"
+    settings["schema"] = "ScreenSimulation.FrameSettings.v12"
 
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
         try PhysicalSettingsExchange.decode(from: ["settings": settings])
@@ -161,7 +161,7 @@ private func canonicalFrameContext(
         ),
         referenceResource: .init(
             kind: .none, fileName: nil, sha256: nil, inputTransformID: nil,
-            matchEnabled: false, corners: []
+            corners: []
         )
     )
 }

@@ -1,7 +1,7 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.FrameSettings.v12"
+    static let schema = "ScreenSimulation.FrameSettings.v13"
 
     struct EnvironmentResource: Codable, Equatable, Sendable {
         enum Kind: String, Codable, Sendable { case procedural, image }
@@ -46,14 +46,13 @@ enum PhysicalSettingsExchange {
         let fileName: String?
         let sha256: String?
         let inputTransformID: String?
-        let matchEnabled: Bool
         let corners: [ReferenceCorner]
 
         func validate() throws {
             switch kind {
             case .none:
                 guard fileName == nil, sha256 == nil, inputTransformID == nil,
-                      !matchEnabled, corners.isEmpty
+                      corners.isEmpty
                 else { throw ImportError.invalidReferenceResource }
             case .imageOrVideo:
                 guard let fileName, !fileName.isEmpty,

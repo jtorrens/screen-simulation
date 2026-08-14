@@ -5,9 +5,11 @@ import SwiftUI
 final class ReferenceMatchPanelController: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var isVisible = false
     private var panel: NSPanel?
+    private weak var activeModel: WorkspaceModel?
 
     func toggle(model: WorkspaceModel, undoManager: UndoManager?) {
         if let panel, panel.isVisible {
+            model.setReferenceMatchEnabled(false)
             panel.orderOut(nil)
             isVisible = false
             return
@@ -15,12 +17,15 @@ final class ReferenceMatchPanelController: NSObject, ObservableObject, NSWindowD
         show(model: model, undoManager: undoManager)
     }
 
-    func hide() {
+    func hide(model: WorkspaceModel) {
+        model.setReferenceMatchEnabled(false)
         panel?.orderOut(nil)
         isVisible = false
     }
 
     private func show(model: WorkspaceModel, undoManager: UndoManager?) {
+        activeModel = model
+        model.setReferenceMatchEnabled(true)
         let content = ReferenceMatchPanel(
             model: model,
             undoManager: undoManager
@@ -40,7 +45,7 @@ final class ReferenceMatchPanelController: NSObject, ObservableObject, NSWindowD
         panel.title = "Match Reference"
         panel.level = .floating
         panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = true
+        panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: content)
@@ -51,6 +56,7 @@ final class ReferenceMatchPanelController: NSObject, ObservableObject, NSWindowD
     }
 
     func windowWillClose(_ notification: Notification) {
+        activeModel?.setReferenceMatchEnabled(false)
         isVisible = false
     }
 }
@@ -61,19 +67,13 @@ private struct ReferenceMatchPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Toggle("Activar Match", isOn: Binding(
-                get: { model.referenceMatchEnabled },
-                set: { model.setReferenceMatchEnabled($0) }
-            ))
-            .toggleStyle(.switch)
-
             HStack {
                 Label(
-                    "\(model.referenceMatchPinnedIndices.count)/4 objetivos",
-                    systemImage: model.referenceMatchPinnedIndices.count == 4
+                    "4 objetivos directos",
+                    systemImage: model.referenceMatchCorners.count == 4
                         ? "checkmark.circle.fill" : "circle.dashed"
                 )
-                .foregroundStyle(model.referenceMatchPinnedIndices.count == 4
+                .foregroundStyle(model.referenceMatchCorners.count == 4
                     ? .green : .secondary)
                 Spacer()
                 if let error = model.referenceMatchErrorPixels {
@@ -83,7 +83,7 @@ private struct ReferenceMatchPanel: View {
                 }
             }
 
-            Text("Shift+clic fija o libera un objetivo. Arrastra los objetivos verdes hasta las cuatro esquinas del área activa.")
+            Text("Arrastra directamente los cuatro objetivos amarillos hasta las esquinas del área activa. Al soltar, la cámara se resuelve sin deformar el Device.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -98,13 +98,13 @@ private struct ReferenceMatchPanel: View {
                 .buttonStyle(.borderedProminent)
             }
             .disabled(!model.referenceMatchEnabled
-                || model.referenceMatchPinnedIndices.count != 4)
+                || model.referenceMatchCorners.count != 4)
 
             HStack {
-                Button("Borrar objetivos", role: .destructive) {
+                Button("Reiniciar objetivos") {
                     model.clearReferenceMatchTargets()
                 }
-                .disabled(model.referenceMatchPinnedIndices.isEmpty)
+                .disabled(model.referenceMatchCorners.count != 4)
                 Spacer()
                 if let focal = model.referenceMatchFocalLengthMillimeters {
                     Text("Focal \(focal.formatted(.number.precision(.fractionLength(2)))) mm")
