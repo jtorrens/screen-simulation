@@ -1458,7 +1458,11 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func changePhysicalQuality(_ quality: PhysicalQuality) {
+        let qualityChanged = physicalModel.quality != quality
         physicalModel.setQuality(quality)
+        if !qualityChanged {
+            rebuildPhysicalSelectedFrame()
+        }
     }
 
     func setModelViewportSize(_ size: CGSize) {
@@ -3989,7 +3993,11 @@ final class WorkspaceModel: ObservableObject {
         // Rebuilding the source invalidates the previous physical frame and
         // deliberately returns the viewer to Setup. Apply an explicitly
         // authored physical quality only after that final invalidation.
+        let qualityChanged = physicalModel.quality != quality
         physicalModel.setQuality(quality)
+        if !qualityChanged {
+            rebuildPhysicalSelectedFrame()
+        }
     }
 
     private var selectedTestPreviewResult: TestPreviewResultKind? {
