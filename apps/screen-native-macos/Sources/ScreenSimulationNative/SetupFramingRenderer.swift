@@ -198,15 +198,15 @@ final class SetupFramingRenderer {
             deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
             deliveryPlacement: deliveryPlacement,
             outputWidth: outputWidth, outputHeight: outputHeight,
-            applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3,
-            sampleDistortedEdges: diagnosticMode == 2 || diagnosticMode == 3
+            applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
+            sampleDistortedEdges: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4
         )
         let corners = Self.projectedBoundary(
             authored: authored, device: device,
             deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
             deliveryPlacement: deliveryPlacement,
             outputWidth: outputWidth, outputHeight: outputHeight,
-            applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3,
+            applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
             sampleDistortedEdges: false
         )
         return Result(frame: frame, boundary: boundary, corners: corners)
@@ -235,6 +235,27 @@ final class SetupFramingRenderer {
             previewWidth: previewWidth,
             previewHeight: previewHeight,
             diagnosticMode: 3
+        )
+    }
+
+    func renderReferenceComposite(
+        cameraResult: StudioColorMetalFrame,
+        reference: StudioColorMetalFrame,
+        device: DeviceDefinition,
+        pipeline authored: PhysicalPipelineAuthoringState,
+        deliveryPlacementID: String
+    ) throws -> Result {
+        try render(
+            source: cameraResult,
+            reference: reference,
+            sourcePlacement: .stretch,
+            device: device,
+            pipeline: authored,
+            deliveryWidth: reference.width,
+            deliveryHeight: reference.height,
+            deliveryPlacementID: deliveryPlacementID,
+            deliveryBackgroundID: "black",
+            diagnosticMode: 4
         )
     }
 
@@ -442,6 +463,26 @@ final class SetupFramingRenderer {
         return true;
     }
 
+    inline bool delivery_uv(float2 camera_uv, constant SetupParameters& s, thread float2& uv) {
+        const float2 output_size = float2(s.source_device.xy);
+        const float2 camera_size = float2(s.raster.zw);
+        const float2 camera_pixel = camera_uv * camera_size - 0.5f;
+        float2 output_pixel;
+        if (s.modes.y == 0 || s.modes.y == 2) {
+            const float scale = s.modes.y == 0
+                ? min(output_size.x / camera_size.x, output_size.y / camera_size.y)
+                : max(output_size.x / camera_size.x, output_size.y / camera_size.y);
+            const float2 offset = (output_size - camera_size * scale) * 0.5f;
+            output_pixel = (camera_pixel + 0.5f) * scale - 0.5f + offset;
+        } else {
+            const int2 offset = (int2(s.source_device.xy) - int2(s.raster.zw)) / 2;
+            output_pixel = camera_pixel + float2(offset);
+        }
+        if (any(output_pixel < -0.5f) || any(output_pixel >= output_size - 0.5f)) return false;
+        uv = (output_pixel + 0.5f) / output_size;
+        return true;
+    }
+
     inline bool screen_uv(float2 camera_uv, constant SetupParameters& s, thread float2& uv) {
         const float2 observed = camera_uv * 2.0f - 1.0f;
         const float shift_y = s.screen_height_shift_y.y;
@@ -614,11 +655,25 @@ final class SetupFramingRenderer {
     ) {
         if (any(p >= s.preview_raster.xy)) return;
         const float2 previewUV = (float2(p) + 0.5f) / float2(s.preview_raster.xy);
-        const float4 background = s.modes.w == 3u
+        const float4 background = (s.modes.w == 3u || s.modes.w == 4u)
             ? reference.sample(linear_sampler, previewUV)
             : (s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1));
         float2 camera;
         if (!camera_uv(p, s, camera)) { output.write(background, p); return; }
+        if (s.modes.w == 4u) {
+            float2 panel;
+            float unused_depth;
+            float2 delivery;
+            if (!focus_screen_sample(camera, s, panel, unused_depth)
+                || any(panel < 0.0f) || any(panel > 1.0f)
+                || !delivery_uv(camera, s, delivery)) {
+                output.write(background, p); return;
+            }
+            float4 value = source.sample(linear_sampler, delivery);
+            value.a = 1.0f;
+            output.write(value, p);
+            return;
+        }
         if (s.modes.w == 1u) {
             float2 environmentUV;
             if (!environment_uv(camera, s, environmentUV)) {

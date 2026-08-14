@@ -47,17 +47,17 @@ import Testing
     }
 }
 
-@Test func referenceMovieIsTheTimelineAuthorityOnlyWhileMatchIsEnabled() {
+@Test func referenceMovieIsTheTimelineAuthorityWhileItRemainsLoaded() {
     let source = NativeVideoTimelineInfo(frameRate: 24, frameCount: 120)
     let reference = NativeVideoTimelineInfo(frameRate: 25, frameCount: 300)
     #expect(ReferenceTimelineAuthority.resolve(
-        source: source, reference: reference, matchEnabled: true
+        source: source, reference: reference, referenceVisible: true
     ) == reference)
     #expect(ReferenceTimelineAuthority.resolve(
-        source: source, reference: reference, matchEnabled: false
+        source: source, reference: reference, referenceVisible: false
     ) == source)
     #expect(ReferenceTimelineAuthority.resolve(
-        source: source, reference: nil, matchEnabled: true
+        source: source, reference: nil, referenceVisible: true
     ) == source)
 }
 
@@ -197,6 +197,30 @@ import Testing
                   movedResult.corners[0].y - anchorTarget.y) < 0.01)
     #expect(hypot(movedResult.corners[1].x - movingTarget.x,
                   movedResult.corners[1].y - movingTarget.y) < 0.01)
+
+    let cameraResultPixels = Array(
+        repeating: [Float(0.7), Float(0.05), Float(0.05), Float(1)], count: 320 * 180
+    ).flatMap { $0 }
+    let cameraResult = try display.makeACEScgFrame(
+        width: 320, height: 180, encodedRGBA: cameraResultPixels,
+        input: input, alpha: .straight
+    )
+    let composite = try renderer.renderReferenceComposite(
+        cameraResult: cameraResult, reference: reference,
+        device: device, pipeline: authored, deliveryPlacementID: "fit"
+    )
+    let compositeValues = try display.readLinearRGBA(composite.frame)
+    let referenceValues = try display.readLinearRGBA(reference)
+    let cameraValues = try display.readLinearRGBA(cameraResult)
+    let compositePixels = stride(from: 0, to: compositeValues.count, by: 4).map {
+        SIMD3(compositeValues[$0], compositeValues[$0 + 1], compositeValues[$0 + 2])
+    }
+    let referenceColor = SIMD3(referenceValues[0], referenceValues[1], referenceValues[2])
+    let cameraColor = SIMD3(cameraValues[0], cameraValues[1], cameraValues[2])
+    #expect(composite.frame.width == reference.width)
+    #expect(composite.frame.height == reference.height)
+    #expect(compositePixels.contains { simd_distance($0, referenceColor) < 0.001 })
+    #expect(compositePixels.contains { simd_distance($0, cameraColor) < 0.001 })
 }
 
 @Test @MainActor func setupFramingRecomputesDeliveryPlacementWithoutLosingTheBoundary() throws {

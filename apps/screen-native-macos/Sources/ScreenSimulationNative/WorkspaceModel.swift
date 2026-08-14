@@ -87,9 +87,9 @@ enum ReferenceTimelineAuthority {
     static func resolve(
         source: NativeVideoTimelineInfo,
         reference: NativeVideoTimelineInfo?,
-        matchEnabled: Bool
+        referenceVisible: Bool
     ) -> NativeVideoTimelineInfo {
-        matchEnabled ? reference ?? source : source
+        referenceVisible ? reference ?? source : source
     }
 }
 
@@ -227,6 +227,7 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceInputTransformID: String?
     private var environmentSourceURL: URL?
     private var referenceACEScgFrame: StudioColorMetalFrame?
+    private var referenceForegroundFrame: StudioColorMetalFrame?
     private var referenceSourceURL: URL?
     private var referenceInputTransformID: String?
     private var referenceSourceHash: String?
@@ -918,7 +919,7 @@ final class WorkspaceModel: ObservableObject {
             pose.orientation.imag.z, pose.orientation.real,
         ]
         authored.cameraLookAt = nil
-        if referenceMatchEnabled {
+        if referenceACEScgFrame != nil {
             publishReferenceMatchSetup(resetTargetsFromProjection: false, authoredOverride: authored)
         } else if cameraNavigationPreviewQuality == .focusSetup {
             publishFocusSetup(
@@ -1486,6 +1487,7 @@ final class WorkspaceModel: ObservableObject {
         referenceRefreshTask?.cancel()
         referenceRefreshTask = nil
         referenceACEScgFrame = nil
+        referenceForegroundFrame = nil
         referenceSourceURL = nil
         referenceInputTransformID = nil
         referenceSourceHash = nil
@@ -1508,7 +1510,7 @@ final class WorkspaceModel: ObservableObject {
             physicalModel.setQuality(.setup)
             publishReferenceMatchSetup(resetTargetsFromProjection: referenceMatchCorners.count != 4)
         } else {
-            rebuildPhysicalSelectedFrame()
+            publishReferenceMatchSetup(resetTargetsFromProjection: false)
         }
     }
 
@@ -1531,6 +1533,7 @@ final class WorkspaceModel: ObservableObject {
                 alpha: .ignore
             )
             referenceACEScgFrame = frame
+            referenceForegroundFrame = nil
             referenceSourceURL = managed.url
             referenceInputTransformID = input.id
             referenceSourceHash = managed.sha256
@@ -2260,6 +2263,7 @@ final class WorkspaceModel: ObservableObject {
             switch context.referenceResource.kind {
             case .none:
                 referenceACEScgFrame = nil
+                referenceForegroundFrame = nil
                 referenceSourceURL = nil
                 referenceInputTransformID = nil
                 referenceSourceHash = nil
@@ -2330,6 +2334,7 @@ final class WorkspaceModel: ObservableObject {
                 width: decoded.width, height: decoded.height,
                 encodedRGBA: decoded.rgba, input: input, alpha: .ignore
             )
+            referenceForegroundFrame = nil
             referenceTimelineInfo = timeline
             applyTimelineAuthority(resetRange: true)
             publishReferenceMatchSetup(
@@ -2410,8 +2415,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func refreshReferenceFrameForCurrentTime() {
-        guard referenceMatchEnabled,
-              let url = referenceSourceURL,
+        guard let url = referenceSourceURL,
               let inputID = referenceInputTransformID,
               Self.isVideo(url)
         else { return }
@@ -2432,7 +2436,11 @@ final class WorkspaceModel: ObservableObject {
                     width: decoded.width, height: decoded.height,
                     encodedRGBA: decoded.rgba, input: input, alpha: .ignore
                 )
-                self.publishReferenceMatchSetup(resetTargetsFromProjection: false)
+                if self.referenceMatchEnabled || self.physicalModel.quality == .setup {
+                    self.publishReferenceMatchSetup(resetTargetsFromProjection: false)
+                } else if let foreground = self.referenceForegroundFrame {
+                    self.publishReferenceComposite(foreground)
+                }
             } catch is CancellationError {
             } catch {
                 self.errorMessage = error.localizedDescription
@@ -2594,7 +2602,11 @@ final class WorkspaceModel: ObservableObject {
         if physicalModel.quality == .setup {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
-            publishSetupFraming()
+            if referenceACEScgFrame != nil {
+                publishReferenceMatchSetup(resetTargetsFromProjection: referenceMatchCorners.count != 4)
+            } else {
+                publishSetupFraming()
+            }
             return
         }
         if physicalModel.quality == .environmentSetup {
@@ -2703,8 +2715,7 @@ final class WorkspaceModel: ObservableObject {
         resetTargetsFromProjection: Bool,
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
-        guard referenceMatchEnabled,
-              let reference = referenceACEScgFrame,
+        guard let reference = referenceACEScgFrame,
               let source = sourceACEScgFrame,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
               let authored = authoredOverride ?? physicalAuthoringState
@@ -2724,7 +2735,32 @@ final class WorkspaceModel: ObservableObject {
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
             if resetTargetsFromProjection { referenceMatchCorners = result.corners }
-            physicalPublicationSummary = "Match referencia · referencia + Device rígido + cámara"
+            physicalPublicationSummary = referenceMatchEnabled
+                ? "Match referencia · referencia + Device rígido + cámara"
+                : "Referencia visible · cámara libre"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func publishReferenceComposite(_ foreground: StudioColorMetalFrame) {
+        guard let reference = referenceACEScgFrame,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let authored = physicalAuthoringState
+        else { return }
+        do {
+            if setupFramingRenderer == nil {
+                setupFramingRenderer = try SetupFramingRenderer(device: foreground.texture.device)
+            }
+            let result = try setupFramingRenderer!.renderReferenceComposite(
+                cameraResult: foreground,
+                reference: reference,
+                device: device,
+                pipeline: authored,
+                deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
+            )
+            metalFrame = result.frame
+            setupDeviceBoundary = result.boundary
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -2742,7 +2778,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private var referenceControlsTimeline: Bool {
-        referenceMatchEnabled && referenceTimelineInfo != nil
+        referenceTimelineInfo != nil
     }
 
     private func applyTimelineAuthority(resetRange: Bool) {
@@ -2750,7 +2786,7 @@ final class WorkspaceModel: ObservableObject {
         let timeline = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
             reference: referenceTimelineInfo,
-            matchEnabled: referenceMatchEnabled
+            referenceVisible: referenceACEScgFrame != nil
         )
         frameRate = timeline.frameRate
         frameCount = max(1, timeline.frameCount)
@@ -3467,7 +3503,9 @@ final class WorkspaceModel: ObservableObject {
                 deliveryRasterCheckpoint = delivery
             }
             if result == .deliveryRaster {
-                metalFrame = delivery
+                referenceForegroundFrame = delivery
+                if referenceACEScgFrame != nil { publishReferenceComposite(delivery) }
+                else { metalFrame = delivery }
                 monitorOutput.update(frame: delivery, display: metalDisplay)
                 return
             }
@@ -3498,7 +3536,9 @@ final class WorkspaceModel: ObservableObject {
                 recordingEncodedBytes = nil
                 recordingEncodedSHA256 = nil
             }
-            metalFrame = frame
+            referenceForegroundFrame = frame
+            if referenceACEScgFrame != nil { publishReferenceComposite(frame) }
+            else { metalFrame = frame }
             monitorOutput.update(frame: frame, display: metalDisplay)
         } catch {
             errorMessage = error.localizedDescription
@@ -3555,7 +3595,7 @@ final class WorkspaceModel: ObservableObject {
                 } else {
                     presentationFrame = frame
                 }
-                metalFrame = presentationFrame
+                referenceForegroundFrame = presentationFrame
                 let duration = started.duration(to: .now)
                 let elapsed = Double(duration.components.seconds)
                     + Double(duration.components.attoseconds) / 1e18
@@ -3578,6 +3618,11 @@ final class WorkspaceModel: ObservableObject {
                         publishRecordingPreview(result: selectedTestPreviewResult!)
                         return
                     }
+                }
+                if referenceACEScgFrame != nil {
+                    publishReferenceComposite(presentationFrame)
+                } else {
+                    metalFrame = presentationFrame
                 }
                 monitorOutput.update(frame: presentationFrame, display: metalDisplay)
                 let diagnostic = snapshot.diagnostics

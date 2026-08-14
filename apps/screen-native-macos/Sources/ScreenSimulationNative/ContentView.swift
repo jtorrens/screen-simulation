@@ -1533,13 +1533,42 @@ struct ContentView: View {
                     Label("Referencia…", systemImage: "photo.on.rectangle")
                 }
                 .help("Cargar una imagen o película detrás del Device")
-                if model.referenceFrameName != nil {
+                if let referenceName = model.referenceFrameName {
+                    Text(referenceName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 130)
+                        .help(referenceName)
                     Toggle("Match", isOn: Binding(
                         get: { model.referenceMatchEnabled },
                         set: { model.setReferenceMatchEnabled($0) }
                     ))
                     .toggleStyle(.button)
-                    .help("Ajustar la cámara mediante cuatro correspondencias rígidas")
+                    .help("Activar o desactivar los controles de cámara; la referencia permanece visible")
+                    if model.referenceMatchEnabled {
+                        Menu {
+                            ForEach(Array(["TL", "TR", "BR", "BL"].enumerated()), id: \.offset) {
+                                index, label in
+                                Button {
+                                    model.setReferenceMatchAnchor(index)
+                                } label: {
+                                    if model.referenceMatchAnchorIndex == index {
+                                        Label(label, systemImage: "checkmark")
+                                    } else {
+                                        Text(label)
+                                    }
+                                }
+                            }
+                        } label: {
+                            Label(
+                                model.referenceMatchAnchorIndex.map {
+                                    "Ancla \(["TL", "TR", "BR", "BL"][$0])"
+                                } ?? "Elegir ancla",
+                                systemImage: "scope"
+                            )
+                        }
+                        .help("Seleccionar el ancla verde; Shift+clic sobre una esquina hace lo mismo")
+                    }
                     Button {
                         model.removeReferenceFrame()
                     } label: { Image(systemName: "xmark.circle") }
