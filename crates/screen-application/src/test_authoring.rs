@@ -124,6 +124,13 @@ pub const RECORDING_OUTPUT_TRANSFORM_CONTROL_ID: &str = "recording-output-transf
 pub const RECORDING_PROFILE_CONTROL_ID: &str = "recording-profile";
 pub const RECORDING_CHARACTER_CONTROL_ID: &str = "recording-character";
 
+fn focal_length_bounds(lens: screen_geometry::LensPreset) -> (f32, f32) {
+    (
+        lens.nominal_focal_length.0 * 0.5,
+        lens.nominal_focal_length.0 * 2.0,
+    )
+}
+
 fn recording_profile_options(capture: CaptureDevicePreset) -> Vec<TestChoiceOption> {
     bundled_profiles()
         .into_iter()
@@ -959,8 +966,10 @@ pub fn resolve_test_authoring_selection(
         .raster_mode(selection.capture_raster_mode_id)
         .ok_or(TestAuthoringError::InvalidCaptureRasterMode)?;
     let lens = lens(selection.lens_preset_id)?;
+    let (minimum_focal_length, maximum_focal_length) = focal_length_bounds(lens);
     if !selection.focal_length_millimeters.is_finite()
-        || !(1.0..=300.0).contains(&selection.focal_length_millimeters)
+        || !(minimum_focal_length..=maximum_focal_length)
+            .contains(&selection.focal_length_millimeters)
     {
         return Err(TestAuthoringError::InvalidGeometry);
     }
@@ -1651,8 +1660,8 @@ pub fn test_page_descriptor(
             FOCAL_LENGTH_CONTROL_ID,
             "Distancia focal",
             selection.focal_length_millimeters,
-            1.0,
-            300.0,
+            focal_length_bounds(lens(selection.lens_preset_id)?).0,
+            focal_length_bounds(lens(selection.lens_preset_id)?).1,
             lens(selection.lens_preset_id)?.nominal_focal_length.0,
             "mm",
         ),
@@ -3223,11 +3232,12 @@ mod tests {
                 control,
                 TestControlRequirement::Scalar {
                     id: FOCAL_LENGTH_CONTROL_ID,
-                    minimum: 1.0,
-                    maximum: 300.0,
+                    minimum,
+                    maximum,
                     unit: "mm",
                     ..
-                }
+                } if (*minimum - 2.1).abs() < 1.0e-6
+                    && (*maximum - 8.4).abs() < 1.0e-6
             )),
             Some(_)
         ));
@@ -3248,8 +3258,8 @@ mod tests {
                 ..
             }
         )));
-        let authored = apply_test_scalar(asus(), FOCAL_LENGTH_CONTROL_ID, 73.5).unwrap();
-        assert!((authored.focal_length_millimeters - 73.5).abs() < 1.0e-6);
+        let authored = apply_test_scalar(asus(), FOCAL_LENGTH_CONTROL_ID, 6.5).unwrap();
+        assert!((authored.focal_length_millimeters - 6.5).abs() < 1.0e-6);
         assert!(page.phases[11].controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Scalar {

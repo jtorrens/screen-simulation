@@ -1661,8 +1661,21 @@ final class WorkspaceModel: ObservableObject {
         do {
             // Search uniformly in log focal length so wide and telephoto ranges receive
             // comparable resolution. Then refine only the best neighboring interval.
-            let lower = log(1.0)
-            let upper = log(300.0)
+            guard let focalControl = testPresentation?.phases
+                .flatMap(\.sections)
+                .flatMap(\.controls)
+                .compactMap({ descriptor -> TestScalarControl? in
+                    guard case let .scalar(control) = descriptor,
+                          control.id == "focal-length-millimeters"
+                    else { return nil }
+                    return control
+                })
+                .first
+            else {
+                throw ReferenceMatchError.unsolved("no existe un intervalo focal resuelto")
+            }
+            let lower = log(focalControl.minimum)
+            let upper = log(focalControl.maximum)
             let coarseCount = 72
             var candidates: [(logFocal: Double, solved: (pose: CameraNavigationPose, maximumErrorPixels: Double, rmsErrorPixels: Double))] = []
             for index in 0..<coarseCount {

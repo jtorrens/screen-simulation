@@ -1916,6 +1916,7 @@ final class MetalPreviewContainer: NSView {
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
     private let referenceProjectionLayer = CAShapeLayer()
+    private let referenceTargetBoundaryLayer = CAShapeLayer()
     private let referenceAvailableTargetLayer = CAShapeLayer()
     private let referenceTargetLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
@@ -1971,6 +1972,11 @@ final class MetalPreviewContainer: NSView {
         referenceProjectionLayer.lineWidth = 1.5
         referenceProjectionLayer.zPosition = 120
         layer?.addSublayer(referenceProjectionLayer)
+        referenceTargetBoundaryLayer.fillColor = NSColor.clear.cgColor
+        referenceTargetBoundaryLayer.strokeColor = NSColor.systemGreen.cgColor
+        referenceTargetBoundaryLayer.lineWidth = 1.5
+        referenceTargetBoundaryLayer.zPosition = 120.5
+        layer?.addSublayer(referenceTargetBoundaryLayer)
         referenceAvailableTargetLayer.fillColor = NSColor.systemYellow.cgColor
         referenceAvailableTargetLayer.strokeColor = NSColor.black.cgColor
         referenceAvailableTargetLayer.lineWidth = 1
@@ -2363,6 +2369,16 @@ final class MetalPreviewContainer: NSView {
         }
         let targetHandles = CGMutablePath()
         let availableHandles = CGMutablePath()
+        let targetBoundary = CGMutablePath()
+        if referenceTargetCorners.count == 4,
+           referencePinnedIndices.count == 4 {
+            for (index, point) in referenceTargetCorners.enumerated() {
+                let displayedPoint = displayedPoint(forRaster: point)
+                if index == 0 { targetBoundary.move(to: displayedPoint) }
+                else { targetBoundary.addLine(to: displayedPoint) }
+            }
+            targetBoundary.closeSubpath()
+        }
         for index in referenceTargetCorners.indices {
             let displayedPoint = displayedPoint(forRaster: referenceTargetCorners[index])
             let path = referencePinnedIndices.contains(index) ? targetHandles : availableHandles
@@ -2372,6 +2388,8 @@ final class MetalPreviewContainer: NSView {
         }
         referenceProjectionLayer.frame = bounds
         referenceProjectionLayer.path = projectedHandles
+        referenceTargetBoundaryLayer.frame = bounds
+        referenceTargetBoundaryLayer.path = targetBoundary
         referenceAvailableTargetLayer.frame = bounds
         referenceAvailableTargetLayer.path = availableHandles
         referenceTargetLayer.frame = bounds
