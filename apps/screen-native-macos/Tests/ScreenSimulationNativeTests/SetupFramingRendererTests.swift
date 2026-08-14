@@ -46,6 +46,20 @@ import Testing
     }
 }
 
+@Test func referenceMovieIsTheTimelineAuthorityOnlyWhileMatchIsEnabled() {
+    let source = NativeVideoTimelineInfo(frameRate: 24, frameCount: 120)
+    let reference = NativeVideoTimelineInfo(frameRate: 25, frameCount: 300)
+    #expect(ReferenceTimelineAuthority.resolve(
+        source: source, reference: reference, matchEnabled: true
+    ) == reference)
+    #expect(ReferenceTimelineAuthority.resolve(
+        source: source, reference: reference, matchEnabled: false
+    ) == source)
+    #expect(ReferenceTimelineAuthority.resolve(
+        source: source, reference: nil, matchEnabled: true
+    ) == source)
+}
+
 @Test @MainActor func setupFramingUsesTheAuthoredCameraAndMarksTheDeviceBoundary() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
