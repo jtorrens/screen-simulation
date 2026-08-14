@@ -1927,10 +1927,7 @@ struct MetalPreview: NSViewRepresentable {
         container.onReflectionHandleChange = onReflectionHandleChange
         container.onReflectionHandleEnd = onReflectionHandleEnd
         display.present(frame, output: output, in: container.metalView)
-        // AppKit may defer an MTKView's setNeedsDisplay while it is inside a
-        // mouse-tracking loop. Draw the newly published Setup texture now so
-        // the image and its CALayer boundary cannot visibly diverge.
-        container.metalView.draw()
+        container.drawCommittedFrame()
     }
 
     @MainActor
@@ -2058,6 +2055,7 @@ final class MetalPreviewContainer: NSView {
     private var cameraGestureUpdate: DispatchWorkItem?
     private var wheelGestureActive = false
     private var wheelGestureDelta = CGSize.zero
+    private var committedDrawGeneration: UInt64 = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -2123,6 +2121,21 @@ final class MetalPreviewContainer: NSView {
         metalView = view
         addSubview(view)
         needsLayout = true
+    }
+
+    /// Draw immediately for interactive tracking, then retry only the latest
+    /// committed presentation after AppKit has attached/updated the drawable.
+    /// A first publication can otherwise be consumed while currentDrawable is
+    /// unavailable and remain black until an unrelated state change.
+    func drawCommittedFrame() {
+        committedDrawGeneration &+= 1
+        let generation = committedDrawGeneration
+        metalView.draw()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.committedDrawGeneration == generation else { return }
+            self.metalView.setNeedsDisplay(self.metalView.bounds)
+            self.metalView.draw()
+        }
     }
 
     override func layout() {
