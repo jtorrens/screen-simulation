@@ -674,11 +674,26 @@ pub fn capture_device_preset(id: &str) -> Option<CaptureDevicePreset> {
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub enum RasterPlacement {
-    Fit,
-    FillCrop,
-    Stretch,
-    OneToOne,
+    Fit = 0,
+    FillCrop = 1,
+    Stretch = 2,
+    OneToOne = 3,
+}
+
+impl TryFrom<u32> for RasterPlacement {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Fit),
+            1 => Ok(Self::FillCrop),
+            2 => Ok(Self::Stretch),
+            3 => Ok(Self::OneToOne),
+            _ => Err(()),
+        }
+    }
 }
 
 /// Fraction of the active device raster occupied by authored source samples.

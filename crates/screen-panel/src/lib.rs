@@ -63,11 +63,26 @@ impl PanelColorMode {
 /// Precision policy for the orthographic panel surface. Every level covers the
 /// same complete active area; only the sample lattice changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub enum FlatPanelQuality {
-    Draft,
-    Medium,
-    High,
-    Native,
+    Draft = 0,
+    Medium = 1,
+    High = 2,
+    Native = 3,
+}
+
+impl TryFrom<u32> for FlatPanelQuality {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Draft),
+            1 => Ok(Self::Medium),
+            2 => Ok(Self::High),
+            3 => Ok(Self::Native),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

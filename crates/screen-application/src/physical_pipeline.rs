@@ -231,6 +231,33 @@ pub enum PhysicalIntermediate {
     CameraRenderedAcesCg = 16,
 }
 
+impl TryFrom<u32> for PhysicalIntermediate {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::SourceAcesCg),
+            1 => Ok(Self::DeviceSignal),
+            2 => Ok(Self::PanelEmission),
+            3 => Ok(Self::SubpixelRadiance),
+            4 => Ok(Self::PanelUniformity),
+            5 => Ok(Self::PanelLightSpread),
+            6 => Ok(Self::RelativeGeometry),
+            7 => Ok(Self::CoverEnvironment),
+            8 => Ok(Self::CoverGlow),
+            9 => Ok(Self::LensProjection),
+            10 => Ok(Self::ShutterMotion),
+            11 => Ok(Self::ComputationalCapture),
+            12 => Ok(Self::SensorBloom),
+            13 => Ok(Self::SensorNoise),
+            14 => Ok(Self::RawMosaic),
+            15 => Ok(Self::DevelopedAcesCg),
+            16 => Ok(Self::CameraRenderedAcesCg),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalStageControl {
     pub stage: PhysicalStage,

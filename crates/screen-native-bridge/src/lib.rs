@@ -936,46 +936,15 @@ fn identity_matches(first: ScreenPhysicalIdentity128, second: ScreenPhysicalIden
 }
 
 fn quality(value: u32) -> Option<FlatPanelQuality> {
-    match value {
-        0 => Some(FlatPanelQuality::Draft),
-        1 => Some(FlatPanelQuality::Medium),
-        2 => Some(FlatPanelQuality::High),
-        3 => Some(FlatPanelQuality::Native),
-        _ => None,
-    }
+    FlatPanelQuality::try_from(value).ok()
 }
 
 fn placement(value: u32) -> Option<RasterPlacement> {
-    match value {
-        SCREEN_PHYSICAL_RASTER_FIT => Some(RasterPlacement::Fit),
-        SCREEN_PHYSICAL_RASTER_FILL_CROP => Some(RasterPlacement::FillCrop),
-        SCREEN_PHYSICAL_RASTER_STRETCH => Some(RasterPlacement::Stretch),
-        SCREEN_PHYSICAL_RASTER_ONE_TO_ONE => Some(RasterPlacement::OneToOne),
-        _ => None,
-    }
+    RasterPlacement::try_from(value).ok()
 }
 
 fn intermediate(value: u32) -> Option<PhysicalIntermediate> {
-    Some(match value {
-        0 => PhysicalIntermediate::SourceAcesCg,
-        1 => PhysicalIntermediate::DeviceSignal,
-        2 => PhysicalIntermediate::PanelEmission,
-        3 => PhysicalIntermediate::SubpixelRadiance,
-        4 => PhysicalIntermediate::PanelUniformity,
-        5 => PhysicalIntermediate::PanelLightSpread,
-        6 => PhysicalIntermediate::RelativeGeometry,
-        7 => PhysicalIntermediate::CoverEnvironment,
-        8 => PhysicalIntermediate::CoverGlow,
-        9 => PhysicalIntermediate::LensProjection,
-        10 => PhysicalIntermediate::ShutterMotion,
-        11 => PhysicalIntermediate::ComputationalCapture,
-        12 => PhysicalIntermediate::SensorBloom,
-        13 => PhysicalIntermediate::SensorNoise,
-        14 => PhysicalIntermediate::RawMosaic,
-        15 => PhysicalIntermediate::DevelopedAcesCg,
-        16 => PhysicalIntermediate::CameraRenderedAcesCg,
-        _ => return None,
-    })
+    PhysicalIntermediate::try_from(value).ok()
 }
 
 fn contribution_amounts(
