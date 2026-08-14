@@ -99,6 +99,14 @@ impl FrameRate {
         self.denominator
     }
 
+    pub fn as_f64(self) -> f64 {
+        f64::from(self.numerator) / f64::from(self.denominator)
+    }
+
+    pub fn as_f32(self) -> f32 {
+        self.numerator as f32 / self.denominator as f32
+    }
+
     pub fn time_at_frame(self, frame: i64) -> Result<RationalTime, ContractError> {
         let numerator = frame
             .checked_mul(i64::from(self.denominator))

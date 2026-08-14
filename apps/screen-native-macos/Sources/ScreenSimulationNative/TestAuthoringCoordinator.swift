@@ -35,7 +35,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let whiteLuminanceNits: Double
     let placementID: String
     var previewQualityID: String
-    var frameRate: Double
+    var frameRate: ExactFrameRate
     let sourceExposureEV: Double
     let sourceContrast: Double
     let sourceSaturation: Double
@@ -133,21 +133,23 @@ enum RustTestAuthoringCoordinator {
     static func defaultSelection(
         inputTransformID: String,
         deviceID: String,
-        frameRate: Double
+        frameRate: ExactFrameRate
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV21()
+                var output = ScreenTestAuthoringSelectionV22()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
-                    inputView, deviceView, Float(frameRate), &output, &error
+                    inputView, deviceView,
+                    frameRate.numerator, frameRate.denominator,
+                    &output, &error
                 ) else {
                     throw TestAuthoringCoordinatorError.bridge(
                         error.map(String.init(cString:))
                             ?? "Rust no pudo crear la selección inicial de Test."
                     )
                 }
-                return resolved(output)
+                return try resolved(output)
             }
         }
     }
@@ -266,7 +268,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV21()
+                        var output = ScreenTestAuthoringSelectionV22()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -276,14 +278,14 @@ enum RustTestAuthoringCoordinator {
                                     ?? "Rust rechazó la selección de Test."
                             )
                         }
-                        return resolved(output)
+                        return try resolved(output)
                     }
                 }
             }
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV21()
+                    var output = ScreenTestAuthoringSelectionV22()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -293,13 +295,13 @@ enum RustTestAuthoringCoordinator {
                                 ?? "Rust rechazó el valor de Test."
                         )
                     }
-                    return resolved(output)
+                    return try resolved(output)
                 }
             }
         case let .setToggle(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV21()
+                    var output = ScreenTestAuthoringSelectionV22()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_toggle(
                         rawSelection, controlView, value, &output, &error
@@ -309,7 +311,7 @@ enum RustTestAuthoringCoordinator {
                                 ?? "Rust rechazó el interruptor de Test."
                         )
                     }
-                    return resolved(output)
+                    return try resolved(output)
                 }
             }
         case .selectPhase, .performAction:
@@ -421,8 +423,8 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV21
-    ) -> TestAuthoringResolvedSelection {
+        _ raw: ScreenTestAuthoringSelectionV22
+    ) throws -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
             outputSignalID: string(raw.output_signal_id),
@@ -432,7 +434,10 @@ enum RustTestAuthoringCoordinator {
             whiteLuminanceNits: Double(raw.white_luminance_nits),
             placementID: string(raw.placement_id),
             previewQualityID: string(raw.preview_quality_id),
-            frameRate: Double(raw.frame_rate),
+            frameRate: try ExactFrameRate(
+                numerator: raw.frame_rate_numerator,
+                denominator: raw.frame_rate_denominator
+            ),
             sourceExposureEV: Double(raw.source_exposure_ev),
             sourceContrast: Double(raw.source_contrast),
             sourceSaturation: Double(raw.source_saturation),
@@ -510,7 +515,7 @@ enum RustTestAuthoringCoordinator {
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV21>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV22>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -531,7 +536,7 @@ enum RustTestAuthoringCoordinator {
                                             try withUTF8View(selection.recordingOutputTransformID) { recordingOutputView in
                                                 try withUTF8View(selection.recordingProfileID) { recordingProfileView in
                                                 try withUTF8View(selection.environmentProjectionID) { environmentProjectionView in
-                                                    var raw = ScreenTestAuthoringSelectionV21()
+                                                    var raw = ScreenTestAuthoringSelectionV22()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView
@@ -541,7 +546,8 @@ enum RustTestAuthoringCoordinator {
                                             raw.white_luminance_nits = Float(selection.whiteLuminanceNits)
                                             raw.placement_id = placementView
                                             raw.preview_quality_id = qualityView
-                                            raw.frame_rate = Float(selection.frameRate)
+                                            raw.frame_rate_numerator = selection.frameRate.numerator
+                                            raw.frame_rate_denominator = selection.frameRate.denominator
                                             raw.source_exposure_ev = Float(selection.sourceExposureEV)
                                             raw.source_contrast = Float(selection.sourceContrast)
                                             raw.source_saturation = Float(selection.sourceSaturation)

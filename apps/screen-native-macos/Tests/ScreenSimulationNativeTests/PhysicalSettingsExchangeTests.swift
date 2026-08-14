@@ -70,7 +70,7 @@ import Testing
     }
 }
 
-@Test @MainActor func physicalSettingsExchangeRejectsFrameSettingsVersionThirteen() throws {
+@Test @MainActor func physicalSettingsExchangeRejectsFrameSettingsVersionFourteen() throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
         $0.id == device.defaultCoverGlassPresetID
@@ -83,7 +83,7 @@ import Testing
         model: controller.authoringState,
         context: try canonicalFrameContext(deviceID: device.id)
     ))
-    settings["schema"] = "ScreenSimulation.FrameSettings.v13"
+    settings["schema"] = "ScreenSimulation.FrameSettings.v14"
 
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
         try PhysicalSettingsExchange.decode(from: ["settings": settings])
@@ -166,7 +166,7 @@ private func canonicalFrameContext(
         selection: try RustTestAuthoringCoordinator.defaultSelection(
             inputTransformID: "srgb-encoded-rec709",
             deviceID: deviceID,
-            frameRate: 24
+            frameRate: .fps24
         ),
         sourceInputTransformID: "srgb-encoded-rec709",
         sourceAlphaMode: "Ignorar",

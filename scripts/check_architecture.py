@@ -370,6 +370,22 @@ def validate_native_model_authority() -> None:
             f"Normal PNG import exposes retired compatibility readers: {present}"
         )
 
+    test_authoring = (
+        ROOT / "crates/screen-application/src/test_authoring.rs"
+    ).read_text(encoding="utf-8")
+    if "pub frame_rate: f32" in test_authoring:
+        raise ValidationError("Test authoring transports frame rate as floating point")
+
+    native_header = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
+    ).read_text(encoding="utf-8")
+    if "float frame_rate" in native_header:
+        raise ValidationError("Native Test authoring ABI transports frame rate as float")
+    for required in ("frame_rate_numerator", "frame_rate_denominator"):
+        if required not in native_header:
+            raise ValidationError(f"Native Test authoring ABI omits exact cadence: {required}")
+
 
 def validate_phase_gated_workflow() -> None:
     rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")

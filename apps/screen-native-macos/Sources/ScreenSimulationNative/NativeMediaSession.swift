@@ -16,9 +16,11 @@ struct NativeSourceInfo: Sendable {
     let name: String
     let detail: String
     let duration: CMTime
-    let frameRate: Double
+    let exactFrameRate: ExactFrameRate
     let frameCount: Int
     let hasAudio: Bool
+
+    var frameRate: Double { exactFrameRate.framesPerSecond }
 }
 
 @MainActor
@@ -70,11 +72,21 @@ final class NativeMediaSession {
             throw NativeMediaError.unreadable(url.lastPathComponent)
         }
         let duration = try await asset.load(.duration)
-        let nominalRate = Double(try await track.load(.nominalFrameRate))
+        let minimumFrameDuration = try await track.load(.minFrameDuration)
         let naturalSize = try await track.load(.naturalSize)
         let preferredTransform = try await track.load(.preferredTransform)
         let displaySize = naturalSize.applying(preferredTransform)
-        let frameRate = nominalRate > 0 ? nominalRate : 24
+        guard minimumFrameDuration.isNumeric,
+              minimumFrameDuration.value > 0,
+              minimumFrameDuration.timescale > 0,
+              let rateNumerator = UInt32(exactly: minimumFrameDuration.timescale),
+              let rateDenominator = UInt32(exactly: minimumFrameDuration.value)
+        else { throw NativeMediaError.invalidFrameRate }
+        let exactFrameRate = try ExactFrameRate(
+            numerator: rateNumerator,
+            denominator: rateDenominator
+        )
+        let frameRate = exactFrameRate.framesPerSecond
         let audio = try await !asset.loadTracks(withMediaType: .audio).isEmpty
         let pixelFormat: OSType
         if colorModel == .rgb {
@@ -106,7 +118,7 @@ final class NativeMediaSession {
             name: url.lastPathComponent,
             detail: "Video · \(Int(abs(displaySize.width))) × \(Int(abs(displaySize.height))) · \(Int(frameRate.rounded())) fps · \(audio ? "audio" : "sin audio")",
             duration: duration,
-            frameRate: frameRate,
+            exactFrameRate: exactFrameRate,
             frameCount: count,
             hasAudio: audio
         )
@@ -115,7 +127,10 @@ final class NativeMediaSession {
         return result
     }
 
-    func openImages(_ urls: [URL], frameRate: Double = 24) throws -> NativeSourceInfo {
+    func openImages(
+        _ urls: [URL],
+        frameRate: ExactFrameRate = .fps24
+    ) throws -> NativeSourceInfo {
         let ordered = urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         guard !ordered.isEmpty else { throw NativeMediaError.invalidRaster }
         source = .images(ordered)
@@ -123,12 +138,15 @@ final class NativeMediaSession {
         videoAsset = nil
         videoTrack = nil
         videoPixelAttributes = [:]
-        let duration = CMTime(value: CMTimeValue(ordered.count), timescale: CMTimeScale(frameRate.rounded()))
+        let duration = CMTime(
+            value: CMTimeValue(ordered.count) * CMTimeValue(frameRate.denominator),
+            timescale: CMTimeScale(frameRate.numerator)
+        )
         let result = NativeSourceInfo(
             name: ordered.count == 1 ? ordered[0].lastPathComponent : "\(ordered[0].deletingPathExtension().lastPathComponent)…",
-            detail: ordered.count == 1 ? "Imagen" : "Secuencia · \(ordered.count) frames · \(Int(frameRate)) fps",
+            detail: ordered.count == 1 ? "Imagen" : "Secuencia · \(ordered.count) frames · \(frameRate.framesPerSecond.formatted()) fps",
             duration: duration,
-            frameRate: frameRate,
+            exactFrameRate: frameRate,
             frameCount: ordered.count,
             hasAudio: false
         )
@@ -176,12 +194,18 @@ final class NativeMediaSession {
             }
             return NativeMediaSample(pixelBuffer: buffer, time: time)
         case let .images(urls):
-            let fps = info?.frameRate ?? 24
+            guard let rate = info?.exactFrameRate else {
+                throw NativeMediaError.invalidFrameRate
+            }
+            let fps = rate.framesPerSecond
             let seconds = max(0, requested?.seconds ?? 0)
             let index = min(urls.count - 1, Int((seconds * fps).rounded(.down)))
             return NativeMediaSample(
                 pixelBuffer: try Self.imagePixelBuffer(urls[index]),
-                time: CMTime(value: CMTimeValue(index), timescale: CMTimeScale(fps.rounded()))
+                time: CMTime(
+                    value: CMTimeValue(index) * CMTimeValue(rate.denominator),
+                    timescale: CMTimeScale(rate.numerator)
+                )
             )
         }
     }
@@ -196,7 +220,13 @@ final class NativeMediaSession {
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw NativeMediaError.invalidRaster }
         reader.add(output)
-        let duration = CMTime(seconds: 1 / (info?.frameRate ?? 24), preferredTimescale: 60_000)
+        guard let rate = info?.exactFrameRate else {
+            throw NativeMediaError.invalidFrameRate
+        }
+        let duration = CMTime(
+            value: CMTimeValue(rate.denominator),
+            timescale: CMTimeScale(rate.numerator)
+        )
         reader.timeRange = CMTimeRange(start: bounded(requested), duration: duration)
         guard reader.startReading(),
               let sample = output.copyNextSampleBuffer(),
@@ -209,8 +239,11 @@ final class NativeMediaSession {
     }
 
     func time(forFrame frame: Int) -> CMTime {
-        let rate = info?.frameRate ?? 24
-        return CMTime(value: CMTimeValue(max(0, frame)), timescale: CMTimeScale(rate.rounded()))
+        guard let rate = info?.exactFrameRate else { return .invalid }
+        return CMTime(
+            value: CMTimeValue(max(0, frame)) * CMTimeValue(rate.denominator),
+            timescale: CMTimeScale(rate.numerator)
+        )
     }
 
     private func bounded(_ time: CMTime) -> CMTime {

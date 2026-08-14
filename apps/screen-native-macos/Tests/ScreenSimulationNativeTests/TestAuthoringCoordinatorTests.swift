@@ -23,7 +23,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         whiteLuminanceNits: 350,
         placementID: "fit",
         previewQualityID: "draft",
-        frameRate: 24,
+        frameRate: .fps24,
         sourceExposureEV: 0,
         sourceContrast: 1,
         sourceSaturation: 1,
@@ -95,6 +95,23 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         recordingProfileID: "iphone-heic-photo-v1",
         recordingCharacter: 1
     )
+}
+
+@Test func testAuthoringBridgePreservesFractionalFrameRate() throws {
+    let rate = try ExactFrameRate(numerator: 24_000, denominator: 1_001)
+    let selection = try RustTestAuthoringCoordinator.defaultSelection(
+        inputTransformID: "srgb-encoded-rec709",
+        deviceID: "lcd-asus-proart-pa329cv",
+        frameRate: rate
+    )
+    #expect(selection.frameRate == rate)
+}
+
+@Test func exactFrameRateDecodingRejectsZeroDenominator() throws {
+    let bytes = Data(#"{"numerator":24000,"denominator":0}"#.utf8)
+    #expect(throws: NativeMediaError.self) {
+        try JSONDecoder().decode(ExactFrameRate.self, from: bytes)
+    }
 }
 
 @Test func nativeRenderButtonFollowsTheAuthoritativePhysicalFrameState() {

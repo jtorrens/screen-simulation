@@ -89,7 +89,7 @@ parameter revision/hash. The snapshot materializes cover, procedural
 environment, resolved scene/camera/lens, shutter/readout/motion, sensor/noise
 and RAW development. Panel emission, the complete fixed spatial-uniformity profile, temporal
 behavior and complete light-spread radii and weights are materialized by the Device handle. The
-live Device layout is `ScreenDeviceParametersV3`; catalog ABI 7 and test-authoring ABI 27 are
+live Device layout is `ScreenDeviceParametersV3`; catalog ABI 7 and test-authoring ABI 28 are
 strict current-only companions to physical-frame ABI 15.
 
 `ScreenPhysicalFrameResultV2` returns one borrowed texture and states which

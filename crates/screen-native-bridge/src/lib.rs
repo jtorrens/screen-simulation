@@ -30,7 +30,7 @@ use screen_application::{
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
-use screen_contracts::{LinearRgb, Meters, RationalTime, Vec2, Vec3};
+use screen_contracts::{FrameRate, LinearRgb, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
     ENVIRONMENT_PRESETS, EnvironmentPattern, EquirectangularEnvironment, IncidentEnvironment,
@@ -160,7 +160,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 27;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 28;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -168,7 +168,7 @@ pub const SCREEN_TEST_CONTROL_ACTION: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestAuthoringSelectionV21 {
+pub struct ScreenTestAuthoringSelectionV22 {
     abi_version: u32,
     input_transform_id: ScreenUtf8View,
     output_signal_id: ScreenUtf8View,
@@ -178,7 +178,8 @@ pub struct ScreenTestAuthoringSelectionV21 {
     white_luminance_nits: f32,
     placement_id: ScreenUtf8View,
     preview_quality_id: ScreenUtf8View,
-    frame_rate: f32,
+    frame_rate_numerator: u32,
+    frame_rate_denominator: u32,
     source_exposure_ev: f32,
     source_contrast: f32,
     source_saturation: f32,
@@ -2223,7 +2224,7 @@ unsafe fn borrowed_utf8<'a>(view: ScreenUtf8View) -> Option<&'a str> {
 }
 
 unsafe fn test_selection<'a>(
-    selection: *const ScreenTestAuthoringSelectionV21,
+    selection: *const ScreenTestAuthoringSelectionV22,
 ) -> Option<TestAuthoringSelection<'a>> {
     let selection = unsafe { selection.as_ref() }?;
     if selection.abi_version != SCREEN_TEST_AUTHORING_ABI_VERSION {
@@ -2237,7 +2238,11 @@ unsafe fn test_selection<'a>(
         white_luminance_nits: selection.white_luminance_nits,
         placement_id: unsafe { borrowed_utf8(selection.placement_id) }?,
         preview_quality_id: unsafe { borrowed_utf8(selection.preview_quality_id) }?,
-        frame_rate: selection.frame_rate,
+        frame_rate: FrameRate::new(
+            selection.frame_rate_numerator,
+            selection.frame_rate_denominator,
+        )
+        .ok()?,
         source_adjustment: SceneLinearAdjustment {
             exposure_ev: selection.source_exposure_ev,
             contrast: selection.source_contrast,
@@ -2382,8 +2387,8 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
 
 fn resolved_test_selection(
     selection: screen_application::ResolvedTestAuthoringSelection,
-) -> ScreenTestAuthoringSelectionV21 {
-    ScreenTestAuthoringSelectionV21 {
+) -> ScreenTestAuthoringSelectionV22 {
+    ScreenTestAuthoringSelectionV22 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         input_transform_id: utf8_view(selection.input_transform_id),
         output_signal_id: utf8_view(selection.output_signal_id),
@@ -2393,7 +2398,8 @@ fn resolved_test_selection(
         white_luminance_nits: selection.white_luminance_nits,
         placement_id: utf8_view(selection.placement_id),
         preview_quality_id: utf8_view(selection.preview_quality_id),
-        frame_rate: selection.frame_rate,
+        frame_rate_numerator: selection.frame_rate.numerator(),
+        frame_rate_denominator: selection.frame_rate.denominator(),
         source_exposure_ev: selection.source_adjustment.exposure_ev,
         source_contrast: selection.source_adjustment.contrast,
         source_saturation: selection.source_adjustment.saturation,
@@ -2471,8 +2477,9 @@ fn resolved_test_selection(
 pub unsafe extern "C" fn screen_test_authoring_default_selection(
     input_transform_id: ScreenUtf8View,
     device_id: ScreenUtf8View,
-    frame_rate: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV21,
+    frame_rate_numerator: u32,
+    frame_rate_denominator: u32,
+    resolved: *mut ScreenTestAuthoringSelectionV22,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(input_transform_id) = (unsafe { borrowed_utf8(input_transform_id) }) else {
@@ -2492,6 +2499,10 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
         };
         return false;
     };
+    let Ok(frame_rate) = FrameRate::new(frame_rate_numerator, frame_rate_denominator) else {
+        unsafe { set_error(error_message, b"invalid exact Test frame rate\0") };
+        return false;
+    };
     match default_test_authoring_selection(input_transform_id, device_id, frame_rate) {
         Ok(selection) => {
             *destination = resolved_test_selection(selection);
@@ -2507,7 +2518,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_page_descriptor_create(
-    selection: *const ScreenTestAuthoringSelectionV21,
+    selection: *const ScreenTestAuthoringSelectionV22,
     error_message: *mut *const c_char,
 ) -> *mut ScreenTestPageDescriptor {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2809,10 +2820,10 @@ pub unsafe extern "C" fn screen_test_page_preview_choice_option(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_choice(
-    selection: *const ScreenTestAuthoringSelectionV21,
+    selection: *const ScreenTestAuthoringSelectionV22,
     control_id: ScreenUtf8View,
     option_id: ScreenUtf8View,
-    resolved: *mut ScreenTestAuthoringSelectionV21,
+    resolved: *mut ScreenTestAuthoringSelectionV22,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2846,10 +2857,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_choice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
-    selection: *const ScreenTestAuthoringSelectionV21,
+    selection: *const ScreenTestAuthoringSelectionV22,
     control_id: ScreenUtf8View,
     value: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV21,
+    resolved: *mut ScreenTestAuthoringSelectionV22,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2879,10 +2890,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_toggle(
-    selection: *const ScreenTestAuthoringSelectionV21,
+    selection: *const ScreenTestAuthoringSelectionV22,
     control_id: ScreenUtf8View,
     value: bool,
-    resolved: *mut ScreenTestAuthoringSelectionV21,
+    resolved: *mut ScreenTestAuthoringSelectionV22,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -5297,12 +5308,28 @@ mod tests {
         let selection = default_test_authoring_selection(
             "srgb-encoded-rec709",
             "lcd-asus-proart-pa329cv",
-            24.0,
+            FrameRate::new(24, 1).unwrap(),
         )
         .unwrap();
         let mut raw = resolved_test_selection(selection);
         raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION - 1;
         let descriptor = unsafe { screen_test_page_descriptor_create(&raw, std::ptr::null_mut()) };
         assert!(descriptor.is_null());
+    }
+
+    #[test]
+    fn test_authoring_abi_preserves_fractional_frame_rate() {
+        let rate = FrameRate::new(24_000, 1_001).unwrap();
+        let selection = default_test_authoring_selection(
+            "srgb-encoded-rec709",
+            "lcd-asus-proart-pa329cv",
+            rate,
+        )
+        .unwrap();
+        let raw = resolved_test_selection(selection);
+        assert_eq!(raw.frame_rate_numerator, 24_000);
+        assert_eq!(raw.frame_rate_denominator, 1_001);
+        let borrowed = unsafe { test_selection(&raw) }.expect("current exact selection");
+        assert_eq!(borrowed.frame_rate, rate);
     }
 }

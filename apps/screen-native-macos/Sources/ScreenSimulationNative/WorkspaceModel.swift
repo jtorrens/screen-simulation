@@ -291,7 +291,10 @@ final class WorkspaceModel: ObservableObject {
     private var referenceInputTransformID: String?
     private var referenceSourceHash: String?
     private var referenceDetection = SyntheticPattern.animatedCheckerboard.sourceDetection
-    private var sourceTimelineInfo = NativeVideoTimelineInfo(frameRate: 24, frameCount: 1)
+    private var sourceTimelineInfo = NativeVideoTimelineInfo(
+        exactFrameRate: .fps24,
+        frameCount: 1
+    )
     private var referenceTimelineInfo: NativeVideoTimelineInfo?
     private var referencePlaybackStartedAt: CFTimeInterval?
     private var referencePlaybackStartFrame = 0
@@ -1804,7 +1807,7 @@ final class WorkspaceModel: ObservableObject {
         defaultSignalRange = resolvedRange
         defaultSignalColorModel = resolvedColorModel
         sourceTimelineInfo = NativeVideoTimelineInfo(
-            frameRate: 24,
+            exactFrameRate: .fps24,
             frameCount: pattern == .animatedCheckerboard ? 240 : 1
         )
         applyTimelineAuthority(resetRange: true)
@@ -1928,7 +1931,10 @@ final class WorkspaceModel: ObservableObject {
             referenceInputTransformID = referenceInputTransform.id
             referenceSourceHash = managed.sha256
             referenceTimelineInfo = isVideo
-                ? NativeVideoTimelineInfo(frameRate: info.frameRate, frameCount: info.frameCount)
+                ? NativeVideoTimelineInfo(
+                    exactFrameRate: info.exactFrameRate,
+                    frameCount: info.frameCount
+                )
                 : nil
             referenceFrameName = managed.originalFileName
             referenceFrameDetail = info.detail
@@ -2156,7 +2162,8 @@ final class WorkspaceModel: ObservableObject {
             sourceName = info.name
             sourceDetail = info.detail + (detection.note.map { " · Metadata: \($0)" } ?? "")
             sourceTimelineInfo = NativeVideoTimelineInfo(
-                frameRate: info.frameRate, frameCount: info.frameCount
+                exactFrameRate: info.exactFrameRate,
+                frameCount: info.frameCount
             )
             applyTimelineAuthority(resetRange: true)
             includeAudio = info.hasAudio
@@ -2512,10 +2519,12 @@ final class WorkspaceModel: ObservableObject {
                     originalName: sourceName,
                     width: raster.width,
                     height: raster.height,
-                    frameRate: sourceTimelineInfo.frameRate,
+                    frameRateNumerator: sourceTimelineInfo.exactFrameRate.numerator,
+                    frameRateDenominator: sourceTimelineInfo.exactFrameRate.denominator,
                     frameCount: sourceTimelineInfo.frameCount,
-                    durationSeconds: Double(sourceTimelineInfo.frameCount)
-                        / sourceTimelineInfo.frameRate
+                    durationNumerator: UInt64(sourceTimelineInfo.frameCount)
+                        * UInt64(sourceTimelineInfo.exactFrameRate.denominator),
+                    durationDenominator: sourceTimelineInfo.exactFrameRate.numerator
                 )
             )
         }
@@ -2612,9 +2621,10 @@ final class WorkspaceModel: ObservableObject {
         sourceIsPattern = false
         missingMediaSource = source
         sourceName = "MEDIA MISSING · \(descriptor.originalName)"
-        sourceDetail = "Medio ausente · \(descriptor.width) × \(descriptor.height) · \(descriptor.frameCount) frames · \(descriptor.frameRate.formatted(.number.precision(.fractionLength(0 ... 3)))) fps"
+        let exactFrameRate = try descriptor.exactFrameRate
+        sourceDetail = "Medio ausente · \(descriptor.width) × \(descriptor.height) · \(descriptor.frameCount) frames · \(exactFrameRate.framesPerSecond.formatted(.number.precision(.fractionLength(0 ... 3)))) fps"
         sourceTimelineInfo = .init(
-            frameRate: descriptor.frameRate,
+            exactFrameRate: exactFrameRate,
             frameCount: descriptor.frameCount
         )
         if resetTimeline { applyTimelineAuthority(resetRange: true) }
@@ -3064,7 +3074,10 @@ final class WorkspaceModel: ObservableObject {
             referenceForegroundIsDeliveryAligned = false
             referenceFrameDetail = info.detail
             referenceTimelineInfo = isVideo
-                ? NativeVideoTimelineInfo(frameRate: info.frameRate, frameCount: info.frameCount)
+                ? NativeVideoTimelineInfo(
+                    exactFrameRate: info.exactFrameRate,
+                    frameCount: info.frameCount
+                )
                 : nil
             applyTimelineAuthority(resetRange: true)
             publishReferenceMatchSetup(
@@ -3955,10 +3968,21 @@ final class WorkspaceModel: ObservableObject {
         physicalPublicationLog.notice(
             "submit source=\(sourceACEScgFrame.width)x\(sourceACEScgFrame.height) device=\(deviceSignal.width)x\(deviceSignal.height) quality=\(quality.uiLabel, privacy: .public) intermediate=\(self.requestedPhysicalIntermediate.uiLabel, privacy: .public) cameraZ=\(physicalAuthoringState.cameraPose.position[2])"
         )
+        let exactFrameRate = ReferenceTimelineAuthority.resolve(
+            source: sourceTimelineInfo,
+            reference: referenceTimelineInfo,
+            referenceVisible: referenceControlsTimeline
+        ).exactFrameRate
+        let (timeNumerator, timeOverflow) = Int64(currentFrame).multipliedReportingOverflow(
+            by: Int64(exactFrameRate.denominator)
+        )
+        guard !timeOverflow else {
+            throw PhysicalContractError.invalidFrameTime
+        }
         let selection = try PhysicalFrameSelection(
             frameIndex: Int64(currentFrame),
-            timeNumerator: Int64(currentFrame),
-            timeDenominator: UInt32(max(1, Int(frameRate.rounded())))
+            timeNumerator: timeNumerator,
+            timeDenominator: exactFrameRate.numerator
         )
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
@@ -4004,11 +4028,16 @@ final class WorkspaceModel: ObservableObject {
 
     private func refreshTestAuthoringDescriptor() throws {
         guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return }
+        let exactFrameRate = ReferenceTimelineAuthority.resolve(
+            source: sourceTimelineInfo,
+            reference: referenceTimelineInfo,
+            referenceVisible: referenceControlsTimeline
+        ).exactFrameRate
         if testAuthoringSelection == nil {
             let initial = try RustTestAuthoringCoordinator.defaultSelection(
                 inputTransformID: inputTransform.id,
                 deviceID: device.id,
-                frameRate: frameRate
+                frameRate: exactFrameRate
             )
             testAuthoringSelection = sourceIsPattern
                 ? try RustTestAuthoringCoordinator.apply(
@@ -4021,7 +4050,7 @@ final class WorkspaceModel: ObservableObject {
                 : initial
         }
         guard var selection = testAuthoringSelection else { return }
-        selection.frameRate = frameRate
+        selection.frameRate = exactFrameRate
         testAuthoringSelection = selection
         let snapshot = try RustTestAuthoringCoordinator.snapshot(
             selection: selection,

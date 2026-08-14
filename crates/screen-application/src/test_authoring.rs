@@ -21,7 +21,7 @@ use screen_recording::{
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 27;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 28;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -343,7 +343,7 @@ pub struct TestAuthoringSelection<'a> {
     pub white_luminance_nits: f32,
     pub placement_id: &'a str,
     pub preview_quality_id: &'a str,
-    pub frame_rate: f32,
+    pub frame_rate: FrameRate,
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
     pub panel_uniformity_amount: f32,
@@ -418,7 +418,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub white_luminance_nits: f32,
     pub placement_id: &'static str,
     pub preview_quality_id: &'static str,
-    pub frame_rate: f32,
+    pub frame_rate: FrameRate,
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
     pub panel_uniformity_amount: f32,
@@ -850,7 +850,7 @@ fn default_output_for_input(input: OcioInputTransform) -> DeviceColorTarget {
 pub fn default_test_authoring_selection(
     input_transform_id: &str,
     device_id: &str,
-    frame_rate: f32,
+    frame_rate: FrameRate,
 ) -> Result<ResolvedTestAuthoringSelection, TestAuthoringError> {
     let input = OcioInputTransform::from_stable_id(input_transform_id)
         .ok_or(TestAuthoringError::UnknownInputTransform)?;
@@ -916,7 +916,7 @@ pub fn default_test_authoring_selection(
         autofocus_enabled: true,
         focus_distance_meters: 0.15,
         f_stop: capture.f_stop,
-        exposure_time_seconds: capture.default_shutter_angle_degrees / 360.0 / frame_rate,
+        exposure_time_seconds: capture.default_shutter_angle_degrees / 360.0 / frame_rate.as_f32(),
         shutter_motion_amount: 1.0,
         computational_character_strength: 1.0,
         computational_exposure_count: f32::from(capture.computational_capture.exposure_count),
@@ -972,9 +972,6 @@ pub fn resolve_test_authoring_selection(
         selection.preview_quality_id,
         TestAuthoringError::UnknownPreviewQuality,
     )?;
-    if !selection.frame_rate.is_finite() || selection.frame_rate <= 0.0 {
-        return Err(TestAuthoringError::InvalidExposureTime);
-    }
     let geometry_mode_id = selected_option(
         &GEOMETRY_MODES,
         selection.geometry_mode_id,
@@ -1223,11 +1220,7 @@ pub fn resolve_test_authoring_selection(
         .find(|profile| profile.id == selection.recording_profile_id)
         .ok_or(TestAuthoringError::InvalidRecording)?;
     let recording_frame_rate = if selected_profile.codec.medium() == RecordingMedium::MovingImage {
-        let rounded = selection.frame_rate.round();
-        if (selection.frame_rate - rounded).abs() > 1.0e-6 {
-            return Err(TestAuthoringError::InvalidRecording);
-        }
-        Some(FrameRate::new(rounded as u32, 1).map_err(|_| TestAuthoringError::InvalidRecording)?)
+        Some(selection.frame_rate)
     } else {
         None
     };
@@ -2135,7 +2128,7 @@ pub fn test_page_descriptor(
                     scalar_control(
                         SHUTTER_ANGLE_CONTROL_ID,
                         "Ángulo de obturación",
-                        selection.exposure_time_seconds * selection.frame_rate * 360.0,
+                        selection.exposure_time_seconds * selection.frame_rate.as_f32() * 360.0,
                         1.0,
                         360.0,
                         capture.default_shutter_angle_degrees,
@@ -2147,7 +2140,8 @@ pub fn test_page_descriptor(
                         1.0 / selection.exposure_time_seconds,
                         1.0 / 60.0,
                         32_000.0,
-                        360.0 * selection.frame_rate / capture.default_shutter_angle_degrees,
+                        360.0 * selection.frame_rate.as_f32()
+                            / capture.default_shutter_angle_degrees,
                         "1/s",
                     ),
                 ],
@@ -2467,7 +2461,7 @@ pub fn apply_test_choice(
                 lens_evaluation_model_id(capture.default_lens_evaluation_model);
             next.f_stop = capture.f_stop;
             next.exposure_time_seconds =
-                capture.default_shutter_angle_degrees / 360.0 / current.frame_rate;
+                capture.default_shutter_angle_degrees / 360.0 / current.frame_rate.as_f32();
             next.computational_character_strength = 1.0;
             next.computational_exposure_count =
                 f32::from(capture.computational_capture.exposure_count);
@@ -2829,7 +2823,9 @@ pub fn apply_test_scalar(
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
         FOCAL_LENGTH_CONTROL_ID => next.focal_length_millimeters = value,
         F_STOP_CONTROL_ID => next.f_stop = value,
-        SHUTTER_ANGLE_CONTROL_ID => next.exposure_time_seconds = value / 360.0 / current.frame_rate,
+        SHUTTER_ANGLE_CONTROL_ID => {
+            next.exposure_time_seconds = value / 360.0 / current.frame_rate.as_f32()
+        }
         SHUTTER_RECIPROCAL_CONTROL_ID => next.exposure_time_seconds = 1.0 / value,
         FOCUS_DISTANCE_CONTROL_ID => next.focus_distance_meters = value,
         SHUTTER_AMOUNT_CONTROL_ID => next.shutter_motion_amount = value,
@@ -2909,7 +2905,7 @@ mod tests {
             white_luminance_nits: 350.0,
             placement_id: "fit",
             preview_quality_id: "setup",
-            frame_rate: 24.0,
+            frame_rate: FrameRate::new(24, 1).expect("valid test frame rate"),
             source_adjustment: SceneLinearAdjustment::NEUTRAL,
             subpixel_geometry_amount: 1.0,
             panel_uniformity_amount: 1.0,
@@ -3245,7 +3241,7 @@ mod tests {
             default_test_authoring_selection(
                 "srgb-encoded-rec709",
                 "lcd-asus-proart-pa329cv",
-                24.0
+                FrameRate::new(24, 1).unwrap()
             )
             .unwrap()
             .output_signal_id,
@@ -3255,12 +3251,28 @@ mod tests {
             default_test_authoring_selection(
                 "display-rec709-gamma24",
                 "lcd-asus-proart-pa329cv",
-                24.0
+                FrameRate::new(24, 1).unwrap()
             )
             .unwrap()
             .output_signal_id,
             "rec709-gamma24"
         );
+    }
+
+    #[test]
+    fn test_authoring_preserves_fractional_frame_rates_exactly() {
+        for rate in [
+            FrameRate::new(24_000, 1_001).unwrap(),
+            FrameRate::new(30_000, 1_001).unwrap(),
+        ] {
+            let resolved = default_test_authoring_selection(
+                "srgb-encoded-rec709",
+                "lcd-asus-proart-pa329cv",
+                rate,
+            )
+            .unwrap();
+            assert_eq!(resolved.frame_rate, rate);
+        }
     }
 
     #[test]

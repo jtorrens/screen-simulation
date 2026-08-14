@@ -20,14 +20,25 @@ struct SavedMissingMediaDescriptor: Codable, Equatable, Sendable {
     let originalName: String
     let width: Int
     let height: Int
-    let frameRate: Double
+    let frameRateNumerator: UInt32
+    let frameRateDenominator: UInt32
     let frameCount: Int
-    let durationSeconds: Double
+    let durationNumerator: UInt64
+    let durationDenominator: UInt32
+
+    var exactFrameRate: ExactFrameRate {
+        get throws {
+            try ExactFrameRate(
+                numerator: frameRateNumerator,
+                denominator: frameRateDenominator
+            )
+        }
+    }
 
     func validate() throws {
         guard !originalName.isEmpty, width > 0, height > 0,
-              frameRate.isFinite, frameRate > 0, frameCount > 0,
-              durationSeconds.isFinite, durationSeconds >= 0
+              frameRateNumerator > 0, frameRateDenominator > 0, frameCount > 0,
+              durationDenominator > 0
         else {
             throw SceneLibraryError.invalidDocument(
                 "La descripción persistida del medio ausente no es válida."
@@ -61,7 +72,7 @@ struct SavedSceneSource: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v1"
+    static let schema = "ScreenSimulation.SavedScene.v2"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -123,7 +134,7 @@ struct SavedSceneCapture: Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -179,11 +190,15 @@ struct SceneLibraryStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("Scenes.v1.json")
+        documentURL = directory.appendingPathComponent("Scenes.v2.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
+            let retired = directoryURL.appendingPathComponent("Scenes.v1.json")
+            if FileManager.default.fileExists(atPath: retired.path) {
+                throw SceneLibraryError.unsupportedSchema(1)
+            }
             return SceneLibraryDocument()
         }
         let data = try Data(contentsOf: documentURL)
@@ -250,8 +265,9 @@ struct SceneLibraryStore: Sendable {
                           return false
                       }
                       return Set(missing.keys) == [
-                          "originalName", "width", "height", "frameRate", "frameCount",
-                          "durationSeconds",
+                          "originalName", "width", "height", "frameRateNumerator",
+                          "frameRateDenominator", "frameCount", "durationNumerator",
+                          "durationDenominator",
                       ]
                   }())
             else { throw SceneLibraryError.invalidDocument("La escena contiene campos desconocidos.") }

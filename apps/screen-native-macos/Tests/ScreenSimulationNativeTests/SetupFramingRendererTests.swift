@@ -47,9 +47,12 @@ import Testing
     }
 }
 
-@Test func referenceMovieIsTheTimelineAuthorityWhileItRemainsLoaded() {
-    let source = NativeVideoTimelineInfo(frameRate: 24, frameCount: 120)
-    let reference = NativeVideoTimelineInfo(frameRate: 25, frameCount: 300)
+@Test func referenceMovieIsTheTimelineAuthorityWhileItRemainsLoaded() throws {
+    let source = NativeVideoTimelineInfo(exactFrameRate: .fps24, frameCount: 120)
+    let reference = NativeVideoTimelineInfo(
+        exactFrameRate: try ExactFrameRate(numerator: 25, denominator: 1),
+        frameCount: 300
+    )
     #expect(ReferenceTimelineAuthority.resolve(
         source: source, reference: reference, referenceVisible: true
     ) == reference)

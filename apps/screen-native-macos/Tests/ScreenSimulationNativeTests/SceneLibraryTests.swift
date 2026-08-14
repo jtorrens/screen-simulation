@@ -47,9 +47,11 @@ import Testing
         originalName: "plate.mov",
         width: 4096,
         height: 2160,
-        frameRate: 24,
+        frameRateNumerator: 24_000,
+        frameRateDenominator: 1_001,
         frameCount: 240,
-        durationSeconds: 10
+        durationNumerator: 10_010,
+        durationDenominator: 1_000
     )
     let snapshot = SavedSceneSnapshot(
         source: .init(
@@ -78,6 +80,9 @@ import Testing
 
     let restored = try #require(try store.load().scenes.first)
     #expect(restored.snapshot.source.missingMedia == missing)
+    #expect(try restored.snapshot.source.missingMedia?.exactFrameRate.framesPerSecond == 24_000.0 / 1_001.0)
+    #expect(restored.snapshot.source.missingMedia?.durationNumerator == 10_010)
+    #expect(restored.snapshot.source.missingMedia?.durationDenominator == 1_000)
     #expect(restored.snapshot.currentFrame == 73)
 }
 
@@ -95,6 +100,20 @@ import Testing
     try unknown.write(to: store.documentURL)
     #expect(throws: SceneLibraryError.self) { try store.load() }
     #expect(try Data(contentsOf: store.documentURL) == unknown)
+}
+
+@Test func sceneLibraryRejectsASelectedRetiredIndexInsteadOfOpeningEmpty() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scenes-retired-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SceneLibraryStore(directoryURL: root)
+    let retired = root.appendingPathComponent("Scenes.v1.json")
+    let bytes = Data("{\"schemaVersion\":1,\"scenes\":[]}".utf8)
+    try bytes.write(to: retired)
+
+    #expect(throws: SceneLibraryError.self) { try store.load() }
+    #expect(try Data(contentsOf: retired) == bytes)
+    #expect(!FileManager.default.fileExists(atPath: store.documentURL.path))
 }
 
 @Test func sourceAssetsAreContentAddressedAndResolvedWithoutFilenameInference() throws {

@@ -27,7 +27,7 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 27u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 28u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -52,7 +52,8 @@ typedef struct {
     float white_luminance_nits;
     ScreenUTF8View placement_id;
     ScreenUTF8View preview_quality_id;
-    float frame_rate;
+    uint32_t frame_rate_numerator;
+    uint32_t frame_rate_denominator;
     float source_exposure_ev;
     float source_contrast;
     float source_saturation;
@@ -123,7 +124,7 @@ typedef struct {
     ScreenUTF8View recording_output_transform_id;
     ScreenUTF8View recording_profile_id;
     float recording_character;
-} ScreenTestAuthoringSelectionV21;
+} ScreenTestAuthoringSelectionV22;
 
 typedef struct {
     uint32_t abi_version;
@@ -165,13 +166,14 @@ typedef struct {
 bool screen_test_authoring_default_selection(
     ScreenUTF8View input_transform_id,
     ScreenUTF8View device_id,
-    float frame_rate,
-    ScreenTestAuthoringSelectionV21 *resolved,
+    uint32_t frame_rate_numerator,
+    uint32_t frame_rate_denominator,
+    ScreenTestAuthoringSelectionV22 *resolved,
     const char **error_message
 );
 
 ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
-    const ScreenTestAuthoringSelectionV21 *selection,
+    const ScreenTestAuthoringSelectionV22 *selection,
     const char **error_message
 );
 void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
@@ -223,24 +225,24 @@ bool screen_test_page_preview_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 bool screen_test_authoring_apply_choice(
-    const ScreenTestAuthoringSelectionV21 *selection,
+    const ScreenTestAuthoringSelectionV22 *selection,
     ScreenUTF8View control_id,
     ScreenUTF8View option_id,
-    ScreenTestAuthoringSelectionV21 *resolved,
+    ScreenTestAuthoringSelectionV22 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_scalar(
-    const ScreenTestAuthoringSelectionV21 *selection,
+    const ScreenTestAuthoringSelectionV22 *selection,
     ScreenUTF8View control_id,
     float value,
-    ScreenTestAuthoringSelectionV21 *resolved,
+    ScreenTestAuthoringSelectionV22 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_toggle(
-    const ScreenTestAuthoringSelectionV21 *selection,
+    const ScreenTestAuthoringSelectionV22 *selection,
     ScreenUTF8View control_id,
     bool value,
-    ScreenTestAuthoringSelectionV21 *resolved,
+    ScreenTestAuthoringSelectionV22 *resolved,
     const char **error_message
 );
 

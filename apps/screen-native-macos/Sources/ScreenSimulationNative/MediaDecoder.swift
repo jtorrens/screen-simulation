@@ -12,21 +12,63 @@ struct DecodedNativeFrame: Sendable {
     let sourceDescription: String
 }
 
+struct ExactFrameRate: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey { case numerator, denominator }
+    static let fps24 = ExactFrameRate(validatedNumerator: 24, denominator: 1)
+    let numerator: UInt32
+    let denominator: UInt32
+
+    init(numerator: UInt32, denominator: UInt32) throws {
+        guard numerator > 0, denominator > 0 else {
+            throw NativeMediaError.invalidFrameRate
+        }
+        self.numerator = numerator
+        self.denominator = denominator
+    }
+
+    private init(validatedNumerator numerator: UInt32, denominator: UInt32) {
+        self.numerator = numerator
+        self.denominator = denominator
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            numerator: values.decode(UInt32.self, forKey: .numerator),
+            denominator: values.decode(UInt32.self, forKey: .denominator)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(numerator, forKey: .numerator)
+        try values.encode(denominator, forKey: .denominator)
+    }
+
+    var framesPerSecond: Double {
+        Double(numerator) / Double(denominator)
+    }
+}
+
 struct NativeVideoTimelineInfo: Sendable, Equatable {
-    let frameRate: Double
+    let exactFrameRate: ExactFrameRate
     let frameCount: Int
+
+    var frameRate: Double { exactFrameRate.framesPerSecond }
 }
 
 enum NativeMediaError: Error, LocalizedError {
     case unsupportedType(String)
     case unreadable(String)
     case invalidRaster
+    case invalidFrameRate
 
     var errorDescription: String? {
         switch self {
         case let .unsupportedType(value): "Formato no compatible: \(value)."
         case let .unreadable(value): "No se puede decodificar \(value)."
         case .invalidRaster: "El frame decodificado no tiene un raster RGB válido."
+        case .invalidFrameRate: "La cadencia del medio no es una fracción positiva válida."
         }
     }
 }
@@ -64,10 +106,20 @@ enum NativeMediaDecoder {
         guard let track, duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0 else {
             throw NativeMediaError.unreadable(url.lastPathComponent)
         }
-        let nominalRate = Double(try await track.load(.nominalFrameRate))
-        let frameRate = nominalRate.isFinite && nominalRate > 0 ? nominalRate : 24
+        let minimumFrameDuration = try await track.load(.minFrameDuration)
+        guard minimumFrameDuration.isNumeric,
+              minimumFrameDuration.value > 0,
+              minimumFrameDuration.timescale > 0,
+              let numerator = UInt32(exactly: minimumFrameDuration.timescale),
+              let denominator = UInt32(exactly: minimumFrameDuration.value)
+        else { throw NativeMediaError.invalidFrameRate }
+        let exactFrameRate = try ExactFrameRate(
+            numerator: numerator,
+            denominator: denominator
+        )
+        let frameRate = exactFrameRate.framesPerSecond
         return NativeVideoTimelineInfo(
-            frameRate: frameRate,
+            exactFrameRate: exactFrameRate,
             frameCount: max(1, Int((duration.seconds * frameRate).rounded()))
         )
     }
