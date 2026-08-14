@@ -7,7 +7,6 @@ import UniformTypeIdentifiers
 
 enum FrameCheckPNG {
     static let metadataKeyword = "ScreenSimulation.PhysicalFrame.v2"
-    private static let selectedMigrationKeyword = "ScreenSimulation.PhysicalFrame.v1"
 
     static func jsonObject<T: Encodable>(_ value: T) -> Any? {
         guard let data = try? JSONEncoder().encode(value) else { return nil }
@@ -111,12 +110,6 @@ enum FrameCheckPNG {
 
     static func metadata(in png: Data) -> Data? {
         internationalText(in: png, keyword: metadataKeyword)
-    }
-
-    /// This reader is only used after the user explicitly selects Import Settings.
-    /// It accepts the single retired container needed by the one-way migration.
-    static func metadataForSelectedImport(in png: Data) -> Data? {
-        metadata(in: png) ?? internationalText(in: png, keyword: selectedMigrationKeyword)
     }
 
     private static func internationalText(in png: Data, keyword: String) -> Data? {

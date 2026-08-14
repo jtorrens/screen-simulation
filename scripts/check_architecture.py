@@ -357,6 +357,19 @@ def validate_native_model_authority() -> None:
     if "private func physicalIntermediate(" in workspace:
         raise ValidationError("Native host reconstructs phase-to-intermediate routing")
 
+    frame_check = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/FrameCheckPNG.swift"
+    ).read_text(encoding="utf-8")
+    forbidden_png_compatibility = (
+        "PhysicalFrame.v1",
+        "metadataForSelectedImport",
+    )
+    present = [value for value in forbidden_png_compatibility if value in frame_check]
+    if present:
+        raise ValidationError(
+            f"Normal PNG import exposes retired compatibility readers: {present}"
+        )
+
 
 def validate_phase_gated_workflow() -> None:
     rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")

@@ -2788,7 +2788,7 @@ final class WorkspaceModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let png = try Data(contentsOf: url)
-            guard let metadata = FrameCheckPNG.metadataForSelectedImport(in: png),
+            guard let metadata = FrameCheckPNG.metadata(in: png),
                   let document = try JSONSerialization.jsonObject(with: metadata) as? [String: Any]
             else {
                 throw PhysicalSettingsExchange.ImportError.missingSettings

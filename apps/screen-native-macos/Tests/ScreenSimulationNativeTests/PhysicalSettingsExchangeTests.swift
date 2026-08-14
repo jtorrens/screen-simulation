@@ -90,7 +90,7 @@ import Testing
     }
 }
 
-@Test func selectedPNGImportReadsRawAndCompressedRetiredContainers() throws {
+@Test func normalPNGImportRejectsRetiredContainers() throws {
     let metadata = Data("{\"settings\":{\"schema\":\"ScreenSimulation.PhysicalSettings.v1\"}}".utf8)
     let rawPNG = try pngWithInternationalText(
         keyword: "ScreenSimulation.PhysicalFrame.v1",
@@ -104,8 +104,7 @@ import Testing
     )
 
     #expect(FrameCheckPNG.metadata(in: rawPNG) == nil)
-    #expect(FrameCheckPNG.metadataForSelectedImport(in: rawPNG) == metadata)
-    #expect(FrameCheckPNG.metadataForSelectedImport(in: compressedPNG) == metadata)
+    #expect(FrameCheckPNG.metadata(in: compressedPNG) == nil)
 }
 
 @Test func frameSettingsRejectMalformedImageEnvironmentIdentity() throws {
