@@ -267,6 +267,7 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceHash: String?
     private var environmentSourceInputTransformID: String?
     private var environmentSourceURL: URL?
+    private var environmentSourceCalibration: EnvironmentAssetCalibration?
     private var generatedReflectionEnvironmentData: Data?
     private var activeSceneID: UUID?
     private var persistGeneratedEnvironment: ((UUID, Data) throws -> ManagedEnvironmentAsset)?
@@ -801,6 +802,7 @@ final class WorkspaceModel: ObservableObject {
                     environmentSourceHash = nil
                     environmentSourceInputTransformID = nil
                     environmentSourceURL = nil
+                    environmentSourceCalibration = nil
                     generatedReflectionEnvironmentData = nil
                     environmentReflectionFramingSourceFrame = nil
                 }
@@ -1135,7 +1137,8 @@ final class WorkspaceModel: ObservableObject {
               let source = environmentReflectionFramingSourceFrame
                 ?? environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = physicalAuthoringState
+              let authored = physicalAuthoringState,
+              let calibration = environmentSourceCalibration
         else { return }
         environmentReflectionFramingIsGenerating = true
         defer { environmentReflectionFramingIsGenerating = false }
@@ -1162,15 +1165,22 @@ final class WorkspaceModel: ObservableObject {
                     data, suggestedName: "Reflejos creados"
                 )
             }
+            let generatedCalibration = try EnvironmentAssetCalibration(
+                inputTransformID: "acescg",
+                sourceUnitRadianceCandelasPerSquareMeter:
+                    calibration.sourceUnitRadianceCandelasPerSquareMeter,
+                exposureEV: calibration.exposureEV
+            )
+            try EnvironmentAssetLibrary.saveCalibration(generatedCalibration, for: asset)
             generatedReflectionEnvironmentData = data
             try resetGeneratedEnvironmentPlacement()
-            await loadEnvironment(
-                asset.url, inputTransformID: "acescg",
-                unitRadiance: authored.environment.sourceUnitRadianceCandelasPerSquareMeter,
-                exposureStops: authored.environment.exposureStops,
+            guard await loadEnvironment(
+                asset.url, inputTransformID: generatedCalibration.inputTransformID,
+                unitRadiance: generatedCalibration.sourceUnitRadianceCandelasPerSquareMeter,
+                exposureStops: generatedCalibration.exposureEV,
                 originalFileName: asset.originalFileName,
                 knownHash: asset.sha256
-            )
+            ) else { return }
             environmentReflectionFramingEnabled = false
             rebuildPhysicalSelectedFrame()
             status = "Entorno reproyectado · \(output.width)×\(output.height) · pose actual"
@@ -1495,13 +1505,20 @@ final class WorkspaceModel: ObservableObject {
                     data, suggestedName: "Reflejos creados"
                 )
             }
+            let calibration = try EnvironmentAssetCalibration(
+                inputTransformID: "acescg",
+                sourceUnitRadianceCandelasPerSquareMeter: 1,
+                exposureEV: 0
+            )
+            try EnvironmentAssetLibrary.saveCalibration(calibration, for: asset)
             generatedReflectionEnvironmentData = data
             try resetGeneratedEnvironmentPlacement()
-            await loadEnvironment(
-                asset.url, inputTransformID: "acescg", unitRadiance: 1,
-                exposureStops: 0, originalFileName: asset.originalFileName,
+            guard await loadEnvironment(
+                asset.url, inputTransformID: calibration.inputTransformID,
+                unitRadiance: calibration.sourceUnitRadianceCandelasPerSquareMeter,
+                exposureStops: calibration.exposureEV, originalFileName: asset.originalFileName,
                 knownHash: asset.sha256
-            )
+            ) else { return }
             status = "Entorno de reflejos generado · \(width)×\(height) · \(asset.originalFileName)"
         } catch {
             errorMessage = error.localizedDescription
@@ -1638,6 +1655,7 @@ final class WorkspaceModel: ObservableObject {
         try applyTestAuthoringSelection(selection)
     }
 
+    @discardableResult
     private func loadEnvironment(
         _ url: URL,
         inputTransformID: String,
@@ -1645,7 +1663,7 @@ final class WorkspaceModel: ObservableObject {
         exposureStops: Double,
         originalFileName: String? = nil,
         knownHash: String? = nil
-    ) async {
+    ) async -> Bool {
         do {
             status = "Decodificando entorno HDR…"
             let managed: ManagedEnvironmentAsset
@@ -1690,7 +1708,7 @@ final class WorkspaceModel: ObservableObject {
             )
             environmentAdjustmentOwner = adjusted
             let environment = try EnvironmentRadianceFrame.prefiltered(from: adjusted.frame)
-            guard var authored = physicalAuthoringState else { return }
+            guard var authored = physicalAuthoringState else { return false }
             authored.environment.sourceKind = 1
             authored.environment.sourceUnitRadianceCandelasPerSquareMeter = unitRadiance
             authored.environment.exposureStops = exposureStops
@@ -1706,6 +1724,7 @@ final class WorkspaceModel: ObservableObject {
             environmentSourceInputTransformID = inputTransformID
             environmentSourceHash = managed.sha256
             environmentSourceURL = managed.url
+            environmentSourceCalibration = calibration
             guard let current = currentTestAuthoringSelection() else {
                 throw TestAuthoringCoordinatorError.malformedDescriptor(
                     "Test no tiene una selección resuelta para el entorno externo."
@@ -1722,8 +1741,11 @@ final class WorkspaceModel: ObservableObject {
             physicalModel.invalidateExternalParameters()
             try applyTestAuthoringSelection(selected)
             status = "Entorno cargado · visible desde Draft · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
+            errorMessage = nil
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -3206,6 +3228,7 @@ final class WorkspaceModel: ObservableObject {
                 environmentSourceHash = nil
                 environmentSourceInputTransformID = nil
                 environmentSourceURL = nil
+                environmentSourceCalibration = nil
                 generatedReflectionEnvironmentData = nil
             case .image:
                 authoredImageEnvironment = state.pipeline.environment

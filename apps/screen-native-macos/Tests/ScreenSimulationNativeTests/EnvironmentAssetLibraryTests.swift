@@ -64,3 +64,32 @@ import Testing
         libraryRoot: testRoot
     ) == second)
 }
+
+@Test func overwrittenGeneratedEnvironmentReceivesItsNewCalibrationBeforeReuse() throws {
+    let testRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-generated-calibration-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: testRoot) }
+
+    let first = try EnvironmentAssetLibrary.storeGeneratedEXR(
+        Data([1, 2, 3]), suggestedName: "Reflejos creados", libraryRoot: testRoot
+    )
+    let oldCalibration = try EnvironmentAssetCalibration(
+        inputTransformID: "linear-rec709",
+        sourceUnitRadianceCandelasPerSquareMeter: 100,
+        exposureEV: -1
+    )
+    try EnvironmentAssetLibrary.saveCalibration(oldCalibration, for: first)
+
+    let replacement = try EnvironmentAssetLibrary.storeGeneratedEXR(
+        Data([4, 5, 6]), suggestedName: "Reflejos creados", libraryRoot: testRoot
+    )
+    let generatedCalibration = try EnvironmentAssetCalibration(
+        inputTransformID: "acescg",
+        sourceUnitRadianceCandelasPerSquareMeter: 100,
+        exposureEV: -1
+    )
+    try EnvironmentAssetLibrary.saveCalibration(generatedCalibration, for: replacement)
+
+    #expect(first.url == replacement.url)
+    #expect(try EnvironmentAssetLibrary.calibration(for: replacement) == generatedCalibration)
+}
