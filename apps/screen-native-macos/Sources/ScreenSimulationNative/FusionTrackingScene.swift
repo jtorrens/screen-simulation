@@ -14,7 +14,19 @@ struct TrackingMesh: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let label: String
     let sourceVertices: [SIMD3<Double>]
-    let triangleIndices: [Int]
+    let faceVertexCounts: [Int]
+    let faceVertexIndices: [Int]
+
+    var triangleIndices: [Int] {
+        var result: [Int] = [], cursor = 0
+        for count in faceVertexCounts where count >= 3 && cursor + count <= faceVertexIndices.count {
+            for corner in 1..<(count - 1) {
+                result += [faceVertexIndices[cursor], faceVertexIndices[cursor + corner], faceVertexIndices[cursor + corner + 1]]
+            }
+            cursor += count
+        }
+        return result
+    }
 }
 
 struct TrackingPlanePlacement: Equatable, Sendable {
@@ -82,6 +94,11 @@ struct TrackingCameraSample: Codable, Equatable, Sendable {
 }
 
 struct TrackingCamera: Identifiable, Codable, Equatable, Sendable {
+    enum Distortion: Codable, Equatable, Sendable {
+        case pinhole
+        case de4RadialStandardDegree4(degree2: Double, degree4: Double)
+    }
+
     let id: String
     let label: String
     let frameRateNumerator: UInt32
@@ -89,6 +106,9 @@ struct TrackingCamera: Identifiable, Codable, Equatable, Sendable {
     let focalLengthMillimeters: Double
     let gateWidthMillimeters: Double
     let gateHeightMillimeters: Double
+    let plateWidth: UInt32
+    let plateHeight: UInt32
+    let distortion: Distortion
     let samples: [TrackingCameraSample]
 
     func sample(atTimelineFrame frame: Int, timelineFrameRate: Double) -> TrackingCameraSample? {
@@ -147,7 +167,7 @@ struct ImportedTrackingScene: Codable, Equatable, Sendable {
     }
 }
 
-enum AlembicTrackingError: LocalizedError {
+enum FusionTrackingError: LocalizedError {
     case invalid(String)
     case converter(String)
 
@@ -158,272 +178,181 @@ enum AlembicTrackingError: LocalizedError {
     }
 }
 
-struct AlembicTrackingImporter {
-    private struct Prim {
-        let type: String
-        let name: String
-        let start: String.Index
-        let open: String.Index
-        let close: String.Index
-        var parent: Int?
-        var path: String = ""
-    }
-
+struct FusionTrackingImporter {
     func load(_ url: URL) throws -> ImportedTrackingScene {
-        guard url.pathExtension.lowercased() == "abc" else {
-            throw AlembicTrackingError.invalid("La escena de tracking debe ser un archivo Alembic .abc.")
+        guard url.pathExtension.lowercased() == "comp" else {
+            throw FusionTrackingError.invalid("La solución de tracking debe ser una composición Fusion .comp.")
         }
-        let temporary = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("usda")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/usdcat")
-        process.arguments = [url.path, "--out", temporary.path]
-        let errors = Pipe()
-        process.standardError = errors
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            throw AlembicTrackingError.converter("macOS no pudo iniciar el conversor Alembic/USD: \(error.localizedDescription)")
-        }
-        guard process.terminationStatus == 0 else {
-            let detail = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            throw AlembicTrackingError.converter("macOS no pudo leer el Alembic. \(detail)")
-        }
-        let text = try String(contentsOf: temporary, encoding: .utf8)
+        let text = try String(contentsOf: url, encoding: .utf8)
         return try parse(text, sourceFileName: url.lastPathComponent)
     }
 
     func parse(_ text: String, sourceFileName: String) throws -> ImportedTrackingScene {
-        guard text.contains("#usda 1.0"), text.contains("upAxis = \"Y\"") else {
-            throw AlembicTrackingError.invalid("El Alembic convertido debe declarar USD 1.0 y eje vertical Y.")
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("-- Fusion Exporter:"),
+              text.contains("Composition {") else {
+            throw FusionTrackingError.invalid("El archivo no es una composición ASCII exportada por SynthEyes para Fusion.")
         }
-        var prims = try parsePrims(text)
-        for index in prims.indices {
-            let containers = prims.indices.filter {
-                $0 != index && prims[$0].open < prims[index].start && prims[$0].close > prims[index].close
-            }
-            prims[index].parent = containers.min { a, b in
-                text.distance(from: prims[a].open, to: prims[a].close)
-                    < text.distance(from: prims[b].open, to: prims[b].close)
-            }
+        let format = try requiredBlock(after: "FrameFormat =", in: text)
+        let width = try requiredUInt("Width", in: format)
+        let height = try requiredUInt("Height", in: format)
+        let rate = try requiredUInt("Rate", in: format)
+        guard width > 0, height > 0, rate > 0 else {
+            throw FusionTrackingError.invalid("El raster o la cadencia Fusion no son válidos.")
         }
-        for index in prims.indices {
-            var names = [prims[index].name]
-            var parent = prims[index].parent
-            while let value = parent {
-                names.append(prims[value].name)
-                parent = prims[value].parent
-            }
-            prims[index].path = "/" + names.reversed().joined(separator: "/")
-        }
-
-        let sampleTimes = prims.filter { $0.type == "Xform" }.flatMap {
-            matrixSamples(in: body($0, text)).map(\.time)
-        }.sorted()
-        let frameRate = try exactFrameRate(sampleTimes: sampleTimes)
-
+        let cameraEntries = try toolEntries(ofType: "Camera3D", in: text)
         var cameras: [TrackingCamera] = []
-        for (index, xform) in prims.enumerated() where xform.type == "Xform" {
-            guard let cameraPrim = prims.first(where: { $0.parent == index && $0.type == "Camera" }) else { continue }
-            let transforms = matrixSamples(in: body(xform, text)).sorted { $0.time < $1.time }
-            guard !transforms.isEmpty else { continue }
-            let cameraBody = body(cameraPrim, text)
-            let focal = try requiredScalarSample("focalLength", in: cameraBody)
-            let gateWidth = try requiredScalarSample("horizontalAperture", in: cameraBody)
-            let gateHeight = try requiredScalarSample("verticalAperture", in: cameraBody)
-            let samples = transforms.enumerated().map { offset, sample in
-                TrackingCameraSample(
-                    frame: offset,
-                    sourcePosition: sample.translation,
-                    orientation: quaternion(fromUSDMatrix: sample.matrix)
-                )
+        for entry in cameraEntries {
+            let body = entry.body
+            let focal = try requiredInput("FLength", in: body)
+            let gateWidth = try requiredInput("ApertureW", in: body) * 25.4
+            let gateHeight = try requiredInput("ApertureH", in: body) * 25.4
+            let channels = try ["XOffset", "YOffset", "ZOffset", "XRotation", "YRotation", "ZRotation"].map {
+                try spline(named: entry.name + $0, in: text)
+            }
+            guard Set(channels.map { Set($0.keys) }).count == 1,
+                  let frames = channels.first?.keys.sorted(), !frames.isEmpty else {
+                throw FusionTrackingError.invalid("La cámara Fusion no contiene seis canales animados coincidentes.")
+            }
+            let samples = frames.map { frame -> TrackingCameraSample in
+                let position = SIMD3(channels[0][frame]!, channels[1][frame]!, channels[2][frame]!)
+                let degrees = SIMD3(channels[3][frame]!, channels[4][frame]!, channels[5][frame]!)
+                let qx = simd_quatd(angle: degrees.x * .pi / 180, axis: SIMD3(1, 0, 0))
+                let qy = simd_quatd(angle: degrees.y * .pi / 180, axis: SIMD3(0, 1, 0))
+                let qz = simd_quatd(angle: degrees.z * .pi / 180, axis: SIMD3(0, 0, 1))
+                let q = simd_normalize(qz * qy * qx)
+                return .init(frame: frame, sourcePosition: position,
+                    orientation: .init(q.imag.x, q.imag.y, q.imag.z, q.real))
             }
             cameras.append(.init(
-                id: xform.path, label: xform.name,
-                frameRateNumerator: frameRate.0, frameRateDenominator: frameRate.1,
+                id: entry.name, label: entry.name,
+                frameRateNumerator: rate, frameRateDenominator: 1,
                 focalLengthMillimeters: focal,
-                gateWidthMillimeters: gateWidth,
-                gateHeightMillimeters: gateHeight,
+                gateWidthMillimeters: gateWidth, gateHeightMillimeters: gateHeight,
+                plateWidth: width, plateHeight: height,
+                distortion: try distortion(for: entry.name, gateWidth: gateWidth, gateHeight: gateHeight, in: text),
                 samples: samples
             ))
         }
-
-        var groups: [TrackingPointGroup] = []
-        for (index, xform) in prims.enumerated() where xform.type == "Xform" {
-            let children = prims.filter { $0.parent == index && $0.type == "Mesh" }
-            let points = children.compactMap { child -> TrackingPoint? in
-                guard let transform = matrixSamples(in: body(child, text)).first else { return nil }
-                return .init(id: child.path, label: child.name, sourcePosition: transform.translation)
+        let pointGroups: [TrackingPointGroup] = try toolEntries(ofType: "PointCloud3D", in: text).map { entry in
+            let positions = try requiredBlock(after: "Positions =", in: entry.body)
+            let regex = try NSRegularExpression(pattern: #"\[(\d+)\]\s*=\s*\{\s*([-+0-9.eE]+),\s*([-+0-9.eE]+),\s*([-+0-9.eE]+),\s*\"([^\"]+)\""#)
+            let points = regex.matches(in: positions, range: NSRange(positions.startIndex..., in: positions)).compactMap { match -> TrackingPoint? in
+                guard let i = Range(match.range(at: 1), in: positions), let x = Range(match.range(at: 2), in: positions),
+                      let y = Range(match.range(at: 3), in: positions), let z = Range(match.range(at: 4), in: positions),
+                      let label = Range(match.range(at: 5), in: positions),
+                      let xv = Double(positions[x]), let yv = Double(positions[y]), let zv = Double(positions[z]) else { return nil }
+                return .init(id: "\(entry.name)/\(positions[i])", label: String(positions[label]), sourcePosition: .init(xv, yv, zv))
             }
-            if !points.isEmpty {
-                groups.append(.init(id: xform.path, label: xform.name, points: points))
-            }
+            guard !points.isEmpty else { throw FusionTrackingError.invalid("La nube \(entry.name) no contiene puntos válidos.") }
+            return .init(id: entry.name, label: entry.name, points: points)
         }
-
-        let groupedMeshPaths = Set(groups.flatMap { $0.points.map(\.id) })
-        var meshes: [TrackingMesh] = []
-        for mesh in prims where mesh.type == "Mesh" && !groupedMeshPaths.contains(mesh.path) {
-            let meshBody = body(mesh, text)
-            guard let vertices = vectorArray(property: "point3f[] points.timeSamples", in: meshBody),
-                  let counts = integerArray(property: "int[] faceVertexCounts.timeSamples", in: meshBody),
-                  let indices = integerArray(property: "int[] faceVertexIndices.timeSamples", in: meshBody)
-            else { continue }
-            let transform = matrixSamples(in: meshBody).first?.matrix ?? matrix_identity_double4x4
-            let worldVertices = vertices.map { transformPoint($0, usd: transform) }
-            var triangles: [Int] = []
-            var cursor = 0
-            for count in counts {
-                guard count >= 3, cursor + count <= indices.count else {
-                    throw AlembicTrackingError.invalid("La geometría \(mesh.path) contiene caras inválidas.")
-                }
-                for corner in 1..<(count - 1) {
-                    triangles += [indices[cursor], indices[cursor + corner], indices[cursor + corner + 1]]
-                }
-                cursor += count
-            }
-            meshes.append(.init(id: mesh.path, label: mesh.name, sourceVertices: worldVertices, triangleIndices: triangles))
+        let meshes: [TrackingMesh] = try toolEntries(ofType: "Shape3D", in: text).map { entry in
+            let t = try vector3(prefix: "Transform3DOp.Translate", in: entry.body, defaultValue: 0)
+            let r = try vector3(prefix: "Transform3DOp.Rotate", in: entry.body, defaultValue: 0)
+            let s = try vector3(prefix: "Transform3DOp.Scale", in: entry.body, defaultValue: 1)
+            let qx = simd_quatd(angle: r.x * .pi / 180, axis: SIMD3(1, 0, 0))
+            let qy = simd_quatd(angle: r.y * .pi / 180, axis: SIMD3(0, 1, 0))
+            let qz = simd_quatd(angle: r.z * .pi / 180, axis: SIMD3(0, 0, 1))
+            let q = simd_normalize(qz * qy * qx)
+            let local = [SIMD3(-0.5, -0.5, 0), SIMD3(0.5, -0.5, 0), SIMD3(0.5, 0.5, 0), SIMD3(-0.5, 0.5, 0)]
+            return .init(id: entry.name, label: entry.name,
+                sourceVertices: local.map { q.act($0 * s) + t },
+                faceVertexCounts: [4], faceVertexIndices: [0, 1, 2, 3])
         }
-        guard !cameras.isEmpty else { throw AlembicTrackingError.invalid("El Alembic no contiene una cámara utilizable.") }
-        guard !groups.isEmpty else { throw AlembicTrackingError.invalid("El Alembic no contiene ningún grupo seleccionable como nube de puntos.") }
-        return .init(sourceFileName: sourceFileName, cameras: cameras, pointGroups: groups, meshes: meshes)
+        guard !cameras.isEmpty else { throw FusionTrackingError.invalid("La composición no contiene una cámara Fusion utilizable.") }
+        guard !pointGroups.isEmpty else { throw FusionTrackingError.invalid("La composición no contiene ninguna nube de puntos.") }
+        return .init(sourceFileName: sourceFileName, cameras: cameras, pointGroups: pointGroups, meshes: meshes)
     }
 
-    private func parsePrims(_ text: String) throws -> [Prim] {
-        let regex = try NSRegularExpression(pattern: #"(?m)^\s*def\s+(Xform|Mesh|Camera)\s+\"([^\"]+)\"\s*$"#)
-        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
-        return try regex.matches(in: text, range: nsRange).map { match in
-            guard let typeRange = Range(match.range(at: 1), in: text),
-                  let nameRange = Range(match.range(at: 2), in: text),
-                  let matchRange = Range(match.range, in: text),
-                  let open = text[matchRange.upperBound...].firstIndex(of: "{")
-            else { throw AlembicTrackingError.invalid("La jerarquía USD del Alembic está incompleta.") }
-            var depth = 0
-            var cursor = open
-            var close: String.Index?
-            while cursor < text.endIndex {
-                if text[cursor] == "{" { depth += 1 }
-                if text[cursor] == "}" {
-                    depth -= 1
-                    if depth == 0 { close = cursor; break }
-                }
-                cursor = text.index(after: cursor)
-            }
-            guard let close else { throw AlembicTrackingError.invalid("Un objeto USD no está cerrado.") }
-            return Prim(type: String(text[typeRange]), name: String(text[nameRange]), start: matchRange.lowerBound, open: open, close: close, parent: nil)
+    private struct ToolEntry { let name: String; let body: String }
+
+    private func toolEntries(ofType type: String, in text: String) throws -> [ToolEntry] {
+        let regex = try NSRegularExpression(pattern: #"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"# + NSRegularExpression.escapedPattern(for: type) + #"\s*\{"#)
+        return try regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { match in
+            guard let full = Range(match.range, in: text), let name = Range(match.range(at: 1), in: text),
+                  let open = text[full].lastIndex(of: "{") else { throw FusionTrackingError.invalid("Un nodo Fusion está incompleto.") }
+            return .init(name: String(text[name]), body: try balancedBody(open: open, in: text))
         }
     }
 
-    private func body(_ prim: Prim, _ text: String) -> String {
-        String(text[text.index(after: prim.open)..<prim.close])
-    }
-
-    private struct MatrixSample {
-        let time: Double
-        let matrix: simd_double4x4
-        var translation: SIMD3<Double> { .init(matrix.columns.0.w, matrix.columns.1.w, matrix.columns.2.w) }
-    }
-
-    private func matrixSamples(in body: String) -> [MatrixSample] {
-        guard let property = propertyBlock("matrix4d xformOp:transform.timeSamples", in: body) else { return [] }
-        return property.split(separator: "\n").compactMap { line in
-            let numbers = numericValues(String(line))
-            guard numbers.count == 17 else { return nil }
-            let m = simd_double4x4(rows: [
-                SIMD4(numbers[1], numbers[2], numbers[3], numbers[4]),
-                SIMD4(numbers[5], numbers[6], numbers[7], numbers[8]),
-                SIMD4(numbers[9], numbers[10], numbers[11], numbers[12]),
-                SIMD4(numbers[13], numbers[14], numbers[15], numbers[16]),
-            ])
-            return MatrixSample(time: numbers[0], matrix: m)
+    private func requiredBlock(after marker: String, in text: String) throws -> String {
+        guard let markerRange = text.range(of: marker), let open = text[markerRange.upperBound...].firstIndex(of: "{") else {
+            throw FusionTrackingError.invalid("Falta el bloque Fusion \(marker).")
         }
+        return try balancedBody(open: open, in: text)
     }
 
-    private func propertyBlock(_ name: String, in body: String) -> String? {
-        guard let nameRange = body.range(of: name),
-              let open = body[nameRange.upperBound...].firstIndex(of: "{") else { return nil }
-        var depth = 0
+    private func balancedBody(open: String.Index, in text: String) throws -> String {
+        var depth = 0, quoted = false, escaped = false
         var cursor = open
-        while cursor < body.endIndex {
-            if body[cursor] == "{" { depth += 1 }
-            if body[cursor] == "}" {
-                depth -= 1
-                if depth == 0 { return String(body[body.index(after: open)..<cursor]) }
-            }
-            cursor = body.index(after: cursor)
+        while cursor < text.endIndex {
+            let c = text[cursor]
+            if quoted {
+                if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { quoted = false }
+            } else if c == "\"" { quoted = true }
+            else if c == "{" { depth += 1 }
+            else if c == "}" { depth -= 1; if depth == 0 { return String(text[text.index(after: open)..<cursor]) } }
+            cursor = text.index(after: cursor)
         }
-        return nil
+        throw FusionTrackingError.invalid("Un bloque Fusion no está cerrado.")
     }
 
-    private func vectorArray(property: String, in body: String) -> [SIMD3<Double>]? {
-        guard let block = propertyBlock(property, in: body),
-              let open = block.firstIndex(of: "["), let close = block.lastIndex(of: "]") else { return nil }
-        let values = numericValues(String(block[open...close]))
-        guard values.count.isMultiple(of: 3) else { return nil }
-        return stride(from: 0, to: values.count, by: 3).map { .init(values[$0], values[$0 + 1], values[$0 + 2]) }
-    }
-
-    private func integerArray(property: String, in body: String) -> [Int]? {
-        guard let block = propertyBlock(property, in: body),
-              let open = block.firstIndex(of: "["), let close = block.lastIndex(of: "]") else { return nil }
-        return numericValues(String(block[open...close])).map { Int($0) }
-    }
-
-    private func requiredScalarSample(_ name: String, in body: String) throws -> Double {
-        guard let block = propertyBlock("float \(name).timeSamples", in: body),
-              let value = numericValues(block).last else {
-            throw AlembicTrackingError.invalid("La cámara no declara \(name).")
+    private func requiredInput(_ name: String, in text: String) throws -> Double {
+        let pattern = NSRegularExpression.escapedPattern(for: name) + #"\s*=\s*Input\s*\{\s*Value\s*=\s*([-+0-9.eE]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern), let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text), let value = Double(text[range]), value.isFinite else {
+            throw FusionTrackingError.invalid("Falta el valor Fusion \(name).")
         }
         return value
     }
 
-    private func numericValues(_ text: String) -> [Double] {
-        let pattern = #"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-        return regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)).compactMap {
-            Range($0.range, in: text).flatMap { Double(text[$0]) }
+    private func requiredUInt(_ name: String, in text: String) throws -> UInt32 {
+        let regex = try NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: name) + #"\s*=\s*(\d+)"#)
+        guard let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text), let value = UInt32(text[range]) else {
+            throw FusionTrackingError.invalid("Falta el entero Fusion \(name).")
         }
+        return value
     }
 
-    private func exactFrameRate(sampleTimes: [Double]) throws -> (UInt32, UInt32) {
-        let distinct = Array(Set(sampleTimes)).sorted()
-        guard distinct.count >= 2 else { return (24, 1) }
-        let delta = distinct[1] - distinct[0]
-        guard delta > 0, distinct.dropFirst().enumerated().allSatisfy({ index, value in
-            index == 0 || abs((value - distinct[index]) - delta) < 1e-6
-        }) else { throw AlembicTrackingError.invalid("La cámara Alembic no usa muestras temporales uniformes.") }
-        // USD's normative default timeCodesPerSecond is 24. SynthEyes' 0.96
-        // time-code step therefore represents exactly 25 frames per second.
-        let rate = 24.0 / delta
-        for denominator in 1...1001 {
-            let numerator = (rate * Double(denominator)).rounded()
-            if abs(rate - numerator / Double(denominator)) < 1e-8 {
-                return (UInt32(numerator), UInt32(denominator))
-            }
+    private func spline(named name: String, in text: String) throws -> [Int: Double] {
+        guard let entry = try toolEntries(ofType: "BezierSpline", in: text).first(where: { $0.name == name }) else {
+            throw FusionTrackingError.invalid("Falta la curva Fusion \(name).")
         }
-        throw AlembicTrackingError.invalid("La cadencia Alembic no puede representarse como racional exacta.")
+        let keys = try requiredBlock(after: "KeyFrames =", in: entry.body)
+        let regex = try NSRegularExpression(pattern: #"\[(-?\d+)\]\s*=\s*\{\s*([-+0-9.eE]+)"#)
+        let pairs = regex.matches(in: keys, range: NSRange(keys.startIndex..., in: keys)).compactMap { match -> (Int, Double)? in
+            guard let f = Range(match.range(at: 1), in: keys), let v = Range(match.range(at: 2), in: keys),
+                  let frame = Int(keys[f]), let value = Double(keys[v]) else { return nil }
+            return (frame, value)
+        }
+        guard !pairs.isEmpty, Set(pairs.map(\.0)).count == pairs.count else { throw FusionTrackingError.invalid("La curva \(name) no contiene claves únicas.") }
+        return Dictionary(uniqueKeysWithValues: pairs)
     }
 
-    private func quaternion(fromUSDMatrix matrix: simd_double4x4) -> SIMD4<Double> {
-        // USD/Alembic stores the SynthEyes camera transform for row-vector
-        // multiplication (translation in the final row). simd_quatd acts on
-        // column vectors, so its rotation must be the transpose of the USD
-        // 3x3 block. Keeping this conversion shared with the imported camera
-        // is what leaves static trackers fixed in the solved world.
-        let rotation = simd_double3x3(columns: (
-            SIMD3(matrix[0, 0], matrix[1, 0], matrix[2, 0]),
-            SIMD3(matrix[0, 1], matrix[1, 1], matrix[2, 1]),
-            SIMD3(matrix[0, 2], matrix[1, 2], matrix[2, 2])
-        ))
-        let q = simd_normalize(simd_quatd(rotation))
-        return .init(q.imag.x, q.imag.y, q.imag.z, q.real)
+    private func distortion(for camera: String, gateWidth: Double, gateHeight: Double, in text: String) throws -> TrackingCamera.Distortion {
+        let nodes = try toolEntries(ofType: "LensDistort", in: text).filter { $0.name.hasPrefix(camera) }
+        guard !nodes.isEmpty else { return .pinhole }
+        let modelNodes = nodes.filter { $0.body.contains(#"Model = Input { Value = FuID { "DE4RadialStandardDegree4" }"#) }
+        guard modelNodes.count == nodes.count else { throw FusionTrackingError.invalid("La composición contiene un modelo de distorsión no compatible.") }
+        let values = try modelNodes.map { node in
+            (try requiredInput("[\"DE4RadialStandardDegree4.DistortionDegree2\"]", in: node.body),
+             try requiredInput("[\"DE4RadialStandardDegree4.QuarticDistortionDegree4\"]", in: node.body))
+        }
+        guard values.dropFirst().allSatisfy({ abs($0.0 - values[0].0) < 1e-12 && abs($0.1 - values[0].1) < 1e-12 }) else {
+            throw FusionTrackingError.invalid("Los nodos de distorsión y redistorsión no coinciden.")
+        }
+        let value = values[0]
+        return abs(value.0) < 1e-15 && abs(value.1) < 1e-15 ? .pinhole : .de4RadialStandardDegree4(degree2: value.0, degree4: value.1)
     }
 
-    private func transformPoint(_ point: SIMD3<Double>, usd matrix: simd_double4x4) -> SIMD3<Double> {
-        let value = SIMD4(point.x, point.y, point.z, 1) * matrix
-        return .init(value.x, value.y, value.z)
+    private func vector3(prefix: String, in text: String, defaultValue: Double) throws -> SIMD3<Double> {
+        func component(_ axis: String) throws -> Double {
+            let key = "[\"\(prefix).\(axis)\"]"
+            if !text.contains(key) { return defaultValue }
+            return try requiredInput(key, in: text)
+        }
+        return try .init(component("X"), component("Y"), component("Z"))
     }
 }
 
@@ -472,8 +401,8 @@ private struct TrackingScenePanel: View {
 
     var body: some View {
         Form {
-            Section("Alembic") {
-                Button("Importar .abc…", action: model.importAlembicTrackingScene)
+            Section("SynthEyes / Fusion") {
+                Button("Importar .comp…", action: model.importFusionTrackingScene)
                 if let scene = model.trackingScene {
                     LabeledContent("Archivo", value: scene.sourceFileName)
                     Picker("Cámara", selection: $model.selectedTrackingCameraID) {
@@ -532,7 +461,7 @@ private struct TrackingScenePanel: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
-                                Text("\(mesh.sourceVertices.count) vértices · \(mesh.triangleIndices.count / 3) triángulos")
+                                Text("\(mesh.sourceVertices.count) vértices · \(mesh.faceVertexCounts.count) caras")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
@@ -561,7 +490,7 @@ private struct TrackingScenePanel: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(model.trackingScalePointAID == nil || model.trackingScalePointBID == nil)
                     if let scale = model.trackingMetersPerSourceUnit {
-                        Text("1 unidad Alembic = \(scale.formatted(.number.precision(.fractionLength(6)))) m")
+                        Text("1 unidad Fusion = \(scale.formatted(.number.precision(.fractionLength(6)))) m")
                             .font(.caption.monospacedDigit())
                     } else {
                         Text("La cámara y la geometría no se aplican hasta resolver la escala.")

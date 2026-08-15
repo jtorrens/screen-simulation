@@ -102,13 +102,13 @@ import Testing
     #expect(try Data(contentsOf: store.documentURL) == unknown)
 }
 
-@Test func sceneLibraryPersistsAlembicIdentityVisibilityAndMetricCalibration() throws {
+@Test func sceneLibraryPersistsFusionIdentityVisibilityAndMetricCalibration() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-tracking-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
-    let source = root.appendingPathComponent("solve.abc")
+    let source = root.appendingPathComponent("solve.comp")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    try Data("alembic fixture".utf8).write(to: source)
+    try Data("fusion fixture".utf8).write(to: source)
     let trackingRoot = root.appendingPathComponent("tracking-assets")
     let managed = try TrackingAssetLibrary.importAsset(from: source, libraryRoot: trackingRoot)
     let store = try SceneLibraryStore(

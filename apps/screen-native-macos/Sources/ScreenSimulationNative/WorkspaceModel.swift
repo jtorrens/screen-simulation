@@ -2842,13 +2842,15 @@ final class WorkspaceModel: ObservableObject {
     var trackingOverlaySegments: [CGPoint] {
         guard trackingGeometryVisible, let scene = trackingScene else { return [] }
         return scene.meshes.filter { visibleTrackingMeshIDs.contains($0.id) }.flatMap { mesh in
-            stride(from: 0, to: mesh.triangleIndices.count, by: 3).flatMap { offset -> [CGPoint] in
-                guard offset + 2 < mesh.triangleIndices.count else { return [] }
-                let ids = [mesh.triangleIndices[offset], mesh.triangleIndices[offset + 1], mesh.triangleIndices[offset + 2]]
+            var cursor = 0
+            return mesh.faceVertexCounts.flatMap { count -> [CGPoint] in
+                defer { cursor += count }
+                guard count >= 2, cursor + count <= mesh.faceVertexIndices.count else { return [] }
+                let ids = Array(mesh.faceVertexIndices[cursor..<(cursor + count)])
                 guard ids.allSatisfy({ mesh.sourceVertices.indices.contains($0) }) else { return [] }
                 let projected = ids.compactMap { projectTrackingPoint(mesh.sourceVertices[$0]) }
-                guard projected.count == 3 else { return [] }
-                return [projected[0], projected[1], projected[1], projected[2], projected[2], projected[0]]
+                guard projected.count == count else { return [] }
+                return projected.indices.flatMap { [projected[$0], projected[($0 + 1) % projected.count]] }
             }
         }
     }
@@ -2961,15 +2963,15 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    func importAlembicTrackingScene() {
+    func importFusionTrackingScene() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "abc")!]
+        panel.allowedContentTypes = [UTType(filenameExtension: "comp")!]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let managed = try TrackingAssetLibrary.importAsset(from: url)
-            let imported = try AlembicTrackingImporter().load(managed.url)
+            let imported = try FusionTrackingImporter().load(managed.url)
             trackingAsset = managed
             trackingScene = imported
             selectedTrackingCameraID = nil
@@ -3036,7 +3038,7 @@ final class WorkspaceModel: ObservableObject {
         }
         trackingMetersPerSourceUnit = Double(resolved)
         applyTrackingCameraAtCurrentFrame()
-        status = "Escala resuelta · 1 unidad Alembic = \(Double(resolved).formatted(.number.precision(.fractionLength(6)))) m"
+        status = "Escala resuelta · 1 unidad Fusion = \(Double(resolved).formatted(.number.precision(.fractionLength(6)))) m"
     }
 
     private var selectedTrackingPointGroup: TrackingPointGroup? {
@@ -3058,7 +3060,7 @@ final class WorkspaceModel: ObservableObject {
                 denominator: camera.frameRateDenominator
             )
         } catch {
-            preconditionFailure("La cámara Alembic importada contiene una cadencia inválida.")
+            preconditionFailure("La cámara Fusion importada contiene una cadencia inválida.")
         }
         return NativeVideoTimelineInfo(exactFrameRate: rate, frameCount: camera.samples.count)
     }
@@ -3119,11 +3121,17 @@ final class WorkspaceModel: ObservableObject {
         authored.sceneLens.focalLengthMillimeters = camera.focalLengthMillimeters
         authored.sceneLens.sensorWidthMillimeters = camera.gateWidthMillimeters
         authored.sceneLens.sensorHeightMillimeters = camera.gateHeightMillimeters
-        // The current Alembic camera contract is a calibrated pinhole camera.
-        // Never retain aberrations or shift from the previously selected lens:
-        // they were not part of the solve and move the imported projections.
         authored.sceneLens.lensShift = [0, 0]
-        authored.sceneLens.radialDistortion = [0, 0, 0]
+        switch camera.distortion {
+        case .pinhole:
+            authored.sceneLens.radialDistortion = [0, 0, 0]
+        case let .de4RadialStandardDegree4(degree2, degree4):
+            // 3DE normalizes radius to the image diagonal (corner radius = 1),
+            // while the canonical evaluator uses an axis-normalized gate
+            // (corner radius² = 2). Convert the even polynomial at that shared
+            // boundary; never inherit coefficients from the selected lens.
+            authored.sceneLens.radialDistortion = [degree2 * 0.5, degree4 * 0.25, 0]
+        }
         authored.sceneLens.tangentialDistortion = [0, 0]
     }
 
@@ -3159,7 +3167,15 @@ final class WorkspaceModel: ObservableObject {
                 cameraHeight = UInt32(reference.height)
                 projectionPlacementID = referencePlacement.stableID
                 lensShift = .zero
-                radialDistortion = .zero
+                if let imported = selectedTrackingCamera {
+                    radialDistortion = switch imported.distortion {
+                    case .pinhole: .zero
+                    case let .de4RadialStandardDegree4(degree2, degree4):
+                        SIMD3(degree2 * 0.5, degree4 * 0.25, 0)
+                    }
+                } else {
+                    radialDistortion = .zero
+                }
                 tangentialDistortion = .zero
             } else {
                 cameraWidth = authored.sensor.nativeWidth
@@ -3207,7 +3223,11 @@ final class WorkspaceModel: ObservableObject {
                 ?? physicalAuthoringState?.sensor.nativeHeight
                 ?? UInt32(max(1, frame.height))
             lensShift = .zero
-            radialDistortion = .zero
+            radialDistortion = switch imported.distortion {
+            case .pinhole: .zero
+            case let .de4RadialStandardDegree4(degree2, degree4):
+                SIMD3(degree2 * 0.5, degree4 * 0.25, 0)
+            }
             tangentialDistortion = .zero
             projectionPlacementID = referenceACEScgFrame == nil
                 ? (testAuthoringSelection?.deliveryPlacementID ?? "fit")
@@ -3610,12 +3630,12 @@ final class WorkspaceModel: ObservableObject {
         try saved.validate()
         guard let asset = try TrackingAssetLibrary.asset(
             sha256: saved.asset.sha256, originalFileName: saved.asset.fileName
-        ) else { throw SceneLibraryError.invalidDocument("Falta el Alembic de tracking guardado.") }
-        let imported = try AlembicTrackingImporter().load(asset.url)
+        ) else { throw SceneLibraryError.invalidDocument("Falta la composición Fusion de tracking guardada.") }
+        let imported = try FusionTrackingImporter().load(asset.url)
         guard imported.cameras.contains(where: { $0.id == saved.cameraID }),
               imported.pointGroups.contains(where: { $0.id == saved.pointGroupID }),
               Set(saved.visibleMeshIDs).isSubset(of: Set(imported.meshes.map(\.id))) else {
-            throw SceneLibraryError.invalidDocument("La selección guardada no existe en el Alembic.")
+            throw SceneLibraryError.invalidDocument("La selección guardada no existe en la composición Fusion.")
         }
         trackingAsset = asset
         trackingScene = imported

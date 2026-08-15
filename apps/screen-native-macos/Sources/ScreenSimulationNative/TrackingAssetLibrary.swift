@@ -10,7 +10,10 @@ struct ManagedTrackingAsset: Equatable, Sendable {
 enum TrackingAssetLibrary {
     static func importAsset(from source: URL, libraryRoot: URL? = nil) throws -> ManagedTrackingAsset {
         let data = try Data(contentsOf: source, options: .mappedIfSafe)
-        guard !data.isEmpty else { throw AlembicTrackingError.invalid("El Alembic seleccionado está vacío.") }
+        guard source.pathExtension.lowercased() == "comp" else {
+            throw FusionTrackingError.invalid("La solución debe ser una composición Fusion .comp.")
+        }
+        guard !data.isEmpty else { throw FusionTrackingError.invalid("La composición Fusion seleccionada está vacía.") }
         let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         if let existing = try asset(sha256: hash, originalFileName: source.lastPathComponent, libraryRoot: libraryRoot) {
             return existing
@@ -19,7 +22,7 @@ enum TrackingAssetLibrary {
         let stem = source.deletingPathExtension().lastPathComponent
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        let destination = directory.appendingPathComponent("\(stem)--\(hash).abc")
+        let destination = directory.appendingPathComponent("\(stem)--\(hash).comp")
         try data.write(to: destination, options: .atomic)
         return .init(url: destination, originalFileName: source.lastPathComponent, sha256: hash)
     }

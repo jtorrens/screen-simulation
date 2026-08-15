@@ -1279,7 +1279,7 @@ struct ContentView: View {
                 Label("Tracking 3D", systemImage: "point.3.connected.trianglepath.dotted")
             }
             .disabled(page == .settings)
-            .help("Importar cámara, point cloud y geometrías Alembic")
+            .help("Importar cámara, point cloud, geometrías y lente desde Fusion")
             Button {
                 model.importPhysicalSettings(undoManager: undoManager)
             } label: {
@@ -1312,7 +1312,7 @@ struct ContentView: View {
                 }
                 .controlSize(.small)
                 .disabled(page == .settings)
-                .help("Importar cámara, point cloud y geometrías Alembic")
+                .help("Importar cámara, point cloud, geometrías y lente desde Fusion")
                 Button {
                     saveNewScene()
                 } label: {

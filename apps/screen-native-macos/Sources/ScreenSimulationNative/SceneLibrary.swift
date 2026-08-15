@@ -363,7 +363,7 @@ struct SceneLibraryStore: Sendable {
                     libraryRoot: trackingLibraryRoot
                 ) != nil else {
                     throw SceneLibraryError.invalidDocument(
-                        "Falta el Alembic de tracking de “\(scene.name)”."
+                        "Falta la composición Fusion de tracking de “\(scene.name)”."
                     )
                 }
             }
