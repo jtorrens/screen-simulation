@@ -2692,6 +2692,112 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    var trackingOverlayMeshCenters: [CGPoint] {
+        visibleTrackingPlanePlacements.compactMap { projectTrackingPoint($0.placement.center) }
+    }
+
+    var trackingOverlayMeshCenterIDs: [String] {
+        visibleTrackingPlanePlacements.compactMap { item in
+            projectTrackingPoint(item.placement.center) == nil ? nil : item.mesh.id
+        }
+    }
+
+    var trackingOverlayMeshCenterLabels: [String] {
+        visibleTrackingPlanePlacements.compactMap { item in
+            projectTrackingPoint(item.placement.center) == nil ? nil : item.mesh.label
+        }
+    }
+
+    private var visibleTrackingPlanePlacements: [(mesh: TrackingMesh, placement: TrackingPlanePlacement)] {
+        guard trackingGeometryVisible, let scene = trackingScene else { return [] }
+        let viewer = trackingSourceCameraPosition
+        return scene.meshes.compactMap { mesh in
+            guard visibleTrackingMeshIDs.contains(mesh.id),
+                  let placement = mesh.planePlacement(toward: viewer)
+            else { return nil }
+            return (mesh, placement)
+        }
+    }
+
+    private var trackingSourceCameraPosition: SIMD3<Double> {
+        guard let scale = trackingMetersPerSourceUnit, scale > 0,
+              let authored = physicalAuthoringState else { return .zero }
+        return SIMD3(
+            authored.cameraPose.position[0] / scale,
+            authored.cameraPose.position[1] / scale,
+            authored.cameraPose.position[2] / scale
+        )
+    }
+
+    func placeDeviceAtTrackingPoint(_ id: String, undoManager: UndoManager?) {
+        guard let scale = trackingMetersPerSourceUnit,
+              let point = selectedTrackingPointGroup?.points.first(where: { $0.id == id })
+        else {
+            errorMessage = "Selecciona una nube de puntos y resuelve su escala antes de colocar el Device."
+            return
+        }
+        placeDevice(
+            at: point.sourcePosition * scale,
+            orientation: nil,
+            undoManager: undoManager,
+            actionName: "Colocar Device en punto"
+        )
+    }
+
+    func placeDeviceOnTrackingPlane(_ id: String, undoManager: UndoManager?) {
+        guard let scale = trackingMetersPerSourceUnit,
+              let mesh = trackingScene?.meshes.first(where: { $0.id == id }),
+              let placement = mesh.planePlacement(toward: trackingSourceCameraPosition)
+        else {
+            errorMessage = "La geometría seleccionada no define un plano válido o falta resolver la escala."
+            return
+        }
+        placeDevice(
+            at: placement.center * scale,
+            orientation: placement.orientation,
+            undoManager: undoManager,
+            actionName: "Alinear Device con plano"
+        )
+    }
+
+    private func placeDevice(
+        at position: SIMD3<Double>,
+        orientation: simd_quatd?,
+        undoManager: UndoManager?,
+        actionName: String
+    ) {
+        guard var selection = testAuthoringSelection else { return }
+        let prior = selection
+        selection.geometryModeID = "free"
+        selection.previewQualityID = "setup"
+        selection.screenPositionXMeters = position.x
+        selection.screenPositionYMeters = position.y
+        selection.screenPositionZMeters = position.z
+        if let orientation {
+            let degrees = PoseRotationProjection.degrees(from: [
+                orientation.imag.x, orientation.imag.y,
+                orientation.imag.z, orientation.real,
+            ])
+            selection.screenRotationXDegrees = degrees[0]
+            selection.screenYawDegrees = degrees[1]
+            selection.screenRotationZDegrees = degrees[2]
+        }
+        do {
+            try applyTestAuthoringSelection(selection)
+            applyTrackingCameraAtCurrentFrame()
+            let manager = UndoManagerBox(undoManager)
+            undoManager?.registerUndo(withTarget: self) { target in
+                Task { @MainActor in
+                    try? target.restoreCameraNavigationSelection(prior, undoManager: manager.value)
+                    target.applyTrackingCameraAtCurrentFrame()
+                }
+            }
+            undoManager?.setActionName(actionName)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func importAlembicTrackingScene() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "abc")!]

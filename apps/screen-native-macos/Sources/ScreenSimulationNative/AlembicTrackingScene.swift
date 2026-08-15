@@ -17,6 +17,64 @@ struct TrackingMesh: Identifiable, Codable, Equatable, Sendable {
     let triangleIndices: [Int]
 }
 
+struct TrackingPlanePlacement: Equatable, Sendable {
+    let center: SIMD3<Double>
+    let orientation: simd_quatd
+}
+
+extension TrackingMesh {
+    func planePlacement(toward viewer: SIMD3<Double>) -> TrackingPlanePlacement? {
+        guard !sourceVertices.isEmpty, triangleIndices.count >= 3 else { return nil }
+        let minimum = sourceVertices.reduce(SIMD3(repeating: Double.infinity)) { simd_min($0, $1) }
+        let maximum = sourceVertices.reduce(SIMD3(repeating: -Double.infinity)) { simd_max($0, $1) }
+        let center = (minimum + maximum) * 0.5
+        var normal = SIMD3<Double>.zero
+        var edgeUse: [TrackingMeshEdge: Int] = [:]
+        for offset in stride(from: 0, to: triangleIndices.count, by: 3) {
+            guard offset + 2 < triangleIndices.count else { return nil }
+            let ids = [triangleIndices[offset], triangleIndices[offset + 1], triangleIndices[offset + 2]]
+            guard ids.allSatisfy(sourceVertices.indices.contains) else { return nil }
+            let a = sourceVertices[ids[0]], b = sourceVertices[ids[1]], c = sourceVertices[ids[2]]
+            normal += simd_cross(b - a, c - a)
+            for pair in [(ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[0])] {
+                edgeUse[TrackingMeshEdge(pair.0, pair.1), default: 0] += 1
+            }
+        }
+        guard simd_length_squared(normal) > 1e-20 else { return nil }
+        normal = simd_normalize(normal)
+        let extent = simd_length(maximum - minimum)
+        guard extent > 1e-10 else { return nil }
+        let maximumPlaneDistance = sourceVertices.map { abs(simd_dot($0 - center, normal)) }.max() ?? 0
+        guard maximumPlaneDistance <= extent * 1e-4 else { return nil }
+        let boundaryEdges = edgeUse.compactMap { edge, count in count == 1 ? edge : nil }
+        guard let longest = boundaryEdges.max(by: {
+            simd_length_squared(sourceVertices[$0.a] - sourceVertices[$0.b])
+                < simd_length_squared(sourceVertices[$1.a] - sourceVertices[$1.b])
+        }) else { return nil }
+        var right = sourceVertices[longest.b] - sourceVertices[longest.a]
+        right -= normal * simd_dot(right, normal)
+        guard simd_length_squared(right) > 1e-20 else { return nil }
+        right = simd_normalize(right)
+        if simd_dot(normal, viewer - center) < 0 {
+            normal = -normal
+            right = -right
+        }
+        let up = simd_normalize(simd_cross(normal, right))
+        let rotation = simd_double3x3(columns: (right, up, normal))
+        return TrackingPlanePlacement(center: center, orientation: simd_normalize(simd_quatd(rotation)))
+    }
+}
+
+private struct TrackingMeshEdge: Hashable {
+    let a: Int
+    let b: Int
+
+    init(_ first: Int, _ second: Int) {
+        a = min(first, second)
+        b = max(first, second)
+    }
+}
+
 struct TrackingCameraSample: Codable, Equatable, Sendable {
     let frame: Int
     let sourcePosition: SIMD3<Double>
@@ -437,6 +495,9 @@ private struct TrackingScenePanel: View {
             }
             if let scene = model.trackingScene {
                 Section("Elementos 3D") {
+                    Text("Clic derecho sobre un punto verde para colocar el centro del Device. Clic derecho sobre el centro naranja de un plano para colocarlo y orientarlo.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Toggle(isOn: $model.trackingPointsVisible) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Nube de puntos")

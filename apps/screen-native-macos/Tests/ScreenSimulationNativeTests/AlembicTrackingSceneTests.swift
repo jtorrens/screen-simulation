@@ -82,6 +82,31 @@ import Testing
     #expect(half.sourcePosition.x == 0.5)
 }
 
+@Test func planarTrackingGeometryProvidesAStableCenterAndOrientation() throws {
+    let plane = TrackingMesh(
+        id: "/Plane", label: "Plane",
+        sourceVertices: [
+            .init(-2, -1, 0), .init(2, -1, 0),
+            .init(2, 1, 0), .init(-2, 1, 0),
+        ],
+        triangleIndices: [0, 1, 2, 0, 2, 3]
+    )
+    let placement = try #require(plane.planePlacement(toward: .init(0, 0, 5)))
+    #expect(simd_length(placement.center) < 1e-12)
+    let normal = placement.orientation.act(SIMD3<Double>(0, 0, 1))
+    #expect(simd_dot(normal, SIMD3<Double>(0, 0, 1)) > 0.999_999)
+
+    let nonPlanar = TrackingMesh(
+        id: "/Volume", label: "Volume",
+        sourceVertices: [
+            .init(-1, -1, 0), .init(1, -1, 0),
+            .init(1, 1, 0), .init(-1, 1, 0.5),
+        ],
+        triangleIndices: [0, 1, 2, 0, 2, 3]
+    )
+    #expect(nonPlanar.planePlacement(toward: .init(0, 0, 5)) == nil)
+}
+
 @Test func actualSynthEyesAlembicCanBeInspectedWhenRequested() throws {
     guard let path = ProcessInfo.processInfo.environment["SCREEN_SYNTH_EYES_ALEMBIC"] else { return }
     let scene = try AlembicTrackingImporter().load(URL(fileURLWithPath: path))
@@ -89,4 +114,5 @@ import Testing
     #expect(scene.pointGroups.contains { $0.points.count == 15 })
     #expect(scene.meshes.contains { $0.label == "Camera01Screen" })
     #expect(scene.meshes.contains { $0.label == "Plane01" })
+    #expect(scene.meshes.first { $0.label == "Plane01" }?.planePlacement(toward: .zero) != nil)
 }

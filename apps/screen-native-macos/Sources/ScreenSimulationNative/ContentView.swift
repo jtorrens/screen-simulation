@@ -1970,6 +1970,9 @@ struct ContentView: View {
                         trackingPoints: model.trackingOverlayPoints,
                         trackingPointIDs: model.trackingOverlayPointIDs,
                         trackingSegments: model.trackingOverlaySegments,
+                        trackingMeshCenters: model.trackingOverlayMeshCenters,
+                        trackingMeshCenterIDs: model.trackingOverlayMeshCenterIDs,
+                        trackingMeshCenterLabels: model.trackingOverlayMeshCenterLabels,
                         trackingPointSelectionEnabled: model.trackingScaleSelectionSlot != nil,
                         cameraNavigationEnabled: !model.referenceMatchEnabled
                             && !model.reflectionEnvironmentEditorEnabled,
@@ -1986,7 +1989,13 @@ struct ContentView: View {
                         onReflectionHandleBegin: model.beginReflectionHandleDrag,
                         onReflectionHandleChange: model.updateReflectionHandle,
                         onReflectionHandleEnd: model.endReflectionHandleDrag,
-                        onTrackingPointSelected: model.selectTrackingPoint
+                        onTrackingPointSelected: model.selectTrackingPoint,
+                        onPlaceDeviceAtTrackingPoint: {
+                            model.placeDeviceAtTrackingPoint($0, undoManager: undoManager)
+                        },
+                        onPlaceDeviceOnTrackingPlane: {
+                            model.placeDeviceOnTrackingPlane($0, undoManager: undoManager)
+                        }
                     )
                     .accessibilityLabel("Preview OCIO del resultado")
                     image
@@ -2105,6 +2114,9 @@ struct MetalPreview: NSViewRepresentable {
     let trackingPoints: [CGPoint]
     let trackingPointIDs: [String]
     let trackingSegments: [CGPoint]
+    let trackingMeshCenters: [CGPoint]
+    let trackingMeshCenterIDs: [String]
+    let trackingMeshCenterLabels: [String]
     let trackingPointSelectionEnabled: Bool
     let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
@@ -2121,6 +2133,8 @@ struct MetalPreview: NSViewRepresentable {
     let onReflectionHandleChange: (Int, CGPoint) -> Void
     let onReflectionHandleEnd: () -> Void
     let onTrackingPointSelected: (String) -> Void
+    let onPlaceDeviceAtTrackingPoint: (String) -> Void
+    let onPlaceDeviceOnTrackingPlane: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onDisplayChange: onDisplayChange)
@@ -2154,6 +2168,9 @@ struct MetalPreview: NSViewRepresentable {
             trackingPoints: trackingPoints,
             trackingPointIDs: trackingPointIDs,
             trackingSegments: trackingSegments,
+            trackingMeshCenters: trackingMeshCenters,
+            trackingMeshCenterIDs: trackingMeshCenterIDs,
+            trackingMeshCenterLabels: trackingMeshCenterLabels,
             trackingPointSelectionEnabled: trackingPointSelectionEnabled,
             cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
@@ -2172,6 +2189,8 @@ struct MetalPreview: NSViewRepresentable {
         container.onReflectionHandleChange = onReflectionHandleChange
         container.onReflectionHandleEnd = onReflectionHandleEnd
         container.onTrackingPointSelected = onTrackingPointSelected
+        container.onPlaceDeviceAtTrackingPoint = onPlaceDeviceAtTrackingPoint
+        container.onPlaceDeviceOnTrackingPlane = onPlaceDeviceOnTrackingPlane
         display.present(frame, output: output, in: container.metalView)
         container.drawCommittedFrame()
     }
@@ -2261,6 +2280,8 @@ final class MetalPreviewContainer: NSView {
     var onReflectionHandleChange: ((Int, CGPoint) -> Void)?
     var onReflectionHandleEnd: (() -> Void)?
     var onTrackingPointSelected: ((String) -> Void)?
+    var onPlaceDeviceAtTrackingPoint: ((String) -> Void)?
+    var onPlaceDeviceOnTrackingPlane: ((String) -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
@@ -2273,6 +2294,7 @@ final class MetalPreviewContainer: NSView {
     private let reflectionHandleLayer = CAShapeLayer()
     private let trackingGeometryLayer = CAShapeLayer()
     private let trackingPointLayer = CAShapeLayer()
+    private let trackingMeshCenterLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
         let layer = CATextLayer()
         layer.string = label
@@ -2294,7 +2316,12 @@ final class MetalPreviewContainer: NSView {
     private var trackingPoints: [CGPoint] = []
     private var trackingPointIDs: [String] = []
     private var trackingSegments: [CGPoint] = []
+    private var trackingMeshCenters: [CGPoint] = []
+    private var trackingMeshCenterIDs: [String] = []
+    private var trackingMeshCenterLabels: [String] = []
     private var trackingPointSelectionEnabled = false
+    private var contextTrackingPointID: String?
+    private var contextTrackingMeshID: String?
     private var referenceCornerDragIndex: Int?
     private var reflectionHandleDragIndex: Int?
     private var dragStartLocation: CGPoint?
@@ -2378,6 +2405,11 @@ final class MetalPreviewContainer: NSView {
         trackingPointLayer.lineWidth = 1
         trackingPointLayer.zPosition = 125
         layer?.addSublayer(trackingPointLayer)
+        trackingMeshCenterLayer.fillColor = NSColor.systemOrange.cgColor
+        trackingMeshCenterLayer.strokeColor = NSColor.black.cgColor
+        trackingMeshCenterLayer.lineWidth = 1
+        trackingMeshCenterLayer.zPosition = 126
+        layer?.addSublayer(trackingMeshCenterLayer)
         referenceLabels.forEach { layer?.addSublayer($0) }
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
@@ -2438,6 +2470,9 @@ final class MetalPreviewContainer: NSView {
         trackingPoints: [CGPoint],
         trackingPointIDs: [String],
         trackingSegments: [CGPoint],
+        trackingMeshCenters: [CGPoint],
+        trackingMeshCenterIDs: [String],
+        trackingMeshCenterLabels: [String],
         trackingPointSelectionEnabled: Bool,
         cameraNavigationEnabled: Bool,
         textureWidth: Int,
@@ -2459,6 +2494,9 @@ final class MetalPreviewContainer: NSView {
         self.trackingPoints = trackingPoints
         self.trackingPointIDs = trackingPointIDs
         self.trackingSegments = trackingSegments
+        self.trackingMeshCenters = trackingMeshCenters
+        self.trackingMeshCenterIDs = trackingMeshCenterIDs
+        self.trackingMeshCenterLabels = trackingMeshCenterLabels
         self.trackingPointSelectionEnabled = trackingPointSelectionEnabled
         self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
@@ -2911,6 +2949,19 @@ final class MetalPreviewContainer: NSView {
         }
         trackingPointLayer.frame = bounds
         trackingPointLayer.path = trackingPointPath
+        let trackingMeshCenterPath = CGMutablePath()
+        for point in trackingMeshCenters {
+            let displayed = displayedPoint(forRaster: point)
+            trackingMeshCenterPath.addEllipse(in: CGRect(
+                x: displayed.x - 6, y: displayed.y - 6, width: 12, height: 12
+            ))
+            trackingMeshCenterPath.move(to: CGPoint(x: displayed.x - 9, y: displayed.y))
+            trackingMeshCenterPath.addLine(to: CGPoint(x: displayed.x + 9, y: displayed.y))
+            trackingMeshCenterPath.move(to: CGPoint(x: displayed.x, y: displayed.y - 9))
+            trackingMeshCenterPath.addLine(to: CGPoint(x: displayed.x, y: displayed.y + 9))
+        }
+        trackingMeshCenterLayer.frame = bounds
+        trackingMeshCenterLayer.path = trackingMeshCenterPath
         for (index, label) in referenceLabels.enumerated() {
             guard referenceTargetCorners.indices.contains(index) else {
                 label.isHidden = true
@@ -2997,6 +3048,57 @@ final class MetalPreviewContainer: NSView {
             hypot(displayedPoint(forRaster: trackingPoints[index]).x - point.x,
                   displayedPoint(forRaster: trackingPoints[index]).y - point.y) <= 12 ? index : nil
         }
+    }
+
+    private func nearestTrackingMeshCenter(to point: CGPoint) -> Int? {
+        trackingMeshCenters.indices.min(by: {
+            hypot(displayedPoint(forRaster: trackingMeshCenters[$0]).x - point.x,
+                  displayedPoint(forRaster: trackingMeshCenters[$0]).y - point.y)
+                < hypot(displayedPoint(forRaster: trackingMeshCenters[$1]).x - point.x,
+                        displayedPoint(forRaster: trackingMeshCenters[$1]).y - point.y)
+        }).flatMap { index in
+            hypot(displayedPoint(forRaster: trackingMeshCenters[index]).x - point.x,
+                  displayedPoint(forRaster: trackingMeshCenters[index]).y - point.y) <= 14 ? index : nil
+        }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let location = convert(event.locationInWindow, from: nil)
+        contextTrackingPointID = nil
+        contextTrackingMeshID = nil
+        let menu = NSMenu()
+        if let index = nearestTrackingMeshCenter(to: location),
+           trackingMeshCenterIDs.indices.contains(index) {
+            contextTrackingMeshID = trackingMeshCenterIDs[index]
+            let label = trackingMeshCenterLabels.indices.contains(index)
+                ? trackingMeshCenterLabels[index] : "plano"
+            menu.addItem(NSMenuItem(
+                title: "Colocar y orientar Device en \(label)",
+                action: #selector(placeDeviceOnContextPlane),
+                keyEquivalent: ""
+            ))
+        } else if let index = nearestTrackingPoint(to: location),
+                  trackingPointIDs.indices.contains(index) {
+            contextTrackingPointID = trackingPointIDs[index]
+            menu.addItem(NSMenuItem(
+                title: "Colocar centro del Device en este punto",
+                action: #selector(placeDeviceAtContextPoint),
+                keyEquivalent: ""
+            ))
+        }
+        guard !menu.items.isEmpty else { return nil }
+        menu.items.forEach { $0.target = self }
+        return menu
+    }
+
+    @objc private func placeDeviceAtContextPoint() {
+        guard let id = contextTrackingPointID else { return }
+        onPlaceDeviceAtTrackingPoint?(id)
+    }
+
+    @objc private func placeDeviceOnContextPlane() {
+        guard let id = contextTrackingMeshID else { return }
+        onPlaceDeviceOnTrackingPlane?(id)
     }
 
     private func nearestReflectionHandle(to point: CGPoint) -> Int? {
