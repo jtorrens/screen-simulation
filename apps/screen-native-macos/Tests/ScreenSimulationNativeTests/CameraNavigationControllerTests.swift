@@ -268,6 +268,7 @@ private func navigationGesture(
     #expect(pose.position == [1, 2, 3])
     #expect(abs(pose.orientation.length - 1) < 1e-12)
 }
+
 @Test func trackedCameraNavigationMovesOnlyTheDeviceRelativeToTheFixedWorld() {
     let camera = CameraNavigationPose(
         position: SIMD3(1, 2, 5),
@@ -290,4 +291,21 @@ private func navigationGesture(
     let viewedByMovedCamera = movedCamera.orientation.inverse.act(originalWorld - movedCamera.position)
     let viewedByFixedCamera = camera.orientation.inverse.act(movedWorld - camera.position)
     #expect(simd_length(viewedByMovedCamera - viewedByFixedCamera) < 1e-12)
+}
+
+@Test func deviceDollyPreservesTheProjectedCenterRayAndOrientation() {
+    let gesture = navigationGesture(distance: 5, operation: .deviceDolly)
+    let device = CameraNavigationPose(
+        position: SIMD3(1.2, -0.7, 0),
+        orientation: simd_quatd(angle: 0.25, axis: simd_normalize(SIMD3(0, 1, 0)))
+    )
+    let moved = CameraNavigationMath.deviceDollyAlongCenterRay(
+        gesture: gesture, startDevice: device, deltaPixels: -80
+    )
+    let before = simd_normalize(device.position - gesture.startPose.position)
+    let after = simd_normalize(moved.position - gesture.startPose.position)
+    #expect(simd_length(before - after) < 1e-12)
+    #expect(moved.orientation == device.orientation)
+    #expect(simd_length(moved.position - gesture.startPose.position)
+        < simd_length(device.position - gesture.startPose.position))
 }

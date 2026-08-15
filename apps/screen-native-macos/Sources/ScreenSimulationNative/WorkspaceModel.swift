@@ -905,9 +905,11 @@ final class WorkspaceModel: ObservableObject {
         cameraNavigationStartSelection = selection
         cameraNavigationLatestPose = nil
         cameraNavigationLatestDevicePose = nil
-        cameraNavigationMovesDevice = trackingCameraEnabled
-            && trackingMetersPerSourceUnit != nil
-            && selectedTrackingCamera != nil
+        cameraNavigationMovesDevice = operation == .deviceDolly || (
+            trackingCameraEnabled
+                && trackingMetersPerSourceUnit != nil
+                && selectedTrackingCamera != nil
+        )
         cameraNavigationStartDevicePose = cameraNavigationMovesDevice
             ? CameraNavigationPose(
                 position: geometry.center,
@@ -950,6 +952,16 @@ final class WorkspaceModel: ObservableObject {
             pose = CameraNavigationMath.dolly(
                 gesture: gesture, deltaPixels: Double(delta.width)
             )
+        case .deviceDolly:
+            guard let startDevice = cameraNavigationStartDevicePose else { return }
+            let devicePose = CameraNavigationMath.deviceDollyAlongCenterRay(
+                gesture: gesture,
+                startDevice: startDevice,
+                deltaPixels: Double(delta.width)
+            )
+            cameraNavigationLatestDevicePose = devicePose
+            applyTransientDeviceNavigationPose(devicePose, viewportSize: gesture.viewportSize)
+            return
         }
         if cameraNavigationMovesDevice,
            let startDevice = cameraNavigationStartDevicePose {
@@ -1047,7 +1059,7 @@ final class WorkspaceModel: ObservableObject {
                 value.zoom = min(100, max(0.05, start.zoom * exp(Double(delta.width) * 0.01)))
             case .orbit:
                 value.rollDegrees = start.rollDegrees + Double(delta.width) * 0.2
-            case nil:
+            case .deviceDolly, nil:
                 return
             }
             environmentReflectionFraming = value
@@ -1089,7 +1101,7 @@ final class WorkspaceModel: ObservableObject {
             )
             selection.environmentRotationXDegrees = rotations.x
             selection.environmentRotationYDegrees = rotations.y
-        case nil:
+        case .deviceDolly, nil:
             return
         }
         let minimumRadius = minimumEnvironmentSphereRadius(selection: selection)

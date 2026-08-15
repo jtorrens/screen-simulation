@@ -2587,9 +2587,12 @@ final class MetalPreviewContainer: NSView {
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let operation: CameraNavigationOperation
-        if flags.contains(.option), !flags.contains(.shift) { operation = .orbit }
+        if flags.contains(.command), !flags.contains(.option), !flags.contains(.shift) {
+            operation = .deviceDolly
+        }
+        else if flags.contains(.option), !flags.contains(.shift), !flags.contains(.command) { operation = .orbit }
         else if flags.contains(.shift), !flags.contains(.option) { operation = .dolly }
-        else if !flags.contains(.option), !flags.contains(.shift) { operation = .pan }
+        else if !flags.contains(.option), !flags.contains(.shift), !flags.contains(.command) { operation = .pan }
         else { return }
         cameraDragStart = convert(event.locationInWindow, from: nil)
         pendingCameraGestureDelta = nil

@@ -27,6 +27,7 @@ enum CameraNavigationOperation: Equatable, Sendable {
     case pan
     case orbit
     case dolly
+    case deviceDolly
 }
 
 enum CameraNavigationLockedAxis: Equatable, Sendable { case horizontal, vertical }
@@ -129,6 +130,32 @@ enum CameraNavigationMath {
                 startDevice.position - movedCamera.position
             ),
             orientation: simd_normalize(worldRotation * startDevice.orientation)
+        )
+    }
+
+    static func deviceDollyAlongCenterRay(
+        gesture: CameraNavigationGesture,
+        startDevice: CameraNavigationPose,
+        deltaPixels: Double
+    ) -> CameraNavigationPose {
+        let camera = gesture.startPose.position
+        let offset = startDevice.position - camera
+        let distance = max(simd_length(offset), gesture.nearClipMeters * 2)
+        let ray = simd_normalize(offset)
+        let requestedDistance = distance * exp(deltaPixels * dollyExponentPerPixel)
+        var translation = requestedDistance - distance
+        let forward = gesture.startPose.orientation.act(SIMD3<Double>(0, 0, -1))
+        let rayDepth = simd_dot(ray, forward)
+        if rayDepth > 1e-9 {
+            let nearestDepth = gesture.geometry.corners.map {
+                simd_dot($0 - camera, forward)
+            }.min() ?? gesture.nearClipMeters * 2
+            let minimumTranslation = (gesture.nearClipMeters * 1.5 - nearestDepth) / rayDepth
+            translation = max(translation, minimumTranslation)
+        }
+        return CameraNavigationPose(
+            position: startDevice.position + ray * translation,
+            orientation: startDevice.orientation
         )
     }
 }
