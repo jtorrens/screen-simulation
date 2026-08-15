@@ -392,6 +392,68 @@ import Testing
     }
 }
 
+@Test @MainActor func environmentSetupClipsToTheDeviceAndUsesItsLocalSphere() throws {
+    let display = try StudioColorMetalDisplay()
+    let input = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    })
+    let width = 32
+    let height = 16
+    var encoded: [Float] = []
+    encoded.reserveCapacity(width * height * 4)
+    for y in 0 ..< height {
+        for x in 0 ..< width {
+            encoded.append(Float(x) / Float(width - 1))
+            encoded.append(Float(y) / Float(height - 1))
+            encoded.append(0.25)
+            encoded.append(1)
+        }
+    }
+    let environment = try display.makeACEScgFrame(
+        width: width, height: height, encodedRGBA: encoded, input: input, alpha: .straight
+    )
+    let device = try #require(try RustDeviceCatalog.builtIns().first {
+        $0.name.contains("ASUS ProArt")
+    })
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    var authored = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
+    authored.cameraPose.position = [0, 0, 2]
+    authored.cameraPose.quaternion = [0, 0, 0, 1]
+    authored.screenPose.position = [0, 0, 0]
+    authored.screenPose.quaternion = PoseRotationProjection.quaternion(fromDegrees: [0, 18, 0])
+    authored.sceneLens.sensorWidthMillimeters = 36
+    authored.sceneLens.sensorHeightMillimeters = 20.25
+    authored.sceneLens.focalLengthMillimeters = 45
+    authored.sceneLens.lensShift = [0, 0]
+    authored.environment.projectionMode = 1
+    authored.environment.sphereRadiusMeters = 5
+
+    let renderer = try SetupFramingRenderer(device: environment.texture.device)
+    let base = try renderer.renderEnvironment(
+        environment: environment, device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180,
+        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+    )
+    let basePixels = try display.readLinearRGBA(base.frame)
+    let corner = 0
+    let center = ((base.frame.height / 2) * base.frame.width + base.frame.width / 2) * 4
+    #expect(basePixels[corner] == 0 && basePixels[corner + 1] == 0 && basePixels[corner + 2] == 0)
+    #expect(basePixels[center] > 0 || basePixels[center + 1] > 0 || basePixels[center + 2] > 0)
+
+    authored.cameraPose.position[0] += 0.4
+    authored.screenPose.position[0] += 0.4
+    let translated = try renderer.renderEnvironment(
+        environment: environment, device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180,
+        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+    )
+    let translatedPixels = try display.readLinearRGBA(translated.frame)
+    #expect(basePixels.count == translatedPixels.count)
+    #expect(zip(basePixels, translatedPixels).allSatisfy { abs($0 - $1) < 0.000_01 })
+}
+
 @Test @MainActor func focusSetupClipsItsChartAndDistortedBoundaryToTheDevice() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
