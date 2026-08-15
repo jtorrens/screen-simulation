@@ -313,6 +313,9 @@ final class WorkspaceModel: ObservableObject {
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
     private var cameraNavigationLatestPose: CameraNavigationPose?
+    private var cameraNavigationStartDevicePose: CameraNavigationPose?
+    private var cameraNavigationLatestDevicePose: CameraNavigationPose?
+    private var cameraNavigationMovesDevice = false
     private var cameraNavigationPreviewQuality = PhysicalQuality.setup
     private var environmentNavigationStartSelection: TestAuthoringResolvedSelection?
     private var environmentNavigationOperation: CameraNavigationOperation?
@@ -901,6 +904,16 @@ final class WorkspaceModel: ObservableObject {
         )
         cameraNavigationStartSelection = selection
         cameraNavigationLatestPose = nil
+        cameraNavigationLatestDevicePose = nil
+        cameraNavigationMovesDevice = trackingCameraEnabled
+            && trackingMetersPerSourceUnit != nil
+            && selectedTrackingCamera != nil
+        cameraNavigationStartDevicePose = cameraNavigationMovesDevice
+            ? CameraNavigationPose(
+                position: geometry.center,
+                orientation: screenQuaternion
+            )
+            : nil
         cameraNavigationPreviewQuality = physicalModel.quality == .focusSetup ? .focusSetup : .setup
         physicalModel.setQuality(cameraNavigationPreviewQuality)
         cameraNavigationGesture = .init(
@@ -938,8 +951,19 @@ final class WorkspaceModel: ObservableObject {
                 gesture: gesture, deltaPixels: Double(delta.width)
             )
         }
-        cameraNavigationLatestPose = pose
-        applyTransientCameraNavigationPose(pose, viewportSize: gesture.viewportSize)
+        if cameraNavigationMovesDevice,
+           let startDevice = cameraNavigationStartDevicePose {
+            let devicePose = CameraNavigationMath.equivalentDevicePose(
+                startCamera: gesture.startPose,
+                movedCamera: pose,
+                startDevice: startDevice
+            )
+            cameraNavigationLatestDevicePose = devicePose
+            applyTransientDeviceNavigationPose(devicePose, viewportSize: gesture.viewportSize)
+        } else {
+            cameraNavigationLatestPose = pose
+            applyTransientCameraNavigationPose(pose, viewportSize: gesture.viewportSize)
+        }
     }
 
     func endCameraNavigation(undoManager: UndoManager?) {
@@ -949,10 +973,14 @@ final class WorkspaceModel: ObservableObject {
         }
         guard cameraNavigationGesture != nil else { return }
         cameraNavigationGesture = nil
-        if let pose = cameraNavigationLatestPose {
+        if let pose = cameraNavigationLatestDevicePose {
+            commitDeviceNavigationPose(pose)
+        } else if let pose = cameraNavigationLatestPose {
             commitCameraNavigationPose(pose)
         }
         cameraNavigationLatestPose = nil
+        cameraNavigationLatestDevicePose = nil
+        cameraNavigationStartDevicePose = nil
         if let prior = cameraNavigationStartSelection,
            prior != testAuthoringSelection {
             let manager = UndoManagerBox(undoManager)
@@ -963,9 +991,10 @@ final class WorkspaceModel: ObservableObject {
                     )
                 }
             }
-            undoManager?.setActionName("Navegar cámara")
+            undoManager?.setActionName(cameraNavigationMovesDevice ? "Mover Device" : "Navegar cámara")
         }
         cameraNavigationStartSelection = nil
+        cameraNavigationMovesDevice = false
         cameraNavigationPreviewQuality = .setup
     }
 
@@ -1252,6 +1281,31 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    private func applyTransientDeviceNavigationPose(
+        _ pose: CameraNavigationPose,
+        viewportSize: CGSize
+    ) {
+        guard var authored = physicalAuthoringState else { return }
+        authored.screenPose.position = [pose.position.x, pose.position.y, pose.position.z]
+        authored.screenPose.quaternion = [
+            pose.orientation.imag.x, pose.orientation.imag.y,
+            pose.orientation.imag.z, pose.orientation.real,
+        ]
+        if referenceACEScgFrame != nil {
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false, authoredOverride: authored)
+        } else if cameraNavigationPreviewQuality == .focusSetup {
+            publishFocusSetup(
+                interactiveViewportSize: viewportSize,
+                authoredOverride: authored
+            )
+        } else {
+            publishSetupFraming(
+                interactiveViewportSize: viewportSize,
+                authoredOverride: authored
+            )
+        }
+    }
+
     private func commitCameraNavigationPose(_ pose: CameraNavigationPose) {
         guard var selection = testAuthoringSelection else { return }
         let degrees = PoseRotationProjection.degrees(from: [
@@ -1272,6 +1326,32 @@ final class WorkspaceModel: ObservableObject {
         } catch {
             if let prior = cameraNavigationStartSelection {
                 try? applyTestAuthoringSelection(prior)
+            }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func commitDeviceNavigationPose(_ pose: CameraNavigationPose) {
+        guard var selection = testAuthoringSelection else { return }
+        let degrees = PoseRotationProjection.degrees(from: [
+            pose.orientation.imag.x, pose.orientation.imag.y,
+            pose.orientation.imag.z, pose.orientation.real,
+        ])
+        selection.previewQualityID = cameraNavigationPreviewQuality == .focusSetup
+            ? "focus-setup" : "setup"
+        selection.screenPositionXMeters = pose.position.x
+        selection.screenPositionYMeters = pose.position.y
+        selection.screenPositionZMeters = pose.position.z
+        selection.screenRotationXDegrees = degrees[0]
+        selection.screenYawDegrees = degrees[1]
+        selection.screenRotationZDegrees = degrees[2]
+        do {
+            try applyTestAuthoringSelection(selection)
+            applyTrackingCameraAtCurrentFrame()
+        } catch {
+            if let prior = cameraNavigationStartSelection {
+                try? applyTestAuthoringSelection(prior)
+                applyTrackingCameraAtCurrentFrame()
             }
             errorMessage = error.localizedDescription
         }

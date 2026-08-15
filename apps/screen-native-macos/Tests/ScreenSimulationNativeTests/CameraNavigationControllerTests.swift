@@ -268,3 +268,26 @@ private func navigationGesture(
     #expect(pose.position == [1, 2, 3])
     #expect(abs(pose.orientation.length - 1) < 1e-12)
 }
+@Test func trackedCameraNavigationMovesOnlyTheDeviceRelativeToTheFixedWorld() {
+    let camera = CameraNavigationPose(
+        position: SIMD3(1, 2, 5),
+        orientation: simd_quatd(angle: 0.2, axis: simd_normalize(SIMD3(0, 1, 0)))
+    )
+    let movedCamera = CameraNavigationPose(
+        position: SIMD3(1.4, 1.8, 4.2),
+        orientation: simd_quatd(angle: -0.15, axis: simd_normalize(SIMD3(0, 1, 0))) * camera.orientation
+    )
+    let device = CameraNavigationPose(
+        position: SIMD3(0.2, -0.1, 0),
+        orientation: simd_quatd(angle: 0.1, axis: simd_normalize(SIMD3(1, 0, 0)))
+    )
+    let movedDevice = CameraNavigationMath.equivalentDevicePose(
+        startCamera: camera, movedCamera: movedCamera, startDevice: device
+    )
+    let devicePoint = SIMD3(0.3, 0.2, 0.0)
+    let originalWorld = device.position + device.orientation.act(devicePoint)
+    let movedWorld = movedDevice.position + movedDevice.orientation.act(devicePoint)
+    let viewedByMovedCamera = movedCamera.orientation.inverse.act(originalWorld - movedCamera.position)
+    let viewedByFixedCamera = camera.orientation.inverse.act(movedWorld - camera.position)
+    #expect(simd_length(viewedByMovedCamera - viewedByFixedCamera) < 1e-12)
+}

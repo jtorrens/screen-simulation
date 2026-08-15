@@ -113,6 +113,24 @@ enum CameraNavigationMath {
             orientation: gesture.startPose.orientation
         )
     }
+
+    /// Keeps the tracked camera/world fixed while reproducing on the Device
+    /// the same relative transform that a camera-navigation gesture requested.
+    static func equivalentDevicePose(
+        startCamera: CameraNavigationPose,
+        movedCamera: CameraNavigationPose,
+        startDevice: CameraNavigationPose
+    ) -> CameraNavigationPose {
+        let worldRotation = simd_normalize(
+            startCamera.orientation * movedCamera.orientation.inverse
+        )
+        return CameraNavigationPose(
+            position: startCamera.position + worldRotation.act(
+                startDevice.position - movedCamera.position
+            ),
+            orientation: simd_normalize(worldRotation * startDevice.orientation)
+        )
+    }
 }
 
 enum EnvironmentNavigationMath {

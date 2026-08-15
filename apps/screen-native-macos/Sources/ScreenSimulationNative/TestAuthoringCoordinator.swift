@@ -57,12 +57,12 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     var cameraRotationXDegrees: Double
     var cameraRotationYDegrees: Double
     var cameraRotationZDegrees: Double
-    let screenPositionXMeters: Double
-    let screenPositionYMeters: Double
-    let screenPositionZMeters: Double
-    let screenRotationXDegrees: Double
-    let screenYawDegrees: Double
-    let screenRotationZDegrees: Double
+    var screenPositionXMeters: Double
+    var screenPositionYMeters: Double
+    var screenPositionZMeters: Double
+    var screenRotationXDegrees: Double
+    var screenYawDegrees: Double
+    var screenRotationZDegrees: Double
     let coverGlassPresetID: String
     let coverGlassAmount: Double
     let coverAgMicrotextureAmount: Double
