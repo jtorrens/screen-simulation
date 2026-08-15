@@ -1164,8 +1164,10 @@ pub fn resolve_test_authoring_selection(
         "finite-sphere" => "finite-sphere",
         _ => return Err(TestAuthoringError::InvalidEnvironmentAmount),
     };
+    let minimum_environment_radius = minimum_authored_environment_radius(selection, device);
     if !selection.environment_sphere_radius_meters.is_finite()
-        || !(0.1..=1_000.0).contains(&selection.environment_sphere_radius_meters)
+        || !(minimum_environment_radius..=1_000.0)
+            .contains(&selection.environment_sphere_radius_meters)
         || (selection.environment_source_id != IMAGE_ENVIRONMENT_SOURCE_ID
             && selection.environment_projection_id != "distant")
     {
@@ -1426,6 +1428,7 @@ pub fn test_page_descriptor(
 ) -> Result<TestPageDescriptor, TestAuthoringError> {
     let selection = resolve_test_authoring_selection(selection)?;
     let device = preset(selection.device_id)?;
+    let minimum_environment_radius = minimum_resolved_environment_radius(&selection, device);
     let output_options = DeviceColorTarget::ALL
         .into_iter()
         .map(|target| TestChoiceOption {
@@ -2124,7 +2127,7 @@ pub fn test_page_descriptor(
                                 ENVIRONMENT_RADIUS_CONTROL_ID,
                                 "Radio del entorno",
                                 selection.environment_sphere_radius_meters,
-                                0.1,
+                                minimum_environment_radius,
                                 1_000.0,
                                 5.0,
                                 "m",
@@ -2467,6 +2470,44 @@ pub fn test_page_descriptor(
             "setup",
         )],
     })
+}
+
+fn minimum_authored_environment_radius(
+    selection: TestAuthoringSelection<'_>,
+    device: DevicePreset,
+) -> f32 {
+    let camera_distance = (selection.camera_position_x_meters.powi(2)
+        + selection.camera_position_y_meters.powi(2)
+        + selection.camera_position_z_meters.powi(2))
+    .sqrt()
+        + selection.focal_length_millimeters * 0.001 / (2.0 * selection.f_stop);
+    let screen_center_distance = (selection.screen_position_x_meters.powi(2)
+        + selection.screen_position_y_meters.powi(2)
+        + selection.screen_position_z_meters.powi(2))
+    .sqrt();
+    let screen_bound =
+        screen_center_distance + 0.5 * device.active_width.0.hypot(device.active_height.0);
+    let enclosure = camera_distance.max(screen_bound).max(0.1);
+    enclosure + (enclosure * 1.0e-4).max(1.0e-4)
+}
+
+fn minimum_resolved_environment_radius(
+    selection: &ResolvedTestAuthoringSelection,
+    device: DevicePreset,
+) -> f32 {
+    let camera_distance = (selection.camera_position_x_meters.powi(2)
+        + selection.camera_position_y_meters.powi(2)
+        + selection.camera_position_z_meters.powi(2))
+    .sqrt()
+        + selection.focal_length_millimeters * 0.001 / (2.0 * selection.f_stop);
+    let screen_center_distance = (selection.screen_position_x_meters.powi(2)
+        + selection.screen_position_y_meters.powi(2)
+        + selection.screen_position_z_meters.powi(2))
+    .sqrt();
+    let screen_bound =
+        screen_center_distance + 0.5 * device.active_width.0.hypot(device.active_height.0);
+    let enclosure = camera_distance.max(screen_bound).max(0.1);
+    enclosure + (enclosure * 1.0e-4).max(1.0e-4)
 }
 
 pub fn apply_test_choice(
@@ -3288,6 +3329,37 @@ mod tests {
                 TestControlRequirement::Scalar { id: control_id, .. } if *control_id == id
             )));
         }
+
+        let finite = apply_test_choice(
+            unresolved_test_selection(selected),
+            ENVIRONMENT_PROJECTION_CONTROL_ID,
+            "finite-sphere",
+        )
+        .unwrap();
+        let finite_page = test_page_descriptor(unresolved_test_selection(finite)).unwrap();
+        let radius = finite_page
+            .phases
+            .iter()
+            .find(|phase| phase.id == COVER_ENVIRONMENT_PHASE_ID)
+            .unwrap()
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                TestControlRequirement::Scalar { id, minimum, .. }
+                    if *id == ENVIRONMENT_RADIUS_CONTROL_ID =>
+                {
+                    Some(*minimum)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(radius > finite.camera_position_z_meters.abs());
+        let mut invalid = unresolved_test_selection(finite);
+        invalid.environment_sphere_radius_meters = radius - 0.001;
+        assert_eq!(
+            resolve_test_authoring_selection(invalid),
+            Err(TestAuthoringError::InvalidEnvironmentAmount)
+        );
     }
 
     #[test]

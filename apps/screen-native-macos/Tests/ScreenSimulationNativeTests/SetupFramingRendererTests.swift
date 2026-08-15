@@ -392,7 +392,7 @@ import Testing
     }
 }
 
-@Test @MainActor func environmentSetupClipsToTheDeviceAndUsesItsLocalSphere() throws {
+@Test @MainActor func environmentSetupClipsToTheDeviceAndUsesTheSceneOriginSphere() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
         $0.id == "srgb-encoded-rec709"
@@ -451,7 +451,10 @@ import Testing
     )
     let translatedPixels = try display.readLinearRGBA(translated.frame)
     #expect(basePixels.count == translatedPixels.count)
-    #expect(zip(basePixels, translatedPixels).allSatisfy { abs($0 - $1) < 0.000_01 })
+    #expect(zip(basePixels, translatedPixels).contains { abs($0 - $1) > 0.000_01 })
+    #expect(translatedPixels[corner] == 0
+        && translatedPixels[corner + 1] == 0
+        && translatedPixels[corner + 2] == 0)
 }
 
 @Test @MainActor func focusSetupClipsItsChartAndDistortedBoundaryToTheDevice() throws {

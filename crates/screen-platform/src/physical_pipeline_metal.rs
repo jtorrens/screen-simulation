@@ -1017,6 +1017,23 @@ impl MetalPhysicalPipeline {
                 plan.lens_amount,
             )
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        if let screen_cover::IncidentEnvironment::Equirectangular(environment) = plan.environment {
+            if let screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } =
+                environment.projection
+            {
+                let minimum = screen_application::minimum_finite_environment_radius(
+                    camera,
+                    screen,
+                    plan.panel.active_width,
+                    plan.panel.active_height,
+                );
+                if radius_meters < minimum {
+                    return Err(MetalPhysicalPipelineError::InvalidPlan(format!(
+                        "finite environment radius {radius_meters} m must enclose camera and Device; minimum is {minimum} m"
+                    )));
+                }
+            }
+        }
         if is_cancelled() {
             return Err(MetalPhysicalPipelineError::Cancelled);
         }

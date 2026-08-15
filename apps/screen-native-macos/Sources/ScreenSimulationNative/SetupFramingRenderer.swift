@@ -709,19 +709,16 @@ final class SetupFramingRenderer {
             0.5f - local_point.y / s.screen_height_shift_y.x);
         if (any(panel_uv < 0.0f) || any(panel_uv > 1.0f)) return false;
         const float3 reflected_world = reflect(ray, screen_normal);
-        float3 reflected = float3(
-            dot(reflected_world, screen_right),
-            dot(reflected_world, screen_up),
-            dot(reflected_world, screen_normal));
+        float3 reflected = reflected_world;
         if (s.environment.z > 0.5f) {
             const float radius = s.environment.w;
-            const float b = dot(local_point, reflected);
-            const float c = dot(local_point, local_point) - radius * radius;
+            const float b = dot(point, reflected);
+            const float c = dot(point, point) - radius * radius;
             const float discriminant = b * b - c;
             if (discriminant <= 0.0f) return false;
             const float t = -b + sqrt(discriminant);
             if (t <= 0.0f) return false;
-            reflected = normalize(local_point + reflected * t);
+            reflected = normalize(point + reflected * t);
         }
         const float3 source = rotate_environment(reflected, s.environment.x, s.environment.y);
         uv = float2(atan2(source.x, source.z) / (2.0f * M_PI_F) + 0.5f,

@@ -1551,6 +1551,7 @@ impl EnvironmentRadianceRaster {
         sample_count: u32,
         sample_seed: [u32; 2],
         cover_position_meters: [f32; 2],
+        screen: screen_geometry::ScreenSample,
         projection: screen_cover::EnvironmentProjection,
     ) -> LinearRgb {
         let length = direction
@@ -1560,8 +1561,16 @@ impl EnvironmentRadianceRaster {
             .sqrt();
         let mut reflected = direction.map(|value| value / length.max(1.0e-8));
         if roughness <= 0.0 || refractive_index == 1.0 {
-            reflected =
-                finite_environment_source_direction(reflected, cover_position_meters, projection);
+            reflected = screen_local_vector_to_world(screen, reflected);
+            reflected = finite_environment_source_direction(
+                reflected,
+                screen.local_to_world(Vec3 {
+                    x: cover_position_meters[0],
+                    y: cover_position_meters[1],
+                    z: 0.0,
+                }),
+                projection,
+            );
             return self.sample_equirectangular_direction(
                 reflected,
                 rotation_x_degrees,
@@ -1595,8 +1604,15 @@ impl EnvironmentRadianceRaster {
             let masking_ratio = (1.0 + lambda_outgoing) / (1.0 + lambda_outgoing + lambda_incident);
             let weight = dielectric_fresnel(outgoing_dot_micro, refractive_index) * masking_ratio
                 / smooth_fresnel;
-            let source_direction =
-                finite_environment_source_direction(incident, cover_position_meters, projection);
+            let source_direction = finite_environment_source_direction(
+                screen_local_vector_to_world(screen, incident),
+                screen.local_to_world(Vec3 {
+                    x: cover_position_meters[0],
+                    y: cover_position_meters[1],
+                    z: 0.0,
+                }),
+                projection,
+            );
             let radiance = self.sample_equirectangular_direction(
                 source_direction,
                 rotation_x_degrees,
@@ -1665,13 +1681,13 @@ impl EnvironmentRadianceRaster {
 
 fn finite_environment_source_direction(
     direction: [f32; 3],
-    cover_position: [f32; 2],
+    cover_position: Vec3,
     projection: screen_cover::EnvironmentProjection,
 ) -> [f32; 3] {
     let screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } = projection else {
         return direction;
     };
-    let origin = [cover_position[0], cover_position[1], 0.0];
+    let origin = [cover_position.x, cover_position.y, cover_position.z];
     let b = origin
         .into_iter()
         .zip(direction)
@@ -1692,6 +1708,94 @@ fn finite_environment_source_direction(
         .sqrt()
         .max(1.0e-8);
     point.map(|value| value / length)
+}
+
+/// Smallest finite environment radius that keeps the complete camera aperture
+/// and active Device surface strictly inside the scene-origin sphere.
+pub fn minimum_finite_environment_radius(
+    camera: screen_geometry::CameraSample,
+    screen: screen_geometry::ScreenSample,
+    active_width: screen_contracts::Meters,
+    active_height: screen_contracts::Meters,
+) -> f32 {
+    let camera_distance = (camera.position.x * camera.position.x
+        + camera.position.y * camera.position.y
+        + camera.position.z * camera.position.z)
+        .sqrt();
+    let aperture_radius = camera.focal_length.0 * 0.001 / (2.0 * camera.f_stop);
+    let half_width = active_width.0 * 0.5;
+    let half_height = active_height.0 * 0.5;
+    let device_distance = [
+        Vec3 {
+            x: -half_width,
+            y: -half_height,
+            z: 0.0,
+        },
+        Vec3 {
+            x: half_width,
+            y: -half_height,
+            z: 0.0,
+        },
+        Vec3 {
+            x: half_width,
+            y: half_height,
+            z: 0.0,
+        },
+        Vec3 {
+            x: -half_width,
+            y: half_height,
+            z: 0.0,
+        },
+    ]
+    .into_iter()
+    .map(|corner| screen.local_to_world(corner))
+    .map(|corner| (corner.x * corner.x + corner.y * corner.y + corner.z * corner.z).sqrt())
+    .fold(0.0_f32, f32::max);
+    let enclosure = (camera_distance + aperture_radius)
+        .max(device_distance)
+        .max(0.1);
+    enclosure + (enclosure * 1.0e-4).max(1.0e-4)
+}
+
+fn validate_finite_environment_enclosure(
+    environment: IncidentEnvironment,
+    camera: screen_geometry::CameraSample,
+    screen: screen_geometry::ScreenSample,
+    active_width: screen_contracts::Meters,
+    active_height: screen_contracts::Meters,
+) -> Result<(), ApplicationError> {
+    let IncidentEnvironment::Equirectangular(environment) = environment else {
+        return Ok(());
+    };
+    let screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } =
+        environment.projection
+    else {
+        return Ok(());
+    };
+    let minimum = minimum_finite_environment_radius(camera, screen, active_width, active_height);
+    if radius_meters < minimum {
+        return Err(ApplicationError::InvalidEnvironmentEnclosure {
+            radius_meters,
+            minimum_radius_meters: minimum,
+        });
+    }
+    Ok(())
+}
+
+fn screen_local_vector_to_world(
+    screen: screen_geometry::ScreenSample,
+    direction: [f32; 3],
+) -> [f32; 3] {
+    let point = screen.local_to_world(Vec3 {
+        x: direction[0],
+        y: direction[1],
+        z: direction[2],
+    });
+    [
+        point.x - screen.translation.x,
+        point.y - screen.translation.y,
+        point.z - screen.translation.z,
+    ]
 }
 
 fn dot3(first: [f32; 3], second: [f32; 3]) -> f32 {
@@ -1893,6 +1997,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             plan.lens_amount,
         )
         .map_err(ApplicationError::Geometry)?;
+    validate_finite_environment_enclosure(
+        plan.environment,
+        resolved_scene.0,
+        resolved_scene.1,
+        plan.panel.active_width,
+        plan.panel.active_height,
+    )?;
     let geometry = request
         .plan
         .panel
@@ -2757,6 +2868,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         physical_environment_reference_sample_count(plan.quality),
                         [x, y],
                         cover_position_meters,
+                        resolved_scene.1,
                         environment.projection,
                     );
                     let scale = environment.radiance_scale();
@@ -7033,6 +7145,10 @@ pub enum ApplicationError {
     InvalidSensorReadout,
     InvalidOpticalAttenuation,
     InvalidRadiometricCalibration(&'static str),
+    InvalidEnvironmentEnclosure {
+        radius_meters: f32,
+        minimum_radius_meters: f32,
+    },
     OpticalSampleRasterMismatch,
     SensorViewportAspectMismatch {
         sensor_aspect: f32,
@@ -7173,6 +7289,13 @@ impl fmt::Display for ApplicationError {
                     "invalid camera radiometric calibration: {reason}"
                 )
             }
+            Self::InvalidEnvironmentEnclosure {
+                radius_meters,
+                minimum_radius_meters,
+            } => write!(
+                formatter,
+                "finite environment radius {radius_meters} m must enclose camera and Device; minimum is {minimum_radius_meters} m"
+            ),
             Self::OpticalSampleRasterMismatch => formatter
                 .write_str("all temporal optical samples must match the authored sensor raster"),
             Self::SensorViewportAspectMismatch {
@@ -7368,6 +7491,7 @@ mod tests {
                 256,
                 [17, 29],
                 [0.0, 0.0],
+                screen_geometry::ScreenSample::IDENTITY,
                 screen_cover::EnvironmentProjection::Distant,
             );
             let second = raster.sample_equirectangular(
@@ -7380,6 +7504,7 @@ mod tests {
                 256,
                 [17, 29],
                 [0.0, 0.0],
+                screen_geometry::ScreenSample::IDENTITY,
                 screen_cover::EnvironmentProjection::Distant,
             );
             assert_eq!(first, second);

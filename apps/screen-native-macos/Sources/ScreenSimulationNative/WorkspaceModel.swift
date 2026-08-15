@@ -941,7 +941,17 @@ final class WorkspaceModel: ObservableObject {
     private func updateEnvironmentNavigation(delta: CGSize) {
         guard var selection = environmentNavigationStartSelection else { return }
         if environmentNavigationOperation == .dolly {
-            selection.environmentSphereRadiusMeters = min(1_000, max(0.1,
+            let minimumRadii: [Double]? = testPresentation?.phases
+                .flatMap(\.sections)
+                .flatMap(\.controls)
+                .compactMap { descriptor -> Double? in
+                    guard case let .scalar(control) = descriptor,
+                          control.id == "environment-sphere-radius-meters"
+                    else { return nil }
+                    return control.minimum
+                }
+            guard let minimumRadius = minimumRadii?.first else { return }
+            selection.environmentSphereRadiusMeters = min(1_000, max(minimumRadius,
                 selection.environmentSphereRadiusMeters * exp(Double(delta.width) * 0.008)))
         } else {
             selection.environmentRotationYDegrees = min(180, max(-180,
