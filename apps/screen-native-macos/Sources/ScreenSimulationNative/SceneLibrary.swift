@@ -72,8 +72,43 @@ struct SavedSceneSource: Codable, Equatable, Sendable {
     }
 }
 
+struct SavedTrackingCalibration: Codable, Equatable, Sendable {
+    let pointAID: String
+    let pointBID: String
+    let measuredDistanceMeters: Double
+    let metersPerSourceUnit: Double
+
+    func validate() throws {
+        guard !pointAID.isEmpty, !pointBID.isEmpty, pointAID != pointBID,
+              measuredDistanceMeters.isFinite, measuredDistanceMeters > 0,
+              metersPerSourceUnit.isFinite, metersPerSourceUnit > 0 else {
+            throw SceneLibraryError.invalidDocument("La calibración métrica del tracking no es válida.")
+        }
+    }
+}
+
+struct SavedTrackingScene: Codable, Equatable, Sendable {
+    let asset: SavedSceneAsset
+    let cameraID: String
+    let pointGroupID: String
+    let visibleMeshIDs: [String]
+    let pointsVisible: Bool
+    let geometryVisible: Bool
+    let cameraEnabled: Bool
+    let calibration: SavedTrackingCalibration
+
+    func validate() throws {
+        try asset.validate()
+        guard !cameraID.isEmpty, !pointGroupID.isEmpty,
+              Set(visibleMeshIDs).count == visibleMeshIDs.count else {
+            throw SceneLibraryError.invalidDocument("La selección de tracking guardada no es válida.")
+        }
+        try calibration.validate()
+    }
+}
+
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v5"
+    static let schema = "ScreenSimulation.SavedScene.v6"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -83,10 +118,11 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
     let viewerIsFitted: Bool
     let settingsDocument: Data
     let generatedEnvironment: SavedSceneAsset?
+    let tracking: SavedTrackingScene?
 
     private enum CodingKeys: String, CodingKey {
         case schema, source, currentFrame, viewerZoom, viewerPanX, viewerPanY
-        case viewerIsFitted, settingsDocument, generatedEnvironment
+        case viewerIsFitted, settingsDocument, generatedEnvironment, tracking
     }
 
     init(
@@ -97,7 +133,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         viewerPanY: Double,
         viewerIsFitted: Bool,
         settingsDocument: Data,
-        generatedEnvironment: SavedSceneAsset? = nil
+        generatedEnvironment: SavedSceneAsset? = nil,
+        tracking: SavedTrackingScene? = nil
     ) {
         schema = Self.schema
         self.source = source
@@ -108,6 +145,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         self.viewerIsFitted = viewerIsFitted
         self.settingsDocument = settingsDocument
         self.generatedEnvironment = generatedEnvironment
+        self.tracking = tracking
     }
 
     init(from decoder: Decoder) throws {
@@ -123,6 +161,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         generatedEnvironment = try values.decodeIfPresent(
             SavedSceneAsset.self, forKey: .generatedEnvironment
         )
+        tracking = try values.decodeIfPresent(SavedTrackingScene.self, forKey: .tracking)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -140,6 +179,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         } else {
             try values.encodeNil(forKey: .generatedEnvironment)
         }
+        if let tracking { try values.encode(tracking, forKey: .tracking) }
+        else { try values.encodeNil(forKey: .tracking) }
     }
 
     func validate() throws {
@@ -153,6 +194,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         else { throw SceneLibraryError.invalidDocument("El snapshot de escena no es válido.") }
         try source.validate()
         try generatedEnvironment?.validate()
+        try tracking?.validate()
     }
 
     func replacingGeneratedEnvironment(_ asset: SavedSceneAsset?) throws -> Self {
@@ -161,7 +203,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
                 source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
                 viewerPanX: viewerPanX, viewerPanY: viewerPanY,
                 viewerIsFitted: viewerIsFitted, settingsDocument: settingsDocument,
-                generatedEnvironment: nil
+                generatedEnvironment: nil,
+                tracking: tracking
             )
         }
         var root = try requireObject(settingsDocument)
@@ -181,7 +224,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
             viewerIsFitted: viewerIsFitted, settingsDocument: data,
-            generatedEnvironment: asset
+            generatedEnvironment: asset,
+            tracking: tracking
         )
     }
 }
@@ -218,7 +262,7 @@ struct SavedSceneCapture: Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 5
+    static let currentSchemaVersion = 6
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -256,8 +300,13 @@ struct SceneLibraryStore: Sendable {
     let directoryURL: URL
     let documentURL: URL
     let environmentLibraryRoot: URL?
+    let trackingLibraryRoot: URL?
 
-    init(directoryURL: URL? = nil, environmentLibraryRoot: URL? = nil) throws {
+    init(
+        directoryURL: URL? = nil,
+        environmentLibraryRoot: URL? = nil,
+        trackingLibraryRoot: URL? = nil
+    ) throws {
         let directory: URL
         if let directoryURL {
             directory = directoryURL
@@ -276,7 +325,8 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v5.json")
+        self.trackingLibraryRoot = trackingLibraryRoot
+        documentURL = directory.appendingPathComponent("Scenes.v6.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -303,6 +353,17 @@ struct SceneLibraryStore: Sendable {
                 ) != nil else {
                     throw SceneLibraryError.invalidDocument(
                         "Falta el entorno generado de “\(scene.name)”."
+                    )
+                }
+            }
+            if let tracking = scene.snapshot.tracking {
+                guard try TrackingAssetLibrary.asset(
+                    sha256: tracking.asset.sha256,
+                    originalFileName: tracking.asset.fileName,
+                    libraryRoot: trackingLibraryRoot
+                ) != nil else {
+                    throw SceneLibraryError.invalidDocument(
+                        "Falta el Alembic de tracking de “\(scene.name)”."
                     )
                 }
             }
@@ -347,7 +408,7 @@ struct SceneLibraryStore: Sendable {
                   Set(snapshot.keys) == [
                       "schema", "source", "currentFrame", "viewerZoom", "viewerPanX",
                       "viewerPanY", "viewerIsFitted", "settingsDocument",
-                      "generatedEnvironment",
+                      "generatedEnvironment", "tracking",
                   ],
                   let source = snapshot["source"] as? [String: Any],
                   Set(source.keys) == ["kind", "assets", "missingMedia"]
@@ -363,6 +424,20 @@ struct SceneLibraryStore: Sendable {
                           "frameRateDenominator", "frameCount", "durationNumerator",
                           "durationDenominator",
                       ]
+                  }()),
+                  (snapshot["tracking"] == nil || snapshot["tracking"] is NSNull || {
+                      guard let tracking = snapshot["tracking"] as? [String: Any],
+                            Set(tracking.keys) == [
+                                "asset", "cameraID", "pointGroupID", "visibleMeshIDs",
+                                "pointsVisible", "geometryVisible", "cameraEnabled", "calibration",
+                            ],
+                            let asset = tracking["asset"] as? [String: Any],
+                            Set(asset.keys) == ["fileName", "sha256"],
+                            let calibration = tracking["calibration"] as? [String: Any],
+                            Set(calibration.keys) == [
+                                "pointAID", "pointBID", "measuredDistanceMeters", "metersPerSourceUnit",
+                            ] else { return false }
+                      return true
                   }())
             else { throw SceneLibraryError.invalidDocument("La escena contiene campos desconocidos.") }
         }

@@ -86,6 +86,7 @@ struct ContentView: View {
     @StateObject private var referenceMatchPanel = ReferenceMatchPanelController()
     @StateObject private var reflectionEnvironmentPanel = ReflectionEnvironmentPanelController()
     @StateObject private var environmentReflectionFramingPanel = EnvironmentReflectionFramingPanelController()
+    @StateObject private var trackingScenePanel = TrackingScenePanelController()
     @State private var tab = SidebarTab.output
     @State private var page = WorkspacePage.main
     @State private var settingsSection = SettingsSection.application
@@ -1273,6 +1274,13 @@ struct ContentView: View {
                 .disabled(page == .settings)
                 .help("Abrir un vídeo o una imagen")
             Button {
+                trackingScenePanel.toggle(model: model)
+            } label: {
+                Label("Tracking 3D", systemImage: "point.3.connected.trianglepath.dotted")
+            }
+            .disabled(page == .settings)
+            .help("Importar cámara, point cloud y geometrías Alembic")
+            Button {
                 model.importPhysicalSettings(undoManager: undoManager)
             } label: {
                 Label("Recuperar ajustes", systemImage: "arrow.down.doc")
@@ -1951,6 +1959,10 @@ struct ContentView: View {
                         reflectionSoftnessPixels: model.selectedReflectionEmitterSoftnessPixels,
                         reflectionShapeClosed: model.selectedReflectionEmitter?.kind == .window,
                         reflectionShapeCircular: model.selectedReflectionEmitter?.kind == .practical,
+                        trackingPoints: model.trackingOverlayPoints,
+                        trackingPointIDs: model.trackingOverlayPointIDs,
+                        trackingSegments: model.trackingOverlaySegments,
+                        trackingPointSelectionEnabled: model.trackingScaleSelectionSlot != nil,
                         cameraNavigationEnabled: !model.referenceMatchEnabled
                             && !model.reflectionEnvironmentEditorEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
@@ -1965,7 +1977,8 @@ struct ContentView: View {
                         onReferenceCornerEnd: { model.endReferenceCornerDrag(undoManager: undoManager) },
                         onReflectionHandleBegin: model.beginReflectionHandleDrag,
                         onReflectionHandleChange: model.updateReflectionHandle,
-                        onReflectionHandleEnd: model.endReflectionHandleDrag
+                        onReflectionHandleEnd: model.endReflectionHandleDrag,
+                        onTrackingPointSelected: model.selectTrackingPoint
                     )
                     .accessibilityLabel("Preview OCIO del resultado")
                     image
@@ -2081,6 +2094,10 @@ struct MetalPreview: NSViewRepresentable {
     let reflectionSoftnessPixels: CGFloat
     let reflectionShapeClosed: Bool
     let reflectionShapeCircular: Bool
+    let trackingPoints: [CGPoint]
+    let trackingPointIDs: [String]
+    let trackingSegments: [CGPoint]
+    let trackingPointSelectionEnabled: Bool
     let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
@@ -2095,6 +2112,7 @@ struct MetalPreview: NSViewRepresentable {
     let onReflectionHandleBegin: (Int) -> Void
     let onReflectionHandleChange: (Int, CGPoint) -> Void
     let onReflectionHandleEnd: () -> Void
+    let onTrackingPointSelected: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onDisplayChange: onDisplayChange)
@@ -2125,6 +2143,10 @@ struct MetalPreview: NSViewRepresentable {
             reflectionSoftnessPixels: reflectionSoftnessPixels,
             reflectionShapeClosed: reflectionShapeClosed,
             reflectionShapeCircular: reflectionShapeCircular,
+            trackingPoints: trackingPoints,
+            trackingPointIDs: trackingPointIDs,
+            trackingSegments: trackingSegments,
+            trackingPointSelectionEnabled: trackingPointSelectionEnabled,
             cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
             textureHeight: frame.height
@@ -2141,6 +2163,7 @@ struct MetalPreview: NSViewRepresentable {
         container.onReflectionHandleBegin = onReflectionHandleBegin
         container.onReflectionHandleChange = onReflectionHandleChange
         container.onReflectionHandleEnd = onReflectionHandleEnd
+        container.onTrackingPointSelected = onTrackingPointSelected
         display.present(frame, output: output, in: container.metalView)
         container.drawCommittedFrame()
     }
@@ -2229,6 +2252,7 @@ final class MetalPreviewContainer: NSView {
     var onReflectionHandleBegin: ((Int) -> Void)?
     var onReflectionHandleChange: ((Int, CGPoint) -> Void)?
     var onReflectionHandleEnd: (() -> Void)?
+    var onTrackingPointSelected: ((String) -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
@@ -2239,6 +2263,8 @@ final class MetalPreviewContainer: NSView {
     private let reflectionBoundaryLayer = CAShapeLayer()
     private let reflectionSoftnessBoundaryLayer = CAShapeLayer()
     private let reflectionHandleLayer = CAShapeLayer()
+    private let trackingGeometryLayer = CAShapeLayer()
+    private let trackingPointLayer = CAShapeLayer()
     private let referenceLabels = ["TL", "TR", "BR", "BL"].map { label -> CATextLayer in
         let layer = CATextLayer()
         layer.string = label
@@ -2257,6 +2283,10 @@ final class MetalPreviewContainer: NSView {
     private var reflectionSoftnessPixels: CGFloat = 0
     private var reflectionShapeClosed = false
     private var reflectionShapeCircular = false
+    private var trackingPoints: [CGPoint] = []
+    private var trackingPointIDs: [String] = []
+    private var trackingSegments: [CGPoint] = []
+    private var trackingPointSelectionEnabled = false
     private var referenceCornerDragIndex: Int?
     private var reflectionHandleDragIndex: Int?
     private var dragStartLocation: CGPoint?
@@ -2330,6 +2360,16 @@ final class MetalPreviewContainer: NSView {
         reflectionHandleLayer.lineWidth = 1
         reflectionHandleLayer.zPosition = 123
         layer?.addSublayer(reflectionHandleLayer)
+        trackingGeometryLayer.fillColor = NSColor.clear.cgColor
+        trackingGeometryLayer.strokeColor = NSColor.systemTeal.withAlphaComponent(0.85).cgColor
+        trackingGeometryLayer.lineWidth = 1
+        trackingGeometryLayer.zPosition = 124
+        layer?.addSublayer(trackingGeometryLayer)
+        trackingPointLayer.fillColor = NSColor.systemGreen.cgColor
+        trackingPointLayer.strokeColor = NSColor.black.cgColor
+        trackingPointLayer.lineWidth = 1
+        trackingPointLayer.zPosition = 125
+        layer?.addSublayer(trackingPointLayer)
         referenceLabels.forEach { layer?.addSublayer($0) }
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
@@ -2387,6 +2427,10 @@ final class MetalPreviewContainer: NSView {
         reflectionSoftnessPixels: CGFloat,
         reflectionShapeClosed: Bool,
         reflectionShapeCircular: Bool,
+        trackingPoints: [CGPoint],
+        trackingPointIDs: [String],
+        trackingSegments: [CGPoint],
+        trackingPointSelectionEnabled: Bool,
         cameraNavigationEnabled: Bool,
         textureWidth: Int,
         textureHeight: Int
@@ -2404,6 +2448,10 @@ final class MetalPreviewContainer: NSView {
         self.reflectionSoftnessPixels = max(0, reflectionSoftnessPixels)
         self.reflectionShapeClosed = reflectionShapeClosed
         self.reflectionShapeCircular = reflectionShapeCircular
+        self.trackingPoints = trackingPoints
+        self.trackingPointIDs = trackingPointIDs
+        self.trackingSegments = trackingSegments
+        self.trackingPointSelectionEnabled = trackingPointSelectionEnabled
         self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
@@ -2413,6 +2461,11 @@ final class MetalPreviewContainer: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
+        if trackingPointSelectionEnabled, let index = nearestTrackingPoint(to: location),
+           trackingPointIDs.indices.contains(index) {
+            onTrackingPointSelected?(trackingPointIDs[index])
+            return
+        }
         if let index = nearestReflectionHandle(to: location) {
             reflectionHandleDragIndex = index
             onReflectionHandleBegin?(index)
@@ -2836,6 +2889,20 @@ final class MetalPreviewContainer: NSView {
         reflectionSoftnessBoundaryLayer.path = reflectionSoftnessBoundary
         reflectionHandleLayer.frame = bounds
         reflectionHandleLayer.path = reflectionHandlePath
+        let trackingGeometryPath = CGMutablePath()
+        for offset in stride(from: 0, to: trackingSegments.count - trackingSegments.count % 2, by: 2) {
+            trackingGeometryPath.move(to: displayedPoint(forRaster: trackingSegments[offset]))
+            trackingGeometryPath.addLine(to: displayedPoint(forRaster: trackingSegments[offset + 1]))
+        }
+        trackingGeometryLayer.frame = bounds
+        trackingGeometryLayer.path = trackingGeometryPath
+        let trackingPointPath = CGMutablePath()
+        for point in trackingPoints {
+            let displayed = displayedPoint(forRaster: point)
+            trackingPointPath.addEllipse(in: CGRect(x: displayed.x - 4, y: displayed.y - 4, width: 8, height: 8))
+        }
+        trackingPointLayer.frame = bounds
+        trackingPointLayer.path = trackingPointPath
         for (index, label) in referenceLabels.enumerated() {
             guard referenceTargetCorners.indices.contains(index) else {
                 label.isHidden = true
@@ -2909,6 +2976,18 @@ final class MetalPreviewContainer: NSView {
             return hypot(displayedPoint(forRaster: referenceTargetCorners[index]).x - point.x,
                          displayedPoint(forRaster: referenceTargetCorners[index]).y - point.y) <= 12
                 ? index : nil
+        }
+    }
+
+    private func nearestTrackingPoint(to point: CGPoint) -> Int? {
+        trackingPoints.indices.min(by: {
+            hypot(displayedPoint(forRaster: trackingPoints[$0]).x - point.x,
+                  displayedPoint(forRaster: trackingPoints[$0]).y - point.y)
+                < hypot(displayedPoint(forRaster: trackingPoints[$1]).x - point.x,
+                        displayedPoint(forRaster: trackingPoints[$1]).y - point.y)
+        }).flatMap { index in
+            hypot(displayedPoint(forRaster: trackingPoints[index]).x - point.x,
+                  displayedPoint(forRaster: trackingPoints[index]).y - point.y) <= 12 ? index : nil
         }
     }
 

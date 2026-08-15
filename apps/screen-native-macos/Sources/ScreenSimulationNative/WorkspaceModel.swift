@@ -6,6 +6,7 @@ import Foundation
 import OSLog
 import ScreenPhysicalBridge
 import ScreenSimulationPresentation
+import simd
 import StudioColor
 import StudioMedia
 import SwiftUI
@@ -251,6 +252,18 @@ final class WorkspaceModel: ObservableObject {
     let lensPresets = try! LensPresetDefinition.catalog()
     let environmentPresets = try! EnvironmentPresetDefinition.catalog()
     @Published private(set) var physicalPublicationSummary = "Sin publicación física"
+    @Published private(set) var trackingScene: ImportedTrackingScene?
+    @Published var selectedTrackingCameraID: String?
+    @Published var selectedTrackingPointGroupID: String?
+    @Published var trackingCameraEnabled = true
+    @Published var trackingPointsVisible = true
+    @Published var trackingGeometryVisible = true
+    @Published var visibleTrackingMeshIDs: Set<String> = []
+    @Published private(set) var trackingScalePointAID: String?
+    @Published private(set) var trackingScalePointBID: String?
+    @Published var trackingMeasuredDistanceMeters = 1.0
+    @Published private(set) var trackingMetersPerSourceUnit: Double?
+    @Published private(set) var trackingScaleSelectionSlot: Int?
     @Published private(set) var testPresentation: TestPagePresentation?
     @Published private(set) var recordingEncodedBytes: Int?
     @Published private(set) var recordingEncodedSHA256: String?
@@ -269,6 +282,7 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceURL: URL?
     private var environmentSourceCalibration: EnvironmentAssetCalibration?
     private var generatedReflectionEnvironmentData: Data?
+    private var trackingAsset: ManagedTrackingAsset?
     private var activeSceneID: UUID?
     private var persistGeneratedEnvironment: ((UUID, Data) throws -> ManagedEnvironmentAsset)?
     private var referenceACEScgFrame: StudioColorMetalFrame?
@@ -2545,6 +2559,7 @@ final class WorkspaceModel: ObservableObject {
     func seek(toFrame frame: Int) {
         pause()
         currentFrame = min(max(0, frame), max(0, frameCount - 1))
+        applyTrackingCameraAtCurrentFrame()
         if sourceIsPattern {
             renderPattern()
             refreshReferenceFrameForCurrentTime()
@@ -2562,6 +2577,203 @@ final class WorkspaceModel: ObservableObject {
                 } catch { errorMessage = error.localizedDescription }
             }
         }
+    }
+
+    var trackingOverlayPoints: [CGPoint] {
+        guard trackingPointsVisible, let group = selectedTrackingPointGroup else { return [] }
+        return group.points.compactMap { projectTrackingPoint($0.sourcePosition) }
+    }
+
+    var trackingOverlayPointIDs: [String] {
+        guard trackingPointsVisible, let group = selectedTrackingPointGroup else { return [] }
+        return group.points.compactMap { point in
+            projectTrackingPoint(point.sourcePosition) == nil ? nil : point.id
+        }
+    }
+
+    var trackingOverlaySegments: [CGPoint] {
+        guard trackingGeometryVisible, let scene = trackingScene else { return [] }
+        return scene.meshes.filter { visibleTrackingMeshIDs.contains($0.id) }.flatMap { mesh in
+            stride(from: 0, to: mesh.triangleIndices.count, by: 3).flatMap { offset -> [CGPoint] in
+                guard offset + 2 < mesh.triangleIndices.count else { return [] }
+                let ids = [mesh.triangleIndices[offset], mesh.triangleIndices[offset + 1], mesh.triangleIndices[offset + 2]]
+                guard ids.allSatisfy({ mesh.sourceVertices.indices.contains($0) }) else { return [] }
+                let projected = ids.compactMap { projectTrackingPoint(mesh.sourceVertices[$0]) }
+                guard projected.count == 3 else { return [] }
+                return [projected[0], projected[1], projected[1], projected[2], projected[2], projected[0]]
+            }
+        }
+    }
+
+    func importAlembicTrackingScene() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "abc")!]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let managed = try TrackingAssetLibrary.importAsset(from: url)
+            let imported = try AlembicTrackingImporter().load(managed.url)
+            trackingAsset = managed
+            trackingScene = imported
+            selectedTrackingCameraID = nil
+            selectedTrackingPointGroupID = nil
+            visibleTrackingMeshIDs = Set(imported.meshes.map(\.id))
+            trackingScalePointAID = nil
+            trackingScalePointBID = nil
+            trackingMetersPerSourceUnit = nil
+            trackingScaleSelectionSlot = nil
+            status = "Tracking importado · selecciona cámara y nube · escala pendiente"
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func setTrackingMesh(_ id: String, visible: Bool) {
+        if visible { visibleTrackingMeshIDs.insert(id) }
+        else { visibleTrackingMeshIDs.remove(id) }
+    }
+
+    func refreshTrackingCamera() {
+        applyTrackingCameraAtCurrentFrame()
+    }
+
+    func beginTrackingScalePointSelection(slot: Int) {
+        guard slot == 0 || slot == 1 else { return }
+        trackingScaleSelectionSlot = slot
+        status = "Selecciona el punto \(slot == 0 ? "A" : "B") en el Viewer"
+    }
+
+    func selectTrackingPoint(id: String) {
+        guard let slot = trackingScaleSelectionSlot else { return }
+        if slot == 0 { trackingScalePointAID = id }
+        else { trackingScalePointBID = id }
+        trackingScaleSelectionSlot = nil
+    }
+
+    func clearTrackingScaleCalibration() {
+        trackingScalePointAID = nil
+        trackingScalePointBID = nil
+        trackingMetersPerSourceUnit = nil
+        trackingScaleSelectionSlot = nil
+    }
+
+    func resolveTrackingScale() {
+        guard let group = selectedTrackingPointGroup,
+              let firstID = trackingScalePointAID, let secondID = trackingScalePointBID,
+              let first = group.points.first(where: { $0.id == firstID }),
+              let second = group.points.first(where: { $0.id == secondID }) else {
+            errorMessage = "Selecciona dos puntos diferentes de la nube activa."
+            return
+        }
+        var request = ScreenTrackingScaleCalibrationV1(
+            abi_version: SCREEN_TRACKING_SCALE_ABI_VERSION,
+            first_point_xyz: (Float(first.sourcePosition.x), Float(first.sourcePosition.y), Float(first.sourcePosition.z)),
+            second_point_xyz: (Float(second.sourcePosition.x), Float(second.sourcePosition.y), Float(second.sourcePosition.z)),
+            measured_distance_meters: Float(trackingMeasuredDistanceMeters)
+        )
+        var resolved: Float = 0
+        var errorPointer: UnsafePointer<CChar>?
+        guard screen_geometry_resolve_tracking_scale_v1(&request, &resolved, &errorPointer), resolved.isFinite, resolved > 0 else {
+            errorMessage = errorPointer.map { String(cString: $0) }
+                ?? "La escala no es válida: los puntos deben ser distintos y la distancia real positiva."
+            return
+        }
+        trackingMetersPerSourceUnit = Double(resolved)
+        applyTrackingCameraAtCurrentFrame()
+        status = "Escala resuelta · 1 unidad Alembic = \(Double(resolved).formatted(.number.precision(.fractionLength(6)))) m"
+    }
+
+    private var selectedTrackingPointGroup: TrackingPointGroup? {
+        guard let id = selectedTrackingPointGroupID else { return nil }
+        return trackingScene?.pointGroups.first { $0.id == id }
+    }
+
+    private var selectedTrackingCamera: TrackingCamera? {
+        guard let id = selectedTrackingCameraID else { return nil }
+        return trackingScene?.cameras.first { $0.id == id }
+    }
+
+    private func applyTrackingCameraAtCurrentFrame() {
+        guard trackingCameraEnabled, let scale = trackingMetersPerSourceUnit,
+              let camera = selectedTrackingCamera, !camera.samples.isEmpty,
+              var authored = physicalAuthoringState else { return }
+        let sample = camera.samples[min(max(0, currentFrame), camera.samples.count - 1)]
+        authored.cameraPose.position = [
+            sample.sourcePosition.x * scale,
+            sample.sourcePosition.y * scale,
+            sample.sourcePosition.z * scale,
+        ]
+        authored.cameraPose.quaternion = [
+            sample.orientation.x, sample.orientation.y,
+            sample.orientation.z, sample.orientation.w,
+        ]
+        authored.cameraLookAt = nil
+        authored.sceneLens.focalLengthMillimeters = camera.focalLengthMillimeters
+        authored.sceneLens.sensorWidthMillimeters = camera.gateWidthMillimeters
+        authored.sceneLens.sensorHeightMillimeters = camera.gateHeightMillimeters
+        physicalAuthoringState = authored
+        if var selection = testAuthoringSelection {
+            let degrees = PoseRotationProjection.degrees(from: authored.cameraPose.quaternion)
+            selection.geometryModeID = "free"
+            selection.cameraPositionXMeters = authored.cameraPose.position[0]
+            selection.cameraPositionYMeters = authored.cameraPose.position[1]
+            selection.cameraPositionZMeters = authored.cameraPose.position[2]
+            selection.cameraRotationXDegrees = degrees[0]
+            selection.cameraRotationYDegrees = degrees[1]
+            selection.cameraRotationZDegrees = degrees[2]
+            selection.focalLengthMillimeters = camera.focalLengthMillimeters
+            testAuthoringSelection = selection
+            try? refreshTestAuthoringDescriptor()
+        }
+        if physicalModel.quality == .setup {
+            publishSetupFraming(authoredOverride: authored)
+        }
+    }
+
+    private func projectTrackingPoint(_ source: SIMD3<Double>) -> CGPoint? {
+        guard let frame = metalFrame else { return nil }
+        let camera: SIMD3<Double>
+        let q: simd_quatd
+        let focal: Double
+        let gateWidth: Double
+        let gateHeight: Double
+        let world: SIMD3<Double>
+        let near: Double
+        if let scale = trackingMetersPerSourceUnit, let authored = physicalAuthoringState,
+           authored.cameraPose.position.count == 3, authored.cameraPose.quaternion.count == 4 {
+            camera = .init(authored.cameraPose.position[0], authored.cameraPose.position[1], authored.cameraPose.position[2])
+            q = simd_normalize(simd_quatd(
+                ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
+                iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
+            ))
+            focal = authored.sceneLens.focalLengthMillimeters
+            gateWidth = authored.sceneLens.sensorWidthMillimeters
+            gateHeight = authored.sceneLens.sensorHeightMillimeters
+            world = source * scale
+            near = authored.sceneLens.nearClipMeters
+        } else if let imported = selectedTrackingCamera, !imported.samples.isEmpty {
+            let sample = imported.samples[min(max(0, currentFrame), imported.samples.count - 1)]
+            camera = sample.sourcePosition
+            q = simd_normalize(simd_quatd(
+                ix: sample.orientation.x, iy: sample.orientation.y,
+                iz: sample.orientation.z, r: sample.orientation.w
+            ))
+            focal = imported.focalLengthMillimeters
+            gateWidth = imported.gateWidthMillimeters
+            gateHeight = imported.gateHeightMillimeters
+            world = source
+            near = 1e-8
+        } else { return nil }
+        let right = q.act(SIMD3<Double>(1, 0, 0))
+        let up = q.act(SIMD3<Double>(0, 1, 0))
+        let forward = q.act(SIMD3<Double>(0, 0, -1))
+        let relative = world - camera
+        let depth = simd_dot(relative, forward)
+        guard depth > near else { return nil }
+        let x = 0.5 + simd_dot(relative, right) / depth
+            * focal / gateWidth
+        let y = 0.5 - simd_dot(relative, up) / depth
+            * focal / gateHeight
+        return CGPoint(x: x * Double(frame.width), y: y * Double(frame.height))
     }
 
     func step(_ delta: Int) { seek(toFrame: currentFrame + delta) }
@@ -2790,6 +3002,32 @@ final class WorkspaceModel: ObservableObject {
                 )
             )
         }
+        let savedTracking: SavedTrackingScene?
+        if trackingScene != nil {
+            guard let asset = trackingAsset,
+                  let cameraID = selectedTrackingCameraID,
+                  let pointGroupID = selectedTrackingPointGroupID,
+                  let pointAID = trackingScalePointAID,
+                  let pointBID = trackingScalePointBID,
+                  let scale = trackingMetersPerSourceUnit else {
+                throw SceneLibraryError.invalidDocument(
+                    "Resuelve la cámara, la nube y la escala del tracking antes de guardar la escena."
+                )
+            }
+            savedTracking = .init(
+                asset: .init(fileName: asset.originalFileName, sha256: asset.sha256),
+                cameraID: cameraID, pointGroupID: pointGroupID,
+                visibleMeshIDs: visibleTrackingMeshIDs.sorted(),
+                pointsVisible: trackingPointsVisible,
+                geometryVisible: trackingGeometryVisible,
+                cameraEnabled: trackingCameraEnabled,
+                calibration: .init(
+                    pointAID: pointAID, pointBID: pointBID,
+                    measuredDistanceMeters: trackingMeasuredDistanceMeters,
+                    metersPerSourceUnit: scale
+                )
+            )
+        } else { savedTracking = nil }
         let snapshot = SavedSceneSnapshot(
             source: source,
             currentFrame: currentFrame,
@@ -2797,7 +3035,8 @@ final class WorkspaceModel: ObservableObject {
             viewerPanX: pan.width,
             viewerPanY: pan.height,
             viewerIsFitted: previewIsFitted,
-            settingsDocument: settingsDocument
+            settingsDocument: settingsDocument,
+            tracking: savedTracking
         )
         try snapshot.validate()
         let thumbnail = try SceneThumbnailRenderer.render(
@@ -2864,6 +3103,7 @@ final class WorkspaceModel: ObservableObject {
                 try applyPhysicalSettings(imported, undoManager: undoManager)
             }
             currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
+            try restoreTrackingScene(scene.snapshot.tracking)
             viewerNavigation.restore(
                 zoom: scene.snapshot.viewerZoom,
                 pan: .init(width: scene.snapshot.viewerPanX, height: scene.snapshot.viewerPanY),
@@ -2887,6 +3127,41 @@ final class WorkspaceModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func restoreTrackingScene(_ saved: SavedTrackingScene?) throws {
+        guard let saved else {
+            trackingScene = nil
+            trackingAsset = nil
+            selectedTrackingCameraID = nil
+            selectedTrackingPointGroupID = nil
+            visibleTrackingMeshIDs = []
+            clearTrackingScaleCalibration()
+            return
+        }
+        try saved.validate()
+        guard let asset = try TrackingAssetLibrary.asset(
+            sha256: saved.asset.sha256, originalFileName: saved.asset.fileName
+        ) else { throw SceneLibraryError.invalidDocument("Falta el Alembic de tracking guardado.") }
+        let imported = try AlembicTrackingImporter().load(asset.url)
+        guard imported.cameras.contains(where: { $0.id == saved.cameraID }),
+              imported.pointGroups.contains(where: { $0.id == saved.pointGroupID }),
+              Set(saved.visibleMeshIDs).isSubset(of: Set(imported.meshes.map(\.id))) else {
+            throw SceneLibraryError.invalidDocument("La selección guardada no existe en el Alembic.")
+        }
+        trackingAsset = asset
+        trackingScene = imported
+        selectedTrackingCameraID = saved.cameraID
+        selectedTrackingPointGroupID = saved.pointGroupID
+        visibleTrackingMeshIDs = Set(saved.visibleMeshIDs)
+        trackingPointsVisible = saved.pointsVisible
+        trackingGeometryVisible = saved.geometryVisible
+        trackingCameraEnabled = saved.cameraEnabled
+        trackingScalePointAID = saved.calibration.pointAID
+        trackingScalePointBID = saved.calibration.pointBID
+        trackingMeasuredDistanceMeters = saved.calibration.measuredDistanceMeters
+        trackingMetersPerSourceUnit = saved.calibration.metersPerSourceUnit
+        applyTrackingCameraAtCurrentFrame()
     }
 
     private func publishMissingMedia(

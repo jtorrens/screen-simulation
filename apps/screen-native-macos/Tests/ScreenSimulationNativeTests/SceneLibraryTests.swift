@@ -102,6 +102,57 @@ import Testing
     #expect(try Data(contentsOf: store.documentURL) == unknown)
 }
 
+@Test func sceneLibraryPersistsAlembicIdentityVisibilityAndMetricCalibration() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scenes-tracking-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("solve.abc")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data("alembic fixture".utf8).write(to: source)
+    let trackingRoot = root.appendingPathComponent("tracking-assets")
+    let managed = try TrackingAssetLibrary.importAsset(from: source, libraryRoot: trackingRoot)
+    let store = try SceneLibraryStore(
+        directoryURL: root.appendingPathComponent("scenes"),
+        trackingLibraryRoot: trackingRoot
+    )
+    let id = UUID()
+    let tracking = SavedTrackingScene(
+        asset: .init(fileName: managed.originalFileName, sha256: managed.sha256),
+        cameraID: "/Camera01", pointGroupID: "/Camera01Trackers",
+        visibleMeshIDs: ["/Plane01"], pointsVisible: true,
+        geometryVisible: false, cameraEnabled: true,
+        calibration: .init(
+            pointAID: "/Camera01Trackers/P01",
+            pointBID: "/Camera01Trackers/P02",
+            measuredDistanceMeters: 1.75,
+            metersPerSourceUnit: 0.01
+        )
+    )
+    let snapshot = SavedSceneSnapshot(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+        viewerIsFitted: true,
+        settingsDocument: try JSONSerialization.data(
+            withJSONObject: ["settings": ["schema": PhysicalSettingsExchange.schema]]
+        ),
+        tracking: tracking
+    )
+    let scene = SavedScene(
+        id: id, name: "Plano con solve",
+        thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: snapshot
+    )
+    try store.writeThumbnail(Data([1]), for: scene)
+    try store.save(.init(scenes: [scene]))
+
+    let restored = try #require(try store.load().scenes.first)
+    #expect(restored.snapshot.tracking == tracking)
+}
+
 @Test func sourceAssetsAreContentAddressedAndResolvedWithoutFilenameInference() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scene-source-\(UUID().uuidString)")
