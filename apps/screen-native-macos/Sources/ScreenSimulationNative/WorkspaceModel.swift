@@ -126,9 +126,12 @@ enum ReferenceTimelineAuthority {
     static func resolve(
         source: NativeVideoTimelineInfo,
         reference: NativeVideoTimelineInfo?,
-        referenceVisible: Bool
+        referenceVisible: Bool,
+        tracking: NativeVideoTimelineInfo? = nil
     ) -> NativeVideoTimelineInfo {
-        referenceVisible ? reference ?? source : source
+        if referenceVisible, let reference { return reference }
+        if source.frameCount > 1 { return source }
+        return tracking ?? source
     }
 }
 
@@ -220,7 +223,12 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var environmentSourceName: String?
     @Published private(set) var environmentSourceResolution: CGSize?
     @Published var errorMessage: String?
-    @Published var currentFrame = 0
+    @Published var currentFrame = 0 {
+        didSet {
+            guard currentFrame != oldValue else { return }
+            applyTrackingCameraAtCurrentFrame()
+        }
+    }
     @Published var frameCount = 1
     @Published var frameRate = 24.0
     @Published var isPlaying = false
@@ -2559,7 +2567,6 @@ final class WorkspaceModel: ObservableObject {
     func seek(toFrame frame: Int) {
         pause()
         currentFrame = min(max(0, frame), max(0, frameCount - 1))
-        applyTrackingCameraAtCurrentFrame()
         if sourceIsPattern {
             renderPattern()
             refreshReferenceFrameForCurrentTime()
@@ -2633,6 +2640,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func refreshTrackingCamera() {
+        applyTimelineAuthority(resetRange: true)
         applyTrackingCameraAtCurrentFrame()
     }
 
@@ -2692,11 +2700,28 @@ final class WorkspaceModel: ObservableObject {
         return trackingScene?.cameras.first { $0.id == id }
     }
 
+    private var trackingTimelineInfo: NativeVideoTimelineInfo? {
+        guard trackingCameraEnabled, let camera = selectedTrackingCamera else { return nil }
+        let rate: ExactFrameRate
+        do {
+            rate = try ExactFrameRate(
+                numerator: camera.frameRateNumerator,
+                denominator: camera.frameRateDenominator
+            )
+        } catch {
+            preconditionFailure("La cámara Alembic importada contiene una cadencia inválida.")
+        }
+        return NativeVideoTimelineInfo(exactFrameRate: rate, frameCount: camera.samples.count)
+    }
+
     private func applyTrackingCameraAtCurrentFrame() {
         guard trackingCameraEnabled, let scale = trackingMetersPerSourceUnit,
               let camera = selectedTrackingCamera, !camera.samples.isEmpty,
               var authored = physicalAuthoringState else { return }
-        let sample = camera.samples[min(max(0, currentFrame), camera.samples.count - 1)]
+        guard let sample = camera.sample(
+            atTimelineFrame: currentFrame,
+            timelineFrameRate: frameRate
+        ) else { return }
         authored.cameraPose.position = [
             sample.sourcePosition.x * scale,
             sample.sourcePosition.y * scale,
@@ -2751,7 +2776,10 @@ final class WorkspaceModel: ObservableObject {
             world = source * scale
             near = authored.sceneLens.nearClipMeters
         } else if let imported = selectedTrackingCamera, !imported.samples.isEmpty {
-            let sample = imported.samples[min(max(0, currentFrame), imported.samples.count - 1)]
+            guard let sample = imported.sample(
+                atTimelineFrame: currentFrame,
+                timelineFrameRate: frameRate
+            ) else { return nil }
             camera = sample.sourcePosition
             q = simd_normalize(simd_quatd(
                 ix: sample.orientation.x, iy: sample.orientation.y,
@@ -2874,7 +2902,8 @@ final class WorkspaceModel: ObservableObject {
         let exactFrameRate = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
             reference: referenceTimelineInfo,
-            referenceVisible: referenceControlsTimeline
+            referenceVisible: referenceControlsTimeline,
+            tracking: trackingTimelineInfo
         ).exactFrameRate
         let configuration = StudioResolvedRenderConfiguration(
             format: outputFormat,
@@ -4161,7 +4190,8 @@ final class WorkspaceModel: ObservableObject {
         let timeline = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
             reference: referenceTimelineInfo,
-            referenceVisible: referenceControlsTimeline
+            referenceVisible: referenceControlsTimeline,
+            tracking: trackingTimelineInfo
         )
         frameRate = timeline.frameRate
         frameCount = max(1, timeline.frameCount)
@@ -4539,7 +4569,8 @@ final class WorkspaceModel: ObservableObject {
         let exactFrameRate = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
             reference: referenceTimelineInfo,
-            referenceVisible: referenceControlsTimeline
+            referenceVisible: referenceControlsTimeline,
+            tracking: trackingTimelineInfo
         ).exactFrameRate
         let (timeNumerator, timeOverflow) = Int64(currentFrame).multipliedReportingOverflow(
             by: Int64(exactFrameRate.denominator)
@@ -4601,7 +4632,8 @@ final class WorkspaceModel: ObservableObject {
         let exactFrameRate = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
             reference: referenceTimelineInfo,
-            referenceVisible: referenceControlsTimeline
+            referenceVisible: referenceControlsTimeline,
+            tracking: trackingTimelineInfo
         ).exactFrameRate
         if testAuthoringSelection == nil {
             let initial = try RustTestAuthoringCoordinator.defaultSelection(

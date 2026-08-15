@@ -32,6 +32,38 @@ struct TrackingCamera: Identifiable, Codable, Equatable, Sendable {
     let gateWidthMillimeters: Double
     let gateHeightMillimeters: Double
     let samples: [TrackingCameraSample]
+
+    func sample(atTimelineFrame frame: Int, timelineFrameRate: Double) -> TrackingCameraSample? {
+        guard !samples.isEmpty, timelineFrameRate.isFinite, timelineFrameRate > 0 else { return nil }
+        let trackingFrameRate = Double(frameRateNumerator) / Double(frameRateDenominator)
+        let samplePosition = max(0, Double(frame)) * trackingFrameRate / timelineFrameRate
+        let lowerIndex = min(Int(floor(samplePosition)), samples.count - 1)
+        let upperIndex = min(lowerIndex + 1, samples.count - 1)
+        let amount = min(max(samplePosition - Double(lowerIndex), 0), 1)
+        let lower = samples[lowerIndex]
+        guard upperIndex != lowerIndex, amount > 0 else {
+            return TrackingCameraSample(
+                frame: frame,
+                sourcePosition: lower.sourcePosition,
+                orientation: lower.orientation
+            )
+        }
+        let upper = samples[upperIndex]
+        let lowerRotation = simd_normalize(simd_quatd(
+            ix: lower.orientation.x, iy: lower.orientation.y,
+            iz: lower.orientation.z, r: lower.orientation.w
+        ))
+        let upperRotation = simd_normalize(simd_quatd(
+            ix: upper.orientation.x, iy: upper.orientation.y,
+            iz: upper.orientation.z, r: upper.orientation.w
+        ))
+        let rotation = simd_slerp(lowerRotation, upperRotation, amount)
+        return TrackingCameraSample(
+            frame: frame,
+            sourcePosition: lower.sourcePosition + (upper.sourcePosition - lower.sourcePosition) * amount,
+            orientation: .init(rotation.imag.x, rotation.imag.y, rotation.imag.z, rotation.real)
+        )
+    }
 }
 
 struct TrackingPointGroup: Identifiable, Codable, Equatable, Sendable {
@@ -138,7 +170,7 @@ struct AlembicTrackingImporter {
         var cameras: [TrackingCamera] = []
         for (index, xform) in prims.enumerated() where xform.type == "Xform" {
             guard let cameraPrim = prims.first(where: { $0.parent == index && $0.type == "Camera" }) else { continue }
-            let transforms = matrixSamples(in: body(xform, text))
+            let transforms = matrixSamples(in: body(xform, text)).sorted { $0.time < $1.time }
             guard !transforms.isEmpty else { continue }
             let cameraBody = body(cameraPrim, text)
             let focal = try requiredScalarSample("focalLength", in: cameraBody)

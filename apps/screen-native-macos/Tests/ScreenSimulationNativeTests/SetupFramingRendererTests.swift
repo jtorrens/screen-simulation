@@ -64,6 +64,17 @@ import Testing
     ) == source)
 }
 
+@Test func trackingTimelineDrivesAStaticSourceAndStartsAtFrameZero() throws {
+    let still = NativeVideoTimelineInfo(exactFrameRate: .fps24, frameCount: 1)
+    let tracking = NativeVideoTimelineInfo(
+        exactFrameRate: try ExactFrameRate(numerator: 25, denominator: 1),
+        frameCount: 100
+    )
+    #expect(ReferenceTimelineAuthority.resolve(
+        source: still, reference: nil, referenceVisible: false, tracking: tracking
+    ) == tracking)
+}
+
 @Test @MainActor func setupFramingUsesTheAuthoredCameraAndMarksTheDeviceBoundary() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
