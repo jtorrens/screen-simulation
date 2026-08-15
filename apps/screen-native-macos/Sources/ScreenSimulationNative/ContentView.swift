@@ -1925,6 +1925,17 @@ struct ContentView: View {
                 Button { model.zoomBy(1.25) } label: { Image(systemName: "plus.magnifyingglass") }
                     .help("Aumentar zoom")
                     .accessibilityLabel("Aumentar zoom")
+                Button(action: model.togglePreviewTransformationsLock) {
+                    Image(systemName: model.previewTransformationsLocked
+                        ? "lock.fill" : "lock.open")
+                }
+                .foregroundStyle(model.previewTransformationsLocked ? .orange : .secondary)
+                .help(model.previewTransformationsLocked
+                    ? "Desbloquear transformaciones de escena y Device"
+                    : "Bloquear transformaciones de escena y Device")
+                .accessibilityLabel(model.previewTransformationsLocked
+                    ? "Desbloquear transformaciones del Viewer"
+                    : "Bloquear transformaciones del Viewer")
                 Button {
                     model.renderCurrentFrame()
                 } label: {
@@ -1974,7 +1985,9 @@ struct ContentView: View {
                         trackingMeshCenterIDs: model.trackingOverlayMeshCenterIDs,
                         trackingMeshCenterLabels: model.trackingOverlayMeshCenterLabels,
                         trackingPointSelectionEnabled: model.trackingScaleSelectionSlot != nil,
-                        cameraNavigationEnabled: !model.referenceMatchEnabled
+                        sceneInteractionLocked: model.previewTransformationsLocked,
+                        cameraNavigationEnabled: !model.previewTransformationsLocked
+                            && !model.referenceMatchEnabled
                             && !model.reflectionEnvironmentEditorEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
@@ -2118,6 +2131,7 @@ struct MetalPreview: NSViewRepresentable {
     let trackingMeshCenterIDs: [String]
     let trackingMeshCenterLabels: [String]
     let trackingPointSelectionEnabled: Bool
+    let sceneInteractionLocked: Bool
     let cameraNavigationEnabled: Bool
     let onDisplayChange: (StudioColorSystemDisplayInfo) -> Void
     let onPanChange: (CGSize) -> Void
@@ -2172,6 +2186,7 @@ struct MetalPreview: NSViewRepresentable {
             trackingMeshCenterIDs: trackingMeshCenterIDs,
             trackingMeshCenterLabels: trackingMeshCenterLabels,
             trackingPointSelectionEnabled: trackingPointSelectionEnabled,
+            sceneInteractionLocked: sceneInteractionLocked,
             cameraNavigationEnabled: cameraNavigationEnabled,
             textureWidth: frame.width,
             textureHeight: frame.height
@@ -2267,6 +2282,7 @@ final class MetalPreviewContainer: NSView {
     private var textureWidth = 1
     private var textureHeight = 1
     private var cameraNavigationEnabled = true
+    private var sceneInteractionLocked = false
     var onPanChange: ((CGSize) -> Void)?
     var onZoomChange: ((Double) -> Void)?
     var onFittedZoomChange: ((Double) -> Void)?
@@ -2474,6 +2490,7 @@ final class MetalPreviewContainer: NSView {
         trackingMeshCenterIDs: [String],
         trackingMeshCenterLabels: [String],
         trackingPointSelectionEnabled: Bool,
+        sceneInteractionLocked: Bool,
         cameraNavigationEnabled: Bool,
         textureWidth: Int,
         textureHeight: Int
@@ -2498,6 +2515,7 @@ final class MetalPreviewContainer: NSView {
         self.trackingMeshCenterIDs = trackingMeshCenterIDs
         self.trackingMeshCenterLabels = trackingMeshCenterLabels
         self.trackingPointSelectionEnabled = trackingPointSelectionEnabled
+        self.sceneInteractionLocked = sceneInteractionLocked
         self.cameraNavigationEnabled = cameraNavigationEnabled
         self.textureWidth = textureWidth
         self.textureHeight = textureHeight
@@ -2507,18 +2525,19 @@ final class MetalPreviewContainer: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
-        if trackingPointSelectionEnabled, let index = nearestTrackingPoint(to: location),
+        if !sceneInteractionLocked,
+           trackingPointSelectionEnabled, let index = nearestTrackingPoint(to: location),
            trackingPointIDs.indices.contains(index) {
             onTrackingPointSelected?(trackingPointIDs[index])
             return
         }
-        if let index = nearestReflectionHandle(to: location) {
+        if !sceneInteractionLocked, let index = nearestReflectionHandle(to: location) {
             reflectionHandleDragIndex = index
             onReflectionHandleBegin?(index)
             NSCursor.crosshair.push()
             return
         }
-        if let index = nearestReferenceCorner(to: location) {
+        if !sceneInteractionLocked, let index = nearestReferenceCorner(to: location) {
             referenceCornerDragIndex = index
             onReferenceCornerBegin?(index)
             NSCursor.crosshair.push()
@@ -3066,6 +3085,7 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        guard !sceneInteractionLocked else { return nil }
         let location = convert(event.locationInWindow, from: nil)
         contextTrackingPointID = nil
         contextTrackingMeshID = nil

@@ -243,6 +243,7 @@ final class WorkspaceModel: ObservableObject {
         testAuthoringSelection?.focalLengthMillimeters
     }
     @Published var referenceMatchEnabled = false
+    @Published private(set) var previewTransformationsLocked = false
     @Published private(set) var reflectionEnvironmentEditorEnabled = false
     @Published private(set) var environmentReflectionFramingEnabled = false
     @Published private(set) var environmentReflectionFraming = EnvironmentReflectionFraming()
@@ -904,6 +905,7 @@ final class WorkspaceModel: ObservableObject {
         _ operation: CameraNavigationOperation,
         viewportSize: CGSize
     ) {
+        guard !previewTransformationsLocked else { return }
         if physicalModel.quality == .environmentSetup {
             beginEnvironmentNavigation(operation, viewportSize: viewportSize)
             return
@@ -976,6 +978,10 @@ final class WorkspaceModel: ObservableObject {
             nearClipMeters: authored.sceneLens.nearClipMeters,
             lockedAxis: nil
         )
+    }
+
+    func togglePreviewTransformationsLock() {
+        previewTransformationsLocked.toggle()
     }
 
     func updateCameraNavigation(delta: CGSize) {
@@ -1691,14 +1697,16 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func beginReflectionHandleDrag(_ index: Int) {
-        guard reflectionEnvironmentEditorEnabled,
+        guard !previewTransformationsLocked,
+              reflectionEnvironmentEditorEnabled,
               selectedReflectionEmitterHandles.indices.contains(index)
         else { return }
         reflectionHandleDragIndex = index
     }
 
     func updateReflectionHandle(_ index: Int, point: CGPoint) {
-        guard reflectionHandleDragIndex == index,
+        guard !previewTransformationsLocked,
+              reflectionHandleDragIndex == index,
               let id = selectedReflectionEmitterID,
               let emitterIndex = reflectionEmitters.firstIndex(where: { $0.id == id }),
               reflectionEmitters[emitterIndex].handles.indices.contains(index),
@@ -2521,13 +2529,15 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func beginReferenceCornerDrag(_ index: Int) {
-        guard referenceMatchEnabled, referenceMatchCorners.indices.contains(index)
+        guard !previewTransformationsLocked,
+              referenceMatchEnabled, referenceMatchCorners.indices.contains(index)
         else { return }
         referenceMatchStartSelection = testAuthoringSelection
     }
 
     func updateReferenceCorner(_ index: Int, to point: CGPoint) {
-        guard referenceMatchEnabled,
+        guard !previewTransformationsLocked,
+              referenceMatchEnabled,
               referenceMatchCorners.indices.contains(index),
               referenceACEScgFrame != nil
         else { return }
@@ -2881,6 +2891,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func placeDeviceAtTrackingPoint(_ id: String, undoManager: UndoManager?) {
+        guard !previewTransformationsLocked else { return }
         guard let scale = trackingMetersPerSourceUnit,
               let point = selectedTrackingPointGroup?.points.first(where: { $0.id == id })
         else {
@@ -2896,6 +2907,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func placeDeviceOnTrackingPlane(_ id: String, undoManager: UndoManager?) {
+        guard !previewTransformationsLocked else { return }
         guard let scale = trackingMetersPerSourceUnit,
               let mesh = trackingScene?.meshes.first(where: { $0.id == id }),
               let placement = mesh.planePlacement(toward: trackingSourceCameraPosition)

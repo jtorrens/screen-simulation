@@ -150,6 +150,26 @@ import Testing
     #expect(workspace.physicalModel.quality == .setup)
 }
 
+@Test @MainActor func previewLockRejectsSceneNavigationWithoutBlockingViewerState() throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectModelDevice(device, coverGlass: cover)
+    let before = try #require(workspace.physicalAuthoringState).cameraPose.position
+
+    workspace.togglePreviewTransformationsLock()
+    workspace.beginCameraNavigation(.pan, viewportSize: CGSize(width: 1_200, height: 800))
+    workspace.updateCameraNavigation(delta: CGSize(width: 300, height: 120))
+    workspace.endCameraNavigation(undoManager: nil)
+
+    #expect(workspace.previewTransformationsLocked)
+    #expect(workspace.physicalAuthoringState?.cameraPose.position == before)
+    workspace.pan = CGSize(width: 40, height: -20)
+    #expect(workspace.pan == CGSize(width: 40, height: -20))
+}
+
 private func navigationGesture(
     distance: Double,
     operation: CameraNavigationOperation = .pan,
