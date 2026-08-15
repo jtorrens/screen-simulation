@@ -833,6 +833,9 @@ final class SetupFramingRenderer {
                 output.write(background, p); return;
             }
             float4 reflected = source.sample(linear_sampler, environmentUV);
+            constexpr float OUTSIDE_DEVICE_GAIN = 0.20f;
+            const float coverage = device_coverage(p, false, s);
+            reflected.rgb *= mix(OUTSIDE_DEVICE_GAIN, 1.0f, coverage);
             reflected.a = 1.0f;
             output.write(reflected, p);
             return;

@@ -455,6 +455,50 @@ import Testing
     #expect(translatedPixels[corner + 2] > 0)
 }
 
+@Test @MainActor func environmentSetupDimsOnlyTheSphereOutsideTheProjectedDevice() throws {
+    let display = try StudioColorMetalDisplay()
+    let input = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    })
+    let pixel: [Float] = [0.5, 0.5, 0.5, 1]
+    let encoded = Array(repeating: pixel, count: 16 * 8).flatMap { $0 }
+    let environment = try display.makeACEScgFrame(
+        width: 16, height: 8, encodedRGBA: encoded, input: input, alpha: .straight
+    )
+    let device = try #require(try RustDeviceCatalog.builtIns().first {
+        $0.name.contains("ASUS ProArt")
+    })
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    var authored = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
+    authored.cameraPose.position = [0, 0, 2]
+    authored.cameraPose.quaternion = [0, 0, 0, 1]
+    authored.screenPose.position = [0, 0, 0]
+    authored.screenPose.quaternion = [0, 0, 0, 1]
+    authored.sceneLens.sensorWidthMillimeters = 36
+    authored.sceneLens.sensorHeightMillimeters = 20.25
+    authored.sceneLens.focalLengthMillimeters = 45
+    authored.sceneLens.lensShift = [0, 0]
+    authored.environment.projectionMode = 0
+
+    let renderer = try SetupFramingRenderer(device: environment.texture.device)
+    let result = try renderer.renderEnvironment(
+        environment: environment, device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180,
+        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+    )
+    let values = try display.readLinearRGBA(result.frame)
+    let outside = 0
+    let inside = ((result.frame.height / 2) * result.frame.width + result.frame.width / 2) * 4
+    for channel in 0 ..< 3 {
+        #expect(values[inside + channel] > 0)
+        #expect(abs(values[outside + channel] / values[inside + channel] - 0.20) < 0.005)
+    }
+    #expect(values[outside + 3] == 1)
+    #expect(values[inside + 3] == 1)
+}
+
 @Test @MainActor func focusSetupClipsItsChartAndDistortedBoundaryToTheDevice() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
