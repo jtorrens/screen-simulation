@@ -195,14 +195,6 @@ struct SceneLibraryStore: Sendable {
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            for retiredVersion in [2, 1] {
-                let retired = directoryURL.appendingPathComponent(
-                    "Scenes.v\(retiredVersion).json"
-                )
-                if FileManager.default.fileExists(atPath: retired.path) {
-                    throw SceneLibraryError.unsupportedSchema(retiredVersion)
-                }
-            }
             return SceneLibraryDocument()
         }
         let data = try Data(contentsOf: documentURL)
