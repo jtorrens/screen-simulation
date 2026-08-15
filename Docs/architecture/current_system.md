@@ -82,24 +82,9 @@ A new Test selection starts `Ver hasta` at the final phase published by Applicat
 
 ## Technology
 
-The current macOS-first implementation uses Rust 1.97.1. Native RAW development runs through the required Metal backend on Apple Silicon; the physical core and typed domain boundaries remain platform-independent, but the current version does not require, ship or validate a Windows/D3D12 adapter. Native display publication uses one required Metal backend generated from the pinned OCIO processor and quantizes its result directly to RGBA8; the OCIO CPU processor remains only a numeric oracle with the explicit tolerance in `native_compute.md`. A Native cancellation remains an active job until the Metal worker confirms the cancelled terminal state; the host exposes that interval as `Cancelling`, retains progress from the last completed tile and cannot submit another Native job meanwhile. The technical desktop UI uses Slint with one compiled `fluent-dark` style and its WGPU renderer on macOS. Slint remains confined to `screen-desktop`; domain and application packages expose no UI types. The desktop bundle includes the required Slint attribution through the standard `AboutSlint` component. Media decode uses one linked FFmpeg configuration. The Platform adapter owns two small product unsafe bridges: `sws_setColorspaceDetails`, because the safe Rust wrapper does not expose this required libswscale operation, and completed shared Metal-buffer copies described by `native_compute.md`; no unsafe code crosses the adapter boundary. The current local macOS packager copies its complete non-system Mach-O dependency closure and the compiled Native metallib into the application, rewrites every route to the bundle and rejects remaining machine-specific paths. OpenColorIO 2.5.2 is statically built through the `screen-color` dependency boundary; `screen-color` opens the exact upstream built-in `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` configuration and never reads the process environment or a workstation configuration path. OpenEXR remains behind its own format adapter.
+The current macOS-first implementation uses Rust 1.97.1 behind the SwiftUI/AppKit composition root in `apps/screen-native-macos`. Native RAW development runs through the required Metal backend on Apple Silicon; the physical core and typed domain boundaries remain platform-independent, but the current version does not require, ship or validate a Windows/D3D12 adapter. Native display publication uses one required Metal backend generated from the pinned OCIO processor and quantizes its result directly to RGBA8; the OCIO CPU processor remains only a numeric oracle with the explicit tolerance in `native_compute.md`. A Native cancellation remains an active job until the Metal worker confirms the cancelled terminal state; the host exposes that interval as `Cancelling`, retains progress from the last completed tile and cannot submit another Native job meanwhile. Media decode uses Apple frameworks through StudioMedia. The product color implementation is the extractable `packages/StudioColor` boundary copied from the authoritative CREDITOS-HDR OCIO/ACES implementation at the pinned source commit and hashes. The native host authors an explicit Input Transform into linear ACEScg, resolves the independently selected Output Signal into the nonlinear feeder contract, applies the Device Color Mode only in panel interpretation, calls the Rust-owned physical evaluator once per immutable request and uses the StudioColor OCIO-generated Metal display processor for preview and output. The local packager builds only `dist/Screen Simulation Native.app`, validates that its native binary and bundle contain no FFmpeg dependency, and validates the current physical ABI. There is no packaged Rust/Slint product, runtime backend selector or compatibility shell.
 
-An isolated SwiftUI/AppKit replacement candidate exists under
-`apps/screen-native-macos`. It is not a second product composition root and is
-not reachable from `screen-desktop`. Its only color implementation is the
-extractable `packages/StudioColor` boundary copied from the authoritative
-CREDITOS-HDR OCIO/ACES implementation at the pinned source commit and hashes.
-The candidate decodes one explicitly requested frame with Apple frameworks,
-authors an explicit Input Transform into linear ACEScg, resolves the independently selected
-Output Signal into the nonlinear feeder contract, applies the Device Color Mode only in panel
-interpretation, calls the Rust-owned
-`PhysicalPipeline(identity)` once per complete float buffer, and uses the
-StudioColor OCIO-generated Metal display processor for preview and output.
-The existing Slint executable remains the shipped composition root until the
-single cutover defined in `Docs/NATIVE_MACOS_CUTOVER.md`; there is no runtime
-backend selector or fallback between the two shells or color implementations.
-
-The candidate's one physical-frame boundary is the versioned coarse ABI in
+The product's physical-frame boundary is the versioned coarse ABI in
 `ScreenPhysicalBridge.h`, specified by `Docs/NATIVE_PHYSICAL_FRAME_CONTRACT.md`.
 It carries one selected frame through an opaque input containing the source
 linear-ACEScg texture, the nonlinear Device RGB texture resolved by StudioColor
@@ -128,10 +113,10 @@ screen-recording       strict still/video codec profiles and causal single-pass 
 screen-application     immutable request preparation and orchestration
 screen-persistence     strict portable project documents
 screen-platform        replaceable OS, GPU, media and filesystem adapters
-screen-desktop         current composition root and Slint UI shell
+screen-native-bridge   narrow C ABI consumed by the SwiftUI/AppKit composition root
 ```
 
-Domain packages expose narrow capabilities and do not depend on sibling implementation details. The exact allowed Rust package edges are executable in `architecture/domains.json`, and the exact Swift target edges are executable in `architecture/swift-domains.json`. Executable and host adapters are composition roots. `screen-desktop` and the native macOS host translate their boundaries into the same immutable Application requests; a later OFX adapter must do the same and cannot introduce another evaluator, domain semantics or UI types into the core. Application publishes and resolves the ordered physical contribution set by stable stage identity, control semantics and dependency; host bridges cannot index that array to rediscover named phase meaning.
+Domain packages expose narrow capabilities and do not depend on sibling implementation details. The exact allowed Rust package edges are executable in `architecture/domains.json`, and the exact Swift target edges are executable in `architecture/swift-domains.json`. Executable and host adapters are composition roots. The native macOS host translates its boundaries into immutable Application requests; a later OFX adapter must do the same and cannot introduce another evaluator, domain semantics or UI types into the core. Application publishes and resolves the ordered physical contribution set by stable stage identity, control semantics and dependency; host bridges cannot index that array to rediscover named phase meaning.
 
 ## Current scope
 

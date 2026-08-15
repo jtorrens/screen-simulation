@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and package the SwiftUI/AppKit replacement candidate."""
+"""Build and package the current SwiftUI/AppKit macOS application."""
 
 from __future__ import annotations
 

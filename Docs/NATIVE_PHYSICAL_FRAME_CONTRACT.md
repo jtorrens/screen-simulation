@@ -1,6 +1,6 @@
 # Native physical-frame contract
 
-Status: normative for the SwiftUI/AppKit replacement candidate.
+Status: normative for the current SwiftUI/AppKit macOS product.
 
 ## Ownership and version
 
