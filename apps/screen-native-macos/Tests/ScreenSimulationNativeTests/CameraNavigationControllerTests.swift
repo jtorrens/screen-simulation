@@ -293,19 +293,32 @@ private func navigationGesture(
     #expect(simd_length(viewedByMovedCamera - viewedByFixedCamera) < 1e-12)
 }
 
-@Test func deviceDollyPreservesTheProjectedCenterRayAndOrientation() {
-    let gesture = navigationGesture(distance: 5, operation: .deviceDolly)
+@Test func trackingWorldScalePreservesProjectedPointsAndChangesDeviceAngularSize() {
+    let gesture = navigationGesture(distance: 5, operation: .trackingWorldScale)
     let device = CameraNavigationPose(
         position: SIMD3(1.2, -0.7, 0),
         orientation: simd_quatd(angle: 0.25, axis: simd_normalize(SIMD3(0, 1, 0)))
     )
-    let moved = CameraNavigationMath.deviceDollyAlongCenterRay(
-        gesture: gesture, startDevice: device, deltaPixels: -80
+    let scaled = CameraNavigationMath.scaledTrackingWorld(
+        gesture: gesture,
+        startDevice: device,
+        startMetersPerSourceUnit: 0.1,
+        deltaPixels: -80
     )
-    let before = simd_normalize(device.position - gesture.startPose.position)
-    let after = simd_normalize(moved.position - gesture.startPose.position)
-    #expect(simd_length(before - after) < 1e-12)
-    #expect(moved.orientation == device.orientation)
-    #expect(simd_length(moved.position - gesture.startPose.position)
+    let factor = scaled.metersPerSourceUnit / 0.1
+    let sourcePoint = SIMD3<Double>(2.5, -0.5, -1.0)
+    let beforeDirection = simd_normalize(sourcePoint - gesture.startPose.position)
+    let afterDirection = simd_normalize(
+        sourcePoint * factor - scaled.camera.position
+    )
+    #expect(simd_length(beforeDirection - afterDirection) < 1e-12)
+    #expect(simd_length(
+        simd_normalize(device.position - gesture.startPose.position)
+            - simd_normalize(scaled.device.position - scaled.camera.position)
+    ) < 1e-12)
+    #expect(scaled.device.orientation == device.orientation)
+    #expect(scaled.camera.orientation == gesture.startPose.orientation)
+    #expect(scaled.metersPerSourceUnit < 0.1)
+    #expect(simd_length(scaled.device.position - scaled.camera.position)
         < simd_length(device.position - gesture.startPose.position))
 }

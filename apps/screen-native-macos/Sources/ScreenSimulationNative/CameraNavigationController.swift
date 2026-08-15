@@ -27,7 +27,7 @@ enum CameraNavigationOperation: Equatable, Sendable {
     case pan
     case orbit
     case dolly
-    case deviceDolly
+    case trackingWorldScale
 }
 
 enum CameraNavigationLockedAxis: Equatable, Sendable { case horizontal, vertical }
@@ -133,29 +133,35 @@ enum CameraNavigationMath {
         )
     }
 
-    static func deviceDollyAlongCenterRay(
+    static func scaledTrackingWorld(
         gesture: CameraNavigationGesture,
         startDevice: CameraNavigationPose,
+        startMetersPerSourceUnit: Double,
         deltaPixels: Double
-    ) -> CameraNavigationPose {
-        let camera = gesture.startPose.position
-        let offset = startDevice.position - camera
-        let distance = max(simd_length(offset), gesture.nearClipMeters * 2)
-        let ray = simd_normalize(offset)
-        let requestedDistance = distance * exp(deltaPixels * dollyExponentPerPixel)
-        var translation = requestedDistance - distance
+    ) -> (metersPerSourceUnit: Double, camera: CameraNavigationPose, device: CameraNavigationPose) {
         let forward = gesture.startPose.orientation.act(SIMD3<Double>(0, 0, -1))
-        let rayDepth = simd_dot(ray, forward)
-        if rayDepth > 1e-9 {
-            let nearestDepth = gesture.geometry.corners.map {
-                simd_dot($0 - camera, forward)
-            }.min() ?? gesture.nearClipMeters * 2
-            let minimumTranslation = (gesture.nearClipMeters * 1.5 - nearestDepth) / rayDepth
-            translation = max(translation, minimumTranslation)
-        }
-        return CameraNavigationPose(
-            position: startDevice.position + ray * translation,
-            orientation: startDevice.orientation
+        let centerDepth = simd_dot(
+            startDevice.position - gesture.startPose.position, forward
+        )
+        let halfDepthExtent = abs(simd_dot(gesture.geometry.right, forward))
+                * gesture.geometry.halfWidth
+            + abs(simd_dot(gesture.geometry.up, forward))
+                * gesture.geometry.halfHeight
+        let minimumFactor = centerDepth > 1e-12
+            ? (gesture.nearClipMeters * 1.5 + halfDepthExtent) / centerDepth
+            : 1
+        let requestedFactor = exp(deltaPixels * dollyExponentPerPixel)
+        let factor = min(1e6, max(minimumFactor, requestedFactor))
+        return (
+            startMetersPerSourceUnit * factor,
+            CameraNavigationPose(
+                position: gesture.startPose.position * factor,
+                orientation: gesture.startPose.orientation
+            ),
+            CameraNavigationPose(
+                position: startDevice.position * factor,
+                orientation: startDevice.orientation
+            )
         )
     }
 }

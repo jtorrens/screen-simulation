@@ -346,6 +346,8 @@ final class WorkspaceModel: ObservableObject {
     private var cameraNavigationLatestPose: CameraNavigationPose?
     private var cameraNavigationStartDevicePose: CameraNavigationPose?
     private var cameraNavigationLatestDevicePose: CameraNavigationPose?
+    private var cameraNavigationStartTrackingScale: Double?
+    private var cameraNavigationLatestTrackingScale: Double?
     private var cameraNavigationMovesDevice = false
     private var cameraNavigationPreviewQuality = PhysicalQuality.setup
     private var environmentNavigationStartSelection: TestAuthoringResolvedSelection?
@@ -911,6 +913,13 @@ final class WorkspaceModel: ObservableObject {
               let selection = testAuthoringSelection,
               viewportSize.width > 0, viewportSize.height > 0
         else { return }
+        if operation == .trackingWorldScale,
+           !(trackingCameraEnabled
+                && trackingMetersPerSourceUnit != nil
+                && selectedTrackingCamera != nil) {
+            errorMessage = "Cmd+MMB necesita una cámara tracking activa y una escala 3D resuelta."
+            return
+        }
         let cameraQuaternion = simd_quatd(
             ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
             iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
@@ -936,7 +945,10 @@ final class WorkspaceModel: ObservableObject {
         cameraNavigationStartSelection = selection
         cameraNavigationLatestPose = nil
         cameraNavigationLatestDevicePose = nil
-        cameraNavigationMovesDevice = operation == .deviceDolly || (
+        cameraNavigationStartTrackingScale = operation == .trackingWorldScale
+            ? trackingMetersPerSourceUnit : nil
+        cameraNavigationLatestTrackingScale = nil
+        cameraNavigationMovesDevice = operation == .trackingWorldScale || (
             trackingCameraEnabled
                 && trackingMetersPerSourceUnit != nil
                 && selectedTrackingCamera != nil
@@ -983,15 +995,24 @@ final class WorkspaceModel: ObservableObject {
             pose = CameraNavigationMath.dolly(
                 gesture: gesture, deltaPixels: Double(delta.width)
             )
-        case .deviceDolly:
-            guard let startDevice = cameraNavigationStartDevicePose else { return }
-            let devicePose = CameraNavigationMath.deviceDollyAlongCenterRay(
+        case .trackingWorldScale:
+            guard let startDevice = cameraNavigationStartDevicePose,
+                  let startScale = cameraNavigationStartTrackingScale
+            else { return }
+            let scaled = CameraNavigationMath.scaledTrackingWorld(
                 gesture: gesture,
                 startDevice: startDevice,
+                startMetersPerSourceUnit: startScale,
                 deltaPixels: Double(delta.width)
             )
-            cameraNavigationLatestDevicePose = devicePose
-            applyTransientDeviceNavigationPose(devicePose, viewportSize: gesture.viewportSize)
+            cameraNavigationLatestDevicePose = scaled.device
+            cameraNavigationLatestPose = scaled.camera
+            cameraNavigationLatestTrackingScale = scaled.metersPerSourceUnit
+            applyTransientTrackingWorldScale(
+                cameraPose: scaled.camera,
+                devicePose: scaled.device,
+                viewportSize: gesture.viewportSize
+            )
             return
         }
         if cameraNavigationMovesDevice,
@@ -1015,26 +1036,48 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         guard cameraNavigationGesture != nil else { return }
+        let scaledTrackingWorld = cameraNavigationLatestTrackingScale != nil
+        let priorTrackingScale = cameraNavigationStartTrackingScale
         cameraNavigationGesture = nil
-        if let pose = cameraNavigationLatestDevicePose {
+        if let scale = cameraNavigationLatestTrackingScale,
+           let pose = cameraNavigationLatestDevicePose {
+            trackingMetersPerSourceUnit = scale
+            commitDeviceNavigationPose(pose)
+        } else if let pose = cameraNavigationLatestDevicePose {
             commitDeviceNavigationPose(pose)
         } else if let pose = cameraNavigationLatestPose {
             commitCameraNavigationPose(pose)
         }
         cameraNavigationLatestPose = nil
         cameraNavigationLatestDevicePose = nil
+        cameraNavigationStartTrackingScale = nil
+        cameraNavigationLatestTrackingScale = nil
         cameraNavigationStartDevicePose = nil
         if let prior = cameraNavigationStartSelection,
            prior != testAuthoringSelection {
             let manager = UndoManagerBox(undoManager)
-            undoManager?.registerUndo(withTarget: self) { target in
-                Task { @MainActor in
-                    try? target.restoreCameraNavigationSelection(
-                        prior, undoManager: manager.value
-                    )
+            if scaledTrackingWorld, let priorTrackingScale {
+                undoManager?.registerUndo(withTarget: self) { target in
+                    Task { @MainActor in
+                        try? target.restoreTrackingWorldScale(
+                            priorTrackingScale,
+                            selection: prior,
+                            undoManager: manager.value
+                        )
+                    }
+                }
+            } else {
+                undoManager?.registerUndo(withTarget: self) { target in
+                    Task { @MainActor in
+                        try? target.restoreCameraNavigationSelection(
+                            prior, undoManager: manager.value
+                        )
+                    }
                 }
             }
-            undoManager?.setActionName(cameraNavigationMovesDevice ? "Mover Device" : "Navegar cámara")
+            undoManager?.setActionName(scaledTrackingWorld
+                ? "Escalar mundo tracking"
+                : (cameraNavigationMovesDevice ? "Mover Device" : "Navegar cámara"))
         }
         cameraNavigationStartSelection = nil
         cameraNavigationMovesDevice = false
@@ -1090,7 +1133,7 @@ final class WorkspaceModel: ObservableObject {
                 value.zoom = min(100, max(0.05, start.zoom * exp(Double(delta.width) * 0.01)))
             case .orbit:
                 value.rollDegrees = start.rollDegrees + Double(delta.width) * 0.2
-            case .deviceDolly, nil:
+            case .trackingWorldScale, nil:
                 return
             }
             environmentReflectionFraming = value
@@ -1132,7 +1175,7 @@ final class WorkspaceModel: ObservableObject {
             )
             selection.environmentRotationXDegrees = rotations.x
             selection.environmentRotationYDegrees = rotations.y
-        case .deviceDolly, nil:
+        case .trackingWorldScale, nil:
             return
         }
         let minimumRadius = minimumEnvironmentSphereRadius(selection: selection)
@@ -1349,6 +1392,45 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    private func applyTransientTrackingWorldScale(
+        cameraPose: CameraNavigationPose,
+        devicePose: CameraNavigationPose,
+        viewportSize: CGSize
+    ) {
+        guard var authored = physicalAuthoringState else { return }
+        authored.cameraPose.position = [
+            cameraPose.position.x, cameraPose.position.y, cameraPose.position.z,
+        ]
+        authored.cameraPose.quaternion = [
+            cameraPose.orientation.imag.x, cameraPose.orientation.imag.y,
+            cameraPose.orientation.imag.z, cameraPose.orientation.real,
+        ]
+        authored.cameraLookAt = nil
+        authored.screenPose.position = [
+            devicePose.position.x, devicePose.position.y, devicePose.position.z,
+        ]
+        authored.screenPose.quaternion = [
+            devicePose.orientation.imag.x, devicePose.orientation.imag.y,
+            devicePose.orientation.imag.z, devicePose.orientation.real,
+        ]
+        if referenceACEScgFrame != nil {
+            publishReferenceMatchSetup(
+                resetTargetsToVisibleFrame: false,
+                authoredOverride: authored
+            )
+        } else if cameraNavigationPreviewQuality == .focusSetup {
+            publishFocusSetup(
+                interactiveViewportSize: viewportSize,
+                authoredOverride: authored
+            )
+        } else {
+            publishSetupFraming(
+                interactiveViewportSize: viewportSize,
+                authoredOverride: authored
+            )
+        }
+    }
+
     private func commitCameraNavigationPose(_ pose: CameraNavigationPose) {
         guard var selection = testAuthoringSelection else { return }
         let degrees = PoseRotationProjection.degrees(from: [
@@ -1416,6 +1498,32 @@ final class WorkspaceModel: ObservableObject {
                 }
             }
             undoManager?.setActionName("Navegar cámara")
+        }
+    }
+
+    private func restoreTrackingWorldScale(
+        _ scale: Double,
+        selection: TestAuthoringResolvedSelection,
+        undoManager: UndoManager?
+    ) throws {
+        guard scale.isFinite, scale > 0 else { return }
+        let currentScale = trackingMetersPerSourceUnit
+        let currentSelection = testAuthoringSelection
+        trackingMetersPerSourceUnit = scale
+        try applyTestAuthoringSelection(selection)
+        applyTrackingCameraAtCurrentFrame()
+        if let currentScale, let currentSelection {
+            let manager = UndoManagerBox(undoManager)
+            undoManager?.registerUndo(withTarget: self) { target in
+                Task { @MainActor in
+                    try? target.restoreTrackingWorldScale(
+                        currentScale,
+                        selection: currentSelection,
+                        undoManager: manager.value
+                    )
+                }
+            }
+            undoManager?.setActionName("Escalar mundo tracking")
         }
     }
 
