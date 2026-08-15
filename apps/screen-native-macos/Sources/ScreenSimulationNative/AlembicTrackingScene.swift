@@ -349,10 +349,15 @@ struct AlembicTrackingImporter {
     }
 
     private func quaternion(fromUSDMatrix matrix: simd_double4x4) -> SIMD4<Double> {
+        // USD/Alembic stores the SynthEyes camera transform for row-vector
+        // multiplication (translation in the final row). simd_quatd acts on
+        // column vectors, so its rotation must be the transpose of the USD
+        // 3x3 block. Keeping this conversion shared with the imported camera
+        // is what leaves static trackers fixed in the solved world.
         let rotation = simd_double3x3(columns: (
-            SIMD3(matrix[0, 0], matrix[0, 1], matrix[0, 2]),
-            SIMD3(matrix[1, 0], matrix[1, 1], matrix[1, 2]),
-            SIMD3(matrix[2, 0], matrix[2, 1], matrix[2, 2])
+            SIMD3(matrix[0, 0], matrix[1, 0], matrix[2, 0]),
+            SIMD3(matrix[0, 1], matrix[1, 1], matrix[2, 1]),
+            SIMD3(matrix[0, 2], matrix[1, 2], matrix[2, 2])
         ))
         let q = simd_normalize(simd_quatd(rotation))
         return .init(q.imag.x, q.imag.y, q.imag.z, q.real)

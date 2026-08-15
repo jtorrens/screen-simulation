@@ -1,4 +1,5 @@
 import Foundation
+import simd
 import Testing
 @testable import ScreenSimulationNative
 
@@ -11,8 +12,8 @@ import Testing
     def Xform "ShotCamera"
     {
         matrix4d xformOp:transform.timeSamples = {
-            1001: ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 2, 10, 1) ),
-            1001.96: ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (1, 2, 10, 1) ),
+            1001: ( (0, 1, 0, 0), (-1, 0, 0, 0), (0, 0, 1, 0), (0, 2, 10, 1) ),
+            1001.96: ( (0, 1, 0, 0), (-1, 0, 0, 0), (0, 0, 1, 0), (1, 2, 10, 1) ),
         }
         def Camera "ShotCameraData"
         {
@@ -49,6 +50,14 @@ import Testing
     #expect(scene.cameras[0].frameRateDenominator == 1)
     #expect(scene.cameras[0].samples[0].frame == 0)
     #expect(scene.cameras[0].samples[1].sourcePosition.x == 1)
+    let orientation = scene.cameras[0].samples[0].orientation
+    let rotation = simd_quatd(
+        ix: orientation.x, iy: orientation.y,
+        iz: orientation.z, r: orientation.w
+    )
+    let rotatedX = rotation.act(SIMD3<Double>(1, 0, 0))
+    #expect(abs(rotatedX.x) < 0.000_001)
+    #expect(abs(rotatedX.y - 1) < 0.000_001)
     #expect(scene.pointGroups.count == 1)
     #expect(scene.pointGroups[0].points.map(\.label) == ["P1", "P2"])
     #expect(scene.meshes.count == 1)
