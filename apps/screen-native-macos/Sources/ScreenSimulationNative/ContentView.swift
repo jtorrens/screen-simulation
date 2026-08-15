@@ -134,6 +134,9 @@ struct ContentView: View {
         }
         .toolbar { workspaceToolbar }
         .onAppear {
+            model.configureSceneEnvironmentPersistence { sceneID, data in
+                try scenes.replaceGeneratedEnvironment(sceneID: sceneID, data: data)
+            }
             if model.resolvedDevice == nil,
                let first = library.document.devices.first,
                let cover = library.document.coverGlasses.first(
@@ -1330,6 +1333,10 @@ struct ContentView: View {
                                 },
                                 onOpen: { requestSceneAction(.open, scene: scene) },
                                 onUpdate: { requestSceneAction(.update, scene: scene) },
+                                onDuplicate: {
+                                    do { _ = try scenes.duplicate(scene) }
+                                    catch { model.errorMessage = error.localizedDescription }
+                                },
                                 onDelete: { requestSceneAction(.delete, scene: scene) }
                             )
                         }
@@ -1366,7 +1373,8 @@ struct ContentView: View {
     private func saveNewScene() {
         do {
             let capture = try model.captureSavedScene()
-            try scenes.add(snapshot: capture.snapshot, thumbnail: capture.thumbnailPNG)
+            let scene = try scenes.add(capture: capture)
+            model.markActiveScene(scene.id)
         } catch { model.errorMessage = error.localizedDescription }
     }
 
@@ -1379,11 +1387,8 @@ struct ContentView: View {
         case .update:
             do {
                 let capture = try model.captureSavedScene()
-                try scenes.update(
-                    scene,
-                    snapshot: capture.snapshot,
-                    thumbnail: capture.thumbnailPNG
-                )
+                try scenes.update(scene, capture: capture)
+                model.markActiveScene(scene.id)
             } catch { model.errorMessage = error.localizedDescription }
         case .delete:
             do { try scenes.delete(scene) }
@@ -2954,6 +2959,7 @@ private struct SceneLibraryItemView: View {
     let onRename: (String) -> Void
     let onOpen: () -> Void
     let onUpdate: () -> Void
+    let onDuplicate: () -> Void
     let onDelete: () -> Void
     @State private var draftName: String
 
@@ -2963,6 +2969,7 @@ private struct SceneLibraryItemView: View {
         onRename: @escaping (String) -> Void,
         onOpen: @escaping () -> Void,
         onUpdate: @escaping () -> Void,
+        onDuplicate: @escaping () -> Void,
         onDelete: @escaping () -> Void
     ) {
         self.scene = scene
@@ -2970,6 +2977,7 @@ private struct SceneLibraryItemView: View {
         self.onRename = onRename
         self.onOpen = onOpen
         self.onUpdate = onUpdate
+        self.onDuplicate = onDuplicate
         self.onDelete = onDelete
         _draftName = State(initialValue: scene.name)
     }
@@ -3001,6 +3009,7 @@ private struct SceneLibraryItemView: View {
         .contextMenu {
             Button("Abrir escena", action: onOpen)
             Button("Actualizar con el estado actual", action: onUpdate)
+            Button("Duplicar escena", action: onDuplicate)
             Divider()
             Button("Eliminar escena", role: .destructive, action: onDelete)
         }

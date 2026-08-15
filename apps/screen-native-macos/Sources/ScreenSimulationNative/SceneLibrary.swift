@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CryptoKit
 import Foundation
 import ImageIO
 import StudioColor
@@ -72,7 +73,7 @@ struct SavedSceneSource: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v3"
+    static let schema = "ScreenSimulation.SavedScene.v4"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -81,6 +82,12 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
     let viewerPanY: Double
     let viewerIsFitted: Bool
     let settingsDocument: Data
+    let generatedEnvironment: SavedSceneAsset?
+
+    private enum CodingKeys: String, CodingKey {
+        case schema, source, currentFrame, viewerZoom, viewerPanX, viewerPanY
+        case viewerIsFitted, settingsDocument, generatedEnvironment
+    }
 
     init(
         source: SavedSceneSource,
@@ -89,7 +96,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         viewerPanX: Double,
         viewerPanY: Double,
         viewerIsFitted: Bool,
-        settingsDocument: Data
+        settingsDocument: Data,
+        generatedEnvironment: SavedSceneAsset? = nil
     ) {
         schema = Self.schema
         self.source = source
@@ -99,6 +107,39 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         self.viewerPanY = viewerPanY
         self.viewerIsFitted = viewerIsFitted
         self.settingsDocument = settingsDocument
+        self.generatedEnvironment = generatedEnvironment
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try values.decode(String.self, forKey: .schema)
+        source = try values.decode(SavedSceneSource.self, forKey: .source)
+        currentFrame = try values.decode(Int.self, forKey: .currentFrame)
+        viewerZoom = try values.decode(Double.self, forKey: .viewerZoom)
+        viewerPanX = try values.decode(Double.self, forKey: .viewerPanX)
+        viewerPanY = try values.decode(Double.self, forKey: .viewerPanY)
+        viewerIsFitted = try values.decode(Bool.self, forKey: .viewerIsFitted)
+        settingsDocument = try values.decode(Data.self, forKey: .settingsDocument)
+        generatedEnvironment = try values.decodeIfPresent(
+            SavedSceneAsset.self, forKey: .generatedEnvironment
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schema, forKey: .schema)
+        try values.encode(source, forKey: .source)
+        try values.encode(currentFrame, forKey: .currentFrame)
+        try values.encode(viewerZoom, forKey: .viewerZoom)
+        try values.encode(viewerPanX, forKey: .viewerPanX)
+        try values.encode(viewerPanY, forKey: .viewerPanY)
+        try values.encode(viewerIsFitted, forKey: .viewerIsFitted)
+        try values.encode(settingsDocument, forKey: .settingsDocument)
+        if let generatedEnvironment {
+            try values.encode(generatedEnvironment, forKey: .generatedEnvironment)
+        } else {
+            try values.encodeNil(forKey: .generatedEnvironment)
+        }
     }
 
     func validate() throws {
@@ -111,7 +152,45 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
               object["settings"] is [String: Any]
         else { throw SceneLibraryError.invalidDocument("El snapshot de escena no es válido.") }
         try source.validate()
+        try generatedEnvironment?.validate()
     }
+
+    func replacingGeneratedEnvironment(_ asset: SavedSceneAsset?) throws -> Self {
+        guard let asset else {
+            return Self(
+                source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
+                viewerPanX: viewerPanX, viewerPanY: viewerPanY,
+                viewerIsFitted: viewerIsFitted, settingsDocument: settingsDocument,
+                generatedEnvironment: nil
+            )
+        }
+        var root = try requireObject(settingsDocument)
+        guard var settings = root["settings"] as? [String: Any],
+              var context = settings["context"] as? [String: Any],
+              var environment = context["environmentResource"] as? [String: Any]
+        else { throw SceneLibraryError.invalidDocument("La escena no contiene el recurso de entorno.") }
+        environment["kind"] = "image"
+        environment["fileName"] = asset.fileName
+        environment["sha256"] = asset.sha256
+        environment["inputTransformID"] = "acescg"
+        context["environmentResource"] = environment
+        settings["context"] = context
+        root["settings"] = settings
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+        return Self(
+            source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
+            viewerPanX: viewerPanX, viewerPanY: viewerPanY,
+            viewerIsFitted: viewerIsFitted, settingsDocument: data,
+            generatedEnvironment: asset
+        )
+    }
+}
+
+private func requireObject(_ data: Data) throws -> [String: Any] {
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw SceneLibraryError.invalidDocument("Los ajustes de escena no son un objeto.")
+    }
+    return object
 }
 
 struct SavedScene: Codable, Equatable, Identifiable, Sendable {
@@ -125,16 +204,21 @@ struct SavedScene: Codable, Equatable, Identifiable, Sendable {
               thumbnailFileName == "\(id.uuidString.lowercased()).png"
         else { throw SceneLibraryError.invalidDocument("La escena necesita nombre y miniatura estables.") }
         try snapshot.validate()
+        if let asset = snapshot.generatedEnvironment,
+           asset.fileName != "scene-\(id.uuidString.lowercased()).exr" {
+            throw SceneLibraryError.invalidDocument("El entorno generado pertenece a otra escena.")
+        }
     }
 }
 
 struct SavedSceneCapture: Sendable {
     let snapshot: SavedSceneSnapshot
     let thumbnailPNG: Data
+    let generatedEnvironmentEXR: Data?
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -171,8 +255,9 @@ enum SceneLibraryError: LocalizedError {
 struct SceneLibraryStore: Sendable {
     let directoryURL: URL
     let documentURL: URL
+    let environmentLibraryRoot: URL?
 
-    init(directoryURL: URL? = nil) throws {
+    init(directoryURL: URL? = nil, environmentLibraryRoot: URL? = nil) throws {
         let directory: URL
         if let directoryURL {
             directory = directoryURL
@@ -190,7 +275,8 @@ struct SceneLibraryStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("Scenes.v3.json")
+        self.environmentLibraryRoot = environmentLibraryRoot
+        documentURL = directory.appendingPathComponent("Scenes.v4.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -208,6 +294,17 @@ struct SceneLibraryStore: Sendable {
                 throw SceneLibraryError.invalidDocument(
                     "Falta la miniatura obligatoria de “\(scene.name)”."
                 )
+            }
+            if let asset = scene.snapshot.generatedEnvironment {
+                guard try EnvironmentAssetLibrary.asset(
+                    sha256: asset.sha256,
+                    originalFileName: asset.fileName,
+                    libraryRoot: environmentLibraryRoot
+                ) != nil else {
+                    throw SceneLibraryError.invalidDocument(
+                        "Falta el entorno generado de “\(scene.name)”."
+                    )
+                }
             }
         }
         return document
@@ -250,6 +347,7 @@ struct SceneLibraryStore: Sendable {
                   Set(snapshot.keys) == [
                       "schema", "source", "currentFrame", "viewerZoom", "viewerPanX",
                       "viewerPanY", "viewerIsFitted", "settingsDocument",
+                      "generatedEnvironment",
                   ],
                   let source = snapshot["source"] as? [String: Any],
                   Set(source.keys) == ["kind", "assets", "missingMedia"]
@@ -351,9 +449,17 @@ final class SceneLibraryController: ObservableObject {
         store?.thumbnailURL(for: scene)
     }
 
-    func add(snapshot: SavedSceneSnapshot, thumbnail: Data) throws {
+    @discardableResult
+    func add(capture: SavedSceneCapture) throws -> SavedScene {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let id = UUID()
+        let asset = try capture.generatedEnvironmentEXR.map {
+            let managed = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+                $0, sceneID: id, libraryRoot: store.environmentLibraryRoot
+            )
+            return SavedSceneAsset(fileName: managed.originalFileName, sha256: managed.sha256)
+        }
+        let snapshot = try capture.snapshot.replacingGeneratedEnvironment(asset)
         let scene = SavedScene(
             id: id,
             name: "Escena \(document.scenes.count + 1)",
@@ -361,14 +467,20 @@ final class SceneLibraryController: ObservableObject {
             snapshot: snapshot
         )
         try scene.validate()
-        try store.writeThumbnail(thumbnail, for: scene)
+        try store.writeThumbnail(capture.thumbnailPNG, for: scene)
         var candidate = document
         candidate.scenes.insert(scene, at: 0)
         do {
             try store.save(candidate)
             document = candidate
+            return scene
         } catch {
             try? store.removeThumbnail(for: scene)
+            if asset != nil {
+                try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
+                    sceneID: id, libraryRoot: store.environmentLibraryRoot
+                )
+            }
             throw error
         }
     }
@@ -382,31 +494,161 @@ final class SceneLibraryController: ObservableObject {
         document = candidate
     }
 
-    func update(_ scene: SavedScene, snapshot: SavedSceneSnapshot, thumbnail: Data) throws {
+    func update(_ scene: SavedScene, capture: SavedSceneCapture) throws {
         guard let store, let index = document.scenes.firstIndex(where: { $0.id == scene.id })
         else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
         var candidate = document
-        candidate.scenes[index].snapshot = snapshot
+        let previousAsset = scene.snapshot.generatedEnvironment
+        let previousEnvironmentData = try previousAsset.flatMap {
+            try EnvironmentAssetLibrary.asset(
+                sha256: $0.sha256, originalFileName: $0.fileName,
+                libraryRoot: store.environmentLibraryRoot
+            ).map { try Data(contentsOf: $0.url, options: .mappedIfSafe) }
+        }
+        let asset = try capture.generatedEnvironmentEXR.map {
+            let managed = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+                $0, sceneID: scene.id, libraryRoot: store.environmentLibraryRoot
+            )
+            return SavedSceneAsset(fileName: managed.originalFileName, sha256: managed.sha256)
+        }
+        candidate.scenes[index].snapshot = try capture.snapshot.replacingGeneratedEnvironment(asset)
         try candidate.scenes[index].validate()
         let thumbnailURL = store.thumbnailURL(for: candidate.scenes[index])
         let previousThumbnail = try Data(contentsOf: thumbnailURL)
         do {
-            try store.writeThumbnail(thumbnail, for: candidate.scenes[index])
+            try store.writeThumbnail(capture.thumbnailPNG, for: candidate.scenes[index])
             try store.save(candidate)
         } catch {
             try? previousThumbnail.write(to: thumbnailURL, options: .atomic)
+            if let previousEnvironmentData {
+                _ = try? EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+                    previousEnvironmentData, sceneID: scene.id,
+                    libraryRoot: store.environmentLibraryRoot
+                )
+            } else if asset != nil {
+                try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
+                    sceneID: scene.id, libraryRoot: store.environmentLibraryRoot
+                )
+            }
+            throw error
+        }
+        if previousAsset != nil, asset == nil {
+            try EnvironmentAssetLibrary.removeSceneGeneratedEXR(
+                sceneID: scene.id, libraryRoot: store.environmentLibraryRoot
+            )
+        }
+        document = candidate
+    }
+
+    func replaceGeneratedEnvironment(sceneID: UUID, data: Data) throws -> ManagedEnvironmentAsset {
+        guard let store, let index = document.scenes.firstIndex(where: { $0.id == sceneID })
+        else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
+        let previousAsset = document.scenes[index].snapshot.generatedEnvironment
+        let previousData = try previousAsset.flatMap {
+            try EnvironmentAssetLibrary.asset(
+                sha256: $0.sha256, originalFileName: $0.fileName,
+                libraryRoot: store.environmentLibraryRoot
+            ).map { try Data(contentsOf: $0.url, options: .mappedIfSafe) }
+        }
+        let managed = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+            data, sceneID: sceneID, libraryRoot: store.environmentLibraryRoot
+        )
+        let asset = SavedSceneAsset(fileName: managed.originalFileName, sha256: managed.sha256)
+        var candidate = document
+        candidate.scenes[index].snapshot = try candidate.scenes[index].snapshot
+            .replacingGeneratedEnvironment(asset)
+        try candidate.scenes[index].validate()
+        do { try store.save(candidate) }
+        catch {
+            if let previousData {
+                _ = try? EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+                    previousData, sceneID: sceneID,
+                    libraryRoot: store.environmentLibraryRoot
+                )
+            } else {
+                try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
+                    sceneID: sceneID, libraryRoot: store.environmentLibraryRoot
+                )
+            }
             throw error
         }
         document = candidate
+        return managed
+    }
+
+    @discardableResult
+    func duplicate(_ scene: SavedScene) throws -> SavedScene {
+        guard let store, document.scenes.contains(where: { $0.id == scene.id })
+        else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
+        let id = UUID()
+        let asset: SavedSceneAsset?
+        if let sourceAsset = scene.snapshot.generatedEnvironment,
+           let source = try EnvironmentAssetLibrary.asset(
+               sha256: sourceAsset.sha256, originalFileName: sourceAsset.fileName,
+               libraryRoot: store.environmentLibraryRoot
+           ) {
+            let data = try Data(contentsOf: source.url, options: .mappedIfSafe)
+            let copied = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+                data, sceneID: id, libraryRoot: store.environmentLibraryRoot
+            )
+            asset = .init(fileName: copied.originalFileName, sha256: copied.sha256)
+        } else {
+            asset = nil
+        }
+        let duplicate = SavedScene(
+            id: id,
+            name: "\(scene.name) copia",
+            thumbnailFileName: "\(id.uuidString.lowercased()).png",
+            snapshot: try scene.snapshot.replacingGeneratedEnvironment(asset)
+        )
+        try duplicate.validate()
+        let thumbnail = try Data(contentsOf: store.thumbnailURL(for: scene))
+        try store.writeThumbnail(thumbnail, for: duplicate)
+        var candidate = document
+        candidate.scenes.insert(duplicate, at: 0)
+        do { try store.save(candidate) }
+        catch {
+            try? store.removeThumbnail(for: duplicate)
+            if asset != nil {
+                try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
+                    sceneID: id, libraryRoot: store.environmentLibraryRoot
+                )
+            }
+            throw error
+        }
+        document = candidate
+        return duplicate
     }
 
     func delete(_ scene: SavedScene) throws {
         guard let store, document.scenes.contains(where: { $0.id == scene.id })
         else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
+        let thumbnail = try Data(contentsOf: store.thumbnailURL(for: scene))
+        let environment = try scene.snapshot.generatedEnvironment.flatMap {
+            try EnvironmentAssetLibrary.asset(
+                sha256: $0.sha256, originalFileName: $0.fileName,
+                libraryRoot: store.environmentLibraryRoot
+            ).map { try Data(contentsOf: $0.url, options: .mappedIfSafe) }
+        }
         var candidate = document
         candidate.scenes.removeAll { $0.id == scene.id }
-        try store.save(candidate)
         try store.removeThumbnail(for: scene)
+        if scene.snapshot.generatedEnvironment != nil {
+            try EnvironmentAssetLibrary.removeSceneGeneratedEXR(
+                sceneID: scene.id, libraryRoot: store.environmentLibraryRoot
+            )
+        }
+        do { try store.save(candidate) }
+        catch {
+            try? store.writeThumbnail(thumbnail, for: scene)
+            if let environment {
+                _ = try? EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+                    environment, sceneID: scene.id,
+                    libraryRoot: store.environmentLibraryRoot
+                )
+            }
+            throw error
+        }
         document = candidate
     }
 }

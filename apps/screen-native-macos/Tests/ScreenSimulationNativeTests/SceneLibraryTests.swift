@@ -131,3 +131,70 @@ import Testing
         libraryRoot: libraryRoot
     ) == nil)
 }
+
+@MainActor
+@Test func generatedEnvironmentIsOwnedOverwrittenAndDuplicatedWithItsScene() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-environment-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let environmentRoot = root.appendingPathComponent("assets")
+    let store = try SceneLibraryStore(
+        directoryURL: root.appendingPathComponent("scenes"),
+        environmentLibraryRoot: environmentRoot
+    )
+    let controller = SceneLibraryController(store: store)
+    let settings = try JSONSerialization.data(withJSONObject: [
+        "settings": [
+            "context": [
+                "environmentResource": [
+                    "kind": "procedural",
+                    "presetID": "environment-none",
+                ],
+            ],
+        ],
+    ])
+    let snapshot = SavedSceneSnapshot(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+        viewerIsFitted: true, settingsDocument: settings
+    )
+    let originalData = Data([1, 2, 3, 4])
+    let scene = try controller.add(capture: .init(
+        snapshot: snapshot, thumbnailPNG: Data([9]),
+        generatedEnvironmentEXR: originalData
+    ))
+    let originalAsset = try #require(scene.snapshot.generatedEnvironment)
+    let originalManaged = try EnvironmentAssetLibrary.asset(
+        sha256: originalAsset.sha256, originalFileName: originalAsset.fileName,
+        libraryRoot: environmentRoot
+    )
+    let originalURL = try #require(originalManaged).url
+
+    let replacement = Data([5, 6, 7, 8])
+    let replaced = try controller.replaceGeneratedEnvironment(
+        sceneID: scene.id, data: replacement
+    )
+    #expect(replaced.url == originalURL)
+    #expect(try Data(contentsOf: originalURL) == replacement)
+
+    let current = try #require(controller.document.scenes.first { $0.id == scene.id })
+    let duplicate = try controller.duplicate(current)
+    let duplicateAsset = try #require(duplicate.snapshot.generatedEnvironment)
+    #expect(duplicateAsset.fileName != replaced.originalFileName)
+    #expect(duplicateAsset.sha256 == replaced.sha256)
+    let duplicateManaged = try EnvironmentAssetLibrary.asset(
+        sha256: duplicateAsset.sha256, originalFileName: duplicateAsset.fileName,
+        libraryRoot: environmentRoot
+    )
+    let duplicateURL = try #require(duplicateManaged).url
+    #expect(duplicateURL != originalURL)
+    #expect(try Data(contentsOf: duplicateURL) == replacement)
+
+    try controller.delete(current)
+    #expect(!FileManager.default.fileExists(atPath: originalURL.path))
+    #expect(FileManager.default.fileExists(atPath: duplicateURL.path))
+}

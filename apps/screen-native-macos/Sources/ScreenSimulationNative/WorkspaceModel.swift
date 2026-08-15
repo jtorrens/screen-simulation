@@ -264,6 +264,9 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceHash: String?
     private var environmentSourceInputTransformID: String?
     private var environmentSourceURL: URL?
+    private var generatedReflectionEnvironmentData: Data?
+    private var activeSceneID: UUID?
+    private var persistGeneratedEnvironment: ((UUID, Data) throws -> ManagedEnvironmentAsset)?
     private var referenceACEScgFrame: StudioColorMetalFrame?
     private var referenceForegroundFrame: StudioColorMetalFrame?
     private var referenceForegroundIsDeliveryAligned = false
@@ -785,6 +788,7 @@ final class WorkspaceModel: ObservableObject {
                     environmentSourceHash = nil
                     environmentSourceInputTransformID = nil
                     environmentSourceURL = nil
+                    generatedReflectionEnvironmentData = nil
                 }
                 let phaseToReveal = testPhaseToReveal(for: intent)
                 let resolved = try RustTestAuthoringCoordinator.apply(intent, to: selection)
@@ -1092,6 +1096,7 @@ final class WorkspaceModel: ObservableObject {
               let exposureStops = Double(exposureField.stringValue), exposureStops.isFinite,
               (-16 ... 16).contains(exposureStops)
         else { return }
+        generatedReflectionEnvironmentData = nil
         Task {
             await loadEnvironment(
                 url, inputTransformID: inputID,
@@ -1273,9 +1278,15 @@ final class WorkspaceModel: ObservableObject {
             let data = try ReflectionEnvironmentCompiler.encodeEXR(
                 pixels, width: width, height: height
             )
-            let asset = try EnvironmentAssetLibrary.storeGeneratedEXR(
-                data, suggestedName: "Reflejos creados"
-            )
+            let asset: ManagedEnvironmentAsset
+            if let activeSceneID, let persistGeneratedEnvironment {
+                asset = try persistGeneratedEnvironment(activeSceneID, data)
+            } else {
+                asset = try EnvironmentAssetLibrary.storeGeneratedEXR(
+                    data, suggestedName: "Reflejos creados"
+                )
+            }
+            generatedReflectionEnvironmentData = data
             try resetGeneratedEnvironmentPlacement()
             await loadEnvironment(
                 asset.url, inputTransformID: "acescg", unitRadiance: 1,
@@ -1286,6 +1297,16 @@ final class WorkspaceModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func configureSceneEnvironmentPersistence(
+        _ persistence: @escaping (UUID, Data) throws -> ManagedEnvironmentAsset
+    ) {
+        persistGeneratedEnvironment = persistence
+    }
+
+    func markActiveScene(_ id: UUID?) {
+        activeSceneID = id
     }
 
     private func reflectionEditorBounds(width: Int, height: Int) -> CGRect {
@@ -2550,7 +2571,11 @@ final class WorkspaceModel: ObservableObject {
             output: previewTransform,
             display: metalDisplay
         )
-        return .init(snapshot: snapshot, thumbnailPNG: thumbnail)
+        return .init(
+            snapshot: snapshot,
+            thumbnailPNG: thumbnail,
+            generatedEnvironmentEXR: generatedReflectionEnvironmentData
+        )
     }
 
     func openSavedScene(
@@ -2611,6 +2636,17 @@ final class WorkspaceModel: ObservableObject {
                 isFitted: scene.snapshot.viewerIsFitted
             )
             rebuildPhysicalSelectedFrame()
+            activeSceneID = scene.id
+            if let generated = scene.snapshot.generatedEnvironment,
+               let asset = try EnvironmentAssetLibrary.asset(
+                   sha256: generated.sha256, originalFileName: generated.fileName
+               ) {
+                generatedReflectionEnvironmentData = try Data(
+                    contentsOf: asset.url, options: .mappedIfSafe
+                )
+            } else {
+                generatedReflectionEnvironmentData = nil
+            }
             status = missingMediaSource == nil
                 ? "Escena abierta · \(scene.name)"
                 : "Escena abierta · \(scene.name) · MEDIA MISSING"
@@ -2958,6 +2994,7 @@ final class WorkspaceModel: ObservableObject {
                 environmentSourceHash = nil
                 environmentSourceInputTransformID = nil
                 environmentSourceURL = nil
+                generatedReflectionEnvironmentData = nil
             case .image:
                 authoredImageEnvironment = state.pipeline.environment
                 environmentSourceName = context.environmentResource.fileName

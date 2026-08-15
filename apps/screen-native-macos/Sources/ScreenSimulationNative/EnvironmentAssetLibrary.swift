@@ -121,16 +121,45 @@ enum EnvironmentAssetLibrary {
         let cleanName = suggestedName
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        let destination = directory.appendingPathComponent("\(cleanName)--\(hash).exr")
-        if !FileManager.default.fileExists(atPath: destination.path) {
-            do { try data.write(to: destination, options: .atomic) }
-            catch { throw EnvironmentAssetLibraryError.copyFailed(error.localizedDescription) }
-        }
+        let fileName = cleanName == "Reflejos creados"
+            ? "working-reflections.exr" : "\(cleanName)--\(hash).exr"
+        let destination = directory.appendingPathComponent(fileName)
+        do { try data.write(to: destination, options: .atomic) }
+        catch { throw EnvironmentAssetLibraryError.copyFailed(error.localizedDescription) }
         return .init(
             url: destination,
-            originalFileName: "\(cleanName).exr",
+            originalFileName: fileName,
             sha256: hash
         )
+    }
+
+    static func storeSceneGeneratedEXR(
+        _ data: Data,
+        sceneID: UUID,
+        libraryRoot: URL? = nil
+    ) throws -> ManagedEnvironmentAsset {
+        guard !data.isEmpty else { throw EnvironmentAssetLibraryError.unreadable }
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let fileName = "scene-\(sceneID.uuidString.lowercased()).exr"
+        let destination = try environmentDirectory(libraryRoot: libraryRoot)
+            .appendingPathComponent(fileName)
+        do { try data.write(to: destination, options: .atomic) }
+        catch { throw EnvironmentAssetLibraryError.copyFailed(error.localizedDescription) }
+        return .init(url: destination, originalFileName: fileName, sha256: hash)
+    }
+
+    static func removeSceneGeneratedEXR(
+        sceneID: UUID,
+        libraryRoot: URL? = nil
+    ) throws {
+        let fileName = "scene-\(sceneID.uuidString.lowercased()).exr"
+        let url = try environmentDirectory(libraryRoot: libraryRoot)
+            .appendingPathComponent(fileName)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw EnvironmentAssetLibraryError.unreadable
+        }
+        do { try FileManager.default.removeItem(at: url) }
+        catch { throw EnvironmentAssetLibraryError.copyFailed(error.localizedDescription) }
     }
 
     static func asset(
@@ -140,6 +169,14 @@ enum EnvironmentAssetLibrary {
     ) throws -> ManagedEnvironmentAsset? {
         guard sha256.count == 64, sha256.allSatisfy(\.isHexDigit) else { return nil }
         let directory = try environmentDirectory(libraryRoot: libraryRoot)
+        if originalFileName == "working-reflections.exr"
+            || originalFileName.hasPrefix("scene-") {
+            let exact = directory.appendingPathComponent(originalFileName)
+            guard let data = try? Data(contentsOf: exact, options: .mappedIfSafe) else { return nil }
+            let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            guard actual == sha256 else { return nil }
+            return .init(url: exact, originalFileName: originalFileName, sha256: sha256)
+        }
         let candidates = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.isRegularFileKey],

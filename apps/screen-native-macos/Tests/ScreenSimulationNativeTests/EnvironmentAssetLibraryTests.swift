@@ -34,7 +34,7 @@ import Testing
     #expect(try EnvironmentAssetLibrary.calibration(for: first) == calibration)
 }
 
-@Test func generatedEnvironmentsUseTheSameContentAddressedLibrary() throws {
+@Test func workingGeneratedEnvironmentOverwritesOneStableAsset() throws {
     let testRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-generated-environment-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: testRoot) }
@@ -43,12 +43,24 @@ import Testing
     let first = try EnvironmentAssetLibrary.storeGeneratedEXR(
         data, suggestedName: "Reflejos creados", libraryRoot: testRoot
     )
+    let replacement = Data([0x76, 0x2f, 0x31, 0x04, 0x05, 0x06])
     let second = try EnvironmentAssetLibrary.storeGeneratedEXR(
-        data, suggestedName: "Reflejos creados", libraryRoot: testRoot
+        replacement, suggestedName: "Reflejos creados", libraryRoot: testRoot
     )
 
-    #expect(first == second)
+    #expect(first.url == second.url)
+    #expect(first.sha256 != second.sha256)
     #expect(first.url.path.contains("/SCREEN-SIMULATION/Library/Environments/HDRI/"))
-    #expect(first.url.lastPathComponent == "Reflejos creados--\(first.sha256).exr")
-    #expect(try Data(contentsOf: first.url) == data)
+    #expect(first.url.lastPathComponent == "working-reflections.exr")
+    #expect(try Data(contentsOf: first.url) == replacement)
+    #expect(try EnvironmentAssetLibrary.asset(
+        sha256: first.sha256,
+        originalFileName: first.originalFileName,
+        libraryRoot: testRoot
+    ) == nil)
+    #expect(try EnvironmentAssetLibrary.asset(
+        sha256: second.sha256,
+        originalFileName: second.originalFileName,
+        libraryRoot: testRoot
+    ) == second)
 }
