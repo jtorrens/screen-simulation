@@ -198,6 +198,7 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
 /// Immutable options owned by one render job. A global preset only seeds these
 /// fields and is never retained as a dynamic dependency.
 public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
+    public let composition: StudioRenderComposition
     public let format: StudioOutputFormat
     public let pipeline: StudioRenderPipeline
     public let target: StudioRenderTarget
@@ -213,6 +214,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let lastFrame: Int
 
     public init(
+        composition: StudioRenderComposition,
         format: StudioOutputFormat,
         pipeline: StudioRenderPipeline,
         target: StudioRenderTarget,
@@ -227,6 +229,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         firstFrame: Int,
         lastFrame: Int
     ) {
+        self.composition = composition
         self.format = format
         self.pipeline = pipeline
         self.target = target
@@ -243,6 +246,19 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     }
 
     public var frameRange: ClosedRange<Int> { firstFrame ... lastFrame }
+}
+
+public enum StudioRenderComposition: String, CaseIterable, Identifiable, Codable, Sendable {
+    case deviceOnly
+    case deviceWithReference
+
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .deviceOnly: "Solo Device"
+        case .deviceWithReference: "Device + referencia"
+        }
+    }
 }
 
 public enum StudioRenderRange: String, CaseIterable, Identifiable, Sendable {

@@ -48,6 +48,7 @@ import Testing
     var preset = StudioRenderPreset.builtIns[0]
     let exactFrameRate = try StudioFrameRate(numerator: 24_000, denominator: 1_001)
     let configuration = StudioResolvedRenderConfiguration(
+        composition: .deviceOnly,
         format: .proRes4444,
         pipeline: preset.pipeline,
         target: preset.target,

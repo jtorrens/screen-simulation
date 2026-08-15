@@ -524,6 +524,10 @@ final class SceneLibraryController: ObservableObject {
         store?.thumbnailURL(for: scene)
     }
 
+    func scene(id: UUID) -> SavedScene? {
+        document.scenes.first { $0.id == id }
+    }
+
     @discardableResult
     func add(capture: SavedSceneCapture) throws -> SavedScene {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }

@@ -7,10 +7,14 @@ import Testing
     let controller = NativeOutputQueueController()
     let configuration = outputQueueTestConfiguration()
     controller.enqueue(
+        scene: outputQueueTestScene(name: "Primera"),
+        generatedEnvironmentEXR: nil,
         destination: URL(fileURLWithPath: "/tmp/first.mov"),
         configuration: configuration
     )
     controller.enqueue(
+        scene: outputQueueTestScene(name: "Segunda"),
+        generatedEnvironmentEXR: nil,
         destination: URL(fileURLWithPath: "/tmp/second.mov"),
         configuration: configuration
     )
@@ -33,6 +37,8 @@ import Testing
     }
     let controller = NativeOutputQueueController()
     controller.enqueue(
+        scene: outputQueueTestScene(name: "Fallo"),
+        generatedEnvironmentEXR: nil,
         destination: URL(fileURLWithPath: "/tmp/failure.mov"),
         configuration: outputQueueTestConfiguration()
     )
@@ -47,8 +53,50 @@ import Testing
     #expect(failure == "fallo controlado")
 }
 
+@Test @MainActor func outputQueueFreezesTheSavedSceneAtEnqueueTime() {
+    let controller = NativeOutputQueueController()
+    var scene = outputQueueTestScene(name: "Guardada")
+    controller.enqueue(
+        scene: scene,
+        generatedEnvironmentEXR: Data([1, 2, 3]),
+        destination: URL(fileURLWithPath: "/tmp/frozen.mov"),
+        configuration: outputQueueTestConfiguration()
+    )
+    scene.name = "Modificada después"
+
+    #expect(controller.jobs.first?.scene.name == "Guardada")
+    #expect(controller.jobs.first?.generatedEnvironmentEXR == Data([1, 2, 3]))
+    #expect(controller.jobs.first?.scene.snapshot == outputQueueTestScene(name: "Otra").snapshot)
+}
+
+private func outputQueueTestScene(name: String) -> SavedScene {
+    let id = UUID()
+    return SavedScene(
+        id: id,
+        name: name,
+        thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: SavedSceneSnapshot(
+            source: .init(
+                kind: .syntheticPattern,
+                patternRawValue: SyntheticPattern.eyeChart.rawValue,
+                assets: [],
+                missingMedia: nil
+            ),
+            currentFrame: 0,
+            viewerZoom: 1,
+            viewerPanX: 0,
+            viewerPanY: 0,
+            viewerIsFitted: true,
+            settingsDocument: try! JSONSerialization.data(
+                withJSONObject: ["settings": ["schema": PhysicalSettingsExchange.schema]]
+            )
+        )
+    )
+}
+
 private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
+        composition: .deviceOnly,
         format: .proRes4444,
         pipeline: .aces,
         target: .sdr,

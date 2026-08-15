@@ -6,6 +6,8 @@ final class NativeOutputQueueController: ObservableObject {
     struct RenderJob: Identifiable {
         enum State: String { case pending, rendering, completed, failed, cancelled }
         let id = UUID()
+        let scene: SavedScene
+        let generatedEnvironmentEXR: Data?
         let destination: URL
         let configuration: StudioResolvedRenderConfiguration
         var state: State = .pending
@@ -25,8 +27,18 @@ final class NativeOutputQueueController: ObservableObject {
     var hasPendingJobs: Bool { jobs.contains { $0.state == .pending } }
     var isRendering: Bool { activeTask != nil }
 
-    func enqueue(destination: URL, configuration: StudioResolvedRenderConfiguration) {
-        jobs.append(RenderJob(destination: destination, configuration: configuration))
+    func enqueue(
+        scene: SavedScene,
+        generatedEnvironmentEXR: Data?,
+        destination: URL,
+        configuration: StudioResolvedRenderConfiguration
+    ) {
+        jobs.append(RenderJob(
+            scene: scene,
+            generatedEnvironmentEXR: generatedEnvironmentEXR,
+            destination: destination,
+            configuration: configuration
+        ))
     }
 
     func run(

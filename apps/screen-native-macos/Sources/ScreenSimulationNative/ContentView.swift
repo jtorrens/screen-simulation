@@ -16,7 +16,7 @@ enum NativeTheme {
 
 struct ContentView: View {
     enum PendingSceneAction {
-        case open, update, delete
+        case open, update, renderAfterUpdate, delete
     }
     enum LibraryDeletion: String {
         case pattern = "patrón"
@@ -207,6 +207,8 @@ struct ContentView: View {
                 Text("Se sustituirá la escena cargada actualmente por el snapshot guardado.")
             } else if pendingSceneAction == .update {
                 Text("Se reemplazarán los datos y la miniatura guardados por el estado activo.")
+            } else if pendingSceneAction == .renderAfterUpdate {
+                Text("La escena activa ha cambiado. Se guardará primero y Render Queue conservará una copia inmutable de ese estado.")
             } else {
                 Text("Esta operación elimina la escena de la biblioteca.")
             }
@@ -1287,9 +1289,6 @@ struct ContentView: View {
             }
             .disabled(page != .test)
             .help("Recuperar desde un PNG guardado por SCREEN-SIMULATION los ajustes con los que se generó")
-            Button("A cola", action: model.enqueueExport)
-                .disabled(page != .main || model.metalFrame == nil)
-                .help("Añadir la película o el rango completo a Render Queue")
             Button("Frame", action: model.renderCurrentFrame)
                 .disabled(page != .main || model.metalFrame == nil)
                 .help("Renderizar el frame actual horneando la transformación del visor")
@@ -1354,6 +1353,7 @@ struct ContentView: View {
                                     do { _ = try scenes.duplicate(scene) }
                                     catch { model.errorMessage = error.localizedDescription }
                                 },
+                                onRender: { requestSceneRender(scene) },
                                 onDelete: { requestSceneAction(.delete, scene: scene) }
                             )
                         }
@@ -1370,6 +1370,7 @@ struct ContentView: View {
         return switch action {
         case .open: "¿Abrir ‘\(scene.name)’?"
         case .update: "¿Actualizar ‘\(scene.name)’?"
+        case .renderAfterUpdate: "¿Actualizar ‘\(scene.name)’ antes de renderizar?"
         case .delete: "¿Eliminar ‘\(scene.name)’?"
         }
     }
@@ -1378,6 +1379,7 @@ struct ContentView: View {
         switch action {
         case .open: "Abrir escena"
         case .update: "Actualizar escena"
+        case .renderAfterUpdate: "Actualizar y añadir a cola"
         case .delete: "Eliminar escena"
         }
     }
@@ -1385,6 +1387,18 @@ struct ContentView: View {
     private func requestSceneAction(_ action: PendingSceneAction, scene: SavedScene) {
         pendingScene = scene
         pendingSceneAction = action
+    }
+
+    private func requestSceneRender(_ scene: SavedScene) {
+        do {
+            if try model.savedSceneNeedsUpdate(scene) {
+                requestSceneAction(.renderAfterUpdate, scene: scene)
+            } else {
+                model.enqueueSavedScene(scene)
+            }
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
     }
 
     private func saveNewScene() {
@@ -1406,6 +1420,16 @@ struct ContentView: View {
                 let capture = try model.captureSavedScene()
                 try scenes.update(scene, capture: capture)
                 model.markActiveScene(scene.id)
+            } catch { model.errorMessage = error.localizedDescription }
+        case .renderAfterUpdate:
+            do {
+                let capture = try model.captureSavedScene()
+                try scenes.update(scene, capture: capture)
+                model.markActiveScene(scene.id)
+                guard let updated = scenes.scene(id: scene.id) else {
+                    throw SceneLibraryError.inaccessible("La escena actualizada no existe.")
+                }
+                model.enqueueSavedScene(updated)
             } catch { model.errorMessage = error.localizedDescription }
         case .delete:
             do { try scenes.delete(scene) }
@@ -1794,6 +1818,11 @@ struct ContentView: View {
                     Text("Todo").tag(StudioRenderRange.all)
                     Text("IN / OUT").tag(StudioRenderRange.inOut)
                 }
+                Picker("Composición", selection: $model.renderComposition) {
+                    ForEach(StudioRenderComposition.allCases) { composition in
+                        Text(composition.label).tag(composition)
+                    }
+                }
                 Picker("Alpha", selection: $model.outputAlphaMode) {
                     ForEach(StudioAlphaMode.allCases) { Text($0.label).tag($0) }
                 }
@@ -1802,8 +1831,9 @@ struct ContentView: View {
                     .disabled(!model.outputFormat.isMovie)
             }
             Section("Exportación") {
-                Button("Añadir a Render Queue", action: model.enqueueExport)
-                    .disabled(model.metalFrame == nil)
+                Text("Añade el render desde el menú contextual de una escena guardada. La cola conservará exactamente ese snapshot.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -1819,6 +1849,7 @@ struct ContentView: View {
                         Text(job.state.rawValue.capitalized).foregroundStyle(.secondary)
                     }
                     Text(job.configuration.format.displayName).font(.caption)
+                    Text(job.scene.name).font(.caption).foregroundStyle(.secondary)
                     Text("\(job.configuration.firstFrame)–\(job.configuration.lastFrame) · \(job.configuration.pixelEncoding.label) · \(job.configuration.signalRange.label) · \(job.detail)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -3193,6 +3224,7 @@ private struct SceneLibraryItemView: View {
     let onOpen: () -> Void
     let onUpdate: () -> Void
     let onDuplicate: () -> Void
+    let onRender: () -> Void
     let onDelete: () -> Void
     @State private var draftName: String
 
@@ -3203,6 +3235,7 @@ private struct SceneLibraryItemView: View {
         onOpen: @escaping () -> Void,
         onUpdate: @escaping () -> Void,
         onDuplicate: @escaping () -> Void,
+        onRender: @escaping () -> Void,
         onDelete: @escaping () -> Void
     ) {
         self.scene = scene
@@ -3211,6 +3244,7 @@ private struct SceneLibraryItemView: View {
         self.onOpen = onOpen
         self.onUpdate = onUpdate
         self.onDuplicate = onDuplicate
+        self.onRender = onRender
         self.onDelete = onDelete
         _draftName = State(initialValue: scene.name)
     }
@@ -3243,6 +3277,7 @@ private struct SceneLibraryItemView: View {
             Button("Abrir escena", action: onOpen)
             Button("Actualizar con el estado actual", action: onUpdate)
             Button("Duplicar escena", action: onDuplicate)
+            Button("Añadir a Render Queue…", action: onRender)
             Divider()
             Button("Eliminar escena", role: .destructive, action: onDelete)
         }

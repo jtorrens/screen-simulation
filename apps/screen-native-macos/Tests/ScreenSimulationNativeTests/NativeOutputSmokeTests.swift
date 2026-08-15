@@ -486,6 +486,7 @@ private func renderConfiguration(
     case .ignore: .ignore
     }
     return StudioResolvedRenderConfiguration(
+        composition: .deviceOnly,
         format: format,
         pipeline: preset.pipeline,
         target: preset.target,

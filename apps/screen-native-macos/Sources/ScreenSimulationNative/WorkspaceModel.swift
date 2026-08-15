@@ -267,6 +267,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var inFrame = 0
     @Published var outFrame = 0
     @Published var renderRange = StudioRenderRange.all
+    @Published var renderComposition = StudioRenderComposition.deviceOnly
     @Published var loopPlayback = false
     @Published var outputFormat = StudioOutputFormat.proRes4444
     @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
@@ -3339,8 +3340,42 @@ final class WorkspaceModel: ObservableObject {
         includeAudio = preset.includeAudio
     }
 
-    func enqueueExport() {
-        guard metalFrame != nil else { return }
+    func savedSceneNeedsUpdate(_ scene: SavedScene) throws -> Bool {
+        guard activeSceneID == scene.id else { return false }
+        let capture = try captureSavedScene()
+        let generatedMatches: Bool
+        switch (capture.generatedEnvironmentEXR, scene.snapshot.generatedEnvironment) {
+        case (nil, nil):
+            generatedMatches = true
+        case let (.some(data), .some(asset)):
+            generatedMatches = FrameCheckPNG.sha256(data) == asset.sha256
+        default:
+            generatedMatches = false
+        }
+        let normalized = try capture.snapshot.replacingGeneratedEnvironment(
+            scene.snapshot.generatedEnvironment
+        )
+        return normalized != scene.snapshot || !generatedMatches
+    }
+
+    func enqueueSavedScene(_ scene: SavedScene) {
+        let generatedEnvironmentEXR: Data?
+        do {
+            generatedEnvironmentEXR = try scene.snapshot.generatedEnvironment.flatMap { identity in
+                guard let asset = try EnvironmentAssetLibrary.asset(
+                    sha256: identity.sha256,
+                    originalFileName: identity.fileName
+                ) else {
+                    throw SceneLibraryError.invalidDocument(
+                        "Falta el entorno generado de la escena guardada."
+                    )
+                }
+                return try Data(contentsOf: asset.url, options: .mappedIfSafe)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         let url: URL?
         if outputFormat.isMovie {
             let panel = NSSavePanel()
@@ -3365,6 +3400,7 @@ final class WorkspaceModel: ObservableObject {
             tracking: trackingTimelineInfo
         ).exactFrameRate
         let configuration = StudioResolvedRenderConfiguration(
+            composition: renderComposition,
             format: outputFormat,
             pipeline: renderPreset.pipeline,
             target: renderPreset.target,
@@ -3379,28 +3415,180 @@ final class WorkspaceModel: ObservableObject {
             firstFrame: range.lowerBound,
             lastFrame: range.upperBound
         )
-        outputQueue.enqueue(destination: url, configuration: configuration)
+        outputQueue.enqueue(
+            scene: scene,
+            generatedEnvironmentEXR: generatedEnvironmentEXR,
+            destination: url,
+            configuration: configuration
+        )
+    }
+
+    func enqueueExport() {
+        guard let activeSceneID else {
+            errorMessage = "Guarda primero la escena antes de añadirla a Render Queue."
+            return
+        }
+        errorMessage = "Usa ‘Añadir a Render Queue’ desde el menú contextual de la escena guardada."
+        status = "Escena activa · \(activeSceneID.uuidString.lowercased())"
     }
 
     func runQueue() {
         pause()
         outputQueue.run(
-            operation: { [weak self] job, progress in
-                guard let self else { throw CancellationError() }
+            operation: { job, progress in
+                let executor = WorkspaceModel()
+                let materialized = try executor.materializeQueuedScene(
+                    job.scene,
+                    generatedEnvironmentEXR: job.generatedEnvironmentEXR
+                )
+                defer { materialized.cleanup() }
+                try await executor.prepareQueuedScene(materialized.scene)
                 return try await NativeOutputRenderer.render(
                     configuration: job.configuration,
                     destination: job.destination,
-                    audioSource: self.session.sourceURL,
-                    display: self.metalDisplay,
-                    frameProvider: { [weak self] frame in
-                        guard let self else { throw CancellationError() }
-                        return try await self.renderFrame(frame)
+                    audioSource: executor.session.sourceURL,
+                    display: executor.metalDisplay,
+                    frameProvider: { frame in
+                        try await executor.renderQueuedSceneFrame(
+                            frame,
+                            composition: job.configuration.composition
+                        )
                     },
                     progress: progress
                 )
             },
             onFailure: { [weak self] message in self?.errorMessage = message }
         )
+    }
+
+    private struct QueuedSceneMaterialization {
+        let scene: SavedScene
+        let ownedEnvironmentSceneID: UUID?
+
+        func cleanup() {
+            guard let ownedEnvironmentSceneID else { return }
+            try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
+                sceneID: ownedEnvironmentSceneID
+            )
+        }
+    }
+
+    private func materializeQueuedScene(
+        _ scene: SavedScene,
+        generatedEnvironmentEXR: Data?
+    ) throws -> QueuedSceneMaterialization {
+        guard let generatedEnvironmentEXR else {
+            return .init(scene: scene, ownedEnvironmentSceneID: nil)
+        }
+        let queueSceneID = UUID()
+        let managed = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+            generatedEnvironmentEXR,
+            sceneID: queueSceneID
+        )
+        let asset = SavedSceneAsset(
+            fileName: managed.originalFileName,
+            sha256: managed.sha256
+        )
+        let snapshot = try scene.snapshot.replacingGeneratedEnvironment(asset)
+        let clone = SavedScene(
+            id: queueSceneID,
+            name: scene.name,
+            thumbnailFileName: "\(queueSceneID.uuidString.lowercased()).png",
+            snapshot: snapshot
+        )
+        try clone.validate()
+        return .init(scene: clone, ownedEnvironmentSceneID: queueSceneID)
+    }
+
+    private func prepareQueuedScene(_ scene: SavedScene) async throws {
+        errorMessage = nil
+        await openSavedScene(scene, undoManager: nil)
+        if let errorMessage {
+            throw SceneLibraryError.invalidDocument(errorMessage)
+        }
+        guard activeSceneID == scene.id else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena guardada no se pudo materializar para Render Queue."
+            )
+        }
+        setModelPageActive(true)
+        requestedPhysicalIntermediate = .cameraRenderedACEScg
+        physicalModel.setQuality(.native)
+    }
+
+    private func renderQueuedSceneFrame(
+        _ index: Int,
+        composition: StudioRenderComposition
+    ) async throws -> StudioColorMetalFrame {
+        try Task.checkCancellation()
+        currentFrame = index
+        applyTrackingCameraAtCurrentFrame()
+        let source = try await renderFrame(index)
+        sourceACEScgFrame = source
+        physicalModel.invalidateExternalParameters()
+        let job = try submitPhysicalJob(quality: .native)
+        while true {
+            try Task.checkCancellation()
+            let snapshot = try job.snapshot()
+            switch snapshot.state {
+            case .idle, .stale, .rendering:
+                try await Task.sleep(for: .milliseconds(8))
+            case .cancelled:
+                throw CancellationError()
+            case .failed:
+                throw PhysicalMetalFrameEngineError.bridge(
+                    snapshot.diagnostics.last?.message
+                        ?? "La evaluación física de la escena ha fallado."
+                )
+            case .complete:
+                guard snapshot.returnedIntermediate == .cameraRenderedACEScg,
+                      let camera = snapshot.frame,
+                      let selection = testAuthoringSelection
+                else {
+                    throw PhysicalMetalFrameEngineError.bridge(
+                        "Render Queue no recibió el checkpoint de cámara solicitado."
+                    )
+                }
+                let delivery = try RecordingPhaseExecutor.delivery(
+                    cameraRendered: camera,
+                    width: Int(selection.deliveryWidth),
+                    height: Int(selection.deliveryHeight),
+                    placementID: selection.deliveryPlacementID,
+                    backgroundID: selection.deliveryBackgroundID,
+                    display: metalDisplay
+                )
+                guard composition == .deviceWithReference else { return delivery }
+                guard referenceSourceURL != nil else {
+                    throw SceneLibraryError.invalidDocument(
+                        "La composición pide referencia, pero la escena no contiene una."
+                    )
+                }
+                try await rebuildReferenceFrame()
+                guard let reference = referenceACEScgFrame,
+                      let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+                      let authored = physicalAuthoringState else {
+                    throw SceneLibraryError.invalidDocument(
+                        "No se pudo resolver la referencia guardada para este frame."
+                    )
+                }
+                if setupFramingRenderer == nil {
+                    setupFramingRenderer = try SetupFramingRenderer(
+                        device: delivery.texture.device
+                    )
+                }
+                return try setupFramingRenderer!.renderReferenceComposite(
+                    cameraResult: delivery,
+                    reference: reference,
+                    referencePlacement: referencePlacement,
+                    device: device,
+                    pipeline: authored,
+                    deliveryWidth: Int(selection.deliveryWidth),
+                    deliveryHeight: Int(selection.deliveryHeight),
+                    deliveryPlacementID: selection.deliveryPlacementID,
+                    deliveryAligned: true
+                ).frame
+            }
+        }
     }
 
     func cancelRender() {
