@@ -392,7 +392,7 @@ import Testing
     }
 }
 
-@Test @MainActor func environmentSetupClipsToTheDeviceAndUsesTheSceneOriginSphere() throws {
+@Test @MainActor func environmentSetupExtendsTheIdealMirrorAndUsesTheSceneOriginSphere() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
         $0.id == "srgb-encoded-rec709"
@@ -439,7 +439,7 @@ import Testing
     let basePixels = try display.readLinearRGBA(base.frame)
     let corner = 0
     let center = ((base.frame.height / 2) * base.frame.width + base.frame.width / 2) * 4
-    #expect(basePixels[corner] == 0 && basePixels[corner + 1] == 0 && basePixels[corner + 2] == 0)
+    #expect(basePixels[corner + 2] > 0)
     #expect(basePixels[center] > 0 || basePixels[center + 1] > 0 || basePixels[center + 2] > 0)
 
     authored.cameraPose.position[0] += 0.4
@@ -452,9 +452,7 @@ import Testing
     let translatedPixels = try display.readLinearRGBA(translated.frame)
     #expect(basePixels.count == translatedPixels.count)
     #expect(zip(basePixels, translatedPixels).contains { abs($0 - $1) > 0.000_01 })
-    #expect(translatedPixels[corner] == 0
-        && translatedPixels[corner + 1] == 0
-        && translatedPixels[corner + 2] == 0)
+    #expect(translatedPixels[corner + 2] > 0)
 }
 
 @Test @MainActor func focusSetupClipsItsChartAndDistortedBoundaryToTheDevice() throws {

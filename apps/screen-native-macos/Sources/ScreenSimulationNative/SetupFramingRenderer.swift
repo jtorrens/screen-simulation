@@ -704,10 +704,6 @@ final class SetupFramingRenderer {
         const float3 relative = point - s.screen_position_width.xyz;
         const float3 local_point = float3(
             dot(relative, screen_right), dot(relative, screen_up), dot(relative, screen_normal));
-        const float2 panel_uv = float2(
-            local_point.x / s.screen_position_width.w + 0.5f,
-            0.5f - local_point.y / s.screen_height_shift_y.x);
-        if (any(panel_uv < 0.0f) || any(panel_uv > 1.0f)) return false;
         const float3 reflected_world = reflect(ray, screen_normal);
         float3 reflected = reflected_world;
         if (s.environment.z > 0.5f) {
