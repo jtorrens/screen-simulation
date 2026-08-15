@@ -87,5 +87,6 @@ import Testing
     let scene = try AlembicTrackingImporter().load(URL(fileURLWithPath: path))
     #expect(scene.cameras.count == 1)
     #expect(scene.pointGroups.contains { $0.points.count == 15 })
+    #expect(scene.meshes.contains { $0.label == "Camera01Screen" })
     #expect(scene.meshes.contains { $0.label == "Plane01" })
 }

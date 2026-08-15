@@ -390,7 +390,7 @@ final class TrackingScenePanelController: NSObject, ObservableObject, NSWindowDe
             return
         }
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 390, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 650),
             styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false
         )
         panel.title = "Tracking 3D"
@@ -436,14 +436,47 @@ private struct TrackingScenePanel: View {
                 }
             }
             if let scene = model.trackingScene {
-                Section("Visibilidad") {
-                    Toggle("Mostrar point cloud", isOn: $model.trackingPointsVisible)
-                    Toggle("Mostrar geometrías", isOn: $model.trackingGeometryVisible)
+                Section("Elementos 3D") {
+                    Toggle(isOn: $model.trackingPointsVisible) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Nube de puntos")
+                            if let group = selectedPointGroup(in: scene) {
+                                Text("\(group.label) · \(group.points.count) puntos")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Ninguna seleccionada")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Toggle(isOn: $model.trackingGeometryVisible) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Geometrías")
+                            Text("\(scene.meshes.count) elementos importados")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     ForEach(scene.meshes) { mesh in
-                        Toggle(mesh.label, isOn: Binding(
+                        Toggle(isOn: Binding(
                             get: { model.visibleTrackingMeshIDs.contains(mesh.id) },
                             set: { model.setTrackingMesh(mesh.id, visible: $0) }
-                        ))
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(mesh.label)
+                                Text(mesh.id)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text("\(mesh.sourceVertices.count) vértices · \(mesh.triangleIndices.count / 3) triángulos")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .help(mesh.id)
                     }
                 }
                 Section("Escala métrica") {
@@ -477,6 +510,11 @@ private struct TrackingScenePanel: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 390, height: 520)
+        .frame(width: 440, height: 650)
+    }
+
+    private func selectedPointGroup(in scene: ImportedTrackingScene) -> TrackingPointGroup? {
+        guard let selectedID = model.selectedTrackingPointGroupID else { return nil }
+        return scene.pointGroups.first { $0.id == selectedID }
     }
 }
