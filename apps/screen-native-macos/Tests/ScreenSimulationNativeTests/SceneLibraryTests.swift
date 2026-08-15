@@ -107,13 +107,16 @@ import Testing
         .appendingPathComponent("screen-scenes-retired-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    let retired = root.appendingPathComponent("Scenes.v1.json")
-    let bytes = Data("{\"schemaVersion\":1,\"scenes\":[]}".utf8)
-    try bytes.write(to: retired)
+    for version in [1, 2] {
+        let retired = root.appendingPathComponent("Scenes.v\(version).json")
+        let bytes = Data("{\"schemaVersion\":\(version),\"scenes\":[]}".utf8)
+        try bytes.write(to: retired)
 
-    #expect(throws: SceneLibraryError.self) { try store.load() }
-    #expect(try Data(contentsOf: retired) == bytes)
-    #expect(!FileManager.default.fileExists(atPath: store.documentURL.path))
+        #expect(throws: SceneLibraryError.self) { try store.load() }
+        #expect(try Data(contentsOf: retired) == bytes)
+        #expect(!FileManager.default.fileExists(atPath: store.documentURL.path))
+        try FileManager.default.removeItem(at: retired)
+    }
 }
 
 @Test func sourceAssetsAreContentAddressedAndResolvedWithoutFilenameInference() throws {

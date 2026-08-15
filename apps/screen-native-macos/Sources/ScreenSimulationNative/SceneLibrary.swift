@@ -72,7 +72,7 @@ struct SavedSceneSource: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v2"
+    static let schema = "ScreenSimulation.SavedScene.v3"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -134,7 +134,7 @@ struct SavedSceneCapture: Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -190,14 +190,18 @@ struct SceneLibraryStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("Scenes.v2.json")
+        documentURL = directory.appendingPathComponent("Scenes.v3.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let retired = directoryURL.appendingPathComponent("Scenes.v1.json")
-            if FileManager.default.fileExists(atPath: retired.path) {
-                throw SceneLibraryError.unsupportedSchema(1)
+            for retiredVersion in [2, 1] {
+                let retired = directoryURL.appendingPathComponent(
+                    "Scenes.v\(retiredVersion).json"
+                )
+                if FileManager.default.fileExists(atPath: retired.path) {
+                    throw SceneLibraryError.unsupportedSchema(retiredVersion)
+                }
             }
             return SceneLibraryDocument()
         }
