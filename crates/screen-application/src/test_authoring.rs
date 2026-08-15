@@ -21,7 +21,7 @@ use screen_recording::{
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 30;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 31;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -101,6 +101,8 @@ pub const FOCAL_LENGTH_CONTROL_ID: &str = "focal-length-millimeters";
 pub const LENS_EVALUATION_MODEL_CONTROL_ID: &str = "lens-evaluation-model";
 pub const LENS_AMOUNT_CONTROL_ID: &str = "lens-amount";
 pub const AUTOFOCUS_CONTROL_ID: &str = "autofocus";
+pub const AUTOFOCUS_TARGET_U_CONTROL_ID: &str = "autofocus-target-u";
+pub const AUTOFOCUS_TARGET_V_CONTROL_ID: &str = "autofocus-target-v";
 pub const FOCUS_DISTANCE_CONTROL_ID: &str = "focus-distance-meters";
 pub const F_STOP_CONTROL_ID: &str = "f-stop";
 pub const SHUTTER_ANGLE_CONTROL_ID: &str = "shutter-angle-degrees";
@@ -392,6 +394,8 @@ pub struct TestAuthoringSelection<'a> {
     pub lens_evaluation_model_id: &'a str,
     pub lens_amount: f32,
     pub autofocus_enabled: bool,
+    pub autofocus_target_u: f32,
+    pub autofocus_target_v: f32,
     pub focus_distance_meters: f32,
     pub f_stop: f32,
     pub exposure_time_seconds: f32,
@@ -470,6 +474,8 @@ pub struct ResolvedTestAuthoringSelection {
     pub lens_evaluation_model_id: &'static str,
     pub lens_amount: f32,
     pub autofocus_enabled: bool,
+    pub autofocus_target_u: f32,
+    pub autofocus_target_v: f32,
     pub focus_distance_meters: f32,
     pub f_stop: f32,
     pub exposure_time_seconds: f32,
@@ -981,6 +987,8 @@ pub fn default_test_authoring_selection(
         lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
         lens_amount: 1.0,
         autofocus_enabled: true,
+        autofocus_target_u: 0.5,
+        autofocus_target_v: 0.5,
         focus_distance_meters: 0.15,
         f_stop: capture.f_stop,
         exposure_time_seconds: capture.default_shutter_angle_degrees / 360.0 / frame_rate.as_f32(),
@@ -1202,6 +1210,10 @@ pub fn resolve_test_authoring_selection(
     }
     if !selection.focus_distance_meters.is_finite()
         || !(0.01..=100.0).contains(&selection.focus_distance_meters)
+        || !selection.autofocus_target_u.is_finite()
+        || !(0.0..=1.0).contains(&selection.autofocus_target_u)
+        || !selection.autofocus_target_v.is_finite()
+        || !(0.0..=1.0).contains(&selection.autofocus_target_v)
     {
         return Err(TestAuthoringError::InvalidFocusDistance);
     }
@@ -1214,11 +1226,7 @@ pub fn resolve_test_authoring_selection(
         return Err(TestAuthoringError::InvalidExposureTime);
     }
     let resolved_focus_distance_meters = if selection.autofocus_enabled {
-        if geometry_mode_id == "look-at" {
-            selection.camera_distance_meters
-        } else {
-            free_focus_distance(&selection)?
-        }
+        autofocus_target_distance(&selection, &device)?
     } else {
         selection.focus_distance_meters
     };
@@ -1370,6 +1378,8 @@ pub fn resolve_test_authoring_selection(
         lens_evaluation_model_id,
         lens_amount: selection.lens_amount,
         autofocus_enabled: selection.autofocus_enabled,
+        autofocus_target_u: selection.autofocus_target_u,
+        autofocus_target_v: selection.autofocus_target_v,
         focus_distance_meters: resolved_focus_distance_meters,
         f_stop: selection.f_stop,
         exposure_time_seconds: selection.exposure_time_seconds,
@@ -1389,41 +1399,96 @@ pub fn resolve_test_authoring_selection(
     })
 }
 
-fn free_focus_distance(selection: &TestAuthoringSelection<'_>) -> Result<f32, TestAuthoringError> {
-    let camera = euler_quaternion([
-        selection.camera_rotation_x_degrees,
-        selection.camera_rotation_y_degrees,
-        selection.camera_rotation_z_degrees,
-    ]);
-    let screen = euler_quaternion([
+fn autofocus_target_distance(
+    selection: &TestAuthoringSelection<'_>,
+    device: &screen_panel::DevicePreset,
+) -> Result<f32, TestAuthoringError> {
+    let screen_q = euler_quaternion([
         selection.screen_rotation_x_degrees,
         selection.screen_yaw_degrees,
         selection.screen_rotation_z_degrees,
     ]);
-    let forward = [
-        -2.0 * (camera[0] * camera[2] + camera[3] * camera[1]),
-        -2.0 * (camera[1] * camera[2] - camera[3] * camera[0]),
-        -(1.0 - 2.0 * (camera[0] * camera[0] + camera[1] * camera[1])),
+    let screen_right = rotate3([1.0, 0.0, 0.0], screen_q);
+    let screen_up = rotate3([0.0, 1.0, 0.0], screen_q);
+    let screen = [
+        selection.screen_position_x_meters,
+        selection.screen_position_y_meters,
+        selection.screen_position_z_meters,
     ];
-    let normal = [
-        2.0 * (screen[0] * screen[2] + screen[3] * screen[1]),
-        2.0 * (screen[1] * screen[2] - screen[3] * screen[0]),
-        1.0 - 2.0 * (screen[0] * screen[0] + screen[1] * screen[1]),
+    let camera_position = if selection.geometry_mode_id == "look-at" {
+        let pitch = selection.camera_orbit_x_degrees.to_radians();
+        let yaw = selection.camera_orbit_y_degrees.to_radians();
+        let cos_pitch = pitch.cos();
+        [
+            screen[0] + yaw.sin() * cos_pitch * selection.camera_distance_meters,
+            screen[1] - pitch.sin() * selection.camera_distance_meters,
+            screen[2] + yaw.cos() * cos_pitch * selection.camera_distance_meters,
+        ]
+    } else {
+        [
+            selection.camera_position_x_meters,
+            selection.camera_position_y_meters,
+            selection.camera_position_z_meters,
+        ]
+    };
+    let forward = if selection.geometry_mode_id == "look-at" {
+        let vector = [
+            screen[0] - camera_position[0],
+            screen[1] - camera_position[1],
+            screen[2] - camera_position[2],
+        ];
+        let length = dot3(vector, vector).sqrt();
+        if !length.is_finite() || length <= 1.0e-6 {
+            return Err(TestAuthoringError::InvalidGeometry);
+        }
+        [vector[0] / length, vector[1] / length, vector[2] / length]
+    } else {
+        rotate3(
+            [0.0, 0.0, -1.0],
+            euler_quaternion([
+                selection.camera_rotation_x_degrees,
+                selection.camera_rotation_y_degrees,
+                selection.camera_rotation_z_degrees,
+            ]),
+        )
+    };
+    let target = [
+        screen[0]
+            + screen_right[0] * (selection.autofocus_target_u - 0.5) * device.active_width.0
+            + screen_up[0] * (0.5 - selection.autofocus_target_v) * device.active_height.0,
+        screen[1]
+            + screen_right[1] * (selection.autofocus_target_u - 0.5) * device.active_width.0
+            + screen_up[1] * (0.5 - selection.autofocus_target_v) * device.active_height.0,
+        screen[2]
+            + screen_right[2] * (selection.autofocus_target_u - 0.5) * device.active_width.0
+            + screen_up[2] * (0.5 - selection.autofocus_target_v) * device.active_height.0,
     ];
-    let offset = [
-        selection.screen_position_x_meters - selection.camera_position_x_meters,
-        selection.screen_position_y_meters - selection.camera_position_y_meters,
-        selection.screen_position_z_meters - selection.camera_position_z_meters,
-    ];
-    let denominator = dot3(forward, normal);
-    if denominator.abs() <= 1.0e-6 {
-        return Err(TestAuthoringError::InvalidGeometry);
-    }
-    let distance = dot3(offset, normal) / denominator;
+    let distance = dot3(
+        [
+            target[0] - camera_position[0],
+            target[1] - camera_position[1],
+            target[2] - camera_position[2],
+        ],
+        forward,
+    );
     if !distance.is_finite() || !(0.01..=100.0).contains(&distance) {
         return Err(TestAuthoringError::InvalidGeometry);
     }
     Ok(distance)
+}
+
+fn rotate3(vector: [f32; 3], q: [f32; 4]) -> [f32; 3] {
+    let qv = [q[0], q[1], q[2]];
+    let t = [
+        2.0 * (qv[1] * vector[2] - qv[2] * vector[1]),
+        2.0 * (qv[2] * vector[0] - qv[0] * vector[2]),
+        2.0 * (qv[0] * vector[1] - qv[1] * vector[0]),
+    ];
+    [
+        vector[0] + q[3] * t[0] + qv[1] * t[2] - qv[2] * t[1],
+        vector[1] + q[3] * t[1] + qv[2] * t[0] - qv[0] * t[2],
+        vector[2] + q[3] * t[2] + qv[0] * t[1] - qv[1] * t[0],
+    ]
 }
 
 fn euler_quaternion(degrees: [f32; 3]) -> [f32; 4] {
@@ -1797,6 +1862,26 @@ pub fn test_page_descriptor(
             "f/",
         ),
     ];
+    if selection.autofocus_enabled {
+        lens_controls.push(scalar_control(
+            AUTOFOCUS_TARGET_U_CONTROL_ID,
+            "Punto de foco X",
+            selection.autofocus_target_u,
+            0.0,
+            1.0,
+            0.5,
+            "UV",
+        ));
+        lens_controls.push(scalar_control(
+            AUTOFOCUS_TARGET_V_CONTROL_ID,
+            "Punto de foco Y",
+            selection.autofocus_target_v,
+            0.0,
+            1.0,
+            0.5,
+            "UV",
+        ));
+    }
     if !selection.autofocus_enabled {
         lens_controls.push(scalar_control(
             FOCUS_DISTANCE_CONTROL_ID,
@@ -2833,6 +2918,8 @@ fn unresolved_test_selection(
         focal_length_millimeters: current.focal_length_millimeters,
         lens_amount: current.lens_amount,
         autofocus_enabled: current.autofocus_enabled,
+        autofocus_target_u: current.autofocus_target_u,
+        autofocus_target_v: current.autofocus_target_v,
         focus_distance_meters: current.focus_distance_meters,
         f_stop: current.f_stop,
         exposure_time_seconds: current.exposure_time_seconds,
@@ -3000,6 +3087,8 @@ pub fn apply_test_scalar(
         }
         SHUTTER_RECIPROCAL_CONTROL_ID => next.exposure_time_seconds = 1.0 / value,
         FOCUS_DISTANCE_CONTROL_ID => next.focus_distance_meters = value,
+        AUTOFOCUS_TARGET_U_CONTROL_ID => next.autofocus_target_u = value,
+        AUTOFOCUS_TARGET_V_CONTROL_ID => next.autofocus_target_v = value,
         SHUTTER_AMOUNT_CONTROL_ID => next.shutter_motion_amount = value,
         COMPUTATIONAL_CAPTURE_AMOUNT_CONTROL_ID => next.computational_character_strength = value,
         COMPUTATIONAL_EXPOSURE_COUNT_CONTROL_ID => next.computational_exposure_count = value,
@@ -3123,6 +3212,8 @@ mod tests {
             focal_length_millimeters: 4.2,
             lens_amount: 1.0,
             autofocus_enabled: true,
+            autofocus_target_u: 0.5,
+            autofocus_target_v: 0.5,
             focus_distance_meters: 0.15,
             f_stop: 1.64,
             exposure_time_seconds: 1.0 / 288.0,
@@ -3502,6 +3593,30 @@ mod tests {
     }
 
     #[test]
+    fn autofocus_target_is_device_local_and_changes_depth_on_a_tilted_screen() {
+        let mut selection = asus();
+        selection.geometry_mode_id = "free";
+        selection.camera_position_x_meters = 0.0;
+        selection.camera_position_y_meters = 0.0;
+        selection.camera_position_z_meters = 0.5;
+        selection.camera_rotation_x_degrees = 0.0;
+        selection.camera_rotation_y_degrees = 0.0;
+        selection.camera_rotation_z_degrees = 0.0;
+        selection.screen_yaw_degrees = 30.0;
+        selection.autofocus_target_u = 0.0;
+        let left = resolve_test_authoring_selection(selection).unwrap();
+        selection.autofocus_target_u = 1.0;
+        let right = resolve_test_authoring_selection(selection).unwrap();
+        assert!(left.focus_distance_meters < right.focus_distance_meters);
+
+        selection.autofocus_enabled = false;
+        selection.focus_distance_meters = 0.31;
+        selection.autofocus_target_u = 0.25;
+        let manual = resolve_test_authoring_selection(selection).unwrap();
+        assert!((manual.focus_distance_meters - 0.31).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn lens_and_exposure_publish_real_aperture_time_and_autofocus_controls() {
         let page = test_page_descriptor(asus()).unwrap();
         let lens = &page.phases[10].controls;
@@ -3515,6 +3630,18 @@ mod tests {
             )),
             Some(_)
         ));
+        for id in [AUTOFOCUS_TARGET_U_CONTROL_ID, AUTOFOCUS_TARGET_V_CONTROL_ID] {
+            assert!(lens.iter().any(|control| matches!(
+                control,
+                TestControlRequirement::Scalar {
+                    id: control_id,
+                    minimum: 0.0,
+                    maximum: 1.0,
+                    unit: "UV",
+                    ..
+                } if *control_id == id
+            )));
+        }
         assert!(matches!(
             lens.iter().find(|control| matches!(
                 control,

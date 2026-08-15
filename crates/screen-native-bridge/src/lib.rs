@@ -280,6 +280,8 @@ pub struct ScreenTestAuthoringSelectionV22 {
     focal_length_millimeters: f32,
     lens_amount: f32,
     autofocus_enabled: bool,
+    autofocus_target_u: f32,
+    autofocus_target_v: f32,
     focus_distance_meters: f32,
     f_stop: f32,
     exposure_time_seconds: f32,
@@ -400,7 +402,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 18;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 19;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -2329,6 +2331,8 @@ unsafe fn test_selection<'a>(
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
         autofocus_enabled: selection.autofocus_enabled,
+        autofocus_target_u: selection.autofocus_target_u,
+        autofocus_target_v: selection.autofocus_target_v,
         focus_distance_meters: selection.focus_distance_meters,
         f_stop: selection.f_stop,
         exposure_time_seconds: selection.exposure_time_seconds,
@@ -2487,6 +2491,8 @@ fn resolved_test_selection(
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
         autofocus_enabled: selection.autofocus_enabled,
+        autofocus_target_u: selection.autofocus_target_u,
+        autofocus_target_v: selection.autofocus_target_v,
         focus_distance_meters: selection.focus_distance_meters,
         f_stop: selection.f_stop,
         exposure_time_seconds: selection.exposure_time_seconds,

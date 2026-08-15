@@ -214,6 +214,44 @@ import Testing
     #expect(abs(oneToOne[2].y - 1_619.5) < 0.001)
 }
 
+@Test @MainActor func focusTargetProjectionAndInverseUseTheSameDistortedCameraContract() throws {
+    let device = try #require(try RustDeviceCatalog.builtIns().first {
+        $0.name.contains("ASUS ProArt")
+    })
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    var authored = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
+    authored.cameraPose.position = [0.08, 0.03, 0.62]
+    authored.cameraPose.quaternion = [0, 0, 0, 1]
+    authored.screenPose.position = [0, 0, 0]
+    authored.screenPose.quaternion = [0, 0.12, 0, sqrt(1 - 0.12 * 0.12)]
+    authored.sceneLens.sensorWidthMillimeters = 36
+    authored.sceneLens.sensorHeightMillimeters = 20.25
+    authored.sceneLens.focalLengthMillimeters = 50
+    authored.sceneLens.lensShift = [0.03, -0.02]
+    authored.sceneLens.radialDistortion = [-0.08, 0.015, -0.001]
+    authored.sceneLens.tangentialDistortion = [0.002, -0.001]
+
+    let expected = SIMD2<Double>(0.23, 0.71)
+    let projected = try #require(SetupFramingRenderer.projectedDevicePoint(
+        u: Float(expected.x), v: Float(expected.y),
+        authored: authored, device: device,
+        deliveryWidth: 3_840, deliveryHeight: 2_160,
+        deliveryPlacement: 2,
+        outputWidth: 1_280, outputHeight: 720,
+        applyLensDistortion: true
+    ))
+    let recovered = try #require(SetupFramingRenderer.deviceUV(
+        at: projected, authored: authored, device: device,
+        deliveryWidth: 3_840, deliveryHeight: 2_160,
+        deliveryPlacement: 2,
+        outputWidth: 1_280, outputHeight: 720
+    ))
+    #expect(abs(recovered.x - expected.x) < 0.000_1)
+    #expect(abs(recovered.y - expected.y) < 0.000_1)
+}
+
 @Test func reflectionAuthoringKeepsDeliveryRasterGeometryAcrossPreviewResolution() {
     let delivery = CGSize(width: 3_840, height: 2_160)
     let preview = CGSize(width: 1_920, height: 1_080)

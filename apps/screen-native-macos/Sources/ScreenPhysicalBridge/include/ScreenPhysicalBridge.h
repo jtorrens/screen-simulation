@@ -17,7 +17,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 18u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 19u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u
@@ -103,6 +103,8 @@ typedef struct {
     float focal_length_millimeters;
     float lens_amount;
     bool autofocus_enabled;
+    float autofocus_target_u;
+    float autofocus_target_v;
     float focus_distance_meters;
     float f_stop;
     float exposure_time_seconds;

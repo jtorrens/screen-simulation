@@ -83,7 +83,7 @@ import Testing
         model: controller.authoringState,
         context: try canonicalFrameContext(deviceID: device.id)
     ))
-    settings["schema"] = "ScreenSimulation.FrameSettings.v16"
+    settings["schema"] = "ScreenSimulation.FrameSettings.v17"
 
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
         try PhysicalSettingsExchange.decode(from: ["settings": settings])

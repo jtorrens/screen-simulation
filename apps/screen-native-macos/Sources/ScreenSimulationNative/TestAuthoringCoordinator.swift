@@ -85,6 +85,8 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     var focalLengthMillimeters: Double
     let lensAmount: Double
     let autofocusEnabled: Bool
+    let autofocusTargetU: Double
+    let autofocusTargetV: Double
     let focusDistanceMeters: Double
     let fStop: Double
     let exposureTimeSeconds: Double
@@ -490,6 +492,8 @@ enum RustTestAuthoringCoordinator {
             focalLengthMillimeters: Double(raw.focal_length_millimeters),
             lensAmount: Double(raw.lens_amount),
             autofocusEnabled: raw.autofocus_enabled,
+            autofocusTargetU: Double(raw.autofocus_target_u),
+            autofocusTargetV: Double(raw.autofocus_target_v),
             focusDistanceMeters: Double(raw.focus_distance_meters),
             fStop: Double(raw.f_stop),
             exposureTimeSeconds: Double(raw.exposure_time_seconds),
@@ -619,6 +623,8 @@ enum RustTestAuthoringCoordinator {
                                             )
                                             raw.lens_amount = Float(selection.lensAmount)
                                             raw.autofocus_enabled = selection.autofocusEnabled
+                                            raw.autofocus_target_u = Float(selection.autofocusTargetU)
+                                            raw.autofocus_target_v = Float(selection.autofocusTargetV)
                                             raw.focus_distance_meters = Float(selection.focusDistanceMeters)
                                             raw.f_stop = Float(selection.fStop)
                                             raw.exposure_time_seconds = Float(selection.exposureTimeSeconds)

@@ -2126,6 +2126,10 @@ struct ContentView: View {
                                 || model.physicalModel.quality == .focusSetup
                                 || model.referenceMatchEnabled
                             ? model.setupSensorGateBoundary : [],
+                        focusTarget: model.physicalModel.quality == .focusSetup
+                            ? model.focusSetupTarget : nil,
+                        focusTargetEnabled: model.physicalModel.quality == .focusSetup
+                            && model.focusSetupTargetEnabled,
                         referenceProjectedCorners: model.referenceMatchEnabled
                             ? model.referenceMatchProjectedCorners : [],
                         referenceTargetCorners: model.referenceMatchEnabled
@@ -2152,6 +2156,9 @@ struct ContentView: View {
                         onCameraGestureBegin: model.beginCameraNavigation,
                         onCameraGestureChange: model.updateCameraNavigation,
                         onCameraGestureEnd: { model.endCameraNavigation(undoManager: undoManager) },
+                        onFocusTargetBegin: model.beginFocusTargetDrag,
+                        onFocusTargetChange: model.updateFocusTarget,
+                        onFocusTargetEnd: { model.endFocusTargetDrag(undoManager: undoManager) },
                         onReferenceCornerBegin: model.beginReferenceCornerDrag,
                         onReferenceCornerChange: model.updateReferenceCorner,
                         onReferenceCornerEnd: { model.endReferenceCornerDrag(undoManager: undoManager) },
@@ -2274,6 +2281,8 @@ struct MetalPreview: NSViewRepresentable {
     let metadataLines: [String]
     let deviceBoundary: [CGPoint]
     let sensorGateBoundary: [CGPoint]
+    let focusTarget: CGPoint?
+    let focusTargetEnabled: Bool
     let referenceProjectedCorners: [CGPoint]
     let referenceTargetCorners: [CGPoint]
     let reflectionHandles: [CGPoint]
@@ -2296,6 +2305,9 @@ struct MetalPreview: NSViewRepresentable {
     let onCameraGestureBegin: (CameraNavigationOperation, CGSize) -> Void
     let onCameraGestureChange: (CGSize) -> Void
     let onCameraGestureEnd: () -> Void
+    let onFocusTargetBegin: () -> Void
+    let onFocusTargetChange: (CGPoint) -> Void
+    let onFocusTargetEnd: () -> Void
     let onReferenceCornerBegin: (Int) -> Void
     let onReferenceCornerChange: (Int, CGPoint) -> Void
     let onReferenceCornerEnd: () -> Void
@@ -2329,6 +2341,8 @@ struct MetalPreview: NSViewRepresentable {
             metadataLines: metadataLines,
             deviceBoundary: deviceBoundary,
             sensorGateBoundary: sensorGateBoundary,
+            focusTarget: focusTarget,
+            focusTargetEnabled: focusTargetEnabled,
             referenceProjectedCorners: referenceProjectedCorners,
             referenceTargetCorners: referenceTargetCorners,
             reflectionHandles: reflectionHandles,
@@ -2353,6 +2367,9 @@ struct MetalPreview: NSViewRepresentable {
         container.onCameraGestureBegin = onCameraGestureBegin
         container.onCameraGestureChange = onCameraGestureChange
         container.onCameraGestureEnd = onCameraGestureEnd
+        container.onFocusTargetBegin = onFocusTargetBegin
+        container.onFocusTargetChange = onFocusTargetChange
+        container.onFocusTargetEnd = onFocusTargetEnd
         container.onReferenceCornerBegin = onReferenceCornerBegin
         container.onReferenceCornerChange = onReferenceCornerChange
         container.onReferenceCornerEnd = onReferenceCornerEnd
@@ -2445,6 +2462,9 @@ final class MetalPreviewContainer: NSView {
     var onCameraGestureBegin: ((CameraNavigationOperation, CGSize) -> Void)?
     var onCameraGestureChange: ((CGSize) -> Void)?
     var onCameraGestureEnd: (() -> Void)?
+    var onFocusTargetBegin: (() -> Void)?
+    var onFocusTargetChange: ((CGPoint) -> Void)?
+    var onFocusTargetEnd: (() -> Void)?
     var onReferenceCornerBegin: ((Int) -> Void)?
     var onReferenceCornerChange: ((Int, CGPoint) -> Void)?
     var onReferenceCornerEnd: (() -> Void)?
@@ -2458,6 +2478,7 @@ final class MetalPreviewContainer: NSView {
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
     private let sensorGateBoundaryLayer = CAShapeLayer()
+    private let focusTargetLayer = CAShapeLayer()
     private let referenceProjectionLayer = CAShapeLayer()
     private let referenceTargetBoundaryLayer = CAShapeLayer()
     private let referenceTargetLayer = CAShapeLayer()
@@ -2479,6 +2500,8 @@ final class MetalPreviewContainer: NSView {
     }
     private var deviceBoundary: [CGPoint] = []
     private var sensorGateBoundary: [CGPoint] = []
+    private var focusTarget: CGPoint?
+    private var focusTargetEnabled = false
     private var referenceProjectedCorners: [CGPoint] = []
     private var referenceTargetCorners: [CGPoint] = []
     private var reflectionHandles: [CGPoint] = []
@@ -2496,6 +2519,7 @@ final class MetalPreviewContainer: NSView {
     private var contextTrackingMeshID: String?
     private var referenceCornerDragIndex: Int?
     private var reflectionHandleDragIndex: Int?
+    private var focusTargetDragging = false
     private var dragStartLocation: CGPoint?
     private var dragStartPan = CGSize.zero
     private var magnifyAnchor: CGPoint?
@@ -2536,6 +2560,11 @@ final class MetalPreviewContainer: NSView {
         sensorGateBoundaryLayer.lineDashPattern = [6, 4]
         sensorGateBoundaryLayer.zPosition = 109
         layer?.addSublayer(sensorGateBoundaryLayer)
+        focusTargetLayer.fillColor = NSColor.clear.cgColor
+        focusTargetLayer.strokeColor = NSColor.systemGreen.cgColor
+        focusTargetLayer.lineWidth = 2
+        focusTargetLayer.zPosition = 127
+        layer?.addSublayer(focusTargetLayer)
         referenceProjectionLayer.fillColor = NSColor.clear.cgColor
         referenceProjectionLayer.strokeColor = NSColor.systemRed.cgColor
         referenceProjectionLayer.lineWidth = 1.5
@@ -2633,6 +2662,8 @@ final class MetalPreviewContainer: NSView {
         metadataLines: [String],
         deviceBoundary: [CGPoint],
         sensorGateBoundary: [CGPoint],
+        focusTarget: CGPoint?,
+        focusTargetEnabled: Bool,
         referenceProjectedCorners: [CGPoint],
         referenceTargetCorners: [CGPoint],
         reflectionHandles: [CGPoint],
@@ -2658,6 +2689,8 @@ final class MetalPreviewContainer: NSView {
         metadataLabel.isHidden = metadataLines.isEmpty
         self.deviceBoundary = deviceBoundary
         self.sensorGateBoundary = sensorGateBoundary
+        self.focusTarget = focusTarget
+        self.focusTargetEnabled = focusTargetEnabled
         self.referenceProjectedCorners = referenceProjectedCorners
         self.referenceTargetCorners = referenceTargetCorners
         self.reflectionHandles = reflectionHandles
@@ -2681,6 +2714,13 @@ final class MetalPreviewContainer: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let location = convert(event.locationInWindow, from: nil)
+        if !sceneInteractionLocked, focusTargetEnabled, focusTargetHitRegion(location) {
+            focusTargetDragging = true
+            onFocusTargetBegin?()
+            onFocusTargetChange?(rasterPoint(fromViewer: location))
+            NSCursor.crosshair.push()
+            return
+        }
         if !sceneInteractionLocked,
            trackingPointSelectionEnabled, let index = nearestTrackingPoint(to: location),
            trackingPointIDs.indices.contains(index) {
@@ -2705,6 +2745,10 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if focusTargetDragging {
+            onFocusTargetChange?(rasterPoint(fromViewer: convert(event.locationInWindow, from: nil)))
+            return
+        }
         if let index = reflectionHandleDragIndex {
             onReflectionHandleChange?(index, rasterPoint(fromViewer: convert(event.locationInWindow, from: nil)))
             return
@@ -2723,6 +2767,12 @@ final class MetalPreviewContainer: NSView {
     }
 
     override func mouseUp(with _: NSEvent) {
+        if focusTargetDragging {
+            focusTargetDragging = false
+            onFocusTargetEnd?()
+            NSCursor.pop()
+            return
+        }
         if reflectionHandleDragIndex != nil {
             reflectionHandleDragIndex = nil
             onReflectionHandleEnd?()
@@ -3022,6 +3072,17 @@ final class MetalPreviewContainer: NSView {
         if !sensorGateBoundary.isEmpty { sensorGatePath.closeSubpath() }
         sensorGateBoundaryLayer.frame = bounds
         sensorGateBoundaryLayer.path = sensorGatePath
+        let focusPath = CGMutablePath()
+        if let focusTarget {
+            let point = displayedPoint(forRaster: focusTarget)
+            focusPath.addEllipse(in: CGRect(x: point.x - 7, y: point.y - 7, width: 14, height: 14))
+            focusPath.move(to: CGPoint(x: point.x - 11, y: point.y))
+            focusPath.addLine(to: CGPoint(x: point.x + 11, y: point.y))
+            focusPath.move(to: CGPoint(x: point.x, y: point.y - 11))
+            focusPath.addLine(to: CGPoint(x: point.x, y: point.y + 11))
+        }
+        focusTargetLayer.frame = bounds
+        focusTargetLayer.path = focusPath
         let projectedHandles = CGMutablePath()
         for point in referenceProjectedCorners {
             let displayedPoint = displayedPoint(forRaster: point)
@@ -3214,6 +3275,23 @@ final class MetalPreviewContainer: NSView {
                          displayedPoint(forRaster: referenceTargetCorners[index]).y - point.y) <= 12
                 ? index : nil
         }
+    }
+
+    private func focusTargetHitRegion(_ viewerPoint: CGPoint) -> Bool {
+        if let focusTarget {
+            let displayed = displayedPoint(forRaster: focusTarget)
+            if hypot(displayed.x - viewerPoint.x, displayed.y - viewerPoint.y) <= 14 {
+                return true
+            }
+        }
+        guard deviceBoundary.count >= 3 else { return false }
+        let path = CGMutablePath()
+        for (index, point) in deviceBoundary.enumerated() {
+            let displayed = displayedPoint(forRaster: point)
+            if index == 0 { path.move(to: displayed) } else { path.addLine(to: displayed) }
+        }
+        path.closeSubpath()
+        return path.contains(viewerPoint)
     }
 
     private func nearestTrackingPoint(to point: CGPoint) -> Int? {

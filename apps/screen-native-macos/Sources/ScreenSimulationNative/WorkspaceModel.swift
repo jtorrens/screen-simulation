@@ -224,6 +224,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var metalFrame: StudioColorMetalFrame?
     @Published private(set) var setupDeviceBoundary: [CGPoint] = []
     @Published private(set) var setupSensorGateBoundary: [CGPoint] = []
+    @Published private(set) var focusSetupTarget: CGPoint?
+    @Published private(set) var focusSetupTargetEnabled = false
     @Published private(set) var referenceFrameName: String?
     @Published private(set) var referenceFrameDetail: String?
     @Published private(set) var referenceInputTransform = StudioColorInputTransform.catalog.first {
@@ -347,6 +349,7 @@ final class WorkspaceModel: ObservableObject {
     private let referenceSession = NativeMediaSession()
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
+    private var focusTargetDragStartSelection: TestAuthoringResolvedSelection?
     private var cameraNavigationLatestPose: CameraNavigationPose?
     private var cameraNavigationStartDevicePose: CameraNavigationPose?
     private var cameraNavigationLatestDevicePose: CameraNavigationPose?
@@ -2561,6 +2564,59 @@ final class WorkspaceModel: ObservableObject {
         referenceMatchStartSelection = nil
     }
 
+    func beginFocusTargetDrag() {
+        guard !previewTransformationsLocked,
+              physicalModel.quality == .focusSetup,
+              testAuthoringSelection?.autofocusEnabled == true
+        else { return }
+        focusTargetDragStartSelection = testAuthoringSelection
+    }
+
+    func updateFocusTarget(to rasterPoint: CGPoint) {
+        guard !previewTransformationsLocked,
+              physicalModel.quality == .focusSetup,
+              let authored = physicalAuthoringState,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let selection = testAuthoringSelection,
+              selection.autofocusEnabled,
+              let frame = metalFrame,
+              let placement = Self.deliveryPlacementCode(selection.deliveryPlacementID),
+              let uv = SetupFramingRenderer.deviceUV(
+                at: rasterPoint, authored: authored, device: device,
+                deliveryWidth: Int(selection.deliveryWidth),
+                deliveryHeight: Int(selection.deliveryHeight),
+                deliveryPlacement: placement,
+                outputWidth: frame.width, outputHeight: frame.height
+              )
+        else { return }
+        do {
+            let withU = try RustTestAuthoringCoordinator.apply(
+                .setScalar(controlID: "autofocus-target-u", value: uv.x), to: selection
+            )
+            let resolved = try RustTestAuthoringCoordinator.apply(
+                .setScalar(controlID: "autofocus-target-v", value: uv.y), to: withU
+            )
+            try applyTestAuthoringSelection(resolved)
+            publishFocusSetup()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func endFocusTargetDrag(undoManager: UndoManager?) {
+        guard let prior = focusTargetDragStartSelection else { return }
+        focusTargetDragStartSelection = nil
+        guard prior != testAuthoringSelection else { return }
+        let manager = UndoManagerBox(undoManager)
+        undoManager?.registerUndo(withTarget: self) { target in
+            Task { @MainActor in
+                try? target.restoreCameraNavigationSelection(prior, undoManager: manager.value)
+                target.publishFocusSetup()
+            }
+        }
+        undoManager?.setActionName("Cambiar punto de autofocus")
+    }
+
     func solveReferenceMatchTargets(undoManager: UndoManager?) {
         guard let prior = testAuthoringSelection else { return }
         solveReferenceMatchTargets(undoManager: undoManager, priorSelection: prior)
@@ -3079,7 +3135,6 @@ final class WorkspaceModel: ObservableObject {
         Self.applyImportedTrackingCamera(
             camera, sample: sample, metersPerSourceUnit: scale, to: &authored
         )
-        physicalAuthoringState = authored
         if var selection = testAuthoringSelection {
             let degrees = PoseRotationProjection.degrees(from: authored.cameraPose.quaternion)
             selection.geometryModeID = "free"
@@ -3090,9 +3145,21 @@ final class WorkspaceModel: ObservableObject {
             selection.cameraRotationYDegrees = degrees[1]
             selection.cameraRotationZDegrees = degrees[2]
             selection.focalLengthMillimeters = camera.focalLengthMillimeters
+            if selection.autofocusEnabled,
+               let resolved = try? RustTestAuthoringCoordinator.apply(
+                .setScalar(
+                    controlID: "autofocus-target-u",
+                    value: selection.autofocusTargetU
+                ),
+                to: selection
+               ) {
+                selection = resolved
+                authored.sceneLens.focusDistanceMeters = resolved.focusDistanceMeters
+            }
             testAuthoringSelection = selection
             try? refreshTestAuthoringDescriptor()
         }
+        physicalAuthoringState = authored
         if physicalModel.quality == .setup {
             if referenceACEScgFrame != nil {
                 publishReferenceMatchSetup(
@@ -4755,6 +4822,23 @@ final class WorkspaceModel: ObservableObject {
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
+            if let selection,
+               selection.autofocusEnabled,
+               let placement = Self.deliveryPlacementCode(selection.deliveryPlacementID) {
+                focusSetupTarget = SetupFramingRenderer.projectedDevicePoint(
+                    u: Float(selection.autofocusTargetU),
+                    v: Float(selection.autofocusTargetV),
+                    authored: authored, device: device,
+                    deliveryWidth: width, deliveryHeight: height,
+                    deliveryPlacement: placement,
+                    outputWidth: result.frame.width, outputHeight: result.frame.height,
+                    applyLensDistortion: true
+                )
+                focusSetupTargetEnabled = focusSetupTarget != nil
+            } else {
+                focusSetupTarget = nil
+                focusSetupTargetEnabled = false
+            }
             if interactiveViewportSize == nil {
                 monitorOutput.update(frame: result.frame, display: metalDisplay)
                 let elapsedMilliseconds = (CACurrentMediaTime() - started) * 1_000
@@ -4764,7 +4848,18 @@ final class WorkspaceModel: ObservableObject {
         } catch {
             setupDeviceBoundary = []
             setupSensorGateBoundary = []
+            focusSetupTarget = nil
+            focusSetupTargetEnabled = false
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private static func deliveryPlacementCode(_ id: String) -> UInt32? {
+        switch id {
+        case "fit": 0
+        case "one-to-one": 1
+        case "fill-crop": 2
+        default: nil
         }
     }
 

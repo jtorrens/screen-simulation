@@ -74,6 +74,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         focalLengthMillimeters: 4.2,
         lensAmount: 1,
         autofocusEnabled: true,
+        autofocusTargetU: 0.5,
+        autofocusTargetV: 0.5,
         focusDistanceMeters: 0.15,
         fStop: 1.64,
         exposureTimeSeconds: 1.0 / 288.0,

@@ -454,6 +454,45 @@ final class SetupFramingRenderer {
         applyLensDistortion: Bool,
         sampleDistortedEdges: Bool
     ) -> [CGPoint] {
+        let edgeSamples = sampleDistortedEdges ? 64 : 1
+        let corners: [(Float, Float)] = [(-1, 1), (1, 1), (1, -1), (-1, -1)]
+        let perimeter = corners.indices.flatMap { edge -> [(Float, Float)] in
+            let start = corners[edge]
+            let end = corners[(edge + 1) % corners.count]
+            return (0..<edgeSamples).map { sample in
+                let t = Float(sample) / Float(edgeSamples)
+                return (
+                    start.0 + (end.0 - start.0) * t,
+                    start.1 + (end.1 - start.1) * t
+                )
+            }
+        }
+        return perimeter.compactMap { sx, sy in
+            projectedDevicePoint(
+                u: (sx + 1) * 0.5, v: (1 - sy) * 0.5,
+                authored: authored, device: device,
+                deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
+                deliveryPlacement: deliveryPlacement,
+                outputWidth: outputWidth, outputHeight: outputHeight,
+                applyLensDistortion: applyLensDistortion
+            )
+        }
+    }
+
+    static func projectedDevicePoint(
+        u: Float,
+        v: Float,
+        authored: PhysicalPipelineAuthoringState,
+        device: DeviceDefinition,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        deliveryPlacement: UInt32,
+        outputWidth: Int,
+        outputHeight: Int,
+        applyLensDistortion: Bool
+    ) -> CGPoint? {
+        guard u.isFinite, v.isFinite, deliveryWidth > 0, deliveryHeight > 0,
+              outputWidth > 0, outputHeight > 0 else { return nil }
         let cameraQ = authored.cameraPose.quaternion.map(Float.init)
         let screenQ = authored.screenPose.quaternion.map(Float.init)
         let camera = SIMD3<Float>(
@@ -482,45 +521,130 @@ final class SetupFramingRenderer {
         let sensorHeight = Float(authored.sceneLens.sensorHeightMillimeters)
         let shiftX = Float(authored.sceneLens.lensShift[0])
         let shiftY = Float(authored.sceneLens.lensShift[1])
-        let halfWidth = Float(device.activeWidthMeters) * 0.5
-        let halfHeight = Float(device.activeHeightMeters) * 0.5
-        let edgeSamples = sampleDistortedEdges ? 64 : 1
-        let corners: [(Float, Float)] = [(-1, 1), (1, 1), (1, -1), (-1, -1)]
-        let perimeter = corners.indices.flatMap { edge -> [(Float, Float)] in
-            let start = corners[edge]
-            let end = corners[(edge + 1) % corners.count]
-            return (0..<edgeSamples).map { sample in
-                let t = Float(sample) / Float(edgeSamples)
-                return (
-                    start.0 + (end.0 - start.0) * t,
-                    start.1 + (end.1 - start.1) * t
-                )
-            }
+        let world = screen
+            + screenRight * ((u - 0.5) * Float(device.activeWidthMeters))
+            + screenUp * ((0.5 - v) * Float(device.activeHeightMeters))
+        let relative = world - camera
+        let depth = simd_dot(relative, cameraForward)
+        guard depth > 0 else { return nil }
+        let idealX = simd_dot(relative, cameraRight) / depth * (2 * focal / sensorWidth)
+        let idealY = simd_dot(relative, cameraUp) / depth * (2 * focal / sensorHeight)
+        let distorted = applyLensDistortion
+            ? Self.distort(
+                SIMD2(idealX, idealY),
+                radial: authored.sceneLens.radialDistortion,
+                tangential: authored.sceneLens.tangentialDistortion
+            )
+            : SIMD2(idealX, idealY)
+        let observed = SIMD2<Float>(distorted.x - 2 * shiftX, -distorted.y - 2 * shiftY)
+        let cameraPixel = (observed + 1) * 0.5 * cameraSize - 0.5
+        let outputPixel = deliveryPlacement == 1
+            ? cameraPixel + offset
+            : (cameraPixel + 0.5) * scale - 0.5 + offset
+        let preview = (outputPixel + 0.5) * SIMD2<Float>(
+            Float(outputWidth) / Float(deliveryWidth),
+            Float(outputHeight) / Float(deliveryHeight)
+        ) - 0.5
+        return CGPoint(x: CGFloat(preview.x), y: CGFloat(preview.y))
+    }
+
+    static func deviceUV(
+        at point: CGPoint,
+        authored: PhysicalPipelineAuthoringState,
+        device: DeviceDefinition,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        deliveryPlacement: UInt32,
+        outputWidth: Int,
+        outputHeight: Int
+    ) -> SIMD2<Double>? {
+        guard deliveryWidth > 0, deliveryHeight > 0, outputWidth > 0, outputHeight > 0 else {
+            return nil
         }
-        return perimeter.map { sx, sy in
-            let world = screen + screenRight * (sx * halfWidth) + screenUp * (sy * halfHeight)
-            let relative = world - camera
-            let depth = simd_dot(relative, cameraForward)
-            let idealX = simd_dot(relative, cameraRight) / depth * (2 * focal / sensorWidth)
-            let idealY = simd_dot(relative, cameraUp) / depth * (2 * focal / sensorHeight)
-            let distorted = applyLensDistortion
-                ? Self.distort(
-                    SIMD2(idealX, idealY),
-                    radial: authored.sceneLens.radialDistortion,
-                    tangential: authored.sceneLens.tangentialDistortion
-                )
-                : SIMD2(idealX, idealY)
-            let observed = SIMD2<Float>(distorted.x - 2 * shiftX, -distorted.y - 2 * shiftY)
-            let cameraPixel = (observed + 1) * 0.5 * cameraSize - 0.5
-            let outputPixel = deliveryPlacement == 1
-                ? cameraPixel + offset
-                : (cameraPixel + 0.5) * scale - 0.5 + offset
-            let preview = (outputPixel + 0.5) * SIMD2<Float>(
-                Float(outputWidth) / Float(deliveryWidth),
-                Float(outputHeight) / Float(deliveryHeight)
-            ) - 0.5
-            return CGPoint(x: CGFloat(preview.x), y: CGFloat(preview.y))
+        let cameraSize = SIMD2<Float>(Float(authored.sensor.nativeWidth), Float(authored.sensor.nativeHeight))
+        let outputSize = SIMD2<Float>(Float(deliveryWidth), Float(deliveryHeight))
+        let previewScale = SIMD2<Float>(Float(outputWidth) / outputSize.x, Float(outputHeight) / outputSize.y)
+        let outputPixel = (SIMD2(Float(point.x), Float(point.y)) + 0.5) / previewScale - 0.5
+        let scale: Float = switch deliveryPlacement {
+        case 0: min(outputSize.x / cameraSize.x, outputSize.y / cameraSize.y)
+        case 2: max(outputSize.x / cameraSize.x, outputSize.y / cameraSize.y)
+        default: 1
         }
+        let offset = (outputSize - cameraSize * scale) * 0.5
+        let cameraPixel = deliveryPlacement == 1
+            ? outputPixel - offset
+            : (outputPixel + 0.5 - offset) / scale - 0.5
+        let cameraUV = (cameraPixel + 0.5) / cameraSize
+        guard cameraUV.x.isFinite, cameraUV.y.isFinite else { return nil }
+        let observed = cameraUV * 2 - 1
+        let shifted = SIMD2<Float>(
+            observed.x + 2 * Float(authored.sceneLens.lensShift[0]),
+            -observed.y - 2 * Float(authored.sceneLens.lensShift[1])
+        )
+        guard let ideal = inverseDistortion(
+            shifted,
+            radial: authored.sceneLens.radialDistortion,
+            tangential: authored.sceneLens.tangentialDistortion
+        ) else { return nil }
+        let cameraQ = authored.cameraPose.quaternion.map(Float.init)
+        let screenQ = authored.screenPose.quaternion.map(Float.init)
+        let camera = SIMD3<Float>(
+            Float(authored.cameraPose.position[0]), Float(authored.cameraPose.position[1]),
+            Float(authored.cameraPose.position[2])
+        )
+        let screen = SIMD3<Float>(
+            Float(authored.screenPose.position[0]), Float(authored.screenPose.position[1]),
+            Float(authored.screenPose.position[2])
+        )
+        let cameraRight = rotate([1, 0, 0], by: cameraQ)
+        let cameraUp = rotate([0, 1, 0], by: cameraQ)
+        let cameraForward = rotate([0, 0, -1], by: cameraQ)
+        let screenRight = rotate([1, 0, 0], by: screenQ)
+        let screenUp = rotate([0, 1, 0], by: screenQ)
+        let screenNormal = rotate([0, 0, 1], by: screenQ)
+        let ray = simd_normalize(
+            cameraForward
+                + cameraRight * (ideal.x * Float(authored.sceneLens.sensorWidthMillimeters)
+                    / (2 * Float(authored.sceneLens.focalLengthMillimeters)))
+                + cameraUp * (ideal.y * Float(authored.sceneLens.sensorHeightMillimeters)
+                    / (2 * Float(authored.sceneLens.focalLengthMillimeters)))
+        )
+        let denominator = simd_dot(ray, screenNormal)
+        guard abs(denominator) >= 1e-8 else { return nil }
+        let distance = simd_dot(screen - camera, screenNormal) / denominator
+        guard distance > 0 else { return nil }
+        let local = camera + ray * distance - screen
+        let uv = SIMD2<Double>(
+            Double(simd_dot(local, screenRight) / Float(device.activeWidthMeters) + 0.5),
+            Double(0.5 - simd_dot(local, screenUp) / Float(device.activeHeightMeters))
+        )
+        guard uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 else { return nil }
+        return uv
+    }
+
+    private static func inverseDistortion(
+        _ observed: SIMD2<Float>, radial: [Double], tangential: [Double]
+    ) -> SIMD2<Float>? {
+        var ideal = observed
+        for _ in 0..<12 {
+            let projected = distort(ideal, radial: radial, tangential: tangential)
+            let residual = projected - observed
+            if max(abs(residual.x), abs(residual.y)) < 1e-7 { break }
+            let epsilon: Float = 1e-4
+            let dx = (distort(ideal + SIMD2(epsilon, 0), radial: radial, tangential: tangential)
+                - distort(ideal - SIMD2(epsilon, 0), radial: radial, tangential: tangential)) / (2 * epsilon)
+            let dy = (distort(ideal + SIMD2(0, epsilon), radial: radial, tangential: tangential)
+                - distort(ideal - SIMD2(0, epsilon), radial: radial, tangential: tangential)) / (2 * epsilon)
+            let determinant = dx.x * dy.y - dy.x * dx.y
+            guard abs(determinant) >= 1e-10 else { return nil }
+            ideal -= SIMD2(
+                (dy.y * residual.x - dy.x * residual.y) / determinant,
+                (-dx.y * residual.x + dx.x * residual.y) / determinant
+            )
+        }
+        let residual = abs(distort(ideal, radial: radial, tangential: tangential) - observed)
+        return ideal.x.isFinite && ideal.y.isFinite && max(residual.x, residual.y) < 2e-4
+            ? ideal : nil
     }
 
     private static func distort(
