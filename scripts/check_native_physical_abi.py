@@ -144,7 +144,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v17 source/header/symbol gate passed")
+    print("native macOS physical ABI v18 source/header/symbol gate passed")
     return 0
 
 
