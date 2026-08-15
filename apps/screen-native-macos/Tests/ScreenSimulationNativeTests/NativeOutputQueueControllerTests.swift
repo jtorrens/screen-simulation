@@ -95,17 +95,6 @@ import Testing
         == capture.snapshot.settingsDocument)
 }
 
-@Test("Render Queue evalúa Nativa en el Raster de entrega, no en el panel") @MainActor
-func outputQueueNativeDimensionsFollowDeliveryRaster() throws {
-    let dimensions = try WorkspaceModel.queuedNativeDimensions(
-        deliveryWidth: 3_840,
-        deliveryHeight: 2_160
-    )
-
-    #expect(dimensions.width == 3_840)
-    #expect(dimensions.height == 2_160)
-}
-
 private func outputQueueTestScene(name: String) -> SavedScene {
     let id = UUID()
     return SavedScene(

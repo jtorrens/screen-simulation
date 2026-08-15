@@ -160,7 +160,8 @@ final class SetupFramingRenderer {
             referenceRaster: SIMD4(
                 UInt32(reference?.width ?? source.width),
                 UInt32(reference?.height ?? source.height),
-                Self.sourcePlacement(referencePlacement), 0
+                Self.sourcePlacement(referencePlacement),
+                reference == nil ? 0 : 1
             ),
             modes: SIMD4(
                 Self.sourcePlacement(sourcePlacement),
@@ -285,6 +286,32 @@ final class SetupFramingRenderer {
         deliveryPlacementID: String,
         deliveryAligned: Bool = false
     ) throws -> Result {
+        try renderCameraComposite(
+            cameraResult: cameraResult,
+            reference: reference,
+            referencePlacement: referencePlacement,
+            device: device,
+            pipeline: authored,
+            deliveryWidth: deliveryWidth,
+            deliveryHeight: deliveryHeight,
+            deliveryPlacementID: deliveryPlacementID,
+            deliveryBackgroundID: "black",
+            deliveryAligned: deliveryAligned
+        )
+    }
+
+    func renderCameraComposite(
+        cameraResult: StudioColorMetalFrame,
+        reference: StudioColorMetalFrame?,
+        referencePlacement: WorkspaceModel.SourcePlacement,
+        device: DeviceDefinition,
+        pipeline authored: PhysicalPipelineAuthoringState,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        deliveryPlacementID: String,
+        deliveryBackgroundID: String,
+        deliveryAligned: Bool = false
+    ) throws -> Result {
         try render(
             source: cameraResult,
             reference: reference,
@@ -295,7 +322,7 @@ final class SetupFramingRenderer {
             deliveryWidth: deliveryWidth,
             deliveryHeight: deliveryHeight,
             deliveryPlacementID: deliveryPlacementID,
-            deliveryBackgroundID: "black",
+            deliveryBackgroundID: deliveryBackgroundID,
             diagnosticMode: deliveryAligned ? 5 : 4
         )
     }
@@ -828,7 +855,10 @@ final class SetupFramingRenderer {
         if (any(p >= s.preview_raster.xy)) return;
         float2 referenceUV;
         const bool hasReference = reference_uv(p, s, referenceUV);
-        const float4 background = (s.modes.w == 3u || s.modes.w == 4u || s.modes.w == 5u)
+        const bool referenceComposite =
+            (s.modes.w == 3u || s.modes.w == 4u || s.modes.w == 5u)
+            && s.reference_raster.w != 0u;
+        const float4 background = referenceComposite
             ? (hasReference
                 ? reference.sample(linear_sampler, referenceUV)
                 : float4(0, 0, 0, 1))

@@ -3542,20 +3542,10 @@ final class WorkspaceModel: ObservableObject {
         let source = try await renderFrame(index)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
-        guard let selection = testAuthoringSelection else {
-            throw PhysicalMetalFrameEngineError.bridge(
-                "Render Queue no pudo resolver el Raster de entrega guardado."
-            )
-        }
-        let queueDimensions = try Self.queuedNativeDimensions(
-            deliveryWidth: selection.deliveryWidth,
-            deliveryHeight: selection.deliveryHeight
-        )
         let job = try submitPhysicalJob(
             quality: .native,
             temporalSamplesOverride: configuration.motionBlurEnabled
-                ? configuration.motionSamples : 1,
-            requestedDimensionsOverride: queueDimensions
+                ? configuration.motionSamples : 1
         )
         while true {
             try Task.checkCancellation()
@@ -3572,43 +3562,39 @@ final class WorkspaceModel: ObservableObject {
                 )
             case .complete:
                 guard snapshot.returnedIntermediate == .cameraRenderedACEScg,
-                      let camera = snapshot.frame
+                      let camera = snapshot.frame,
+                      let selection = testAuthoringSelection,
+                      let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+                      let authored = physicalAuthoringState
                 else {
                     throw PhysicalMetalFrameEngineError.bridge(
                         "Render Queue no recibió el checkpoint de cámara solicitado."
                     )
                 }
-                let delivery = try RecordingPhaseExecutor.delivery(
-                    cameraRendered: camera,
-                    width: Int(selection.deliveryWidth),
-                    height: Int(selection.deliveryHeight),
-                    placementID: selection.deliveryPlacementID,
-                    backgroundID: selection.deliveryBackgroundID,
-                    display: metalDisplay
-                )
-                guard configuration.composition == .deviceWithReference else {
-                    return delivery
-                }
-                guard referenceSourceURL != nil else {
-                    throw SceneLibraryError.invalidDocument(
-                        "La composición pide referencia, pero la escena no contiene una."
-                    )
-                }
-                try await rebuildReferenceFrame()
-                guard let reference = referenceACEScgFrame,
-                      let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-                      let authored = physicalAuthoringState else {
-                    throw SceneLibraryError.invalidDocument(
-                        "No se pudo resolver la referencia guardada para este frame."
-                    )
+                let reference: StudioColorMetalFrame?
+                if configuration.composition == .deviceWithReference {
+                    guard referenceSourceURL != nil else {
+                        throw SceneLibraryError.invalidDocument(
+                            "La composición pide referencia, pero la escena no contiene una."
+                        )
+                    }
+                    try await rebuildReferenceFrame()
+                    guard let resolvedReference = referenceACEScgFrame else {
+                        throw SceneLibraryError.invalidDocument(
+                            "No se pudo resolver la referencia guardada para este frame."
+                        )
+                    }
+                    reference = resolvedReference
+                } else {
+                    reference = nil
                 }
                 if setupFramingRenderer == nil {
                     setupFramingRenderer = try SetupFramingRenderer(
-                        device: delivery.texture.device
+                        device: camera.texture.device
                     )
                 }
-                return try setupFramingRenderer!.renderReferenceComposite(
-                    cameraResult: delivery,
+                return try setupFramingRenderer!.renderCameraComposite(
+                    cameraResult: camera,
                     reference: reference,
                     referencePlacement: referencePlacement,
                     device: device,
@@ -3616,7 +3602,7 @@ final class WorkspaceModel: ObservableObject {
                     deliveryWidth: Int(selection.deliveryWidth),
                     deliveryHeight: Int(selection.deliveryHeight),
                     deliveryPlacementID: selection.deliveryPlacementID,
-                    deliveryAligned: true
+                    deliveryBackgroundID: selection.deliveryBackgroundID
                 ).frame
             }
         }
@@ -5194,8 +5180,7 @@ final class WorkspaceModel: ObservableObject {
 
     private func submitPhysicalJob(
         quality: PhysicalQuality,
-        temporalSamplesOverride: UInt16? = nil,
-        requestedDimensionsOverride: PhysicalDimensions? = nil
+        temporalSamplesOverride: UInt16? = nil
     ) throws -> PhysicalMetalFrameJob {
         guard let sourceACEScgFrame else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
@@ -5290,11 +5275,10 @@ final class WorkspaceModel: ObservableObject {
             timeNumerator: timeNumerator,
             timeDenominator: exactFrameRate.numerator
         )
-        let requestedDimensions = try requestedDimensionsOverride
-            ?? physicalRequestedDimensions(
-                quality: quality,
-                device: resolvedDevice.definition
-            )
+        let requestedDimensions = try physicalRequestedDimensions(
+            quality: quality,
+            device: resolvedDevice.definition
+        )
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
@@ -5909,16 +5893,6 @@ final class WorkspaceModel: ObservableObject {
         return try PhysicalDimensions(
             width: min(device.nativeWidth, max(1, Int(Double(width) * scale))),
             height: min(device.nativeHeight, max(1, Int(Double(height) * scale)))
-        )
-    }
-
-    static func queuedNativeDimensions(
-        deliveryWidth: UInt32,
-        deliveryHeight: UInt32
-    ) throws -> PhysicalDimensions {
-        try PhysicalDimensions(
-            width: Int(deliveryWidth),
-            height: Int(deliveryHeight)
         )
     }
 

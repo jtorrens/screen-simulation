@@ -361,6 +361,22 @@ import Testing
             && simd_distance(pixel, reconstructed) < 0.002
     })
 
+    let deviceOnly = try renderer.renderCameraComposite(
+        cameraResult: cameraResult, reference: nil,
+        referencePlacement: .fit,
+        device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180,
+        deliveryPlacementID: "fit", deliveryBackgroundID: "black"
+    )
+    let deviceOnlyValues = try display.readLinearRGBA(deviceOnly.frame)
+    let deviceOnlyPixels = stride(from: 0, to: deviceOnlyValues.count, by: 4).map {
+        SIMD3(deviceOnlyValues[$0], deviceOnlyValues[$0 + 1], deviceOnlyValues[$0 + 2])
+    }
+    #expect(deviceOnly.frame.width == 320)
+    #expect(deviceOnly.frame.height == 180)
+    #expect(deviceOnlyPixels.contains { simd_length($0) < 0.001 })
+    #expect(deviceOnlyPixels.contains { simd_distance($0, cameraColor) < 0.001 })
+
     let alignedWidth = 200
     let alignedHeight = 100
     let alignedPixels = (0 ..< alignedHeight).flatMap { _ in
