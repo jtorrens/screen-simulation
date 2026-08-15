@@ -15,6 +15,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var rotationXDegrees = 0.0
         var rotationYDegrees = 0.0
         var projectionMode: UInt32 = 0
+        var sphereCenterMeters = [0.0, 0.0, 0.0]
         var sphereRadiusMeters = 5.0
         var pattern: UInt32 = 0
     }
@@ -164,6 +165,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         environmentABI.rotation_x_degrees = Float(environment.rotationXDegrees)
         environmentABI.rotation_y_degrees = Float(environment.rotationYDegrees)
         environmentABI.projection_mode = environment.projectionMode
+        environmentABI.sphere_center_meters = tuple3(environment.sphereCenterMeters)
         environmentABI.sphere_radius_meters = Float(environment.sphereRadiusMeters)
         environmentABI.pattern = environment.pattern
 
@@ -289,14 +291,15 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         try coverGlass.validate()
         let vectors = [
             environment.ambientRadianceACEScg, environment.keyRadianceACEScg,
-            environment.keyDirectionLocal, sceneLens.radialDistortion,
+            environment.keyDirectionLocal, environment.sphereCenterMeters,
+            sceneLens.radialDistortion,
             sceneLens.longitudinalChromaticMeters, sceneLens.lateralChromaticScale,
             sceneLens.transmissionRGB, sensor.saturationIlluminanceSeconds,
             develop.whiteBalance, cameraPose.position, cameraPose.quaternion,
             screenPose.position, screenPose.quaternion,
         ]
         guard vectors.enumerated().allSatisfy({ index, values in
-            let expected = [10, 12].contains(index) ? 4 : 3
+            let expected = [11, 13].contains(index) ? 4 : 3
             return values.count == expected && values.allSatisfy(\.isFinite)
         }), sceneLens.lensShift.count == 2,
             sceneLens.tangentialDistortion.count == 2,
@@ -308,6 +311,11 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             shutterMotion.openOffsetDenominator > 0,
             shutterMotion.closeOffsetDenominator > 0,
             sensor.nativeWidth > 0, sensor.nativeHeight > 0,
+            environment.projectionMode <= 1,
+            (0.1 ... 1_000).contains(environment.sphereRadiusMeters),
+            environment.sphereCenterMeters.allSatisfy(
+                { (-1_000 ... 1_000).contains($0) }
+            ),
             sensor.adcBits > 0, sensor.adcBits < 32,
             sceneLens.focalLengthMillimeters > 0,
             sceneLens.sensorWidthMillimeters > 0,

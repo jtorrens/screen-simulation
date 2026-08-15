@@ -1684,10 +1684,18 @@ fn finite_environment_source_direction(
     cover_position: Vec3,
     projection: screen_cover::EnvironmentProjection,
 ) -> [f32; 3] {
-    let screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } = projection else {
+    let screen_cover::EnvironmentProjection::FiniteSphere {
+        center_meters,
+        radius_meters,
+    } = projection
+    else {
         return direction;
     };
-    let origin = [cover_position.x, cover_position.y, cover_position.z];
+    let origin = [
+        cover_position.x - center_meters[0],
+        cover_position.y - center_meters[1],
+        cover_position.z - center_meters[2],
+    ];
     let b = origin
         .into_iter()
         .zip(direction)
@@ -1711,16 +1719,22 @@ fn finite_environment_source_direction(
 }
 
 /// Smallest finite environment radius that keeps the complete camera aperture
-/// and active Device surface strictly inside the scene-origin sphere.
+/// and active Device surface strictly inside the authored world-space sphere.
 pub fn minimum_finite_environment_radius(
     camera: screen_geometry::CameraSample,
     screen: screen_geometry::ScreenSample,
     active_width: screen_contracts::Meters,
     active_height: screen_contracts::Meters,
+    center_meters: [f32; 3],
 ) -> f32 {
-    let camera_distance = (camera.position.x * camera.position.x
-        + camera.position.y * camera.position.y
-        + camera.position.z * camera.position.z)
+    let camera_relative = Vec3 {
+        x: camera.position.x - center_meters[0],
+        y: camera.position.y - center_meters[1],
+        z: camera.position.z - center_meters[2],
+    };
+    let camera_distance = (camera_relative.x * camera_relative.x
+        + camera_relative.y * camera_relative.y
+        + camera_relative.z * camera_relative.z)
         .sqrt();
     let aperture_radius = camera.focal_length.0 * 0.001 / (2.0 * camera.f_stop);
     let half_width = active_width.0 * 0.5;
@@ -1749,7 +1763,12 @@ pub fn minimum_finite_environment_radius(
     ]
     .into_iter()
     .map(|corner| screen.local_to_world(corner))
-    .map(|corner| (corner.x * corner.x + corner.y * corner.y + corner.z * corner.z).sqrt())
+    .map(|corner| {
+        let x = corner.x - center_meters[0];
+        let y = corner.y - center_meters[1];
+        let z = corner.z - center_meters[2];
+        (x * x + y * y + z * z).sqrt()
+    })
     .fold(0.0_f32, f32::max);
     let enclosure = (camera_distance + aperture_radius)
         .max(device_distance)
@@ -1767,12 +1786,20 @@ fn validate_finite_environment_enclosure(
     let IncidentEnvironment::Equirectangular(environment) = environment else {
         return Ok(());
     };
-    let screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } =
-        environment.projection
+    let screen_cover::EnvironmentProjection::FiniteSphere {
+        center_meters,
+        radius_meters,
+    } = environment.projection
     else {
         return Ok(());
     };
-    let minimum = minimum_finite_environment_radius(camera, screen, active_width, active_height);
+    let minimum = minimum_finite_environment_radius(
+        camera,
+        screen,
+        active_width,
+        active_height,
+        center_meters,
+    );
     if radius_meters < minimum {
         return Err(ApplicationError::InvalidEnvironmentEnclosure {
             radius_meters,

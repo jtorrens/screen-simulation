@@ -76,6 +76,7 @@ struct PhysicalPipelineParams {
     environment_key_radius: [f32; 4],
     environment_direction: [f32; 4],
     environment_rotation: [f32; 4],
+    environment_center: [f32; 4],
     camera_position_focal: [f32; 4],
     camera_right_sensor_width: [f32; 4],
     camera_up_sensor_height: [f32; 4],
@@ -1018,14 +1019,17 @@ impl MetalPhysicalPipeline {
             )
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         if let screen_cover::IncidentEnvironment::Equirectangular(environment) = plan.environment {
-            if let screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } =
-                environment.projection
+            if let screen_cover::EnvironmentProjection::FiniteSphere {
+                center_meters,
+                radius_meters,
+            } = environment.projection
             {
                 let minimum = screen_application::minimum_finite_environment_radius(
                     camera,
                     screen,
                     plan.panel.active_width,
                     plan.panel.active_height,
+                    center_meters,
                 );
                 if radius_meters < minimum {
                     return Err(MetalPhysicalPipelineError::InvalidPlan(format!(
@@ -1288,11 +1292,20 @@ impl MetalPhysicalPipeline {
                     },
                     match environment.projection {
                         screen_cover::EnvironmentProjection::Distant => 1.0,
-                        screen_cover::EnvironmentProjection::FiniteSphere { radius_meters } => {
-                            radius_meters
-                        }
+                        screen_cover::EnvironmentProjection::FiniteSphere {
+                            radius_meters, ..
+                        } => radius_meters,
                     },
                 ],
+            },
+            environment_center: match plan.environment {
+                IncidentEnvironment::Equirectangular(environment) => match environment.projection {
+                    screen_cover::EnvironmentProjection::Distant => [0.0; 4],
+                    screen_cover::EnvironmentProjection::FiniteSphere { center_meters, .. } => {
+                        [center_meters[0], center_meters[1], center_meters[2], 0.0]
+                    }
+                },
+                IncidentEnvironment::Procedural(_) => [0.0; 4],
             },
             camera_position_focal: [
                 camera.position.x,
@@ -2235,7 +2248,17 @@ mod tests {
                 (lens, screen_cover::EnvironmentProjection::Distant),
                 (
                     lens,
-                    screen_cover::EnvironmentProjection::FiniteSphere { radius_meters: 2.0 },
+                    screen_cover::EnvironmentProjection::FiniteSphere {
+                        center_meters: [0.0; 3],
+                        radius_meters: 2.0,
+                    },
+                ),
+                (
+                    lens,
+                    screen_cover::EnvironmentProjection::FiniteSphere {
+                        center_meters: [0.2, -0.1, 0.05],
+                        radius_meters: 2.0,
+                    },
                 ),
             ]
         }) {

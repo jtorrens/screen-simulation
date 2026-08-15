@@ -215,6 +215,35 @@ private func navigationGesture(
     #expect(verticalPose.position.y > 0)
 }
 
+@Test func environmentNavigationFollowsCameraConventionsAndLocksOrbitAxis() {
+    let center = EnvironmentNavigationMath.translatedCenter(
+        start: .zero,
+        radius: 5,
+        cameraRight: [1, 0, 0],
+        cameraUp: [0, 1, 0],
+        viewportSize: CGSize(width: 1_920, height: 1_080),
+        verticalFovRadians: 45 * .pi / 180,
+        delta: CGSize(width: 100, height: -50)
+    )
+    #expect(center.x > 0)
+    #expect(center.y > 0)
+
+    var axis: CameraNavigationLockedAxis?
+    let horizontal = EnvironmentNavigationMath.rotations(
+        startX: 4, startY: 8, lockedAxis: &axis,
+        delta: CGSize(width: 100, height: 20)
+    )
+    #expect(axis == .horizontal)
+    #expect(horizontal.x == 4)
+    #expect(horizontal.y < 8)
+    let stillHorizontal = EnvironmentNavigationMath.rotations(
+        startX: 4, startY: 8, lockedAxis: &axis,
+        delta: CGSize(width: 20, height: 100)
+    )
+    #expect(stillHorizontal.x == 4)
+    #expect(EnvironmentNavigationMath.scaledRadius(start: 5, deltaPixels: 100) > 5)
+}
+
 @Test func deviceGeometryExposesRigidWorldCornersWithoutMutation() {
     let geometry = CameraNavigationGeometry(
         center: [3, 2, 1], right: [0, 0, -1], up: [0, 1, 0],

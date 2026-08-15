@@ -70,7 +70,7 @@ import Testing
     }
 }
 
-@Test @MainActor func physicalSettingsExchangeRejectsFrameSettingsVersionFifteen() throws {
+@Test @MainActor func physicalSettingsExchangeRejectsFrameSettingsVersionSixteen() throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
         $0.id == device.defaultCoverGlassPresetID
@@ -83,7 +83,7 @@ import Testing
         model: controller.authoringState,
         context: try canonicalFrameContext(deviceID: device.id)
     ))
-    settings["schema"] = "ScreenSimulation.FrameSettings.v15"
+    settings["schema"] = "ScreenSimulation.FrameSettings.v16"
 
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
         try PhysicalSettingsExchange.decode(from: ["settings": settings])

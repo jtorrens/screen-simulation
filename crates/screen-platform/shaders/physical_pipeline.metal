@@ -29,6 +29,7 @@ struct PhysicalPipelineParams {
     float4 environment_key_radius;
     float4 environment_direction;
     float4 environment_rotation; // panel-local X and Y radians
+    float4 environment_center; // world-space finite-sphere center in meters
     float4 camera_position_focal;
     float4 camera_right_sensor_width;
     float4 camera_up_sensor_height;
@@ -536,25 +537,26 @@ inline float3 physical_sample_environment(float selector, float2 jitter,
 }
 
 inline float3 physical_finite_sphere_incident(float3 source_direction,
-    float3 cover_position, float radius, thread float& jacobian) {
+    float3 cover_position, float3 center, float radius, thread float& jacobian) {
     const float3 origin = cover_position;
-    const float3 point = source_direction * radius;
+    const float3 relative_origin = origin - center;
+    const float3 point = center + source_direction * radius;
     const float3 delta = point - origin;
     const float distance = length(delta);
-    jacobian = radius * radius * max(1.0e-8f, radius - dot(origin, source_direction))
+    jacobian = radius * radius * max(1.0e-8f, radius - dot(relative_origin, source_direction))
         / max(1.0e-8f, distance * distance * distance);
     return delta / max(distance, 1.0e-8f);
 }
 
 inline float3 physical_finite_sphere_source(float3 incident,
-    float3 cover_position, float radius, thread float& jacobian) {
-    const float3 origin = cover_position;
+    float3 cover_position, float3 center, float radius, thread float& jacobian) {
+    const float3 origin = cover_position - center;
     const float b = dot(origin, incident);
     const float t = -b + sqrt(max(0.0f,
         b * b - (dot(origin, origin) - radius * radius)));
     const float3 source = normalize(origin + incident * t);
     float ignored;
-    physical_finite_sphere_incident(source, cover_position, radius, ignored);
+    physical_finite_sphere_incident(source, cover_position, center, radius, ignored);
     jacobian = ignored;
     return source;
 }
@@ -641,7 +643,7 @@ inline float3 physical_reference_ggx_environment(
     if (roughness <= 0.0f || p.cover_geometry.z == 1.0f) {
         mirror = physical_quaternion_rotate(p.screen_quaternion, mirror);
         if (p.environment_rotation.z > 0.5f) {
-            const float3 origin = cover_position_world;
+            const float3 origin = cover_position_world - p.environment_center.xyz;
             const float radius = p.environment_rotation.w;
             const float b = dot(origin, mirror);
             const float discriminant = b * b - (dot(origin, origin) - radius * radius);
@@ -693,7 +695,7 @@ inline float3 physical_reference_ggx_environment(
             float sphere_jacobian = 1.0f;
             const float3 incident_world = p.environment_rotation.z > 0.5f
                 ? physical_finite_sphere_incident(source_direction_world, cover_position_world,
-                    p.environment_rotation.w, sphere_jacobian)
+                    p.environment_center.xyz, p.environment_rotation.w, sphere_jacobian)
                 : source_direction_world;
             const float3 rotated_incident = physical_quaternion_rotate(
                 inverse_screen_quaternion, incident_world);
@@ -735,7 +737,8 @@ inline float3 physical_reference_ggx_environment(
             float sphere_jacobian = 1.0f;
             const float3 source_direction_world = p.environment_rotation.z > 0.5f
                 ? physical_finite_sphere_source(incident_world,
-                    cover_position_world, p.environment_rotation.w, sphere_jacobian)
+                    cover_position_world, p.environment_center.xyz,
+                    p.environment_rotation.w, sphere_jacobian)
                 : incident_world;
             const float3 source_direction = physical_environment_to_source(
                 source_direction_world, rotation_x, rotation_y);

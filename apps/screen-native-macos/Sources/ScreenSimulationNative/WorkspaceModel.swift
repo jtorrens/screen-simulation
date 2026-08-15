@@ -290,6 +290,11 @@ final class WorkspaceModel: ObservableObject {
     private var cameraNavigationPreviewQuality = PhysicalQuality.setup
     private var environmentNavigationStartSelection: TestAuthoringResolvedSelection?
     private var environmentNavigationOperation: CameraNavigationOperation?
+    private var environmentNavigationViewportSize = CGSize(width: 1, height: 1)
+    private var environmentNavigationCameraRight = SIMD3<Double>(1, 0, 0)
+    private var environmentNavigationCameraUp = SIMD3<Double>(0, 1, 0)
+    private var environmentNavigationVerticalFovRadians = Double.pi / 3
+    private var environmentNavigationLockedAxis: CameraNavigationLockedAxis?
     private var reflectionHandleDragIndex: Int?
 
     let metalDisplay: StudioColorMetalDisplay
@@ -831,7 +836,7 @@ final class WorkspaceModel: ObservableObject {
         viewportSize: CGSize
     ) {
         if physicalModel.quality == .environmentSetup {
-            beginEnvironmentNavigation(operation)
+            beginEnvironmentNavigation(operation, viewportSize: viewportSize)
             return
         }
         guard let authored = physicalAuthoringState,
@@ -931,45 +936,115 @@ final class WorkspaceModel: ObservableObject {
         cameraNavigationPreviewQuality = .setup
     }
 
-    private func beginEnvironmentNavigation(_ operation: CameraNavigationOperation) {
+    private func beginEnvironmentNavigation(
+        _ operation: CameraNavigationOperation,
+        viewportSize: CGSize
+    ) {
         guard var selection = testAuthoringSelection,
-              selection.environmentSourceID == "environment-image"
+              selection.environmentSourceID == "environment-image",
+              let authored = physicalAuthoringState,
+              viewportSize.width > 0,
+              viewportSize.height > 0
         else { return }
         if selection.environmentProjectionID == "distant" {
             selection.environmentProjectionID = "finite-sphere"
         }
+        let cameraOrientation = simd_quatd(
+            ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
+            iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
+        ).normalized
         environmentNavigationStartSelection = selection
         environmentNavigationOperation = operation
+        environmentNavigationViewportSize = viewportSize
+        environmentNavigationCameraRight = cameraOrientation.act(SIMD3(1, 0, 0))
+        environmentNavigationCameraUp = cameraOrientation.act(SIMD3(0, 1, 0))
+        environmentNavigationVerticalFovRadians = 2 * atan(
+            authored.sceneLens.sensorHeightMillimeters
+                / (2 * authored.sceneLens.focalLengthMillimeters)
+        )
+        environmentNavigationLockedAxis = nil
     }
 
     private func updateEnvironmentNavigation(delta: CGSize) {
         guard var selection = environmentNavigationStartSelection else { return }
-        if environmentNavigationOperation == .dolly {
-            let minimumRadii: [Double]? = testPresentation?.phases
-                .flatMap(\.sections)
-                .flatMap(\.controls)
-                .compactMap { descriptor -> Double? in
-                    guard case let .scalar(control) = descriptor,
-                          control.id == "environment-sphere-radius-meters"
-                    else { return nil }
-                    return control.minimum
-                }
-            guard let minimumRadius = minimumRadii?.first else { return }
-            selection.environmentSphereRadiusMeters = min(1_000, max(minimumRadius,
-                selection.environmentSphereRadiusMeters * exp(Double(delta.width) * 0.008)))
-        } else {
-            selection.environmentRotationYDegrees = min(180, max(-180,
-                selection.environmentRotationYDegrees + Double(delta.width) * 0.2))
-            selection.environmentRotationXDegrees = min(90, max(-90,
-                selection.environmentRotationXDegrees - Double(delta.height) * 0.2))
+        switch environmentNavigationOperation {
+        case .dolly:
+            selection.environmentSphereRadiusMeters = min(1_000,
+                EnvironmentNavigationMath.scaledRadius(
+                    start: selection.environmentSphereRadiusMeters,
+                    deltaPixels: Double(delta.width)
+                )
+            )
+        case .pan:
+            let center = EnvironmentNavigationMath.translatedCenter(
+                start: SIMD3(
+                    selection.environmentSphereCenterXMeters,
+                    selection.environmentSphereCenterYMeters,
+                    selection.environmentSphereCenterZMeters
+                ),
+                radius: selection.environmentSphereRadiusMeters,
+                cameraRight: environmentNavigationCameraRight,
+                cameraUp: environmentNavigationCameraUp,
+                viewportSize: environmentNavigationViewportSize,
+                verticalFovRadians: environmentNavigationVerticalFovRadians,
+                delta: delta
+            )
+            selection.environmentSphereCenterXMeters = center.x
+            selection.environmentSphereCenterYMeters = center.y
+            selection.environmentSphereCenterZMeters = center.z
+        case .orbit:
+            let rotations = EnvironmentNavigationMath.rotations(
+                startX: selection.environmentRotationXDegrees,
+                startY: selection.environmentRotationYDegrees,
+                lockedAxis: &environmentNavigationLockedAxis,
+                delta: delta
+            )
+            selection.environmentRotationXDegrees = rotations.x
+            selection.environmentRotationYDegrees = rotations.y
+        case nil:
+            return
         }
+        let minimumRadius = minimumEnvironmentSphereRadius(selection: selection)
+        guard minimumRadius <= 1_000 else { return }
+        selection.environmentSphereRadiusMeters = min(1_000, max(
+            minimumRadius, selection.environmentSphereRadiusMeters
+        ))
         applyTransientEnvironmentSelection(selection)
+    }
+
+    private func minimumEnvironmentSphereRadius(
+        selection: TestAuthoringResolvedSelection
+    ) -> Double {
+        guard let authored = physicalAuthoringState,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition
+        else { return 0.1 }
+        let center = SIMD3(
+            selection.environmentSphereCenterXMeters,
+            selection.environmentSphereCenterYMeters,
+            selection.environmentSphereCenterZMeters
+        )
+        let camera = SIMD3(
+            authored.cameraPose.position[0], authored.cameraPose.position[1],
+            authored.cameraPose.position[2]
+        )
+        let screen = SIMD3(
+            authored.screenPose.position[0], authored.screenPose.position[1],
+            authored.screenPose.position[2]
+        )
+        let halfDiagonal = hypot(device.activeWidthMeters, device.activeHeightMeters) * 0.5
+        let apertureRadius = authored.sceneLens.focalLengthMillimeters
+            / (2 * authored.sceneLens.fStop) / 1_000
+        return max(0.1, max(
+            simd_length(camera - center) + apertureRadius,
+            simd_length(screen - center) + halfDiagonal
+        ) + 0.001)
     }
 
     private func endEnvironmentNavigation() {
         let finalSelection = testAuthoringSelection
         environmentNavigationStartSelection = nil
         environmentNavigationOperation = nil
+        environmentNavigationLockedAxis = nil
         if var selection = finalSelection {
             selection.previewQualityID = "environment-setup"
             try? applyTestAuthoringSelection(selection)
@@ -981,6 +1056,11 @@ final class WorkspaceModel: ObservableObject {
         authored.environment.rotationXDegrees = selection.environmentRotationXDegrees
         authored.environment.rotationYDegrees = selection.environmentRotationYDegrees
         authored.environment.projectionMode = selection.environmentProjectionID == "finite-sphere" ? 1 : 0
+        authored.environment.sphereCenterMeters = [
+            selection.environmentSphereCenterXMeters,
+            selection.environmentSphereCenterYMeters,
+            selection.environmentSphereCenterZMeters,
+        ]
         authored.environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
         testAuthoringSelection = selection
         publishEnvironmentSetup(authoredOverride: authored)
@@ -4264,6 +4344,11 @@ final class WorkspaceModel: ObservableObject {
         authored.environment.rotationYDegrees = selection.environmentRotationYDegrees
         authored.environment.exposureStops = selection.environmentExposureEV
         authored.environment.projectionMode = selection.environmentProjectionID == "finite-sphere" ? 1 : 0
+        authored.environment.sphereCenterMeters = [
+            selection.environmentSphereCenterXMeters,
+            selection.environmentSphereCenterYMeters,
+            selection.environmentSphereCenterZMeters,
+        ]
         authored.environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"

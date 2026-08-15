@@ -21,7 +21,7 @@ use screen_recording::{
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 29;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 30;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -90,6 +90,9 @@ pub const ENVIRONMENT_SATURATION_CONTROL_ID: &str = "environment-saturation";
 pub const ENVIRONMENT_TEMPERATURE_CONTROL_ID: &str = "environment-temperature-kelvin";
 pub const ENVIRONMENT_TINT_CONTROL_ID: &str = "environment-tint";
 pub const ENVIRONMENT_PROJECTION_CONTROL_ID: &str = "environment-projection";
+pub const ENVIRONMENT_CENTER_X_CONTROL_ID: &str = "environment-sphere-center-x-meters";
+pub const ENVIRONMENT_CENTER_Y_CONTROL_ID: &str = "environment-sphere-center-y-meters";
+pub const ENVIRONMENT_CENTER_Z_CONTROL_ID: &str = "environment-sphere-center-z-meters";
 pub const ENVIRONMENT_RADIUS_CONTROL_ID: &str = "environment-sphere-radius-meters";
 pub const IMAGE_ENVIRONMENT_SOURCE_ID: &str = "environment-image";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
@@ -379,6 +382,9 @@ pub struct TestAuthoringSelection<'a> {
     pub environment_temperature_kelvin: f32,
     pub environment_tint: f32,
     pub environment_projection_id: &'a str,
+    pub environment_sphere_center_x_meters: f32,
+    pub environment_sphere_center_y_meters: f32,
+    pub environment_sphere_center_z_meters: f32,
     pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'a str,
@@ -454,6 +460,9 @@ pub struct ResolvedTestAuthoringSelection {
     pub environment_temperature_kelvin: f32,
     pub environment_tint: f32,
     pub environment_projection_id: &'static str,
+    pub environment_sphere_center_x_meters: f32,
+    pub environment_sphere_center_y_meters: f32,
+    pub environment_sphere_center_z_meters: f32,
     pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
     pub lens_preset_id: &'static str,
@@ -962,6 +971,9 @@ pub fn default_test_authoring_selection(
         environment_temperature_kelvin: 6500.0,
         environment_tint: 0.0,
         environment_projection_id: "distant",
+        environment_sphere_center_x_meters: 0.0,
+        environment_sphere_center_y_meters: 0.0,
+        environment_sphere_center_z_meters: 0.0,
         environment_sphere_radius_meters: 5.0,
         cover_glow_amount: 1.0,
         lens_preset_id: capture.default_lens_preset_id,
@@ -1165,7 +1177,14 @@ pub fn resolve_test_authoring_selection(
         _ => return Err(TestAuthoringError::InvalidEnvironmentAmount),
     };
     let minimum_environment_radius = minimum_authored_environment_radius(selection, device);
-    if !selection.environment_sphere_radius_meters.is_finite()
+    if [
+        selection.environment_sphere_center_x_meters,
+        selection.environment_sphere_center_y_meters,
+        selection.environment_sphere_center_z_meters,
+    ]
+    .into_iter()
+    .any(|value| !value.is_finite() || value.abs() > 1_000.0)
+        || !selection.environment_sphere_radius_meters.is_finite()
         || !(minimum_environment_radius..=1_000.0)
             .contains(&selection.environment_sphere_radius_meters)
         || (selection.environment_source_id != IMAGE_ENVIRONMENT_SOURCE_ID
@@ -1341,6 +1360,9 @@ pub fn resolve_test_authoring_selection(
         environment_temperature_kelvin: selection.environment_temperature_kelvin,
         environment_tint: selection.environment_tint,
         environment_projection_id,
+        environment_sphere_center_x_meters: selection.environment_sphere_center_x_meters,
+        environment_sphere_center_y_meters: selection.environment_sphere_center_y_meters,
+        environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: lens.id,
@@ -2123,15 +2145,44 @@ pub fn test_page_descriptor(
                             ),
                         ]);
                         if selection.environment_projection_id == "finite-sphere" {
-                            controls.push(scalar_control(
-                                ENVIRONMENT_RADIUS_CONTROL_ID,
-                                "Radio del entorno",
-                                selection.environment_sphere_radius_meters,
-                                minimum_environment_radius,
-                                1_000.0,
-                                5.0,
-                                "m",
-                            ));
+                            controls.extend([
+                                scalar_control(
+                                    ENVIRONMENT_CENTER_X_CONTROL_ID,
+                                    "Centro X del entorno",
+                                    selection.environment_sphere_center_x_meters,
+                                    -1_000.0,
+                                    1_000.0,
+                                    0.0,
+                                    "m",
+                                ),
+                                scalar_control(
+                                    ENVIRONMENT_CENTER_Y_CONTROL_ID,
+                                    "Centro Y del entorno",
+                                    selection.environment_sphere_center_y_meters,
+                                    -1_000.0,
+                                    1_000.0,
+                                    0.0,
+                                    "m",
+                                ),
+                                scalar_control(
+                                    ENVIRONMENT_CENTER_Z_CONTROL_ID,
+                                    "Centro Z del entorno",
+                                    selection.environment_sphere_center_z_meters,
+                                    -1_000.0,
+                                    1_000.0,
+                                    0.0,
+                                    "m",
+                                ),
+                                scalar_control(
+                                    ENVIRONMENT_RADIUS_CONTROL_ID,
+                                    "Radio del entorno",
+                                    selection.environment_sphere_radius_meters,
+                                    minimum_environment_radius,
+                                    1_000.0,
+                                    5.0,
+                                    "m",
+                                ),
+                            ]);
                         }
                     }
                     controls
@@ -2476,14 +2527,19 @@ fn minimum_authored_environment_radius(
     selection: TestAuthoringSelection<'_>,
     device: DevicePreset,
 ) -> f32 {
-    let camera_distance = (selection.camera_position_x_meters.powi(2)
-        + selection.camera_position_y_meters.powi(2)
-        + selection.camera_position_z_meters.powi(2))
+    let center = [
+        selection.environment_sphere_center_x_meters,
+        selection.environment_sphere_center_y_meters,
+        selection.environment_sphere_center_z_meters,
+    ];
+    let camera_distance = ((selection.camera_position_x_meters - center[0]).powi(2)
+        + (selection.camera_position_y_meters - center[1]).powi(2)
+        + (selection.camera_position_z_meters - center[2]).powi(2))
     .sqrt()
         + selection.focal_length_millimeters * 0.001 / (2.0 * selection.f_stop);
-    let screen_center_distance = (selection.screen_position_x_meters.powi(2)
-        + selection.screen_position_y_meters.powi(2)
-        + selection.screen_position_z_meters.powi(2))
+    let screen_center_distance = ((selection.screen_position_x_meters - center[0]).powi(2)
+        + (selection.screen_position_y_meters - center[1]).powi(2)
+        + (selection.screen_position_z_meters - center[2]).powi(2))
     .sqrt();
     let screen_bound =
         screen_center_distance + 0.5 * device.active_width.0.hypot(device.active_height.0);
@@ -2495,14 +2551,19 @@ fn minimum_resolved_environment_radius(
     selection: &ResolvedTestAuthoringSelection,
     device: DevicePreset,
 ) -> f32 {
-    let camera_distance = (selection.camera_position_x_meters.powi(2)
-        + selection.camera_position_y_meters.powi(2)
-        + selection.camera_position_z_meters.powi(2))
+    let center = [
+        selection.environment_sphere_center_x_meters,
+        selection.environment_sphere_center_y_meters,
+        selection.environment_sphere_center_z_meters,
+    ];
+    let camera_distance = ((selection.camera_position_x_meters - center[0]).powi(2)
+        + (selection.camera_position_y_meters - center[1]).powi(2)
+        + (selection.camera_position_z_meters - center[2]).powi(2))
     .sqrt()
         + selection.focal_length_millimeters * 0.001 / (2.0 * selection.f_stop);
-    let screen_center_distance = (selection.screen_position_x_meters.powi(2)
-        + selection.screen_position_y_meters.powi(2)
-        + selection.screen_position_z_meters.powi(2))
+    let screen_center_distance = ((selection.screen_position_x_meters - center[0]).powi(2)
+        + (selection.screen_position_y_meters - center[1]).powi(2)
+        + (selection.screen_position_z_meters - center[2]).powi(2))
     .sqrt();
     let screen_bound =
         screen_center_distance + 0.5 * device.active_width.0.hypot(device.active_height.0);
@@ -2605,6 +2666,9 @@ pub fn apply_test_choice(
                 next.environment_temperature_kelvin = 6500.0;
                 next.environment_tint = 0.0;
                 next.environment_projection_id = "distant";
+                next.environment_sphere_center_x_meters = 0.0;
+                next.environment_sphere_center_y_meters = 0.0;
+                next.environment_sphere_center_z_meters = 0.0;
                 next.environment_sphere_radius_meters = 5.0;
             } else {
                 let environment = environment_preset(option_id)
@@ -2619,6 +2683,9 @@ pub fn apply_test_choice(
                 next.environment_temperature_kelvin = 6500.0;
                 next.environment_tint = 0.0;
                 next.environment_projection_id = "distant";
+                next.environment_sphere_center_x_meters = 0.0;
+                next.environment_sphere_center_y_meters = 0.0;
+                next.environment_sphere_center_z_meters = 0.0;
                 next.environment_sphere_radius_meters = 5.0;
             }
         }
@@ -2673,6 +2740,9 @@ pub fn apply_test_choice(
         | ENVIRONMENT_SATURATION_CONTROL_ID
         | ENVIRONMENT_TEMPERATURE_CONTROL_ID
         | ENVIRONMENT_TINT_CONTROL_ID
+        | ENVIRONMENT_CENTER_X_CONTROL_ID
+        | ENVIRONMENT_CENTER_Y_CONTROL_ID
+        | ENVIRONMENT_CENTER_Z_CONTROL_ID
         | ENVIRONMENT_RADIUS_CONTROL_ID
         | COVER_GLOW_AMOUNT_CONTROL_ID
         | LENS_AMOUNT_CONTROL_ID
@@ -2754,6 +2824,9 @@ fn unresolved_test_selection(
         environment_temperature_kelvin: current.environment_temperature_kelvin,
         environment_tint: current.environment_tint,
         environment_projection_id: current.environment_projection_id,
+        environment_sphere_center_x_meters: current.environment_sphere_center_x_meters,
+        environment_sphere_center_y_meters: current.environment_sphere_center_y_meters,
+        environment_sphere_center_z_meters: current.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: current.environment_sphere_radius_meters,
         cover_glow_amount: current.cover_glow_amount,
         lens_preset_id: current.lens_preset_id,
@@ -2914,6 +2987,9 @@ pub fn apply_test_scalar(
         ENVIRONMENT_SATURATION_CONTROL_ID => next.environment_saturation = value,
         ENVIRONMENT_TEMPERATURE_CONTROL_ID => next.environment_temperature_kelvin = value,
         ENVIRONMENT_TINT_CONTROL_ID => next.environment_tint = value,
+        ENVIRONMENT_CENTER_X_CONTROL_ID => next.environment_sphere_center_x_meters = value,
+        ENVIRONMENT_CENTER_Y_CONTROL_ID => next.environment_sphere_center_y_meters = value,
+        ENVIRONMENT_CENTER_Z_CONTROL_ID => next.environment_sphere_center_z_meters = value,
         ENVIRONMENT_RADIUS_CONTROL_ID => next.environment_sphere_radius_meters = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
@@ -3038,6 +3114,9 @@ mod tests {
             environment_temperature_kelvin: 6500.0,
             environment_tint: 0.0,
             environment_projection_id: "distant",
+            environment_sphere_center_x_meters: 0.0,
+            environment_sphere_center_y_meters: 0.0,
+            environment_sphere_center_z_meters: 0.0,
             environment_sphere_radius_meters: 5.0,
             cover_glow_amount: 1.0,
             lens_preset_id: "iphone-16e-main-integrated",
@@ -3336,6 +3415,12 @@ mod tests {
             "finite-sphere",
         )
         .unwrap();
+        let finite = apply_test_scalar(
+            unresolved_test_selection(finite),
+            ENVIRONMENT_CENTER_X_CONTROL_ID,
+            4.0,
+        )
+        .unwrap();
         let finite_page = test_page_descriptor(unresolved_test_selection(finite)).unwrap();
         let radius = finite_page
             .phases
@@ -3354,6 +3439,7 @@ mod tests {
             })
             .unwrap();
         assert!(radius > finite.camera_position_z_meters.abs());
+        assert!(radius > 4.0);
         let mut invalid = unresolved_test_selection(finite);
         invalid.environment_sphere_radius_meters = radius - 0.001;
         assert_eq!(

@@ -255,6 +255,7 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             }
             screen_persistence::EnvironmentProjectionDocument::FiniteSphere => {
                 screen_cover::EnvironmentProjection::FiniteSphere {
+                    center_meters: package.shot.environment.sphere_center_meters,
                     radius_meters: package.shot.environment.sphere_radius_meters,
                 }
             }
@@ -693,6 +694,7 @@ mod tests {
                     temperature_kelvin: 6500.0,
                     tint: 0.0,
                     projection: screen_persistence::EnvironmentProjectionDocument::Distant,
+                    sphere_center_meters: [0.0; 3],
                     sphere_radius_meters: 5.0,
                     pattern: screen_persistence::EnvironmentPatternDocument::StudioSoftboxes,
                 },

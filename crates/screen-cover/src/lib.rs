@@ -217,7 +217,10 @@ pub struct ProceduralEnvironment {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EnvironmentProjection {
     Distant,
-    FiniteSphere { radius_meters: f32 },
+    FiniteSphere {
+        center_meters: [f32; 3],
+        radius_meters: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -779,8 +782,17 @@ impl EquirectangularEnvironment {
         {
             return Err(CoverError::InvalidEnvironmentRotation);
         }
-        if let EnvironmentProjection::FiniteSphere { radius_meters } = self.projection {
-            if !radius_meters.is_finite() || !(0.1..=1_000.0).contains(&radius_meters) {
+        if let EnvironmentProjection::FiniteSphere {
+            center_meters,
+            radius_meters,
+        } = self.projection
+        {
+            if center_meters
+                .into_iter()
+                .any(|value| !value.is_finite() || value.abs() > 1_000.0)
+                || !radius_meters.is_finite()
+                || !(0.1..=1_000.0).contains(&radius_meters)
+            {
                 return Err(CoverError::InvalidEnvironmentSourceSize);
             }
         }

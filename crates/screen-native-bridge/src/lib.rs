@@ -161,7 +161,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 29;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 30;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -221,6 +221,9 @@ pub struct ScreenTestAuthoringSelectionV22 {
     environment_temperature_kelvin: f32,
     environment_tint: f32,
     environment_projection_id: ScreenUtf8View,
+    environment_sphere_center_x_meters: f32,
+    environment_sphere_center_y_meters: f32,
+    environment_sphere_center_z_meters: f32,
     environment_sphere_radius_meters: f32,
     cover_glow_amount: f32,
     lens_preset_id: ScreenUtf8View,
@@ -347,7 +350,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 17;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 18;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -2056,6 +2059,7 @@ pub struct ScreenEnvironmentParametersV2 {
     rotation_x_degrees: f32,
     rotation_y_degrees: f32,
     projection_mode: u32,
+    sphere_center_meters: [f32; 3],
     sphere_radius_meters: f32,
     pattern: u32,
 }
@@ -2266,6 +2270,9 @@ unsafe fn test_selection<'a>(
         environment_temperature_kelvin: selection.environment_temperature_kelvin,
         environment_tint: selection.environment_tint,
         environment_projection_id: unsafe { borrowed_utf8(selection.environment_projection_id) }?,
+        environment_sphere_center_x_meters: selection.environment_sphere_center_x_meters,
+        environment_sphere_center_y_meters: selection.environment_sphere_center_y_meters,
+        environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
@@ -2421,6 +2428,9 @@ fn resolved_test_selection(
         environment_temperature_kelvin: selection.environment_temperature_kelvin,
         environment_tint: selection.environment_tint,
         environment_projection_id: utf8_view(selection.environment_projection_id),
+        environment_sphere_center_x_meters: selection.environment_sphere_center_x_meters,
+        environment_sphere_center_y_meters: selection.environment_sphere_center_y_meters,
+        environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
         lens_preset_id: utf8_view(selection.lens_preset_id),
@@ -2993,6 +3003,7 @@ pub unsafe extern "C" fn screen_environment_preset_parameters(
         rotation_x_degrees: environment.rotation_x_degrees,
         rotation_y_degrees: environment.rotation_y_degrees,
         projection_mode: 0,
+        sphere_center_meters: [0.0; 3],
         sphere_radius_meters: 5.0,
         pattern: match environment.pattern {
             EnvironmentPattern::UniformNeutral => 0,
@@ -3181,6 +3192,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
                 projection: match parameters.environment.projection_mode {
                     0 => screen_cover::EnvironmentProjection::Distant,
                     1 => screen_cover::EnvironmentProjection::FiniteSphere {
+                        center_meters: parameters.environment.sphere_center_meters,
                         radius_meters: parameters.environment.sphere_radius_meters,
                     },
                     _ => {
@@ -4660,6 +4672,7 @@ mod tests {
                 rotation_x_degrees: 0.0,
                 rotation_y_degrees: 0.0,
                 projection_mode: 0,
+                sphere_center_meters: [0.0; 3],
                 sphere_radius_meters: 5.0,
                 pattern: 0,
             },

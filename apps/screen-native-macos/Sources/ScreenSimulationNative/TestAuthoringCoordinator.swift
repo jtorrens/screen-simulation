@@ -76,6 +76,9 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let environmentTemperatureKelvin: Double
     let environmentTint: Double
     var environmentProjectionID: String
+    var environmentSphereCenterXMeters: Double
+    var environmentSphereCenterYMeters: Double
+    var environmentSphereCenterZMeters: Double
     var environmentSphereRadiusMeters: Double
     let coverGlowAmount: Double
     let lensPresetID: String
@@ -478,6 +481,9 @@ enum RustTestAuthoringCoordinator {
             environmentTemperatureKelvin: Double(raw.environment_temperature_kelvin),
             environmentTint: Double(raw.environment_tint),
             environmentProjectionID: string(raw.environment_projection_id),
+            environmentSphereCenterXMeters: Double(raw.environment_sphere_center_x_meters),
+            environmentSphereCenterYMeters: Double(raw.environment_sphere_center_y_meters),
+            environmentSphereCenterZMeters: Double(raw.environment_sphere_center_z_meters),
             environmentSphereRadiusMeters: Double(raw.environment_sphere_radius_meters),
             coverGlowAmount: Double(raw.cover_glow_amount),
             lensPresetID: string(raw.lens_preset_id),
@@ -596,6 +602,15 @@ enum RustTestAuthoringCoordinator {
                                             raw.environment_temperature_kelvin = Float(selection.environmentTemperatureKelvin)
                                             raw.environment_tint = Float(selection.environmentTint)
                                             raw.environment_projection_id = environmentProjectionView
+                                            raw.environment_sphere_center_x_meters = Float(
+                                                selection.environmentSphereCenterXMeters
+                                            )
+                                            raw.environment_sphere_center_y_meters = Float(
+                                                selection.environmentSphereCenterYMeters
+                                            )
+                                            raw.environment_sphere_center_z_meters = Float(
+                                                selection.environmentSphereCenterZMeters
+                                            )
                                             raw.environment_sphere_radius_meters = Float(selection.environmentSphereRadiusMeters)
                                             raw.cover_glow_amount = Float(selection.coverGlowAmount)
                                             raw.lens_preset_id = lensView

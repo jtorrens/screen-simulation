@@ -392,7 +392,7 @@ import Testing
     }
 }
 
-@Test @MainActor func environmentSetupExtendsTheIdealMirrorAndUsesTheSceneOriginSphere() throws {
+@Test @MainActor func environmentSetupUsesTheAuthoredFiniteSphereCenter() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first {
         $0.id == "srgb-encoded-rec709"
@@ -453,6 +453,15 @@ import Testing
     #expect(basePixels.count == translatedPixels.count)
     #expect(zip(basePixels, translatedPixels).contains { abs($0 - $1) > 0.000_01 })
     #expect(translatedPixels[corner + 2] > 0)
+
+    authored.environment.sphereCenterMeters = [0.4, 0, 0]
+    let coTranslated = try renderer.renderEnvironment(
+        environment: environment, device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180,
+        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+    )
+    let coTranslatedPixels = try display.readLinearRGBA(coTranslated.frame)
+    #expect(zip(basePixels, coTranslatedPixels).allSatisfy { abs($0 - $1) < 0.000_1 })
 }
 
 @Test @MainActor func environmentSetupDimsOnlyTheSphereOutsideTheProjectedDevice() throws {

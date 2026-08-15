@@ -42,6 +42,7 @@ final class SetupFramingRenderer {
         var referenceRaster: SIMD4<UInt32>
         var modes: SIMD4<UInt32>
         var environment: SIMD4<Float>
+        var environmentCenter: SIMD4<Float>
         var lensRadialTangential: SIMD4<Float>
         var lensTangentialFocus: SIMD4<Float>
     }
@@ -170,6 +171,11 @@ final class SetupFramingRenderer {
                 Float(authored.environment.rotationYDegrees * .pi / 180),
                 Float(authored.environment.projectionMode),
                 Float(authored.environment.sphereRadiusMeters)
+            ),
+            environmentCenter: SIMD4(
+                Float(authored.environment.sphereCenterMeters[0]),
+                Float(authored.environment.sphereCenterMeters[1]),
+                Float(authored.environment.sphereCenterMeters[2]), 0
             ),
             lensRadialTangential: SIMD4(
                 Float(authored.sceneLens.radialDistortion[0]),
@@ -517,6 +523,7 @@ final class SetupFramingRenderer {
         uint4 reference_raster;
         uint4 modes;
         float4 environment;
+        float4 environment_center;
         float4 lens_radial_tangential;
         float4 lens_tangential_focus;
     };
@@ -708,13 +715,14 @@ final class SetupFramingRenderer {
         float3 reflected = reflected_world;
         if (s.environment.z > 0.5f) {
             const float radius = s.environment.w;
-            const float b = dot(point, reflected);
-            const float c = dot(point, point) - radius * radius;
+            const float3 relative_point = point - s.environment_center.xyz;
+            const float b = dot(relative_point, reflected);
+            const float c = dot(relative_point, relative_point) - radius * radius;
             const float discriminant = b * b - c;
             if (discriminant <= 0.0f) return false;
             const float t = -b + sqrt(discriminant);
             if (t <= 0.0f) return false;
-            reflected = normalize(point + reflected * t);
+            reflected = normalize(relative_point + reflected * t);
         }
         const float3 source = rotate_environment(reflected, s.environment.x, s.environment.y);
         uv = float2(atan2(source.x, source.z) / (2.0f * M_PI_F) + 0.5f,

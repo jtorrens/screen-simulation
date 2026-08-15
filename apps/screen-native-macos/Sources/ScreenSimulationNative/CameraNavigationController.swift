@@ -115,6 +115,51 @@ enum CameraNavigationMath {
     }
 }
 
+enum EnvironmentNavigationMath {
+    static func translatedCenter(
+        start: SIMD3<Double>,
+        radius: Double,
+        cameraRight: SIMD3<Double>,
+        cameraUp: SIMD3<Double>,
+        viewportSize: CGSize,
+        verticalFovRadians: Double,
+        delta: CGSize
+    ) -> SIMD3<Double> {
+        let height = max(1, Double(viewportSize.height))
+        let width = max(1, Double(viewportSize.width))
+        let visibleHeight = 2 * radius * tan(verticalFovRadians * 0.5)
+        let horizontalFov = 2 * atan(tan(verticalFovRadians * 0.5) * width / height)
+        let visibleWidth = 2 * radius * tan(horizontalFov * 0.5)
+        return start
+            + cameraRight * (Double(delta.width) * visibleWidth / width)
+            + cameraUp * (-Double(delta.height) * visibleHeight / height)
+    }
+
+    static func rotations(
+        startX: Double,
+        startY: Double,
+        lockedAxis: inout CameraNavigationLockedAxis?,
+        delta: CGSize
+    ) -> (x: Double, y: Double) {
+        if lockedAxis == nil,
+           hypot(delta.width, delta.height) >= CameraNavigationMath.orbitLockThresholdPixels {
+            lockedAxis = abs(delta.width) >= abs(delta.height) ? .horizontal : .vertical
+        }
+        switch lockedAxis {
+        case .horizontal:
+            return (startX, min(180, max(-180, startY - Double(delta.width) * 0.2)))
+        case .vertical:
+            return (min(90, max(-90, startX + Double(delta.height) * 0.2)), startY)
+        case nil:
+            return (startX, startY)
+        }
+    }
+
+    static func scaledRadius(start: Double, deltaPixels: Double) -> Double {
+        start * exp(deltaPixels * CameraNavigationMath.dollyExponentPerPixel)
+    }
+}
+
 enum ReferenceAnchorCameraMath {
     /// Converts a pixel from the rendered, distorted camera gate into the
     /// equivalent pinhole pixel consumed by the planar pose solver.
