@@ -1306,6 +1306,14 @@ struct ContentView: View {
                     .font(.headline)
                 Spacer()
                 Button {
+                    trackingScenePanel.toggle(model: model)
+                } label: {
+                    Label("Tracking 3D", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+                .controlSize(.small)
+                .disabled(page == .settings)
+                .help("Importar cámara, point cloud y geometrías Alembic")
+                Button {
                     saveNewScene()
                 } label: {
                     Label("Guardar escena", systemImage: "plus.square.on.square")
