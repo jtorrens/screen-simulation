@@ -3071,19 +3071,9 @@ final class WorkspaceModel: ObservableObject {
             atTimelineFrame: currentFrame,
             timelineFrameRate: frameRate
         ) else { return }
-        authored.cameraPose.position = [
-            sample.sourcePosition.x * scale,
-            sample.sourcePosition.y * scale,
-            sample.sourcePosition.z * scale,
-        ]
-        authored.cameraPose.quaternion = [
-            sample.orientation.x, sample.orientation.y,
-            sample.orientation.z, sample.orientation.w,
-        ]
-        authored.cameraLookAt = nil
-        authored.sceneLens.focalLengthMillimeters = camera.focalLengthMillimeters
-        authored.sceneLens.sensorWidthMillimeters = camera.gateWidthMillimeters
-        authored.sceneLens.sensorHeightMillimeters = camera.gateHeightMillimeters
+        Self.applyImportedTrackingCamera(
+            camera, sample: sample, metersPerSourceUnit: scale, to: &authored
+        )
         physicalAuthoringState = authored
         if var selection = testAuthoringSelection {
             let degrees = PoseRotationProjection.degrees(from: authored.cameraPose.quaternion)
@@ -3099,8 +3089,42 @@ final class WorkspaceModel: ObservableObject {
             try? refreshTestAuthoringDescriptor()
         }
         if physicalModel.quality == .setup {
-            publishSetupFraming(authoredOverride: authored)
+            if referenceACEScgFrame != nil {
+                publishReferenceMatchSetup(
+                    resetTargetsToVisibleFrame: false,
+                    authoredOverride: authored
+                )
+            } else {
+                publishSetupFraming(authoredOverride: authored)
+            }
         }
+    }
+
+    private static func applyImportedTrackingCamera(
+        _ camera: TrackingCamera,
+        sample: TrackingCameraSample,
+        metersPerSourceUnit scale: Double,
+        to authored: inout PhysicalPipelineAuthoringState
+    ) {
+        authored.cameraPose.position = [
+            sample.sourcePosition.x * scale,
+            sample.sourcePosition.y * scale,
+            sample.sourcePosition.z * scale,
+        ]
+        authored.cameraPose.quaternion = [
+            sample.orientation.x, sample.orientation.y,
+            sample.orientation.z, sample.orientation.w,
+        ]
+        authored.cameraLookAt = nil
+        authored.sceneLens.focalLengthMillimeters = camera.focalLengthMillimeters
+        authored.sceneLens.sensorWidthMillimeters = camera.gateWidthMillimeters
+        authored.sceneLens.sensorHeightMillimeters = camera.gateHeightMillimeters
+        // The current Alembic camera contract is a calibrated pinhole camera.
+        // Never retain aberrations or shift from the previously selected lens:
+        // they were not part of the solve and move the imported projections.
+        authored.sceneLens.lensShift = [0, 0]
+        authored.sceneLens.radialDistortion = [0, 0, 0]
+        authored.sceneLens.tangentialDistortion = [0, 0]
     }
 
     private func projectTrackingPoint(_ source: SIMD3<Double>) -> CGPoint? {
@@ -3114,6 +3138,7 @@ final class WorkspaceModel: ObservableObject {
         let near: Double
         let cameraWidth: UInt32
         let cameraHeight: UInt32
+        let projectionPlacementID: String
         let lensShift: SIMD2<Double>
         let radialDistortion: SIMD3<Double>
         let tangentialDistortion: SIMD2<Double>
@@ -3129,27 +3154,37 @@ final class WorkspaceModel: ObservableObject {
             gateHeight = authored.sceneLens.sensorHeightMillimeters
             world = source * scale
             near = authored.sceneLens.nearClipMeters
-            cameraWidth = authored.sensor.nativeWidth
-            cameraHeight = authored.sensor.nativeHeight
-            lensShift = SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1])
-            let usesDistortedProjection = switch physicalModel.quality {
-            case .setup: referenceACEScgFrame != nil
-            case .environmentSetup: false
-            case .focusSetup, .draft, .medium, .high, .native: true
+            if trackingCameraEnabled, let reference = referenceACEScgFrame {
+                cameraWidth = UInt32(reference.width)
+                cameraHeight = UInt32(reference.height)
+                projectionPlacementID = referencePlacement.stableID
+                lensShift = .zero
+                radialDistortion = .zero
+                tangentialDistortion = .zero
+            } else {
+                cameraWidth = authored.sensor.nativeWidth
+                cameraHeight = authored.sensor.nativeHeight
+                projectionPlacementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
+                lensShift = SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1])
+                let usesDistortedProjection = switch physicalModel.quality {
+                case .setup: referenceACEScgFrame != nil
+                case .environmentSetup: false
+                case .focusSetup, .draft, .medium, .high, .native: true
+                }
+                radialDistortion = usesDistortedProjection
+                    ? SIMD3(
+                        authored.sceneLens.radialDistortion[0],
+                        authored.sceneLens.radialDistortion[1],
+                        authored.sceneLens.radialDistortion[2]
+                    )
+                    : .zero
+                tangentialDistortion = usesDistortedProjection
+                    ? SIMD2(
+                        authored.sceneLens.tangentialDistortion[0],
+                        authored.sceneLens.tangentialDistortion[1]
+                    )
+                    : .zero
             }
-            radialDistortion = usesDistortedProjection
-                ? SIMD3(
-                    authored.sceneLens.radialDistortion[0],
-                    authored.sceneLens.radialDistortion[1],
-                    authored.sceneLens.radialDistortion[2]
-                )
-                : .zero
-            tangentialDistortion = usesDistortedProjection
-                ? SIMD2(
-                    authored.sceneLens.tangentialDistortion[0],
-                    authored.sceneLens.tangentialDistortion[1]
-                )
-                : .zero
         } else if let imported = selectedTrackingCamera, !imported.samples.isEmpty {
             guard let sample = imported.sample(
                 atTimelineFrame: currentFrame,
@@ -3165,13 +3200,18 @@ final class WorkspaceModel: ObservableObject {
             gateHeight = imported.gateHeightMillimeters
             world = source
             near = 1e-8
-            cameraWidth = physicalAuthoringState?.sensor.nativeWidth
+            cameraWidth = referenceACEScgFrame.map { UInt32($0.width) }
+                ?? physicalAuthoringState?.sensor.nativeWidth
                 ?? UInt32(max(1, frame.width))
-            cameraHeight = physicalAuthoringState?.sensor.nativeHeight
+            cameraHeight = referenceACEScgFrame.map { UInt32($0.height) }
+                ?? physicalAuthoringState?.sensor.nativeHeight
                 ?? UInt32(max(1, frame.height))
             lensShift = .zero
             radialDistortion = .zero
             tangentialDistortion = .zero
+            projectionPlacementID = referenceACEScgFrame == nil
+                ? (testAuthoringSelection?.deliveryPlacementID ?? "fit")
+                : referencePlacement.stableID
         } else { return nil }
         let pose = CameraNavigationPose(position: camera, orientation: q)
         let depth = simd_dot(
@@ -3199,7 +3239,7 @@ final class WorkspaceModel: ObservableObject {
             previewHeight: frame.height,
             cameraWidth: cameraWidth,
             cameraHeight: cameraHeight,
-            deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
+            deliveryPlacementID: projectionPlacementID
         ).first
     }
 
@@ -4503,13 +4543,24 @@ final class WorkspaceModel: ObservableObject {
         guard let reference = referenceACEScgFrame,
               let source = sourceACEScgFrame,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = authoredOverride ?? physicalAuthoringState
+              var authored = authoredOverride ?? physicalAuthoringState
         else { return }
         do {
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: source.texture.device)
             }
             let delivery = referenceDeliveryRasterSize
+            let projectionPlacementID: String
+            if trackingCameraEnabled {
+                authored.sensor.nativeWidth = UInt32(reference.width)
+                authored.sensor.nativeHeight = UInt32(reference.height)
+                authored.sceneLens.lensShift = [0, 0]
+                authored.sceneLens.radialDistortion = [0, 0, 0]
+                authored.sceneLens.tangentialDistortion = [0, 0]
+                projectionPlacementID = referencePlacement.stableID
+            } else {
+                projectionPlacementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
+            }
             let result = try setupFramingRenderer!.renderReferenceMatch(
                 source: source,
                 reference: reference,
@@ -4519,7 +4570,7 @@ final class WorkspaceModel: ObservableObject {
                 pipeline: authored,
                 deliveryWidth: delivery.width,
                 deliveryHeight: delivery.height,
-                deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
+                deliveryPlacementID: projectionPlacementID
             )
             referenceMatchProjectedCorners = result.corners
             if resetTargetsToVisibleFrame {
@@ -5317,6 +5368,20 @@ final class WorkspaceModel: ObservableObject {
         selectedCapturePresetID = capture.id
         selectedCaptureRasterModeID = selection.captureRasterModeID
         selectedLensPresetID = selection.lensPresetID
+        if trackingCameraEnabled,
+           let scale = trackingMetersPerSourceUnit,
+           let camera = selectedTrackingCamera,
+           let sample = camera.sample(
+               atTimelineFrame: currentFrame,
+               timelineFrameRate: frameRate
+           ) {
+            Self.applyImportedTrackingCamera(
+                camera,
+                sample: sample,
+                metersPerSourceUnit: scale,
+                to: &authored
+            )
+        }
         physicalAuthoringState = authored
         resolvedPhysicalPipeline = try authored.resolvedPipeline()
         baseModelDeviceDefinition = device

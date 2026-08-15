@@ -80,6 +80,29 @@ import Testing
     #expect(abs(shiftedPoint.y - 269.5) < 0.000_001)
 }
 
+@Test func trackingPlateScalesFromHDToUHDWithoutChangingCameraGeometry() throws {
+    let platePoints = [
+        CGPoint(x: -0.5, y: -0.5),
+        CGPoint(x: 959.5, y: 539.5),
+        CGPoint(x: 1_919.5, y: 1_079.5),
+    ]
+    let output = try ReferenceMatchRasterMapping.previewPoints(
+        platePoints,
+        deliveryWidth: 3_840,
+        deliveryHeight: 2_160,
+        previewWidth: 3_840,
+        previewHeight: 2_160,
+        cameraWidth: 1_920,
+        cameraHeight: 1_080,
+        deliveryPlacementID: "fill-crop"
+    )
+    #expect(output == [
+        CGPoint(x: -0.5, y: -0.5),
+        CGPoint(x: 1_919.5, y: 1_079.5),
+        CGPoint(x: 3_839.5, y: 2_159.5),
+    ])
+}
+
 @Test func referenceMovieIsTheTimelineAuthorityWhileItRemainsLoaded() throws {
     let source = NativeVideoTimelineInfo(exactFrameRate: .fps24, frameCount: 120)
     let reference = NativeVideoTimelineInfo(
