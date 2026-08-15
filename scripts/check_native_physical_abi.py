@@ -42,6 +42,8 @@ RETIRED_TOKENS = (
     "ScreenTestAuthoringSelectionV9",
     "ScreenCapturePresetParametersV1",
     "SCREEN_AUTHORING_CATALOG_ABI_VERSION 2",
+    "SCREEN_PHYSICAL_FRAME_ABI_VERSION 17",
+    "SCREEN_TEST_AUTHORING_ABI_VERSION 29",
 )
 
 RETIRED_SOURCE_PATTERNS = (
@@ -82,7 +84,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 17u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 18u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
         "screen_physical_frame_submit",
@@ -94,7 +96,7 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 29u",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 30u",
         "ScreenTestAuthoringSelectionV22",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
@@ -108,11 +110,11 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 17",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 18",
         "ScreenPhysicalStageDescriptorV1",
         "screen_physical_stage_descriptor",
         "ScreenPhysicalStageContributionV3",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 29",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 30",
         "ScreenTestAuthoringSelectionV22",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
