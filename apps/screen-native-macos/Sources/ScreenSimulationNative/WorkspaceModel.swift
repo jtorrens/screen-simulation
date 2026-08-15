@@ -3542,10 +3542,20 @@ final class WorkspaceModel: ObservableObject {
         let source = try await renderFrame(index)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
+        guard let selection = testAuthoringSelection else {
+            throw PhysicalMetalFrameEngineError.bridge(
+                "Render Queue no pudo resolver el Raster de entrega guardado."
+            )
+        }
+        let queueDimensions = try Self.queuedNativeDimensions(
+            deliveryWidth: selection.deliveryWidth,
+            deliveryHeight: selection.deliveryHeight
+        )
         let job = try submitPhysicalJob(
             quality: .native,
             temporalSamplesOverride: configuration.motionBlurEnabled
-                ? configuration.motionSamples : 1
+                ? configuration.motionSamples : 1,
+            requestedDimensionsOverride: queueDimensions
         )
         while true {
             try Task.checkCancellation()
@@ -3562,8 +3572,7 @@ final class WorkspaceModel: ObservableObject {
                 )
             case .complete:
                 guard snapshot.returnedIntermediate == .cameraRenderedACEScg,
-                      let camera = snapshot.frame,
-                      let selection = testAuthoringSelection
+                      let camera = snapshot.frame
                 else {
                     throw PhysicalMetalFrameEngineError.bridge(
                         "Render Queue no recibió el checkpoint de cámara solicitado."
@@ -5185,7 +5194,8 @@ final class WorkspaceModel: ObservableObject {
 
     private func submitPhysicalJob(
         quality: PhysicalQuality,
-        temporalSamplesOverride: UInt16? = nil
+        temporalSamplesOverride: UInt16? = nil,
+        requestedDimensionsOverride: PhysicalDimensions? = nil
     ) throws -> PhysicalMetalFrameJob {
         guard let sourceACEScgFrame else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
@@ -5280,10 +5290,11 @@ final class WorkspaceModel: ObservableObject {
             timeNumerator: timeNumerator,
             timeDenominator: exactFrameRate.numerator
         )
-        let requestedDimensions = try physicalRequestedDimensions(
-            quality: quality,
-            device: resolvedDevice.definition
-        )
+        let requestedDimensions = try requestedDimensionsOverride
+            ?? physicalRequestedDimensions(
+                quality: quality,
+                device: resolvedDevice.definition
+            )
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
@@ -5898,6 +5909,16 @@ final class WorkspaceModel: ObservableObject {
         return try PhysicalDimensions(
             width: min(device.nativeWidth, max(1, Int(Double(width) * scale))),
             height: min(device.nativeHeight, max(1, Int(Double(height) * scale)))
+        )
+    }
+
+    static func queuedNativeDimensions(
+        deliveryWidth: UInt32,
+        deliveryHeight: UInt32
+    ) throws -> PhysicalDimensions {
+        try PhysicalDimensions(
+            width: Int(deliveryWidth),
+            height: Int(deliveryHeight)
         )
     }
 
