@@ -4112,25 +4112,32 @@ final class WorkspaceModel: ObservableObject {
         undoManager: UndoManager?
     ) throws {
         try validatePhysicalSettingsResources(imported)
-        guard let priorDevice = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let priorPipeline = physicalAuthoringState
-        else { throw PhysicalSettingsExchange.ImportError.invalidModel }
-        let prior = ImportedPhysicalState(
-            device: priorDevice,
-            pipeline: priorPipeline,
-            model: physicalModel.authoringState,
-            context: currentSettingsContext()
-        )
+        let prior: ImportedPhysicalState?
+        if undoManager != nil {
+            guard let priorDevice = modelDeviceDefinition ?? resolvedDevice?.definition,
+                  let priorPipeline = physicalAuthoringState
+            else { throw PhysicalSettingsExchange.ImportError.invalidModel }
+            prior = ImportedPhysicalState(
+                device: priorDevice,
+                pipeline: priorPipeline,
+                model: physicalModel.authoringState,
+                context: currentSettingsContext()
+            )
+        } else {
+            prior = nil
+        }
         try restoreImportedPhysicalState(.init(
             device: imported.device,
             pipeline: imported.pipeline,
             model: imported.model,
             context: imported.context
         ))
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in try? target.restoreImportedPhysicalState(prior) }
+        if let undoManager, let prior {
+            undoManager.registerUndo(withTarget: self) { target in
+                Task { @MainActor in try? target.restoreImportedPhysicalState(prior) }
+            }
+            undoManager.setActionName("Importar ajustes físicos")
         }
-        undoManager?.setActionName("Importar ajustes físicos")
     }
 
     private func validatePhysicalSettingsResources(

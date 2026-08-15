@@ -71,6 +71,30 @@ import Testing
     #expect(controller.jobs.first?.configuration.motionSamples == 8)
 }
 
+@Test @MainActor func isolatedQueueWorkspaceRestoresAStrictSavedSceneWithoutPriorState() async throws {
+    let source = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    source.selectModelDevice(device, coverGlass: cover)
+    let capture = try source.captureSavedScene()
+    let id = UUID()
+    let scene = SavedScene(
+        id: id,
+        name: "Render aislado",
+        thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: capture.snapshot
+    )
+
+    let executor = WorkspaceModel()
+    await executor.openSavedScene(scene, undoManager: nil)
+
+    #expect(executor.errorMessage == nil)
+    #expect(try executor.captureSavedScene().snapshot.settingsDocument
+        == capture.snapshot.settingsDocument)
+}
+
 private func outputQueueTestScene(name: String) -> SavedScene {
     let id = UUID()
     return SavedScene(
