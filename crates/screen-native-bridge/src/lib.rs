@@ -39,7 +39,8 @@ use screen_cover::{
 };
 use screen_geometry::{
     KeyframeInterpolation, LENS_PRESETS, LensModel, LensPresetAuthority, PlanarReferenceMatch,
-    Quaternion, TransformKeyframe, TransformTrack, solve_planar_reference_camera,
+    Quaternion, TrackingScaleCalibration, TransformKeyframe, TransformTrack,
+    solve_planar_reference_camera,
 };
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, FlatPanelQuality, LcdProfile, PanelColorimetry,
@@ -101,6 +102,55 @@ pub struct ScreenMatchedCameraPoseV1 {
 }
 
 pub const SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION: u32 = 1;
+pub const SCREEN_TRACKING_SCALE_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenTrackingScaleCalibrationV1 {
+    abi_version: u32,
+    first_point_xyz: [f32; 3],
+    second_point_xyz: [f32; 3],
+    measured_distance_meters: f32,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_geometry_resolve_tracking_scale_v1(
+    request: *const ScreenTrackingScaleCalibrationV1,
+    meters_per_source_unit: *mut f32,
+    error_message: *mut *const c_char,
+) -> bool {
+    if request.is_null() || meters_per_source_unit.is_null() {
+        unsafe { set_error(error_message, b"invalid tracking scale request\0") };
+        return false;
+    }
+    let request = unsafe { *request };
+    if request.abi_version != SCREEN_TRACKING_SCALE_ABI_VERSION {
+        unsafe { set_error(error_message, b"invalid tracking scale ABI\0") };
+        return false;
+    }
+    let point = |value: [f32; 3]| Vec3 {
+        x: value[0],
+        y: value[1],
+        z: value[2],
+    };
+    match (TrackingScaleCalibration {
+        first_point: point(request.first_point_xyz),
+        second_point: point(request.second_point_xyz),
+        measured_distance: Meters(request.measured_distance_meters),
+    })
+    .meters_per_source_unit()
+    {
+        Ok(value) => unsafe {
+            *meters_per_source_unit = value;
+            set_error(error_message, b"\0");
+            true
+        },
+        Err(_) => {
+            unsafe { set_error(error_message, b"tracking scale calibration failed\0") };
+            false
+        }
+    }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
@@ -4442,6 +4492,25 @@ unsafe fn set_error(destination: *mut *const c_char, message: &'static [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracking_scale_bridge_uses_the_geometry_owner_and_rejects_old_abi() {
+        let mut request = ScreenTrackingScaleCalibrationV1 {
+            abi_version: SCREEN_TRACKING_SCALE_ABI_VERSION,
+            first_point_xyz: [0.0, 0.0, 0.0],
+            second_point_xyz: [3.0, 4.0, 0.0],
+            measured_distance_meters: 2.5,
+        };
+        let mut scale = 0.0;
+        assert!(unsafe {
+            screen_geometry_resolve_tracking_scale_v1(&request, &mut scale, std::ptr::null_mut())
+        });
+        assert_eq!(scale, 0.5);
+        request.abi_version -= 1;
+        assert!(!unsafe {
+            screen_geometry_resolve_tracking_scale_v1(&request, &mut scale, std::ptr::null_mut())
+        });
+    }
 
     #[test]
     fn reflection_environment_bridge_compiles_typed_emitters_and_rejects_old_abi() {

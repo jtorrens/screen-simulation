@@ -657,6 +657,32 @@ impl TransformSample {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrackingScaleCalibration {
+    pub first_point: Vec3,
+    pub second_point: Vec3,
+    pub measured_distance: Meters,
+}
+
+impl TrackingScaleCalibration {
+    pub fn meters_per_source_unit(self) -> Result<f32, GeometryError> {
+        let delta = subtract(self.second_point, self.first_point);
+        let source_distance = dot(delta, delta).sqrt();
+        if !source_distance.is_finite()
+            || source_distance <= 1.0e-8
+            || !self.measured_distance.0.is_finite()
+            || self.measured_distance.0 <= 0.0
+        {
+            return Err(GeometryError::InvalidTrackingScaleCalibration);
+        }
+        let scale = self.measured_distance.0 / source_distance;
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(GeometryError::InvalidTrackingScaleCalibration);
+        }
+        Ok(scale)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct CameraIntrinsicsKeyframe {
     pub id: String,
@@ -1972,6 +1998,7 @@ pub enum GeometryError {
     InvalidReferenceMatch,
     ReferenceMatchBehindCamera,
     ReferenceMatchReprojectionFailed,
+    InvalidTrackingScaleCalibration,
 }
 
 impl fmt::Display for GeometryError {
@@ -2003,6 +2030,9 @@ impl fmt::Display for GeometryError {
             Self::ReferenceMatchReprojectionFailed => {
                 "reference match cannot reproduce all four corners"
             }
+            Self::InvalidTrackingScaleCalibration => {
+                "tracking scale requires two distinct finite points and a positive measured distance"
+            }
         })
     }
 }
@@ -2012,6 +2042,44 @@ impl std::error::Error for GeometryError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tracking_scale_is_resolved_only_from_two_points_and_authored_distance() {
+        let calibration = TrackingScaleCalibration {
+            first_point: Vec3 {
+                x: -2.0,
+                y: 1.0,
+                z: 4.0,
+            },
+            second_point: Vec3 {
+                x: 1.0,
+                y: 5.0,
+                z: 4.0,
+            },
+            measured_distance: Meters(2.5),
+        };
+        assert_eq!(calibration.meters_per_source_unit().unwrap(), 0.5);
+    }
+
+    #[test]
+    fn tracking_scale_rejects_coincident_points_and_invalid_distance() {
+        let point = Vec3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        };
+        for measured_distance in [0.0, -1.0, f32::NAN] {
+            assert_eq!(
+                TrackingScaleCalibration {
+                    first_point: point,
+                    second_point: point,
+                    measured_distance: Meters(measured_distance),
+                }
+                .meters_per_source_unit(),
+                Err(GeometryError::InvalidTrackingScaleCalibration)
+            );
+        }
+    }
 
     #[test]
     fn orbit_yaw_pitch_rotation_looks_from_spherical_position_to_origin() {

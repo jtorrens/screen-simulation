@@ -398,6 +398,20 @@ typedef struct {
     float maximum_reprojection_error_pixels;
 } ScreenMatchedCameraPoseV1;
 
+#define SCREEN_TRACKING_SCALE_ABI_VERSION 1u
+typedef struct {
+    uint32_t abi_version;
+    float first_point_xyz[3];
+    float second_point_xyz[3];
+    float measured_distance_meters;
+} ScreenTrackingScaleCalibrationV1;
+
+bool screen_geometry_resolve_tracking_scale_v1(
+    const ScreenTrackingScaleCalibrationV1 *request,
+    float *meters_per_source_unit,
+    const char **error_message
+);
+
 #define SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION 2u
 typedef struct {
     uint32_t abi_version;
