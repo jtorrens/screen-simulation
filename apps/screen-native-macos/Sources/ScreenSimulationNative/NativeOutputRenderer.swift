@@ -173,6 +173,17 @@ enum NativeOutputRenderer {
         format: StudioOutputFormat,
         configuration: StudioResolvedRenderConfiguration
     ) throws {
+        guard format.supports(target: configuration.target) else {
+            throw NativeOutputError.unsupported(
+                "\(format.displayName) no admite el destino \(configuration.target.rawValue)"
+            )
+        }
+        guard !configuration.motionBlurEnabled
+            || (2...64).contains(configuration.motionSamples) else {
+            throw NativeOutputError.unsupported(
+                "el desenfoque de movimiento requiere entre 2 y 64 muestras temporales"
+            )
+        }
         guard format.supportedPixelEncodings.contains(configuration.pixelEncoding) else {
             throw NativeOutputError.unsupported(
                 "\(format.displayName) no admite \(configuration.pixelEncoding.label)"
@@ -183,28 +194,6 @@ enum NativeOutputRenderer {
             throw NativeOutputError.unsupported(
                 "\(configuration.pixelEncoding.label) no admite rango \(configuration.signalRange.label) en el writer vigente"
             )
-        }
-        switch format {
-        case .h264Low, .h264Medium, .h264High:
-            guard configuration.target == .sdr else {
-                throw NativeOutputError.unsupported("H.264 requiere una ODT SDR")
-            }
-        case .h265Low, .h265Medium, .h265High:
-            guard configuration.target == .hdr else {
-                throw NativeOutputError.unsupported("H.265 requiere una ODT HDR")
-            }
-        case .proRes4444, .proRes4444XQ:
-            guard configuration.target == .sdr || configuration.target == .hdr else {
-                throw NativeOutputError.unsupported("ProRes 4444 requiere una ODT SDR/HDR")
-            }
-        case .openEXR:
-            guard configuration.target == .acescg || configuration.target == .aces2065 else {
-                throw NativeOutputError.unsupported("OpenEXR requiere ACEScg o ACES2065-1")
-            }
-        case .dpx10RGB, .tiff16:
-            guard configuration.target == .sdr || configuration.target == .hdr else {
-                throw NativeOutputError.unsupported("la secuencia display-referred requiere ODT")
-            }
         }
     }
 

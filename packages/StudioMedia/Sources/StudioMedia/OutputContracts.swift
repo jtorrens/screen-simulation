@@ -98,6 +98,19 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
         supportedPixelEncodings[0]
     }
 
+    public func supports(target: StudioRenderTarget) -> Bool {
+        switch self {
+        case .h264Low, .h264Medium, .h264High:
+            target == .sdr
+        case .h265Low, .h265Medium, .h265High:
+            target == .hdr
+        case .proRes4444, .proRes4444XQ, .dpx10RGB, .tiff16:
+            target == .sdr || target == .hdr
+        case .openEXR:
+            target == .acescg || target == .aces2065
+        }
+    }
+
     public func supportedSignalRanges(
         for encoding: StudioPixelEncoding
     ) -> [StudioSignalRange] {
@@ -199,6 +212,8 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
 /// fields and is never retained as a dynamic dependency.
 public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let composition: StudioRenderComposition
+    public let motionBlurEnabled: Bool
+    public let motionSamples: UInt16
     public let format: StudioOutputFormat
     public let pipeline: StudioRenderPipeline
     public let target: StudioRenderTarget
@@ -215,6 +230,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
 
     public init(
         composition: StudioRenderComposition,
+        motionBlurEnabled: Bool,
+        motionSamples: UInt16,
         format: StudioOutputFormat,
         pipeline: StudioRenderPipeline,
         target: StudioRenderTarget,
@@ -230,6 +247,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         lastFrame: Int
     ) {
         self.composition = composition
+        self.motionBlurEnabled = motionBlurEnabled
+        self.motionSamples = motionSamples
         self.format = format
         self.pipeline = pipeline
         self.target = target

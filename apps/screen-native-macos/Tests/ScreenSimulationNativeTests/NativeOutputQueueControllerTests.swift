@@ -67,6 +67,8 @@ import Testing
     #expect(controller.jobs.first?.scene.name == "Guardada")
     #expect(controller.jobs.first?.generatedEnvironmentEXR == Data([1, 2, 3]))
     #expect(controller.jobs.first?.scene.snapshot == outputQueueTestScene(name: "Otra").snapshot)
+    #expect(controller.jobs.first?.configuration.motionBlurEnabled == true)
+    #expect(controller.jobs.first?.configuration.motionSamples == 8)
 }
 
 private func outputQueueTestScene(name: String) -> SavedScene {
@@ -97,6 +99,8 @@ private func outputQueueTestScene(name: String) -> SavedScene {
 private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
         composition: .deviceOnly,
+        motionBlurEnabled: true,
+        motionSamples: 8,
         format: .proRes4444,
         pipeline: .aces,
         target: .sdr,

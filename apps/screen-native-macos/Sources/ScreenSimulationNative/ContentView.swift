@@ -95,6 +95,7 @@ struct ContentView: View {
     @State private var sidebarIsVisible = true
     @State private var pendingSceneAction: PendingSceneAction?
     @State private var pendingScene: SavedScene?
+    @State private var pendingRenderScene: SavedScene?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -159,6 +160,9 @@ struct ContentView: View {
             )
         ) { Button("Aceptar") { model.errorMessage = nil } }
         message: { Text(model.errorMessage ?? "") }
+        .sheet(item: $pendingRenderScene) { scene in
+            renderOptionsSheet(scene)
+        }
         .confirmationDialog(
             "¿Eliminar \(pendingLibraryDeletion?.rawValue ?? "elemento")?",
             isPresented: Binding(
@@ -1394,7 +1398,8 @@ struct ContentView: View {
             if try model.savedSceneNeedsUpdate(scene) {
                 requestSceneAction(.renderAfterUpdate, scene: scene)
             } else {
-                model.enqueueSavedScene(scene)
+                model.ensureRenderOptionsCompatible()
+                pendingRenderScene = scene
             }
         } catch {
             model.errorMessage = error.localizedDescription
@@ -1429,12 +1434,123 @@ struct ContentView: View {
                 guard let updated = scenes.scene(id: scene.id) else {
                     throw SceneLibraryError.inaccessible("La escena actualizada no existe.")
                 }
-                model.enqueueSavedScene(updated)
+                model.ensureRenderOptionsCompatible()
+                pendingRenderScene = updated
             } catch { model.errorMessage = error.localizedDescription }
         case .delete:
             do { try scenes.delete(scene) }
             catch { model.errorMessage = error.localizedDescription }
         }
+    }
+
+    private func renderOptionsSheet(_ scene: SavedScene) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Opciones de render")
+                        .font(.headline)
+                    Text(scene.name)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding()
+            Divider()
+            Form {
+                Section("Salida") {
+                    Picker("Preset", selection: Binding(
+                        get: { model.renderPreset },
+                        set: { model.applyRenderPreset($0) }
+                    )) {
+                        ForEach(library.allRenderPresets) { preset in
+                            Text(preset.name).tag(preset)
+                        }
+                    }
+                    Picker("Formato", selection: Binding(
+                        get: { model.outputFormat },
+                        set: { model.changeOutputFormat($0) }
+                    )) {
+                        ForEach(StudioOutputFormat.allCases.filter {
+                            $0.supports(target: model.renderPreset.target)
+                        }) { format in
+                            Text(format.displayName).tag(format)
+                        }
+                    }
+                    Picker("Composición", selection: $model.renderComposition) {
+                        ForEach(StudioRenderComposition.allCases) { composition in
+                            Text(composition.label).tag(composition)
+                        }
+                    }
+                    Picker("Rango", selection: $model.renderRange) {
+                        Text("Todo").tag(StudioRenderRange.all)
+                        Text("IN / OUT").tag(StudioRenderRange.inOut)
+                    }
+                    if model.renderRange == .inOut {
+                        LabeledContent("IN") {
+                            TextField("IN", value: $model.inFrame, format: .number)
+                                .frame(width: 90)
+                        }
+                        LabeledContent("OUT") {
+                            TextField("OUT", value: $model.outFrame, format: .number)
+                                .frame(width: 90)
+                        }
+                    }
+                }
+                Section("Movimiento") {
+                    Toggle("Desenfoque de movimiento", isOn: $model.renderMotionBlurEnabled)
+                    LabeledContent("Muestras temporales") {
+                        Stepper(
+                            value: $model.renderMotionSamples,
+                            in: 2...64,
+                            step: 1
+                        ) {
+                            Text("\(model.renderMotionSamples)")
+                                .monospacedDigit()
+                                .frame(width: 34, alignment: .trailing)
+                        }
+                    }
+                    .disabled(!model.renderMotionBlurEnabled)
+                    Text("Integra cámara, Device y emisión durante el intervalo físico de obturación. No aplica un blur 2D posterior.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Codificación") {
+                    LabeledContent("Píxel", value: model.outputPixelEncoding.label)
+                    Picker("Rango de señal", selection: $model.outputSignalRange) {
+                        ForEach(StudioSignalRange.allCases) { range in
+                            Text(range.label).tag(range)
+                                .disabled(!model.outputFormat.supportedSignalRanges(
+                                    for: model.outputPixelEncoding
+                                ).contains(range))
+                        }
+                    }
+                    Picker("Alpha", selection: $model.outputAlphaMode) {
+                        ForEach(StudioAlphaMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .disabled(!model.outputFormat.supportsAlpha)
+                    Toggle("Audio", isOn: $model.includeAudio)
+                        .disabled(!model.outputFormat.isMovie)
+                }
+            }
+            .formStyle(.grouped)
+            Divider()
+            HStack {
+                Button("Cancelar") { pendingRenderScene = nil }
+                Spacer()
+                Button("Elegir destino y añadir") {
+                    pendingRenderScene = nil
+                    DispatchQueue.main.async {
+                        model.enqueueSavedScene(scene)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding()
+        }
+        .frame(width: 520, height: 610)
     }
 
     private var testSetupPanel: some View {
@@ -1803,7 +1919,9 @@ struct ContentView: View {
                     get: { model.outputFormat },
                     set: { model.changeOutputFormat($0) }
                 )) {
-                    ForEach(StudioOutputFormat.allCases) { Text($0.displayName).tag($0) }
+                    ForEach(StudioOutputFormat.allCases.filter {
+                        $0.supports(target: model.renderPreset.target)
+                    }) { Text($0.displayName).tag($0) }
                 }
                 LabeledContent("Codificación", value: model.outputPixelEncoding.label)
                 Picker("Rango de señal", selection: $model.outputSignalRange) {
@@ -1823,6 +1941,13 @@ struct ContentView: View {
                         Text(composition.label).tag(composition)
                     }
                 }
+                Toggle("Desenfoque de movimiento", isOn: $model.renderMotionBlurEnabled)
+                Stepper(
+                    "Muestras temporales · \(model.renderMotionSamples)",
+                    value: $model.renderMotionSamples,
+                    in: 2...64
+                )
+                .disabled(!model.renderMotionBlurEnabled)
                 Picker("Alpha", selection: $model.outputAlphaMode) {
                     ForEach(StudioAlphaMode.allCases) { Text($0.label).tag($0) }
                 }

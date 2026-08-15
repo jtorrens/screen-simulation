@@ -268,6 +268,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var outFrame = 0
     @Published var renderRange = StudioRenderRange.all
     @Published var renderComposition = StudioRenderComposition.deviceOnly
+    @Published var renderMotionBlurEnabled = true
+    @Published var renderMotionSamples: UInt16 = 8
     @Published var loopPlayback = false
     @Published var outputFormat = StudioOutputFormat.proRes4444
     @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
@@ -3340,6 +3342,18 @@ final class WorkspaceModel: ObservableObject {
         includeAudio = preset.includeAudio
     }
 
+    func ensureRenderOptionsCompatible() {
+        guard !outputFormat.supports(target: renderPreset.target) else { return }
+        let replacement = renderPreset.format.supports(target: renderPreset.target)
+            ? renderPreset.format
+            : StudioOutputFormat.allCases.first {
+                $0.supports(target: renderPreset.target)
+            }
+        if let replacement {
+            changeOutputFormat(replacement)
+        }
+    }
+
     func savedSceneNeedsUpdate(_ scene: SavedScene) throws -> Bool {
         guard activeSceneID == scene.id else { return false }
         let capture = try captureSavedScene()
@@ -3401,6 +3415,8 @@ final class WorkspaceModel: ObservableObject {
         ).exactFrameRate
         let configuration = StudioResolvedRenderConfiguration(
             composition: renderComposition,
+            motionBlurEnabled: renderMotionBlurEnabled,
+            motionSamples: renderMotionSamples,
             format: outputFormat,
             pipeline: renderPreset.pipeline,
             target: renderPreset.target,
@@ -3451,7 +3467,7 @@ final class WorkspaceModel: ObservableObject {
                     frameProvider: { frame in
                         try await executor.renderQueuedSceneFrame(
                             frame,
-                            composition: job.configuration.composition
+                            configuration: job.configuration
                         )
                     },
                     progress: progress
@@ -3518,7 +3534,7 @@ final class WorkspaceModel: ObservableObject {
 
     private func renderQueuedSceneFrame(
         _ index: Int,
-        composition: StudioRenderComposition
+        configuration: StudioResolvedRenderConfiguration
     ) async throws -> StudioColorMetalFrame {
         try Task.checkCancellation()
         currentFrame = index
@@ -3526,7 +3542,11 @@ final class WorkspaceModel: ObservableObject {
         let source = try await renderFrame(index)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
-        let job = try submitPhysicalJob(quality: .native)
+        let job = try submitPhysicalJob(
+            quality: .native,
+            temporalSamplesOverride: configuration.motionBlurEnabled
+                ? configuration.motionSamples : 1
+        )
         while true {
             try Task.checkCancellation()
             let snapshot = try job.snapshot()
@@ -3557,7 +3577,9 @@ final class WorkspaceModel: ObservableObject {
                     backgroundID: selection.deliveryBackgroundID,
                     display: metalDisplay
                 )
-                guard composition == .deviceWithReference else { return delivery }
+                guard configuration.composition == .deviceWithReference else {
+                    return delivery
+                }
                 guard referenceSourceURL != nil else {
                     throw SceneLibraryError.invalidDocument(
                         "La composición pide referencia, pero la escena no contiene una."
@@ -5155,7 +5177,8 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func submitPhysicalJob(
-        quality: PhysicalQuality
+        quality: PhysicalQuality,
+        temporalSamplesOverride: UInt16? = nil
     ) throws -> PhysicalMetalFrameJob {
         guard let sourceACEScgFrame else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
@@ -5170,10 +5193,19 @@ final class WorkspaceModel: ObservableObject {
                 "El modelo físico necesita un snapshot completo resuelto."
             )
         }
-        guard let physicalAuthoringState else {
+        guard var effectiveAuthoringState = physicalAuthoringState else {
             throw DeviceDomainError.invalidPhysicalProfile(
                 "El modelo físico necesita overrides de proyecto resueltos."
             )
+        }
+        if let temporalSamplesOverride {
+            guard (1...64).contains(temporalSamplesOverride) else {
+                throw DeviceDomainError.invalidPhysicalProfile(
+                    "Las muestras de desenfoque deben estar entre 1 y 64."
+                )
+            }
+            effectiveAuthoringState.shutterMotion.temporalSamples = temporalSamplesOverride
+            try effectiveAuthoringState.validate()
         }
         let outputSignal = try resolvedOutputSignal()
         let authoringSelection = currentTestAuthoringSelection()
@@ -5222,7 +5254,7 @@ final class WorkspaceModel: ObservableObject {
         )
         physicalPublicationSummary = "Source \(sourceACEScgFrame.width)×\(sourceACEScgFrame.height) · Device \(deviceSignal.width)×\(deviceSignal.height) · \(quality.uiLabel)/\(requestedPhysicalIntermediate.uiLabel) · enviado"
         physicalPublicationLog.notice(
-            "submit source=\(sourceACEScgFrame.width)x\(sourceACEScgFrame.height) device=\(deviceSignal.width)x\(deviceSignal.height) quality=\(quality.uiLabel, privacy: .public) intermediate=\(self.requestedPhysicalIntermediate.uiLabel, privacy: .public) cameraZ=\(physicalAuthoringState.cameraPose.position[2])"
+            "submit source=\(sourceACEScgFrame.width)x\(sourceACEScgFrame.height) device=\(deviceSignal.width)x\(deviceSignal.height) quality=\(quality.uiLabel, privacy: .public) intermediate=\(self.requestedPhysicalIntermediate.uiLabel, privacy: .public) cameraZ=\(effectiveAuthoringState.cameraPose.position[2])"
         )
         let exactFrameRate = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
@@ -5249,7 +5281,7 @@ final class WorkspaceModel: ObservableObject {
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
             environmentACEScg: environmentRadianceFrame,
-            orchestration: try physicalAuthoringState.orchestration(for: selection),
+            orchestration: try effectiveAuthoringState.orchestration(for: selection),
             resolvedDevice: effectiveDevice,
             resolvedPipeline: effectivePipeline,
             quality: quality,

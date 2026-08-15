@@ -487,6 +487,8 @@ private func renderConfiguration(
     }
     return StudioResolvedRenderConfiguration(
         composition: .deviceOnly,
+        motionBlurEnabled: false,
+        motionSamples: 8,
         format: format,
         pipeline: preset.pipeline,
         target: preset.target,

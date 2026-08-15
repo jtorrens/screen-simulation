@@ -49,6 +49,8 @@ import Testing
     let exactFrameRate = try StudioFrameRate(numerator: 24_000, denominator: 1_001)
     let configuration = StudioResolvedRenderConfiguration(
         composition: .deviceOnly,
+        motionBlurEnabled: true,
+        motionSamples: 8,
         format: .proRes4444,
         pipeline: preset.pipeline,
         target: preset.target,
@@ -96,4 +98,16 @@ import Testing
     #expect(StudioOutputFormat.proRes4444.supportedSignalRanges(for: .yuv44412) == [.video])
     #expect(StudioOutputFormat.openEXR.supportedPixelEncodings == [.rgba16Float])
     #expect(StudioOutputFormat.openEXR.supportedSignalRanges(for: .rgba16Float) == [.full])
+}
+
+@Test func outputFormatsDeclareTheirRenderTargetCompatibility() {
+    #expect(StudioOutputFormat.h264High.supports(target: .sdr))
+    #expect(!StudioOutputFormat.h264High.supports(target: .hdr))
+    #expect(StudioOutputFormat.h265High.supports(target: .hdr))
+    #expect(!StudioOutputFormat.h265High.supports(target: .sdr))
+    #expect(StudioOutputFormat.openEXR.supports(target: .acescg))
+    #expect(StudioOutputFormat.openEXR.supports(target: .aces2065))
+    #expect(!StudioOutputFormat.openEXR.supports(target: .sdr))
+    #expect(StudioOutputFormat.proRes4444.supports(target: .sdr))
+    #expect(StudioOutputFormat.proRes4444.supports(target: .hdr))
 }
