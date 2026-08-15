@@ -272,30 +272,38 @@ private struct EnvironmentReflectionFramingPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Encuadra el panorama en plano sobre el Device. Al generar se reproyecta a un EXR 2:1 para la cámara y pantalla actuales.")
                 .font(.caption).foregroundStyle(.secondary)
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 9) {
-                row("Centro X", value: model.environmentReflectionFraming.centerX, range: 0 ... 1) {
-                    model.updateEnvironmentReflectionFraming(centerX: $0)
+            if model.environmentReflectionFramingEnabled {
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 9) {
+                    row("Centro X", value: model.environmentReflectionFraming.centerX, range: 0 ... 1) {
+                        model.updateEnvironmentReflectionFraming(centerX: $0)
+                    }
+                    row("Centro Y", value: model.environmentReflectionFraming.centerY, range: 0 ... 1) {
+                        model.updateEnvironmentReflectionFraming(centerY: $0)
+                    }
+                    row("Zoom", value: model.environmentReflectionFraming.zoom, range: 0.1 ... 20) {
+                        model.updateEnvironmentReflectionFraming(zoom: $0)
+                    }
+                    row("Rotación Z", value: model.environmentReflectionFraming.rollDegrees, range: -180 ... 180) {
+                        model.updateEnvironmentReflectionFraming(rollDegrees: $0)
+                    }
                 }
-                row("Centro Y", value: model.environmentReflectionFraming.centerY, range: 0 ... 1) {
-                    model.updateEnvironmentReflectionFraming(centerY: $0)
+                Text("MMB: desplazar · Alt+MMB: rotar · Shift+MMB o rueda: zoom")
+                    .font(.caption2).foregroundStyle(.secondary)
+                HStack {
+                    Button("Restablecer") { model.resetEnvironmentReflectionFraming() }
+                    Spacer()
+                    Button("Generar y usar") {
+                        Task { await model.generateAndUseFramedEnvironment() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.environmentReflectionFramingIsGenerating)
                 }
-                row("Zoom", value: model.environmentReflectionFraming.zoom, range: 0.1 ... 20) {
-                    model.updateEnvironmentReflectionFraming(zoom: $0)
+            } else {
+                Text("El EXR reproyectado está activo. Puedes volver a encuadrar conservando la fuente original de esta sesión.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Volver a encuadrar") {
+                    model.setEnvironmentReflectionFramingEnabled(true)
                 }
-                row("Rotación Z", value: model.environmentReflectionFraming.rollDegrees, range: -180 ... 180) {
-                    model.updateEnvironmentReflectionFraming(rollDegrees: $0)
-                }
-            }
-            Text("MMB: desplazar · Alt+MMB: rotar · Shift+MMB o rueda: zoom")
-                .font(.caption2).foregroundStyle(.secondary)
-            HStack {
-                Button("Restablecer") { model.resetEnvironmentReflectionFraming() }
-                Spacer()
-                Button("Generar y usar") {
-                    Task { await model.generateAndUseFramedEnvironment() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.environmentReflectionFramingIsGenerating)
             }
             if model.environmentReflectionFramingIsGenerating { ProgressView().controlSize(.small) }
         }

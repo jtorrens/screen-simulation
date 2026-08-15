@@ -302,6 +302,7 @@ final class WorkspaceModel: ObservableObject {
     private var environmentReflectionFramingOperation: CameraNavigationOperation?
     private var environmentReflectionFramingViewport = CGSize(width: 1, height: 1)
     private var environmentReflectionReprojector: EnvironmentReflectionReprojector?
+    private var environmentReflectionFramingSourceFrame: StudioColorMetalFrame?
     private var reflectionHandleDragIndex: Int?
 
     let metalDisplay: StudioColorMetalDisplay
@@ -801,6 +802,7 @@ final class WorkspaceModel: ObservableObject {
                     environmentSourceInputTransformID = nil
                     environmentSourceURL = nil
                     generatedReflectionEnvironmentData = nil
+                    environmentReflectionFramingSourceFrame = nil
                 }
                 let phaseToReveal = testPhaseToReveal(for: intent)
                 let resolved = try RustTestAuthoringCoordinator.apply(intent, to: selection)
@@ -1099,6 +1101,10 @@ final class WorkspaceModel: ObservableObject {
         environmentReflectionFramingStart = nil
         environmentReflectionFramingOperation = nil
         if enabled {
+            if environmentReflectionFramingSourceFrame == nil {
+                environmentReflectionFramingSourceFrame =
+                    environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame
+            }
             referenceMatchEnabled = false
             reflectionEnvironmentEditorEnabled = false
             physicalModel.setQuality(.environmentSetup)
@@ -1126,7 +1132,8 @@ final class WorkspaceModel: ObservableObject {
 
     func generateAndUseFramedEnvironment() async {
         guard !environmentReflectionFramingIsGenerating,
-              let source = environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame,
+              let source = environmentReflectionFramingSourceFrame
+                ?? environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
               let authored = physicalAuthoringState
         else { return }
@@ -1165,7 +1172,8 @@ final class WorkspaceModel: ObservableObject {
                 knownHash: asset.sha256
             )
             environmentReflectionFramingEnabled = false
-            status = "Entorno reproyectado · (output.width)×(output.height) · pose actual"
+            rebuildPhysicalSelectedFrame()
+            status = "Entorno reproyectado · \(output.width)×\(output.height) · pose actual"
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1297,6 +1305,7 @@ final class WorkspaceModel: ObservableObject {
               (-16 ... 16).contains(exposureStops)
         else { return }
         generatedReflectionEnvironmentData = nil
+        environmentReflectionFramingSourceFrame = nil
         Task {
             await loadEnvironment(
                 url, inputTransformID: inputID,
@@ -4079,14 +4088,17 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         do {
+            let setupSource = environmentReflectionFramingEnabled
+                ? environmentReflectionFramingSourceFrame ?? environmentSourceACEScgFrame
+                : environmentSourceACEScgFrame
             if setupFramingRenderer == nil {
-                setupFramingRenderer = try SetupFramingRenderer(device: environmentSourceACEScgFrame.texture.device)
+                setupFramingRenderer = try SetupFramingRenderer(device: setupSource.texture.device)
             }
             let selection = testAuthoringSelection
             let width = Int(selection?.deliveryWidth ?? UInt32(environmentSourceACEScgFrame.width))
             let height = Int(selection?.deliveryHeight ?? UInt32(environmentSourceACEScgFrame.height))
             let result = try setupFramingRenderer!.renderEnvironment(
-                environment: environmentSourceACEScgFrame,
+                environment: setupSource,
                 device: device,
                 pipeline: authored,
                 deliveryWidth: width,
