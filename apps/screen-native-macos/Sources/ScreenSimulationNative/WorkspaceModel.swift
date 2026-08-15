@@ -120,6 +120,37 @@ enum ReferenceMatchRasterMapping {
             )
         }
     }
+
+    static func previewPoints(
+        _ cameraGatePoints: [CGPoint],
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        previewWidth: Int,
+        previewHeight: Int,
+        cameraWidth: UInt32,
+        cameraHeight: UInt32,
+        deliveryPlacementID: String
+    ) throws -> [CGPoint] {
+        guard deliveryWidth > 0, deliveryHeight > 0,
+              previewWidth > 0, previewHeight > 0
+        else { throw ReferenceMatchError.unsolved("el raster de entrega o preview no es válido") }
+        let deliveryPoints = try referenceCorners(
+            cameraGatePoints,
+            referenceWidth: deliveryWidth,
+            referenceHeight: deliveryHeight,
+            cameraWidth: cameraWidth,
+            cameraHeight: cameraHeight,
+            deliveryPlacementID: deliveryPlacementID
+        )
+        let scaleX = Double(previewWidth) / Double(deliveryWidth)
+        let scaleY = Double(previewHeight) / Double(deliveryHeight)
+        return deliveryPoints.map { point in
+            CGPoint(
+                x: (Double(point.x) + 0.5) * scaleX - 0.5,
+                y: (Double(point.y) + 0.5) * scaleY - 0.5
+            )
+        }
+    }
 }
 
 enum ReferenceTimelineAuthority {
@@ -2961,6 +2992,11 @@ final class WorkspaceModel: ObservableObject {
         let gateHeight: Double
         let world: SIMD3<Double>
         let near: Double
+        let cameraWidth: UInt32
+        let cameraHeight: UInt32
+        let lensShift: SIMD2<Double>
+        let radialDistortion: SIMD3<Double>
+        let tangentialDistortion: SIMD2<Double>
         if let scale = trackingMetersPerSourceUnit, let authored = physicalAuthoringState,
            authored.cameraPose.position.count == 3, authored.cameraPose.quaternion.count == 4 {
             camera = .init(authored.cameraPose.position[0], authored.cameraPose.position[1], authored.cameraPose.position[2])
@@ -2973,6 +3009,27 @@ final class WorkspaceModel: ObservableObject {
             gateHeight = authored.sceneLens.sensorHeightMillimeters
             world = source * scale
             near = authored.sceneLens.nearClipMeters
+            cameraWidth = authored.sensor.nativeWidth
+            cameraHeight = authored.sensor.nativeHeight
+            lensShift = SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1])
+            let usesDistortedProjection = switch physicalModel.quality {
+            case .setup: referenceACEScgFrame != nil
+            case .environmentSetup: false
+            case .focusSetup, .draft, .medium, .high, .native: true
+            }
+            radialDistortion = usesDistortedProjection
+                ? SIMD3(
+                    authored.sceneLens.radialDistortion[0],
+                    authored.sceneLens.radialDistortion[1],
+                    authored.sceneLens.radialDistortion[2]
+                )
+                : .zero
+            tangentialDistortion = usesDistortedProjection
+                ? SIMD2(
+                    authored.sceneLens.tangentialDistortion[0],
+                    authored.sceneLens.tangentialDistortion[1]
+                )
+                : .zero
         } else if let imported = selectedTrackingCamera, !imported.samples.isEmpty {
             guard let sample = imported.sample(
                 atTimelineFrame: currentFrame,
@@ -2988,18 +3045,42 @@ final class WorkspaceModel: ObservableObject {
             gateHeight = imported.gateHeightMillimeters
             world = source
             near = 1e-8
+            cameraWidth = physicalAuthoringState?.sensor.nativeWidth
+                ?? UInt32(max(1, frame.width))
+            cameraHeight = physicalAuthoringState?.sensor.nativeHeight
+                ?? UInt32(max(1, frame.height))
+            lensShift = .zero
+            radialDistortion = .zero
+            tangentialDistortion = .zero
         } else { return nil }
-        let right = q.act(SIMD3<Double>(1, 0, 0))
-        let up = q.act(SIMD3<Double>(0, 1, 0))
-        let forward = q.act(SIMD3<Double>(0, 0, -1))
-        let relative = world - camera
-        let depth = simd_dot(relative, forward)
+        let pose = CameraNavigationPose(position: camera, orientation: q)
+        let depth = simd_dot(
+            world - camera,
+            q.act(SIMD3<Double>(0, 0, -1))
+        )
         guard depth > near else { return nil }
-        let x = 0.5 + simd_dot(relative, right) / depth
-            * focal / gateWidth
-        let y = 0.5 - simd_dot(relative, up) / depth
-            * focal / gateHeight
-        return CGPoint(x: x * Double(frame.width), y: y * Double(frame.height))
+        guard let cameraGatePoint = ReferenceAnchorCameraMath.project(
+            pose: pose,
+            point: world,
+            imageSize: CGSize(width: Int(cameraWidth), height: Int(cameraHeight)),
+            focalLengthMillimeters: focal,
+            sensorSizeMillimeters: CGSize(width: gateWidth, height: gateHeight),
+            lensShift: lensShift,
+            radialDistortion: radialDistortion,
+            tangentialDistortion: tangentialDistortion
+        ) else { return nil }
+        let deliveryWidth = Int(testAuthoringSelection?.deliveryWidth ?? cameraWidth)
+        let deliveryHeight = Int(testAuthoringSelection?.deliveryHeight ?? cameraHeight)
+        return try? ReferenceMatchRasterMapping.previewPoints(
+            [cameraGatePoint],
+            deliveryWidth: deliveryWidth,
+            deliveryHeight: deliveryHeight,
+            previewWidth: frame.width,
+            previewHeight: frame.height,
+            cameraWidth: cameraWidth,
+            cameraHeight: cameraHeight,
+            deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit"
+        ).first
     }
 
     func step(_ delta: Int) { seek(toFrame: currentFrame + delta) }

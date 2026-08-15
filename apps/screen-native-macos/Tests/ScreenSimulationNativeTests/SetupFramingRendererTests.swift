@@ -47,6 +47,39 @@ import Testing
     }
 }
 
+@Test func trackingOverlayProjectionUsesTheSameDeliveryAndPreviewMappingAsTheDevice() throws {
+    let gateCenter = CGPoint(x: 2_015.5, y: 1_511.5)
+    for placement in ["fit", "fill-crop", "one-to-one"] {
+        let preview = try ReferenceMatchRasterMapping.previewPoints(
+            [gateCenter],
+            deliveryWidth: 3_840,
+            deliveryHeight: 2_160,
+            previewWidth: 1_280,
+            previewHeight: 720,
+            cameraWidth: 4_032,
+            cameraHeight: 3_024,
+            deliveryPlacementID: placement
+        )
+        let point = try #require(preview.first)
+        #expect(abs(point.x - 639.5) < 0.000_001)
+        #expect(abs(point.y - 359.5) < 0.000_001)
+    }
+
+    let shifted = try ReferenceMatchRasterMapping.previewPoints(
+        [CGPoint(x: 3_023.5, y: 1_511.5)],
+        deliveryWidth: 3_840,
+        deliveryHeight: 2_160,
+        previewWidth: 960,
+        previewHeight: 540,
+        cameraWidth: 4_032,
+        cameraHeight: 3_024,
+        deliveryPlacementID: "fit"
+    )
+    let shiftedPoint = try #require(shifted.first)
+    #expect(abs(shiftedPoint.x - 659.5) < 0.000_001)
+    #expect(abs(shiftedPoint.y - 269.5) < 0.000_001)
+}
+
 @Test func referenceMovieIsTheTimelineAuthorityWhileItRemainsLoaded() throws {
     let source = NativeVideoTimelineInfo(exactFrameRate: .fps24, frameCount: 120)
     let reference = NativeVideoTimelineInfo(
