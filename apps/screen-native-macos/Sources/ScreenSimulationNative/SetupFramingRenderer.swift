@@ -43,6 +43,7 @@ final class SetupFramingRenderer {
         var modes: SIMD4<UInt32>
         var environment: SIMD4<Float>
         var environmentCenter: SIMD4<Float>
+        var environmentFraming: SIMD4<Float>
         var lensRadialTangential: SIMD4<Float>
         var lensTangentialFocus: SIMD4<Float>
     }
@@ -85,7 +86,8 @@ final class SetupFramingRenderer {
         deliveryBackgroundID: String,
         previewWidth: Int? = nil,
         previewHeight: Int? = nil,
-        diagnosticMode: UInt32 = 0
+        diagnosticMode: UInt32 = 0,
+        environmentFraming: SIMD4<Float> = SIMD4(0.5, 0.5, 1, 0)
     ) throws -> Result {
         let outputWidth = previewWidth ?? deliveryWidth
         let outputHeight = previewHeight ?? deliveryHeight
@@ -177,6 +179,7 @@ final class SetupFramingRenderer {
                 Float(authored.environment.sphereCenterMeters[1]),
                 Float(authored.environment.sphereCenterMeters[2]), 0
             ),
+            environmentFraming: environmentFraming,
             lensRadialTangential: SIMD4(
                 Float(authored.sceneLens.radialDistortion[0]),
                 Float(authored.sceneLens.radialDistortion[1]),
@@ -306,7 +309,8 @@ final class SetupFramingRenderer {
         deliveryPlacementID: String,
         deliveryBackgroundID: String,
         previewWidth: Int? = nil,
-        previewHeight: Int? = nil
+        previewHeight: Int? = nil,
+        planarFraming: SIMD4<Float>? = nil
     ) throws -> Result {
         try render(
             source: environment,
@@ -320,7 +324,8 @@ final class SetupFramingRenderer {
             deliveryBackgroundID: deliveryBackgroundID,
             previewWidth: previewWidth,
             previewHeight: previewHeight,
-            diagnosticMode: 1
+            diagnosticMode: planarFraming == nil ? 1 : 6,
+            environmentFraming: planarFraming ?? SIMD4(0.5, 0.5, 1, 0)
         )
     }
 
@@ -524,6 +529,7 @@ final class SetupFramingRenderer {
         uint4 modes;
         float4 environment;
         float4 environment_center;
+        float4 environment_framing;
         float4 lens_radial_tangential;
         float4 lens_tangential_focus;
     };
@@ -749,6 +755,20 @@ final class SetupFramingRenderer {
         return (device_uv - 0.5f) * scale + 0.5f;
     }
 
+    inline float2 framed_environment_uv(float2 device_uv, constant SetupParameters& s) {
+        const float angle = -s.environment_framing.w;
+        const float sn = sin(angle), cs = cos(angle);
+        const float2 centered = device_uv - 0.5f;
+        const float2 rotated = float2(
+            centered.x * cs - centered.y * sn,
+            centered.x * sn + centered.y * cs
+        );
+        float2 uv = s.environment_framing.xy + rotated / s.environment_framing.z;
+        uv.x = fract(uv.x);
+        uv.y = clamp(uv.y, 0.0f, 1.0f);
+        return uv;
+    }
+
     inline bool reference_uv(
         uint2 p, constant SetupParameters& s, thread float2& uv
     ) {
@@ -846,6 +866,23 @@ final class SetupFramingRenderer {
             reflected.rgb *= mix(OUTSIDE_DEVICE_GAIN, 1.0f, coverage);
             reflected.a = 1.0f;
             output.write(reflected, p);
+            return;
+        }
+        if (s.modes.w == 6u) {
+            float2 environmentUV;
+            float4 backgroundEnvironment = float4(0, 0, 0, 1);
+            if (environment_uv(camera, s, environmentUV)) {
+                backgroundEnvironment = source.sample(linear_sampler, environmentUV);
+                backgroundEnvironment.rgb *= 0.20f;
+                backgroundEnvironment.a = 1.0f;
+            }
+            float2 panel;
+            if (!screen_uv(camera, s, panel) || any(panel < 0.0f) || any(panel > 1.0f)) {
+                output.write(backgroundEnvironment, p); return;
+            }
+            float4 value = source.sample(linear_sampler, framed_environment_uv(panel, s));
+            value.a = 1.0f;
+            output.write(value, p);
             return;
         }
         if (s.modes.w == 2u) {

@@ -209,6 +209,9 @@ final class WorkspaceModel: ObservableObject {
     }
     @Published var referenceMatchEnabled = false
     @Published private(set) var reflectionEnvironmentEditorEnabled = false
+    @Published private(set) var environmentReflectionFramingEnabled = false
+    @Published private(set) var environmentReflectionFraming = EnvironmentReflectionFraming()
+    @Published private(set) var environmentReflectionFramingIsGenerating = false
     @Published private(set) var reflectionEmitters: [AuthoredReflectionEmitter] = []
     @Published private(set) var selectedReflectionEmitterID: UUID?
     @Published var reflectionEnvironmentWidth = 2048
@@ -295,6 +298,10 @@ final class WorkspaceModel: ObservableObject {
     private var environmentNavigationCameraUp = SIMD3<Double>(0, 1, 0)
     private var environmentNavigationVerticalFovRadians = Double.pi / 3
     private var environmentNavigationLockedAxis: CameraNavigationLockedAxis?
+    private var environmentReflectionFramingStart: EnvironmentReflectionFraming?
+    private var environmentReflectionFramingOperation: CameraNavigationOperation?
+    private var environmentReflectionFramingViewport = CGSize(width: 1, height: 1)
+    private var environmentReflectionReprojector: EnvironmentReflectionReprojector?
     private var reflectionHandleDragIndex: Int?
 
     let metalDisplay: StudioColorMetalDisplay
@@ -888,7 +895,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func updateCameraNavigation(delta: CGSize) {
-        if environmentNavigationStartSelection != nil {
+        if environmentNavigationStartSelection != nil || environmentReflectionFramingStart != nil {
             updateEnvironmentNavigation(delta: delta)
             return
         }
@@ -910,7 +917,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func endCameraNavigation(undoManager: UndoManager?) {
-        if environmentNavigationStartSelection != nil {
+        if environmentNavigationStartSelection != nil || environmentReflectionFramingStart != nil {
             endEnvironmentNavigation()
             return
         }
@@ -940,6 +947,12 @@ final class WorkspaceModel: ObservableObject {
         _ operation: CameraNavigationOperation,
         viewportSize: CGSize
     ) {
+        if environmentReflectionFramingEnabled {
+            environmentReflectionFramingStart = environmentReflectionFraming
+            environmentReflectionFramingOperation = operation
+            environmentReflectionFramingViewport = viewportSize
+            return
+        }
         guard var selection = testAuthoringSelection,
               selection.environmentSourceID == "environment-image",
               let authored = physicalAuthoringState,
@@ -966,6 +979,26 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func updateEnvironmentNavigation(delta: CGSize) {
+        if let start = environmentReflectionFramingStart {
+            var value = start
+            switch environmentReflectionFramingOperation {
+            case .pan:
+                value.centerX = start.centerX - Double(delta.width / max(1, environmentReflectionFramingViewport.width)) / start.zoom
+                value.centerY = start.centerY - Double(delta.height / max(1, environmentReflectionFramingViewport.height)) / start.zoom
+                value.centerX.formTruncatingRemainder(dividingBy: 1)
+                if value.centerX < 0 { value.centerX += 1 }
+                value.centerY = min(1, max(0, value.centerY))
+            case .dolly:
+                value.zoom = min(100, max(0.05, start.zoom * exp(Double(delta.width) * 0.01)))
+            case .orbit:
+                value.rollDegrees = start.rollDegrees + Double(delta.width) * 0.2
+            case nil:
+                return
+            }
+            environmentReflectionFraming = value
+            publishEnvironmentSetup()
+            return
+        }
         guard var selection = environmentNavigationStartSelection else { return }
         switch environmentNavigationOperation {
         case .dolly:
@@ -1041,6 +1074,12 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func endEnvironmentNavigation() {
+        if environmentReflectionFramingStart != nil {
+            environmentReflectionFramingStart = nil
+            environmentReflectionFramingOperation = nil
+            publishEnvironmentSetup()
+            return
+        }
         let finalSelection = testAuthoringSelection
         environmentNavigationStartSelection = nil
         environmentNavigationOperation = nil
@@ -1048,6 +1087,87 @@ final class WorkspaceModel: ObservableObject {
         if var selection = finalSelection {
             selection.previewQualityID = "environment-setup"
             try? applyTestAuthoringSelection(selection)
+        }
+    }
+
+    func setEnvironmentReflectionFramingEnabled(_ enabled: Bool) {
+        guard !enabled || environmentSourceACEScgFrame != nil else {
+            errorMessage = "Encuadrar reflejo necesita un HDRI / EXR seleccionado."
+            return
+        }
+        environmentReflectionFramingEnabled = enabled
+        environmentReflectionFramingStart = nil
+        environmentReflectionFramingOperation = nil
+        if enabled {
+            referenceMatchEnabled = false
+            reflectionEnvironmentEditorEnabled = false
+            physicalModel.setQuality(.environmentSetup)
+        }
+        rebuildPhysicalSelectedFrame()
+    }
+
+    func updateEnvironmentReflectionFraming(
+        centerX: Double? = nil, centerY: Double? = nil,
+        zoom: Double? = nil, rollDegrees: Double? = nil
+    ) {
+        if let centerX, centerX.isFinite { environmentReflectionFraming.centerX = centerX }
+        if let centerY, centerY.isFinite { environmentReflectionFraming.centerY = centerY }
+        if let zoom, zoom.isFinite, zoom > 0 { environmentReflectionFraming.zoom = zoom }
+        if let rollDegrees, rollDegrees.isFinite {
+            environmentReflectionFraming.rollDegrees = rollDegrees
+        }
+        publishEnvironmentSetup()
+    }
+
+    func resetEnvironmentReflectionFraming() {
+        environmentReflectionFraming = EnvironmentReflectionFraming()
+        publishEnvironmentSetup()
+    }
+
+    func generateAndUseFramedEnvironment() async {
+        guard !environmentReflectionFramingIsGenerating,
+              let source = environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame,
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let authored = physicalAuthoringState
+        else { return }
+        environmentReflectionFramingIsGenerating = true
+        defer { environmentReflectionFramingIsGenerating = false }
+        do {
+            status = "Reproyectando entorno para la pose actual…"
+            if environmentReflectionReprojector == nil {
+                environmentReflectionReprojector = try EnvironmentReflectionReprojector(
+                    device: source.texture.device
+                )
+            }
+            let output = try environmentReflectionReprojector!.render(
+                source: source, device: device, pipeline: authored,
+                framing: environmentReflectionFraming
+            )
+            let pixels = try metalDisplay.readLinearRGBA(output)
+            let data = try ReflectionEnvironmentCompiler.encodeEXR(
+                pixels, width: output.width, height: output.height
+            )
+            let asset: ManagedEnvironmentAsset
+            if let activeSceneID, let persistGeneratedEnvironment {
+                asset = try persistGeneratedEnvironment(activeSceneID, data)
+            } else {
+                asset = try EnvironmentAssetLibrary.storeGeneratedEXR(
+                    data, suggestedName: "Reflejos creados"
+                )
+            }
+            generatedReflectionEnvironmentData = data
+            try resetGeneratedEnvironmentPlacement()
+            await loadEnvironment(
+                asset.url, inputTransformID: "acescg",
+                unitRadiance: authored.environment.sourceUnitRadianceCandelasPerSquareMeter,
+                exposureStops: authored.environment.exposureStops,
+                originalFileName: asset.originalFileName,
+                knownHash: asset.sha256
+            )
+            environmentReflectionFramingEnabled = false
+            status = "Entorno reproyectado · (output.width)×(output.height) · pose actual"
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -1502,6 +1622,9 @@ final class WorkspaceModel: ObservableObject {
         )
         selection = try RustTestAuthoringCoordinator.apply(
             .setScalar(controlID: "environment-rotation-y-degrees", value: 0), to: selection
+        )
+        selection = try RustTestAuthoringCoordinator.apply(
+            .setChoice(controlID: "environment-projection", optionID: "distant"), to: selection
         )
         try applyTestAuthoringSelection(selection)
     }
@@ -3969,13 +4092,19 @@ final class WorkspaceModel: ObservableObject {
                 deliveryWidth: width,
                 deliveryHeight: height,
                 deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
-                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black"
+                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black",
+                planarFraming: environmentReflectionFramingEnabled
+                    ? environmentReflectionFraming.shaderValue : nil
             )
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
-            status = "Setup entorno · reflexión ideal 100% · \(width)×\(height)"
-            physicalPublicationSummary = "Setup entorno · espejo ideal sin cristal, panel ni cámara"
+            status = environmentReflectionFramingEnabled
+                ? "Encuadre plano de reflejo · \(width)×\(height)"
+                : "Setup entorno · reflexión ideal 100% · \(width)×\(height)"
+            physicalPublicationSummary = environmentReflectionFramingEnabled
+                ? "Autoría inversa · el EXR se genera para la pose actual"
+                : "Setup entorno · espejo ideal sin cristal, panel ni cámara"
         } catch {
             setupDeviceBoundary = []
             setupSensorGateBoundary = []

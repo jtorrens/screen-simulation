@@ -85,6 +85,7 @@ struct ContentView: View {
     @StateObject private var scenes = SceneLibraryController()
     @StateObject private var referenceMatchPanel = ReferenceMatchPanelController()
     @StateObject private var reflectionEnvironmentPanel = ReflectionEnvironmentPanelController()
+    @StateObject private var environmentReflectionFramingPanel = EnvironmentReflectionFramingPanelController()
     @State private var tab = SidebarTab.output
     @State private var page = WorkspacePage.main
     @State private var settingsSection = SettingsSection.application
@@ -1411,9 +1412,11 @@ struct ContentView: View {
                         onIntent: model.handleTestIntent
                     )
                     TestPhaseCard(label: "Autoría de reflejos") {
-                        HStack {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
                             Button {
                                 referenceMatchPanel.hide(model: model)
+                                environmentReflectionFramingPanel.hide(model: model)
                                 reflectionEnvironmentPanel.toggle(model: model)
                             } label: {
                                 Label(
@@ -1427,6 +1430,24 @@ struct ContentView: View {
                             Text("genera EXR 2:1")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            }
+                            HStack {
+                                Button {
+                                    referenceMatchPanel.hide(model: model)
+                                    reflectionEnvironmentPanel.hide(model: model)
+                                    environmentReflectionFramingPanel.toggle(model: model)
+                                } label: {
+                                    Label(
+                                        environmentReflectionFramingPanel.isVisible
+                                            ? "Ocultar encuadre" : "Encuadrar HDRI…",
+                                        systemImage: "viewfinder"
+                                    )
+                                }
+                                .disabled(model.environmentSourceName == nil)
+                                Spacer()
+                                Text("pan · zoom · rotación Z")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                     if !model.environmentSourceEvidence.isEmpty {

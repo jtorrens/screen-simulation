@@ -550,3 +550,63 @@ import Testing
     #expect(luminance.contains { $0 > 0.95 })
     #expect(luminance.contains { index in index > 0 && index < 0.95 })
 }
+
+@Test @MainActor func framedEnvironmentBakeReproducesThePlanarCropForTheCalibratedPose() throws {
+    let display = try StudioColorMetalDisplay()
+    let input = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescg" })
+    let width = 64
+    let height = 32
+    var encoded: [Float] = []
+    for y in 0 ..< height {
+        for x in 0 ..< width {
+            encoded += [Float(x) / 63, Float(y) / 31, 0.25, 1]
+        }
+    }
+    let environment = try display.makeACEScgFrame(
+        width: width, height: height, encodedRGBA: encoded, input: input, alpha: .straight
+    )
+    let device = try #require(try RustDeviceCatalog.builtIns().first {
+        $0.name.contains("ASUS ProArt")
+    })
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    var authored = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
+    authored.cameraPose.position = [0, 0, 1]
+    authored.cameraPose.quaternion = [0, 0, 0, 1]
+    authored.screenPose.position = [0, 0, 0]
+    authored.screenPose.quaternion = [0, 0, 0, 1]
+    authored.sceneLens.sensorWidthMillimeters = 36
+    authored.sceneLens.sensorHeightMillimeters = 20.25
+    authored.sceneLens.focalLengthMillimeters = 45
+    authored.sceneLens.lensShift = [0, 0]
+    authored.environment.projectionMode = 0
+    authored.environment.rotationXDegrees = -12
+    authored.environment.rotationYDegrees = 27
+    let framing = EnvironmentReflectionFraming(
+        centerX: 0.68, centerY: 0.31, zoom: 2.4, rollDegrees: 17
+    )
+    let setup = try SetupFramingRenderer(device: environment.texture.device)
+    let planar = try setup.renderEnvironment(
+        environment: environment, device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180,
+        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black",
+        planarFraming: framing.shaderValue
+    )
+    let baked = try EnvironmentReflectionReprojector(device: environment.texture.device).render(
+        source: environment, device: device, pipeline: authored, framing: framing
+    )
+    authored.environment.rotationXDegrees = 0
+    authored.environment.rotationYDegrees = 0
+    let reflected = try setup.renderEnvironment(
+        environment: baked, device: device, pipeline: authored,
+        deliveryWidth: 320, deliveryHeight: 180,
+        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+    )
+    let a = try display.readLinearRGBA(planar.frame)
+    let b = try display.readLinearRGBA(reflected.frame)
+    let center = ((planar.frame.height / 2) * planar.frame.width + planar.frame.width / 2) * 4
+    for channel in 0 ..< 3 {
+        #expect(abs(a[center + channel] - b[center + channel]) < 0.04)
+    }
+}
