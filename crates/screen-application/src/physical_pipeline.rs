@@ -229,6 +229,9 @@ pub enum PhysicalIntermediate {
     SensorReadoutRaw = 14,
     DevelopedAcesCg = 15,
     CameraRenderedAcesCg = 16,
+    /// Temporally integrated panel radiance. Appended rather than inserted in
+    /// the numeric ABI so existing stable intermediate identities do not move.
+    PanelTemporal = 17,
 }
 
 impl TryFrom<u32> for PhysicalIntermediate {
@@ -253,6 +256,7 @@ impl TryFrom<u32> for PhysicalIntermediate {
             14 => Ok(Self::SensorReadoutRaw),
             15 => Ok(Self::DevelopedAcesCg),
             16 => Ok(Self::CameraRenderedAcesCg),
+            17 => Ok(Self::PanelTemporal),
             _ => Err(()),
         }
     }

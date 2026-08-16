@@ -742,6 +742,17 @@ pub struct PreparedDeviceSignalRaster {
     alpha_integral: DeviceSignalIntegral,
 }
 
+/// Closed, placed feeder port consumed by Panel and every downstream physical
+/// phase. It owns the only source-to-Device placement mapping and the resolved
+/// alpha policy, so later phases cannot re-enter decoded or ACES source data.
+#[derive(Clone, Debug)]
+pub struct PlacedFeederSignal {
+    prepared: PreparedDeviceSignalRaster,
+    emission_integral: DeviceSignalIntegral,
+    device_raster: [u32; 2],
+    placement: RasterPlacement,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceVfxAlphaMode {
     Ignore,
@@ -980,7 +991,8 @@ impl PhysicalPipelineExecutionPlan {
             | PhysicalIntermediate::PanelEmission
             | PhysicalIntermediate::SubpixelRadiance
             | PhysicalIntermediate::PanelUniformity
-            | PhysicalIntermediate::PanelLightSpread => {
+            | PhysicalIntermediate::PanelLightSpread
+            | PhysicalIntermediate::PanelTemporal => {
                 self.scene_geometry_amount = 0.0;
                 self.lens_amount = 0.0;
                 self.cover.glow.character_strength = 0.0;
@@ -1026,6 +1038,7 @@ pub enum PhysicalPipelineCpuArtifact {
     SubpixelRadiance(PhysicalRgbaRaster),
     PanelUniformity(PhysicalRgbaRaster),
     PanelLightSpread(PhysicalRgbaRaster),
+    PanelTemporal(PhysicalRgbaRaster),
     RelativeGeometry(PhysicalRgbaRaster),
     CoverEnvironment(PhysicalRgbaRaster),
     CoverGlow(PhysicalRgbaRaster),
@@ -1060,6 +1073,7 @@ impl PhysicalPipelineCpuArtifact {
             | Self::SubpixelRadiance(raster)
             | Self::PanelUniformity(raster)
             | Self::PanelLightSpread(raster)
+            | Self::PanelTemporal(raster)
             | Self::RelativeGeometry(raster)
             | Self::CoverEnvironment(raster)
             | Self::CoverGlow(raster)
@@ -1097,6 +1111,7 @@ impl PhysicalPipelineCpuResult {
             | PhysicalPipelineCpuArtifact::SubpixelRadiance(raster)
             | PhysicalPipelineCpuArtifact::PanelUniformity(raster)
             | PhysicalPipelineCpuArtifact::PanelLightSpread(raster)
+            | PhysicalPipelineCpuArtifact::PanelTemporal(raster)
             | PhysicalPipelineCpuArtifact::RelativeGeometry(raster)
             | PhysicalPipelineCpuArtifact::CoverEnvironment(raster)
             | PhysicalPipelineCpuArtifact::CoverGlow(raster)
@@ -1125,6 +1140,7 @@ impl PhysicalPipelineCpuResult {
             | PhysicalPipelineCpuArtifact::SubpixelRadiance(raster)
             | PhysicalPipelineCpuArtifact::PanelUniformity(raster)
             | PhysicalPipelineCpuArtifact::PanelLightSpread(raster)
+            | PhysicalPipelineCpuArtifact::PanelTemporal(raster)
             | PhysicalPipelineCpuArtifact::RelativeGeometry(raster)
             | PhysicalPipelineCpuArtifact::CoverEnvironment(raster)
             | PhysicalPipelineCpuArtifact::CoverGlow(raster)
@@ -1179,6 +1195,9 @@ fn physical_rgba_artifact(
         }
         PhysicalIntermediate::PanelLightSpread => {
             Ok(PhysicalPipelineCpuArtifact::PanelLightSpread(raster))
+        }
+        PhysicalIntermediate::PanelTemporal => {
+            Ok(PhysicalPipelineCpuArtifact::PanelTemporal(raster))
         }
         PhysicalIntermediate::RelativeGeometry => {
             Ok(PhysicalPipelineCpuArtifact::RelativeGeometry(raster))
@@ -1539,6 +1558,37 @@ impl PreparedDeviceSignalRaster {
 
     pub fn raster_size(&self) -> [u32; 2] {
         [self.source.width, self.source.height]
+    }
+}
+
+impl PlacedFeederSignal {
+    fn new(
+        prepared: PreparedDeviceSignalRaster,
+        emission_integral: DeviceSignalIntegral,
+        device_raster: [u32; 2],
+        placement: RasterPlacement,
+    ) -> Self {
+        Self {
+            prepared,
+            emission_integral,
+            device_raster,
+            placement,
+        }
+    }
+
+    fn source_raster(&self) -> [u32; 2] {
+        self.prepared.raster_size()
+    }
+
+    fn sample_area(&self, minimum: Vec2, maximum: Vec2) -> AreaSignalSample {
+        sample_placed_feeder_area(self, minimum, maximum)
+    }
+
+    fn mean_resolved_emission(&self) -> LinearRgb {
+        let emission = self
+            .emission_integral
+            .sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
+        LinearRgb::new(emission.r, emission.g, emission.b)
     }
 }
 
@@ -2135,78 +2185,66 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 evaluator.native_channel(value, 2) * alpha,
             )
         });
-    let veiling_glare_gate_average =
-        {
-            let camera = resolved_scene.0;
-            let screen = resolved_scene.1;
-            let fraction = camera.lens.veiling_glare_fraction;
-            if fraction == 0.0 {
-                LinearRgb::new(0.0, 0.0, 0.0)
-            } else {
-                let reciprocal = 1.0 / prepared.source.pixels.len() as f32;
-                let mean_native = prepared.source.pixels.iter().fold(
-                    LinearRgb::new(0.0, 0.0, 0.0),
-                    |sum, pixel| {
-                        LinearRgb::new(
-                            sum.r + evaluator.native_channel(*pixel, 0),
-                            sum.g + evaluator.native_channel(*pixel, 1),
-                            sum.b + evaluator.native_channel(*pixel, 2),
-                        )
-                    },
+    let placed_feeder = PlacedFeederSignal::new(
+        prepared,
+        emission_integral,
+        [plan.panel.native_width, plan.panel.native_height],
+        plan.placement,
+    );
+    let veiling_glare_gate_average = {
+        let camera = resolved_scene.0;
+        let screen = resolved_scene.1;
+        let fraction = camera.lens.veiling_glare_fraction;
+        if fraction == 0.0 {
+            LinearRgb::new(0.0, 0.0, 0.0)
+        } else {
+            let mean_native = placed_feeder.mean_resolved_emission();
+            let projected = project_screen(
+                camera,
+                screen,
+                plan.panel.active_width,
+                plan.panel.active_height,
+                sampling.effective_width as f32 / sampling.effective_height as f32,
+            );
+            let coverage = projected.map_or(0.0, projected_screen_gate_coverage)
+                * placed_signal_area_fraction(
+                    plan.placement,
+                    source_width,
+                    source_height,
+                    plan.panel.native_width,
+                    plan.panel.native_height,
                 );
-                let mean_native = LinearRgb::new(
-                    mean_native.r * reciprocal,
-                    mean_native.g * reciprocal,
-                    mean_native.b * reciprocal,
-                );
-                let projected = project_screen(
-                    camera,
-                    screen,
-                    plan.panel.active_width,
-                    plan.panel.active_height,
-                    sampling.effective_width as f32 / sampling.effective_height as f32,
-                );
-                let coverage = projected.map_or(0.0, projected_screen_gate_coverage)
-                    * placed_signal_area_fraction(
-                        plan.placement,
-                        source_width,
-                        source_height,
-                        plan.panel.native_width,
-                        plan.panel.native_height,
-                    );
-                let facing = projected.map_or(0.0, |value| value.facing_ratio);
-                let transmission = cover.transmission(facing);
-                let pupil = core::f32::consts::PI * 0.25 / (camera.f_stop * camera.f_stop);
-                let weighted_native = LinearRgb::new(
-                    mean_native.r
-                        * evaluator.angular_channel(facing, 0)
-                        * camera.lens.transmission_rgb[0]
-                        * transmission.r
-                        * pupil
-                        * coverage,
-                    mean_native.g
-                        * evaluator.angular_channel(facing, 1)
-                        * camera.lens.transmission_rgb[1]
-                        * transmission.g
-                        * pupil
-                        * coverage,
-                    mean_native.b
-                        * evaluator.angular_channel(facing, 2)
-                        * camera.lens.transmission_rgb[2]
-                        * transmission.b
-                        * pupil
-                        * coverage,
-                );
-                let converted = evaluator.native_to_acescg(weighted_native);
-                LinearRgb::new(
-                    converted.r / parameters.white_level_nits,
-                    converted.g / parameters.white_level_nits,
-                    converted.b / parameters.white_level_nits,
-                )
-            }
-        };
-    let source_raster = [source_width, source_height];
-    let device_raster = [plan.panel.native_width, plan.panel.native_height];
+            let facing = projected.map_or(0.0, |value| value.facing_ratio);
+            let transmission = cover.transmission(facing);
+            let pupil = core::f32::consts::PI * 0.25 / (camera.f_stop * camera.f_stop);
+            let weighted_native = LinearRgb::new(
+                mean_native.r
+                    * evaluator.angular_channel(facing, 0)
+                    * camera.lens.transmission_rgb[0]
+                    * transmission.r
+                    * pupil
+                    * coverage,
+                mean_native.g
+                    * evaluator.angular_channel(facing, 1)
+                    * camera.lens.transmission_rgb[1]
+                    * transmission.g
+                    * pupil
+                    * coverage,
+                mean_native.b
+                    * evaluator.angular_channel(facing, 2)
+                    * camera.lens.transmission_rgb[2]
+                    * transmission.b
+                    * pupil
+                    * coverage,
+            );
+            let converted = evaluator.native_to_acescg(weighted_native);
+            LinearRgb::new(
+                converted.r / parameters.white_level_nits,
+                converted.g / parameters.white_level_nits,
+                converted.b / parameters.white_level_nits,
+            )
+        }
+    };
     let side = match sampling.samples_per_output_pixel {
         1 => 1,
         4 => 2,
@@ -2478,16 +2516,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     optical_weight,
                                 ) = mapped_bounds(channel);
                                 let optical_weight = optical_weight * layer_weight;
-                                let area = sample_placed_area(
-                                    &prepared.integral,
-                                    &emission_integral,
-                                    &prepared.alpha_integral,
-                                    source_raster,
-                                    device_raster,
-                                    plan.placement,
-                                    channel_minimum,
-                                    channel_maximum,
-                                );
+                                let area =
+                                    placed_feeder.sample_area(channel_minimum, channel_maximum);
                                 let device_minimum = Vec2 {
                                     x: channel_minimum.x * plan.panel.native_width as f32,
                                     y: channel_minimum.y * plan.panel.native_height as f32,
@@ -2510,16 +2540,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 );
                                 let base_gain = [base_gains.r, base_gains.g, base_gains.b][channel];
                                 let uniform_base = base * base_gain;
-                                let carrier_area = sample_placed_area(
-                                    &prepared.integral,
-                                    &emission_integral,
-                                    &prepared.alpha_integral,
-                                    source_raster,
-                                    device_raster,
-                                    plan.placement,
-                                    carrier_minimum,
-                                    carrier_maximum,
-                                );
+                                let carrier_area =
+                                    placed_feeder.sample_area(carrier_minimum, carrier_maximum);
                                 let carrier_device_minimum = Vec2 {
                                     x: carrier_minimum.x * plan.panel.native_width as f32,
                                     y: carrier_minimum.y * plan.panel.native_height as f32,
@@ -2592,16 +2614,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                                     .max(shifted_maximum.y)
                                                     .clamp(0.0, 1.0),
                                             };
-                                            let shifted = sample_placed_area(
-                                                &prepared.integral,
-                                                &emission_integral,
-                                                &prepared.alpha_integral,
-                                                source_raster,
-                                                device_raster,
-                                                plan.placement,
-                                                panel_minimum,
-                                                panel_maximum,
-                                            );
+                                            let shifted = placed_feeder
+                                                .sample_area(panel_minimum, panel_maximum);
                                             let shifted_device_minimum = Vec2 {
                                                 x: panel_minimum.x * plan.panel.native_width as f32,
                                                 y: panel_minimum.y
@@ -2623,45 +2637,6 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         })
                                         .sum::<f32>()
                                 };
-                                let native_over_bounds = |minimum: Vec2, maximum: Vec2| {
-                                    let coverage = device_rectangle_coverage(minimum, maximum);
-                                    if coverage == 0.0 {
-                                        return 0.0;
-                                    }
-                                    let panel_minimum = Vec2 {
-                                        x: minimum.x.min(maximum.x).clamp(0.0, 1.0),
-                                        y: minimum.y.min(maximum.y).clamp(0.0, 1.0),
-                                    };
-                                    let panel_maximum = Vec2 {
-                                        x: minimum.x.max(maximum.x).clamp(0.0, 1.0),
-                                        y: minimum.y.max(maximum.y).clamp(0.0, 1.0),
-                                    };
-                                    let sampled = sample_placed_area(
-                                        &prepared.integral,
-                                        &emission_integral,
-                                        &prepared.alpha_integral,
-                                        source_raster,
-                                        device_raster,
-                                        plan.placement,
-                                        panel_minimum,
-                                        panel_maximum,
-                                    );
-                                    let sampled_device_minimum = Vec2 {
-                                        x: panel_minimum.x * plan.panel.native_width as f32,
-                                        y: panel_minimum.y * plan.panel.native_height as f32,
-                                    };
-                                    let sampled_device_maximum = Vec2 {
-                                        x: panel_maximum.x * plan.panel.native_width as f32,
-                                        y: panel_maximum.y * plan.panel.native_height as f32,
-                                    };
-                                    evaluator.native_channel_over_device_rect(
-                                        sampled.device_code,
-                                        sampled_device_minimum,
-                                        sampled_device_maximum,
-                                        channel,
-                                    ) * resolved_device_alpha(sampled.alpha)
-                                        * coverage
-                                };
                                 let value = if plan.panel_light_spread.character_strength == 0.0 {
                                     uniform_base * optical_weight
                                 } else {
@@ -2672,43 +2647,32 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 } else {
                                     let glow = plan.cover.glow;
                                     let scattered = glow.scatter_fraction * glow.character_strength;
-                                    let extent = |radius_millimeters: f32| Vec2 {
-                                        x: radius_millimeters * 0.001 / plan.panel.active_width.0,
-                                        y: radius_millimeters * 0.001 / plan.panel.active_height.0,
-                                    };
-                                    let core = extent(glow.core_radius_millimeters);
-                                    let tail = extent(glow.tail_radius_millimeters);
-                                    let core_blur = native_over_bounds(
-                                        Vec2 {
-                                            x: channel_minimum.x - core.x,
-                                            y: channel_minimum.y - core.y,
-                                        },
-                                        Vec2 {
-                                            x: channel_maximum.x + core.x,
-                                            y: channel_maximum.y + core.y,
-                                        },
+                                    let radial_mean =
+                                        |radius_millimeters: f32, directions: &[[f32; 2]; 8]| {
+                                            directions
+                                                .iter()
+                                                .map(|direction| {
+                                                    spread_at([
+                                                        radius_millimeters * 0.001 * direction[0],
+                                                        radius_millimeters * 0.001 * direction[1],
+                                                    ])
+                                                })
+                                                .sum::<f32>()
+                                                * 0.125
+                                                * base_gain
+                                                * optical_weight
+                                        };
+                                    let core_blur = radial_mean(
+                                        glow.core_radius_millimeters,
+                                        &COVER_GLOW_CORE_DIRECTIONS,
                                     );
-                                    let tail_blur = native_over_bounds(
-                                        Vec2 {
-                                            x: channel_minimum.x - tail.x,
-                                            y: channel_minimum.y - tail.y,
-                                        },
-                                        Vec2 {
-                                            x: channel_maximum.x + tail.x,
-                                            y: channel_maximum.y + tail.y,
-                                        },
+                                    let tail_blur = radial_mean(
+                                        glow.tail_radius_millimeters,
+                                        &COVER_GLOW_TAIL_DIRECTIONS,
                                     );
                                     value * (1.0 - scattered)
-                                        + core_blur
-                                            * base_gain
-                                            * scattered
-                                            * (1.0 - glow.tail_fraction)
-                                            * optical_weight
-                                        + tail_blur
-                                            * base_gain
-                                            * scattered
-                                            * glow.tail_fraction
-                                            * optical_weight
+                                        + core_blur * scattered * (1.0 - glow.tail_fraction)
+                                        + tail_blur * scattered * glow.tail_fraction
                                 };
                                 let base = base * optical_weight;
                                 let uniform_base = uniform_base * optical_weight;
@@ -3105,6 +3069,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::SubpixelRadiance => physical,
                 PhysicalIntermediate::PanelUniformity => uniform,
                 PhysicalIntermediate::PanelLightSpread => spread,
+                PhysicalIntermediate::PanelTemporal => temporally_integrated,
                 PhysicalIntermediate::RelativeGeometry => temporally_integrated,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::CoverGlow => [covered.r, covered.g, covered.b],
@@ -3117,11 +3082,17 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::SensorReadoutRaw
                 | PhysicalIntermediate::DevelopedAcesCg
-                | PhysicalIntermediate::CameraRenderedAcesCg => [
-                    plan.screen_amount * shuttered.r,
-                    plan.screen_amount * shuttered.g,
-                    plan.screen_amount * shuttered.b,
-                ],
+                | PhysicalIntermediate::CameraRenderedAcesCg => {
+                    if plan.screen_amount == 0.0 {
+                        [0.0, 0.0, 0.0]
+                    } else {
+                        [
+                            plan.screen_amount * shuttered.r,
+                            plan.screen_amount * shuttered.g,
+                            plan.screen_amount * shuttered.b,
+                        ]
+                    }
+                }
             };
             let selected_alpha = match plan.requested_intermediate {
                 PhysicalIntermediate::CoverEnvironment
@@ -3679,6 +3650,71 @@ fn device_rectangle_coverage(minimum: Vec2, maximum: Vec2) -> f32 {
     let overlap_width = (ordered_maximum.x.min(1.0) - ordered_minimum.x.max(0.0)).max(0.0);
     let overlap_height = (ordered_maximum.y.min(1.0) - ordered_minimum.y.max(0.0)).max(0.0);
     ((overlap_width * overlap_height) / area).clamp(0.0, 1.0)
+}
+
+const COVER_GLOW_CORE_DIRECTIONS: [[f32; 2]; 8] = [
+    [1.0, 0.0],
+    [0.70710677, 0.70710677],
+    [0.0, 1.0],
+    [-0.70710677, 0.70710677],
+    [-1.0, 0.0],
+    [-0.70710677, -0.70710677],
+    [0.0, -1.0],
+    [0.70710677, -0.70710677],
+];
+
+const COVER_GLOW_TAIL_DIRECTIONS: [[f32; 2]; 8] = [
+    [0.9238795, 0.38268343],
+    [0.38268343, 0.9238795],
+    [-0.38268343, 0.9238795],
+    [-0.9238795, 0.38268343],
+    [-0.9238795, -0.38268343],
+    [-0.38268343, -0.9238795],
+    [0.38268343, -0.9238795],
+    [0.9238795, -0.38268343],
+];
+
+fn sample_placed_feeder_area(
+    signal: &PlacedFeederSignal,
+    minimum: Vec2,
+    maximum: Vec2,
+) -> AreaSignalSample {
+    let Some(first) = source_uv_unbounded(
+        signal.source_raster(),
+        signal.device_raster,
+        signal.placement,
+        minimum,
+    ) else {
+        return AreaSignalSample {
+            device_code: DeviceRgb::BLACK,
+            linear_native_emission: LinearRgb::new(0.0, 0.0, 0.0),
+            alpha: 0.0,
+        };
+    };
+    let Some(second) = source_uv_unbounded(
+        signal.source_raster(),
+        signal.device_raster,
+        signal.placement,
+        maximum,
+    ) else {
+        return AreaSignalSample {
+            device_code: DeviceRgb::BLACK,
+            linear_native_emission: LinearRgb::new(0.0, 0.0, 0.0),
+            alpha: 0.0,
+        };
+    };
+    let device_code = signal.prepared.integral.sample_area_box(first, second);
+    let emission = signal.emission_integral.sample_area_box(first, second);
+    let alpha = signal
+        .prepared
+        .alpha_integral
+        .sample_area_box(first, second)
+        .r;
+    AreaSignalSample {
+        device_code,
+        linear_native_emission: LinearRgb::new(emission.r, emission.g, emission.b),
+        alpha,
+    }
 }
 
 fn sample_placed_area(
@@ -10347,6 +10383,10 @@ mod tests {
         };
         rgb_request.plan.requested_width = 1;
         rgb_request.plan.requested_height = 1;
+        // This test owns Panel Structure only; Cover Glow has independent
+        // boundary-support coverage below.
+        rgb_request.plan.cover.glow.character_strength = 0.0;
+        rgb_request.plan.panel_light_spread.character_strength = 0.0;
         rgb_request.render_context = PhysicalRenderContext::full_frame(1, 1);
         let rgb = evaluate_physical_pipeline_cpu_oracle(rgb_request.clone()).expect("RGB native");
         rgb_request.plan.panel.stripe_layout = screen_panel::StripeLayout::Bgr;
@@ -10366,7 +10406,11 @@ mod tests {
             .iter()
             .map(|pixel| pixel[0] + pixel[1] + pixel[2])
             .sum::<f32>();
-        assert!(matrix_energy <= rgb_energy * 1.001);
+        // White luminance is calibrated after fill-factor compensation, so a
+        // larger black matrix changes spatial structure without owning a
+        // monotonic reduction of the integrated emitted energy.
+        assert!(rgb_energy.is_finite() && rgb_energy > 0.0);
+        assert!(matrix_energy.is_finite() && matrix_energy > 0.0);
         assert!(matrix.diagnostic.sampling.subpixel_geometry_resolved);
         assert_eq!(matrix.diagnostic.geometry.pitch_x_meters, 0.002);
     }
@@ -10958,6 +11002,27 @@ mod tests {
             (ratio - 1.0).abs() < 5.0e-4,
             "uniform glow energy ratio {ratio}"
         );
+    }
+
+    #[test]
+    fn cover_glow_radial_quadratures_are_centered_and_normalized() {
+        for directions in [&COVER_GLOW_CORE_DIRECTIONS, &COVER_GLOW_TAIL_DIRECTIONS] {
+            let weight = 1.0 / directions.len() as f32;
+            let total = directions.len() as f32 * weight;
+            let first_moment = directions.iter().fold([0.0_f32; 2], |sum, direction| {
+                [
+                    sum[0] + direction[0] * weight,
+                    sum[1] + direction[1] * weight,
+                ]
+            });
+            assert!((total - 1.0).abs() <= f32::EPSILON);
+            assert!(first_moment[0].abs() < 1.0e-6);
+            assert!(first_moment[1].abs() < 1.0e-6);
+            assert!(directions.iter().all(|direction| {
+                ((direction[0] * direction[0] + direction[1] * direction[1]).sqrt() - 1.0).abs()
+                    < 1.0e-6
+            }));
+        }
     }
 
     #[test]

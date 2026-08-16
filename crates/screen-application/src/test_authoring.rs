@@ -30,6 +30,7 @@ pub const DEVICE_INTERPRETATION_PHASE_ID: &str = "device-interpretation";
 pub const PANEL_STRUCTURE_PHASE_ID: &str = "panel-structure";
 pub const PANEL_UNIFORMITY_PHASE_ID: &str = "panel-uniformity";
 pub const PANEL_LIGHT_SPREAD_PHASE_ID: &str = "panel-light-spread";
+pub const PANEL_TEMPORAL_PHASE_ID: &str = "panel-temporal";
 pub const RELATIVE_GEOMETRY_PHASE_ID: &str = "relative-geometry";
 pub const COVER_ENVIRONMENT_PHASE_ID: &str = "cover-environment";
 pub const COVER_GLOW_PHASE_ID: &str = "cover-glow";
@@ -702,6 +703,7 @@ pub enum PhysicalArtifactId {
     SubpixelRadianceV1,
     UniformPanelRadianceV1,
     SpreadPanelRadianceV1,
+    TemporallyIntegratedPanelRadianceV1,
     ResolvedObservationGeometryV1,
     CoveredDirectionalRadianceV1,
     GlassScatteredRadianceV1,
@@ -730,6 +732,7 @@ impl PhysicalArtifactId {
             Self::SubpixelRadianceV1 => "subpixel-radiance-v1",
             Self::UniformPanelRadianceV1 => "uniform-panel-radiance-v1",
             Self::SpreadPanelRadianceV1 => "spread-panel-radiance-v1",
+            Self::TemporallyIntegratedPanelRadianceV1 => "temporally-integrated-panel-radiance-v1",
             Self::ResolvedObservationGeometryV1 => "resolved-observation-geometry-v1",
             Self::CoveredDirectionalRadianceV1 => "covered-directional-radiance-v1",
             Self::GlassScatteredRadianceV1 => "glass-scattered-radiance-v1",
@@ -775,6 +778,7 @@ impl TestPhaseDescriptor {
             | PANEL_STRUCTURE_PHASE_ID
             | PANEL_UNIFORMITY_PHASE_ID
             | PANEL_LIGHT_SPREAD_PHASE_ID
+            | PANEL_TEMPORAL_PHASE_ID
             | COVER_ENVIRONMENT_PHASE_ID
             | COVER_GLOW_PHASE_ID => "Radiancia espectral RGB",
             RELATIVE_GEOMETRY_PHASE_ID => "Geometría física",
@@ -824,6 +828,7 @@ pub enum TestPreviewResult {
     RecordingOutput = 19,
     RecordingCodec = 20,
     DeviceVfxTransparency = 21,
+    PanelTemporal = 22,
 }
 
 impl TestPreviewResult {
@@ -835,6 +840,7 @@ impl TestPreviewResult {
             Self::PanelStructure => Some(PhysicalIntermediate::SubpixelRadiance),
             Self::PanelUniformity => Some(PhysicalIntermediate::PanelUniformity),
             Self::PanelLightSpread => Some(PhysicalIntermediate::PanelLightSpread),
+            Self::PanelTemporal => Some(PhysicalIntermediate::PanelTemporal),
             Self::RelativeGeometry => Some(PhysicalIntermediate::RelativeGeometry),
             Self::CoverEnvironment => Some(PhysicalIntermediate::CoverEnvironment),
             Self::CoverGlow => Some(PhysicalIntermediate::CoverGlow),
@@ -2286,11 +2292,21 @@ pub fn test_page_descriptor(
                 )],
             },
             TestPhaseDescriptor {
+                id: PANEL_TEMPORAL_PHASE_ID,
+                label: "Emisión temporal del panel",
+                effect_summary: "Integra la emisión resuelta del panel durante el intervalo temporal de captura.",
+                header_control_id: None,
+                input_artifact: PhysicalArtifactId::SpreadPanelRadianceV1,
+                output_artifact: PhysicalArtifactId::TemporallyIntegratedPanelRadianceV1,
+                preview_result: TestPreviewResult::PanelTemporal,
+                controls: vec![],
+            },
+            TestPhaseDescriptor {
                 id: RELATIVE_GEOMETRY_PHASE_ID,
                 label: "Geometría relativa",
                 effect_summary: "Sitúa cámara y pantalla y determina perspectiva, encuadre e incidencia.",
                 header_control_id: None,
-                input_artifact: PhysicalArtifactId::SpreadPanelRadianceV1,
+                input_artifact: PhysicalArtifactId::TemporallyIntegratedPanelRadianceV1,
                 output_artifact: PhysicalArtifactId::ResolvedObservationGeometryV1,
                 preview_result: TestPreviewResult::RelativeGeometry,
                 controls: geometry_controls,
@@ -3748,6 +3764,7 @@ mod tests {
                 PANEL_STRUCTURE_PHASE_ID,
                 PANEL_UNIFORMITY_PHASE_ID,
                 PANEL_LIGHT_SPREAD_PHASE_ID,
+                PANEL_TEMPORAL_PHASE_ID,
                 RELATIVE_GEOMETRY_PHASE_ID,
                 COVER_ENVIRONMENT_PHASE_ID,
                 COVER_GLOW_PHASE_ID,
@@ -3788,6 +3805,7 @@ mod tests {
                 Some(PhysicalIntermediate::SubpixelRadiance),
                 Some(PhysicalIntermediate::PanelUniformity),
                 Some(PhysicalIntermediate::PanelLightSpread),
+                Some(PhysicalIntermediate::PanelTemporal),
                 Some(PhysicalIntermediate::RelativeGeometry),
                 Some(PhysicalIntermediate::CoverEnvironment),
                 Some(PhysicalIntermediate::CoverGlow),
@@ -3806,7 +3824,7 @@ mod tests {
             ]
         );
         assert!(matches!(
-            &page.phases[7].controls[0],
+            &page.phases[8].controls[0],
             TestControlRequirement::Choice {
                 id: CAPTURE_PRESET_CONTROL_ID,
                 selected_id: "iphone-16e-main-48mp",
@@ -3814,7 +3832,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            &page.phases[10].controls[0],
+            &page.phases[11].controls[0],
             TestControlRequirement::Choice {
                 id: LENS_EVALUATION_MODEL_CONTROL_ID,
                 selected_id: "vfx-2d-dof",
@@ -3822,7 +3840,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            &page.phases[10].controls[1],
+            &page.phases[11].controls[1],
             TestControlRequirement::Choice {
                 id: LENS_PRESET_CONTROL_ID,
                 options,
@@ -4117,7 +4135,7 @@ mod tests {
     #[test]
     fn lens_and_exposure_publish_real_aperture_time_and_autofocus_controls() {
         let page = test_page_descriptor(asus()).unwrap();
-        let lens = &page.phases[10].controls;
+        let lens = &page.phases[11].controls;
         assert!(matches!(
             lens.iter().find(|control| matches!(
                 control,
@@ -4173,7 +4191,7 @@ mod tests {
         )));
         let authored = apply_test_scalar(asus(), FOCAL_LENGTH_CONTROL_ID, 6.5).unwrap();
         assert!((authored.focal_length_millimeters - 6.5).abs() < 1.0e-6);
-        assert!(page.phases[11].controls.iter().any(|control| matches!(
+        assert!(page.phases[12].controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Scalar {
                 id: SHUTTER_ANGLE_CONTROL_ID,
@@ -4188,7 +4206,7 @@ mod tests {
         assert!((from_angle.exposure_time_seconds - 1.0 / 48.0).abs() < 1.0e-6);
         let angle_page = test_page_descriptor(unresolved_test_selection(from_angle)).unwrap();
         assert!(matches!(
-            angle_page.phases[11]
+            angle_page.phases[12]
                 .controls
                 .iter()
                 .find(|control| matches!(
@@ -4211,7 +4229,7 @@ mod tests {
     #[test]
     fn sensor_bloom_publishes_and_restores_the_selected_camera_profile() {
         let page = test_page_descriptor(asus()).unwrap();
-        let ids = page.phases[14]
+        let ids = page.phases[15]
             .controls
             .iter()
             .map(|control| match control {
@@ -4318,7 +4336,7 @@ mod tests {
     fn cover_microtexture_is_model_authored_and_resets_with_the_cover_preset() {
         let page = test_page_descriptor(asus()).unwrap();
         assert!(matches!(
-            page.phases[8].controls.iter().find(|control| matches!(
+            page.phases[9].controls.iter().find(|control| matches!(
                 control,
                 TestControlRequirement::Scalar {
                     id: COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID,
@@ -4461,6 +4479,7 @@ mod tests {
             PhysicalArtifactId::SubpixelRadianceV1,
             PhysicalArtifactId::UniformPanelRadianceV1,
             PhysicalArtifactId::SpreadPanelRadianceV1,
+            PhysicalArtifactId::TemporallyIntegratedPanelRadianceV1,
             PhysicalArtifactId::ResolvedObservationGeometryV1,
             PhysicalArtifactId::CoveredDirectionalRadianceV1,
             PhysicalArtifactId::GlassScatteredRadianceV1,
@@ -4495,7 +4514,7 @@ mod tests {
     #[test]
     fn geometry_mode_publishes_only_its_owned_controls() {
         let look_at = test_page_descriptor(asus()).unwrap();
-        let controls = &look_at.phases[7].controls;
+        let controls = &look_at.phases[8].controls;
         assert!(controls.iter().any(|control| matches!(
             control,
             TestControlRequirement::Scalar {
@@ -4520,7 +4539,7 @@ mod tests {
 
         let free = apply_test_choice(asus(), GEOMETRY_MODE_CONTROL_ID, "free").unwrap();
         let free = test_page_descriptor(unresolved_test_selection(free)).unwrap();
-        let controls = &free.phases[7].controls;
+        let controls = &free.phases[8].controls;
         for id in [
             CAMERA_POSITION_X_CONTROL_ID,
             CAMERA_POSITION_Y_CONTROL_ID,
