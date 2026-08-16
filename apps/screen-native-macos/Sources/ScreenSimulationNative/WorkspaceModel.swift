@@ -596,6 +596,17 @@ final class WorkspaceModel: ObservableObject {
         coverGlass: CoverGlassDefinition
     ) {
         do {
+            if let selection = testAuthoringSelection,
+               selection.deviceID != definition.id,
+               try RustDeviceCatalog.builtIns().contains(where: { $0.id == definition.id }) {
+                let resolved = try RustTestAuthoringCoordinator.apply(
+                    .setChoice(controlID: "device", optionID: definition.id),
+                    to: selection
+                )
+                try applyTestAuthoringSelection(resolved)
+                rebuildPhysicalSelectedFrame()
+                return
+            }
             resolvedDevice = try definition.resolved()
             modelDeviceDefinition = definition
             var authored = try PhysicalPipelineAuthoringState.seeded(

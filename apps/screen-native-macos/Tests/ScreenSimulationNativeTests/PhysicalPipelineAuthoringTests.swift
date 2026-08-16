@@ -76,3 +76,25 @@ import Testing
     #expect(workspace.modelDeviceDefinition?.id == custom.id)
     #expect(workspace.modelDeviceDefinition?.nativeWidth == custom.nativeWidth)
 }
+
+@Test @MainActor func changingBuiltInDeviceAppliesItsAuthoredDefaultsAtomically() throws {
+    let devices = try RustDeviceCatalog.builtIns()
+    let phone = try #require(devices.first { $0.id == "lcd-phone-4_7-retina" })
+    let asus = try #require(devices.first { $0.id == "lcd-asus-proart-pa329cv" })
+    let covers = try RustCoverGlassCatalog.builtIns()
+    let phoneCover = try #require(covers.first { $0.id == phone.defaultCoverGlassPresetID })
+    let asusCover = try #require(covers.first { $0.id == asus.defaultCoverGlassPresetID })
+    let workspace = WorkspaceModel()
+
+    workspace.selectModelDevice(phone, coverGlass: phoneCover)
+    workspace.selectModelDevice(asus, coverGlass: asusCover)
+
+    #expect(workspace.errorMessage == nil)
+    #expect(workspace.modelDeviceDefinition?.id == asus.id)
+    #expect(workspace.modelDeviceDefinition?.colorModeID == "srgb")
+    #expect(workspace.modelDeviceDefinition?.whiteLevelNits == 350)
+    #expect(workspace.modelDeviceDefinition?.panelUniformity.characterStrength
+        == asus.panelUniformity.characterStrength)
+    #expect(workspace.modelDeviceDefinition?.panelLightSpread.characterStrength
+        == asus.panelLightSpread.characterStrength)
+}
