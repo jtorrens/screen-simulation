@@ -617,6 +617,7 @@ impl MetalPhysicalPipeline {
             encoder.set_buffer(0, Some(&codes), 0);
             encoder.set_buffer(1, Some(green), 0);
             encoder.set_texture(0, Some(&output));
+            encoder.set_texture(1, Some(&physical.texture));
             encoder.set_bytes(
                 2,
                 size_of::<CameraDevelopmentParams>() as u64,
@@ -2890,10 +2891,10 @@ mod tests {
     }
 
     #[test]
-    fn camera_rendering_intent_matches_cpu_after_develop() {
+    fn camera_rendering_intent_and_device_matte_match_cpu_after_develop() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
-        let (input, mut plan) = fixture(
+        let (mut input, mut plan) = fixture(
             RasterPlacement::Stretch,
             FlatPanelQuality::High,
             StripeLayout::Rgb,
@@ -2916,13 +2917,16 @@ mod tests {
             tint: 0.0,
         };
         plan.rendering_intent_enabled = true;
+        plan.device_vfx_alpha_mode = DeviceVfxAlphaMode::DeviceTransparency;
+        input.device_signal.alpha = input.acescg.iter().map(|pixel| pixel[3]).collect();
         plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
         let source = texture(&device, input.width, input.height, &input.acescg);
         let signal_values = input
             .device_signal
             .pixels
             .iter()
-            .map(|value| [value.r, value.g, value.b, 1.0])
+            .zip(&input.device_signal.alpha)
+            .map(|(value, alpha)| [value.r, value.g, value.b, *alpha])
             .collect::<Vec<_>>();
         let signal = texture(&device, input.width, input.height, &signal_values);
         let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
@@ -2937,7 +2941,8 @@ mod tests {
         let gpu = backend
             .evaluate(&source, &signal, plan, |_| {}, || false)
             .expect("Metal camera-rendered result");
-        let maximum = read(&gpu.texture)
+        let gpu_pixels = read(&gpu.texture);
+        let maximum = gpu_pixels
             .iter()
             .zip(cpu.presentation_rgba())
             .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
@@ -2945,6 +2950,14 @@ mod tests {
         assert!(
             maximum <= 3.0e-3,
             "camera rendering intent CPU/Metal deviation {maximum}"
+        );
+        let (minimum_alpha, maximum_alpha) = gpu_pixels.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(minimum, maximum), pixel| (minimum.min(pixel[3]), maximum.max(pixel[3])),
+        );
+        assert!(
+            minimum_alpha < 0.5 && maximum_alpha > 0.5,
+            "camera development must preserve the varying physical Device matte: {minimum_alpha}..{maximum_alpha}"
         );
     }
 

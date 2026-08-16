@@ -3231,6 +3231,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         }
         let developed = develop_raw_to_acescg(&raw, raw.sensor_profile, plan.development)
             .map_err(ApplicationError::CameraDevelopment)?;
+        if developed.width != sampling.effective_width
+            || developed.height != sampling.effective_height
+            || developed.acescg.len() != output.len()
+        {
+            return Err(ApplicationError::OpticalSampleRasterMismatch);
+        }
         if plan.requested_intermediate == PhysicalIntermediate::CameraRenderedAcesCg {
             if !plan.rendering_intent_enabled {
                 return Err(ApplicationError::UnsupportedPhysicalIntermediate);
@@ -3247,7 +3253,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     height: developed.height,
                     rgba: acescg
                         .into_iter()
-                        .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
+                        .zip(output.iter())
+                        .map(|(pixel, optical)| [pixel.r, pixel.g, pixel.b, optical[3]])
                         .collect(),
                 }),
                 diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
@@ -3260,7 +3267,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 rgba: developed
                     .acescg
                     .into_iter()
-                    .map(|pixel| [pixel.r, pixel.g, pixel.b, 1.0])
+                    .zip(output.iter())
+                    .map(|(pixel, optical)| [pixel.r, pixel.g, pixel.b, optical[3]])
                     .collect(),
             }),
             diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },

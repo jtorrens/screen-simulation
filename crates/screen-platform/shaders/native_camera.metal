@@ -199,11 +199,19 @@ kernel void develop_acescg_texture(
     device const ushort* codes [[buffer(0)]],
     device const float* green [[buffer(1)]],
     texture2d<float, access::write> output [[texture(0)]],
+    texture2d<float, access::read> physical_exposure [[texture(1)]],
     constant CameraParams& p [[buffer(2)]],
     uint2 position [[thread_position_in_grid]]) {
     if (position.x >= p.width || position.y >= p.height) return;
-    output.write(
-        developed_acescg_at(codes, green, p, position.y * p.width + position.x),
-        position
+    float4 developed = developed_acescg_at(
+        codes,
+        green,
+        p,
+        position.y * p.width + position.x
     );
+    // Sensor development transforms only the captured tristimulus signal.
+    // The optical Device matte is an independent sidecar and must survive
+    // unchanged for the later VFX composite.
+    developed.a = physical_exposure.read(position).a;
+    output.write(developed, position);
 }
