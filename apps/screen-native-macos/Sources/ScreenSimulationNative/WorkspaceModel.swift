@@ -3986,8 +3986,10 @@ final class WorkspaceModel: ObservableObject {
         )
         originACEScgFrame = base
         sourceACEScgFrame = try adjustedSourceFrame(base)
-        metalFrame = base
         physicalModel.invalidateExternalParameters()
+        if !setupOwnsViewerPublication {
+            metalFrame = base
+        }
         rebuildPhysicalSelectedFrame()
         publishSelectedTestPreview()
     }
@@ -4639,9 +4641,9 @@ final class WorkspaceModel: ObservableObject {
             originACEScgFrame = base
             sourceACEScgFrame = try adjustedSourceFrame(base)
             physicalModel.invalidateExternalParameters()
-            metalFrame = base
-            if let metalFrame {
-                monitorOutput.update(frame: metalFrame, display: metalDisplay)
+            if !setupOwnsViewerPublication {
+                metalFrame = base
+                monitorOutput.update(frame: base, display: metalDisplay)
             }
             sourceDetail = "Patrón SCREEN canónico · \(decoded.width) × \(decoded.height)"
             decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
@@ -4673,9 +4675,9 @@ final class WorkspaceModel: ObservableObject {
         originACEScgFrame = base
         sourceACEScgFrame = try adjustedSourceFrame(base)
         physicalModel.invalidateExternalParameters()
-        metalFrame = base
-        if let metalFrame {
-            monitorOutput.update(frame: metalFrame, display: metalDisplay)
+        if !setupOwnsViewerPublication {
+            metalFrame = base
+            monitorOutput.update(frame: base, display: metalDisplay)
         }
         currentFrame = min(frameCount - 1, max(0, Int((sample.time.seconds * frameRate).rounded())))
         decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
@@ -4729,7 +4731,7 @@ final class WorkspaceModel: ObservableObject {
     private func rebuildPhysicalSelectedFrame() {
         let testNeedsPhysicalResult = isTestPageActive
             && selectedTestPhysicalIntermediate != nil
-        guard isModelPageActive || testNeedsPhysicalResult else {
+        guard isModelPageActive || testNeedsPhysicalResult || setupOwnsViewerPublication else {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
             if !isTestPageActive, let sourceACEScgFrame { metalFrame = sourceACEScgFrame }

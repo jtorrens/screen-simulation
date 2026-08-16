@@ -1299,14 +1299,13 @@ kernel void evaluate_physical_pipeline(
     float aperture_weight = 0.0f;
     const uint requested_stage = p.semantics.z;
     const bool final_optical = requested_stage >= 6;
-    const bool needs_ideal_rgb = requested_stage == 0
-        || (final_optical && (p.strengths.y != 1.0f || p.strengths.x != 1.0f));
+    const bool needs_ideal_rgb = requested_stage == 0 || final_optical;
     const bool needs_average_code = requested_stage == 1;
-    const bool needs_continuous = requested_stage == 2
-        || (final_optical && p.strengths.y != p.strengths.z);
-    const bool needs_physical = requested_stage == 3;
+    const bool needs_continuous = requested_stage == 2 || final_optical;
+    const bool needs_physical = requested_stage == 3
+        || (final_optical && p.uniformity_scales.w == 0.0f && p.strengths.z != 1.0f);
     const bool needs_uniform = requested_stage == 4
-        || (final_optical && p.strengths.z != 1.0f);
+        || (final_optical && p.uniformity_scales.w != 0.0f && p.strengths.z != 1.0f);
     const bool needs_spread = requested_stage == 5;
     const bool needs_glow = final_optical;
     const bool needs_carrier = final_optical && VFX_DEPTH_BLUR
@@ -1581,59 +1580,35 @@ kernel void evaluate_physical_pipeline(
     ) / p.levels.z;
     const float moire_saturation = p.geometry.y;
     const float moire_intensity = p.geometry.w;
-    if (moire_saturation != 1.0f) {
-        const float carrier_luminance = dot(
-            carrier_detail,
-            float3(0.27222872f, 0.67408174f, 0.053689517f)
-        );
-        carrier_detail = carrier_luminance
-            + moire_saturation * (carrier_detail - carrier_luminance);
-    }
-    carrier_detail *= moire_intensity;
-    float3 glass_scattered;
-    if (moire_saturation == 1.0f && p.uniformity_scales.w == 0.0f) {
-        glass_scattered = ideal.rgb * (1.0f - p.strengths.y)
+    float3 sampled_panel;
+    float3 interference_base;
+    if (p.uniformity_scales.w == 0.0f) {
+        interference_base = ideal.rgb * (1.0f - p.strengths.y)
+            + continuous * p.strengths.y;
+        sampled_panel = ideal.rgb * (1.0f - p.strengths.y)
             + continuous * (p.strengths.y - p.strengths.z)
             + physical * (p.strengths.z - 1.0f)
             + glow
             + carrier_detail * p.strengths.z;
-    } else if (moire_saturation == 1.0f) {
-        const float3 uniformed = ideal.rgb * (1.0f - p.strengths.y)
-            + uniform_continuous * (p.strengths.y - p.strengths.z)
-            + uniform * p.strengths.z;
-        glass_scattered = uniformed
-            + spread - uniform
-            + glow - spread
-            + carrier_detail * p.strengths.z;
-    } else if (p.uniformity_scales.w == 0.0f) {
-        float3 residual = physical - continuous;
-        const float residual_luminance = dot(
-            residual,
-            float3(0.27222872f, 0.67408174f, 0.053689517f)
-        );
-        residual = residual_luminance
-            + moire_saturation * (residual - residual_luminance);
-        glass_scattered = ideal.rgb * (1.0f - p.strengths.y)
-            + continuous * p.strengths.y
-            + residual * p.strengths.z
-            + glow - physical
-            + carrier_detail * p.strengths.z;
     } else {
-        float3 residual = uniform - uniform_continuous;
-        const float residual_luminance = dot(
-            residual,
-            float3(0.27222872f, 0.67408174f, 0.053689517f)
-        );
-        residual = residual_luminance
-            + moire_saturation * (residual - residual_luminance);
-        const float3 uniformed = ideal.rgb * (1.0f - p.strengths.y)
-            + uniform_continuous * p.strengths.y
-            + residual * p.strengths.z;
-        glass_scattered = uniformed
-            + spread - uniform
-            + glow - spread
+        interference_base = ideal.rgb * (1.0f - p.strengths.y)
+            + uniform_continuous * p.strengths.y;
+        sampled_panel = ideal.rgb * (1.0f - p.strengths.y)
+            + uniform_continuous * (p.strengths.y - p.strengths.z)
+            + uniform * (p.strengths.z - 1.0f)
+            + glow
             + carrier_detail * p.strengths.z;
     }
+    float3 interference = sampled_panel - interference_base;
+    if (moire_saturation != 1.0f) {
+        const float residual_luminance = dot(
+            interference,
+            float3(0.27222872f, 0.67408174f, 0.053689517f)
+        );
+        interference = residual_luminance
+            + moire_saturation * (interference - residual_luminance);
+    }
+    const float3 glass_scattered = interference_base + moire_intensity * interference;
     const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
     const float3 temporally_integrated = glass_scattered * temporal_gain;
     const float3 covered = apply_flat_cover(temporally_integrated,

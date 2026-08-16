@@ -884,8 +884,8 @@ pub struct PhysicalPipelineExecutionPlan {
     pub screen_amount: f32,
     pub emission_amount: f32,
     pub subpixel_geometry_amount: f32,
-    /// Creative amplitude of the VFX depth-blur carrier residual. One preserves
-    /// the calibrated result and zero removes that additional moiré carrier.
+    /// Amplitude of the complete Lens-owned sampled interference residual. One
+    /// preserves the calibrated result and zero leaves continuous panel emission.
     pub moire_intensity: f32,
     /// Chroma scale of the sampled subpixel interference residual. One keeps
     /// the physically sampled color, zero preserves its luminance only.
@@ -1936,6 +1936,27 @@ fn moire_residual_with_saturation(residual: [f32; 3], saturation: f32) -> [f32; 
     residual.map(|channel| luminance + saturation * (channel - luminance))
 }
 
+fn apply_moire_look(
+    continuous: [f32; 3],
+    sampled: [f32; 3],
+    intensity: f32,
+    saturation: f32,
+) -> [f32; 3] {
+    let residual = moire_residual_with_saturation(
+        [
+            sampled[0] - continuous[0],
+            sampled[1] - continuous[1],
+            sampled[2] - continuous[2],
+        ],
+        saturation,
+    );
+    [
+        continuous[0] + intensity * residual[0],
+        continuous[1] + intensity * residual[1],
+        continuous[2] + intensity * residual[2],
+    ]
+}
+
 fn sample_placed_acescg_area(
     source_width: u32,
     source_height: u32,
@@ -2818,12 +2839,6 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * carrier_detail_native.b)
                     / parameters.white_level_nits,
             ];
-            let carrier_detail = if plan.moire_saturation == 1.0 {
-                carrier_detail
-            } else {
-                moire_residual_with_saturation(carrier_detail, plan.moire_saturation)
-            };
-            let carrier_detail = carrier_detail.map(|value| value * plan.moire_intensity);
             let glowed = if plan.lens_evaluation_model == LensEvaluationModel::VfxDepthBlur {
                 [
                     glowed[0] + plan.subpixel_geometry_amount * carrier_detail[0],
@@ -2833,102 +2848,56 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             } else {
                 glowed
             };
-            let staged = if plan.moire_saturation == 1.0 {
-                if plan.panel_uniformity.character_strength == 0.0 {
-                    let structured_and_spread = [
-                        ideal[0]
-                            + plan.emission_amount * (continuous[0] - ideal[0])
-                            + plan.subpixel_geometry_amount * (physical[0] - continuous[0])
-                            + (spread[0] - physical[0]),
-                        ideal[1]
-                            + plan.emission_amount * (continuous[1] - ideal[1])
-                            + plan.subpixel_geometry_amount * (physical[1] - continuous[1])
-                            + (spread[1] - physical[1]),
-                        ideal[2]
-                            + plan.emission_amount * (continuous[2] - ideal[2])
-                            + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
-                            + (spread[2] - physical[2]),
-                    ];
-                    [
-                        structured_and_spread[0] + glowed[0] - spread[0],
-                        structured_and_spread[1] + glowed[1] - spread[1],
-                        structured_and_spread[2] + glowed[2] - spread[2],
-                    ]
-                } else {
-                    let uniformed = [
-                        ideal[0] * (1.0 - plan.emission_amount)
-                            + uniform_continuous[0]
-                                * (plan.emission_amount - plan.subpixel_geometry_amount)
-                            + uniform[0] * plan.subpixel_geometry_amount,
-                        ideal[1] * (1.0 - plan.emission_amount)
-                            + uniform_continuous[1]
-                                * (plan.emission_amount - plan.subpixel_geometry_amount)
-                            + uniform[1] * plan.subpixel_geometry_amount,
-                        ideal[2] * (1.0 - plan.emission_amount)
-                            + uniform_continuous[2]
-                                * (plan.emission_amount - plan.subpixel_geometry_amount)
-                            + uniform[2] * plan.subpixel_geometry_amount,
-                    ];
-                    [
-                        uniformed[0] + spread[0] - uniform[0] + glowed[0] - spread[0],
-                        uniformed[1] + spread[1] - uniform[1] + glowed[1] - spread[1],
-                        uniformed[2] + spread[2] - uniform[2] + glowed[2] - spread[2],
-                    ]
-                }
-            } else if plan.panel_uniformity.character_strength == 0.0 {
-                let residual = moire_residual_with_saturation(
-                    [
-                        physical[0] - continuous[0],
-                        physical[1] - continuous[1],
-                        physical[2] - continuous[2],
-                    ],
-                    plan.moire_saturation,
-                );
-                let structured_and_spread = [
-                    ideal[0]
-                        + plan.emission_amount * (continuous[0] - ideal[0])
-                        + plan.subpixel_geometry_amount * residual[0]
-                        + (spread[0] - physical[0]),
-                    ideal[1]
-                        + plan.emission_amount * (continuous[1] - ideal[1])
-                        + plan.subpixel_geometry_amount * residual[1]
-                        + (spread[1] - physical[1]),
-                    ideal[2]
-                        + plan.emission_amount * (continuous[2] - ideal[2])
-                        + plan.subpixel_geometry_amount * residual[2]
-                        + (spread[2] - physical[2]),
-                ];
+            let continuous_base = if plan.panel_uniformity.character_strength == 0.0 {
+                continuous
+            } else {
+                uniform_continuous
+            };
+            let interference_base = [
+                ideal[0] + plan.emission_amount * (continuous_base[0] - ideal[0]),
+                ideal[1] + plan.emission_amount * (continuous_base[1] - ideal[1]),
+                ideal[2] + plan.emission_amount * (continuous_base[2] - ideal[2]),
+            ];
+            let sampled_panel = if plan.panel_uniformity.character_strength == 0.0 {
                 [
-                    structured_and_spread[0] + glowed[0] - spread[0],
-                    structured_and_spread[1] + glowed[1] - spread[1],
-                    structured_and_spread[2] + glowed[2] - spread[2],
+                    ideal[0] * (1.0 - plan.emission_amount)
+                        + continuous[0] * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + physical[0] * (plan.subpixel_geometry_amount - 1.0)
+                        + glowed[0],
+                    ideal[1] * (1.0 - plan.emission_amount)
+                        + continuous[1] * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + physical[1] * (plan.subpixel_geometry_amount - 1.0)
+                        + glowed[1],
+                    ideal[2] * (1.0 - plan.emission_amount)
+                        + continuous[2] * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + physical[2] * (plan.subpixel_geometry_amount - 1.0)
+                        + glowed[2],
                 ]
             } else {
-                let residual = moire_residual_with_saturation(
-                    [
-                        uniform[0] - uniform_continuous[0],
-                        uniform[1] - uniform_continuous[1],
-                        uniform[2] - uniform_continuous[2],
-                    ],
-                    plan.moire_saturation,
-                );
-                let uniformed = [
-                    ideal[0] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[0] * plan.emission_amount
-                        + residual[0] * plan.subpixel_geometry_amount,
-                    ideal[1] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[1] * plan.emission_amount
-                        + residual[1] * plan.subpixel_geometry_amount,
-                    ideal[2] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[2] * plan.emission_amount
-                        + residual[2] * plan.subpixel_geometry_amount,
-                ];
                 [
-                    uniformed[0] + spread[0] - uniform[0] + glowed[0] - spread[0],
-                    uniformed[1] + spread[1] - uniform[1] + glowed[1] - spread[1],
-                    uniformed[2] + spread[2] - uniform[2] + glowed[2] - spread[2],
+                    ideal[0] * (1.0 - plan.emission_amount)
+                        + uniform_continuous[0]
+                            * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + uniform[0] * (plan.subpixel_geometry_amount - 1.0)
+                        + glowed[0],
+                    ideal[1] * (1.0 - plan.emission_amount)
+                        + uniform_continuous[1]
+                            * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + uniform[1] * (plan.subpixel_geometry_amount - 1.0)
+                        + glowed[1],
+                    ideal[2] * (1.0 - plan.emission_amount)
+                        + uniform_continuous[2]
+                            * (plan.emission_amount - plan.subpixel_geometry_amount)
+                        + uniform[2] * (plan.subpixel_geometry_amount - 1.0)
+                        + glowed[2],
                 ]
             };
+            let staged = apply_moire_look(
+                interference_base,
+                sampled_panel,
+                plan.moire_intensity,
+                plan.moire_saturation,
+            );
             let resolved_temporal_gain =
                 physical_row_temporal_gain(plan, y as usize, sampling.effective_height as usize)?;
             let temporal_gain =
@@ -7512,6 +7481,14 @@ mod tests {
         let doubled_luminance =
             doubled[0] * 0.272_228_72 + doubled[1] * 0.674_081_74 + doubled[2] * 0.053_689_517;
         assert!((doubled_luminance - original_luminance).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn moire_intensity_zero_is_exact_continuous_emission_and_one_is_calibrated() {
+        let continuous = [0.13, 0.27, 0.41];
+        let sampled = [0.91, -0.18, 0.62];
+        assert_eq!(apply_moire_look(continuous, sampled, 0.0, 4.0), continuous);
+        assert_eq!(apply_moire_look(continuous, sampled, 1.0, 1.0), sampled);
     }
 
     #[test]

@@ -1979,9 +1979,14 @@ mod tests {
     fn moire_intensity_and_antialias_match_cpu_without_grading_continuous_panel_emission() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
-        for (intensity, saturation, filter_strength) in
-            [(0.0, 1.0, 0.0), (1.0, 1.0, 1.0), (2.0, 1.0, 4.0)]
-        {
+        for (intensity, saturation, filter_strength) in [
+            (0.0, 1.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (1.0, 1.0, 4.0),
+            (1.0, 2.0, 0.0),
+            (2.0, 1.0, 0.0),
+        ] {
             let (input, mut plan) = fixture(
                 RasterPlacement::Stretch,
                 FlatPanelQuality::High,
@@ -2024,7 +2029,7 @@ mod tests {
                 .fold(0.0_f32, f32::max);
             assert!(
                 maximum <= 2.0e-3,
-                "moire intensity {intensity}, antialias {filter_strength} CPU/Metal deviation {maximum}"
+                "moire intensity {intensity}, saturation {saturation}, antialias {filter_strength} CPU/Metal deviation {maximum}"
             );
         }
     }

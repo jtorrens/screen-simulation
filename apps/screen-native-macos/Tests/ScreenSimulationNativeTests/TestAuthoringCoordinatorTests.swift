@@ -672,7 +672,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     workspace.setTestPageActive(true)
     let sourcePhase = try #require(workspace.testPresentation?.phases.first)
 
-    for qualityID in ["setup", "focus-setup"] {
+    for (index, qualityID) in ["setup", "focus-setup"].enumerated() {
         try requestPhysicalPreview(qualityID, in: workspace)
         let setup = try #require(workspace.metalFrame)
         let source = try #require(workspace.sourceACEScgFrame)
@@ -682,8 +682,18 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         workspace.handleTestIntent(.selectPhase(sourcePhase.id))
 
         let retained = try #require(workspace.metalFrame)
+        let selectedSource = try #require(workspace.sourceACEScgFrame)
         #expect(ObjectIdentifier(retained.texture as AnyObject)
-            == ObjectIdentifier(setup.texture as AnyObject))
+            != ObjectIdentifier(selectedSource.texture as AnyObject))
+
+        workspace.handleTestIntent(.setScalar(
+            controlID: "moire-saturation",
+            value: 1.25 + Double(index) * 0.25
+        ))
+        let rebuilt = try #require(workspace.metalFrame)
+        let currentSource = try #require(workspace.sourceACEScgFrame)
+        #expect(ObjectIdentifier(rebuilt.texture as AnyObject)
+            != ObjectIdentifier(currentSource.texture as AnyObject))
     }
 }
 
