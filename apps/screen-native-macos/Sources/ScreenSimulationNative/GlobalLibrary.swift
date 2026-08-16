@@ -430,7 +430,11 @@ final class GlobalLibraryController: ObservableObject {
     }
 
     var allRenderPresets: [StudioRenderPreset] {
-        document.renderPresets.map(\.value)
+        let builtInIDs = Set(StudioRenderPreset.builtIns.map(\.id))
+        let custom = document.renderPresets
+            .map(\.value)
+            .filter { !builtInIDs.contains($0.id) }
+        return StudioRenderPreset.builtIns + custom
     }
 
     var authorableColorModes: [LibraryColorModeOption] {

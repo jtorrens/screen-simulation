@@ -333,6 +333,9 @@ pub struct CaptureDevicePreset {
     pub default_raster_mode_id: &'static str,
     pub default_recording_profile_id: &'static str,
     pub recommended_recording_profile_ids: &'static [&'static str],
+    /// Color-owned stable encoding id for camera-native VFX interchange.
+    /// Absence explicitly means that this calibrated preset does not provide one.
+    pub native_vfx_encoding_id: Option<&'static str>,
     pub default_lens_evaluation_model: LensEvaluationModel,
     pub computational_capture: ComputationalCaptureProfile,
     pub rendering_intent: CameraRenderingIntent,
@@ -391,6 +394,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         default_raster_mode_id: CAPTURE_RASTER_FULL_ID,
         default_recording_profile_id: screen_recording::GENERIC_PRORES_422_HQ_PROFILE_ID,
         recommended_recording_profile_ids: &[screen_recording::GENERIC_PRORES_422_HQ_PROFILE_ID],
+        native_vfx_encoding_id: Some("arri-logc4-awg4"),
         default_lens_evaluation_model: LensEvaluationModel::ThinLens,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
@@ -456,6 +460,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             screen_recording::GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
             screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
         ],
+        native_vfx_encoding_id: None,
         default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 8,
@@ -518,6 +523,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         default_raster_mode_id: CAPTURE_RASTER_FULL_ID,
         default_recording_profile_id: screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
         recommended_recording_profile_ids: &[screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID],
+        native_vfx_encoding_id: None,
         default_lens_evaluation_model: LensEvaluationModel::ThinLens,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
@@ -572,6 +578,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             screen_recording::GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
             screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
         ],
+        native_vfx_encoding_id: None,
         default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
@@ -635,6 +642,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
             screen_recording::GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
             screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
         ],
+        native_vfx_encoding_id: None,
         default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile {
             exposure_count: 3,
@@ -8582,6 +8590,16 @@ mod tests {
             assert_eq!(capture_device_preset(preset.id), Some(*preset));
         }
         assert_eq!(capture_device_preset("unknown-or-retired"), None);
+        assert_eq!(
+            capture_device_preset("arri-alexa-35-open-gate")
+                .and_then(|preset| preset.native_vfx_encoding_id),
+            Some("arri-logc4-awg4")
+        );
+        for preset in CAPTURE_DEVICE_PRESETS {
+            if preset.id != "arri-alexa-35-open-gate" {
+                assert_eq!(preset.native_vfx_encoding_id, None);
+            }
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import Foundation
 import ScreenPhysicalBridge
+import StudioColor
 
 struct CapturePresetDefinition: Identifiable {
     struct RasterMode: Identifiable, Equatable, Sendable {
@@ -24,6 +25,7 @@ struct CapturePresetDefinition: Identifiable {
     let rasterModes: [RasterMode]
     let defaultRasterModeID: String
     let defaultLensEvaluationModelID: String
+    let nativeVFXEncodingID: String?
 
     static func catalog() throws -> [Self] {
         try (0..<screen_capture_preset_count()).map { index in
@@ -48,6 +50,9 @@ struct CapturePresetDefinition: Identifiable {
                 )
             }
             let defaultRasterModeID = text(parameters.default_raster_mode_id)
+            let rawNativeVFXEncodingID = text(parameters.native_vfx_encoding_id)
+            let nativeVFXEncodingID = rawNativeVFXEncodingID.isEmpty
+                ? nil : rawNativeVFXEncodingID
             let defaultLensEvaluationModelID = switch parameters.default_lens_evaluation_model {
             case 0: "thin-lens"
             case 1: "vfx-2d-dof"
@@ -58,7 +63,10 @@ struct CapturePresetDefinition: Identifiable {
                   Set(rasterModes.map(\.id)).count == rasterModes.count,
                   rasterModes.allSatisfy({ !$0.id.isEmpty && $0.width > 0 && $0.height > 0 }),
                   rasterModes.contains(where: { $0.id == defaultRasterModeID }),
-                  !defaultLensEvaluationModelID.isEmpty
+                  !defaultLensEvaluationModelID.isEmpty,
+                  nativeVFXEncodingID == nil || StudioVFXInterchangeEncoding.catalog.contains(
+                      where: { $0.id == nativeVFXEncodingID }
+                  )
             else { throw CapturePresetError.invalidCatalog(index) }
             return Self(
                 id: text(screen_capture_preset_id(index)),
@@ -70,7 +78,8 @@ struct CapturePresetDefinition: Identifiable {
                 parameters: parameters,
                 rasterModes: rasterModes,
                 defaultRasterModeID: defaultRasterModeID,
-                defaultLensEvaluationModelID: defaultLensEvaluationModelID
+                defaultLensEvaluationModelID: defaultLensEvaluationModelID,
+                nativeVFXEncodingID: nativeVFXEncodingID
             )
         }
     }

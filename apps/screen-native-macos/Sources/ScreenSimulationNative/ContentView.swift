@@ -700,6 +700,7 @@ struct ContentView: View {
                             Text("HDR").tag(StudioRenderTarget.hdr)
                             Text("ACES2065-1").tag(StudioRenderTarget.aces2065)
                             Text("ACEScg").tag(StudioRenderTarget.acescg)
+                            Text("VFX Log / Gamut").tag(StudioRenderTarget.vfxLog)
                         }
                         TextField("Peak nits", value: Binding(
                             get: { preset.peakNits },
@@ -1014,6 +1015,14 @@ struct ContentView: View {
                 preset.signalRange = .full
                 preset.alpha = .straight
                 preset.includeAudio = false
+            case .vfxLog:
+                preset.peakNits = 0
+                preset.display = nil
+                preset.view = nil
+                preset.format = .proRes4444XQ
+                preset.pixelEncoding = .yuv44412
+                preset.signalRange = .video
+                preset.alpha = .straight
             }
         }
     }
@@ -1475,6 +1484,24 @@ struct ContentView: View {
                             $0.supports(target: model.renderPreset.target)
                         }) { format in
                             Text(format.displayName).tag(format)
+                        }
+                    }
+                    if model.renderPreset.target == .vfxLog {
+                        Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
+                            ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
+                                Text(encoding.label).tag(encoding.id)
+                            }
+                        }
+                        if let recommendation = model.recommendedVFXInterchangeEncoding {
+                            HStack {
+                                Text("Sugerido por cámara: \(recommendation.label)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Usar sugerido") {
+                                    model.vfxInterchangeEncodingID = recommendation.id
+                                }
+                            }
                         }
                     }
                     Picker("Composición", selection: $model.renderComposition) {
@@ -1951,10 +1978,22 @@ struct ContentView: View {
                 )) {
                     ForEach(library.allRenderPresets) { Text($0.name).tag($0) }
                 }
-                LabeledContent("ODT del preset", value: model.renderPreset.view ?? model.renderPreset.target.rawValue)
-                LabeledContent("ODT efectiva", value: model.renderPreset.view ?? model.renderPreset.target.rawValue)
-                LabeledContent("Peak nits") {
-                    TextField("nits", value: $model.peakNits, format: .number).frame(width: 90)
+                LabeledContent(
+                    "ODT del preset",
+                    value: model.renderPreset.target == .vfxLog
+                        ? "Sin ODT de display"
+                        : (model.renderPreset.view ?? model.renderPreset.target.rawValue)
+                )
+                LabeledContent(
+                    "Transformación efectiva",
+                    value: model.renderPreset.target == .vfxLog
+                        ? (model.selectedVFXInterchangeEncoding?.label ?? "Selección inválida")
+                        : (model.renderPreset.view ?? model.renderPreset.target.rawValue)
+                )
+                if model.renderPreset.target != .vfxLog {
+                    LabeledContent("Peak nits") {
+                        TextField("nits", value: $model.peakNits, format: .number).frame(width: 90)
+                    }
                 }
                 Picker("Formato", selection: Binding(
                     get: { model.outputFormat },
@@ -1963,6 +2002,18 @@ struct ContentView: View {
                     ForEach(StudioOutputFormat.allCases.filter {
                         $0.supports(target: model.renderPreset.target)
                     }) { Text($0.displayName).tag($0) }
+                }
+                if model.renderPreset.target == .vfxLog {
+                    Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
+                        ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
+                            Text(encoding.label).tag(encoding.id)
+                        }
+                    }
+                    if let recommendation = model.recommendedVFXInterchangeEncoding {
+                        Button("Usar sugerido · \(recommendation.label)") {
+                            model.vfxInterchangeEncodingID = recommendation.id
+                        }
+                    }
                 }
                 LabeledContent("Codificación", value: model.outputPixelEncoding.label)
                 Picker("Rango de señal", selection: $model.outputSignalRange) {

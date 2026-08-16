@@ -106,6 +106,8 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
             target == .hdr
         case .proRes4444, .proRes4444XQ, .dpx10RGB, .tiff16:
             target == .sdr || target == .hdr
+                || ((self == .proRes4444 || self == .proRes4444XQ)
+                    && target == .vfxLog)
         case .openEXR:
             target == .acescg || target == .aces2065
         }
@@ -124,7 +126,7 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
 }
 
 public enum StudioRenderTarget: String, Codable, Sendable {
-    case sdr, hdr, aces2065, acescg
+    case sdr, hdr, aces2065, acescg, vfxLog
 }
 
 public enum StudioRenderPipeline: String, Codable, Sendable {
@@ -186,6 +188,8 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
             "Intercambio scene-linear: asigna ACES2065-1 al reimportar y exporta OpenEXR ACES2065-1 para conservar identidad."
         case (.aces, .acescg):
             "Intercambio scene-linear: asigna ACEScg al reimportar y exporta OpenEXR ACEScg para conservar identidad."
+        case (_, .vfxLog):
+            "Intercambio VFX: asigna al clip exactamente el Log/Gamut elegido para el render. La cámara sólo propone el valor inicial; no interpretes el archivo como Rec.709."
         case (.davinciColorManaged, .sdr):
             "DaVinci YRGB Color Managed: Input Rec.709 Gamma 2.4, Timeline DaVinci Wide Gamut / Intermediate y Output Rec.709 Gamma 2.4. Desactiva Auto Color Management para el clip."
         case (.davinciColorManaged, .hdr):
@@ -205,6 +209,8 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C05")!, name: "ACES2065-1 · EXR", pipeline: .aces, target: .aces2065, peakNits: 0, display: nil, view: nil, format: .openEXR, pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight, notes: "Intercambio scene-linear ACES2065-1."),
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C06")!, name: "ACEScg · EXR", pipeline: .aces, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight, notes: "Intercambio scene-linear ACEScg."),
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C07")!, name: "DCM · EXR (ACEScg)", pipeline: .davinciColorManaged, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight, notes: "Intercambio scene-linear ACEScg para DCM."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C08")!, name: "VFX · ProRes 4444", pipeline: .aces, target: .vfxLog, peakNits: 0, display: nil, view: nil, format: .proRes4444, pixelEncoding: .yuv44412, signalRange: .video, alpha: .straight, notes: "Log/Gamut VFX elegido explícitamente; sin ODT de display."),
+        .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C09")!, name: "VFX · ProRes 4444 XQ", pipeline: .aces, target: .vfxLog, peakNits: 0, display: nil, view: nil, format: .proRes4444XQ, pixelEncoding: .yuv44412, signalRange: .video, alpha: .straight, notes: "Máxima calidad ProRes con Log/Gamut VFX elegido explícitamente; sin ODT de display."),
     ]
 }
 
@@ -220,6 +226,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let peakNits: Double
     public let display: String?
     public let view: String?
+    public let vfxInterchangeEncodingID: String?
     public let pixelEncoding: StudioPixelEncoding
     public let signalRange: StudioSignalRange
     public let alpha: StudioAlphaMode
@@ -238,6 +245,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         peakNits: Double,
         display: String?,
         view: String?,
+        vfxInterchangeEncodingID: String?,
         pixelEncoding: StudioPixelEncoding,
         signalRange: StudioSignalRange,
         alpha: StudioAlphaMode,
@@ -255,6 +263,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         self.peakNits = peakNits
         self.display = display
         self.view = view
+        self.vfxInterchangeEncodingID = vfxInterchangeEncodingID
         self.pixelEncoding = pixelEncoding
         self.signalRange = signalRange
         self.alpha = alpha

@@ -7,13 +7,20 @@ import Testing
         "openEXR", "dpx10RGB", "tiff16", "proRes4444", "proRes4444XQ",
         "h264Low", "h264Medium", "h264High", "h265Low", "h265Medium", "h265High",
     ])
-    #expect(StudioRenderPreset.builtIns.count == 7)
+    #expect(StudioRenderPreset.builtIns.count == 9)
     #expect(StudioRenderPreset.builtIns[1].peakNits == 1_000)
     #expect(StudioRenderPreset.builtIns[0].pipeline == .aces)
     #expect(StudioRenderPreset.builtIns[2].pipeline == .davinciColorManaged)
     #expect(StudioRenderPreset.builtIns[2].view == "Video (colorimetric)")
     #expect(StudioOutputFormat.h264High.bitsPerPixelPerFrame == 0.16)
     #expect(StudioOutputFormat.h265High.bitsPerPixelPerFrame == 0.10)
+    #expect(StudioRenderPreset.builtIns[7].target == .vfxLog)
+    #expect(StudioRenderPreset.builtIns[7].format == .proRes4444)
+    #expect(StudioRenderPreset.builtIns[8].target == .vfxLog)
+    #expect(StudioRenderPreset.builtIns[8].format == .proRes4444XQ)
+    #expect(StudioOutputFormat.proRes4444.supports(target: .vfxLog))
+    #expect(StudioOutputFormat.proRes4444XQ.supports(target: .vfxLog))
+    #expect(!StudioOutputFormat.openEXR.supports(target: .vfxLog))
 }
 
 @Test func metadataProposalMatchesCreditsRulesAndAddsMatrix() {
@@ -57,6 +64,7 @@ import Testing
         peakNits: 120,
         display: preset.display,
         view: preset.view,
+        vfxInterchangeEncodingID: nil,
         pixelEncoding: .yuv44412,
         signalRange: .video,
         alpha: .straight,
@@ -76,6 +84,35 @@ import Testing
         StudioResolvedRenderConfiguration.self,
         from: JSONEncoder().encode(configuration)
     )
+    #expect(roundtrip == configuration)
+}
+
+@Test func vfxRenderJobFreezesCodecAndLogGamutIndependentlyOfCamera() throws {
+    let configuration = StudioResolvedRenderConfiguration(
+        composition: .deviceWithReference,
+        motionBlurEnabled: false,
+        motionSamples: 8,
+        format: .proRes4444XQ,
+        pipeline: .aces,
+        target: .vfxLog,
+        peakNits: 0,
+        display: nil,
+        view: nil,
+        vfxInterchangeEncodingID: "davinci-intermediate-wide-gamut",
+        pixelEncoding: .yuv44412,
+        signalRange: .video,
+        alpha: .straight,
+        includeAudio: true,
+        frameRate: .fps24,
+        firstFrame: 0,
+        lastFrame: 23
+    )
+    let roundtrip = try JSONDecoder().decode(
+        StudioResolvedRenderConfiguration.self,
+        from: JSONEncoder().encode(configuration)
+    )
+    #expect(roundtrip.format == .proRes4444XQ)
+    #expect(roundtrip.vfxInterchangeEncodingID == "davinci-intermediate-wide-gamut")
     #expect(roundtrip == configuration)
 }
 

@@ -70,14 +70,14 @@ import Testing
     var migrated = try store.load()
     #expect(migrated.schemaVersion == GlobalLibraryDocument.currentSchemaVersion)
     #expect(migrated.devices.count == 9)
-    #expect(migrated.renderPresets.count == 7)
+    #expect(migrated.renderPresets.count == 9)
 
     migrated.devices.removeFirst()
     migrated.renderPresets.removeFirst()
     try store.save(migrated)
     let reopened = try store.load()
     #expect(reopened.devices.count == 8)
-    #expect(reopened.renderPresets.count == 6)
+    #expect(reopened.renderPresets.count == 8)
     #expect(reopened == migrated)
 }
 
@@ -212,25 +212,39 @@ import Testing
         documentURL: root.appendingPathComponent("library.json")
     )
     let controller = GlobalLibraryController(store: store)
-    #expect(controller.document.renderPresets.count == 7)
+    #expect(controller.document.renderPresets.count == 9)
     controller.selectedPresetID = controller.document.renderPresets.first?.id
     let originalName = controller.selectedPresetItem?.name
     #expect(controller.selectedPresetItem?.isLocked == true)
     controller.updateSelectedPreset { $0.name = "No debe cambiar" }
     #expect(controller.selectedPresetItem?.name == originalName)
     controller.duplicateSelectedPreset()
-    #expect(controller.document.renderPresets.count == 8)
+    #expect(controller.document.renderPresets.count == 10)
     #expect(controller.selectedPresetItem?.isLocked == false)
     controller.updateSelectedPreset { $0.name = "ACES SDR personalizado" }
     #expect(controller.selectedPresetItem?.name == "ACES SDR personalizado")
     controller.removeSelectedPreset()
-    #expect(controller.document.renderPresets.count == 7)
+    #expect(controller.document.renderPresets.count == 9)
 
     controller.selectedPresetID = controller.document.renderPresets.first?.id
     controller.unlockSelectedPreset()
     #expect(controller.selectedPresetItem?.isLocked == false)
     controller.removeSelectedPreset()
-    #expect(try store.load().renderPresets.count == 6)
+    #expect(try store.load().renderPresets.count == 8)
+}
+
+@Test @MainActor func currentRenderCatalogSupersedesStoredBuiltInCopies() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-render-catalog-\(UUID().uuidString)")
+    let store = try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("library.json")
+    )
+    var stored = GlobalLibraryDocument()
+    stored.renderPresets.removeLast(2)
+    try store.save(stored)
+    let controller = GlobalLibraryController(store: store)
+    #expect(controller.document.renderPresets.count == 7)
+    #expect(controller.allRenderPresets == StudioRenderPreset.builtIns)
 }
 
 @Test @MainActor func coverGlassSeedsUseTheRustAuthorityAndGenericLockContract() throws {

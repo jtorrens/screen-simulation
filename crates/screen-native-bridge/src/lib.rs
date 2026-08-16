@@ -423,6 +423,7 @@ pub struct ScreenCapturePresetParametersV4 {
     raster_modes: [ScreenCaptureRasterModeV1; 3],
     default_raster_mode_id: ScreenUtf8View,
     default_lens_evaluation_model: u32,
+    native_vfx_encoding_id: ScreenUtf8View,
 }
 
 #[repr(C)]
@@ -444,7 +445,7 @@ pub struct ScreenLensPresetParametersV1 {
 pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 23;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
-pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
+pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 8;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
 pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;
@@ -3879,6 +3880,7 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
                 screen_application::LensEvaluationModel::ThinLens => 0,
                 screen_application::LensEvaluationModel::VfxDepthBlur => 1,
             },
+            native_vfx_encoding_id: utf8_view(preset.native_vfx_encoding_id.unwrap_or("")),
         };
     }
     true

@@ -22,7 +22,7 @@ typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
-#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 8u
 #define SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION 1u
 
 typedef struct {
@@ -727,6 +727,7 @@ typedef struct {
     ScreenCaptureRasterModeV1 raster_modes[3];
     ScreenUTF8View default_raster_mode_id;
     uint32_t default_lens_evaluation_model;
+    ScreenUTF8View native_vfx_encoding_id;
 } ScreenCapturePresetParametersV4;
 
 typedef struct {

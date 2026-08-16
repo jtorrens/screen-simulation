@@ -101,7 +101,7 @@ def validate_sources() -> None:
         "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
-        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u",
+        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 8u",
         "ScreenCapturePresetParametersV4",
     )
     missing = [token for token in required if token not in header]
@@ -120,7 +120,7 @@ def validate_sources() -> None:
         "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
-        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7",
+        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 8",
         "ScreenCapturePresetParametersV4",
     ):
         if token not in rust_bridge:

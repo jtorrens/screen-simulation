@@ -108,7 +108,8 @@ lens, sensor, temporal, cover or environment operation. Application prepares one
 two borrowed typed Metal textures and placement from the v1 frame input. It never resolves color,
 looks up a device preset or interprets source ACEScg as Device RGB. Active evaluation publishes
 RGBA32Float linear ACEScg so a half-float contract input is not quantized a second time; Screen
-amount zero retains the exact source texture instead of dispatching or copying.
+amount zero contributes no physical Device emission and never reintroduces the source texture after
+the placed-feeder boundary.
 
 The flat kernel uses safe Metal math with contraction disabled. It integrates the
 piecewise-constant source raster over every placed footprint, evaluates signed panel EOTF, and

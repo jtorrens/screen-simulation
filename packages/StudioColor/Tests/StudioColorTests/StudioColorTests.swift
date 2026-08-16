@@ -8,6 +8,21 @@ import Metal
     #expect(StudioColorBuildIdentity.configurationSHA256.count == 64)
 }
 
+@Test func vfxInterchangeCatalogIsExplicitUniqueAndResolvable() throws {
+    let catalog = StudioVFXInterchangeEncoding.catalog
+    #expect(!catalog.isEmpty)
+    #expect(Set(catalog.map(\.id)).count == catalog.count)
+    let engine = try StudioColorEngine.bundled()
+    for encoding in catalog {
+        #expect(encoding.outputTransform.encoding == .cameraLog)
+        #expect(encoding.outputTransform.colorSpace == nil)
+        _ = try engine.cachedColorSpaceProcessor(
+            source: "ACEScg",
+            destination: encoding.ocioColorSpace
+        )
+    }
+}
+
 @Test func rawPreviewShowsLinearValuesWithoutAnEncodingCurve() throws {
     let raw = try #require(StudioColorOutputTransform.catalog.first {
         $0.id == "acescg-raw"

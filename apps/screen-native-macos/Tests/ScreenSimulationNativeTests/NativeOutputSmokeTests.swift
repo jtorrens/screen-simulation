@@ -136,6 +136,39 @@ import Testing
     }
 }
 
+@Test @MainActor func vfxProResDoesNotMasqueradeAsARec709Master() async throws {
+    let display = try StudioColorMetalDisplay()
+    let frame = try display.makeACEScgFrame(
+        width: 32,
+        height: 18,
+        encodedRGBA: [Float](repeating: 0.18, count: 32 * 18 * 4)
+            .enumerated().map { $0.offset % 4 == 3 ? 1 : $0.element },
+        input: try #require(StudioColorInputTransform.catalog.first { $0.id == "acescg" }),
+        alpha: .straight
+    )
+    let destination = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vfx-log-\(UUID().uuidString).mov")
+    _ = try await NativeOutputRenderer.render(
+        configuration: renderConfiguration(
+            format: .proRes4444XQ,
+            preset: StudioRenderPreset.builtIns[8],
+            alpha: .straight,
+            signalRange: .video,
+            frameRange: 0 ... 0
+        ),
+        destination: destination,
+        audioSource: nil,
+        display: display,
+        frameProvider: { _ in frame },
+        progress: { _, _ in }
+    )
+    let detection = await StudioMediaMetadataDetector.detect(
+        url: destination,
+        isVideo: true
+    )
+    #expect(detection.proposedInputTransformID == nil)
+}
+
 @Test @MainActor func h264RoundtripSeparatesCodecLossFromColorContract() async throws {
     for range in [StudioSignalRange.video, .full] {
         let result = try await movieRoundtrip(
@@ -495,6 +528,8 @@ private func renderConfiguration(
         peakNits: preset.peakNits,
         display: preset.display,
         view: preset.view,
+        vfxInterchangeEncodingID: preset.target == .vfxLog
+            ? "arri-logc4-awg4" : nil,
         pixelEncoding: format.defaultPixelEncoding,
         signalRange: signalRange,
         alpha: alphaMode,

@@ -131,6 +131,7 @@ private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration
         peakNits: 100,
         display: "sRGB",
         view: "ACES 2.0 - SDR 100 nits (Rec.709)",
+        vfxInterchangeEncodingID: nil,
         pixelEncoding: .yuv44412,
         signalRange: .video,
         alpha: .straight,

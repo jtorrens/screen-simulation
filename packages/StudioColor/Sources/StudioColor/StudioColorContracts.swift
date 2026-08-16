@@ -258,7 +258,7 @@ public struct StudioColorMode: Hashable, Identifiable, Sendable {
 
 public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
     public enum Encoding: Equatable, Sendable {
-        case linearRec709Raw, acescgRaw, sRGB, rec709, displayP3, displayP3EDR, rec2100PQ, rec2100HLG
+        case linearRec709Raw, acescgRaw, cameraLog, sRGB, rec709, displayP3, displayP3EDR, rec2100PQ, rec2100HLG
     }
     public enum Processor: Hashable, Sendable {
         case displayView(display: String, view: String)
@@ -384,6 +384,7 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         // codes, so ColorSync does not add an encoding curve that lifts them.
         case .linearRec709Raw: CGColorSpace(name: CGColorSpace.sRGB)
         case .acescgRaw: CGColorSpace(name: CGColorSpace.acescgLinear)
+        case .cameraLog: nil
         case .sRGB: CGColorSpace(name: CGColorSpace.sRGB)
         case .rec709: CGColorSpace(name: CGColorSpace.itur_709)
         case .displayP3: CGColorSpace(name: CGColorSpace.displayP3)
@@ -397,6 +398,7 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         switch encoding {
         case .linearRec709Raw: "RGB lineal Rec.709 · sin curva"
         case .acescgRaw: "ACEScg lineal"
+        case .cameraLog: "Log / Gamut VFX"
         case .sRGB: "sRGB · IEC 61966-2-1"
         case .rec709: "Rec.709 · SDR"
         case .displayP3: "Display P3 · SDR"
@@ -404,6 +406,67 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         case .rec2100PQ: "Rec.2100 · PQ"
         case .rec2100HLG: "Rec.2100 · HLG"
         }
+    }
+}
+
+/// Color-owned encodings suitable for a VFX interchange master.
+/// Camera presets may recommend one stable id, but the authored selection is
+/// independent and is never inferred from the camera name during evaluation.
+public struct StudioVFXInterchangeEncoding: Hashable, Identifiable, Sendable {
+    public let id: String
+    public let label: String
+    public let ocioColorSpace: String
+
+    public static let catalog: [Self] = [
+        .init(
+            id: "arri-logc4-awg4",
+            label: "ARRI LogC4 / ARRI Wide Gamut 4",
+            ocioColorSpace: "ARRI LogC4"
+        ),
+        .init(
+            id: "arri-logc3-ei800-awg3",
+            label: "ARRI LogC3 EI800 / ARRI Wide Gamut 3",
+            ocioColorSpace: "ARRI LogC3 (EI800)"
+        ),
+        .init(
+            id: "sony-slog3-sgamut3-cine",
+            label: "Sony S-Log3 / S-Gamut3.Cine",
+            ocioColorSpace: "S-Log3 S-Gamut3.Cine"
+        ),
+        .init(
+            id: "panasonic-vlog-vgamut",
+            label: "Panasonic V-Log / V-Gamut",
+            ocioColorSpace: "V-Log V-Gamut"
+        ),
+        .init(
+            id: "canon-log3-cinema-gamut-d55",
+            label: "Canon Log 3 / Cinema Gamut D55",
+            ocioColorSpace: "CanonLog3 CinemaGamut D55"
+        ),
+        .init(
+            id: "red-log3g10-redwidegamutrgb",
+            label: "RED Log3G10 / REDWideGamutRGB",
+            ocioColorSpace: "Log3G10 REDWideGamutRGB"
+        ),
+        .init(
+            id: "blackmagic-film-gen5",
+            label: "Blackmagic Film Gen 5 / Wide Gamut Gen 5",
+            ocioColorSpace: "BMDFilm WideGamut Gen5"
+        ),
+        .init(
+            id: "davinci-intermediate-wide-gamut",
+            label: "DaVinci Intermediate / Wide Gamut",
+            ocioColorSpace: "DaVinci Intermediate WideGamut"
+        ),
+    ]
+
+    public var outputTransform: StudioColorOutputTransform {
+        .init(
+            id: "vfx-interchange-\(id)",
+            label: label,
+            colorSpace: ocioColorSpace,
+            encoding: .cameraLog
+        )
     }
 }
 

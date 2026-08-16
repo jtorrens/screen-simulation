@@ -277,6 +277,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var outputFormat = StudioOutputFormat.proRes4444
     @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
     @Published var renderPreset = StudioRenderPreset.builtIns[0]
+    @Published var vfxInterchangeEncodingID = "arri-logc4-awg4"
     @Published var peakNits = 100.0
     @Published var includeAudio = true
     @Published var outputAlphaMode = StudioAlphaMode.premultiplied
@@ -3452,6 +3453,23 @@ final class WorkspaceModel: ObservableObject {
         outputSignalRange = preset.signalRange
         outputAlphaMode = preset.alpha
         includeAudio = preset.includeAudio
+        if preset.target == .vfxLog,
+           let recommendation = selectedCapturePreset?.nativeVFXEncodingID {
+            vfxInterchangeEncodingID = recommendation
+        }
+    }
+
+    var selectedCapturePreset: CapturePresetDefinition? {
+        capturePresets.first { $0.id == selectedCapturePresetID }
+    }
+
+    var selectedVFXInterchangeEncoding: StudioVFXInterchangeEncoding? {
+        StudioVFXInterchangeEncoding.catalog.first { $0.id == vfxInterchangeEncodingID }
+    }
+
+    var recommendedVFXInterchangeEncoding: StudioVFXInterchangeEncoding? {
+        guard let id = selectedCapturePreset?.nativeVFXEncodingID else { return nil }
+        return StudioVFXInterchangeEncoding.catalog.first { $0.id == id }
     }
 
     func ensureRenderOptionsCompatible() {
@@ -3535,6 +3553,8 @@ final class WorkspaceModel: ObservableObject {
             peakNits: peakNits,
             display: renderPreset.display,
             view: renderPreset.view,
+            vfxInterchangeEncodingID: renderPreset.target == .vfxLog
+                ? vfxInterchangeEncodingID : nil,
             pixelEncoding: outputPixelEncoding,
             signalRange: outputSignalRange,
             alpha: outputFormat.supportsAlpha ? outputAlphaMode : .ignore,

@@ -43,7 +43,7 @@ enum NativeOutputRenderer {
         guard let firstIndex = frames.first else { throw NativeOutputError.invalidFrame }
         try validate(format: format, configuration: configuration)
         let first = try await frameProvider(firstIndex)
-        let output = outputTransform(for: configuration)
+        let output = try outputTransform(for: configuration)
         if format.isMovie {
             guard let output else {
                 throw NativeOutputError.unsupported("los masters scene-linear requieren secuencia OpenEXR")
@@ -150,7 +150,19 @@ enum NativeOutputRenderer {
 
     private static func outputTransform(
         for configuration: StudioResolvedRenderConfiguration
-    ) -> StudioColorOutputTransform? {
+    ) throws -> StudioColorOutputTransform? {
+        if configuration.target == .vfxLog {
+            guard let id = configuration.vfxInterchangeEncodingID,
+                  let encoding = StudioVFXInterchangeEncoding.catalog.first(where: {
+                      $0.id == id
+                  })
+            else {
+                throw NativeOutputError.unsupported(
+                    "el intercambio ProRes VFX exige un Log/Gamut explícito"
+                )
+            }
+            return encoding.outputTransform
+        }
         if configuration.pipeline == .davinciColorManaged,
            configuration.target == .sdr {
             return StudioColorOutputTransform(
@@ -176,6 +188,24 @@ enum NativeOutputRenderer {
         guard format.supports(target: configuration.target) else {
             throw NativeOutputError.unsupported(
                 "\(format.displayName) no admite el destino \(configuration.target.rawValue)"
+            )
+        }
+        if configuration.target == .vfxLog {
+            guard format == .proRes4444 || format == .proRes4444XQ else {
+                throw NativeOutputError.unsupported(
+                    "el intercambio VFX vigente admite ProRes 4444 o ProRes 4444 XQ"
+                )
+            }
+            guard let id = configuration.vfxInterchangeEncodingID,
+                  StudioVFXInterchangeEncoding.catalog.contains(where: { $0.id == id })
+            else {
+                throw NativeOutputError.unsupported(
+                    "el intercambio ProRes VFX exige un Log/Gamut conocido"
+                )
+            }
+        } else if configuration.vfxInterchangeEncodingID != nil {
+            throw NativeOutputError.unsupported(
+                "un render que no es VFX Log no puede declarar un Log/Gamut VFX"
             )
         }
         guard !configuration.motionBlurEnabled
@@ -398,7 +428,7 @@ private final class MovieWriter {
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_SMPTE_ST_2084_PQ,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
             ]
-        } else {
+        } else if output.encoding != .cameraLog {
             settings[AVVideoColorPropertiesKey] = [
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
