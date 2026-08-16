@@ -363,11 +363,15 @@ import Testing
             Issue.record("SCREEN_MOIRE_GLOBAL_SHUTTER debe ser 0 o 1")
             return
         }
+        let frameContext = try moireFrameContext(
+            deviceID: device.id,
+            environmentSourcePath: environmentSourcePath
+        )
         imported = .init(
             device: device,
             pipeline: pipeline,
             model: PhysicalModelController().authoringState,
-            context: nil,
+            context: frameContext,
             report: "Headless VFX reference battery"
         )
     }
@@ -669,6 +673,157 @@ import Testing
                 + "metalSubmitToResultMs=\(variant.metalSubmitToResultMilliseconds)"
         )
     }
+}
+
+@MainActor
+private func moireFrameContext(
+    deviceID: String,
+    environmentSourcePath: String?
+) throws -> PhysicalSettingsExchange.FrameContext {
+    let sourceInputTransformID = try #require(
+        ProcessInfo.processInfo.environment["SCREEN_MOIRE_SOURCE_INPUT_TRANSFORM_ID"]
+    )
+    var selection = try RustTestAuthoringCoordinator.defaultSelection(
+        inputTransformID: sourceInputTransformID,
+        deviceID: deviceID,
+        frameRate: .fps24
+    )
+    let choiceIntents: [(String, String)] = [
+        ("placement", "one-to-one"),
+        ("color-mode", try #require(ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_COLOR_MODE_ID"
+        ])),
+        ("cover-glass-preset", try #require(ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_COVER_ID"
+        ])),
+        ("capture-preset", try #require(ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_CAPTURE_ID"
+        ])),
+        ("lens-preset", try #require(ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_LENS_ID"
+        ])),
+        ("lens-evaluation-model", try #require(ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_LENS_EVALUATION_MODEL"
+        ])),
+        ("device-vfx-alpha-mode", "device-transparency"),
+    ]
+    for (controlID, optionID) in choiceIntents {
+        selection = try RustTestAuthoringCoordinator.apply(
+            .setChoice(controlID: controlID, optionID: optionID),
+            to: selection
+        )
+    }
+    if environmentSourcePath != nil {
+        selection = try RustTestAuthoringCoordinator.apply(
+            .setChoice(controlID: "environment-source", optionID: "environment-image"),
+            to: selection
+        )
+    }
+    let scalarSettings: [(String, String)] = [
+        ("white-luminance", "SCREEN_MOIRE_WHITE_NITS"),
+        ("subpixel-geometry-amount", "SCREEN_MOIRE_PANEL_STRUCTURE_AMOUNT"),
+        ("panel-uniformity-amount", "SCREEN_MOIRE_PANEL_UNIFORMITY_AMOUNT"),
+        ("panel-light-spread-amount", "SCREEN_MOIRE_PANEL_SPREAD_AMOUNT"),
+        ("cover-glass-amount", "SCREEN_MOIRE_COVER_CHARACTER_STRENGTH"),
+        ("cover-ag-microtexture-amount", "SCREEN_MOIRE_COVER_AG_MICROTEXTURE_CHARACTER_STRENGTH"),
+        ("environment-rotation-x-degrees", "SCREEN_MOIRE_ENVIRONMENT_ROTATION_X_DEGREES"),
+        ("environment-rotation-y-degrees", "SCREEN_MOIRE_ENVIRONMENT_ROTATION_Y_DEGREES"),
+        ("environment-exposure-ev", "SCREEN_MOIRE_ENVIRONMENT_EXPOSURE_STOPS"),
+        ("camera-distance-meters", "SCREEN_MOIRE_DISTANCE_METERS"),
+        ("camera-orbit-x-degrees", "SCREEN_MOIRE_ORBIT_X_DEGREES"),
+        ("camera-orbit-y-degrees", "SCREEN_MOIRE_ORBIT_Y_DEGREES"),
+        ("cover-glow-amount", "SCREEN_MOIRE_COVER_GLOW_AMOUNT"),
+        ("lens-amount", "SCREEN_MOIRE_LENS_AMOUNT"),
+        ("focus-distance-meters", "SCREEN_MOIRE_FOCUS_DISTANCE_METERS"),
+        ("f-stop", "SCREEN_MOIRE_F_STOP"),
+        ("computational-capture-amount", "SCREEN_MOIRE_COMPUTATIONAL_CHARACTER_STRENGTH"),
+        ("computational-exposure-count", "SCREEN_MOIRE_COMPUTATIONAL_EXPOSURE_COUNT"),
+        ("computational-bracket-spacing-stops", "SCREEN_MOIRE_COMPUTATIONAL_BRACKET_SPACING_STOPS"),
+        ("sensor-noise-amount", "SCREEN_MOIRE_SENSOR_NOISE_AMOUNT"),
+    ]
+    for (controlID, settingID) in scalarSettings {
+        let value = try moireRequiredDouble(settingID)
+        selection = try RustTestAuthoringCoordinator.apply(
+            .setScalar(controlID: controlID, value: value),
+            to: selection
+        )
+    }
+
+    let environmentResource: PhysicalSettingsExchange.EnvironmentResource
+    if let environmentSourcePath {
+        guard let environmentInputTransformID = ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_ENVIRONMENT_INPUT_TRANSFORM_ID"
+        ] else {
+            throw TestAuthoringCoordinatorError.malformedDescriptor(
+                "El fixture HDRI no publicó su Input Transform obligatorio."
+            )
+        }
+        let environmentData = try Data(contentsOf: URL(fileURLWithPath: environmentSourcePath))
+        let environmentHash = SHA256.hash(data: environmentData)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        environmentResource = .init(
+            kind: .image,
+            fileName: URL(fileURLWithPath: environmentSourcePath).lastPathComponent,
+            sha256: environmentHash,
+            inputTransformID: environmentInputTransformID
+        )
+    } else {
+        environmentResource = .init(
+            kind: .procedural,
+            fileName: nil,
+            sha256: nil,
+            inputTransformID: nil
+        )
+    }
+    let previewPhaseID = try moirePreviewPhaseID(
+        for: #require(ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_BASELINE_INTERMEDIATE"
+        ])
+    )
+    return .init(
+        selection: selection,
+        sourceInputTransformID: sourceInputTransformID,
+        sourceAlphaMode: "Ignorar",
+        sourceColorModel: "RGB",
+        sourceYUVMatrix: "BT.709",
+        sourceSignalRange: "Completo",
+        sourcePlacementID: "one-to-one",
+        previewOutputTransformID: try #require(ProcessInfo.processInfo.environment[
+            "SCREEN_MOIRE_OUTPUT_TRANSFORM_ID"
+        ]),
+        previewPhaseID: previewPhaseID,
+        environmentResource: environmentResource,
+        referenceResource: .init(
+            kind: .none,
+            fileName: nil,
+            sha256: nil,
+            inputTransformID: nil,
+            alphaMode: nil,
+            signalColorModel: nil,
+            signalMatrix: nil,
+            signalRange: nil,
+            placementID: nil,
+            corners: []
+        )
+    )
+}
+
+private func moirePreviewPhaseID(for intermediateID: String) throws -> String {
+    try #require([
+        "device-signal": "feeder-output",
+        "panel-emission": "device-interpretation",
+        "subpixel-radiance": "panel-structure",
+        "panel-uniformity": "panel-uniformity",
+        "panel-light-spread": "panel-light-spread",
+        "panel-temporal": "panel-temporal",
+        "relative-geometry": "relative-geometry",
+        "cover-environment": "cover-environment",
+        "cover-glow": "cover-glow",
+        "lens-projection": "lens-projection",
+        "shutter-motion": "shutter-exposure",
+        "camera-rendered-acescg": "camera-rendering-intent",
+    ][intermediateID])
 }
 
 private func moireBaselineIntermediate() throws -> PhysicalIntermediate {
