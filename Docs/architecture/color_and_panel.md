@@ -103,6 +103,8 @@ Photometric calibration uses authored achromatic device-signal codes, the curren
 
 The developed camera result enters `screen-color` as immutable linear ACEScg. Camera output selection uses one stable application identifier resolved against the pinned bundled configuration. The current catalog is ACES 2.0 sRGB SDR 100 nit, Rec.709 SDR 100 nit and Rec.2100 PQ 1000 nit. Preview and export must consume the same resolved output processor; the active monitor never selects or substitutes a transform. Selecting another output does not recompute sensor capture, demosaic, white balance or the authoritative ACEScg result. Scene-linear output is a separate explicit encoding boundary, not an OCIO display-transform fallback.
 
+The unscattered central panel term exists only inside the antialiased active-panel coverage. Outside it, only core/tail energy redistributed from the already-resolved emitted panel may remain; the feeder/source image and an undiffused copy of it are forbidden exterior contributions.
+
 Native level-zero publication crosses one presentation-only backend contract after this immutable
 ACEScg result. That backend must resolve the selected pinned OCIO processor and produce the final
 RGBA8 bytes; it cannot own a color choice or physical operation. The current macOS product uses one

@@ -3024,10 +3024,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 }
             };
             let transmitted = cover.transmission(cover_sample.view_cosine);
+            let scattered = plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength;
+            let exterior_scattered_glow = [
+                cover_glow[0] - spread[0] * (1.0 - scattered),
+                cover_glow[1] - spread[1] * (1.0 - scattered),
+                cover_glow[2] - spread[2] * (1.0 - scattered),
+            ];
             let exterior_glow = LinearRgb::new(
-                cover_glow[0] * temporal_gain * transmitted.r,
-                cover_glow[1] * temporal_gain * transmitted.g,
-                cover_glow[2] * temporal_gain * transmitted.b,
+                exterior_scattered_glow[0] * temporal_gain * transmitted.r,
+                exterior_scattered_glow[1] * temporal_gain * transmitted.g,
+                exterior_scattered_glow[2] * temporal_gain * transmitted.b,
             );
             let covered = LinearRgb::new(
                 exterior_glow.r + panel_coverage * (covered_with_environment.r - exterior_glow.r),

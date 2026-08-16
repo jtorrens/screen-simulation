@@ -1200,10 +1200,12 @@ inline float cover_glow_native_channel(
     float2 device_maximum,
     float base_native,
     float2 prepared_placement_scale,
+    thread float& exterior_scattered,
     constant PhysicalPipelineParams& p
 ) {
     const float scattered = p.cover_glow.z;
     if (scattered == 0.0f) {
+        exterior_scattered = 0.0f;
         return spread_native_channel(
             device_signal, device_row_prefix, channel, device_minimum, device_maximum,
             base_native, prepared_placement_scale, p);
@@ -1222,9 +1224,9 @@ inline float cover_glow_native_channel(
         device_signal, device_row_prefix, channel,
         device_minimum - tail_extent, device_maximum + tail_extent, float2(0.0f),
         prepared_placement_scale, p);
-    return base * (1.0f - scattered)
-        + core_blur * scattered * (1.0f - p.cover_glow.w)
+    exterior_scattered = core_blur * scattered * (1.0f - p.cover_glow.w)
         + tail_blur * scattered * p.cover_glow.w;
+    return base * (1.0f - scattered) + exterior_scattered;
 }
 
 kernel void reduce_physical_veiling_source(
@@ -1307,6 +1309,7 @@ kernel void evaluate_physical_pipeline(
     float3 uniform_native = 0.0f;
     float3 spread_native = 0.0f;
     float3 glow_native = 0.0f;
+    float3 exterior_glow_native = 0.0f;
     float3 carrier_detail_native = 0.0f;
     float3 continuous_native = 0.0f;
     float3 uniform_continuous_native = 0.0f;
@@ -1506,10 +1509,14 @@ kernel void evaluate_physical_pipeline(
                         prepared_placement_scale, p) * base_gain * optical_weight;
                 }
                 if (needs_glow) {
+                    float exterior_scattered = 0.0f;
                     glow_native[channel] += cover_glow_native_channel(
                         device_signal, device_row_prefix, channel,
                         channel_minimum, channel_maximum, base_native,
-                        prepared_placement_scale, p) * base_gain * optical_weight;
+                        prepared_placement_scale, exterior_scattered, p)
+                        * base_gain * optical_weight;
+                    exterior_glow_native[channel] += exterior_scattered
+                        * base_gain * optical_weight;
                 }
                 if (needs_continuous) {
                     continuous_native[channel] += base_linear * optical_weight;
@@ -1564,6 +1571,7 @@ kernel void evaluate_physical_pipeline(
     uniform_native *= reciprocal;
     spread_native *= reciprocal;
     glow_native *= reciprocal;
+    exterior_glow_native *= reciprocal;
     carrier_detail_native *= reciprocal;
     continuous_native *= reciprocal;
     uniform_continuous_native *= reciprocal;
@@ -1597,6 +1605,11 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix0.xyz, glow_native),
         dot(p.matrix1.xyz, glow_native),
         dot(p.matrix2.xyz, glow_native)
+    ) / p.levels.z;
+    const float3 exterior_scattered_glow = float3(
+        dot(p.matrix0.xyz, exterior_glow_native),
+        dot(p.matrix1.xyz, exterior_glow_native),
+        dot(p.matrix2.xyz, exterior_glow_native)
     ) / p.levels.z;
     float3 carrier_detail = float3(
         dot(p.matrix0.xyz, carrier_detail_native),
@@ -1641,7 +1654,10 @@ kernel void evaluate_physical_pipeline(
         cover_footprint_half_extent_meters, environment_acescg, position, p);
     const float panel_coverage = panel_rectangle_coverage(
         cover_position_meters, cover_footprint_half_extent_meters, p);
-    const float3 exterior_glow = glow * temporal_gain
+    // The complete glow term conserves the unscattered panel base for samples
+    // inside the active outline. Outside the panel only the separately
+    // accumulated core/tail energy exists.
+    const float3 exterior_glow = exterior_scattered_glow * temporal_gain
         * flat_cover_transmission(cover_cosine * cover_reciprocal, p);
     const float3 covered = mix(
         exterior_glow, covered_with_environment, panel_coverage);
