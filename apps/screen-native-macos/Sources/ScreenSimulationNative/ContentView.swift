@@ -2067,6 +2067,16 @@ struct ContentView: View {
                 .accessibilityLabel(model.previewTransformationsLocked
                     ? "Desbloquear transformaciones del Viewer"
                     : "Bloquear transformaciones del Viewer")
+                Button(action: model.togglePreviewGizmos) {
+                    Image(systemName: model.previewGizmosVisible ? "eye" : "eye.slash")
+                }
+                .foregroundStyle(model.previewGizmosVisible ? Color.secondary : Color.orange)
+                .help(model.previewGizmosVisible
+                    ? "Ocultar todos los gizmos del Viewer"
+                    : "Mostrar todos los gizmos del Viewer")
+                .accessibilityLabel(model.previewGizmosVisible
+                    ? "Ocultar gizmos del Viewer"
+                    : "Mostrar gizmos del Viewer")
                 Button {
                     model.renderCurrentFrame()
                 } label: {
@@ -2092,34 +2102,49 @@ struct ContentView: View {
                         pan: model.pan,
                         fitted: model.previewIsFitted,
                         metadataLines: model.previewMetadataLines,
-                        deviceBoundary: model.physicalModel.quality == .setup
+                        deviceBoundary: model.previewGizmosVisible && (model.physicalModel.quality == .setup
                                 || model.physicalModel.quality == .environmentSetup
-                                || model.physicalModel.quality == .focusSetup
+                                || model.physicalModel.quality == .focusSetup)
                             ? model.setupDeviceBoundary : [],
-                        sensorGateBoundary: model.physicalModel.quality == .setup
+                        sensorGateBoundary: model.previewGizmosVisible && (model.physicalModel.quality == .setup
                                 || model.physicalModel.quality == .environmentSetup
                                 || model.physicalModel.quality == .focusSetup
-                                || model.referenceMatchEnabled
+                                || model.referenceMatchEnabled)
                             ? model.setupSensorGateBoundary : [],
-                        focusTarget: model.physicalModel.quality == .focusSetup
+                        focusTarget: model.previewGizmosVisible
+                            && model.physicalModel.quality == .focusSetup
                             ? model.focusSetupTarget : nil,
-                        focusTargetEnabled: model.physicalModel.quality == .focusSetup
+                        focusTargetEnabled: model.previewGizmosVisible
+                            && model.physicalModel.quality == .focusSetup
                             && model.focusSetupTargetEnabled,
-                        referenceProjectedCorners: model.referenceMatchEnabled
+                        referenceProjectedCorners: model.previewGizmosVisible
+                            && model.referenceMatchEnabled
                             ? model.referenceMatchProjectedCorners : [],
-                        referenceTargetCorners: model.referenceMatchEnabled
+                        referenceTargetCorners: model.previewGizmosVisible
+                            && model.referenceMatchEnabled
                             ? model.referenceMatchCorners : [],
-                        reflectionHandles: model.selectedReflectionEmitterHandles,
-                        reflectionSoftnessPixels: model.selectedReflectionEmitterSoftnessPixels,
-                        reflectionShapeClosed: model.selectedReflectionEmitter?.kind == .window,
-                        reflectionShapeCircular: model.selectedReflectionEmitter?.kind == .practical,
-                        trackingPoints: model.trackingOverlayPoints,
-                        trackingPointIDs: model.trackingOverlayPointIDs,
-                        trackingSegments: model.trackingOverlaySegments,
-                        trackingMeshCenters: model.trackingOverlayMeshCenters,
-                        trackingMeshCenterIDs: model.trackingOverlayMeshCenterIDs,
-                        trackingMeshCenterLabels: model.trackingOverlayMeshCenterLabels,
-                        trackingPointSelectionEnabled: model.trackingScaleSelectionSlot != nil,
+                        reflectionHandles: model.previewGizmosVisible
+                            ? model.selectedReflectionEmitterHandles : [],
+                        reflectionSoftnessPixels: model.previewGizmosVisible
+                            ? model.selectedReflectionEmitterSoftnessPixels : 0,
+                        reflectionShapeClosed: model.previewGizmosVisible
+                            && model.selectedReflectionEmitter?.kind == .window,
+                        reflectionShapeCircular: model.previewGizmosVisible
+                            && model.selectedReflectionEmitter?.kind == .practical,
+                        trackingPoints: model.previewGizmosVisible
+                            ? model.trackingOverlayPoints : [],
+                        trackingPointIDs: model.previewGizmosVisible
+                            ? model.trackingOverlayPointIDs : [],
+                        trackingSegments: model.previewGizmosVisible
+                            ? model.trackingOverlaySegments : [],
+                        trackingMeshCenters: model.previewGizmosVisible
+                            ? model.trackingOverlayMeshCenters : [],
+                        trackingMeshCenterIDs: model.previewGizmosVisible
+                            ? model.trackingOverlayMeshCenterIDs : [],
+                        trackingMeshCenterLabels: model.previewGizmosVisible
+                            ? model.trackingOverlayMeshCenterLabels : [],
+                        trackingPointSelectionEnabled: model.previewGizmosVisible
+                            && model.trackingScaleSelectionSlot != nil,
                         sceneInteractionLocked: model.previewTransformationsLocked,
                         cameraNavigationEnabled: !model.previewTransformationsLocked
                             && !model.referenceMatchEnabled

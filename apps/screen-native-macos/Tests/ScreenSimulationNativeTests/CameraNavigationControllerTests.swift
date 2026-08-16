@@ -170,6 +170,22 @@ import Testing
     #expect(workspace.pan == CGSize(width: 40, height: -20))
 }
 
+@Test @MainActor func previewGizmoVisibilityDoesNotModifyTheScene() {
+    let workspace = WorkspaceModel()
+    let initialAuthoring = workspace.physicalAuthoringState
+    let initialDevice = workspace.modelDeviceDefinition
+
+    #expect(workspace.previewGizmosVisible)
+    workspace.togglePreviewGizmos()
+    #expect(!workspace.previewGizmosVisible)
+    #expect(workspace.physicalAuthoringState == initialAuthoring)
+    #expect(workspace.modelDeviceDefinition == initialDevice)
+    workspace.togglePreviewGizmos()
+    #expect(workspace.previewGizmosVisible)
+    #expect(workspace.physicalAuthoringState == initialAuthoring)
+    #expect(workspace.modelDeviceDefinition == initialDevice)
+}
+
 private func navigationGesture(
     distance: Double,
     operation: CameraNavigationOperation = .pan,

@@ -606,6 +606,40 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     ) < 0.001)
 }
 
+@Test @MainActor func editingAControlKeepsTheLastComposedFrameUntilReplacement() async throws {
+    let workspace = WorkspaceModel()
+    let asus = try #require(try RustDeviceCatalog.builtIns().first {
+        $0.name.contains("ASUS ProArt")
+    })
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == asus.defaultCoverGlassPresetID
+    })
+    workspace.selectDevice(asus, coverGlass: cover, amount: 0)
+    workspace.setTestPageActive(true)
+    let finalPhase = try #require(workspace.testPresentation?.phases.last)
+    workspace.handleTestIntent(.selectPhase(finalPhase.id))
+    try requestPhysicalPreview("draft", in: workspace)
+
+    for _ in 0..<2_000 {
+        if workspace.physicalPublicationSummary.contains("publicado") { break }
+        try await Task.sleep(for: .milliseconds(2))
+    }
+    let composed = try #require(workspace.metalFrame)
+    let source = try #require(workspace.sourceACEScgFrame)
+    #expect(ObjectIdentifier(composed.texture as AnyObject)
+        != ObjectIdentifier(source.texture as AnyObject))
+
+    workspace.handleTestIntent(.setScalar(
+        controlID: "moire-saturation",
+        value: 1.25
+    ))
+
+    let retained = try #require(workspace.metalFrame)
+    let currentSource = try #require(workspace.sourceACEScgFrame)
+    #expect(ObjectIdentifier(retained.texture as AnyObject)
+        != ObjectIdentifier(currentSource.texture as AnyObject))
+}
+
 @Test @MainActor func deviceColorModeChangesInterpretationWithoutRecodingTheFeeder() throws {
     let workspace = WorkspaceModel()
     let asus = try #require(try RustDeviceCatalog.builtIns().first {

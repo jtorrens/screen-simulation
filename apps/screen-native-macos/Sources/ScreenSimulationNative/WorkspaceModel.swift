@@ -226,6 +226,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var setupSensorGateBoundary: [CGPoint] = []
     @Published private(set) var focusSetupTarget: CGPoint?
     @Published private(set) var focusSetupTargetEnabled = false
+    @Published private(set) var previewGizmosVisible = true
     @Published private(set) var referenceFrameName: String?
     @Published private(set) var referenceFrameDetail: String?
     @Published private(set) var referenceInputTransform = StudioColorInputTransform.catalog.first {
@@ -988,6 +989,10 @@ final class WorkspaceModel: ObservableObject {
 
     func togglePreviewTransformationsLock() {
         previewTransformationsLocked.toggle()
+    }
+
+    func togglePreviewGizmos() {
+        previewGizmosVisible.toggle()
     }
 
     func updateCameraNavigation(delta: CGSize) {
@@ -5768,10 +5773,10 @@ final class WorkspaceModel: ObservableObject {
         baseModelDeviceDefinition = device
         basePhysicalAuthoringState = authored
         try refreshTestAuthoringDescriptor()
-        rebuildCurrent()
-        // Rebuilding the source invalidates the previous physical frame and
-        // deliberately returns the viewer to Setup. Apply an explicitly
-        // authored physical quality only after that final invalidation.
+        // The source artifact is replaced above only when its own adjustment
+        // changes. Keep the last complete composition visible while a new
+        // physical result is evaluated; publishing the decoded source here
+        // would temporarily discard camera, Device and reference placement.
         let qualityChanged = physicalModel.quality != quality
         physicalModel.setQuality(quality)
         if !qualityChanged {
