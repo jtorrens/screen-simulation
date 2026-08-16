@@ -485,6 +485,10 @@ import Testing
         .map { String(format: "%02x", $0) }
         .joined()
     print("MOIRE_BASELINE expected=\(expectedHash ?? "candidate") actual=\(actualHash)")
+    print(
+        "MOIRE_TIMING intermediate=\(ProcessInfo.processInfo.environment["SCREEN_MOIRE_BASELINE_INTERMEDIATE"] ?? "missing") "
+            + "metalSubmitToResultMs=\(baseline.metalSubmitToResultMilliseconds)"
+    )
     if let expectedHash {
         #expect(actualHash == expectedHash)
         let rgba16 = try #require(baseline.rgba16)
@@ -679,6 +683,7 @@ private func moireBaselineIntermediate() throws -> PhysicalIntermediate {
         "subpixel-radiance": .subpixelRadiance,
         "panel-uniformity": .panelUniformity,
         "panel-light-spread": .panelLightSpread,
+        "panel-temporal": .panelTemporal,
         "relative-geometry": .relativeGeometry,
         "cover-environment": .coverEnvironment,
         "cover-glow": .coverGlow,
@@ -854,9 +859,7 @@ private func renderMoireVariant(
         )
     }
     let rgba8 = try context.display.renderRGBA8(frameResult, output: context.output)
-    let rgba16: [UInt16]? = if ProcessInfo.processInfo.environment[
-        "SCREEN_MOIRE_DIAGNOSTIC_DIR"
-    ] != nil, name != "baseline-repeat" {
+    let rgba16: [UInt16]? = if name != "baseline-repeat" {
         try context.display.renderRGBA16(frameResult, output: context.output)
     } else {
         nil
@@ -864,14 +867,22 @@ private func renderMoireVariant(
     let hash = SHA256.hash(data: Data(rgba8))
         .map { String(format: "%02x", $0) }
         .joined()
-    var chroma: [Double] = []
-    chroma.reserveCapacity(rgba8.count / 4)
+    var chromaHistogram = [UInt64](repeating: 0, count: 256)
+    var chromaSum: UInt64 = 0
     for offset in stride(from: 0, to: rgba8.count, by: 4) {
         let minimum = min(rgba8[offset], rgba8[offset + 1], rgba8[offset + 2])
         let maximum = max(rgba8[offset], rgba8[offset + 1], rgba8[offset + 2])
-        chroma.append(Double(maximum - minimum) / 255)
+        let chroma = Int(maximum - minimum)
+        chromaHistogram[chroma] += 1
+        chromaSum += UInt64(chroma)
     }
-    chroma.sort()
+    let pixelCount = rgba8.count / 4
+    let p95Rank = UInt64(Double(pixelCount) * 0.95)
+    var accumulated: UInt64 = 0
+    let p95Code = chromaHistogram.indices.first { code in
+        accumulated += chromaHistogram[code]
+        return accumulated > p95Rank
+    } ?? 255
     return MoireVariant(
         name: name,
         width: frameResult.width,
@@ -879,8 +890,8 @@ private func renderMoireVariant(
         rgba8: rgba8,
         rgba16: rgba16,
         hash: hash,
-        meanChroma: chroma.reduce(0, +) / Double(chroma.count),
-        p95Chroma: chroma[min(chroma.count - 1, Int(Double(chroma.count) * 0.95))],
+        meanChroma: Double(chromaSum) / Double(pixelCount) / 255,
+        p95Chroma: Double(p95Code) / 255,
         metalSubmitToResultMilliseconds: Double(metalElapsedNanoseconds) / 1_000_000,
         frame: frameResult
     )
