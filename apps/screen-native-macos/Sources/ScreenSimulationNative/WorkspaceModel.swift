@@ -5443,6 +5443,7 @@ final class WorkspaceModel: ObservableObject {
             resolvedDevice: effectiveDevice,
             resolvedPipeline: effectivePipeline,
             quality: quality,
+            deviceVfxAlphaMode: effectiveAuthoringState.deviceVfxAlphaMode,
             screenAmount: physicalModel.effectiveScreenAmount,
             contributions: contributions,
             requestedDimensions: requestedDimensions,
@@ -5691,6 +5692,7 @@ final class WorkspaceModel: ObservableObject {
         authored.moireIntensity = selection.moireIntensity
         authored.moireSaturation = selection.moireSaturation
         authored.moireFilterStrength = selection.moireFilterStrength
+        authored.deviceVfxAlphaMode = selection.deviceVfxAlphaModeID
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
         authored.sceneLens.evaluationModel = selection.lensEvaluationModelID
@@ -5871,7 +5873,8 @@ final class WorkspaceModel: ObservableObject {
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
              .shutterExposure, .computationalCapture, .sensorCollection, .sensorBloom,
              .sensorReadoutRaw,
-             .developDemosaic, .cameraRenderingIntent, .deliveryRaster, .recordingOutput, .recordingCodec:
+             .developDemosaic, .cameraRenderingIntent, .deviceVfxTransparency,
+             .deliveryRaster, .recordingOutput, .recordingCodec:
             guard let intermediate = selectedTestPhysicalIntermediate else {
                 errorMessage = "Application no publicó el checkpoint físico de esta fase."
                 return
@@ -5939,6 +5942,9 @@ final class WorkspaceModel: ObservableObject {
                     output: output,
                     profileID: selection.recordingProfileID,
                     character: selection.recordingCharacter,
+                    outputTransformID: selection.recordingOutputTransformID,
+                    frameRateNumerator: selection.frameRate.numerator,
+                    frameRateDenominator: selection.frameRate.denominator,
                     display: metalDisplay
                 )
                 frame = codec.frame

@@ -7,6 +7,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
     var moireIntensity = 1.0
     var moireSaturation = 1.0
     var moireFilterStrength = 0.0
+    var deviceVfxAlphaMode = "device-transparency"
     struct Environment: Codable, Equatable, Sendable {
         var sourceKind: UInt32 = 0
         var sourceUnitRadianceCandelasPerSquareMeter = 0.0
@@ -342,7 +343,8 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             (0.25 ... 4).contains(cameraRenderingIntent.contrast),
             (0 ... 4).contains(cameraRenderingIntent.saturation),
             (2000 ... 12_000).contains(cameraRenderingIntent.temperatureKelvin),
-            (-1 ... 1).contains(cameraRenderingIntent.tint)
+            (-1 ... 1).contains(cameraRenderingIntent.tint),
+            ["ignore", "device-transparency"].contains(deviceVfxAlphaMode)
         else {
             throw DeviceDomainError.invalidPhysicalProfile(
                 "Los overrides físicos no cumplen el dominio seguro del snapshot ABI v3."

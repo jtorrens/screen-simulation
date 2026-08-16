@@ -17,17 +17,36 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 22u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 23u
+#define SCREEN_DEVICE_VFX_ALPHA_IGNORE 0u
+#define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u
+#define SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION 1u
 
 typedef struct {
     const uint8_t *bytes;
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 33u
+typedef struct {
+    uint32_t abi_version;
+    uint32_t adapter_kind;
+    uint32_t unavailable_reason;
+    uint32_t medium;
+    uint32_t bit_depth;
+    uint32_t chroma_sampling;
+    uint32_t rate_control_kind;
+    float quality;
+    uint32_t quantizer;
+    uint64_t bits_per_second;
+    uint32_t lookahead_frames;
+    uint32_t fixed_gop_frames;
+    uint32_t maximum_b_frames;
+} ScreenRecordingExecutionPlanV1;
+
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 34u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -137,6 +156,7 @@ typedef struct {
     float camera_look_saturation;
     float camera_look_temperature_kelvin;
     float camera_look_tint;
+    ScreenUTF8View device_vfx_alpha_mode_id;
     ScreenUTF8View delivery_preset_id;
     uint32_t delivery_width;
     uint32_t delivery_height;
@@ -145,7 +165,7 @@ typedef struct {
     ScreenUTF8View recording_output_transform_id;
     ScreenUTF8View recording_profile_id;
     float recording_character;
-} ScreenTestAuthoringSelectionV22;
+} ScreenTestAuthoringSelectionV23;
 
 typedef struct {
     uint32_t abi_version;
@@ -189,12 +209,12 @@ bool screen_test_authoring_default_selection(
     ScreenUTF8View device_id,
     uint32_t frame_rate_numerator,
     uint32_t frame_rate_denominator,
-    ScreenTestAuthoringSelectionV22 *resolved,
+    ScreenTestAuthoringSelectionV23 *resolved,
     const char **error_message
 );
 
 ScreenTestPageDescriptorRef screen_test_page_descriptor_create(
-    const ScreenTestAuthoringSelectionV22 *selection,
+    const ScreenTestAuthoringSelectionV23 *selection,
     const char **error_message
 );
 void screen_test_page_descriptor_release(ScreenTestPageDescriptorRef descriptor);
@@ -257,24 +277,24 @@ bool screen_test_page_preview_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 bool screen_test_authoring_apply_choice(
-    const ScreenTestAuthoringSelectionV22 *selection,
+    const ScreenTestAuthoringSelectionV23 *selection,
     ScreenUTF8View control_id,
     ScreenUTF8View option_id,
-    ScreenTestAuthoringSelectionV22 *resolved,
+    ScreenTestAuthoringSelectionV23 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_scalar(
-    const ScreenTestAuthoringSelectionV22 *selection,
+    const ScreenTestAuthoringSelectionV23 *selection,
     ScreenUTF8View control_id,
     float value,
-    ScreenTestAuthoringSelectionV22 *resolved,
+    ScreenTestAuthoringSelectionV23 *resolved,
     const char **error_message
 );
 bool screen_test_authoring_apply_toggle(
-    const ScreenTestAuthoringSelectionV22 *selection,
+    const ScreenTestAuthoringSelectionV23 *selection,
     ScreenUTF8View control_id,
     bool value,
-    ScreenTestAuthoringSelectionV22 *resolved,
+    ScreenTestAuthoringSelectionV23 *resolved,
     const char **error_message
 );
 
@@ -468,6 +488,7 @@ typedef struct {
     ScreenDeviceProfileRef resolved_device;
     ScreenPhysicalPipelineSnapshotRef resolved_pipeline;
     uint32_t quality;
+    uint32_t device_vfx_alpha_mode;
     float screen_amount;
     const ScreenPhysicalStageContributionV3 *stage_contributions;
     size_t stage_contribution_count;
@@ -922,6 +943,16 @@ bool screen_recording_output_transform_rgba32f(
     float *output_rgba,
     uint32_t width,
     uint32_t height,
+    const char **error_message
+);
+bool screen_recording_prepare_execution_plan(
+    ScreenUTF8View profile_id,
+    float character,
+    uint32_t frame_rate_numerator,
+    uint32_t frame_rate_denominator,
+    int64_t first_frame_index,
+    uint64_t frame_count,
+    ScreenRecordingExecutionPlanV1 *output,
     const char **error_message
 );
 bool screen_recording_output_inverse_rgba32f(

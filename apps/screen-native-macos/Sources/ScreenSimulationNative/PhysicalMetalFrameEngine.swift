@@ -186,6 +186,7 @@ final class PhysicalMetalFrameEngine {
         resolvedDevice: ResolvedDevice,
         resolvedPipeline: PhysicalPipelineResolvedState,
         quality: PhysicalQuality,
+        deviceVfxAlphaMode: String,
         screenAmount: Double,
         contributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
@@ -312,6 +313,14 @@ final class PhysicalMetalFrameEngine {
         raw.resolved_device = deviceProfile
         raw.resolved_pipeline = pipelineSnapshot
         raw.quality = quality.rawValue
+        switch deviceVfxAlphaMode {
+        case "ignore":
+            raw.device_vfx_alpha_mode = SCREEN_DEVICE_VFX_ALPHA_IGNORE
+        case "device-transparency":
+            raw.device_vfx_alpha_mode = SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY
+        default:
+            throw PhysicalMetalFrameEngineError.invalidSnapshot
+        }
         raw.screen_amount = Float(screenAmount)
         raw.requested_width = UInt32(requestedDimensions.width)
         raw.requested_height = UInt32(requestedDimensions.height)

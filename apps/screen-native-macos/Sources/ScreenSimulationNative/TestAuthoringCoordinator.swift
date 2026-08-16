@@ -24,6 +24,7 @@ enum TestPreviewResultKind: UInt32, Sendable {
     case deliveryRaster = 18
     case recordingOutput = 19
     case recordingCodec = 20
+    case deviceVfxTransparency = 21
 }
 
 struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
@@ -119,6 +120,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let cameraLookSaturation: Double
     let cameraLookTemperatureKelvin: Double
     let cameraLookTint: Double
+    let deviceVfxAlphaModeID: String
     let deliveryPresetID: String
     let deliveryWidth: UInt32
     let deliveryHeight: UInt32
@@ -158,7 +160,7 @@ enum RustTestAuthoringCoordinator {
     ) throws -> TestAuthoringResolvedSelection {
         try withUTF8View(inputTransformID) { inputView in
             try withUTF8View(deviceID) { deviceView in
-                var output = ScreenTestAuthoringSelectionV22()
+                var output = ScreenTestAuthoringSelectionV23()
                 var error: UnsafePointer<CChar>?
                 guard screen_test_authoring_default_selection(
                     inputView, deviceView,
@@ -300,7 +302,7 @@ enum RustTestAuthoringCoordinator {
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
                     try withUTF8View(optionID) { optionView in
-                        var output = ScreenTestAuthoringSelectionV22()
+                        var output = ScreenTestAuthoringSelectionV23()
                         var error: UnsafePointer<CChar>?
                         guard screen_test_authoring_apply_choice(
                             rawSelection, controlView, optionView, &output, &error
@@ -317,7 +319,7 @@ enum RustTestAuthoringCoordinator {
         case let .setScalar(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV22()
+                    var output = ScreenTestAuthoringSelectionV23()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_scalar(
                         rawSelection, controlView, Float(value), &output, &error
@@ -333,7 +335,7 @@ enum RustTestAuthoringCoordinator {
         case let .setToggle(controlID, value):
             return try withRawSelection(selection) { rawSelection in
                 try withUTF8View(controlID) { controlView in
-                    var output = ScreenTestAuthoringSelectionV22()
+                    var output = ScreenTestAuthoringSelectionV23()
                     var error: UnsafePointer<CChar>?
                     guard screen_test_authoring_apply_toggle(
                         rawSelection, controlView, value, &output, &error
@@ -455,7 +457,7 @@ enum RustTestAuthoringCoordinator {
     }
 
     private static func resolved(
-        _ raw: ScreenTestAuthoringSelectionV22
+        _ raw: ScreenTestAuthoringSelectionV23
     ) throws -> TestAuthoringResolvedSelection {
         TestAuthoringResolvedSelection(
             inputTransformID: string(raw.input_transform_id),
@@ -555,6 +557,7 @@ enum RustTestAuthoringCoordinator {
             cameraLookSaturation: Double(raw.camera_look_saturation),
             cameraLookTemperatureKelvin: Double(raw.camera_look_temperature_kelvin),
             cameraLookTint: Double(raw.camera_look_tint),
+            deviceVfxAlphaModeID: string(raw.device_vfx_alpha_mode_id),
             deliveryPresetID: string(raw.delivery_preset_id),
             deliveryWidth: raw.delivery_width,
             deliveryHeight: raw.delivery_height,
@@ -568,7 +571,7 @@ enum RustTestAuthoringCoordinator {
 
     private static func withRawSelection<Result>(
         _ selection: TestAuthoringResolvedSelection,
-        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV22>) throws -> Result
+        _ body: (UnsafePointer<ScreenTestAuthoringSelectionV23>) throws -> Result
     ) throws -> Result {
         try withUTF8View(selection.inputTransformID) { inputView in
             try withUTF8View(selection.outputSignalID) { outputView in
@@ -589,7 +592,8 @@ enum RustTestAuthoringCoordinator {
                                             try withUTF8View(selection.recordingOutputTransformID) { recordingOutputView in
                                                 try withUTF8View(selection.recordingProfileID) { recordingProfileView in
                                                 try withUTF8View(selection.environmentProjectionID) { environmentProjectionView in
-                                                    var raw = ScreenTestAuthoringSelectionV22()
+                                                try withUTF8View(selection.deviceVfxAlphaModeID) { deviceVfxAlphaModeView in
+                                                    var raw = ScreenTestAuthoringSelectionV23()
                                             raw.abi_version = SCREEN_TEST_AUTHORING_ABI_VERSION
                                             raw.input_transform_id = inputView
                                             raw.output_signal_id = outputView
@@ -708,6 +712,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.camera_look_saturation = Float(selection.cameraLookSaturation)
                                             raw.camera_look_temperature_kelvin = Float(selection.cameraLookTemperatureKelvin)
                                             raw.camera_look_tint = Float(selection.cameraLookTint)
+                                            raw.device_vfx_alpha_mode_id = deviceVfxAlphaModeView
                                             raw.delivery_preset_id = deliveryPresetView
                                             raw.delivery_width = selection.deliveryWidth
                                             raw.delivery_height = selection.deliveryHeight
@@ -717,6 +722,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.recording_profile_id = recordingProfileView
                                             raw.recording_character = Float(selection.recordingCharacter)
                                                     return try withUnsafePointer(to: &raw, body)
+                                                }
                                                 }
                                                 }
                                                 }

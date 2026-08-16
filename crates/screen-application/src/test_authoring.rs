@@ -15,13 +15,13 @@ use screen_cover::{
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 use screen_recording::{
-    EncoderExecutionPolicy, GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
+    EncoderExecutionPolicy, GENERIC_H264_HIGH_VIDEO_PROFILE_ID, GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID,
     GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, GENERIC_JPEG_PHOTO_PROFILE_ID,
     GENERIC_PRORES_422_HQ_PROFILE_ID, IPHONE_HEIC_PHOTO_PROFILE_ID, RecordingMedium,
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 32;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 33;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -41,6 +41,7 @@ pub const SENSOR_BLOOM_PHASE_ID: &str = "sensor-bloom";
 pub const SENSOR_READOUT_RAW_PHASE_ID: &str = "sensor-readout-raw";
 pub const DEVELOP_DEMOSAIC_PHASE_ID: &str = "develop-demosaic";
 pub const CAMERA_RENDERING_INTENT_PHASE_ID: &str = "camera-rendering-intent";
+pub const DEVICE_VFX_TRANSPARENCY_PHASE_ID: &str = "device-vfx-transparency";
 pub const DELIVERY_RASTER_PHASE_ID: &str = "delivery-raster";
 pub const RECORDING_OUTPUT_PHASE_ID: &str = "recording-output";
 pub const RECORDING_CODEC_PHASE_ID: &str = "recording-codec";
@@ -138,6 +139,7 @@ pub const CAMERA_LOOK_CONTRAST_CONTROL_ID: &str = "camera-look-contrast";
 pub const CAMERA_LOOK_SATURATION_CONTROL_ID: &str = "camera-look-saturation";
 pub const CAMERA_LOOK_TEMPERATURE_CONTROL_ID: &str = "camera-look-temperature-kelvin";
 pub const CAMERA_LOOK_TINT_CONTROL_ID: &str = "camera-look-tint";
+pub const DEVICE_VFX_ALPHA_MODE_CONTROL_ID: &str = "device-vfx-alpha-mode";
 pub const DELIVERY_PRESET_CONTROL_ID: &str = "delivery-preset";
 pub const DELIVERY_WIDTH_CONTROL_ID: &str = "delivery-width-pixels";
 pub const DELIVERY_HEIGHT_CONTROL_ID: &str = "delivery-height-pixels";
@@ -146,6 +148,17 @@ pub const DELIVERY_BACKGROUND_CONTROL_ID: &str = "delivery-background";
 pub const RECORDING_OUTPUT_TRANSFORM_CONTROL_ID: &str = "recording-output-transform";
 pub const RECORDING_PROFILE_CONTROL_ID: &str = "recording-profile";
 pub const RECORDING_CHARACTER_CONTROL_ID: &str = "recording-character";
+
+pub const DEVICE_VFX_ALPHA_MODES: [TestChoiceOption; 2] = [
+    TestChoiceOption {
+        id: "ignore",
+        label: "Ignorar alpha",
+    },
+    TestChoiceOption {
+        id: "device-transparency",
+        label: "Transparencia del Device",
+    },
+];
 
 fn focal_length_bounds(lens: screen_geometry::LensPreset) -> (f32, f32) {
     (
@@ -164,11 +177,13 @@ fn recording_profile_options(capture: CaptureDevicePreset) -> Vec<TestChoiceOpti
             let label = match (profile.id, common) {
                 (IPHONE_HEIC_PHOTO_PROFILE_ID, true) => "Habitual · HEIC · foto",
                 (GENERIC_JPEG_PHOTO_PROFILE_ID, true) => "Habitual · JPEG · foto",
+                (GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID, true) => "Habitual · HEVC Main · vídeo",
                 (GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, true) => "Habitual · HEVC Main 10 · vídeo",
                 (GENERIC_H264_HIGH_VIDEO_PROFILE_ID, true) => "Habitual · H.264 High · vídeo",
                 (GENERIC_PRORES_422_HQ_PROFILE_ID, true) => "Habitual · ProRes 422 HQ · vídeo",
                 (IPHONE_HEIC_PHOTO_PROFILE_ID, false) => "Disponible · HEIC · foto",
                 (GENERIC_JPEG_PHOTO_PROFILE_ID, false) => "Disponible · JPEG · foto",
+                (GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID, false) => "Disponible · HEVC Main · vídeo",
                 (GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, false) => {
                     "Disponible · HEVC Main 10 · vídeo"
                 }
@@ -190,7 +205,8 @@ pub fn recording_output_transform_for_profile(
     match profile_id {
         IPHONE_HEIC_PHOTO_PROFILE_ID => Ok(RecordingOutputTransform::IphoneHeicDisplayP3SrgbFull),
         GENERIC_JPEG_PHOTO_PROFILE_ID => Ok(RecordingOutputTransform::GenericSrgbFull),
-        GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID
+        GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID
+        | GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID
         | GENERIC_H264_HIGH_VIDEO_PROFILE_ID
         | GENERIC_PRORES_422_HQ_PROFILE_ID => Ok(RecordingOutputTransform::GenericRec709Full),
         _ => Err(TestAuthoringError::InvalidRecording),
@@ -451,6 +467,7 @@ pub struct TestAuthoringSelection<'a> {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub device_vfx_alpha_mode_id: &'a str,
     pub delivery_preset_id: &'a str,
     pub delivery_width: f32,
     pub delivery_height: f32,
@@ -547,6 +564,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
+    pub device_vfx_alpha_mode_id: &'static str,
     pub delivery_preset_id: &'static str,
     pub delivery_width: u32,
     pub delivery_height: u32,
@@ -695,6 +713,7 @@ pub enum PhysicalArtifactId {
     RawMosaicNoisyV1,
     DevelopedCameraAcesCgV1,
     CameraRenderedAcesCgV1,
+    DeviceVfxCompositeV1,
     DeliveryAcesCgRasterV1,
     RecordingOutputSignalV2,
     DecodedRecordingSignalV1,
@@ -722,6 +741,7 @@ impl PhysicalArtifactId {
             Self::RawMosaicNoisyV1 => "raw-mosaic-noisy-v1",
             Self::DevelopedCameraAcesCgV1 => "developed-camera-acescg-v1",
             Self::CameraRenderedAcesCgV1 => "camera-rendered-acescg-v1",
+            Self::DeviceVfxCompositeV1 => "device-vfx-composite-v1",
             Self::DeliveryAcesCgRasterV1 => "delivery-acescg-raster-v1",
             Self::RecordingOutputSignalV2 => "recording-output-signal-v2",
             Self::DecodedRecordingSignalV1 => "decoded-recording-signal-v1",
@@ -748,6 +768,7 @@ impl TestPhaseDescriptor {
             | SOURCE_ADJUSTMENT_PHASE_ID
             | DEVELOP_DEMOSAIC_PHASE_ID
             | CAMERA_RENDERING_INTENT_PHASE_ID
+            | DEVICE_VFX_TRANSPARENCY_PHASE_ID
             | DELIVERY_RASTER_PHASE_ID => "ACEScg lineal",
             FEEDER_SIGNAL_PHASE_ID => "Señal Device no lineal",
             DEVICE_INTERPRETATION_PHASE_ID
@@ -802,6 +823,7 @@ pub enum TestPreviewResult {
     DeliveryRaster = 18,
     RecordingOutput = 19,
     RecordingCodec = 20,
+    DeviceVfxTransparency = 21,
 }
 
 impl TestPreviewResult {
@@ -824,6 +846,7 @@ impl TestPreviewResult {
             Self::SensorReadoutRaw => Some(PhysicalIntermediate::SensorReadoutRaw),
             Self::DevelopDemosaic => Some(PhysicalIntermediate::DevelopedAcesCg),
             Self::CameraRenderingIntent
+            | Self::DeviceVfxTransparency
             | Self::DeliveryRaster
             | Self::RecordingOutput
             | Self::RecordingCodec => Some(PhysicalIntermediate::CameraRenderedAcesCg),
@@ -1097,6 +1120,7 @@ pub fn default_test_authoring_selection(
         sensor_bloom_overflow_transfer_fraction: capture.sensor.bloom.overflow_transfer_fraction,
         sensor_noise_amount: 1.0,
         camera_rendering_intent: capture.rendering_intent,
+        device_vfx_alpha_mode_id: "device-transparency",
         delivery_preset_id: "uhd",
         delivery_width: 3_840.0,
         delivery_height: 2_160.0,
@@ -1405,6 +1429,11 @@ pub fn resolve_test_authoring_selection(
         .camera_rendering_intent
         .validate()
         .map_err(|_| TestAuthoringError::InvalidCameraRenderingIntent)?;
+    let device_vfx_alpha_mode_id = selected_option(
+        &DEVICE_VFX_ALPHA_MODES,
+        selection.device_vfx_alpha_mode_id,
+        TestAuthoringError::UnknownControl,
+    )?;
     let delivery_preset_id = selected_option(
         &DELIVERY_PRESETS,
         selection.delivery_preset_id,
@@ -1543,6 +1572,7 @@ pub fn resolve_test_authoring_selection(
         sensor_bloom_overflow_transfer_fraction: selection.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: selection.sensor_noise_amount,
         camera_rendering_intent: selection.camera_rendering_intent,
+        device_vfx_alpha_mode_id,
         delivery_preset_id,
         recording_output_transform_id: recording_output_transform.stable_id(),
         recording_profile_id: recording.profile.id,
@@ -2829,11 +2859,27 @@ pub fn test_page_descriptor(
                 ],
             },
             TestPhaseDescriptor {
+                id: DEVICE_VFX_TRANSPARENCY_PHASE_ID,
+                label: "Transparencia VFX del Device",
+                effect_summary: "Transporta el alpha como matte no cromático y compone la contribución completa del Device.",
+                header_control_id: None,
+                input_artifact: PhysicalArtifactId::CameraRenderedAcesCgV1,
+                output_artifact: PhysicalArtifactId::DeviceVfxCompositeV1,
+                preview_result: TestPreviewResult::DeviceVfxTransparency,
+                controls: vec![choice_control(
+                    DEVICE_VFX_ALPHA_MODE_CONTROL_ID,
+                    "Uso del alpha",
+                    DEVICE_VFX_ALPHA_MODES.to_vec(),
+                    selection.device_vfx_alpha_mode_id,
+                    "device-transparency",
+                )],
+            },
+            TestPhaseDescriptor {
                 id: DELIVERY_RASTER_PHASE_ID,
                 label: "Raster de entrega",
                 effect_summary: "Ajusta el resultado de cámara al raster final sin cambiar óptica, sensor ni look.",
                 header_control_id: None,
-                input_artifact: PhysicalArtifactId::CameraRenderedAcesCgV1,
+                input_artifact: PhysicalArtifactId::DeviceVfxCompositeV1,
                 output_artifact: PhysicalArtifactId::DeliveryAcesCgRasterV1,
                 preview_result: TestPreviewResult::DeliveryRaster,
                 controls: vec![
@@ -3116,6 +3162,13 @@ pub fn apply_test_choice(
             "thin-lens" | "vfx-2d-dof" => next.lens_evaluation_model_id = option_id,
             _ => return Err(TestAuthoringError::UnknownControl),
         },
+        DEVICE_VFX_ALPHA_MODE_CONTROL_ID => {
+            next.device_vfx_alpha_mode_id = selected_option(
+                &DEVICE_VFX_ALPHA_MODES,
+                option_id,
+                TestAuthoringError::UnknownControl,
+            )?;
+        }
         RECORDING_PROFILE_CONTROL_ID => {
             next.recording_profile_id = option_id;
             next.recording_output_transform_id =
@@ -3318,6 +3371,7 @@ fn unresolved_test_selection(
         sensor_bloom_overflow_transfer_fraction: current.sensor_bloom_overflow_transfer_fraction,
         sensor_noise_amount: current.sensor_noise_amount,
         camera_rendering_intent: current.camera_rendering_intent,
+        device_vfx_alpha_mode_id: current.device_vfx_alpha_mode_id,
         delivery_width: current.delivery_width as f32,
         delivery_height: current.delivery_height as f32,
         delivery_preset_id: current.delivery_preset_id,
@@ -3533,6 +3587,7 @@ pub fn apply_test_scalar(
         | COVER_GLASS_CONTROL_ID
         | ENVIRONMENT_CONTROL_ID
         | LENS_PRESET_CONTROL_ID
+        | DEVICE_VFX_ALPHA_MODE_CONTROL_ID
         | RECORDING_OUTPUT_TRANSFORM_CONTROL_ID
         | RECORDING_PROFILE_CONTROL_ID
         | AUTOFOCUS_CONTROL_ID => return Err(TestAuthoringError::WrongControlType),
@@ -3646,6 +3701,7 @@ mod tests {
             sensor_bloom_overflow_transfer_fraction: 0.30,
             sensor_noise_amount: 1.0,
             camera_rendering_intent: capture("iphone-16e-main-48mp").unwrap().rendering_intent,
+            device_vfx_alpha_mode_id: "device-transparency",
             delivery_preset_id: "uhd",
             delivery_width: 3_840.0,
             delivery_height: 2_160.0,
@@ -3703,6 +3759,7 @@ mod tests {
                 SENSOR_READOUT_RAW_PHASE_ID,
                 DEVELOP_DEMOSAIC_PHASE_ID,
                 CAMERA_RENDERING_INTENT_PHASE_ID,
+                DEVICE_VFX_TRANSPARENCY_PHASE_ID,
                 DELIVERY_RASTER_PHASE_ID,
                 RECORDING_OUTPUT_PHASE_ID,
                 RECORDING_CODEC_PHASE_ID,
@@ -3741,6 +3798,7 @@ mod tests {
                 Some(PhysicalIntermediate::SensorBloom),
                 Some(PhysicalIntermediate::SensorReadoutRaw),
                 Some(PhysicalIntermediate::DevelopedAcesCg),
+                Some(PhysicalIntermediate::CameraRenderedAcesCg),
                 Some(PhysicalIntermediate::CameraRenderedAcesCg),
                 Some(PhysicalIntermediate::CameraRenderedAcesCg),
                 Some(PhysicalIntermediate::CameraRenderedAcesCg),
@@ -4414,6 +4472,7 @@ mod tests {
             PhysicalArtifactId::RawMosaicNoisyV1,
             PhysicalArtifactId::DevelopedCameraAcesCgV1,
             PhysicalArtifactId::CameraRenderedAcesCgV1,
+            PhysicalArtifactId::DeviceVfxCompositeV1,
             PhysicalArtifactId::DeliveryAcesCgRasterV1,
             PhysicalArtifactId::RecordingOutputSignalV2,
             PhysicalArtifactId::DecodedRecordingSignalV1,
@@ -4498,5 +4557,43 @@ mod tests {
         }
         let resolved = apply_test_scalar(asus(), CAMERA_DISTANCE_CONTROL_ID, 0.123).unwrap();
         assert_eq!(resolved.camera_distance_meters, 0.123);
+    }
+
+    #[test]
+    fn device_vfx_transparency_is_an_explicit_typed_choice() {
+        let page = test_page_descriptor(asus()).unwrap();
+        let phase = page
+            .phases
+            .iter()
+            .find(|phase| phase.id == DEVICE_VFX_TRANSPARENCY_PHASE_ID)
+            .expect("Device VFX Transparency phase");
+        assert_eq!(
+            phase.input_artifact,
+            PhysicalArtifactId::CameraRenderedAcesCgV1
+        );
+        assert_eq!(
+            phase.output_artifact,
+            PhysicalArtifactId::DeviceVfxCompositeV1
+        );
+        assert!(phase.controls.iter().any(|control| matches!(
+            control,
+            TestControlRequirement::Choice {
+                id: DEVICE_VFX_ALPHA_MODE_CONTROL_ID,
+                selected_id: "device-transparency",
+                ..
+            }
+        )));
+
+        let ignored =
+            apply_test_choice(asus(), DEVICE_VFX_ALPHA_MODE_CONTROL_ID, "ignore").unwrap();
+        assert_eq!(ignored.device_vfx_alpha_mode_id, "ignore");
+        assert_eq!(
+            apply_test_choice(asus(), DEVICE_VFX_ALPHA_MODE_CONTROL_ID, "opaque"),
+            Err(TestAuthoringError::UnknownControl)
+        );
+        assert_eq!(
+            apply_test_scalar(asus(), DEVICE_VFX_ALPHA_MODE_CONTROL_ID, 1.0),
+            Err(TestAuthoringError::WrongControlType)
+        );
     }
 }

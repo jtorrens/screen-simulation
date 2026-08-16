@@ -17,17 +17,19 @@ use metal::foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{MTLTexture, Texture, TextureRef};
 use screen_application::{
     CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, DeliveryRasterBackground,
-    DeliveryRasterPlacement, DeliveryRasterRequest, PHYSICAL_STAGE_DESCRIPTORS,
+    DeliveryRasterPlacement, DeliveryRasterRequest, DeviceVfxAlphaMode, PHYSICAL_STAGE_DESCRIPTORS,
     PhysicalIntermediate, PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot,
-    PhysicalStageControl, ProceduralTestPattern, RasterPlacement, ReflectionEmitter,
+    PhysicalStageControl, ProceduralTestPattern, RasterPlacement, RecordingAdapterAvailability,
+    RecordingAdapterKind, RecordingAdapterUnavailableReason, ReflectionEmitter,
     ReflectionEnvironmentRig, ReflectionLightAppearance, ReflectionPracticalLight,
-    ReflectionSunLight, ReflectionWindowLight, ResolvedSceneGeometryLensSnapshot,
-    ResolvedShutterMotionSnapshot, RollingDirection, SensorReadout, TestAuthoringError,
-    TestAuthoringSelection, TestControlRequirement,
+    ReflectionSunLight, ReflectionWindowLight, ResolvedRateControl,
+    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, RollingDirection,
+    SensorReadout, TestAuthoringError, TestAuthoringSelection, TestControlRequirement,
     TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice, apply_test_scalar,
     apply_test_toggle, compile_reflection_environment, default_test_authoring_selection,
     diagnostic_signal, evaluate_delivery_raster_rgba32f, physical_shutter_schedule,
-    resolve_physical_stage_contributions, test_page_descriptor,
+    prepare_recording_execution_request, resolve_physical_stage_contributions,
+    test_page_descriptor,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -47,8 +49,28 @@ use screen_panel::{
     PanelLightSpreadProfile, PanelTechnology, PanelTemporalEmission, PanelUniformityProfile,
     ResidualFlicker, StripeLayout,
 };
+use screen_recording::{ChromaSampling, RecordingMedium};
 
 pub const SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION: u32 = 2;
+pub const SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenRecordingExecutionPlanV1 {
+    pub abi_version: u32,
+    pub adapter_kind: u32,
+    pub unavailable_reason: u32,
+    pub medium: u32,
+    pub bit_depth: u32,
+    pub chroma_sampling: u32,
+    pub rate_control_kind: u32,
+    pub quality: f32,
+    pub quantizer: u32,
+    pub bits_per_second: u64,
+    pub lookahead_frames: u32,
+    pub fixed_gop_frames: u32,
+    pub maximum_b_frames: u32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -211,7 +233,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 33;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 34;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -219,7 +241,7 @@ pub const SCREEN_TEST_CONTROL_ACTION: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenTestAuthoringSelectionV22 {
+pub struct ScreenTestAuthoringSelectionV23 {
     abi_version: u32,
     input_transform_id: ScreenUtf8View,
     output_signal_id: ScreenUtf8View,
@@ -314,6 +336,7 @@ pub struct ScreenTestAuthoringSelectionV22 {
     camera_look_saturation: f32,
     camera_look_temperature_kelvin: f32,
     camera_look_tint: f32,
+    device_vfx_alpha_mode_id: ScreenUtf8View,
     delivery_preset_id: ScreenUtf8View,
     delivery_width: u32,
     delivery_height: u32,
@@ -418,7 +441,9 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 22;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 23;
+pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
+pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -538,6 +563,7 @@ pub struct ScreenPhysicalFrameRequestV2 {
     resolved_device: *const ScreenDeviceProfile,
     resolved_pipeline: *const ScreenPhysicalPipelineSnapshot,
     quality: u32,
+    device_vfx_alpha_mode: u32,
     screen_amount: f32,
     stage_contributions: *const ScreenPhysicalStageContributionV3,
     stage_contribution_count: usize,
@@ -1201,6 +1227,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         || request.resolved_device.is_null()
         || request.resolved_pipeline.is_null()
         || quality(request.quality).is_none()
+        || request.device_vfx_alpha_mode > SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY
         || request.requested_width == 0
         || request.requested_height == 0
         || request.render_full_width == 0
@@ -1503,6 +1530,11 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         quality,
         requested_width: request.requested_width,
         requested_height: request.requested_height,
+        device_vfx_alpha_mode: match request.device_vfx_alpha_mode {
+            SCREEN_DEVICE_VFX_ALPHA_IGNORE => DeviceVfxAlphaMode::Ignore,
+            SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY => DeviceVfxAlphaMode::DeviceTransparency,
+            _ => unreachable!("validated Device VFX alpha mode"),
+        },
         screen_amount: request.screen_amount,
         emission_amount: amounts.emission,
         subpixel_geometry_amount: amounts.subpixel_geometry,
@@ -2286,7 +2318,7 @@ unsafe fn borrowed_utf8<'a>(view: ScreenUtf8View) -> Option<&'a str> {
 }
 
 unsafe fn test_selection<'a>(
-    selection: *const ScreenTestAuthoringSelectionV22,
+    selection: *const ScreenTestAuthoringSelectionV23,
 ) -> Option<TestAuthoringSelection<'a>> {
     let selection = unsafe { selection.as_ref() }?;
     if selection.abi_version != SCREEN_TEST_AUTHORING_ABI_VERSION {
@@ -2392,6 +2424,7 @@ unsafe fn test_selection<'a>(
             temperature_kelvin: selection.camera_look_temperature_kelvin,
             tint: selection.camera_look_tint,
         },
+        device_vfx_alpha_mode_id: unsafe { borrowed_utf8(selection.device_vfx_alpha_mode_id) }?,
         delivery_preset_id: unsafe { borrowed_utf8(selection.delivery_preset_id) }?,
         delivery_width: selection.delivery_width as f32,
         delivery_height: selection.delivery_height as f32,
@@ -2478,8 +2511,8 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
 
 fn resolved_test_selection(
     selection: screen_application::ResolvedTestAuthoringSelection,
-) -> ScreenTestAuthoringSelectionV22 {
-    ScreenTestAuthoringSelectionV22 {
+) -> ScreenTestAuthoringSelectionV23 {
+    ScreenTestAuthoringSelectionV23 {
         abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
         input_transform_id: utf8_view(selection.input_transform_id),
         output_signal_id: utf8_view(selection.output_signal_id),
@@ -2574,6 +2607,7 @@ fn resolved_test_selection(
         camera_look_saturation: selection.camera_rendering_intent.saturation,
         camera_look_temperature_kelvin: selection.camera_rendering_intent.temperature_kelvin,
         camera_look_tint: selection.camera_rendering_intent.tint,
+        device_vfx_alpha_mode_id: utf8_view(selection.device_vfx_alpha_mode_id),
         delivery_preset_id: utf8_view(selection.delivery_preset_id),
         delivery_width: selection.delivery_width,
         delivery_height: selection.delivery_height,
@@ -2591,7 +2625,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
     device_id: ScreenUtf8View,
     frame_rate_numerator: u32,
     frame_rate_denominator: u32,
-    resolved: *mut ScreenTestAuthoringSelectionV22,
+    resolved: *mut ScreenTestAuthoringSelectionV23,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(input_transform_id) = (unsafe { borrowed_utf8(input_transform_id) }) else {
@@ -2630,7 +2664,7 @@ pub unsafe extern "C" fn screen_test_authoring_default_selection(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_page_descriptor_create(
-    selection: *const ScreenTestAuthoringSelectionV22,
+    selection: *const ScreenTestAuthoringSelectionV23,
     error_message: *mut *const c_char,
 ) -> *mut ScreenTestPageDescriptor {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -2975,10 +3009,10 @@ pub unsafe extern "C" fn screen_test_page_preview_choice_option(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_choice(
-    selection: *const ScreenTestAuthoringSelectionV22,
+    selection: *const ScreenTestAuthoringSelectionV23,
     control_id: ScreenUtf8View,
     option_id: ScreenUtf8View,
-    resolved: *mut ScreenTestAuthoringSelectionV22,
+    resolved: *mut ScreenTestAuthoringSelectionV23,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -3012,10 +3046,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_choice(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
-    selection: *const ScreenTestAuthoringSelectionV22,
+    selection: *const ScreenTestAuthoringSelectionV23,
     control_id: ScreenUtf8View,
     value: f32,
-    resolved: *mut ScreenTestAuthoringSelectionV22,
+    resolved: *mut ScreenTestAuthoringSelectionV23,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -3045,10 +3079,10 @@ pub unsafe extern "C" fn screen_test_authoring_apply_scalar(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_authoring_apply_toggle(
-    selection: *const ScreenTestAuthoringSelectionV22,
+    selection: *const ScreenTestAuthoringSelectionV23,
     control_id: ScreenUtf8View,
     value: bool,
-    resolved: *mut ScreenTestAuthoringSelectionV22,
+    resolved: *mut ScreenTestAuthoringSelectionV23,
     error_message: *mut *const c_char,
 ) -> bool {
     let Some(selection) = (unsafe { test_selection(selection) }) else {
@@ -4430,6 +4464,102 @@ pub unsafe extern "C" fn screen_delivery_raster_rgba32f(
 /// Color-owned ACEScg -> recording-output-signal-v2 CPU reference boundary.
 /// The caller owns both buffers and supplies exact stable transform identity.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_recording_prepare_execution_plan(
+    profile_id: ScreenUtf8View,
+    character: f32,
+    frame_rate_numerator: u32,
+    frame_rate_denominator: u32,
+    first_frame_index: i64,
+    frame_count: u64,
+    output: *mut ScreenRecordingExecutionPlanV1,
+    error_message: *mut *const c_char,
+) -> bool {
+    let Some(profile_id) = (unsafe { borrowed_utf8(profile_id) }) else {
+        unsafe { set_error(error_message, b"invalid Recording profile UTF-8\0") };
+        return false;
+    };
+    let Ok(frame_rate) = FrameRate::new(frame_rate_numerator, frame_rate_denominator) else {
+        unsafe { set_error(error_message, b"invalid Recording frame rate\0") };
+        return false;
+    };
+    let Ok(prepared) = prepare_recording_execution_request(
+        profile_id,
+        character,
+        frame_rate,
+        first_frame_index,
+        frame_count,
+    ) else {
+        unsafe {
+            set_error(
+                error_message,
+                b"Application rejected Recording execution request\0",
+            )
+        };
+        return false;
+    };
+    let Some(output) = (unsafe { output.as_mut() }) else {
+        unsafe { set_error(error_message, b"missing Recording execution plan output\0") };
+        return false;
+    };
+    let (adapter_kind, unavailable_reason) = match prepared.adapter {
+        RecordingAdapterAvailability::Available(RecordingAdapterKind::ImageIoHeic) => (0, 0),
+        RecordingAdapterAvailability::Available(RecordingAdapterKind::ImageIoJpeg) => (1, 0),
+        RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationHevcMain8) => {
+            (2, 0)
+        }
+        RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationH264High8) => {
+            (3, 0)
+        }
+        RecordingAdapterAvailability::Unavailable(
+            RecordingAdapterUnavailableReason::NativeTenBit420InputNotImplemented,
+        ) => (u32::MAX, 1),
+        RecordingAdapterAvailability::Unavailable(
+            RecordingAdapterUnavailableReason::NativeTenBit422InputNotImplemented,
+        ) => (u32::MAX, 2),
+    };
+    let (rate_control_kind, quality, quantizer, bits_per_second, lookahead_frames) =
+        match prepared.rate_control {
+            ResolvedRateControl::ProfileDefinedIntra => (0, 0.0, 0, 0, 0),
+            ResolvedRateControl::ConstantQuality(value) => (1, value, 0, 0, 0),
+            ResolvedRateControl::ConstantQuantizer(value) => (2, 0.0, u32::from(value), 0, 0),
+            ResolvedRateControl::SinglePassTargetBitrate {
+                bits_per_second,
+                lookahead_frames,
+            } => (3, 0.0, 0, bits_per_second, u32::from(lookahead_frames)),
+        };
+    *output = ScreenRecordingExecutionPlanV1 {
+        abi_version: SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION,
+        adapter_kind,
+        unavailable_reason,
+        medium: match prepared.profile.codec.medium() {
+            RecordingMedium::StillImage => 0,
+            RecordingMedium::MovingImage => 1,
+        },
+        bit_depth: u32::from(prepared.profile.bit_depth),
+        chroma_sampling: match prepared.profile.chroma_sampling {
+            ChromaSampling::Yuv420 => 0,
+            ChromaSampling::Yuv422 => 1,
+            ChromaSampling::Yuv444 => 2,
+        },
+        rate_control_kind,
+        quality,
+        quantizer,
+        bits_per_second,
+        lookahead_frames,
+        fixed_gop_frames: prepared
+            .profile
+            .inter_frame
+            .map_or(0, |value| u32::from(value.fixed_gop_frames)),
+        maximum_b_frames: prepared
+            .profile
+            .inter_frame
+            .map_or(0, |value| u32::from(value.maximum_b_frames)),
+    };
+    unsafe { set_error(error_message, b"\0") };
+    true
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_recording_output_transform_rgba32f(
     transform_id: ScreenUtf8View,
     input_rgba: *const f32,
@@ -5158,6 +5288,7 @@ mod tests {
             resolved_device: profile,
             resolved_pipeline: pipeline,
             quality: 1,
+            device_vfx_alpha_mode: SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY,
             screen_amount: 1.0,
             stage_contributions: contributions.as_ptr(),
             stage_contribution_count: contributions.len(),
@@ -5181,6 +5312,18 @@ mod tests {
             parameter_revision: 42,
             parameter_hash: [0x5a; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
         };
+        request.device_vfx_alpha_mode = 2;
+        let mut invalid_alpha_error = std::ptr::null();
+        let invalid_alpha_job =
+            unsafe { screen_physical_frame_submit(&request, &mut invalid_alpha_error) };
+        assert!(invalid_alpha_job.is_null());
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(invalid_alpha_error) }
+                .to_str()
+                .unwrap(),
+            "invalid or unsupported physical frame request"
+        );
+        request.device_vfx_alpha_mode = SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY;
         request.render_window_width = 2;
         let mut unsupported_error = std::ptr::null();
         let unsupported_job =

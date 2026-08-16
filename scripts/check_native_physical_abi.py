@@ -84,7 +84,8 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 22u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 23u",
+        "#define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
         "screen_physical_frame_submit",
@@ -96,8 +97,8 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 33u",
-        "ScreenTestAuthoringSelectionV22",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 34u",
+        "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
         "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u",
@@ -110,12 +111,13 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 22",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 23",
+        "SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1",
         "ScreenPhysicalStageDescriptorV1",
         "screen_physical_stage_descriptor",
         "ScreenPhysicalStageContributionV3",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 33",
-        "ScreenTestAuthoringSelectionV22",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 34",
+        "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
         "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7",
@@ -144,7 +146,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v22 source/header/symbol gate passed")
+    print("native macOS physical ABI v23 source/header/symbol gate passed")
     return 0
 
 
