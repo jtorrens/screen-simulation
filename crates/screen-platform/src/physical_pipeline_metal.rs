@@ -72,6 +72,7 @@ struct PhysicalPipelineParams {
     cover_microtexture: [f32; 4],
     cover_microtexture_seed: [u32; 4],
     cover_glow: [f32; 4],
+    glow_threshold: [f32; 4],
     environment_ambient_strength: [f32; 4],
     environment_key_radius: [f32; 4],
     environment_direction: [f32; 4],
@@ -1274,6 +1275,12 @@ impl MetalPhysicalPipeline {
                 plan.cover.glow.tail_radius_millimeters,
                 plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength,
                 plan.cover.glow.tail_fraction,
+            ],
+            glow_threshold: [
+                plan.cover.glow.threshold_relative_to_panel_white,
+                0.0,
+                0.0,
+                0.0,
             ],
             environment_ambient_strength: match plan.environment {
                 IncidentEnvironment::Procedural(environment) => [
@@ -3081,6 +3088,7 @@ mod tests {
         plan.cover.glow.core_radius_millimeters = 0.75;
         plan.cover.glow.tail_radius_millimeters = 1.5;
         plan.cover.glow.tail_fraction = 0.35;
+        plan.cover.glow.threshold_relative_to_panel_white = 0.0;
 
         let source = texture(&device, input.width, input.height, &input.acescg);
         let signal_values = input
@@ -3143,8 +3151,10 @@ mod tests {
         let (glow_cpu, _) = evaluate(PhysicalIntermediate::CoverGlow);
         let alpha_zero_glow = pixel(&glow_cpu, 1);
         assert!(
-            alpha_zero_glow[..3].iter().sum::<f32>() > 0.0,
-            "resolved emission must create exterior glow across a locally transparent pixel"
+            alpha_zero_glow[..3]
+                .iter()
+                .all(|value| value.abs() <= 1.0e-7),
+            "Device transparency must remove local panel emission and its glow: {alpha_zero_glow:?}"
         );
         assert!(
             alpha_zero_glow[3].abs() <= 1.0e-7,
@@ -3191,6 +3201,7 @@ mod tests {
         plan.cover.glow.core_radius_millimeters = 0.5;
         plan.cover.glow.tail_radius_millimeters = 1.5;
         plan.cover.glow.tail_fraction = 1.0;
+        plan.cover.glow.threshold_relative_to_panel_white = 0.0;
         plan.requested_intermediate = PhysicalIntermediate::CoverGlow;
 
         let source = texture(&device, input.width, input.height, &input.acescg);
@@ -3215,7 +3226,10 @@ mod tests {
             .fold(0.0_f32, f32::max);
         assert!(
             maximum <= 2.0e-3,
-            "exterior glow CPU/Metal deviation {maximum}"
+            "exterior glow CPU/Metal deviation {maximum}; cpu outside={:?}, gpu outside={:?}",
+            cpu.presentation_rgba()
+                [plan.requested_height as usize / 2 * plan.requested_width as usize + 2],
+            gpu_pixels[plan.requested_height as usize / 2 * plan.requested_width as usize + 2]
         );
 
         let row = plan.requested_height as usize / 2;

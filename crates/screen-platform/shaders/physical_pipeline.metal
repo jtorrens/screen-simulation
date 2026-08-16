@@ -25,6 +25,7 @@ struct PhysicalPipelineParams {
     float4 cover_microtexture; // character, RMS slope, correlation um, anisotropy
     uint4 cover_microtexture_seed;
     float4 cover_glow; // core mm, tail mm, scattered fraction, tail fraction
+    float4 glow_threshold; // relative panel-white threshold, remaining lanes reserved
     float4 environment_ambient_strength;
     float4 environment_key_radius;
     float4 environment_direction;
@@ -1220,60 +1221,6 @@ inline float spread_native_channel(
     return value;
 }
 
-inline float spread_native_channel_over_bounds(
-    texture2d<float, access::read> device_signal,
-    texture2d<float, access::read> device_row_prefix,
-    uint channel,
-    float2 device_minimum,
-    float2 device_maximum,
-    float2 prepared_placement_scale,
-    constant PhysicalPipelineParams& p
-) {
-    const float bounds_base = native_channel_at_offset(
-        device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-        float2(0.0f), prepared_placement_scale, p);
-    return spread_native_channel(
-        device_signal, device_row_prefix, channel,
-        device_minimum, device_maximum, bounds_base, prepared_placement_scale, p);
-}
-
-inline float cover_glow_native_channel(
-    texture2d<float, access::read> device_signal,
-    texture2d<float, access::read> device_row_prefix,
-    uint channel,
-    float2 device_minimum,
-    float2 device_maximum,
-    float base_native,
-    float2 prepared_placement_scale,
-    thread float& exterior_scattered,
-    constant PhysicalPipelineParams& p
-) {
-    const float scattered = p.cover_glow.z;
-    if (scattered == 0.0f) {
-        exterior_scattered = 0.0f;
-        return spread_native_channel(
-            device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-            base_native, prepared_placement_scale, p);
-    }
-    const float2 inverse_panel = 1.0f / p.panel_size_meters.xy;
-    const float2 core_extent = p.cover_glow.x * 0.001f * inverse_panel;
-    const float2 tail_extent = p.cover_glow.y * 0.001f * inverse_panel;
-    const float base = spread_native_channel(
-        device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-        base_native, prepared_placement_scale, p);
-    const float core_blur = spread_native_channel_over_bounds(
-        device_signal, device_row_prefix, channel,
-        device_minimum - core_extent, device_maximum + core_extent,
-        prepared_placement_scale, p);
-    const float tail_blur = spread_native_channel_over_bounds(
-        device_signal, device_row_prefix, channel,
-        device_minimum - tail_extent, device_maximum + tail_extent,
-        prepared_placement_scale, p);
-    exterior_scattered = core_blur * scattered * (1.0f - p.cover_glow.w)
-        + tail_blur * scattered * p.cover_glow.w;
-    return base * (1.0f - scattered) + exterior_scattered;
-}
-
 kernel void reduce_physical_veiling_source(
     texture2d<float, access::read> device_signal [[texture(0)]],
     device float4* partials [[buffer(0)]],
@@ -1354,7 +1301,6 @@ kernel void evaluate_physical_pipeline(
     float3 uniform_native = 0.0f;
     float3 spread_native = 0.0f;
     float3 glow_native = 0.0f;
-    float3 exterior_glow_native = 0.0f;
     float3 carrier_detail_native = 0.0f;
     float3 continuous_native = 0.0f;
     float3 uniform_continuous_native = 0.0f;
@@ -1561,14 +1507,13 @@ kernel void evaluate_physical_pipeline(
                         prepared_placement_scale, p) * base_gain * optical_weight;
                 }
                 if (needs_glow) {
-                    float exterior_scattered = 0.0f;
-                    glow_native[channel] += cover_glow_native_channel(
+                    // The lens footprint still resolves the panel emission, but
+                    // the broad Device halo is evaluated once below rather than
+                    // being repeated for every PSF/aperture sample.
+                    glow_native[channel] += spread_native_channel(
                         device_signal, device_row_prefix, channel,
                         channel_minimum, channel_maximum, base_native,
-                        prepared_placement_scale, exterior_scattered, p)
-                        * base_gain * optical_weight;
-                    exterior_glow_native[channel] += exterior_scattered
-                        * base_gain * optical_weight;
+                        prepared_placement_scale, p) * base_gain * optical_weight;
                 }
                 if (needs_continuous) {
                     continuous_native[channel] += base_linear * optical_weight;
@@ -1627,7 +1572,6 @@ kernel void evaluate_physical_pipeline(
     uniform_native *= reciprocal;
     spread_native *= reciprocal;
     glow_native *= reciprocal;
-    exterior_glow_native *= reciprocal;
     carrier_detail_native *= reciprocal;
     continuous_native *= reciprocal;
     uniform_continuous_native *= reciprocal;
@@ -1662,11 +1606,57 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix1.xyz, glow_native),
         dot(p.matrix2.xyz, glow_native)
     ) / p.levels.z;
-    const float3 exterior_scattered_glow = float3(
-        dot(p.matrix0.xyz, exterior_glow_native),
-        dot(p.matrix1.xyz, exterior_glow_native),
-        dot(p.matrix2.xyz, exterior_glow_native)
-    ) / p.levels.z;
+    const float2 halo_center = cover_uv * cover_reciprocal;
+    const float2 halo_half_extent = cover_half_extent * cover_reciprocal;
+    const float2 inverse_panel_size = 1.0f / p.panel_size_meters.xy;
+    const float2 core_halo_extent = p.cover_glow.x * 0.001f * inverse_panel_size;
+    const float2 tail_halo_extent = p.cover_glow.y * 0.001f * inverse_panel_size;
+    const float4 core_halo_code = area_sample(
+        device_signal, device_row_prefix,
+        clamp(halo_center - halo_half_extent - core_halo_extent, 0.0f, 1.0f),
+        clamp(halo_center + halo_half_extent + core_halo_extent, 0.0f, 1.0f),
+        prepared_placement_scale, p);
+    const float4 tail_halo_code = area_sample(
+        device_signal, device_row_prefix,
+        clamp(halo_center - halo_half_extent - tail_halo_extent, 0.0f, 1.0f),
+        clamp(halo_center + halo_half_extent + tail_halo_extent, 0.0f, 1.0f),
+        prepared_placement_scale, p);
+    const float core_halo_coverage = device_rectangle_coverage(
+        halo_center - halo_half_extent - core_halo_extent,
+        halo_center + halo_half_extent + core_halo_extent);
+    const float tail_halo_coverage = device_rectangle_coverage(
+        halo_center - halo_half_extent - tail_halo_extent,
+        halo_center + halo_half_extent + tail_halo_extent);
+    const float core_halo_alpha = resolved_device_alpha(
+        core_halo_code.a, core_halo_coverage, p);
+    const float tail_halo_alpha = resolved_device_alpha(
+        tail_halo_code.a, tail_halo_coverage, p);
+    const float3 core_halo_native = float3(
+        panel_linear_channel(core_halo_code.r, p),
+        panel_linear_channel(core_halo_code.g, p),
+        panel_linear_channel(core_halo_code.b, p)) * core_halo_alpha;
+    const float3 tail_halo_native = float3(
+        panel_linear_channel(tail_halo_code.r, p),
+        panel_linear_channel(tail_halo_code.g, p),
+        panel_linear_channel(tail_halo_code.b, p)) * tail_halo_alpha;
+    float3 core_halo = float3(
+        dot(p.matrix0.xyz, core_halo_native),
+        dot(p.matrix1.xyz, core_halo_native),
+        dot(p.matrix2.xyz, core_halo_native)) / p.levels.z;
+    float3 tail_halo = float3(
+        dot(p.matrix0.xyz, tail_halo_native),
+        dot(p.matrix1.xyz, tail_halo_native),
+        dot(p.matrix2.xyz, tail_halo_native)) / p.levels.z;
+    const float halo_threshold = p.glow_threshold.x;
+    const float3 acescg_luminance = float3(0.27222872f, 0.67408174f, 0.053689517f);
+    const float core_halo_luminance = dot(core_halo, acescg_luminance);
+    const float tail_halo_luminance = dot(tail_halo, acescg_luminance);
+    core_halo *= core_halo_luminance <= halo_threshold
+        ? 0.0f : (core_halo_luminance - halo_threshold) / max(core_halo_luminance, 1.0e-8f);
+    tail_halo *= tail_halo_luminance <= halo_threshold
+        ? 0.0f : (tail_halo_luminance - halo_threshold) / max(tail_halo_luminance, 1.0e-8f);
+    const float3 soft_glow = p.cover_glow.z
+        * (core_halo * (1.0f - p.cover_glow.w) + tail_halo * p.cover_glow.w);
     float3 carrier_detail = float3(
         dot(p.matrix0.xyz, carrier_detail_native),
         dot(p.matrix1.xyz, carrier_detail_native),
@@ -1676,7 +1666,7 @@ kernel void evaluate_physical_pipeline(
     const float moire_intensity = p.geometry.w;
     const float3 continuous_base = p.uniformity_scales.w == 0.0f
         ? continuous : uniform_continuous;
-    const float3 resolved_glow = glow + carrier_detail * p.strengths.z;
+    const float3 resolved_glow = glow + carrier_detail * p.strengths.z + soft_glow;
     const float3 sampled_panel = p.strengths.y
         * (continuous_base + p.strengths.z * (resolved_glow - continuous_base));
     const float3 sampled_structure_residual = p.uniformity_scales.w == 0.0f
@@ -1707,10 +1697,9 @@ kernel void evaluate_physical_pipeline(
     const float3 transmitted_emission = temporally_integrated * transmission;
     const float3 covered_with_environment = transmitted_emission
         + ideal.a * (combined_cover_response - transmitted_emission);
-    // The complete glow term conserves the unscattered panel base for samples
-    // inside the active outline. Outside the panel only the separately
-    // accumulated core/tail energy exists.
-    const float3 exterior_glow = exterior_scattered_glow * temporal_gain
+    // The direct panel remains inside its finite silhouette. The VFX halo is
+    // additive on both sides of that boundary and carries no exterior matte.
+    const float3 exterior_glow = soft_glow * temporal_gain
         * transmission;
     const float3 covered = mix(
         exterior_glow, covered_with_environment, resolved_panel_coverage);

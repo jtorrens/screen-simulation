@@ -1141,6 +1141,7 @@ fn embedded_test_signal(
             width,
             height,
             pixels,
+            alpha: vec![1.0; (u64::from(width) * u64::from(height)) as usize],
         })
         .map_err(|error| error.to_string())?,
     );

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 20;
+pub const CURRENT_VERSION: u32 = 21;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -202,6 +202,7 @@ pub struct CoverGlowDocument {
     pub core_radius_millimeters: f32,
     pub tail_radius_millimeters: f32,
     pub tail_fraction: f32,
+    pub threshold_relative_to_panel_white: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -989,6 +990,7 @@ fn validate_cover(cover: &CoverDocument) -> Result<(), PersistenceError> {
         cover.glow.core_radius_millimeters,
         cover.glow.tail_radius_millimeters,
         cover.glow.tail_fraction,
+        cover.glow.threshold_relative_to_panel_white,
     ]
     .into_iter()
     .all(f32::is_finite);
@@ -1384,6 +1386,7 @@ mod tests {
                         core_radius_millimeters: 0.22,
                         tail_radius_millimeters: 1.4,
                         tail_fraction: 0.18,
+                        threshold_relative_to_panel_white: 0.15,
                     },
                 },
             },

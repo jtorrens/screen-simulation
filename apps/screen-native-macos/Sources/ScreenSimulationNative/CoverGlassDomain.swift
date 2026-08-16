@@ -29,6 +29,7 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
     var glowCoreRadiusMillimeters: Double
     var glowTailRadiusMillimeters: Double
     var glowTailFraction: Double
+    var glowThresholdRelativeWhite: Double
 
     func validate() throws {
         guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -83,6 +84,7 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
         parameters.glow_core_radius_millimeters = Float(glowCoreRadiusMillimeters)
         parameters.glow_tail_radius_millimeters = Float(glowTailRadiusMillimeters)
         parameters.glow_tail_fraction = Float(glowTailFraction)
+        parameters.glow_threshold_relative_white = Float(glowThresholdRelativeWhite)
         return parameters
     }
 }
@@ -126,7 +128,8 @@ enum RustCoverGlassCatalog {
                 glowScatterFraction: Double(parameters.glow_scatter_fraction),
                 glowCoreRadiusMillimeters: Double(parameters.glow_core_radius_millimeters),
                 glowTailRadiusMillimeters: Double(parameters.glow_tail_radius_millimeters),
-                glowTailFraction: Double(parameters.glow_tail_fraction)
+                glowTailFraction: Double(parameters.glow_tail_fraction),
+                glowThresholdRelativeWhite: Double(parameters.glow_threshold_relative_white)
             )
             try definition.validate()
             return definition

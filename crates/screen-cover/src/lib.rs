@@ -52,8 +52,10 @@ pub struct AntiGlareMicrotextureProfile {
     pub seed: u32,
 }
 
-/// Energy-redistributing lateral scatter inside the cover stack. Radii are
-/// measured on the physical panel surface rather than in preview pixels.
+/// A bounded VFX approximation of the soft light contamination created by
+/// the already-resolved panel emission. Radii are measured on the physical
+/// panel surface rather than in preview pixels, so the effect follows camera
+/// projection without ever reading the original source raster.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CoverGlowProfile {
     /// Zero is exact identity, one is calibrated and values above one
@@ -63,6 +65,9 @@ pub struct CoverGlowProfile {
     pub core_radius_millimeters: f32,
     pub tail_radius_millimeters: f32,
     pub tail_fraction: f32,
+    /// Relative to the authored panel white. Emission below this level does
+    /// not seed the additive soft halo.
+    pub threshold_relative_to_panel_white: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -591,6 +596,7 @@ impl CoverGlowProfile {
         core_radius_millimeters: 0.1,
         tail_radius_millimeters: 1.0,
         tail_fraction: 0.5,
+        threshold_relative_to_panel_white: 0.0,
     };
     pub const GLOSSY_STRONG_AR: Self = Self {
         character_strength: 1.0,
@@ -598,6 +604,7 @@ impl CoverGlowProfile {
         core_radius_millimeters: 0.12,
         tail_radius_millimeters: 1.2,
         tail_fraction: 0.35,
+        threshold_relative_to_panel_white: 0.20,
     };
     pub const GLOSSY_STANDARD_AR: Self = Self {
         character_strength: 1.0,
@@ -605,6 +612,7 @@ impl CoverGlowProfile {
         core_radius_millimeters: 0.18,
         tail_radius_millimeters: 1.8,
         tail_fraction: 0.40,
+        threshold_relative_to_panel_white: 0.20,
     };
     pub const SEMI_GLOSS: Self = Self {
         character_strength: 1.0,
@@ -612,6 +620,7 @@ impl CoverGlowProfile {
         core_radius_millimeters: 0.28,
         tail_radius_millimeters: 2.5,
         tail_fraction: 0.45,
+        threshold_relative_to_panel_white: 0.18,
     };
     pub const MATTE_AR: Self = Self {
         character_strength: 1.0,
@@ -619,6 +628,7 @@ impl CoverGlowProfile {
         core_radius_millimeters: 0.42,
         tail_radius_millimeters: 3.5,
         tail_fraction: 0.50,
+        threshold_relative_to_panel_white: 0.15,
     };
     pub const HEAVY_MATTE: Self = Self {
         character_strength: 1.0,
@@ -626,6 +636,7 @@ impl CoverGlowProfile {
         core_radius_millimeters: 0.65,
         tail_radius_millimeters: 5.0,
         tail_fraction: 0.55,
+        threshold_relative_to_panel_white: 0.12,
     };
     pub const THICK_GLASS: Self = Self {
         character_strength: 1.0,
@@ -633,6 +644,7 @@ impl CoverGlowProfile {
         core_radius_millimeters: 0.80,
         tail_radius_millimeters: 8.0,
         tail_fraction: 0.65,
+        threshold_relative_to_panel_white: 0.18,
     };
 
     pub fn validate(self) -> Result<Self, CoverError> {
@@ -647,6 +659,8 @@ impl CoverGlowProfile {
             || self.tail_radius_millimeters > 30.0
             || !self.tail_fraction.is_finite()
             || !(0.0..=1.0).contains(&self.tail_fraction)
+            || !self.threshold_relative_to_panel_white.is_finite()
+            || !(0.0..=1.0).contains(&self.threshold_relative_to_panel_white)
             || self.scatter_fraction * self.character_strength > 0.95
         {
             return Err(CoverError::InvalidGlow);

@@ -233,7 +233,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 34;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 35;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -314,6 +314,7 @@ pub struct ScreenTestAuthoringSelectionV23 {
     cover_glow_core_radius_millimeters: f32,
     cover_glow_tail_radius_millimeters: f32,
     cover_glow_tail_fraction: f32,
+    cover_glow_threshold_relative_white: f32,
     lens_preset_id: ScreenUtf8View,
     focal_length_millimeters: f32,
     lens_amount: f32,
@@ -442,10 +443,10 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 23;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 24;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
-pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 8;
+pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
 pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;
@@ -2147,6 +2148,7 @@ pub struct ScreenCoverGlassParametersV2 {
     glow_core_radius_millimeters: f32,
     glow_tail_radius_millimeters: f32,
     glow_tail_fraction: f32,
+    glow_threshold_relative_white: f32,
 }
 
 #[repr(C)]
@@ -2402,6 +2404,7 @@ unsafe fn test_selection<'a>(
         cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
         cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
         cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
+        cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
@@ -2587,6 +2590,7 @@ fn resolved_test_selection(
         cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
         cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
         cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
+        cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
         lens_preset_id: utf8_view(selection.lens_preset_id),
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
@@ -3259,6 +3263,7 @@ pub unsafe extern "C" fn screen_cover_glass_profile_create(
             core_radius_millimeters: parameters.glow_core_radius_millimeters,
             tail_radius_millimeters: parameters.glow_tail_radius_millimeters,
             tail_fraction: parameters.glow_tail_fraction,
+            threshold_relative_to_panel_white: parameters.glow_threshold_relative_white,
         },
     };
     let Ok(profile) = profile.validate() else {
@@ -3349,6 +3354,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
             core_radius_millimeters: parameters.cover.glow_core_radius_millimeters,
             tail_radius_millimeters: parameters.cover.glow_tail_radius_millimeters,
             tail_fraction: parameters.cover.glow_tail_fraction,
+            threshold_relative_to_panel_white: parameters.cover.glow_threshold_relative_white,
         },
     };
     let environment = match parameters.environment.source_kind {
@@ -3720,6 +3726,7 @@ fn cover_parameters(
         glow_core_radius_millimeters: profile.glow.core_radius_millimeters,
         glow_tail_radius_millimeters: profile.glow.tail_radius_millimeters,
         glow_tail_fraction: profile.glow.tail_fraction,
+        glow_threshold_relative_white: profile.glow.threshold_relative_to_panel_white,
     }
 }
 
@@ -4997,6 +5004,7 @@ mod tests {
                 glow_core_radius_millimeters: 0.1,
                 glow_tail_radius_millimeters: 1.0,
                 glow_tail_fraction: 0.0,
+                glow_threshold_relative_white: 0.0,
             },
             environment: ScreenEnvironmentParametersV2 {
                 abi_version: version,
@@ -5632,6 +5640,7 @@ mod tests {
                 glow_core_radius_millimeters: 0.0,
                 glow_tail_radius_millimeters: 0.0,
                 glow_tail_fraction: 0.0,
+                glow_threshold_relative_white: 0.0,
             };
             assert!(unsafe { screen_cover_glass_preset_parameters(index, &mut parameters) });
             assert_eq!(parameters.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);

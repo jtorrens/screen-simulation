@@ -21,7 +21,7 @@ use screen_recording::{
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 33;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 34;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -116,6 +116,7 @@ pub const COVER_GLOW_SCATTER_CONTROL_ID: &str = "cover-glow-scatter-fraction";
 pub const COVER_GLOW_CORE_RADIUS_CONTROL_ID: &str = "cover-glow-core-radius-millimeters";
 pub const COVER_GLOW_TAIL_RADIUS_CONTROL_ID: &str = "cover-glow-tail-radius-millimeters";
 pub const COVER_GLOW_TAIL_FRACTION_CONTROL_ID: &str = "cover-glow-tail-fraction";
+pub const COVER_GLOW_THRESHOLD_CONTROL_ID: &str = "cover-glow-threshold-relative-white";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
 pub const FOCAL_LENGTH_CONTROL_ID: &str = "focal-length-millimeters";
 pub const LENS_EVALUATION_MODEL_CONTROL_ID: &str = "lens-evaluation-model";
@@ -449,6 +450,7 @@ pub struct TestAuthoringSelection<'a> {
     pub cover_glow_core_radius_millimeters: f32,
     pub cover_glow_tail_radius_millimeters: f32,
     pub cover_glow_tail_fraction: f32,
+    pub cover_glow_threshold_relative_white: f32,
     pub lens_preset_id: &'a str,
     pub focal_length_millimeters: f32,
     pub lens_evaluation_model_id: &'a str,
@@ -546,6 +548,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub cover_glow_core_radius_millimeters: f32,
     pub cover_glow_tail_radius_millimeters: f32,
     pub cover_glow_tail_fraction: f32,
+    pub cover_glow_threshold_relative_white: f32,
     pub lens_preset_id: &'static str,
     pub focal_length_millimeters: f32,
     pub lens_evaluation_model_id: &'static str,
@@ -1107,6 +1110,7 @@ pub fn default_test_authoring_selection(
         cover_glow_core_radius_millimeters: cover.profile.glow.core_radius_millimeters,
         cover_glow_tail_radius_millimeters: cover.profile.glow.tail_radius_millimeters,
         cover_glow_tail_fraction: cover.profile.glow.tail_fraction,
+        cover_glow_threshold_relative_white: cover.profile.glow.threshold_relative_to_panel_white,
         lens_preset_id: capture.default_lens_preset_id,
         focal_length_millimeters: lens(capture.default_lens_preset_id)?.nominal_focal_length.0,
         lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
@@ -1305,6 +1309,8 @@ pub fn resolve_test_authoring_selection(
     authored_cover.glow.core_radius_millimeters = selection.cover_glow_core_radius_millimeters;
     authored_cover.glow.tail_radius_millimeters = selection.cover_glow_tail_radius_millimeters;
     authored_cover.glow.tail_fraction = selection.cover_glow_tail_fraction;
+    authored_cover.glow.threshold_relative_to_panel_white =
+        selection.cover_glow_threshold_relative_white;
     authored_cover
         .validate()
         .map_err(|_| TestAuthoringError::InvalidCoverGlassProfile)?;
@@ -1559,6 +1565,7 @@ pub fn resolve_test_authoring_selection(
         cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
         cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
         cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
+        cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
         lens_preset_id: lens.id,
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_evaluation_model_id,
@@ -2601,8 +2608,8 @@ pub fn test_page_descriptor(
             },
             TestPhaseDescriptor {
                 id: COVER_GLOW_PHASE_ID,
-                label: "Resplandor del cristal",
-                effect_summary: "Redistribuye luz intensa dentro del cristal, incluso fuera del área activa.",
+                label: "Resplandor de emisión del Device",
+                effect_summary: "Añade un halo suave desde la emisión ya resuelta del panel, dentro y fuera del Device.",
                 header_control_id: Some(COVER_GLOW_AMOUNT_CONTROL_ID),
                 input_artifact: PhysicalArtifactId::CoveredDirectionalRadianceV1,
                 output_artifact: PhysicalArtifactId::GlassScatteredRadianceV1,
@@ -2652,6 +2659,18 @@ pub fn test_page_descriptor(
                         1.0,
                         selected_cover.profile.glow.tail_fraction,
                         "×",
+                    ),
+                    scalar_control(
+                        COVER_GLOW_THRESHOLD_CONTROL_ID,
+                        "Umbral de altas luces",
+                        selection.cover_glow_threshold_relative_white,
+                        0.0,
+                        1.0,
+                        selected_cover
+                            .profile
+                            .glow
+                            .threshold_relative_to_panel_white,
+                        "blanco relativo",
                     ),
                 ],
             },
@@ -3297,6 +3316,8 @@ fn materialize_cover_profile(
     selection.cover_glow_core_radius_millimeters = cover.profile.glow.core_radius_millimeters;
     selection.cover_glow_tail_radius_millimeters = cover.profile.glow.tail_radius_millimeters;
     selection.cover_glow_tail_fraction = cover.profile.glow.tail_fraction;
+    selection.cover_glow_threshold_relative_white =
+        cover.profile.glow.threshold_relative_to_panel_white;
     Ok(())
 }
 
@@ -3369,6 +3390,7 @@ fn unresolved_test_selection(
         cover_glow_core_radius_millimeters: current.cover_glow_core_radius_millimeters,
         cover_glow_tail_radius_millimeters: current.cover_glow_tail_radius_millimeters,
         cover_glow_tail_fraction: current.cover_glow_tail_fraction,
+        cover_glow_threshold_relative_white: current.cover_glow_threshold_relative_white,
         lens_preset_id: current.lens_preset_id,
         focal_length_millimeters: current.focal_length_millimeters,
         lens_amount: current.lens_amount,
@@ -3553,6 +3575,7 @@ pub fn apply_test_scalar(
         COVER_GLOW_CORE_RADIUS_CONTROL_ID => next.cover_glow_core_radius_millimeters = value,
         COVER_GLOW_TAIL_RADIUS_CONTROL_ID => next.cover_glow_tail_radius_millimeters = value,
         COVER_GLOW_TAIL_FRACTION_CONTROL_ID => next.cover_glow_tail_fraction = value,
+        COVER_GLOW_THRESHOLD_CONTROL_ID => next.cover_glow_threshold_relative_white = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
         FOCAL_LENGTH_CONTROL_ID => next.focal_length_millimeters = value,
         F_STOP_CONTROL_ID => next.f_stop = value,
@@ -3699,6 +3722,7 @@ mod tests {
             cover_glow_core_radius_millimeters: 0.42,
             cover_glow_tail_radius_millimeters: 3.5,
             cover_glow_tail_fraction: 0.50,
+            cover_glow_threshold_relative_white: 0.15,
             lens_preset_id: "iphone-16e-main-integrated",
             focal_length_millimeters: 4.2,
             lens_amount: 1.0,

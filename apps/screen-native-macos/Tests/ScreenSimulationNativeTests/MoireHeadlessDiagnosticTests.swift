@@ -123,6 +123,9 @@ import Testing
         cover.glowTailFraction = try moireRequiredDouble(
             "SCREEN_MOIRE_COVER_GLOW_TAIL_FRACTION"
         )
+        cover.glowThresholdRelativeWhite = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_GLOW_THRESHOLD_RELATIVE_WHITE"
+        )
         try cover.validate()
         var pipeline = try PhysicalPipelineAuthoringState.seeded(
             device: device,

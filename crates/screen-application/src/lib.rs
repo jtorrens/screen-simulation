@@ -2726,36 +2726,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 } else {
                                     spread_at([0.0, 0.0]) * base_gain * optical_weight
                                 };
-                                let glow_value = if plan.cover.glow.character_strength == 0.0 {
-                                    value
-                                } else {
-                                    let glow = plan.cover.glow;
-                                    let scattered = glow.scatter_fraction * glow.character_strength;
-                                    let continuous_area = |radius_millimeters: f32| {
-                                        let extent = Vec2 {
-                                            x: radius_millimeters * 0.001
-                                                / plan.panel.active_width.0,
-                                            y: radius_millimeters * 0.001
-                                                / plan.panel.active_height.0,
-                                        };
-                                        spread_over(
-                                            Vec2 {
-                                                x: channel_minimum.x - extent.x,
-                                                y: channel_minimum.y - extent.y,
-                                            },
-                                            Vec2 {
-                                                x: channel_maximum.x + extent.x,
-                                                y: channel_maximum.y + extent.y,
-                                            },
-                                        ) * base_gain
-                                            * optical_weight
-                                    };
-                                    let core_blur = continuous_area(glow.core_radius_millimeters);
-                                    let tail_blur = continuous_area(glow.tail_radius_millimeters);
-                                    value * (1.0 - scattered)
-                                        + core_blur * scattered * (1.0 - glow.tail_fraction)
-                                        + tail_blur * scattered * glow.tail_fraction
-                                };
+                                // The soft Device halo is evaluated once from the
+                                // resolved continuous panel emission after the lens
+                                // footprint has been accumulated. It must not repeat
+                                // this filter for every PSF/aperture sample.
+                                let glow_value = value;
                                 let base = base * optical_weight;
                                 let uniform_base = uniform_base * optical_weight;
                                 let uniform_continuous = [
@@ -2925,6 +2900,90 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * glow_native.b)
                     / parameters.white_level_nits,
             ];
+            let glow_profile = plan.cover.glow;
+            let glow_reciprocal_cover = if cover_weight == 0.0 {
+                1.0
+            } else {
+                1.0 / cover_weight
+            };
+            let glow_center = Vec2 {
+                x: cover_uv[0] * glow_reciprocal_cover,
+                y: cover_uv[1] * glow_reciprocal_cover,
+            };
+            let glow_half_extent = Vec2 {
+                x: cover_half_extent[0] * glow_reciprocal_cover,
+                y: cover_half_extent[1] * glow_reciprocal_cover,
+            };
+            let soft_area = |radius_millimeters: f32| {
+                let extent = Vec2 {
+                    x: radius_millimeters * 0.001 / plan.panel.active_width.0,
+                    y: radius_millimeters * 0.001 / plan.panel.active_height.0,
+                };
+                let minimum = Vec2 {
+                    x: glow_center.x - glow_half_extent.x - extent.x,
+                    y: glow_center.y - glow_half_extent.y - extent.y,
+                };
+                let maximum = Vec2 {
+                    x: glow_center.x + glow_half_extent.x + extent.x,
+                    y: glow_center.y + glow_half_extent.y + extent.y,
+                };
+                let panel_coverage = device_rectangle_coverage(minimum, maximum);
+                if panel_coverage == 0.0 {
+                    return [0.0; 3];
+                }
+                let area = placed_feeder.sample_area(
+                    Vec2 {
+                        x: minimum.x.clamp(0.0, 1.0),
+                        y: minimum.y.clamp(0.0, 1.0),
+                    },
+                    Vec2 {
+                        x: maximum.x.clamp(0.0, 1.0),
+                        y: maximum.y.clamp(0.0, 1.0),
+                    },
+                );
+                let native = [
+                    area.linear_native_emission.r * panel_coverage,
+                    area.linear_native_emission.g * panel_coverage,
+                    area.linear_native_emission.b * panel_coverage,
+                ];
+                let rgb = [
+                    (matrix[0][0] * native[0]
+                        + matrix[0][1] * native[1]
+                        + matrix[0][2] * native[2])
+                        / parameters.white_level_nits,
+                    (matrix[1][0] * native[0]
+                        + matrix[1][1] * native[1]
+                        + matrix[1][2] * native[2])
+                        / parameters.white_level_nits,
+                    (matrix[2][0] * native[0]
+                        + matrix[2][1] * native[1]
+                        + matrix[2][2] * native[2])
+                        / parameters.white_level_nits,
+                ];
+                let luminance =
+                    0.272_228_72 * rgb[0] + 0.674_081_74 * rgb[1] + 0.053_689_517 * rgb[2];
+                let threshold = glow_profile.threshold_relative_to_panel_white;
+                let threshold_scale = if luminance <= threshold {
+                    0.0
+                } else {
+                    (luminance - threshold) / luminance.max(1.0e-8)
+                };
+                rgb.map(|value| value * threshold_scale)
+            };
+            let glow_strength = glow_profile.scatter_fraction * glow_profile.character_strength;
+            let core_glow = soft_area(glow_profile.core_radius_millimeters);
+            let tail_glow = soft_area(glow_profile.tail_radius_millimeters);
+            let soft_glow = [
+                glow_strength
+                    * (core_glow[0] * (1.0 - glow_profile.tail_fraction)
+                        + tail_glow[0] * glow_profile.tail_fraction),
+                glow_strength
+                    * (core_glow[1] * (1.0 - glow_profile.tail_fraction)
+                        + tail_glow[1] * glow_profile.tail_fraction),
+                glow_strength
+                    * (core_glow[2] * (1.0 - glow_profile.tail_fraction)
+                        + tail_glow[2] * glow_profile.tail_fraction),
+            ];
             let carrier_detail = [
                 (matrix[0][0] * carrier_detail_native.r
                     + matrix[0][1] * carrier_detail_native.g
@@ -2941,12 +3000,22 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             ];
             let glowed = if plan.lens_evaluation_model == LensEvaluationModel::VfxDepthBlur {
                 [
-                    cover_glow[0] + plan.subpixel_geometry_amount * carrier_detail[0],
-                    cover_glow[1] + plan.subpixel_geometry_amount * carrier_detail[1],
-                    cover_glow[2] + plan.subpixel_geometry_amount * carrier_detail[2],
+                    cover_glow[0]
+                        + plan.subpixel_geometry_amount * carrier_detail[0]
+                        + soft_glow[0],
+                    cover_glow[1]
+                        + plan.subpixel_geometry_amount * carrier_detail[1]
+                        + soft_glow[1],
+                    cover_glow[2]
+                        + plan.subpixel_geometry_amount * carrier_detail[2]
+                        + soft_glow[2],
                 ]
             } else {
-                cover_glow
+                [
+                    cover_glow[0] + soft_glow[0],
+                    cover_glow[1] + soft_glow[1],
+                    cover_glow[2] + soft_glow[2],
+                ]
             };
             let continuous_base = if plan.panel_uniformity.character_strength == 0.0 {
                 continuous
@@ -3103,16 +3172,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 transmitted_emission.b
                     + local_device_matte * (combined_cover_response.b - transmitted_emission.b),
             );
-            let scattered = plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength;
-            let exterior_scattered_glow = [
-                cover_glow[0] - spread[0] * (1.0 - scattered),
-                cover_glow[1] - spread[1] * (1.0 - scattered),
-                cover_glow[2] - spread[2] * (1.0 - scattered),
-            ];
             let exterior_glow = LinearRgb::new(
-                exterior_scattered_glow[0] * temporal_gain * transmitted.r,
-                exterior_scattered_glow[1] * temporal_gain * transmitted.g,
-                exterior_scattered_glow[2] * temporal_gain * transmitted.b,
+                soft_glow[0] * temporal_gain * transmitted.r,
+                soft_glow[1] * temporal_gain * transmitted.g,
+                soft_glow[2] * temporal_gain * transmitted.b,
             );
             let covered = LinearRgb::new(
                 exterior_glow.r

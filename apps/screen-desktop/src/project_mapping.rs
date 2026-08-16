@@ -189,6 +189,10 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
                 core_radius_millimeters: device.cover.glow.core_radius_millimeters,
                 tail_radius_millimeters: device.cover.glow.tail_radius_millimeters,
                 tail_fraction: device.cover.glow.tail_fraction,
+                threshold_relative_to_panel_white: device
+                    .cover
+                    .glow
+                    .threshold_relative_to_panel_white,
             },
         }
         .validate()
@@ -559,6 +563,7 @@ mod tests {
                         core_radius_millimeters: 0.22,
                         tail_radius_millimeters: 1.4,
                         tail_fraction: 0.18,
+                        threshold_relative_to_panel_white: 0.15,
                     },
                 },
             },
@@ -802,9 +807,10 @@ mod tests {
         );
 
         package.shot.recording.profile_id = id("iphone-heic-photo");
-        assert!(matches!(
-            map_project_scene(&package),
-            Err(error) if error.contains("unknown recording profile")
-        ));
+        let error = match map_project_scene(&package) {
+            Ok(_) => panic!("retired recording profile must fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("Recording selection is invalid"), "{error}");
     }
 }

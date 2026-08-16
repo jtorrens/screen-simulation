@@ -17,12 +17,12 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 23u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 24u
 #define SCREEN_DEVICE_VFX_ALPHA_IGNORE 0u
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
-#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 8u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 9u
 #define SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION 1u
 
 typedef struct {
@@ -46,7 +46,7 @@ typedef struct {
     uint32_t maximum_b_frames;
 } ScreenRecordingExecutionPlanV1;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 34u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 35u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -134,6 +134,7 @@ typedef struct {
     float cover_glow_core_radius_millimeters;
     float cover_glow_tail_radius_millimeters;
     float cover_glow_tail_fraction;
+    float cover_glow_threshold_relative_white;
     ScreenUTF8View lens_preset_id;
     float focal_length_millimeters;
     float lens_amount;
@@ -604,6 +605,7 @@ typedef struct {
     float glow_core_radius_millimeters;
     float glow_tail_radius_millimeters;
     float glow_tail_fraction;
+    float glow_threshold_relative_white;
 } ScreenCoverGlassParametersV2;
 
 typedef struct {

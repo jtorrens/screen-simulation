@@ -937,6 +937,26 @@ struct ContentView: View {
                     }
                 ), format: .number.grouping(.never))
             }
+            Section("Resplandor de emisión") {
+                coverGlassField("Intensidad", value: cover.glowCharacterStrength) {
+                    $0.glowCharacterStrength = $1
+                }
+                coverGlassField("Energía", value: cover.glowScatterFraction) {
+                    $0.glowScatterFraction = $1
+                }
+                coverGlassField("Radio cercano (mm)", value: cover.glowCoreRadiusMillimeters) {
+                    $0.glowCoreRadiusMillimeters = $1
+                }
+                coverGlassField("Radio exterior (mm)", value: cover.glowTailRadiusMillimeters) {
+                    $0.glowTailRadiusMillimeters = $1
+                }
+                coverGlassField("Reparto exterior", value: cover.glowTailFraction) {
+                    $0.glowTailFraction = $1
+                }
+                coverGlassField("Umbral relativo", value: cover.glowThresholdRelativeWhite) {
+                    $0.glowThresholdRelativeWhite = $1
+                }
+            }
             Section("Absorción por milímetro") {
                 ForEach(Array(["R", "G", "B"].enumerated()), id: \.offset) { channel in
                     TextField(channel.element, value: Binding(

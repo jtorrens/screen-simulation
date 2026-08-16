@@ -62,7 +62,7 @@ struct GlobalPatternDefinition: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 8
+    static let currentSchemaVersion = 9
     let schemaVersion: Int
     var patterns: [LibraryItem<GlobalPatternDefinition>]
     var testImages: [LibraryItem<GlobalTestImage>]
@@ -209,73 +209,12 @@ struct GlobalLibraryStore: Sendable {
             GlobalLibrarySchemaHeader.self,
             from: data
         ).schemaVersion
-        switch version {
-        case GlobalLibraryDocument.currentSchemaVersion:
-            let document = try JSONDecoder().decode(
-                GlobalLibraryDocument.self,
-                from: data
-            )
-            try document.validate()
-            return document
-        case 4:
-            let previous = try JSONDecoder().decode(
-                GlobalLibrarySchemaFour.self,
-                from: data
-            )
-            let migrated = GlobalLibraryDocument(
-                testImages: previous.testImages,
-                renderPresets: previous.renderPresets,
-                devices: previous.devices,
-                coverGlasses: try RustCoverGlassCatalog.builtIns()
-            )
-            try migrated.validate()
-            try save(migrated)
-            return migrated
-        case 1:
-            let previous = try JSONDecoder().decode(
-                GlobalLibrarySchemaOne.self,
-                from: data
-            )
-            let migrated = GlobalLibraryDocument(
-                testImages: previous.testImages,
-                renderPresets: migratedPresets(previous.renderPresets),
-                devices: try RustDeviceCatalog.builtIns(),
-                coverGlasses: try RustCoverGlassCatalog.builtIns()
-            )
-            try migrated.validate()
-            try save(migrated)
-            return migrated
-        case 2:
-            let previous = try JSONDecoder().decode(
-                GlobalLibrarySchemaTwo.self,
-                from: data
-            )
-            let migrated = GlobalLibraryDocument(
-                testImages: previous.testImages,
-                renderPresets: migratedPresets(previous.renderPresets),
-                devices: previous.devices,
-                coverGlasses: try RustCoverGlassCatalog.builtIns()
-            )
-            try migrated.validate()
-            try save(migrated)
-            return migrated
-        case 3:
-            let previous = try JSONDecoder().decode(
-                GlobalLibrarySchemaThree.self,
-                from: data
-            )
-            let migrated = GlobalLibraryDocument(
-                testImages: previous.testImages,
-                renderPresets: previous.renderPresets.map(\.current),
-                devices: previous.devices,
-                coverGlasses: try RustCoverGlassCatalog.builtIns()
-            )
-            try migrated.validate()
-            try save(migrated)
-            return migrated
-        default:
+        guard version == GlobalLibraryDocument.currentSchemaVersion else {
             throw GlobalLibraryError.unsupportedSchema(version)
         }
+        let document = try JSONDecoder().decode(GlobalLibraryDocument.self, from: data)
+        try document.validate()
+        return document
     }
 
     func save(_ document: GlobalLibraryDocument) throws {
@@ -288,113 +227,10 @@ struct GlobalLibraryStore: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(document).write(to: documentURL, options: .atomic)
     }
-
-    private func migratedPresets(
-        _ previous: [GlobalRenderPresetSchemaTwo]
-    ) -> [StudioRenderPreset] {
-        let existingIDs = Set(previous.map(\.id))
-        let seeded = StudioRenderPreset.builtIns.filter { !existingIDs.contains($0.id) }
-        return seeded + previous.map { $0.current }
-    }
 }
 
 private struct GlobalLibrarySchemaHeader: Decodable {
     let schemaVersion: Int
-}
-
-private struct GlobalLibrarySchemaOne: Decodable {
-    let schemaVersion: Int
-    let testImages: [GlobalTestImage]
-    let renderPresets: [GlobalRenderPresetSchemaTwo]
-}
-
-private struct GlobalLibrarySchemaTwo: Decodable {
-    let schemaVersion: Int
-    let testImages: [GlobalTestImage]
-    let renderPresets: [GlobalRenderPresetSchemaTwo]
-    let devices: [DeviceDefinition]
-}
-
-private struct GlobalLibrarySchemaThree: Decodable {
-    let schemaVersion: Int
-    let testImages: [GlobalTestImage]
-    let renderPresets: [GlobalRenderPresetSchemaThree]
-    let devices: [DeviceDefinition]
-}
-
-private struct GlobalLibrarySchemaFour: Decodable {
-    let schemaVersion: Int
-    let testImages: [GlobalTestImage]
-    let renderPresets: [StudioRenderPreset]
-    let devices: [DeviceDefinition]
-}
-
-private struct GlobalRenderPresetSchemaTwo: Decodable {
-    let id: UUID
-    let name: String
-    let pipeline: StudioRenderPipeline
-    let target: StudioRenderTarget
-    let peakNits: Double
-    let display: String?
-    let view: String?
-
-    var current: StudioRenderPreset {
-        if let builtIn = StudioRenderPreset.builtIns.first(where: { $0.id == id }) {
-            return builtIn
-        }
-        let isLinear = target == .acescg || target == .aces2065
-        return StudioRenderPreset(
-            id: id,
-            name: name,
-            pipeline: pipeline,
-            target: target,
-            peakNits: peakNits,
-            display: display,
-            view: view,
-            format: isLinear ? .openEXR : .proRes4444,
-            pixelEncoding: isLinear ? .rgba16Float : .yuv44412,
-            signalRange: isLinear ? .full : .video,
-            alpha: isLinear ? .straight : .premultiplied,
-            includeAudio: false,
-            notes: ""
-        )
-    }
-}
-
-private struct GlobalRenderPresetSchemaThree: Decodable {
-    let id: UUID
-    let name: String
-    let pipeline: StudioRenderPipeline
-    let target: StudioRenderTarget
-    let peakNits: Double
-    let display: String?
-    let view: String?
-    let format: StudioOutputFormat
-    let signalRange: StudioSignalRange
-    let alpha: StudioAlphaMode
-    let includeAudio: Bool
-    let notes: String
-
-    var current: StudioRenderPreset {
-        let encoding = format.defaultPixelEncoding
-        let supportedRanges = format.supportedSignalRanges(for: encoding)
-        return StudioRenderPreset(
-            id: id,
-            name: name,
-            pipeline: pipeline,
-            target: target,
-            peakNits: peakNits,
-            display: display,
-            view: view,
-            format: format,
-            pixelEncoding: encoding,
-            signalRange: supportedRanges.contains(signalRange)
-                ? signalRange : supportedRanges[0],
-            alpha: alpha,
-            includeAudio: includeAudio,
-            notes: notes
-        )
-    }
 }
 
 @MainActor

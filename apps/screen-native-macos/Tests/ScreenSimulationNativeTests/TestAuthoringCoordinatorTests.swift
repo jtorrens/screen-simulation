@@ -86,6 +86,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         coverGlowCoreRadiusMillimeters: 0.42,
         coverGlowTailRadiusMillimeters: 3.5,
         coverGlowTailFraction: 0.50,
+        coverGlowThresholdRelativeWhite: 0.15,
         lensPresetID: "iphone-16e-main-integrated",
         focalLengthMillimeters: 4.2,
         lensAmount: 1,
@@ -181,7 +182,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         "Trama del panel", "Uniformidad del panel", "Dispersión de luz del panel",
         "Emisión temporal del panel",
         "Geometría relativa",
-        "Cristal y entorno", "Resplandor del cristal", "Objetivo y proyección",
+        "Cristal y entorno", "Resplandor de emisión del Device", "Objetivo y proyección",
         "Exposición y obturador", "Captura computacional",
         "Colección del fotosito, CFA y ruido", "Crosstalk y bloom del sensor",
         "Lectura del sensor y RAW", "Revelado y demosaico",
@@ -474,7 +475,10 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     let projectedFrame = try #require(workspace.metalFrame)
     let projected = try workspace.metalDisplay.readLinearRGBA(projectedFrame)
 
-    workspace.changePhysicalStageAmount(0, stage: .capture(.geometry))
+    workspace.handleTestIntent(.setScalar(
+        controlID: "camera-orbit-y-degrees",
+        value: 25
+    ))
     try requestPhysicalPreview("draft", in: workspace)
     for _ in 0..<2_000 {
         if let replacement = workspace.metalFrame,

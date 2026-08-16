@@ -64,7 +64,7 @@ import Testing
     })
 }
 
-@Test @MainActor func unifiedPhysicalABIPublishesDevelopedFrameWithEnergyAndOpaqueAlpha() async throws {
+@Test @MainActor func unifiedPhysicalABIPublishesDevelopedFrameWithEnergyAndPhysicalMatte() async throws {
     let fixture = try makePhysicalFixture(width: 64, height: 36)
     let job = try submit(
         fixture: fixture,
@@ -88,7 +88,8 @@ import Testing
     // in the Rust/Metal contract tests, so only require non-zero finite energy
     // at this boundary.
     #expect(rgb.reduce(0) { $0 + max(0, $1) } / Float(rgb.count) > 0)
-    #expect(alpha.allSatisfy { $0 == 1 })
+    #expect(alpha.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1 })
+    #expect(alpha.contains { $0 > 0 })
 }
 
 @Test @MainActor func shutterAngleIntegratesPhysicalEnergyAndDevelopsAVisibleFrame() async throws {

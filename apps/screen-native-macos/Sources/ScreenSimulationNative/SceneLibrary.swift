@@ -108,7 +108,7 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v12"
+    static let schema = "ScreenSimulation.SavedScene.v13"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -263,7 +263,7 @@ struct SavedSceneCapture: Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 12
+    static let currentSchemaVersion = 13
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -327,7 +327,7 @@ struct SceneLibraryStore: Sendable {
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
         self.trackingLibraryRoot = trackingLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v12.json")
+        documentURL = directory.appendingPathComponent("Scenes.v13.json")
     }
 
     func load() throws -> SceneLibraryDocument {
