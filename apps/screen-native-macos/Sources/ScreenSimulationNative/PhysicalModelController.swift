@@ -132,7 +132,7 @@ final class PhysicalModelController: ObservableObject {
     func setQuality(_ quality: PhysicalQuality) {
         guard self.quality != quality else { return }
         self.quality = quality
-        invalidateParameters(returnToSetup: false)
+        invalidateParameters()
     }
 
     func invalidateExternalParameters() {
@@ -413,7 +413,7 @@ final class PhysicalModelController: ObservableObject {
         }
     }
 
-    private func invalidateParameters(returnToSetup: Bool = true) {
+    private func invalidateParameters() {
         parameterRevision &+= 1
         if frameState == .rendering {
             cancelNativeWork?()
@@ -422,14 +422,6 @@ final class PhysicalModelController: ObservableObject {
             frameState = completedFrame == nil ? .cancelled : .stale
         } else if frameState == .complete {
             frameState = .stale
-        }
-        if returnToSetup {
-            switch quality {
-            case .setup, .environmentSetup, .focusSetup:
-                break
-            case .draft, .medium, .high, .native:
-                quality = .setup
-            }
         }
         interactiveInvalidation?()
     }

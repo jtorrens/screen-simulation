@@ -128,7 +128,7 @@ import Testing
     #expect(workspace.testNativeRenderButtonState == .outdated)
 }
 
-@Test @MainActor func editingParametersPreservesTheExplicitSetupTool() throws {
+@Test @MainActor func editingParametersPreservesTheExplicitViewerMode() throws {
     let model = PhysicalModelController()
 
     model.setQuality(.focusSetup)
@@ -141,7 +141,7 @@ import Testing
 
     model.setQuality(.native)
     try model.setContinuousAmount(1.1, stage: .screen(.emission))
-    #expect(model.quality == .setup)
+    #expect(model.quality == .native)
 }
 
 @Test @MainActor func identicalNativeProgressDoesNotRepublishObservableState() throws {

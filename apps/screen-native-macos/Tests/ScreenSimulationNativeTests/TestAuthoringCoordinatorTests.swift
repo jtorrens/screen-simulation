@@ -200,6 +200,14 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         == .sourceAdjustment)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[2].id]
         == .feederSignal)
+    let feederControls = snapshot.presentation.phases[2].sections.flatMap(\.controls)
+    guard case let .choice(placement) = try #require(
+        feederControls.first(where: { $0.id == "placement" })
+    ) else {
+        Issue.record("Placement debe llegar a Swift como selección preparada por Application.")
+        return
+    }
+    #expect(placement.options.map(\.id) == ["fit", "fill-crop", "stretch", "one-to-one"])
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[3].id]
         == .deviceInterpretation)
     #expect(snapshot.previewResultByPhaseID[snapshot.presentation.phases[4].id]
@@ -673,6 +681,11 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     let currentSource = try #require(workspace.sourceACEScgFrame)
     #expect(ObjectIdentifier(retained.texture as AnyObject)
         != ObjectIdentifier(currentSource.texture as AnyObject))
+
+    workspace.setTestPageActive(false)
+    let retainedAcrossPageTransition = try #require(workspace.metalFrame)
+    #expect(ObjectIdentifier(retainedAcrossPageTransition.texture as AnyObject)
+        == ObjectIdentifier(retained.texture as AnyObject))
 }
 
 @Test @MainActor func selectedPhaseRefreshCannotReplaceAnActiveSetupComposition() throws {
