@@ -1360,6 +1360,57 @@ fn sensor_exposure_pixels(
     }
 }
 
+/// Resamples the optical Device matte onto the exact Sensor raster without
+/// interpreting it as color or exposing it to CFA/development operations.
+/// This is the sole matte sidecar transition across the Capture boundary.
+pub fn resample_physical_device_matte(
+    source: &[[f32; 4]],
+    source_width: u32,
+    source_height: u32,
+    sensor_width: u32,
+    sensor_height: u32,
+) -> Result<Vec<f32>, ApplicationError> {
+    if source_width == 0 || source_height == 0 || sensor_width == 0 || sensor_height == 0 {
+        return Err(ApplicationError::OpticalSampleRasterMismatch);
+    }
+    let expected = u64::from(source_width) * u64::from(source_height);
+    if source.len() as u64 != expected {
+        return Err(ApplicationError::OpticalSampleRasterMismatch);
+    }
+    if source_width == sensor_width && source_height == sensor_height {
+        return Ok(source.iter().map(|pixel| pixel[3]).collect());
+    }
+    Ok((0..sensor_height)
+        .flat_map(|output_y| {
+            (0..sensor_width).map(move |output_x| {
+                let minimum_y = output_y as f64 * source_height as f64 / sensor_height as f64;
+                let maximum_y = (output_y + 1) as f64 * source_height as f64 / sensor_height as f64;
+                let minimum_x = output_x as f64 * source_width as f64 / sensor_width as f64;
+                let maximum_x = (output_x + 1) as f64 * source_width as f64 / sensor_width as f64;
+                let mut sum = 0.0_f64;
+                let mut area = 0.0_f64;
+                for source_y in minimum_y.floor() as u32..maximum_y.ceil() as u32 {
+                    let overlap_y = (maximum_y.min(f64::from(source_y + 1))
+                        - minimum_y.max(f64::from(source_y)))
+                    .max(0.0);
+                    for source_x in minimum_x.floor() as u32..maximum_x.ceil() as u32 {
+                        let overlap_x = (maximum_x.min(f64::from(source_x + 1))
+                            - minimum_x.max(f64::from(source_x)))
+                        .max(0.0);
+                        let weight = overlap_x * overlap_y;
+                        let pixel = source[(source_y.min(source_height - 1) * source_width
+                            + source_x.min(source_width - 1))
+                            as usize];
+                        sum += f64::from(pixel[3]) * weight;
+                        area += weight;
+                    }
+                }
+                (sum / area) as f32
+            })
+        })
+        .collect())
+}
+
 /// Canonical Application-owned transition from the shutter-integrated physical
 /// raster into the Sensor-owned integer RAW boundary. Platform adapters may
 /// accelerate the optical work before this call and camera development after
@@ -2177,9 +2228,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     let source_width = request.input.width;
     let source_height = request.input.height;
     let prepared = PreparedDeviceSignalRaster::new(request.input.device_signal)?;
-    let resolved_device_alpha = |authored_alpha: f32| match plan.device_vfx_alpha_mode {
-        DeviceVfxAlphaMode::Ignore => 1.0,
-        DeviceVfxAlphaMode::DeviceTransparency => authored_alpha,
+    let resolved_device_alpha = |authored_alpha: f32, panel_coverage: f32| {
+        panel_coverage
+            * match plan.device_vfx_alpha_mode {
+                DeviceVfxAlphaMode::Ignore => 1.0,
+                DeviceVfxAlphaMode::DeviceTransparency => authored_alpha,
+            }
     };
     let emission_integral =
         DeviceSignalIntegral::new_mapped_with_alpha(&prepared.source, |value, authored_alpha| {
@@ -2534,12 +2588,13 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     x: channel_maximum.x * plan.panel.native_width as f32,
                                     y: channel_maximum.y * plan.panel.native_height as f32,
                                 };
-                                let base = evaluator.native_channel_over_device_rect(
-                                    area.device_code,
-                                    device_minimum,
-                                    device_maximum,
-                                    channel,
-                                ) * resolved_device_alpha(area.alpha);
+                                let base =
+                                    evaluator.native_channel_over_device_rect(
+                                        area.device_code,
+                                        device_minimum,
+                                        device_maximum,
+                                        channel,
+                                    ) * resolved_device_alpha(area.alpha, area.panel_coverage);
                                 let base_gains = plan.panel_uniformity.channel_gains(
                                     plan.panel,
                                     device_minimum,
@@ -2563,7 +2618,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     carrier_device_minimum,
                                     carrier_device_maximum,
                                     channel,
-                                ) * resolved_device_alpha(carrier_area.alpha);
+                                ) * resolved_device_alpha(
+                                    carrier_area.alpha,
+                                    carrier_area.panel_coverage,
+                                );
                                 let carrier_gains = plan.panel_uniformity.channel_gains(
                                     plan.panel,
                                     carrier_device_minimum,
@@ -2637,8 +2695,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                                 shifted_device_minimum,
                                                 shifted_device_maximum,
                                                 channel,
-                                            ) * resolved_device_alpha(shifted.alpha)
-                                                * coverage
+                                            ) * resolved_device_alpha(
+                                                shifted.alpha,
+                                                shifted.panel_coverage,
+                                            ) * coverage
                                                 * sample.weight
                                         })
                                         .sum::<f32>()
@@ -2701,6 +2761,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     area.linear_native_emission.g,
                                     area.linear_native_emission.b,
                                 ][channel]
+                                    * area.panel_coverage
                                     * base_gain
                                     * optical_weight;
                                 match channel {
@@ -2709,8 +2770,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         uniform_native.r += uniform_base;
                                         spread_native.r += value;
                                         glow_native.r += glow_value;
-                                        continuous_native.r +=
-                                            area.linear_native_emission.r * optical_weight;
+                                        continuous_native.r += area.linear_native_emission.r
+                                            * area.panel_coverage
+                                            * optical_weight;
                                         uniform_continuous_native.r += uniform_continuous;
                                         average_device_code.r += area.device_code.r * layer_weight;
                                         carrier_detail_native.r += carrier_detail;
@@ -2720,21 +2782,24 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         uniform_native.g += uniform_base;
                                         spread_native.g += value;
                                         glow_native.g += glow_value;
-                                        continuous_native.g +=
-                                            area.linear_native_emission.g * optical_weight;
+                                        continuous_native.g += area.linear_native_emission.g
+                                            * area.panel_coverage
+                                            * optical_weight;
                                         uniform_continuous_native.g += uniform_continuous;
                                         average_device_code.g += area.device_code.g * layer_weight;
                                         carrier_detail_native.g += carrier_detail;
                                         ideal[3] +=
-                                            resolved_device_alpha(area.alpha) * layer_weight;
+                                            resolved_device_alpha(area.alpha, area.panel_coverage)
+                                                * layer_weight;
                                     }
                                     _ => {
                                         physical_native.b += base;
                                         uniform_native.b += uniform_base;
                                         spread_native.b += value;
                                         glow_native.b += glow_value;
-                                        continuous_native.b +=
-                                            area.linear_native_emission.b * optical_weight;
+                                        continuous_native.b += area.linear_native_emission.b
+                                            * area.panel_coverage
+                                            * optical_weight;
                                         uniform_continuous_native.b += uniform_continuous;
                                         average_device_code.b += area.device_code.b * layer_weight;
                                         carrier_detail_native.b += carrier_detail;
@@ -3226,14 +3291,21 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             sampling.effective_height,
             plan,
         )?;
+        let sensor_device_matte = resample_physical_device_matte(
+            &output,
+            sampling.effective_width,
+            sampling.effective_height,
+            raw.width,
+            raw.height,
+        )?;
         if !plan.development_enabled {
             return Err(ApplicationError::UnsupportedPhysicalIntermediate);
         }
         let developed = develop_raw_to_acescg(&raw, raw.sensor_profile, plan.development)
             .map_err(ApplicationError::CameraDevelopment)?;
-        if developed.width != sampling.effective_width
-            || developed.height != sampling.effective_height
-            || developed.acescg.len() != output.len()
+        if developed.width != raw.width
+            || developed.height != raw.height
+            || developed.acescg.len() != sensor_device_matte.len()
         {
             return Err(ApplicationError::OpticalSampleRasterMismatch);
         }
@@ -3253,8 +3325,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     height: developed.height,
                     rgba: acescg
                         .into_iter()
-                        .zip(output.iter())
-                        .map(|(pixel, optical)| [pixel.r, pixel.g, pixel.b, optical[3]])
+                        .zip(sensor_device_matte.iter())
+                        .map(|(pixel, matte)| [pixel.r, pixel.g, pixel.b, *matte])
                         .collect(),
                 }),
                 diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
@@ -3267,8 +3339,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 rgba: developed
                     .acescg
                     .into_iter()
-                    .zip(output.iter())
-                    .map(|(pixel, optical)| [pixel.r, pixel.g, pixel.b, optical[3]])
+                    .zip(sensor_device_matte.iter())
+                    .map(|(pixel, matte)| [pixel.r, pixel.g, pixel.b, *matte])
                     .collect(),
             }),
             diagnostic: PhysicalPipelineDiagnostic { geometry, sampling },
@@ -3525,6 +3597,9 @@ struct AreaSignalSample {
     device_code: DeviceRgb,
     linear_native_emission: LinearRgb,
     alpha: f32,
+    /// Fraction of the integration footprint that belongs to the finite
+    /// physical panel. This is independent of authored source alpha.
+    panel_coverage: f32,
 }
 
 fn linear_emission_integral(
@@ -3695,6 +3770,7 @@ fn sample_placed_feeder_area(
             device_code: DeviceRgb::BLACK,
             linear_native_emission: LinearRgb::new(0.0, 0.0, 0.0),
             alpha: 0.0,
+            panel_coverage: 0.0,
         };
     };
     let Some(second) = source_uv_unbounded(
@@ -3707,6 +3783,7 @@ fn sample_placed_feeder_area(
             device_code: DeviceRgb::BLACK,
             linear_native_emission: LinearRgb::new(0.0, 0.0, 0.0),
             alpha: 0.0,
+            panel_coverage: 0.0,
         };
     };
     let device_code = signal.prepared.integral.sample_area_box(first, second);
@@ -3720,6 +3797,7 @@ fn sample_placed_feeder_area(
         device_code,
         linear_native_emission: LinearRgb::new(emission.r, emission.g, emission.b),
         alpha,
+        panel_coverage: device_rectangle_coverage(minimum, maximum),
     }
 }
 
@@ -3738,6 +3816,7 @@ fn sample_placed_area(
             device_code: DeviceRgb::BLACK,
             linear_native_emission: LinearRgb::new(0.0, 0.0, 0.0),
             alpha: 0.0,
+            panel_coverage: 0.0,
         };
     };
     let Some(second) = source_uv_unbounded(source_raster, device_raster, placement, maximum) else {
@@ -3745,6 +3824,7 @@ fn sample_placed_area(
             device_code: DeviceRgb::BLACK,
             linear_native_emission: LinearRgb::new(0.0, 0.0, 0.0),
             alpha: 0.0,
+            panel_coverage: 0.0,
         };
     };
     let device_code = source_code.sample_area_box(first, second);
@@ -3754,6 +3834,7 @@ fn sample_placed_area(
         device_code,
         linear_native_emission: LinearRgb::new(emission.r, emission.g, emission.b),
         alpha,
+        panel_coverage: device_rectangle_coverage(minimum, maximum),
     }
 }
 
@@ -7418,6 +7499,7 @@ fn diagnostic_area_signal(
             linear_sum.b / 16.0,
         ),
         alpha: 1.0,
+        panel_coverage: device_rectangle_coverage(minimum, maximum),
     }
 }
 
@@ -7797,6 +7879,45 @@ mod tests {
         let one_worker = resample_with_workers(1);
         let multiple_workers = resample_with_workers(4);
         assert_eq!(bits(&one_worker), bits(&multiple_workers));
+    }
+
+    #[test]
+    fn physical_device_matte_resampling_matches_the_area_reference_exactly() {
+        let source = (0..12)
+            .map(|index| {
+                let alpha = index as f32 / 11.0;
+                [13.0 - alpha, -2.0, 7.0, alpha]
+            })
+            .collect::<Vec<_>>();
+
+        let identity =
+            resample_physical_device_matte(&source, 4, 3, 4, 3).expect("identity Device matte");
+        assert_eq!(
+            identity
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            source
+                .iter()
+                .map(|pixel| pixel[3].to_bits())
+                .collect::<Vec<_>>()
+        );
+
+        let expected = resample_physical_rgba_area_reference(&source, 4, 3, 3, 2)
+            .into_iter()
+            .map(|pixel| pixel[3].to_bits())
+            .collect::<Vec<_>>();
+        let actual = resample_physical_device_matte(&source, 4, 3, 3, 2)
+            .expect("resampled Device matte")
+            .into_iter()
+            .map(f32::to_bits)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+
+        assert_eq!(
+            resample_physical_device_matte(&source[..11], 4, 3, 3, 2),
+            Err(ApplicationError::OpticalSampleRasterMismatch)
+        );
     }
 
     #[test]
@@ -9229,6 +9350,7 @@ mod tests {
             device_code: DeviceRgb::WHITE,
             linear_native_emission: LinearRgb::new(500.0, 500.0, 500.0),
             alpha: 1.0,
+            panel_coverage: 1.0,
         };
         let resolved = integrate_aperture_samples(
             &resolved_spatial,
@@ -11076,6 +11198,7 @@ mod tests {
                 device_code: DeviceRgb::WHITE,
                 linear_native_emission: LinearRgb::new(1.0, 1.0, 1.0),
                 alpha: 1.0,
+                panel_coverage: 1.0,
             },
             cover,
         );

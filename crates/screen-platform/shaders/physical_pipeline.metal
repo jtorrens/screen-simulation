@@ -1150,9 +1150,11 @@ inline float continuous_channel(float code, constant PhysicalPipelineParams& p) 
     return panel_linear_channel(code, p);
 }
 
-inline float resolved_device_alpha(float authored,
+inline float resolved_device_alpha(float authored, float panel_coverage,
     constant PhysicalPipelineParams& p) {
-    return p.geometry.z == 0.0f ? 1.0f : clamp(authored, 0.0f, 1.0f);
+    const float authored_alpha = p.geometry.z == 0.0f
+        ? 1.0f : clamp(authored, 0.0f, 1.0f);
+    return clamp(panel_coverage, 0.0f, 1.0f) * authored_alpha;
 }
 
 inline float native_channel_at_offset(
@@ -1176,7 +1178,7 @@ inline float native_channel_at_offset(
     const float4 code = area_sample(
         device_signal, device_row_prefix, panel_minimum, panel_maximum,
         prepared_placement_scale, p);
-    return coverage * resolved_device_alpha(code.a, p) * native_channel(
+    return resolved_device_alpha(code.a, coverage, p) * native_channel(
         code[channel],
         channel,
         panel_minimum * float2(p.source_panel.zw),
@@ -1518,7 +1520,10 @@ kernel void evaluate_physical_pipeline(
                 const float2 device_maximum = channel_maximum * float2(p.source_panel.zw);
                 // Every Panel branch consumes the same central integral and EOTF.
                 // Only displaced spread/glow taps and the narrow carrier remain distinct.
-                const float local_alpha = resolved_device_alpha(code.a, p);
+                const float local_panel_coverage = device_rectangle_coverage(
+                    channel_minimum, channel_maximum);
+                const float local_alpha = resolved_device_alpha(
+                    code.a, local_panel_coverage, p);
                 const float base_linear = panel_linear_channel(code[channel], p) * local_alpha;
                 const float base_native = native_channel_from_linear(
                     base_linear, channel, device_minimum, device_maximum, p);
@@ -1529,7 +1534,10 @@ kernel void evaluate_physical_pipeline(
                     const float4 carrier_code = area_sample(
                         device_signal, device_row_prefix,
                         carrier_minimum, carrier_maximum, prepared_placement_scale, p);
-                    const float preserved_carrier = resolved_device_alpha(carrier_code.a, p)
+                    const float carrier_panel_coverage = device_rectangle_coverage(
+                        carrier_minimum, carrier_maximum);
+                    const float preserved_carrier = resolved_device_alpha(
+                        carrier_code.a, carrier_panel_coverage, p)
                         * native_channel(
                         carrier_code[channel], channel,
                         carrier_minimum * float2(p.source_panel.zw),
@@ -1591,11 +1599,16 @@ kernel void evaluate_physical_pipeline(
             const float2 green_reconstructed_half_extent =
                 green_sensor_half_extent + green_continuous_half_extent
                 + half_extent * p.lens_softness.w;
+            const float2 matte_minimum = exact_flat
+                ? minimum_uv : green_center - green_reconstructed_half_extent;
+            const float2 matte_maximum = exact_flat
+                ? maximum_uv : green_center + green_reconstructed_half_extent;
             const float4 matte_sample = area_sample(device_signal, device_row_prefix,
-                exact_flat ? minimum_uv : green_center - green_reconstructed_half_extent,
-                exact_flat ? maximum_uv : green_center + green_reconstructed_half_extent,
-                prepared_placement_scale, p);
-            ideal.a += resolved_device_alpha(matte_sample.a, p) * layer_weight;
+                matte_minimum, matte_maximum, prepared_placement_scale, p);
+            const float matte_panel_coverage = device_rectangle_coverage(
+                matte_minimum, matte_maximum);
+            ideal.a += resolved_device_alpha(
+                matte_sample.a, matte_panel_coverage, p) * layer_weight;
             }
             }
         }

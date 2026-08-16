@@ -10,7 +10,7 @@ use metal::{
 use screen_application::{
     DeviceVfxAlphaMode, LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
     RasterPlacement, expose_physical_pipeline_raw, physical_environment_reference_sample_count,
-    physical_row_temporal_gain, placed_signal_area_fraction,
+    physical_row_temporal_gain, placed_signal_area_fraction, resample_physical_device_matte,
 };
 use screen_cover::{EnvironmentPattern, IncidentEnvironment};
 use screen_geometry::{project_screen, projected_screen_gate_coverage};
@@ -565,6 +565,19 @@ impl MetalPhysicalPipeline {
                 "developed output requires the explicit development stage".to_owned(),
             ));
         }
+        let sensor_device_matte = development_parameters
+            .as_ref()
+            .map(|_| {
+                resample_physical_device_matte(
+                    &physical_values,
+                    physical.texture.width() as u32,
+                    physical.texture.height() as u32,
+                    raw.width,
+                    raw.height,
+                )
+            })
+            .transpose()
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let clipping = development_parameters.is_none().then(|| {
             let values = raw
                 .full_well_clipped
@@ -581,6 +594,13 @@ impl MetalPhysicalPipeline {
         let green = development_parameters.as_ref().map(|_| {
             device.new_buffer(
                 (count * size_of::<f32>()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            )
+        });
+        let device_matte = sensor_device_matte.as_ref().map(|matte| {
+            device.new_buffer_with_data(
+                matte.as_ptr().cast(),
+                size_of_val(matte.as_slice()) as u64,
                 MTLResourceOptions::StorageModeShared,
             )
         });
@@ -617,11 +637,19 @@ impl MetalPhysicalPipeline {
             encoder.set_buffer(0, Some(&codes), 0);
             encoder.set_buffer(1, Some(green), 0);
             encoder.set_texture(0, Some(&output));
-            encoder.set_texture(1, Some(&physical.texture));
             encoder.set_bytes(
                 2,
                 size_of::<CameraDevelopmentParams>() as u64,
                 (&raw const development).cast(),
+            );
+            encoder.set_buffer(
+                3,
+                Some(
+                    device_matte
+                        .as_ref()
+                        .expect("camera development prepares its Device matte"),
+                ),
+                0,
             );
         } else {
             encoder.set_compute_pipeline_state(&self.publish_raw_pipeline);
@@ -3070,6 +3098,90 @@ mod tests {
         assert!(
             alpha_zero_glow[3].abs() <= 1.0e-7,
             "exterior glow must not create device occlusion: {alpha_zero_glow:?}"
+        );
+    }
+
+    #[test]
+    fn cover_glow_reaches_a_real_pixel_outside_the_projected_device_silhouette() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (mut input, mut plan) = fixture(
+            RasterPlacement::FillCrop,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.0,
+            1.0,
+        );
+        input.width = 1;
+        input.height = 1;
+        input.acescg = vec![[1.0, 1.0, 1.0, 1.0]];
+        input.device_signal = DeviceSignalRaster {
+            width: 1,
+            height: 1,
+            pixels: vec![DeviceRgb::WHITE],
+            alpha: vec![1.0],
+        };
+        plan.panel.black_level_nits = 0.0;
+        plan.scene_geometry_amount = 1.0;
+        plan.camera_position = screen_contracts::Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.02,
+        };
+        plan.scene_geometry_lens.focus_distance_meters = 0.02;
+        plan.scene_geometry_lens.focal_length_millimeters = 10.0;
+        plan.scene_geometry_lens.sensor_width_millimeters = 4.0;
+        plan.scene_geometry_lens.sensor_height_millimeters = 2.0;
+        plan.panel_uniformity.character_strength = 0.0;
+        plan.panel_light_spread.character_strength = 0.0;
+        plan.cover.character_strength = 1.0;
+        plan.cover.glow.character_strength = 1.0;
+        plan.cover.glow.scatter_fraction = 0.2;
+        plan.cover.glow.core_radius_millimeters = 0.5;
+        plan.cover.glow.tail_radius_millimeters = 1.5;
+        plan.cover.glow.tail_fraction = 1.0;
+        plan.requested_intermediate = PhysicalIntermediate::CoverGlow;
+
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal = texture(&device, 1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
+        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+            input,
+            render_context: screen_application::PhysicalRenderContext::full_frame(
+                plan.requested_width,
+                plan.requested_height,
+            ),
+            plan,
+        })
+        .expect("CPU projected exterior glow");
+        let gpu = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("Metal projected exterior glow");
+        let gpu_pixels = read(&gpu.texture);
+        let maximum = gpu_pixels
+            .iter()
+            .zip(cpu.presentation_rgba())
+            .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            maximum <= 2.0e-3,
+            "exterior glow CPU/Metal deviation {maximum}"
+        );
+
+        let row = plan.requested_height as usize / 2;
+        let outside = row * plan.requested_width as usize + 2;
+        let center = row * plan.requested_width as usize + 6;
+        assert!(
+            cpu.presentation_rgba()[center][3] > 0.99,
+            "center pixel must be inside the projected Device"
+        );
+        let outside_pixel = cpu.presentation_rgba()[outside];
+        assert!(
+            outside_pixel[3].abs() <= 1.0e-7,
+            "glow must not create matte outside the projected Device: {outside_pixel:?}"
+        );
+        assert!(
+            outside_pixel[..3].iter().sum::<f32>() > 0.0,
+            "resolved panel emission must create smooth light outside the projected silhouette"
         );
     }
 }
