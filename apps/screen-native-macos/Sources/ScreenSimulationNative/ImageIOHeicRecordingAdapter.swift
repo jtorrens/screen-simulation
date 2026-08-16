@@ -9,17 +9,40 @@ import UniformTypeIdentifiers
 /// Profile selection, output colorimetry and quality remain upstream authorities. This adapter
 /// only executes one ImageIO encode/decode round trip and reports the exact payload evidence.
 struct ImageIOHeicStillRequest: Equatable, Sendable {
+    enum Format: Sendable {
+        case heic
+        case jpeg
+    }
     enum ColorSpace: String, Sendable {
         case displayP3D65
         case rec709
     }
 
     let profileID: String
+    let format: Format
     let width: Int
     let height: Int
     let quality: Double
     let colorSpace: ColorSpace
     let rgba8: [UInt8]
+
+    init(
+        profileID: String,
+        format: Format = .heic,
+        width: Int,
+        height: Int,
+        quality: Double,
+        colorSpace: ColorSpace,
+        rgba8: [UInt8]
+    ) {
+        self.profileID = profileID
+        self.format = format
+        self.width = width
+        self.height = height
+        self.quality = quality
+        self.colorSpace = colorSpace
+        self.rgba8 = rgba8
+    }
 
     func validated() throws -> Self {
         let pixels = width.multipliedReportingOverflow(by: height)
@@ -83,7 +106,7 @@ enum ImageIOHeicRecordingAdapter {
         colorSpace: CGColorSpace
     ) throws -> Data {
         let destinationTypes = CGImageDestinationCopyTypeIdentifiers() as NSArray
-        let type = request.profileID == "generic-jpeg-photo-v1" ? UTType.jpeg : UTType.heic
+        let type = request.format == .jpeg ? UTType.jpeg : UTType.heic
         guard destinationTypes.contains(type.identifier)
         else { throw ImageIOHeicRecordingError.unavailableEncoder }
         let provider = CGDataProvider(data: Data(request.rgba8) as CFData)

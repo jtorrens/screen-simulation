@@ -7,9 +7,41 @@
 use core::fmt;
 use screen_contracts::FrameRate;
 use screen_recording::{
-    EncoderExecutionPolicy, InterFrameStructure, RateControl, RecordingError, RecordingProfile,
-    RecordingRequest, RecordingTemporalRequirement, bundled_profiles,
+    EncoderExecutionPolicy, InterFrameStructure, RateControl, RecordingCodecProfile,
+    RecordingError, RecordingMedium, RecordingProfile, RecordingRequest,
+    RecordingTemporalRequirement, bundled_profiles,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingAdapterKind {
+    ImageIoHeic,
+    ImageIoJpeg,
+    AvFoundationHevcMain8,
+    AvFoundationH264High8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingAdapterUnavailableReason {
+    NativeTenBit420InputNotImplemented,
+    NativeTenBit422InputNotImplemented,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingAdapterAvailability {
+    Available(RecordingAdapterKind),
+    Unavailable(RecordingAdapterUnavailableReason),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResolvedRateControl {
+    ProfileDefinedIntra,
+    ConstantQuality(f32),
+    ConstantQuantizer(u8),
+    SinglePassTargetBitrate {
+        bits_per_second: u64,
+        lookahead_frames: u16,
+    },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordingCharacterInterpretation {
@@ -113,6 +145,8 @@ pub struct PreparedRecordingRequest {
     pub execution: EncoderExecutionPolicy,
     pub controls: RecordingControlAvailability,
     pub temporal_requirement: RecordingTemporalRequirement,
+    pub adapter: RecordingAdapterAvailability,
+    pub rate_control: ResolvedRateControl,
 }
 
 impl PreparedRecordingRequest {
@@ -158,6 +192,44 @@ pub fn prepare_recording_request(
         1.0 => RecordingCharacterInterpretation::Calibrated,
         _ => RecordingCharacterInterpretation::Exaggerated,
     };
+    let adapter = match profile.codec {
+        RecordingCodecProfile::HeifHevcMainStillPicture => {
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::ImageIoHeic)
+        }
+        RecordingCodecProfile::JpegStill => {
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::ImageIoJpeg)
+        }
+        RecordingCodecProfile::HevcMain => {
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationHevcMain8)
+        }
+        RecordingCodecProfile::H264High => {
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationH264High8)
+        }
+        RecordingCodecProfile::HevcMain10 => RecordingAdapterAvailability::Unavailable(
+            RecordingAdapterUnavailableReason::NativeTenBit420InputNotImplemented,
+        ),
+        RecordingCodecProfile::HevcMain42210
+        | RecordingCodecProfile::ProRes422
+        | RecordingCodecProfile::ProRes422Hq
+        | RecordingCodecProfile::ProRes4444 => RecordingAdapterAvailability::Unavailable(
+            RecordingAdapterUnavailableReason::NativeTenBit422InputNotImplemented,
+        ),
+    };
+    let pressure = selection.character.max(0.25);
+    let rate_control = match profile.reference_rate_control {
+        RateControl::ProfileDefinedIntra => ResolvedRateControl::ProfileDefinedIntra,
+        RateControl::ConstantQuality { quality } => {
+            ResolvedRateControl::ConstantQuality((quality / pressure).clamp(0.0, 1.0))
+        }
+        RateControl::ConstantQuantizer { qp } => ResolvedRateControl::ConstantQuantizer(qp),
+        RateControl::SinglePassTargetBitrate {
+            bits_per_second,
+            lookahead_frames,
+        } => ResolvedRateControl::SinglePassTargetBitrate {
+            bits_per_second: ((bits_per_second as f64) / f64::from(pressure)).round() as u64,
+            lookahead_frames,
+        },
+    };
 
     Ok(PreparedRecordingRequest {
         profile,
@@ -169,6 +241,36 @@ pub fn prepare_recording_request(
         execution: selection.execution,
         controls,
         temporal_requirement,
+        adapter,
+        rate_control,
+    })
+}
+
+/// Prepares a host execution request from project timing. Application, rather
+/// than the host adapter, decides whether that timing belongs to a still or a
+/// moving-image contract.
+pub fn prepare_recording_execution_request(
+    profile_id: &str,
+    character: f32,
+    project_frame_rate: FrameRate,
+    first_frame_index: i64,
+    frame_count: u64,
+) -> Result<PreparedRecordingRequest, RecordingPreparationError> {
+    let profile = bundled_profiles()
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| RecordingPreparationError::UnknownProfile(profile_id.to_owned()))?;
+    let (frame_rate, first_frame_index, frame_count) = match profile.codec.medium() {
+        RecordingMedium::StillImage => (None, first_frame_index, 1),
+        RecordingMedium::MovingImage => (Some(project_frame_rate), first_frame_index, frame_count),
+    };
+    prepare_recording_request(RecordingSelection {
+        profile_id,
+        character,
+        frame_rate,
+        first_frame_index,
+        frame_count,
+        execution: EncoderExecutionPolicy::SINGLE_PASS,
     })
 }
 
@@ -328,5 +430,34 @@ mod tests {
         assert_eq!(request.character, 0.0);
         assert_eq!(request.frame_count, 1);
         assert_eq!(request.execution, EncoderExecutionPolicy::SINGLE_PASS);
+    }
+
+    #[test]
+    fn application_materializes_adapter_and_effective_rate_control() {
+        let still = prepare_recording_request(still(2.0)).expect("prepared still");
+        assert_eq!(
+            still.adapter,
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::ImageIoHeic)
+        );
+        assert_eq!(
+            still.rate_control,
+            ResolvedRateControl::ConstantQuality(0.41)
+        );
+
+        let unavailable = prepare_recording_request(RecordingSelection {
+            profile_id: GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
+            character: 1.0,
+            frame_rate: Some(FrameRate::new(24, 1).expect("rate")),
+            first_frame_index: 0,
+            frame_count: 24,
+            execution: EncoderExecutionPolicy::SINGLE_PASS,
+        })
+        .expect("valid but unavailable profile");
+        assert_eq!(
+            unavailable.adapter,
+            RecordingAdapterAvailability::Unavailable(
+                RecordingAdapterUnavailableReason::NativeTenBit420InputNotImplemented
+            )
+        );
     }
 }

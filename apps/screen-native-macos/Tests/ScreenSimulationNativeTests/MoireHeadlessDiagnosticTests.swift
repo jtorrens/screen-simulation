@@ -904,6 +904,7 @@ private func writeMoireRecordingDiagnostic(
         output: output,
         profileID: RecordingPhaseExecutor.iphoneHeicProfileID,
         character: 1,
+        outputTransformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
         display: context.display
     )
     let output16 = output.rgba8.map { UInt16($0) * 257 }

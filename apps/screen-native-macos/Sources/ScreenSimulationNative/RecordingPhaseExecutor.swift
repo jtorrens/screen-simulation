@@ -19,12 +19,14 @@ enum RecordingPhaseExecutionError: Error, LocalizedError {
     case bridge(String)
     case unsupportedProfile(String)
     case missingACEScgInput
+    case sequenceRequired
 
     var errorDescription: String? {
         switch self {
         case let .bridge(message): message
         case let .unsupportedProfile(profile): "Perfil de grabación no ejecutable en macOS: \(profile)"
         case .missingACEScgInput: "Falta el Input Transform ACEScg requerido."
+        case .sequenceRequired: "El perfil de vídeo requiere la secuencia cronológica completa; no puede evaluarse a partir de un único frame."
         }
     }
 }
@@ -129,6 +131,9 @@ enum RecordingPhaseExecutor {
         output: RecordingOutputExecution,
         profileID: String,
         character: Double,
+        outputTransformID: String,
+        frameRateNumerator: UInt32 = 24,
+        frameRateDenominator: UInt32 = 1,
         display: StudioColorMetalDisplay
     ) throws -> RecordingCodecExecution {
         if character == 0 {
@@ -140,20 +145,36 @@ enum RecordingPhaseExecutor {
                 encodedSHA256Hex: ""
             )
         }
+        let plan = try prepareExecutionPlan(
+            profileID: profileID,
+            character: character,
+            frameRateNumerator: frameRateNumerator,
+            frameRateDenominator: frameRateDenominator,
+            firstFrameIndex: 0,
+            frameCount: 1
+        )
+        guard plan.adapter_kind != UInt32.max else {
+            let precision = plan.unavailable_reason == 1 ? "10-bit 4:2:0" : "10-bit 4:2:2"
+            throw RecordingPhaseExecutionError.unsupportedProfile(
+                "(profileID) · falta entrada nativa (precision); RGBA8 no se usa como sustituto"
+            )
+        }
+        guard plan.medium == 0 else { throw RecordingPhaseExecutionError.sequenceRequired }
         let decoded: [UInt8]
         let data: Data
         let hash: [UInt8]
         let width: Int
         let height: Int
         let transformID: String
-        if profileID == iphoneHeicProfileID || profileID == genericJpegProfileID {
-            let quality = min(max(calibratedHeicQuality / max(character, 0.0001), 0), 1)
+        switch plan.adapter_kind {
+        case 0, 1:
             let result = try ImageIOHeicRecordingAdapter.roundTrip(.init(
                 profileID: profileID,
+                format: plan.adapter_kind == 0 ? .heic : .jpeg,
                 width: output.frame.width,
                 height: output.frame.height,
-                quality: quality,
-                colorSpace: profileID == iphoneHeicProfileID ? .displayP3D65 : .rec709,
+                quality: Double(plan.quality),
+                colorSpace: plan.adapter_kind == 0 ? .displayP3D65 : .rec709,
                 rgba8: output.rgba8
             ))
             decoded = result.rgba8
@@ -161,22 +182,9 @@ enum RecordingPhaseExecutor {
             hash = result.encodedSHA256
             width = result.width
             height = result.height
-            transformID = profileID == iphoneHeicProfileID
-                ? iphoneHeicOutputTransformID : "generic-srgb-recording-full-v1"
-        } else {
-            let result = try AVFoundationRecordingAdapter.roundTrip(
-                profileID: profileID,
-                width: output.frame.width,
-                height: output.frame.height,
-                bitsPerSecond: Int(80_000_000 / max(character, 0.25)),
-                rgba8: output.rgba8
-            )
-            decoded = result.rgba8
-            data = result.encodedData
-            hash = result.encodedSHA256
-            width = result.width
-            height = result.height
-            transformID = "generic-rec709-recording-full-v1"
+            transformID = outputTransformID
+        default:
+            throw RecordingPhaseExecutionError.unsupportedProfile(profileID)
         }
         var encoded = decoded.map { Float($0) / 255 }
         try inverse(&encoded, transformID: transformID, width: width, height: height)
@@ -194,6 +202,40 @@ enum RecordingPhaseExecutor {
             encodedBytes: data.count,
             encodedSHA256Hex: hash.map { String(format: "%02x", $0) }.joined()
         )
+    }
+
+    private static func prepareExecutionPlan(
+        profileID: String,
+        character: Double,
+        frameRateNumerator: UInt32,
+        frameRateDenominator: UInt32,
+        firstFrameIndex: Int64,
+        frameCount: UInt64
+    ) throws -> ScreenRecordingExecutionPlanV1 {
+        try profileID.utf8CString.withUnsafeBufferPointer { id in
+            let view = ScreenUTF8View(
+                bytes: UnsafeRawPointer(id.baseAddress!).assumingMemoryBound(to: UInt8.self),
+                count: max(0, id.count - 1)
+            )
+            var plan = ScreenRecordingExecutionPlanV1()
+            var bridgeError: UnsafePointer<CChar>?
+            guard screen_recording_prepare_execution_plan(
+                view,
+                Float(character),
+                frameRateNumerator,
+                frameRateDenominator,
+                firstFrameIndex,
+                frameCount,
+                &plan,
+                &bridgeError
+            ) else {
+                throw RecordingPhaseExecutionError.bridge(
+                    bridgeError.map(String.init(cString:))
+                        ?? "Application no pudo resolver Recording."
+                )
+            }
+            return plan
+        }
     }
 
     private static func acescgInput() throws -> StudioColorInputTransform {

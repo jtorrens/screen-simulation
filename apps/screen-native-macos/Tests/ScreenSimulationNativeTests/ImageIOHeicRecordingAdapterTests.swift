@@ -39,6 +39,7 @@ import UniformTypeIdentifiers
         output: output,
         profileID: RecordingPhaseExecutor.iphoneHeicProfileID,
         character: 1,
+        outputTransformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
         display: display
     )
     #expect(output.frame.texture !== camera.texture)
@@ -256,6 +257,7 @@ import UniformTypeIdentifiers
         output: output,
         profileID: RecordingPhaseExecutor.iphoneHeicProfileID,
         character: 1,
+        outputTransformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
         display: display
     )
     let directory = URL(fileURLWithPath: outputDirectory, isDirectory: true)

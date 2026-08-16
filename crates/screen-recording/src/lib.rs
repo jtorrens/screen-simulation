@@ -14,6 +14,7 @@ pub const DECODED_RECORDING_SIGNAL_ARTIFACT_ID: &str = "decoded-recording-signal
 
 pub const IPHONE_HEIC_PHOTO_PROFILE_ID: &str = "iphone-heic-photo-v1";
 pub const GENERIC_JPEG_PHOTO_PROFILE_ID: &str = "generic-jpeg-photo-v1";
+pub const GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID: &str = "generic-hevc-main-video-v1";
 pub const GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID: &str = "generic-hevc-main10-video-v1";
 pub const GENERIC_H264_HIGH_VIDEO_PROFILE_ID: &str = "generic-h264-high-video-v1";
 pub const GENERIC_PRORES_422_HQ_PROFILE_ID: &str = "generic-prores-422-hq-v1";
@@ -229,6 +230,46 @@ pub struct RecordingOutputSignal {
     pub alpha_policy: AlphaPolicy,
 }
 
+/// One exact frame supplied to a moving-image encoder. The index is part of the
+/// contract so a host cannot silently repeat or reorder the current Viewer frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordingSequenceFrame {
+    pub frame_index: i64,
+    pub signal: RecordingOutputSignal,
+}
+
+pub fn validate_sequence_frames(
+    request: RecordingRequest<'_>,
+    frames: &[RecordingSequenceFrame],
+) -> Result<(), RecordingError> {
+    request.validate()?;
+    if frames.len()
+        != usize::try_from(request.frame_count).map_err(|_| RecordingError::InvalidSequence)?
+    {
+        return Err(RecordingError::InvalidSequence);
+    }
+    for (offset, frame) in frames.iter().enumerate() {
+        let offset = i64::try_from(offset).map_err(|_| RecordingError::InvalidSequence)?;
+        let expected = request
+            .first_frame_index
+            .checked_add(offset)
+            .ok_or(RecordingError::InvalidSequence)?;
+        if frame.frame_index != expected {
+            return Err(RecordingError::NonChronologicalSequence);
+        }
+        frame.signal.validate()?;
+        if let Some(first) = frames.first()
+            && (frame.signal.width != first.signal.width
+                || frame.signal.height != first.signal.height
+                || frame.signal.color != first.signal.color
+                || frame.signal.alpha_policy != first.signal.alpha_policy)
+        {
+            return Err(RecordingError::InconsistentSequence);
+        }
+    }
+    Ok(())
+}
+
 impl RecordingOutputSignal {
     pub fn validate(&self) -> Result<&Self, RecordingError> {
         let expected = usize::try_from(self.width)
@@ -282,11 +323,11 @@ pub trait RecordingCodecAdapter {
     fn round_trip(
         &mut self,
         request: RecordingRequest<'_>,
-        frames: &[RecordingOutputSignal],
+        frames: &[RecordingSequenceFrame],
     ) -> Result<Vec<DecodedRecordingSignal>, Self::Error>;
 }
 
-pub fn bundled_profiles() -> [RecordingProfile; 5] {
+pub fn bundled_profiles() -> [RecordingProfile; 6] {
     [
         RecordingProfile {
             id: IPHONE_HEIC_PHOTO_PROFILE_ID,
@@ -307,6 +348,22 @@ pub fn bundled_profiles() -> [RecordingProfile; 5] {
             alpha_policy: AlphaPolicy::Opaque,
             reference_rate_control: RateControl::ConstantQuality { quality: 0.90 },
             inter_frame: None,
+        },
+        RecordingProfile {
+            id: GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID,
+            codec: RecordingCodecProfile::HevcMain,
+            bit_depth: 8,
+            chroma_sampling: ChromaSampling::Yuv420,
+            chroma_location: ChromaLocation::Left,
+            alpha_policy: AlphaPolicy::Opaque,
+            reference_rate_control: RateControl::SinglePassTargetBitrate {
+                bits_per_second: 80_000_000,
+                lookahead_frames: 16,
+            },
+            inter_frame: Some(InterFrameStructure {
+                fixed_gop_frames: 48,
+                maximum_b_frames: 2,
+            }),
         },
         RecordingProfile {
             id: GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
@@ -426,6 +483,8 @@ pub enum RecordingError {
     InvalidInterFrameStructure,
     InvalidCharacter,
     InvalidSequence,
+    NonChronologicalSequence,
+    InconsistentSequence,
     InvalidRaster,
     GlobalOrMultiPassAnalysisForbidden,
 }
@@ -439,6 +498,8 @@ impl fmt::Display for RecordingError {
             Self::InvalidInterFrameStructure => "invalid intra/GOP/B-frame structure",
             Self::InvalidCharacter => "recording character must be finite in 0...4",
             Self::InvalidSequence => "recording medium does not match the authored frame sequence",
+            Self::NonChronologicalSequence => "moving-image frames must be supplied once in exact chronological order",
+            Self::InconsistentSequence => "moving-image frames must share one raster, color declaration, and alpha policy",
             Self::InvalidRaster => "invalid recording-output signal raster",
             Self::GlobalOrMultiPassAnalysisForbidden => "recording requires one causal pass; full-clip preanalysis and multiple passes are forbidden",
         })
@@ -566,6 +627,59 @@ mod tests {
                 ..video
             }
             .validate(),
+            Err(RecordingError::InvalidSequence)
+        );
+    }
+
+    fn signal(value: f32) -> RecordingOutputSignal {
+        RecordingOutputSignal {
+            width: 1,
+            height: 1,
+            rgba: vec![[value, value, value, 1.0]],
+            color: EncodedColorMetadata {
+                primaries: Some(screen_contracts::ColorPrimaries::Bt709),
+                transfer: Some(screen_contracts::TransferCharacteristic::Bt709),
+                matrix: Some(screen_contracts::MatrixCoefficients::Rgb),
+                range: Some(screen_contracts::SignalRange::Full),
+            },
+            alpha_policy: AlphaPolicy::Opaque,
+        }
+    }
+
+    #[test]
+    fn moving_frames_must_be_complete_and_chronological() {
+        let profiles = bundled_profiles();
+        let request = RecordingRequest {
+            profile: &profiles[2],
+            character: 1.0,
+            frame_rate: Some(FrameRate::new(24, 1).expect("rate")),
+            first_frame_index: 1001,
+            frame_count: 3,
+            execution: EncoderExecutionPolicy::SINGLE_PASS,
+        };
+        let valid = [
+            RecordingSequenceFrame {
+                frame_index: 1001,
+                signal: signal(0.1),
+            },
+            RecordingSequenceFrame {
+                frame_index: 1002,
+                signal: signal(0.2),
+            },
+            RecordingSequenceFrame {
+                frame_index: 1003,
+                signal: signal(0.3),
+            },
+        ];
+        assert_eq!(validate_sequence_frames(request, &valid), Ok(()));
+        let mut reordered = valid.clone();
+        reordered.swap(1, 2);
+        assert_eq!(
+            validate_sequence_frames(request, &reordered),
+            Err(RecordingError::NonChronologicalSequence)
+        );
+        assert_eq!(
+            validate_sequence_frames(request, &valid[..2]),
             Err(RecordingError::InvalidSequence)
         );
     }
