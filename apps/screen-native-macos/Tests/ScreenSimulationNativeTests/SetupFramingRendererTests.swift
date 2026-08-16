@@ -314,6 +314,16 @@ import Testing
     #expect(result.boundary.count == 256)
     #expect(result.corners.count == 4)
     #expect(result.boundary.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+    let resultValues = try display.readLinearRGBA(result.frame)
+    let expectedReference = SIMD3<Float>(
+        resultValues[0], resultValues[1], resultValues[2]
+    )
+    let decodedSource = try display.readLinearRGBA(source)
+    #expect(simd_length(expectedReference) < 0.001)
+    #expect(simd_distance(
+        expectedReference,
+        SIMD3(decodedSource[0], decodedSource[1], decodedSource[2])
+    ) > 0.05)
 
     let anchorTarget = result.corners[0]
     let movingTarget = CGPoint(x: result.corners[1].x - 18, y: result.corners[1].y + 9)

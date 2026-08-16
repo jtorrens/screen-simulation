@@ -4,12 +4,15 @@ import SwiftUI
 public struct TestAuthoringView: View {
     private let state: TestPagePresentation
     private let onIntent: (TestControlIntent) -> Void
+    private let excludedControlIDs: Set<String>
 
     public init(
         state: TestPagePresentation,
+        excludedControlIDs: Set<String> = [],
         onIntent: @escaping (TestControlIntent) -> Void
     ) {
         self.state = state
+        self.excludedControlIDs = excludedControlIDs
         self.onIntent = onIntent
     }
 
@@ -37,7 +40,9 @@ public struct TestAuthoringView: View {
     }
 
     private var allControls: [TestControlDescriptor] {
-        state.phases.flatMap { $0.sections.flatMap(\.controls) }
+        state.phases
+            .flatMap { $0.sections.flatMap(\.controls) }
+            .filter { !excludedControlIDs.contains($0.id) }
     }
 
     private var quickControls: [TestControlDescriptor] {
@@ -49,7 +54,9 @@ public struct TestAuthoringView: View {
     }
 
     private func phaseCard(_ phase: TestPhasePresentation) -> some View {
-        let controls = phase.sections.flatMap(\.controls)
+        let controls = phase.sections
+            .flatMap(\.controls)
+            .filter { !excludedControlIDs.contains($0.id) }
         let headerControl = phase.headerControlID.flatMap { id in
             controls.first(where: { $0.id == id })
         }
@@ -64,7 +71,9 @@ public struct TestAuthoringView: View {
                         Text(section.label).font(.caption).foregroundStyle(.secondary)
                     }
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                        ForEach(section.controls.filter { $0.id != phase.headerControlID }) {
+                        ForEach(section.controls.filter {
+                            $0.id != phase.headerControlID && !excludedControlIDs.contains($0.id)
+                        }) {
                             controlView($0)
                         }
                     }

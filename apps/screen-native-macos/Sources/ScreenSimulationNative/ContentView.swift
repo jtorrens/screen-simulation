@@ -1562,9 +1562,13 @@ struct ContentView: View {
                 TestPhaseCard(label: "Referencia") {
                     referenceAuthoringControls
                 }
+                TestPhaseCard(label: "Device de la escena") {
+                    sceneDeviceControls
+                }
                 if let presentation = model.testPresentation {
                     TestAuthoringView(
                         state: presentation,
+                        excludedControlIDs: ["device", "color-mode", "white-luminance"],
                         onIntent: model.handleTestIntent
                     )
                     if !model.environmentSourceEvidence.isEmpty {
@@ -1591,6 +1595,82 @@ struct ContentView: View {
                 }
             }
             .padding(12)
+        }
+    }
+
+    @ViewBuilder
+    private var sceneDeviceControls: some View {
+        let selected = model.modelDeviceDefinition
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+            originRow("Device") {
+                Picker("Device", selection: Binding(
+                    get: { selected?.id ?? "" },
+                    set: { id in
+                        guard let item = library.document.devices.first(where: { $0.id == id }),
+                              let cover = library.document.coverGlasses.first(where: {
+                                  $0.id == item.value.defaultCoverGlassPresetID
+                              })
+                        else { return }
+                        library.selectedDeviceID = id
+                        model.selectModelDevice(item.value, coverGlass: cover.value)
+                    }
+                )) {
+                    ForEach(library.document.devices) { item in
+                        Text(item.name).tag(item.id)
+                    }
+                }
+                .labelsHidden()
+            }
+            if let selected {
+                originRow("Color Mode") {
+                    Picker("Color Mode", selection: Binding(
+                        get: { selected.colorModeID },
+                        set: { id in
+                            model.handleTestIntent(.setChoice(
+                                controlID: "color-mode", optionID: id
+                            ))
+                        }
+                    )) {
+                        ForEach(selected.colorModeIDs, id: \.self) { id in
+                            Text(StudioColorMode.catalog.first(where: { $0.id == id })?.label ?? id)
+                                .tag(id)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                originRow("Luminancia blanca") {
+                    HStack {
+                        Slider(
+                            value: Binding(
+                                get: { selected.whiteLevelNits },
+                                set: { value in
+                                    model.handleTestIntent(.setScalar(
+                                        controlID: "white-luminance", value: value
+                                    ))
+                                }
+                            ),
+                            in: selected.minimumWhiteLuminance...selected.maximumWhiteLuminance,
+                            step: selected.whiteLuminanceStep
+                        )
+                        TextField("cd/m²", value: Binding(
+                            get: { selected.whiteLevelNits },
+                            set: { value in
+                                model.handleTestIntent(.setScalar(
+                                    controlID: "white-luminance", value: value
+                                ))
+                            }
+                        ), format: .number)
+                        .frame(width: 72)
+                        Text("cd/m²").foregroundStyle(.secondary)
+                    }
+                }
+                originRow("Resolución nativa") {
+                    Text("\(selected.nativeWidth)×\(selected.nativeHeight) px")
+                }
+                originRow("Densidad") {
+                    Text("\(selected.pixelsPerInch.formatted(.number.precision(.fractionLength(1)))) ppi")
+                }
+            }
         }
     }
 

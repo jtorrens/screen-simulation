@@ -596,7 +596,6 @@ final class WorkspaceModel: ObservableObject {
         coverGlass: CoverGlassDefinition
     ) {
         do {
-            testAuthoringSelection = nil
             resolvedDevice = try definition.resolved()
             modelDeviceDefinition = definition
             var authored = try PhysicalPipelineAuthoringState.seeded(
@@ -5548,9 +5547,15 @@ final class WorkspaceModel: ObservableObject {
             recordingEncodedBytes = nil
             recordingEncodedSHA256 = nil
         }
-        guard var device = try RustDeviceCatalog.builtIns().first(where: {
+        let devicePresetChanged = previous?.deviceID != selection.deviceID
+        var device: DeviceDefinition
+        if !devicePresetChanged, let current = modelDeviceDefinition {
+            device = current
+        } else if let builtIn = try RustDeviceCatalog.builtIns().first(where: {
             $0.id == selection.deviceID
-        }) else {
+        }) {
+            device = builtIn
+        } else {
             throw TestAuthoringCoordinatorError.malformedDescriptor(
                 "Rust devolvió un Device que no existe en su catálogo."
             )

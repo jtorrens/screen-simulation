@@ -57,3 +57,22 @@ import Testing
     await Task.yield()
     #expect(workspace.physicalPipelineState?.parameters.scene_geometry_lens.focal_length_millimeters == 50)
 }
+
+@Test @MainActor func customSceneDeviceSurvivesLaterAuthoringChanges() throws {
+    let preset = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == preset.defaultCoverGlassPresetID
+    })
+    let workspace = WorkspaceModel()
+    workspace.selectModelDevice(preset, coverGlass: cover)
+
+    var custom = preset
+    custom.id = UUID().uuidString
+    custom.name = "Device personalizado"
+    custom.nativeWidth += 17
+    workspace.selectModelDevice(custom, coverGlass: cover)
+    workspace.handleTestIntent(.setScalar(controlID: "moire-intensity", value: 0.5))
+
+    #expect(workspace.modelDeviceDefinition?.id == custom.id)
+    #expect(workspace.modelDeviceDefinition?.nativeWidth == custom.nativeWidth)
+}

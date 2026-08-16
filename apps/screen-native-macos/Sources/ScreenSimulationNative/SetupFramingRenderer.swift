@@ -1003,7 +1003,7 @@ final class SetupFramingRenderer {
             }
             const float4 value = source.sample(linear_sampler, delivery);
             output.write(float4(
-                value.rgb + background.rgb * (1.0f - coverage),
+                value.rgb * coverage + background.rgb * (1.0f - coverage),
                 1.0f
             ), p);
             return;
