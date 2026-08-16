@@ -184,7 +184,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         "Exposición y obturador", "Captura computacional",
         "Colección del fotosito, CFA y ruido", "Crosstalk y bloom del sensor",
         "Lectura del sensor y RAW", "Revelado y demosaico",
-        "Intención de render de cámara", "Raster de entrega", "Señal de grabación · diagnóstico",
+        "Intención de render de cámara", "Transparencia VFX del Device",
+        "Raster de entrega", "Señal de grabación · diagnóstico",
         "Códec de grabación",
     ])
     #expect(snapshot.presentation.selectedPhaseID == snapshot.presentation.phases.last?.id)
@@ -586,6 +587,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         .sensorBloom,
         .sensorReadoutRaw,
         .developedACEScg,
+        .cameraRenderedACEScg,
         .cameraRenderedACEScg,
         .cameraRenderedACEScg,
         .cameraRenderedACEScg,
