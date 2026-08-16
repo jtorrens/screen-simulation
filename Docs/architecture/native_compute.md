@@ -72,13 +72,14 @@ panel phase or any physical checkpoint. The kernel also evaluates only the
 checkpoint terms whose algebraic coefficients are nonzero. In the final optical result, ideal,
 continuous, physical, spatial-uniformity and spread contributions are combined by their exact authored coefficients;
 terms that cancel identically are not sampled merely to subtract them later. Alpha retains its
-complete aperture-integrated source evaluation. Cover glow consumes the already resolved,
-alpha-attenuated Panel Light Spread emission and evaluates two centered normalized continuous
-area filters at the authored physical core/tail half-supports. Their positive mixture preserves uniform linear energy,
-cannot create separated replicas, keeps support outside the active outline and is materially cheaper without introducing a second
-post-sensor path.
+complete aperture-integrated source evaluation. Device emission glow consumes the already resolved,
+alpha-attenuated Panel Light Spread emission and evaluates one bounded two-scale continuous area
+filter per output pixel at the authored physical core/tail half-supports. A panel-white-relative
+threshold selects bright emission while preserving hue. The result adds bloom inside the Device and
+diffuse RGB with zero matte outside it; it cannot create separated replicas or read source/reference
+pixels, and it introduces no post-sensor path.
 
-Panel Uniformity is evaluated in the same fused optical kernel immediately after native subpixel emission. Immutable Device parameters carry explicit amplitudes, physical scales and seed; no texture name, preset lookup or frame-derived seed crosses the compute boundary. CPU and Metal evaluate the same deterministic broad and band-limited fields in device coordinates. The accepted uniformity gain at the central per-channel optical footprint is reused by the micrometre-scale Panel Light Spread and Cover Glow taps because every supported uniformity wavelength is materially larger than those supports. This is a declared scale-separation approximation, not a screen-space blur or temporal noise source. Character zero selects the exact pre-existing arithmetic composition so the inserted phase is bit-identical when disabled.
+Panel Uniformity is evaluated in the same fused optical kernel immediately after native subpixel emission. Immutable Device parameters carry explicit amplitudes, physical scales and seed; no texture name, preset lookup or frame-derived seed crosses the compute boundary. CPU and Metal evaluate the same deterministic broad and band-limited fields in device coordinates. The accepted uniformity gain at the central per-channel optical footprint is reused by the micrometre-scale Panel Light Spread and Device Emission Glow supports because every supported uniformity wavelength is materially larger than those supports. This is a declared scale-separation approximation, not a screen-space blur or temporal noise source. Character zero selects the exact pre-existing arithmetic composition so the inserted phase is bit-identical when disabled.
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and
@@ -86,7 +87,7 @@ colorimetry, cover, its physical-radius core/tail glow approximation and exactly
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
 represent panel temporal modulation. The macOS adapter inverts each distinct Brown-Conrady observed coordinate once and reuses that immutable unscaled ideal coordinate across RGB channels, aperture rays, irradiance and the VFX sensor footprint; channel-specific lateral chromatic scaling remains on a private copy. Each pupil sample similarly prepares its world and screen-local origin once, while the inverse screen rotation and the two VFX rim origins are invariant for the complete output thread. The direct-pupil route prepares each channel's ideal-point irradiance weight once per sensor-footprint/PSF sample and reuses that same value for every pupil ray. It then executes aperture
 and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
-Fresnel/transmission/reflection, centered cover-glow area filtering, spherical analytic or direct equirectangular-HDR sampling and native-to-ACEScg conversion in one Metal kernel. The Metal execution plan prepares the HDR rotation and fixed sample count once; every reflection sample reads the exact level-zero radiance source. Physical
+Fresnel/transmission/reflection, one centered Device-emission soft-glow evaluation, spherical analytic or direct equirectangular-HDR sampling and native-to-ACEScg conversion in one Metal kernel. The Metal execution plan prepares the HDR rotation and fixed sample count once; every reflection sample reads the exact level-zero radiance source. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
 Lens veiling glare uses deterministic panel-emission reduction before tiled optical evaluation.
