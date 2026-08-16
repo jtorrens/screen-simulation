@@ -161,7 +161,7 @@ import Testing
     #expect(setup.contains("TestAuthoringView("))
     #expect(setup.contains("Button(\"Abrir archivo o secuencia…\""))
     #expect(setup.contains("Picker(\"Patrón sintético\""))
-    #expect(text.contains("TestPhasePicker("))
+    #expect(text.contains("TestPreviewControls("))
 }
 
 @Test func everySyntheticPatternDeclaresCompleteInputEvidence() {
