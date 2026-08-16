@@ -1,7 +1,7 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.FrameSettings.v22"
+    static let schema = "ScreenSimulation.FrameSettings.v23"
 
     struct EnvironmentResource: Codable, Equatable, Sendable {
         enum Kind: String, Codable, Sendable { case procedural, image }
@@ -154,6 +154,9 @@ enum PhysicalSettingsExchange {
         )
         try context.environmentResource.validate()
         try context.referenceResource.validate()
+        guard pipeline.deviceVfxAlphaMode == context.selection.deviceVfxAlphaModeID else {
+            throw ImportError.inconsistentDeviceVfxAlphaMode
+        }
 
         guard let screen = settings["screen"] as? [String: Any],
               let amount = number(screen["storedAmount"]),
@@ -262,6 +265,7 @@ enum PhysicalSettingsExchange {
         case unavailableEnvironmentResource(String)
         case invalidReferenceResource
         case unavailableReferenceResource(String)
+        case inconsistentDeviceVfxAlphaMode
 
         var errorDescription: String? {
             switch self {
@@ -281,6 +285,8 @@ enum PhysicalSettingsExchange {
                 "La identidad o los cuatro puntos de la referencia son inválidos."
             case let .unavailableReferenceResource(name):
                 "El frame necesita la referencia ‘\(name)’, que no está en la biblioteca estable."
+            case .inconsistentDeviceVfxAlphaMode:
+                "El modo de transparencia VFX del Device no coincide entre la selección resuelta y el pipeline físico."
             }
         }
     }
