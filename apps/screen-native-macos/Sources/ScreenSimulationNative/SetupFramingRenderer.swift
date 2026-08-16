@@ -994,7 +994,6 @@ final class SetupFramingRenderer {
             const bool delivery_valid = s.modes.w == 5u
                 ? true
                 : delivery_uv(camera, s, delivery);
-            const float coverage = device_coverage(p, true, s);
             if (!delivery_valid) {
                 output.write(background, p); return;
             }
@@ -1002,8 +1001,14 @@ final class SetupFramingRenderer {
                 delivery = (float2(p) + 0.5f) / float2(s.preview_raster.xy);
             }
             const float4 value = source.sample(linear_sampler, delivery);
+            // The physical evaluator owns both outputs of Device VFX Transparency:
+            // premultiplied additive device light in RGB and its transported
+            // occlusion matte in alpha. Geometry here must not reconstruct a
+            // second matte, because transparent authored Device regions can
+            // intentionally reveal the reference plate.
+            const float matte = clamp(value.a, 0.0f, 1.0f);
             output.write(float4(
-                value.rgb + background.rgb * (1.0f - coverage),
+                value.rgb + background.rgb * (1.0f - matte),
                 1.0f
             ), p);
             return;

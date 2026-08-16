@@ -390,9 +390,9 @@ import Testing
             cameraResultPixels.append(contentsOf: insideProjectedBounds
                 ? [0.7, 0.05, 0.05, 1]
                 // Physical RGB outside the Device is the panel/cover glow.
-                // Camera-result alpha may still be opaque across the raster;
-                // geometric coverage owns plate occlusion.
-                : [0.015, 0.01, 0.005, 1])
+                // Device VFX Transparency publishes the independent occlusion
+                // matte in alpha; glow remains an additive RGB contribution.
+                : [0.015, 0.01, 0.005, 0])
         }
     }
     let cameraResult = try display.makeACEScgFrame(
@@ -453,7 +453,9 @@ import Testing
     let alignedHeight = 100
     let alignedPixels = (0 ..< alignedHeight).flatMap { _ in
         (0 ..< alignedWidth).flatMap { x in
-            [Float(x) / Float(alignedWidth - 1), Float(0.1), Float(0.2), Float(1)]
+            let alpha = Float(x) / Float(alignedWidth - 1)
+            // RGB is already the premultiplied additive Device contribution.
+            return [0.6 * alpha, 0.1 * alpha, 0.2 * alpha, alpha]
         }
     }
     let aligned = try display.makeACEScgFrame(
@@ -481,6 +483,24 @@ import Testing
     )
     let expectedRed = alignedSourceValues[sourceX * 4]
     #expect(abs(alignedValues[alignedOffset] - expectedRed) < 0.02)
+
+    // A fractional matte must be consumed directly, independently of the
+    // projected Device polygon. This canonical gradient proves that Swift
+    // neither reconstructs coverage nor multiplies Device RGB a second time.
+    let gradientX = 160
+    let gradientY = 90
+    let gradientOffset = (gradientY * 320 + gradientX) * 4
+    let gradientSourceX = min(
+        alignedWidth - 1,
+        max(0, Int(((Float(gradientX) + 0.5) / 320 * Float(alignedWidth)).rounded(.down)))
+    )
+    let gradientSourceOffset = gradientSourceX * 4
+    let gradientAlpha = alignedSourceValues[gradientSourceOffset + 3]
+    for channel in 0 ..< 3 {
+        let expected = alignedSourceValues[gradientSourceOffset + channel]
+            + referenceValues[channel] * (1 - gradientAlpha)
+        #expect(abs(alignedValues[gradientOffset + channel] - expected) < 0.02)
+    }
 }
 
 @Test @MainActor func setupFramingRecomputesDeliveryPlacementWithoutLosingTheBoundary() throws {

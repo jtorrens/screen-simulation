@@ -112,21 +112,26 @@ import UniformTypeIdentifiers
         rgba[index + 1] = 128
         rgba[index + 2] = 220
     }
-    for profile in [
-        "generic-hevc-main10-video-v1",
-        "generic-h264-high-video-v1",
-        "generic-prores-422-hq-v1",
+    for codec in [
+        AVFoundationRecordingRequest.Codec.hevcMain8,
+        AVFoundationRecordingRequest.Codec.h264High8,
     ] {
-        let result = try AVFoundationRecordingAdapter.roundTrip(
-            profileID: profile,
+        let result = try AVFoundationRecordingAdapter.roundTrip(.init(
+            codec: codec,
             width: width,
             height: height,
+            frameRateNumerator: 24,
+            frameRateDenominator: 1,
+            firstFrameIndex: 0,
             bitsPerSecond: 4_000_000,
-            rgba8: rgba
-        )
+            fixedGOPFrames: 12,
+            maximumBFrames: 0,
+            frames: [.init(frameIndex: 0, rgba8: rgba)]
+        ))
         #expect(result.encodedData.count > 0)
         #expect(result.encodedSHA256.count == 32)
-        #expect(result.rgba8.count == rgba.count)
+        #expect(result.frames.count == 1)
+        #expect(result.frames[0].rgba8.count == rgba.count)
     }
 }
 

@@ -484,6 +484,7 @@ private func submit(
             focusDistanceMeters: framing.cameraDistanceMeters
         ),
         quality: quality,
+        deviceVfxAlphaMode: "device-transparency",
         screenAmount: screenAmount,
         contributions: contributions,
         requestedDimensions: requestedDimensions,

@@ -826,6 +826,7 @@ private func renderMoireVariant(
             contributions: contributions
         ),
         quality: .native,
+        deviceVfxAlphaMode: "device-transparency",
         screenAmount: controller.effectiveScreenAmount,
         contributions: contributions,
         requestedDimensions: requestedDimensions,
