@@ -8,7 +8,7 @@ import Testing
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v9.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v10.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(
