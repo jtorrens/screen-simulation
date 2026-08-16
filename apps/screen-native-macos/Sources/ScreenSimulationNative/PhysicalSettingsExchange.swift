@@ -137,21 +137,13 @@ enum PhysicalSettingsExchange {
         guard settings["schema"] as? String == schema else {
             throw ImportError.unsupportedSchema(settings["schema"] as? String)
         }
-        let decoder = JSONDecoder()
-        let device = try decoder.decode(
-            DeviceDefinition.self,
-            from: try JSONSerialization.data(withJSONObject: requiredObject("device", in: settings))
-        )
-        let pipeline = try decoder.decode(
-            PhysicalPipelineAuthoringState.self,
-            from: try JSONSerialization.data(withJSONObject: requiredObject("pipeline", in: settings))
+        let device = try decodeRequired(DeviceDefinition.self, key: "device", in: settings)
+        let pipeline = try decodeRequired(
+            PhysicalPipelineAuthoringState.self, key: "pipeline", in: settings
         )
         _ = try device.resolved()
         _ = try pipeline.resolvedPipeline()
-        let context = try decoder.decode(
-            FrameContext.self,
-            from: try JSONSerialization.data(withJSONObject: requiredObject("context", in: settings))
-        )
+        let context = try decodeRequired(FrameContext.self, key: "context", in: settings)
         try context.environmentResource.validate()
         try context.referenceResource.validate()
         guard pipeline.deviceVfxAlphaMode == context.selection.deviceVfxAlphaModeID else {
@@ -216,6 +208,34 @@ enum PhysicalSettingsExchange {
         return object
     }
 
+    private static func decodeRequired<Value: Decodable>(
+        _ type: Value.Type,
+        key: String,
+        in settings: [String: Any]
+    ) throws -> Value {
+        let object = try requiredObject(key, in: settings)
+        do {
+            return try JSONDecoder().decode(
+                type,
+                from: try JSONSerialization.data(withJSONObject: object)
+            )
+        } catch let error as DecodingError {
+            let detail: (path: [CodingKey], reason: String) = switch error {
+            case let .keyNotFound(missing, context):
+                (context.codingPath + [missing], context.debugDescription)
+            case let .valueNotFound(_, context), let .typeMismatch(_, context):
+                (context.codingPath, context.debugDescription)
+            case let .dataCorrupted(context):
+                (context.codingPath, context.debugDescription)
+            @unknown default:
+                ([], String(describing: error))
+            }
+            let suffix = detail.path.map(\.stringValue).joined(separator: ".")
+            let path = suffix.isEmpty ? key : "\(key).\(suffix)"
+            throw ImportError.invalidEncodedField(path: path, reason: detail.reason)
+        }
+    }
+
     private static func number(_ value: Any?) -> Double? {
         (value as? NSNumber)?.doubleValue
     }
@@ -266,6 +286,7 @@ enum PhysicalSettingsExchange {
         case invalidReferenceResource
         case unavailableReferenceResource(String)
         case inconsistentDeviceVfxAlphaMode
+        case invalidEncodedField(path: String, reason: String)
 
         var errorDescription: String? {
             switch self {
@@ -287,6 +308,8 @@ enum PhysicalSettingsExchange {
                 "El frame necesita la referencia ‘\(name)’, que no está en la biblioteca estable."
             case .inconsistentDeviceVfxAlphaMode:
                 "El modo de transparencia VFX del Device no coincide entre la selección resuelta y el pipeline físico."
+            case let .invalidEncodedField(path, reason):
+                "El campo físico obligatorio ‘\(path)’ no cumple el contrato vigente: \(reason)"
             }
         }
     }

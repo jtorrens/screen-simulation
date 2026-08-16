@@ -41,6 +41,33 @@ import Testing
     #expect(imported.report.contains("Incompatibles u omitidos"))
 }
 
+@Test @MainActor func malformedCurrentSettingsNameTheExactRequiredField() throws {
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    let pipeline = try PhysicalPipelineAuthoringState.seeded(device: device, coverGlass: cover)
+    let controller = PhysicalModelController()
+    var settings = try #require(PhysicalSettingsExchange.metadata(
+        device: device,
+        pipeline: pipeline,
+        model: controller.authoringState,
+        context: try canonicalFrameContext(deviceID: device.id)
+    ))
+    var context = try #require(settings["context"] as? [String: Any])
+    var selection = try #require(context["selection"] as? [String: Any])
+    selection.removeValue(forKey: "deviceVfxAlphaModeID")
+    context["selection"] = selection
+    settings["context"] = context
+
+    do {
+        _ = try PhysicalSettingsExchange.decode(from: ["settings": settings])
+        Issue.record("La ausencia de un campo current-only debe fallar.")
+    } catch let error as PhysicalSettingsExchange.ImportError {
+        #expect(error.localizedDescription.contains("context.selection.deviceVfxAlphaModeID"))
+    }
+}
+
 @Test @MainActor func physicalSettingsExchangeRejectsLegacyDebugOnlyMetadata() throws {
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
         try PhysicalSettingsExchange.decode(from: ["physical": ["snapshotDebug": "legacy"]])
