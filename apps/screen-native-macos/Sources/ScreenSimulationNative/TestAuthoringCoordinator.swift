@@ -25,6 +25,7 @@ enum TestPreviewResultKind: UInt32, Sendable {
     case recordingOutput = 19
     case recordingCodec = 20
     case deviceVfxTransparency = 21
+    case panelTemporal = 22
 }
 
 struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {

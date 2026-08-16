@@ -72,9 +72,9 @@ panel phase or any physical checkpoint. The kernel also evaluates only the
 checkpoint terms whose algebraic coefficients are nonzero. In the final optical result, ideal,
 continuous, physical, spatial-uniformity and spread contributions are combined by their exact authored coefficients;
 terms that cancel identically are not sampled merely to subtract them later. Alpha retains its
-complete aperture-integrated source evaluation. Cover glow reuses the same exact area sampler for
-two centered physical-radius filters instead of nesting a shifted nine-tap cover lattice over the
-nine-tap panel-spread lattice. Its positive core/tail mixture preserves uniform linear energy,
+complete aperture-integrated source evaluation. Cover glow consumes the already resolved,
+alpha-attenuated Panel Light Spread emission and evaluates two centered normalized eight-direction
+radial kernels at the authored physical core/tail radii. Its positive mixture preserves uniform linear energy and centered first moment,
 keeps support outside the active outline and is materially cheaper without introducing a second
 post-sensor path.
 

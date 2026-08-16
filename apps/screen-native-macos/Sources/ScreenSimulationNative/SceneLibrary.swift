@@ -108,7 +108,7 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v10"
+    static let schema = "ScreenSimulation.SavedScene.v11"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -190,7 +190,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
               !settingsDocument.isEmpty,
               let object = try JSONSerialization.jsonObject(with: settingsDocument)
                 as? [String: Any],
-              object["settings"] is [String: Any]
+              let settings = object["settings"] as? [String: Any],
+              settings["schema"] as? String == PhysicalSettingsExchange.schema
         else { throw SceneLibraryError.invalidDocument("El snapshot de escena no es válido.") }
         try source.validate()
         try generatedEnvironment?.validate()
@@ -262,7 +263,7 @@ struct SavedSceneCapture: Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 10
+    static let currentSchemaVersion = 11
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -326,7 +327,7 @@ struct SceneLibraryStore: Sendable {
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
         self.trackingLibraryRoot = trackingLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v10.json")
+        documentURL = directory.appendingPathComponent("Scenes.v11.json")
     }
 
     func load() throws -> SceneLibraryDocument {

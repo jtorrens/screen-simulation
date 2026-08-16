@@ -445,6 +445,7 @@ final class WorkspaceModel: ObservableObject {
     var physicalPreviewSurfaceAspect: Double? {
         switch requestedPhysicalIntermediate {
         case .panelEmission, .subpixelRadiance, .panelUniformity, .panelLightSpread,
+             .panelTemporal,
              .relativeGeometry,
              .coverEnvironment, .coverGlow, .lensProjection:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
@@ -471,6 +472,7 @@ final class WorkspaceModel: ObservableObject {
             guard let sensor = physicalAuthoringState?.sensor else { return nil }
             return "Captura \(sensor.nativeWidth)×\(sensor.nativeHeight)"
         case .panelEmission, .subpixelRadiance, .panelUniformity, .panelLightSpread,
+             .panelTemporal,
              .relativeGeometry,
              .coverEnvironment, .coverGlow, .lensProjection, .shutterMotion:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
@@ -5870,6 +5872,7 @@ final class WorkspaceModel: ObservableObject {
             rebuildPhysicalSelectedFrame()
             return
         case .deviceInterpretation, .panelStructure, .panelUniformity, .panelLightSpread,
+             .panelTemporal,
              .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
              .shutterExposure, .computationalCapture, .sensorCollection, .sensorBloom,
              .sensorReadoutRaw,

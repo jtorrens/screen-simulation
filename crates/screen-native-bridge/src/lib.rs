@@ -1380,6 +1380,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::SubpixelRadiance
             | PhysicalIntermediate::PanelUniformity
             | PhysicalIntermediate::PanelLightSpread
+            | PhysicalIntermediate::PanelTemporal
             | PhysicalIntermediate::RelativeGeometry
             | PhysicalIntermediate::CoverEnvironment
             | PhysicalIntermediate::CoverGlow

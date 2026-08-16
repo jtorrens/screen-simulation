@@ -372,6 +372,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case sensorReadoutRaw = 14
     case developedACEScg = 15
     case cameraRenderedACEScg = 16
+    case panelTemporal = 17
 
     var id: UInt32 { rawValue }
 
@@ -382,6 +383,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         .subpixelRadiance,
         .panelUniformity,
         .panelLightSpread,
+        .panelTemporal,
         .relativeGeometry,
         .coverEnvironment,
         .coverGlow,
@@ -403,6 +405,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         case .subpixelRadiance: "Subpixel"
         case .panelUniformity: "Uniformity"
         case .panelLightSpread: "Spread"
+        case .panelTemporal: "Panel Temporal"
         case .relativeGeometry: "Relative Geometry"
         case .developedACEScg: "Developed"
         case .cameraRenderedACEScg: "Camera Rendering Intent"

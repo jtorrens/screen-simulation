@@ -3,12 +3,12 @@ import Testing
 @testable import ScreenSimulationNative
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 10)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 11)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v10.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v11.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(
@@ -198,6 +198,7 @@ import Testing
     let controller = SceneLibraryController(store: store)
     let settings = try JSONSerialization.data(withJSONObject: [
         "settings": [
+            "schema": PhysicalSettingsExchange.schema,
             "context": [
                 "environmentResource": [
                     "kind": "procedural",

@@ -107,6 +107,7 @@
         "screen-geometry",
         "screen-panel",
         "screen-platform",
+        "screen-recording",
         "screen-sensor"
       ]
     },
