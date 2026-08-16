@@ -423,7 +423,14 @@ final class PhysicalModelController: ObservableObject {
         } else if frameState == .complete {
             frameState = .stale
         }
-        if returnToSetup { quality = .setup }
+        if returnToSetup {
+            switch quality {
+            case .setup, .environmentSetup, .focusSetup:
+                break
+            case .draft, .medium, .high, .native:
+                quality = .setup
+            }
+        }
         interactiveInvalidation?()
     }
 }
