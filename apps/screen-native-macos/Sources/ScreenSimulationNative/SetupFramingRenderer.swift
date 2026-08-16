@@ -990,23 +990,22 @@ final class SetupFramingRenderer {
         float2 camera;
         if (!camera_uv(p, s, camera)) { output.write(background, p); return; }
         if (s.modes.w == 4u || s.modes.w == 5u) {
-            float2 panel;
-            float unused_depth;
             float2 delivery;
-            const bool center_valid = focus_screen_sample(camera, s, panel, unused_depth)
-                && (s.modes.w == 5u
-                    ? true
-                    : delivery_uv(camera, s, delivery));
+            const bool delivery_valid = s.modes.w == 5u
+                ? true
+                : delivery_uv(camera, s, delivery);
             const float coverage = device_coverage(p, true, s);
-            if (!center_valid || coverage == 0.0f) {
+            if (!delivery_valid) {
                 output.write(background, p); return;
             }
             if (s.modes.w == 5u) {
                 delivery = (float2(p) + 0.5f) / float2(s.preview_raster.xy);
             }
-            float4 value = source.sample(linear_sampler, delivery);
-            value.a = 1.0f;
-            output.write(mix(background, value, coverage), p);
+            const float4 value = source.sample(linear_sampler, delivery);
+            output.write(float4(
+                value.rgb + background.rgb * (1.0f - coverage),
+                1.0f
+            ), p);
             return;
         }
         if (s.modes.w == 1u) {

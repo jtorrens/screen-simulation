@@ -1937,24 +1937,56 @@ fn moire_residual_with_saturation(residual: [f32; 3], saturation: f32) -> [f32; 
 }
 
 fn apply_moire_look(
-    continuous: [f32; 3],
+    structured: [f32; 3],
     sampled: [f32; 3],
     intensity: f32,
     saturation: f32,
 ) -> [f32; 3] {
     let residual = moire_residual_with_saturation(
         [
-            sampled[0] - continuous[0],
-            sampled[1] - continuous[1],
-            sampled[2] - continuous[2],
+            sampled[0] - structured[0],
+            sampled[1] - structured[1],
+            sampled[2] - structured[2],
         ],
         saturation,
     );
     [
-        continuous[0] + intensity * residual[0],
-        continuous[1] + intensity * residual[1],
-        continuous[2] + intensity * residual[2],
+        structured[0] + intensity * residual[0],
+        structured[1] + intensity * residual[1],
+        structured[2] + intensity * residual[2],
     ]
+}
+
+fn panel_rectangle_coverage(
+    position_meters: [f32; 2],
+    footprint_half_extent_meters: [f32; 2],
+    panel_size_meters: [f32; 2],
+) -> f32 {
+    let axis_coverage = |position: f32, footprint_half_extent: f32, size: f32| {
+        let panel_half_extent = 0.5 * size;
+        if footprint_half_extent <= 1.0e-9 {
+            return if position.abs() <= panel_half_extent {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        let footprint_minimum = position - footprint_half_extent;
+        let footprint_maximum = position + footprint_half_extent;
+        let overlap = (footprint_maximum.min(panel_half_extent)
+            - footprint_minimum.max(-panel_half_extent))
+        .max(0.0);
+        (overlap / (2.0 * footprint_half_extent)).clamp(0.0, 1.0)
+    };
+    axis_coverage(
+        position_meters[0],
+        footprint_half_extent_meters[0],
+        panel_size_meters[0],
+    ) * axis_coverage(
+        position_meters[1],
+        footprint_half_extent_meters[1],
+        panel_size_meters[1],
+    )
 }
 
 fn sample_placed_acescg_area(
@@ -2611,10 +2643,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     let glow = plan.cover.glow;
                                     let scattered = glow.scatter_fraction * glow.character_strength;
                                     let extent = |radius_millimeters: f32| Vec2 {
-                                        x: radius_millimeters * (0.001 / 3.0)
-                                            / plan.panel.active_width.0,
-                                        y: radius_millimeters * (0.001 / 3.0)
-                                            / plan.panel.active_height.0,
+                                        x: radius_millimeters * 0.001 / plan.panel.active_width.0,
+                                        y: radius_millimeters * 0.001 / plan.panel.active_height.0,
                                     };
                                     let core = extent(glow.core_radius_millimeters);
                                     let tail = extent(glow.tail_radius_millimeters);
@@ -2848,16 +2878,6 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             } else {
                 glowed
             };
-            let continuous_base = if plan.panel_uniformity.character_strength == 0.0 {
-                continuous
-            } else {
-                uniform_continuous
-            };
-            let interference_base = [
-                ideal[0] + plan.emission_amount * (continuous_base[0] - ideal[0]),
-                ideal[1] + plan.emission_amount * (continuous_base[1] - ideal[1]),
-                ideal[2] + plan.emission_amount * (continuous_base[2] - ideal[2]),
-            ];
             let sampled_panel = if plan.panel_uniformity.character_strength == 0.0 {
                 [
                     ideal[0] * (1.0 - plan.emission_amount)
@@ -2892,8 +2912,26 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         + glowed[2],
                 ]
             };
+            let sampled_structure_residual = if plan.panel_uniformity.character_strength == 0.0 {
+                [
+                    (physical[0] - continuous[0]) * plan.subpixel_geometry_amount,
+                    (physical[1] - continuous[1]) * plan.subpixel_geometry_amount,
+                    (physical[2] - continuous[2]) * plan.subpixel_geometry_amount,
+                ]
+            } else {
+                [
+                    (uniform[0] - uniform_continuous[0]) * plan.subpixel_geometry_amount,
+                    (uniform[1] - uniform_continuous[1]) * plan.subpixel_geometry_amount,
+                    (uniform[2] - uniform_continuous[2]) * plan.subpixel_geometry_amount,
+                ]
+            };
+            let structure_preserving_base = [
+                sampled_panel[0] - sampled_structure_residual[0],
+                sampled_panel[1] - sampled_structure_residual[1],
+                sampled_panel[2] - sampled_structure_residual[2],
+            ];
             let staged = apply_moire_look(
-                interference_base,
+                structure_preserving_base,
                 sampled_panel,
                 plan.moire_intensity,
                 plan.moire_saturation,
@@ -2930,6 +2968,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 cover_half_extent[0] * reciprocal_cover * plan.panel.active_width.0,
                 cover_half_extent[1] * reciprocal_cover * plan.panel.active_height.0,
             ];
+            let panel_coverage = panel_rectangle_coverage(
+                cover_position_meters,
+                footprint_half_extent_meters,
+                [plan.panel.active_width.0, plan.panel.active_height.0],
+            );
             let reflection_visibility = microtexture
                 .reflection_visibility(cover_position_meters, footprint_half_extent_meters);
             let emitted = LinearRgb::new(
@@ -2947,7 +2990,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     cover_irradiance[2] * reciprocal_cover / parameters.white_level_nits,
                 ),
             };
-            let covered = match plan.environment {
+            let covered_with_environment = match plan.environment {
                 IncidentEnvironment::Procedural(_) => cover.evaluate(emitted, cover_sample),
                 IncidentEnvironment::Equirectangular(environment) => {
                     let raster = request
@@ -2980,6 +3023,20 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     )
                 }
             };
+            let transmitted = cover.transmission(cover_sample.view_cosine);
+            let transmitted_emission = LinearRgb::new(
+                emitted.r * transmitted.r,
+                emitted.g * transmitted.g,
+                emitted.b * transmitted.b,
+            );
+            let covered = LinearRgb::new(
+                transmitted_emission.r
+                    + panel_coverage * (covered_with_environment.r - transmitted_emission.r),
+                transmitted_emission.g
+                    + panel_coverage * (covered_with_environment.g - transmitted_emission.g),
+                transmitted_emission.b
+                    + panel_coverage * (covered_with_environment.b - transmitted_emission.b),
+            );
             let glare_fraction = resolved_scene.0.lens.veiling_glare_fraction;
             let temporal_gate_average = LinearRgb::new(
                 veiling_glare_gate_average.r * temporal_gain,
@@ -3032,7 +3089,20 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     ideal[2] + plan.screen_amount * (shuttered.b - ideal[2]),
                 ],
             };
-            output.push([selected[0], selected[1], selected[2], ideal[3]]);
+            let selected_alpha = match plan.requested_intermediate {
+                PhysicalIntermediate::CoverEnvironment
+                | PhysicalIntermediate::CoverGlow
+                | PhysicalIntermediate::LensProjection
+                | PhysicalIntermediate::ShutterMotion
+                | PhysicalIntermediate::ComputationalCapture
+                | PhysicalIntermediate::SensorCollection
+                | PhysicalIntermediate::SensorBloom
+                | PhysicalIntermediate::SensorReadoutRaw
+                | PhysicalIntermediate::DevelopedAcesCg
+                | PhysicalIntermediate::CameraRenderedAcesCg => panel_coverage,
+                _ => ideal[3],
+            };
+            output.push([selected[0], selected[1], selected[2], selected_alpha]);
         }
     }
     if plan.requested_intermediate == PhysicalIntermediate::ComputationalCapture {
@@ -7484,11 +7554,22 @@ mod tests {
     }
 
     #[test]
-    fn moire_intensity_zero_is_exact_continuous_emission_and_one_is_calibrated() {
-        let continuous = [0.13, 0.27, 0.41];
+    fn moire_intensity_zero_preserves_structure_and_one_is_calibrated() {
+        let structured = [0.13, 0.27, 0.41];
         let sampled = [0.91, -0.18, 0.62];
-        assert_eq!(apply_moire_look(continuous, sampled, 0.0, 4.0), continuous);
-        assert_eq!(apply_moire_look(continuous, sampled, 1.0, 1.0), sampled);
+        assert_eq!(apply_moire_look(structured, sampled, 0.0, 4.0), structured);
+        assert_eq!(apply_moire_look(structured, sampled, 1.0, 1.0), sampled);
+    }
+
+    #[test]
+    fn panel_rectangle_coverage_is_exact_inside_outside_and_across_an_edge() {
+        let size = [0.10, 0.20];
+        assert_eq!(panel_rectangle_coverage([0.0, 0.0], [0.0, 0.0], size), 1.0);
+        assert_eq!(
+            panel_rectangle_coverage([0.051, 0.0], [0.0, 0.0], size),
+            0.0
+        );
+        assert!((panel_rectangle_coverage([0.05, 0.0], [0.01, 0.01], size) - 0.5).abs() < 1.0e-6);
     }
 
     #[test]
@@ -10770,13 +10851,17 @@ mod tests {
         optics.cover.glow.core_radius_millimeters = 5.0;
         optics.cover.glow.tail_radius_millimeters = 30.0;
         optics.cover.glow.tail_fraction = 1.0;
+        let outside_uv = -0.020 / optics.panel.active_width.0;
         let evaluator = optics.panel.evaluator().expect("panel evaluator");
         let cover = optics
             .cover
             .evaluator(optics.environment)
             .expect("cover evaluator");
         let ray = OpticalSample {
-            panel_uv: [Some(Vec2 { x: -0.02, y: 0.5 }); 3],
+            panel_uv: [Some(Vec2 {
+                x: outside_uv,
+                y: 0.5,
+            }); 3],
             emission_cosine: [1.0; 3],
             reflection_direction_local: [Some(Vec3 {
                 x: 0.0,

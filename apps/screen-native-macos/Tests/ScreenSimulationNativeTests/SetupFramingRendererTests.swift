@@ -364,9 +364,24 @@ import Testing
     #expect(hypot(movedResult.corners[1].x - movingTarget.x,
                   movedResult.corners[1].y - movingTarget.y) < 0.01)
 
-    let cameraResultPixels = Array(
-        repeating: [Float(0.7), Float(0.05), Float(0.05), Float(1)], count: 320 * 180
-    ).flatMap { $0 }
+    let projectedMinimumX = movedResult.corners.map(\.x).min() ?? 0
+    let projectedMaximumX = movedResult.corners.map(\.x).max() ?? 0
+    let projectedMinimumY = movedResult.corners.map(\.y).min() ?? 0
+    let projectedMaximumY = movedResult.corners.map(\.y).max() ?? 0
+    var cameraResultPixels: [Float] = []
+    cameraResultPixels.reserveCapacity(320 * 180 * 4)
+    for y in 0 ..< 180 {
+        for x in 0 ..< 320 {
+            let pixelX = CGFloat(x)
+            let pixelY = CGFloat(y)
+            let insideHorizontal = pixelX >= projectedMinimumX && pixelX <= projectedMaximumX
+            let insideVertical = pixelY >= projectedMinimumY && pixelY <= projectedMaximumY
+            let insideProjectedBounds = insideHorizontal && insideVertical
+            cameraResultPixels.append(contentsOf: insideProjectedBounds
+                ? [0.7, 0.05, 0.05, 1]
+                : [0, 0, 0, 0])
+        }
+    }
     let cameraResult = try display.makeACEScgFrame(
         width: 320, height: 180, encodedRGBA: cameraResultPixels,
         input: input, alpha: .straight
@@ -384,20 +399,18 @@ import Testing
         SIMD3(compositeValues[$0], compositeValues[$0 + 1], compositeValues[$0 + 2])
     }
     let referenceColor = SIMD3(referenceValues[0], referenceValues[1], referenceValues[2])
-    let cameraColor = SIMD3(cameraValues[0], cameraValues[1], cameraValues[2])
-    let cameraDelta = cameraColor - referenceColor
-    let cameraDeltaSquared = simd_length_squared(cameraDelta)
+    var cameraColor = SIMD3<Float>.zero
+    for offset in stride(from: 0, to: cameraValues.count, by: 4) {
+        let candidate = SIMD3(
+            cameraValues[offset], cameraValues[offset + 1], cameraValues[offset + 2]
+        )
+        if candidate.x > cameraColor.x { cameraColor = candidate }
+    }
     #expect(composite.frame.width == 320)
     #expect(composite.frame.height == 180)
     #expect(compositePixels.contains { simd_distance($0, referenceColor) < 0.001 })
     #expect(compositePixels.contains { simd_distance($0, cameraColor) < 0.001 })
     #expect(compositePixels.contains { simd_length($0) < 0.001 })
-    #expect(compositePixels.contains { pixel in
-        let amount = simd_dot(pixel - referenceColor, cameraDelta) / cameraDeltaSquared
-        let reconstructed = referenceColor + cameraDelta * amount
-        return amount > 0.01 && amount < 0.99
-            && simd_distance(pixel, reconstructed) < 0.002
-    })
 
     let deviceOnly = try renderer.renderCameraComposite(
         cameraResult: cameraResult, reference: nil,

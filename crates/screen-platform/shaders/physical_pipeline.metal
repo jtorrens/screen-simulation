@@ -889,6 +889,27 @@ inline float3 flat_cover_transmission(float view_cosine,
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
 }
 
+inline float panel_rectangle_coverage(float2 position_meters,
+    float2 footprint_half_extent_meters, constant PhysicalPipelineParams& p) {
+    const float2 panel_half_extent = 0.5f * p.panel_size_meters.xy;
+    float2 coverage;
+    for (uint axis = 0; axis < 2; ++axis) {
+        const float footprint = footprint_half_extent_meters[axis];
+        if (footprint <= 1.0e-9f) {
+            coverage[axis] = abs(position_meters[axis]) <= panel_half_extent[axis]
+                ? 1.0f : 0.0f;
+        } else {
+            const float footprint_minimum = position_meters[axis] - footprint;
+            const float footprint_maximum = position_meters[axis] + footprint;
+            const float overlap = max(0.0f,
+                min(footprint_maximum, panel_half_extent[axis])
+                    - max(footprint_minimum, -panel_half_extent[axis]));
+            coverage[axis] = clamp(overlap / (2.0f * footprint), 0.0f, 1.0f);
+        }
+    }
+    return coverage.x * coverage.y;
+}
+
 inline float2 placement_scale(constant PhysicalPipelineParams& p) {
     const float source_aspect = float(p.source_panel.x) / float(p.source_panel.y);
     const float panel_aspect = float(p.source_panel.z) / float(p.source_panel.w);
@@ -1188,8 +1209,8 @@ inline float cover_glow_native_channel(
             base_native, prepared_placement_scale, p);
     }
     const float2 inverse_panel = 1.0f / p.panel_size_meters.xy;
-    const float2 core_extent = p.cover_glow.x * (0.001f / 3.0f) * inverse_panel;
-    const float2 tail_extent = p.cover_glow.y * (0.001f / 3.0f) * inverse_panel;
+    const float2 core_extent = p.cover_glow.x * 0.001f * inverse_panel;
+    const float2 tail_extent = p.cover_glow.y * 0.001f * inverse_panel;
     const float base = spread_native_channel(
         device_signal, device_row_prefix, channel, device_minimum, device_maximum,
         base_native, prepared_placement_scale, p);
@@ -1302,10 +1323,14 @@ kernel void evaluate_physical_pipeline(
     const bool needs_ideal_rgb = requested_stage == 0 || final_optical;
     const bool needs_average_code = requested_stage == 1;
     const bool needs_continuous = requested_stage == 2 || final_optical;
+    const bool needs_moire_decomposition = final_optical
+        && (p.geometry.w != 1.0f || p.geometry.y != 1.0f);
     const bool needs_physical = requested_stage == 3
-        || (final_optical && p.uniformity_scales.w == 0.0f && p.strengths.z != 1.0f);
+        || (final_optical && p.uniformity_scales.w == 0.0f
+            && (p.strengths.z != 1.0f || needs_moire_decomposition));
     const bool needs_uniform = requested_stage == 4
-        || (final_optical && p.uniformity_scales.w != 0.0f && p.strengths.z != 1.0f);
+        || (final_optical && p.uniformity_scales.w != 0.0f
+            && (p.strengths.z != 1.0f || needs_moire_decomposition));
     const bool needs_spread = requested_stage == 5;
     const bool needs_glow = final_optical;
     const bool needs_carrier = final_optical && VFX_DEPTH_BLUR
@@ -1581,25 +1606,24 @@ kernel void evaluate_physical_pipeline(
     const float moire_saturation = p.geometry.y;
     const float moire_intensity = p.geometry.w;
     float3 sampled_panel;
-    float3 interference_base;
     if (p.uniformity_scales.w == 0.0f) {
-        interference_base = ideal.rgb * (1.0f - p.strengths.y)
-            + continuous * p.strengths.y;
         sampled_panel = ideal.rgb * (1.0f - p.strengths.y)
             + continuous * (p.strengths.y - p.strengths.z)
             + physical * (p.strengths.z - 1.0f)
             + glow
             + carrier_detail * p.strengths.z;
     } else {
-        interference_base = ideal.rgb * (1.0f - p.strengths.y)
-            + uniform_continuous * p.strengths.y;
         sampled_panel = ideal.rgb * (1.0f - p.strengths.y)
             + uniform_continuous * (p.strengths.y - p.strengths.z)
             + uniform * (p.strengths.z - 1.0f)
             + glow
             + carrier_detail * p.strengths.z;
     }
-    float3 interference = sampled_panel - interference_base;
+    const float3 sampled_structure_residual = p.uniformity_scales.w == 0.0f
+        ? (physical - continuous) * p.strengths.z
+        : (uniform - uniform_continuous) * p.strengths.z;
+    const float3 structure_preserving_base = sampled_panel - sampled_structure_residual;
+    float3 interference = sampled_panel - structure_preserving_base;
     if (moire_saturation != 1.0f) {
         const float residual_luminance = dot(
             interference,
@@ -1608,13 +1632,19 @@ kernel void evaluate_physical_pipeline(
         interference = residual_luminance
             + moire_saturation * (interference - residual_luminance);
     }
-    const float3 glass_scattered = interference_base + moire_intensity * interference;
+    const float3 glass_scattered = structure_preserving_base + moire_intensity * interference;
     const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
     const float3 temporally_integrated = glass_scattered * temporal_gain;
-    const float3 covered = apply_flat_cover(temporally_integrated,
+    const float3 covered_with_environment = apply_flat_cover(temporally_integrated,
         cover_cosine * cover_reciprocal, cover_reflection_direction,
         cover_irradiance * cover_reciprocal, cover_position_meters,
         cover_footprint_half_extent_meters, environment_acescg, position, p);
+    const float panel_coverage = panel_rectangle_coverage(
+        cover_position_meters, cover_footprint_half_extent_meters, p);
+    const float3 transmitted_emission = temporally_integrated
+        * flat_cover_transmission(cover_cosine * cover_reciprocal, p);
+    const float3 covered = mix(
+        transmitted_emission, covered_with_environment, panel_coverage);
     const float3 glared = mix(covered, veiling_gate_average[0].xyz * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);
@@ -1634,7 +1664,8 @@ kernel void evaluate_physical_pipeline(
         case 10: selected = shuttered; break;
         default: selected = ideal.rgb + p.strengths.x * (shuttered - ideal.rgb); break;
     }
-    output.write(float4(selected, ideal.a), position);
+    const float selected_alpha = p.semantics.z >= 7 ? panel_coverage : ideal.a;
+    output.write(float4(selected, selected_alpha), position);
 }
 
 kernel void accumulate_physical_pipeline(

@@ -1976,13 +1976,13 @@ mod tests {
     }
 
     #[test]
-    fn moire_intensity_and_antialias_match_cpu_without_grading_continuous_panel_emission() {
+    fn moire_controls_match_cpu_while_preserving_explicit_panel_structure() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
         for (intensity, saturation, filter_strength) in [
             (0.0, 1.0, 0.0),
-            (1.0, 0.0, 0.0),
             (1.0, 1.0, 0.0),
+            (1.0, 0.0, 0.0),
             (1.0, 1.0, 4.0),
             (1.0, 2.0, 0.0),
             (2.0, 1.0, 0.0),
@@ -2022,14 +2022,18 @@ mod tests {
                 .evaluate(&source, &signal, plan, |_| {}, || false)
                 .expect("Metal moire controls result");
             let gpu_values = read(&gpu.texture);
-            let maximum = gpu_values
+            let (maximum_index, maximum) = gpu_values
                 .iter()
                 .zip(cpu.presentation_rgba())
                 .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
-                .fold(0.0_f32, f32::max);
+                .enumerate()
+                .max_by(|left, right| left.1.total_cmp(&right.1))
+                .expect("non-empty comparison");
             assert!(
                 maximum <= 2.0e-3,
-                "moire intensity {intensity}, saturation {saturation}, antialias {filter_strength} CPU/Metal deviation {maximum}"
+                "moire intensity {intensity}, saturation {saturation}, antialias {filter_strength} CPU/Metal deviation {maximum} at scalar {maximum_index}; GPU {:?}, CPU {:?}",
+                gpu_values[maximum_index / 4],
+                cpu.presentation_rgba()[maximum_index / 4]
             );
         }
     }
