@@ -17,7 +17,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 20u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 21u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 7u
@@ -27,7 +27,7 @@ typedef struct {
     size_t count;
 } ScreenUTF8View;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 31u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 32u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -61,6 +61,7 @@ typedef struct {
     float source_tint;
     float subpixel_geometry_amount;
     float moire_saturation;
+    float moire_filter_strength;
     float panel_uniformity_amount;
     float panel_light_spread_amount;
     ScreenUTF8View capture_preset_id;
@@ -85,6 +86,15 @@ typedef struct {
     ScreenUTF8View cover_glass_preset_id;
     float cover_glass_amount;
     float cover_ag_microtexture_amount;
+    float cover_thickness_millimeters;
+    float cover_refractive_index;
+    float cover_ar_efficiency;
+    float cover_absorption_rgb[3];
+    float cover_roughness;
+    float cover_haze;
+    float cover_ag_rms_slope;
+    float cover_ag_correlation_micrometers;
+    float cover_ag_anisotropy;
     ScreenUTF8View environment_source_id;
     float environment_amount;
     float environment_rotation_x_degrees;
@@ -100,6 +110,10 @@ typedef struct {
     float environment_sphere_center_z_meters;
     float environment_sphere_radius_meters;
     float cover_glow_amount;
+    float cover_glow_scatter_fraction;
+    float cover_glow_core_radius_millimeters;
+    float cover_glow_tail_radius_millimeters;
+    float cover_glow_tail_fraction;
     ScreenUTF8View lens_preset_id;
     float focal_length_millimeters;
     float lens_amount;
@@ -709,6 +723,7 @@ typedef struct {
 typedef struct {
     uint32_t abi_version;
     float moire_saturation;
+    float moire_filter_strength;
     ScreenCoverGlassParametersV2 cover;
     ScreenEnvironmentParametersV2 environment;
     ScreenSceneGeometryLensParametersV2 scene_geometry_lens;

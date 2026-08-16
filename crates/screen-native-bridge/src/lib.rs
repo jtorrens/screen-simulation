@@ -211,7 +211,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 31;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 32;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -238,6 +238,7 @@ pub struct ScreenTestAuthoringSelectionV22 {
     source_tint: f32,
     subpixel_geometry_amount: f32,
     moire_saturation: f32,
+    moire_filter_strength: f32,
     panel_uniformity_amount: f32,
     panel_light_spread_amount: f32,
     capture_preset_id: ScreenUtf8View,
@@ -262,6 +263,15 @@ pub struct ScreenTestAuthoringSelectionV22 {
     cover_glass_preset_id: ScreenUtf8View,
     cover_glass_amount: f32,
     cover_ag_microtexture_amount: f32,
+    cover_thickness_millimeters: f32,
+    cover_refractive_index: f32,
+    cover_ar_efficiency: f32,
+    cover_absorption_rgb: [f32; 3],
+    cover_roughness: f32,
+    cover_haze: f32,
+    cover_ag_rms_slope: f32,
+    cover_ag_correlation_micrometers: f32,
+    cover_ag_anisotropy: f32,
     environment_source_id: ScreenUtf8View,
     environment_amount: f32,
     environment_rotation_x_degrees: f32,
@@ -277,6 +287,10 @@ pub struct ScreenTestAuthoringSelectionV22 {
     environment_sphere_center_z_meters: f32,
     environment_sphere_radius_meters: f32,
     cover_glow_amount: f32,
+    cover_glow_scatter_fraction: f32,
+    cover_glow_core_radius_millimeters: f32,
+    cover_glow_tail_radius_millimeters: f32,
+    cover_glow_tail_fraction: f32,
     lens_preset_id: ScreenUtf8View,
     focal_length_millimeters: f32,
     lens_amount: f32,
@@ -403,7 +417,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 20;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 21;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -1492,6 +1506,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         emission_amount: amounts.emission,
         subpixel_geometry_amount: amounts.subpixel_geometry,
         moire_saturation: pipeline.moire_saturation,
+        moire_filter_strength: pipeline.moire_filter_strength,
         temporal_emission_amount: amounts.temporal_emission,
         temporal_emission_gain: temporal_gain,
         cover: pipeline.cover,
@@ -2219,6 +2234,7 @@ pub struct ScreenCameraRadiometricCalibrationV2 {
 pub struct ScreenPhysicalPipelineParametersV2 {
     abi_version: u32,
     moire_saturation: f32,
+    moire_filter_strength: f32,
     cover: ScreenCoverGlassParametersV2,
     environment: ScreenEnvironmentParametersV2,
     scene_geometry_lens: ScreenSceneGeometryLensParametersV2,
@@ -2232,6 +2248,7 @@ pub struct ScreenPhysicalPipelineParametersV2 {
 
 pub struct ScreenPhysicalPipelineSnapshot {
     moire_saturation: f32,
+    moire_filter_strength: f32,
     cover: CoverGlassProfile,
     environment: IncidentEnvironment,
     scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
@@ -2293,6 +2310,7 @@ unsafe fn test_selection<'a>(
         },
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         moire_saturation: selection.moire_saturation,
+        moire_filter_strength: selection.moire_filter_strength,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: unsafe { borrowed_utf8(selection.capture_preset_id) }?,
@@ -2317,6 +2335,15 @@ unsafe fn test_selection<'a>(
         cover_glass_preset_id: unsafe { borrowed_utf8(selection.cover_glass_preset_id) }?,
         cover_glass_amount: selection.cover_glass_amount,
         cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
+        cover_thickness_millimeters: selection.cover_thickness_millimeters,
+        cover_refractive_index: selection.cover_refractive_index,
+        cover_ar_efficiency: selection.cover_ar_efficiency,
+        cover_absorption_rgb: selection.cover_absorption_rgb,
+        cover_roughness: selection.cover_roughness,
+        cover_haze: selection.cover_haze,
+        cover_ag_rms_slope: selection.cover_ag_rms_slope,
+        cover_ag_correlation_micrometers: selection.cover_ag_correlation_micrometers,
+        cover_ag_anisotropy: selection.cover_ag_anisotropy,
         environment_source_id: unsafe { borrowed_utf8(selection.environment_source_id) }?,
         environment_amount: selection.environment_amount,
         environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
@@ -2332,6 +2359,10 @@ unsafe fn test_selection<'a>(
         environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
+        cover_glow_scatter_fraction: selection.cover_glow_scatter_fraction,
+        cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
+        cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
+        cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
@@ -2386,6 +2417,9 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
             b"Subpixel Geometry amount is outside 0..=4\0"
         }
         TestAuthoringError::InvalidMoireSaturation => b"Moire saturation is outside 0..=4\0",
+        TestAuthoringError::InvalidMoireFilterStrength => {
+            b"Moire filter strength is outside 0..=4\0"
+        }
         TestAuthoringError::InvalidPanelUniformityAmount => {
             b"Panel Uniformity amount is outside 0..=4\0"
         }
@@ -2401,6 +2435,9 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
         TestAuthoringError::InvalidGeometry => b"invalid Test relative geometry\0",
         TestAuthoringError::UnknownCoverGlassPreset => b"unknown Test Cover Glass preset\0",
         TestAuthoringError::InvalidCoverGlassAmount => b"Cover Glass amount is outside 0..=2\0",
+        TestAuthoringError::InvalidCoverGlassProfile => {
+            b"Cover Glass parameters are outside their physical bounds\0"
+        }
         TestAuthoringError::InvalidCoverAgMicrotextureAmount => {
             b"Cover AG Microtexture amount is outside 0..=4\0"
         }
@@ -2455,6 +2492,7 @@ fn resolved_test_selection(
         source_tint: selection.source_adjustment.tint,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         moire_saturation: selection.moire_saturation,
+        moire_filter_strength: selection.moire_filter_strength,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: utf8_view(selection.capture_preset_id),
@@ -2479,6 +2517,15 @@ fn resolved_test_selection(
         cover_glass_preset_id: utf8_view(selection.cover_glass_preset_id),
         cover_glass_amount: selection.cover_glass_amount,
         cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
+        cover_thickness_millimeters: selection.cover_thickness_millimeters,
+        cover_refractive_index: selection.cover_refractive_index,
+        cover_ar_efficiency: selection.cover_ar_efficiency,
+        cover_absorption_rgb: selection.cover_absorption_rgb,
+        cover_roughness: selection.cover_roughness,
+        cover_haze: selection.cover_haze,
+        cover_ag_rms_slope: selection.cover_ag_rms_slope,
+        cover_ag_correlation_micrometers: selection.cover_ag_correlation_micrometers,
+        cover_ag_anisotropy: selection.cover_ag_anisotropy,
         environment_source_id: utf8_view(selection.environment_source_id),
         environment_amount: selection.environment_amount,
         environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
@@ -2494,6 +2541,10 @@ fn resolved_test_selection(
         environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
+        cover_glow_scatter_fraction: selection.cover_glow_scatter_fraction,
+        cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
+        cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
+        cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
         lens_preset_id: utf8_view(selection.lens_preset_id),
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
@@ -3200,6 +3251,12 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         unsafe { set_error(error_message, b"invalid moire saturation\0") };
         return std::ptr::null_mut();
     }
+    if !parameters.moire_filter_strength.is_finite()
+        || !(0.0..=4.0).contains(&parameters.moire_filter_strength)
+    {
+        unsafe { set_error(error_message, b"invalid moire filter strength\0") };
+        return std::ptr::null_mut();
+    }
     if [
         parameters.abi_version,
         parameters.cover.abi_version,
@@ -3557,6 +3614,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
     unsafe { set_error(error_message, b"\0") };
     Box::into_raw(Box::new(ScreenPhysicalPipelineSnapshot {
         moire_saturation: parameters.moire_saturation,
+        moire_filter_strength: parameters.moire_filter_strength,
         cover,
         environment,
         scene_geometry_lens,
@@ -4771,6 +4829,7 @@ mod tests {
         ScreenPhysicalPipelineParametersV2 {
             abi_version: version,
             moire_saturation: 1.0,
+            moire_filter_strength: 0.0,
             cover: ScreenCoverGlassParametersV2 {
                 abi_version: version,
                 authority: 0,

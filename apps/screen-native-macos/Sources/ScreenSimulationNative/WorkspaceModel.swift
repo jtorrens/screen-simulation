@@ -1291,7 +1291,7 @@ final class WorkspaceModel: ObservableObject {
               let source = environmentReflectionFramingSourceFrame
                 ?? environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              var authored = physicalAuthoringState,
+              let authored = physicalAuthoringState,
               let calibration = environmentSourceCalibration
         else { return }
         environmentReflectionFramingIsGenerating = true
@@ -5611,7 +5611,20 @@ final class WorkspaceModel: ObservableObject {
         var selectedCover = cover
         selectedCover.characterStrength = selection.coverGlassAmount
         selectedCover.agMicrotextureCharacterStrength = selection.coverAgMicrotextureAmount
+        selectedCover.thicknessMillimeters = selection.coverThicknessMillimeters
+        selectedCover.refractiveIndex = selection.coverRefractiveIndex
+        selectedCover.antiReflectiveEfficiency = selection.coverAREfficiency
+        selectedCover.absorptionPerMillimeter = selection.coverAbsorptionRGB
+        selectedCover.roughness = selection.coverRoughness
+        selectedCover.haze = selection.coverHaze
+        selectedCover.agMicrotextureRMSSlope = selection.coverAgRMSSlope
+        selectedCover.agMicrotextureCorrelationLengthMicrometers = selection.coverAgCorrelationMicrometers
+        selectedCover.agMicrotextureAnisotropy = selection.coverAgAnisotropy
         selectedCover.glowCharacterStrength = selection.coverGlowAmount
+        selectedCover.glowScatterFraction = selection.coverGlowScatterFraction
+        selectedCover.glowCoreRadiusMillimeters = selection.coverGlowCoreRadiusMillimeters
+        selectedCover.glowTailRadiusMillimeters = selection.coverGlowTailRadiusMillimeters
+        selectedCover.glowTailFraction = selection.coverGlowTailFraction
         var authored = try PhysicalPipelineAuthoringState.seeded(
             device: device,
             coverGlass: selectedCover
@@ -5657,6 +5670,7 @@ final class WorkspaceModel: ObservableObject {
         ]
         authored.environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
         authored.moireSaturation = selection.moireSaturation
+        authored.moireFilterStrength = selection.moireFilterStrength
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
         authored.sceneLens.evaluationModel = selection.lensEvaluationModelID

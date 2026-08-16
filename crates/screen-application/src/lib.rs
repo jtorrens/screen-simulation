@@ -887,6 +887,9 @@ pub struct PhysicalPipelineExecutionPlan {
     /// Chroma scale of the sampled subpixel interference residual. One keeps
     /// the physically sampled color, zero preserves its luminance only.
     pub moire_saturation: f32,
+    /// Additional optical integration footprint used to suppress subpixel
+    /// aliasing. Zero preserves the resolved lens footprint exactly.
+    pub moire_filter_strength: f32,
     /// Continuous contribution from the calibrated, shutter-integrated panel
     /// temporal model. Zero is exact identity and one is the resolved profile.
     pub temporal_emission_amount: f32,
@@ -2000,6 +2003,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         plan.emission_amount,
         plan.subpixel_geometry_amount,
         plan.moire_saturation,
+        plan.moire_filter_strength,
         plan.panel_uniformity.character_strength,
         plan.temporal_emission_amount,
         plan.scene_geometry_amount,
@@ -2329,10 +2333,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     cover_uv[1] += hit.y * layer_weight;
                                 }
                                 cover_half_extent[0] += (sensor_panel_half_extent[1].x
-                                    + aperture_cell_half_extent[1].x)
+                                    + aperture_cell_half_extent[1].x
+                                    + (maximum_uv.x - minimum_uv.x)
+                                        * 0.5
+                                        * plan.moire_filter_strength)
                                     * layer_weight;
                                 cover_half_extent[1] += (sensor_panel_half_extent[1].y
-                                    + aperture_cell_half_extent[1].y)
+                                    + aperture_cell_half_extent[1].y
+                                    + (maximum_uv.y - minimum_uv.y)
+                                        * 0.5
+                                        * plan.moire_filter_strength)
                                     * layer_weight;
                                 cover_irradiance[0] += optical.irradiance_weight[0] * layer_weight;
                                 cover_irradiance[1] += optical.irradiance_weight[1] * layer_weight;
@@ -2340,7 +2350,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 cover_weight += layer_weight;
                             }
                             let mapped_bounds = |channel: usize| {
-                                if plan.scene_geometry_amount == 0.0 && plan.lens_amount == 0.0 {
+                                if plan.scene_geometry_amount == 0.0
+                                    && plan.lens_amount == 0.0
+                                    && plan.moire_filter_strength == 0.0
+                                {
                                     return (minimum_uv, maximum_uv, minimum_uv, maximum_uv, 1.0);
                                 }
                                 let hit = optical.panel_uv[channel];
@@ -2374,14 +2387,25 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                             * (projected_sensor_half_extent.y
                                                 - flat_sensor_half_extent.y),
                                 };
+                                let antialias_extra = Vec2 {
+                                    x: flat_sensor_half_extent.x * plan.moire_filter_strength,
+                                    y: flat_sensor_half_extent.y * plan.moire_filter_strength,
+                                };
                                 let reconstructed_half_extent = vfx_rectangular_support_half_extent(
+                                    Vec2 {
+                                        x: sensor_half_extent.x + antialias_extra.x,
+                                        y: sensor_half_extent.y + antialias_extra.y,
+                                    },
+                                    aperture_cell_half_extent[channel],
+                                );
+                                let carrier_half_extent_base = vfx_carrier_half_extent(
                                     sensor_half_extent,
                                     aperture_cell_half_extent[channel],
                                 );
-                                let carrier_half_extent = vfx_carrier_half_extent(
-                                    sensor_half_extent,
-                                    aperture_cell_half_extent[channel],
-                                );
+                                let carrier_half_extent = Vec2 {
+                                    x: carrier_half_extent_base.x + antialias_extra.x,
+                                    y: carrier_half_extent_base.y + antialias_extra.y,
+                                };
                                 (
                                     Vec2 {
                                         x: center.x - reconstructed_half_extent.x,
@@ -9123,6 +9147,7 @@ mod tests {
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
                 moire_saturation: 1.0,
+                moire_filter_strength: 0.0,
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
                 cover: CoverGlassProfile::NEUTRAL,

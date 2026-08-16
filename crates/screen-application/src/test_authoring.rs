@@ -8,7 +8,7 @@ use screen_camera::CameraRenderingIntent;
 use screen_color::{
     DeviceColorTarget, OcioInputTransform, RecordingOutputTransform, SceneLinearAdjustment,
 };
-use screen_contracts::FrameRate;
+use screen_contracts::{FrameRate, LinearRgb};
 use screen_cover::{
     COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset, environment_preset,
 };
@@ -21,7 +21,7 @@ use screen_recording::{
     bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 31;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 32;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -57,6 +57,7 @@ pub const PLACEMENT_CONTROL_ID: &str = "placement";
 pub const PREVIEW_QUALITY_CONTROL_ID: &str = "preview-quality";
 pub const SUBPIXEL_GEOMETRY_CONTROL_ID: &str = "subpixel-geometry-amount";
 pub const MOIRE_SATURATION_CONTROL_ID: &str = "moire-saturation";
+pub const MOIRE_FILTER_CONTROL_ID: &str = "moire-antialias-filter";
 pub const PANEL_UNIFORMITY_CONTROL_ID: &str = "panel-uniformity-amount";
 pub const PANEL_LIGHT_SPREAD_CONTROL_ID: &str = "panel-light-spread-amount";
 pub const CAPTURE_PRESET_CONTROL_ID: &str = "capture-preset";
@@ -80,6 +81,17 @@ pub const SCREEN_ROTATION_Z_CONTROL_ID: &str = "screen-rotation-z-degrees";
 pub const COVER_GLASS_CONTROL_ID: &str = "cover-glass-preset";
 pub const COVER_GLASS_AMOUNT_CONTROL_ID: &str = "cover-glass-amount";
 pub const COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID: &str = "cover-ag-microtexture-amount";
+pub const COVER_THICKNESS_CONTROL_ID: &str = "cover-thickness-millimeters";
+pub const COVER_REFRACTIVE_INDEX_CONTROL_ID: &str = "cover-refractive-index";
+pub const COVER_AR_EFFICIENCY_CONTROL_ID: &str = "cover-ar-efficiency";
+pub const COVER_ABSORPTION_R_CONTROL_ID: &str = "cover-absorption-r";
+pub const COVER_ABSORPTION_G_CONTROL_ID: &str = "cover-absorption-g";
+pub const COVER_ABSORPTION_B_CONTROL_ID: &str = "cover-absorption-b";
+pub const COVER_ROUGHNESS_CONTROL_ID: &str = "cover-roughness";
+pub const COVER_HAZE_CONTROL_ID: &str = "cover-haze";
+pub const COVER_AG_RMS_SLOPE_CONTROL_ID: &str = "cover-ag-rms-slope";
+pub const COVER_AG_CORRELATION_CONTROL_ID: &str = "cover-ag-correlation-micrometers";
+pub const COVER_AG_ANISOTROPY_CONTROL_ID: &str = "cover-ag-anisotropy";
 pub const ENVIRONMENT_CONTROL_ID: &str = "environment-source";
 pub const ENVIRONMENT_BROWSE_CONTROL_ID: &str = "environment-browse";
 pub const ENVIRONMENT_AMOUNT_CONTROL_ID: &str = "environment-amount";
@@ -97,6 +109,10 @@ pub const ENVIRONMENT_CENTER_Z_CONTROL_ID: &str = "environment-sphere-center-z-m
 pub const ENVIRONMENT_RADIUS_CONTROL_ID: &str = "environment-sphere-radius-meters";
 pub const IMAGE_ENVIRONMENT_SOURCE_ID: &str = "environment-image";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
+pub const COVER_GLOW_SCATTER_CONTROL_ID: &str = "cover-glow-scatter-fraction";
+pub const COVER_GLOW_CORE_RADIUS_CONTROL_ID: &str = "cover-glow-core-radius-millimeters";
+pub const COVER_GLOW_TAIL_RADIUS_CONTROL_ID: &str = "cover-glow-tail-radius-millimeters";
+pub const COVER_GLOW_TAIL_FRACTION_CONTROL_ID: &str = "cover-glow-tail-fraction";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
 pub const FOCAL_LENGTH_CONTROL_ID: &str = "focal-length-millimeters";
 pub const LENS_EVALUATION_MODEL_CONTROL_ID: &str = "lens-evaluation-model";
@@ -362,6 +378,7 @@ pub struct TestAuthoringSelection<'a> {
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
     pub moire_saturation: f32,
+    pub moire_filter_strength: f32,
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'a str,
@@ -385,6 +402,15 @@ pub struct TestAuthoringSelection<'a> {
     pub cover_glass_preset_id: &'a str,
     pub cover_glass_amount: f32,
     pub cover_ag_microtexture_amount: f32,
+    pub cover_thickness_millimeters: f32,
+    pub cover_refractive_index: f32,
+    pub cover_ar_efficiency: f32,
+    pub cover_absorption_rgb: [f32; 3],
+    pub cover_roughness: f32,
+    pub cover_haze: f32,
+    pub cover_ag_rms_slope: f32,
+    pub cover_ag_correlation_micrometers: f32,
+    pub cover_ag_anisotropy: f32,
     pub environment_source_id: &'a str,
     pub environment_amount: f32,
     pub environment_rotation_x_degrees: f32,
@@ -400,6 +426,10 @@ pub struct TestAuthoringSelection<'a> {
     pub environment_sphere_center_z_meters: f32,
     pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
+    pub cover_glow_scatter_fraction: f32,
+    pub cover_glow_core_radius_millimeters: f32,
+    pub cover_glow_tail_radius_millimeters: f32,
+    pub cover_glow_tail_fraction: f32,
     pub lens_preset_id: &'a str,
     pub focal_length_millimeters: f32,
     pub lens_evaluation_model_id: &'a str,
@@ -443,6 +473,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
     pub moire_saturation: f32,
+    pub moire_filter_strength: f32,
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'static str,
@@ -466,6 +497,15 @@ pub struct ResolvedTestAuthoringSelection {
     pub cover_glass_preset_id: &'static str,
     pub cover_glass_amount: f32,
     pub cover_ag_microtexture_amount: f32,
+    pub cover_thickness_millimeters: f32,
+    pub cover_refractive_index: f32,
+    pub cover_ar_efficiency: f32,
+    pub cover_absorption_rgb: [f32; 3],
+    pub cover_roughness: f32,
+    pub cover_haze: f32,
+    pub cover_ag_rms_slope: f32,
+    pub cover_ag_correlation_micrometers: f32,
+    pub cover_ag_anisotropy: f32,
     pub environment_source_id: &'static str,
     pub environment_amount: f32,
     pub environment_rotation_x_degrees: f32,
@@ -481,6 +521,10 @@ pub struct ResolvedTestAuthoringSelection {
     pub environment_sphere_center_z_meters: f32,
     pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
+    pub cover_glow_scatter_fraction: f32,
+    pub cover_glow_core_radius_millimeters: f32,
+    pub cover_glow_tail_radius_millimeters: f32,
+    pub cover_glow_tail_fraction: f32,
     pub lens_preset_id: &'static str,
     pub focal_length_millimeters: f32,
     pub lens_evaluation_model_id: &'static str,
@@ -810,6 +854,7 @@ pub enum TestAuthoringError {
     InvalidSourceAdjustment,
     InvalidSubpixelGeometryAmount,
     InvalidMoireSaturation,
+    InvalidMoireFilterStrength,
     InvalidPanelUniformityAmount,
     InvalidPanelLightSpreadAmount,
     UnknownCapturePreset,
@@ -819,6 +864,7 @@ pub enum TestAuthoringError {
     InvalidGeometry,
     UnknownCoverGlassPreset,
     InvalidCoverGlassAmount,
+    InvalidCoverGlassProfile,
     InvalidCoverAgMicrotextureAmount,
     UnknownEnvironmentPreset,
     InvalidEnvironmentAmount,
@@ -854,6 +900,7 @@ impl core::fmt::Display for TestAuthoringError {
             Self::InvalidSourceAdjustment => "Source Adjustment is invalid",
             Self::InvalidSubpixelGeometryAmount => "Subpixel Geometry amount is outside 0..=4",
             Self::InvalidMoireSaturation => "Moiré saturation is outside 0..=4",
+            Self::InvalidMoireFilterStrength => "Moiré filter strength is outside 0..=4",
             Self::InvalidPanelUniformityAmount => "Panel Uniformity amount is outside 0..=4",
             Self::InvalidPanelLightSpreadAmount => "Panel Light Spread amount is outside 0..=4",
             Self::UnknownCapturePreset => "unknown Test Capture preset",
@@ -863,6 +910,9 @@ impl core::fmt::Display for TestAuthoringError {
             Self::InvalidGeometry => "Test relative geometry is invalid",
             Self::UnknownCoverGlassPreset => "unknown Test Cover Glass preset",
             Self::InvalidCoverGlassAmount => "Cover Glass amount is outside 0..=2",
+            Self::InvalidCoverGlassProfile => {
+                "Cover Glass parameters are outside their physical bounds"
+            }
             Self::InvalidCoverAgMicrotextureAmount => {
                 "Cover AG Microtexture amount is outside 0..=4"
             }
@@ -949,6 +999,8 @@ pub fn default_test_authoring_selection(
     let capture = capture("iphone-16e-main-48mp")?;
     let seed_distance = 0.15_f32;
     let seed_orbit_y = -5.0_f32;
+    let cover = cover_glass_preset(device.default_cover_glass_preset_id)
+        .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
     resolve_test_authoring_selection(TestAuthoringSelection {
         input_transform_id: input.stable_id(),
         output_signal_id: output.stable_id(),
@@ -961,6 +1013,7 @@ pub fn default_test_authoring_selection(
         source_adjustment: SceneLinearAdjustment::NEUTRAL,
         subpixel_geometry_amount: 1.0,
         moire_saturation: 1.0,
+        moire_filter_strength: 0.0,
         panel_uniformity_amount: device.uniformity.character_strength,
         panel_light_spread_amount: device.light_spread.character_strength,
         capture_preset_id: capture.id,
@@ -983,11 +1036,23 @@ pub fn default_test_authoring_selection(
         screen_rotation_z_degrees: 0.0,
         cover_glass_preset_id: device.default_cover_glass_preset_id,
         cover_glass_amount: 1.0,
-        cover_ag_microtexture_amount: cover_glass_preset(device.default_cover_glass_preset_id)
-            .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?
+        cover_ag_microtexture_amount: cover.profile.anti_glare_microtexture.character_strength,
+        cover_thickness_millimeters: cover.profile.thickness_millimeters,
+        cover_refractive_index: cover.profile.refractive_index,
+        cover_ar_efficiency: cover.profile.anti_reflective_efficiency,
+        cover_absorption_rgb: [
+            cover.profile.absorption_per_millimeter.r,
+            cover.profile.absorption_per_millimeter.g,
+            cover.profile.absorption_per_millimeter.b,
+        ],
+        cover_roughness: cover.profile.roughness,
+        cover_haze: cover.profile.haze,
+        cover_ag_rms_slope: cover.profile.anti_glare_microtexture.rms_slope,
+        cover_ag_correlation_micrometers: cover
             .profile
             .anti_glare_microtexture
-            .character_strength,
+            .correlation_length_micrometers,
+        cover_ag_anisotropy: cover.profile.anti_glare_microtexture.anisotropy,
         environment_source_id: "environment-none",
         environment_amount: 0.0,
         environment_rotation_x_degrees: 0.0,
@@ -1002,7 +1067,11 @@ pub fn default_test_authoring_selection(
         environment_sphere_center_y_meters: 0.0,
         environment_sphere_center_z_meters: 0.0,
         environment_sphere_radius_meters: 5.0,
-        cover_glow_amount: 1.0,
+        cover_glow_amount: cover.profile.glow.character_strength,
+        cover_glow_scatter_fraction: cover.profile.glow.scatter_fraction,
+        cover_glow_core_radius_millimeters: cover.profile.glow.core_radius_millimeters,
+        cover_glow_tail_radius_millimeters: cover.profile.glow.tail_radius_millimeters,
+        cover_glow_tail_fraction: cover.profile.glow.tail_fraction,
         lens_preset_id: capture.default_lens_preset_id,
         focal_length_millimeters: lens(capture.default_lens_preset_id)?.nominal_focal_length.0,
         lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
@@ -1081,6 +1150,11 @@ pub fn resolve_test_authoring_selection(
     if !selection.moire_saturation.is_finite() || !(0.0..=4.0).contains(&selection.moire_saturation)
     {
         return Err(TestAuthoringError::InvalidMoireSaturation);
+    }
+    if !selection.moire_filter_strength.is_finite()
+        || !(0.0..=4.0).contains(&selection.moire_filter_strength)
+    {
+        return Err(TestAuthoringError::InvalidMoireFilterStrength);
     }
     if !selection.panel_uniformity_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.panel_uniformity_amount)
@@ -1168,6 +1242,33 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidCoverAgMicrotextureAmount);
     }
+    let mut authored_cover = cover.profile;
+    authored_cover.character_strength = selection.cover_glass_amount;
+    authored_cover.thickness_millimeters = selection.cover_thickness_millimeters;
+    authored_cover.refractive_index = selection.cover_refractive_index;
+    authored_cover.anti_reflective_efficiency = selection.cover_ar_efficiency;
+    authored_cover.absorption_per_millimeter = LinearRgb::new(
+        selection.cover_absorption_rgb[0],
+        selection.cover_absorption_rgb[1],
+        selection.cover_absorption_rgb[2],
+    );
+    authored_cover.roughness = selection.cover_roughness;
+    authored_cover.haze = selection.cover_haze;
+    authored_cover.anti_glare_microtexture.character_strength =
+        selection.cover_ag_microtexture_amount;
+    authored_cover.anti_glare_microtexture.rms_slope = selection.cover_ag_rms_slope;
+    authored_cover
+        .anti_glare_microtexture
+        .correlation_length_micrometers = selection.cover_ag_correlation_micrometers;
+    authored_cover.anti_glare_microtexture.anisotropy = selection.cover_ag_anisotropy;
+    authored_cover.glow.character_strength = selection.cover_glow_amount;
+    authored_cover.glow.scatter_fraction = selection.cover_glow_scatter_fraction;
+    authored_cover.glow.core_radius_millimeters = selection.cover_glow_core_radius_millimeters;
+    authored_cover.glow.tail_radius_millimeters = selection.cover_glow_tail_radius_millimeters;
+    authored_cover.glow.tail_fraction = selection.cover_glow_tail_fraction;
+    authored_cover
+        .validate()
+        .map_err(|_| TestAuthoringError::InvalidCoverGlassProfile)?;
     let environment = environment_preset(selection.environment_source_id);
     if environment.is_none() && selection.environment_source_id != IMAGE_ENVIRONMENT_SOURCE_ID {
         return Err(TestAuthoringError::UnknownEnvironmentPreset);
@@ -1355,6 +1456,7 @@ pub fn resolve_test_authoring_selection(
         source_adjustment: selection.source_adjustment,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
         moire_saturation: selection.moire_saturation,
+        moire_filter_strength: selection.moire_filter_strength,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: capture.id,
@@ -1382,6 +1484,15 @@ pub fn resolve_test_authoring_selection(
         cover_glass_preset_id: cover.id,
         cover_glass_amount: selection.cover_glass_amount,
         cover_ag_microtexture_amount: selection.cover_ag_microtexture_amount,
+        cover_thickness_millimeters: selection.cover_thickness_millimeters,
+        cover_refractive_index: selection.cover_refractive_index,
+        cover_ar_efficiency: selection.cover_ar_efficiency,
+        cover_absorption_rgb: selection.cover_absorption_rgb,
+        cover_roughness: selection.cover_roughness,
+        cover_haze: selection.cover_haze,
+        cover_ag_rms_slope: selection.cover_ag_rms_slope,
+        cover_ag_correlation_micrometers: selection.cover_ag_correlation_micrometers,
+        cover_ag_anisotropy: selection.cover_ag_anisotropy,
         environment_source_id: environment
             .map(|environment| environment.id)
             .unwrap_or(IMAGE_ENVIRONMENT_SOURCE_ID),
@@ -1399,6 +1510,10 @@ pub fn resolve_test_authoring_selection(
         environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
+        cover_glow_scatter_fraction: selection.cover_glow_scatter_fraction,
+        cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
+        cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
+        cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
         lens_preset_id: lens.id,
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_evaluation_model_id,
@@ -1872,6 +1987,15 @@ pub fn test_page_descriptor(
             1.0,
             "×",
         ),
+        scalar_control(
+            MOIRE_FILTER_CONTROL_ID,
+            "Supresión de moiré",
+            selection.moire_filter_strength,
+            0.0,
+            4.0,
+            0.0,
+            "×",
+        ),
         toggle_control(
             AUTOFOCUS_CONTROL_ID,
             "Autofocus",
@@ -2060,7 +2184,7 @@ pub fn test_page_descriptor(
                 controls: vec![
                     scalar_control(
                         SUBPIXEL_GEOMETRY_CONTROL_ID,
-                        "Intensidad trama / moiré",
+                        "Contraste de trama",
                         selection.subpixel_geometry_amount,
                         0.0,
                         4.0,
@@ -2160,6 +2284,108 @@ pub fn test_page_descriptor(
                                 .profile
                                 .anti_glare_microtexture
                                 .character_strength,
+                            "×",
+                        ),
+                        scalar_control(
+                            COVER_THICKNESS_CONTROL_ID,
+                            "Grosor",
+                            selection.cover_thickness_millimeters,
+                            0.01,
+                            20.0,
+                            selected_cover.profile.thickness_millimeters,
+                            "mm",
+                        ),
+                        scalar_control(
+                            COVER_REFRACTIVE_INDEX_CONTROL_ID,
+                            "Índice de refracción",
+                            selection.cover_refractive_index,
+                            1.0,
+                            2.5,
+                            selected_cover.profile.refractive_index,
+                            "n",
+                        ),
+                        scalar_control(
+                            COVER_AR_EFFICIENCY_CONTROL_ID,
+                            "Eficiencia antirreflejos",
+                            selection.cover_ar_efficiency,
+                            0.0,
+                            1.0,
+                            selected_cover.profile.anti_reflective_efficiency,
+                            "×",
+                        ),
+                        scalar_control(
+                            COVER_ABSORPTION_R_CONTROL_ID,
+                            "Absorción R",
+                            selection.cover_absorption_rgb[0],
+                            0.0,
+                            2.0,
+                            selected_cover.profile.absorption_per_millimeter.r,
+                            "/mm",
+                        ),
+                        scalar_control(
+                            COVER_ABSORPTION_G_CONTROL_ID,
+                            "Absorción G",
+                            selection.cover_absorption_rgb[1],
+                            0.0,
+                            2.0,
+                            selected_cover.profile.absorption_per_millimeter.g,
+                            "/mm",
+                        ),
+                        scalar_control(
+                            COVER_ABSORPTION_B_CONTROL_ID,
+                            "Absorción B",
+                            selection.cover_absorption_rgb[2],
+                            0.0,
+                            2.0,
+                            selected_cover.profile.absorption_per_millimeter.b,
+                            "/mm",
+                        ),
+                        scalar_control(
+                            COVER_ROUGHNESS_CONTROL_ID,
+                            "Rugosidad",
+                            selection.cover_roughness,
+                            0.0,
+                            1.0,
+                            selected_cover.profile.roughness,
+                            "α",
+                        ),
+                        scalar_control(
+                            COVER_HAZE_CONTROL_ID,
+                            "Haze",
+                            selection.cover_haze,
+                            0.0,
+                            1.0,
+                            selected_cover.profile.haze,
+                            "×",
+                        ),
+                        scalar_control(
+                            COVER_AG_RMS_SLOPE_CONTROL_ID,
+                            "Pendiente RMS microtextura",
+                            selection.cover_ag_rms_slope,
+                            0.0,
+                            1.0,
+                            selected_cover.profile.anti_glare_microtexture.rms_slope,
+                            "Δh/Δx",
+                        ),
+                        scalar_control(
+                            COVER_AG_CORRELATION_CONTROL_ID,
+                            "Escala microtextura",
+                            selection.cover_ag_correlation_micrometers,
+                            0.1,
+                            1_000.0,
+                            selected_cover
+                                .profile
+                                .anti_glare_microtexture
+                                .correlation_length_micrometers,
+                            "µm",
+                        ),
+                        scalar_control(
+                            COVER_AG_ANISOTROPY_CONTROL_ID,
+                            "Anisotropía microtextura",
+                            selection.cover_ag_anisotropy,
+                            0.0,
+                            1.0,
+                            selected_cover.profile.anti_glare_microtexture.anisotropy,
                             "×",
                         ),
                         choice_control(
@@ -2318,15 +2544,53 @@ pub fn test_page_descriptor(
                 input_artifact: PhysicalArtifactId::CoveredDirectionalRadianceV1,
                 output_artifact: PhysicalArtifactId::GlassScatteredRadianceV1,
                 preview_result: TestPreviewResult::CoverGlow,
-                controls: vec![scalar_control(
-                    COVER_GLOW_AMOUNT_CONTROL_ID,
-                    "Carácter del resplandor",
-                    selection.cover_glow_amount,
-                    0.0,
-                    4.0,
-                    selected_cover.profile.glow.character_strength,
-                    "×",
-                )],
+                controls: vec![
+                    scalar_control(
+                        COVER_GLOW_AMOUNT_CONTROL_ID,
+                        "Carácter del resplandor",
+                        selection.cover_glow_amount,
+                        0.0,
+                        4.0,
+                        selected_cover.profile.glow.character_strength,
+                        "×",
+                    ),
+                    scalar_control(
+                        COVER_GLOW_SCATTER_CONTROL_ID,
+                        "Fracción dispersada",
+                        selection.cover_glow_scatter_fraction,
+                        0.0,
+                        0.35,
+                        selected_cover.profile.glow.scatter_fraction,
+                        "×",
+                    ),
+                    scalar_control(
+                        COVER_GLOW_CORE_RADIUS_CONTROL_ID,
+                        "Radio del núcleo",
+                        selection.cover_glow_core_radius_millimeters,
+                        0.01,
+                        5.0,
+                        selected_cover.profile.glow.core_radius_millimeters,
+                        "mm",
+                    ),
+                    scalar_control(
+                        COVER_GLOW_TAIL_RADIUS_CONTROL_ID,
+                        "Radio de la cola",
+                        selection.cover_glow_tail_radius_millimeters,
+                        0.01,
+                        30.0,
+                        selected_cover.profile.glow.tail_radius_millimeters,
+                        "mm",
+                    ),
+                    scalar_control(
+                        COVER_GLOW_TAIL_FRACTION_CONTROL_ID,
+                        "Peso de la cola",
+                        selection.cover_glow_tail_fraction,
+                        0.0,
+                        1.0,
+                        selected_cover.profile.glow.tail_fraction,
+                        "×",
+                    ),
+                ],
             },
             TestPhaseDescriptor {
                 id: LENS_PROJECTION_PHASE_ID,
@@ -2646,6 +2910,7 @@ pub fn test_page_descriptor(
         quick_control_ids: vec![
             SUBPIXEL_GEOMETRY_CONTROL_ID,
             MOIRE_SATURATION_CONTROL_ID,
+            MOIRE_FILTER_CONTROL_ID,
             WHITE_LUMINANCE_CONTROL_ID,
             F_STOP_CONTROL_ID,
             SHUTTER_ANGLE_CONTROL_ID,
@@ -2736,6 +3001,7 @@ pub fn apply_test_choice(
                 .profile
                 .glow
                 .character_strength;
+            materialize_cover_profile(&mut next, device.default_cover_glass_preset_id)?;
         }
         COLOR_MODE_CONTROL_ID => next.color_mode_id = option_id,
         PLACEMENT_CONTROL_ID => next.placement_id = option_id,
@@ -2786,6 +3052,7 @@ pub fn apply_test_choice(
             next.cover_ag_microtexture_amount =
                 cover.profile.anti_glare_microtexture.character_strength;
             next.cover_glow_amount = cover.profile.glow.character_strength;
+            materialize_cover_profile(&mut next, cover.id)?;
         }
         ENVIRONMENT_CONTROL_ID => {
             if option_id == IMAGE_ENVIRONMENT_SOURCE_ID {
@@ -2842,6 +3109,7 @@ pub fn apply_test_choice(
         WHITE_LUMINANCE_CONTROL_ID
         | SUBPIXEL_GEOMETRY_CONTROL_ID
         | MOIRE_SATURATION_CONTROL_ID
+        | MOIRE_FILTER_CONTROL_ID
         | PANEL_UNIFORMITY_CONTROL_ID
         | PANEL_LIGHT_SPREAD_CONTROL_ID
         | CAMERA_DISTANCE_CONTROL_ID
@@ -2910,6 +3178,39 @@ pub fn apply_test_choice(
     resolve_test_authoring_selection(next)
 }
 
+fn materialize_cover_profile(
+    selection: &mut TestAuthoringSelection<'_>,
+    preset_id: &str,
+) -> Result<(), TestAuthoringError> {
+    let cover = cover_glass_preset(preset_id).ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
+    selection.cover_glass_preset_id = cover.id;
+    selection.cover_glass_amount = cover.profile.character_strength;
+    selection.cover_ag_microtexture_amount =
+        cover.profile.anti_glare_microtexture.character_strength;
+    selection.cover_thickness_millimeters = cover.profile.thickness_millimeters;
+    selection.cover_refractive_index = cover.profile.refractive_index;
+    selection.cover_ar_efficiency = cover.profile.anti_reflective_efficiency;
+    selection.cover_absorption_rgb = [
+        cover.profile.absorption_per_millimeter.r,
+        cover.profile.absorption_per_millimeter.g,
+        cover.profile.absorption_per_millimeter.b,
+    ];
+    selection.cover_roughness = cover.profile.roughness;
+    selection.cover_haze = cover.profile.haze;
+    selection.cover_ag_rms_slope = cover.profile.anti_glare_microtexture.rms_slope;
+    selection.cover_ag_correlation_micrometers = cover
+        .profile
+        .anti_glare_microtexture
+        .correlation_length_micrometers;
+    selection.cover_ag_anisotropy = cover.profile.anti_glare_microtexture.anisotropy;
+    selection.cover_glow_amount = cover.profile.glow.character_strength;
+    selection.cover_glow_scatter_fraction = cover.profile.glow.scatter_fraction;
+    selection.cover_glow_core_radius_millimeters = cover.profile.glow.core_radius_millimeters;
+    selection.cover_glow_tail_radius_millimeters = cover.profile.glow.tail_radius_millimeters;
+    selection.cover_glow_tail_fraction = cover.profile.glow.tail_fraction;
+    Ok(())
+}
+
 fn unresolved_test_selection(
     current: ResolvedTestAuthoringSelection,
 ) -> TestAuthoringSelection<'static> {
@@ -2925,6 +3226,7 @@ fn unresolved_test_selection(
         source_adjustment: current.source_adjustment,
         subpixel_geometry_amount: current.subpixel_geometry_amount,
         moire_saturation: current.moire_saturation,
+        moire_filter_strength: current.moire_filter_strength,
         panel_uniformity_amount: current.panel_uniformity_amount,
         panel_light_spread_amount: current.panel_light_spread_amount,
         capture_preset_id: current.capture_preset_id,
@@ -2949,6 +3251,15 @@ fn unresolved_test_selection(
         cover_glass_preset_id: current.cover_glass_preset_id,
         cover_glass_amount: current.cover_glass_amount,
         cover_ag_microtexture_amount: current.cover_ag_microtexture_amount,
+        cover_thickness_millimeters: current.cover_thickness_millimeters,
+        cover_refractive_index: current.cover_refractive_index,
+        cover_ar_efficiency: current.cover_ar_efficiency,
+        cover_absorption_rgb: current.cover_absorption_rgb,
+        cover_roughness: current.cover_roughness,
+        cover_haze: current.cover_haze,
+        cover_ag_rms_slope: current.cover_ag_rms_slope,
+        cover_ag_correlation_micrometers: current.cover_ag_correlation_micrometers,
+        cover_ag_anisotropy: current.cover_ag_anisotropy,
         environment_source_id: current.environment_source_id,
         environment_amount: current.environment_amount,
         environment_rotation_x_degrees: current.environment_rotation_x_degrees,
@@ -2964,6 +3275,10 @@ fn unresolved_test_selection(
         environment_sphere_center_z_meters: current.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: current.environment_sphere_radius_meters,
         cover_glow_amount: current.cover_glow_amount,
+        cover_glow_scatter_fraction: current.cover_glow_scatter_fraction,
+        cover_glow_core_radius_millimeters: current.cover_glow_core_radius_millimeters,
+        cover_glow_tail_radius_millimeters: current.cover_glow_tail_radius_millimeters,
+        cover_glow_tail_fraction: current.cover_glow_tail_fraction,
         lens_preset_id: current.lens_preset_id,
         focal_length_millimeters: current.focal_length_millimeters,
         lens_amount: current.lens_amount,
@@ -3093,6 +3408,7 @@ pub fn apply_test_scalar(
         WHITE_LUMINANCE_CONTROL_ID => next.white_luminance_nits = value,
         SUBPIXEL_GEOMETRY_CONTROL_ID => next.subpixel_geometry_amount = value,
         MOIRE_SATURATION_CONTROL_ID => next.moire_saturation = value,
+        MOIRE_FILTER_CONTROL_ID => next.moire_filter_strength = value,
         PANEL_UNIFORMITY_CONTROL_ID => next.panel_uniformity_amount = value,
         PANEL_LIGHT_SPREAD_CONTROL_ID => next.panel_light_spread_amount = value,
         CAMERA_DISTANCE_CONTROL_ID => next.camera_distance_meters = value,
@@ -3112,6 +3428,17 @@ pub fn apply_test_scalar(
         SCREEN_ROTATION_Z_CONTROL_ID => next.screen_rotation_z_degrees = value,
         COVER_GLASS_AMOUNT_CONTROL_ID => next.cover_glass_amount = value,
         COVER_AG_MICROTEXTURE_AMOUNT_CONTROL_ID => next.cover_ag_microtexture_amount = value,
+        COVER_THICKNESS_CONTROL_ID => next.cover_thickness_millimeters = value,
+        COVER_REFRACTIVE_INDEX_CONTROL_ID => next.cover_refractive_index = value,
+        COVER_AR_EFFICIENCY_CONTROL_ID => next.cover_ar_efficiency = value,
+        COVER_ABSORPTION_R_CONTROL_ID => next.cover_absorption_rgb[0] = value,
+        COVER_ABSORPTION_G_CONTROL_ID => next.cover_absorption_rgb[1] = value,
+        COVER_ABSORPTION_B_CONTROL_ID => next.cover_absorption_rgb[2] = value,
+        COVER_ROUGHNESS_CONTROL_ID => next.cover_roughness = value,
+        COVER_HAZE_CONTROL_ID => next.cover_haze = value,
+        COVER_AG_RMS_SLOPE_CONTROL_ID => next.cover_ag_rms_slope = value,
+        COVER_AG_CORRELATION_CONTROL_ID => next.cover_ag_correlation_micrometers = value,
+        COVER_AG_ANISOTROPY_CONTROL_ID => next.cover_ag_anisotropy = value,
         ENVIRONMENT_AMOUNT_CONTROL_ID => next.environment_amount = value,
         ENVIRONMENT_ROTATION_X_CONTROL_ID => next.environment_rotation_x_degrees = value,
         ENVIRONMENT_ROTATION_Y_CONTROL_ID => next.environment_rotation_y_degrees = value,
@@ -3130,6 +3457,10 @@ pub fn apply_test_scalar(
         ENVIRONMENT_CENTER_Z_CONTROL_ID => next.environment_sphere_center_z_meters = value,
         ENVIRONMENT_RADIUS_CONTROL_ID => next.environment_sphere_radius_meters = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
+        COVER_GLOW_SCATTER_CONTROL_ID => next.cover_glow_scatter_fraction = value,
+        COVER_GLOW_CORE_RADIUS_CONTROL_ID => next.cover_glow_core_radius_millimeters = value,
+        COVER_GLOW_TAIL_RADIUS_CONTROL_ID => next.cover_glow_tail_radius_millimeters = value,
+        COVER_GLOW_TAIL_FRACTION_CONTROL_ID => next.cover_glow_tail_fraction = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
         FOCAL_LENGTH_CONTROL_ID => next.focal_length_millimeters = value,
         F_STOP_CONTROL_ID => next.f_stop = value,
@@ -3221,6 +3552,7 @@ mod tests {
             source_adjustment: SceneLinearAdjustment::NEUTRAL,
             subpixel_geometry_amount: 1.0,
             moire_saturation: 1.0,
+            moire_filter_strength: 0.0,
             panel_uniformity_amount: 1.0,
             panel_light_spread_amount: 1.0,
             capture_preset_id: "iphone-16e-main-48mp",
@@ -3245,6 +3577,15 @@ mod tests {
             cover_glass_preset_id: "cover-matte-ar",
             cover_glass_amount: 1.0,
             cover_ag_microtexture_amount: 1.0,
+            cover_thickness_millimeters: 0.8,
+            cover_refractive_index: 1.5,
+            cover_ar_efficiency: 0.62,
+            cover_absorption_rgb: [0.012; 3],
+            cover_roughness: 0.18,
+            cover_haze: 0.03,
+            cover_ag_rms_slope: 0.03,
+            cover_ag_correlation_micrometers: 60.0,
+            cover_ag_anisotropy: 0.12,
             environment_source_id: "environment-none",
             environment_amount: 0.0,
             environment_rotation_x_degrees: 0.0,
@@ -3260,6 +3601,10 @@ mod tests {
             environment_sphere_center_z_meters: 0.0,
             environment_sphere_radius_meters: 5.0,
             cover_glow_amount: 1.0,
+            cover_glow_scatter_fraction: 0.10,
+            cover_glow_core_radius_millimeters: 0.42,
+            cover_glow_tail_radius_millimeters: 3.5,
+            cover_glow_tail_fraction: 0.50,
             lens_preset_id: "iphone-16e-main-integrated",
             focal_length_millimeters: 4.2,
             lens_amount: 1.0,
@@ -3304,6 +3649,7 @@ mod tests {
             [
                 SUBPIXEL_GEOMETRY_CONTROL_ID,
                 MOIRE_SATURATION_CONTROL_ID,
+                MOIRE_FILTER_CONTROL_ID,
                 WHITE_LUMINANCE_CONTROL_ID,
                 F_STOP_CONTROL_ID,
                 SHUTTER_ANGLE_CONTROL_ID,
@@ -3929,6 +4275,75 @@ mod tests {
     }
 
     #[test]
+    fn cover_and_glow_publish_the_complete_model_authored_parameter_sets() {
+        let page = test_page_descriptor(asus()).unwrap();
+        let cover = page
+            .phases
+            .iter()
+            .find(|phase| phase.id == COVER_ENVIRONMENT_PHASE_ID)
+            .unwrap();
+        let glow = page
+            .phases
+            .iter()
+            .find(|phase| phase.id == COVER_GLOW_PHASE_ID)
+            .unwrap();
+        let control_id = |control: &TestControlRequirement| match control {
+            TestControlRequirement::Scalar { id, .. }
+            | TestControlRequirement::Choice { id, .. }
+            | TestControlRequirement::Toggle { id, .. }
+            | TestControlRequirement::Action { id, .. } => *id,
+        };
+        let cover_ids = cover.controls.iter().map(control_id).collect::<Vec<_>>();
+        let glow_ids = glow.controls.iter().map(control_id).collect::<Vec<_>>();
+        for expected in [
+            COVER_THICKNESS_CONTROL_ID,
+            COVER_REFRACTIVE_INDEX_CONTROL_ID,
+            COVER_AR_EFFICIENCY_CONTROL_ID,
+            COVER_ABSORPTION_R_CONTROL_ID,
+            COVER_ABSORPTION_G_CONTROL_ID,
+            COVER_ABSORPTION_B_CONTROL_ID,
+            COVER_ROUGHNESS_CONTROL_ID,
+            COVER_HAZE_CONTROL_ID,
+            COVER_AG_RMS_SLOPE_CONTROL_ID,
+            COVER_AG_CORRELATION_CONTROL_ID,
+            COVER_AG_ANISOTROPY_CONTROL_ID,
+        ] {
+            assert!(
+                cover_ids.contains(&expected),
+                "missing Cover control {expected}"
+            );
+        }
+        for expected in [
+            COVER_GLOW_AMOUNT_CONTROL_ID,
+            COVER_GLOW_SCATTER_CONTROL_ID,
+            COVER_GLOW_CORE_RADIUS_CONTROL_ID,
+            COVER_GLOW_TAIL_RADIUS_CONTROL_ID,
+            COVER_GLOW_TAIL_FRACTION_CONTROL_ID,
+        ] {
+            assert!(
+                glow_ids.contains(&expected),
+                "missing Cover Glow control {expected}"
+            );
+        }
+
+        let edited = apply_test_scalar(asus(), COVER_GLOW_TAIL_RADIUS_CONTROL_ID, 12.0).unwrap();
+        let changed = apply_test_choice(
+            unresolved_test_selection(edited),
+            COVER_GLASS_CONTROL_ID,
+            "cover-glossy-strong-ar",
+        )
+        .unwrap();
+        assert_eq!(
+            changed.cover_glow_tail_radius_millimeters,
+            cover_glass_preset("cover-glossy-strong-ar")
+                .unwrap()
+                .profile
+                .glow
+                .tail_radius_millimeters
+        );
+    }
+
+    #[test]
     fn invalid_intents_fail_at_the_application_boundary() {
         assert_eq!(
             apply_test_choice(asus(), COLOR_MODE_CONTROL_ID, "rec709-gamma22"),
@@ -3941,6 +4356,10 @@ mod tests {
         assert_eq!(
             apply_test_scalar(asus(), SUBPIXEL_GEOMETRY_CONTROL_ID, 4.1),
             Err(TestAuthoringError::InvalidSubpixelGeometryAmount)
+        );
+        assert_eq!(
+            apply_test_scalar(asus(), MOIRE_FILTER_CONTROL_ID, 4.1),
+            Err(TestAuthoringError::InvalidMoireFilterStrength)
         );
     }
 

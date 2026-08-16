@@ -1372,7 +1372,7 @@ impl MetalPhysicalPipeline {
                 camera.lens.center_softness_micrometers,
                 camera.lens.edge_softness_micrometers,
                 plan.lens_amount,
-                0.0,
+                plan.moire_filter_strength,
             ],
             lens_veiling_glare: [
                 camera.lens.veiling_glare_fraction,
@@ -1779,6 +1779,7 @@ mod tests {
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
                 moire_saturation: 1.0,
+                moire_filter_strength: 0.0,
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
                 cover: screen_cover::CoverGlassProfile::NEUTRAL,
@@ -1972,10 +1973,10 @@ mod tests {
     }
 
     #[test]
-    fn moire_saturation_matches_cpu_without_grading_continuous_panel_emission() {
+    fn moire_controls_match_cpu_without_grading_continuous_panel_emission() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
-        for saturation in [0.0, 1.0, 2.0] {
+        for (saturation, filter_strength) in [(0.0, 0.0), (1.0, 1.0), (2.0, 4.0)] {
             let (input, mut plan) = fixture(
                 RasterPlacement::Stretch,
                 FlatPanelQuality::High,
@@ -1984,6 +1985,7 @@ mod tests {
                 1.0,
             );
             plan.moire_saturation = saturation;
+            plan.moire_filter_strength = filter_strength;
             plan.requested_intermediate = PhysicalIntermediate::SubpixelRadiance;
             let source = texture(&device, input.width, input.height, &input.acescg);
             let signal_values = input
@@ -2004,7 +2006,7 @@ mod tests {
             .expect("CPU oracle");
             let gpu = backend
                 .evaluate(&source, &signal, plan, |_| {}, || false)
-                .expect("Metal moire-saturation result");
+                .expect("Metal moire controls result");
             let maximum = read(&gpu.texture)
                 .iter()
                 .zip(cpu.presentation_rgba())

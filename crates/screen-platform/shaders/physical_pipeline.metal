@@ -1413,14 +1413,16 @@ kernel void evaluate_physical_pipeline(
                     footprint.projected_sensor_half_extent;
                 const float2 target = hit.valid ? hit.uv : float2(-2.0f);
                 const float2 center = mix(flat_center, target, p.panel_angular_scene.w);
-                const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
+                const bool exact_flat = p.panel_angular_scene.w == 0.0f
+                    && p.lens_softness.z == 0.0f && p.lens_softness.w == 0.0f;
                 const float2 sensor_half_extent = mix(
                     half_extent, projected_sensor_half_extent, p.panel_angular_scene.w);
+                const float2 antialias_extra = half_extent * p.lens_softness.w;
                 const float2 reconstructed_half_extent =
-                    sensor_half_extent + continuous_half_extent;
+                    sensor_half_extent + continuous_half_extent + antialias_extra;
                 const float2 carrier_half_extent =
                     sensor_half_extent * float2(0.25f, 1.0f)
-                    + continuous_half_extent;
+                    + continuous_half_extent + antialias_extra;
                 const float2 channel_minimum = exact_flat
                     ? minimum_uv : center - reconstructed_half_extent;
                 const float2 channel_maximum = exact_flat
@@ -1500,17 +1502,20 @@ kernel void evaluate_physical_pipeline(
                 cover_direction += green_hit.reflection_direction * layer_weight;
                 cover_uv += green_hit.uv * layer_weight;
                 cover_half_extent += (green_projected_sensor_half_extent
-                    + green_continuous_half_extent) * layer_weight;
+                    + green_continuous_half_extent
+                    + half_extent * p.lens_softness.w) * layer_weight;
                 cover_irradiance += sample_irradiance * layer_weight;
                 cover_weight += layer_weight;
             }
             const float2 green_target = green_hit.valid ? green_hit.uv : float2(-2.0f);
             const float2 green_center = mix(flat_center, green_target, p.panel_angular_scene.w);
-            const bool exact_flat = p.panel_angular_scene.w == 0.0f && p.lens_softness.z == 0.0f;
+            const bool exact_flat = p.panel_angular_scene.w == 0.0f
+                && p.lens_softness.z == 0.0f && p.lens_softness.w == 0.0f;
             const float2 green_sensor_half_extent = mix(
                 half_extent, green_projected_sensor_half_extent, p.panel_angular_scene.w);
             const float2 green_reconstructed_half_extent =
-                green_sensor_half_extent + green_continuous_half_extent;
+                green_sensor_half_extent + green_continuous_half_extent
+                + half_extent * p.lens_softness.w;
             const float4 ideal_sample = area_sample(source_acescg, source_row_prefix,
                 exact_flat ? minimum_uv : green_center - green_reconstructed_half_extent,
                 exact_flat ? maximum_uv : green_center + green_reconstructed_half_extent,

@@ -32,6 +32,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         sourceTint: 0,
         subpixelGeometryAmount: 1,
         moireSaturation: 1,
+        moireFilterStrength: 0,
         panelUniformityAmount: 1,
         panelLightSpreadAmount: 1,
         capturePresetID: "iphone-16e-main-48mp",
@@ -56,6 +57,15 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         coverGlassPresetID: "cover-matte-ar",
         coverGlassAmount: 1,
         coverAgMicrotextureAmount: 1,
+        coverThicknessMillimeters: 0.7,
+        coverRefractiveIndex: 1.5,
+        coverAREfficiency: 0.62,
+        coverAbsorptionRGB: [0.0004, 0.0003, 0.0002],
+        coverRoughness: 0.18,
+        coverHaze: 0.03,
+        coverAgRMSSlope: 0.03,
+        coverAgCorrelationMicrometers: 60,
+        coverAgAnisotropy: 0.12,
         environmentSourceID: "environment-none",
         environmentAmount: 0,
         environmentRotationXDegrees: 0,
@@ -71,6 +81,10 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         environmentSphereCenterZMeters: 0,
         environmentSphereRadiusMeters: 5,
         coverGlowAmount: 1,
+        coverGlowScatterFraction: 0.10,
+        coverGlowCoreRadiusMillimeters: 0.42,
+        coverGlowTailRadiusMillimeters: 3.5,
+        coverGlowTailFraction: 0.50,
         lensPresetID: "iphone-16e-main-integrated",
         focalLengthMillimeters: 4.2,
         lensAmount: 1,
@@ -245,8 +259,8 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(snapshot.presentation.previewControls.count == 1)
     #expect(snapshot.presentation.phases.allSatisfy { !$0.effectSummary.isEmpty })
     #expect(snapshot.presentation.phases[4].headerControlID == "subpixel-geometry-amount")
-    #expect(snapshot.presentation.quickControlIDs.prefix(2) == [
-        "subpixel-geometry-amount", "moire-saturation",
+    #expect(snapshot.presentation.quickControlIDs.prefix(3) == [
+        "subpixel-geometry-amount", "moire-saturation", "moire-antialias-filter",
     ])
     #expect(snapshot.presentation.phases[4].sections.flatMap(\.controls).map(\.id) == [
         "subpixel-geometry-amount", "moire-saturation",

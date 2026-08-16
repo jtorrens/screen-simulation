@@ -43,6 +43,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let sourceTint: Double
     let subpixelGeometryAmount: Double
     let moireSaturation: Double
+    let moireFilterStrength: Double
     let panelUniformityAmount: Double
     let panelLightSpreadAmount: Double
     let capturePresetID: String
@@ -67,6 +68,15 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let coverGlassPresetID: String
     let coverGlassAmount: Double
     let coverAgMicrotextureAmount: Double
+    let coverThicknessMillimeters: Double
+    let coverRefractiveIndex: Double
+    let coverAREfficiency: Double
+    let coverAbsorptionRGB: [Double]
+    let coverRoughness: Double
+    let coverHaze: Double
+    let coverAgRMSSlope: Double
+    let coverAgCorrelationMicrometers: Double
+    let coverAgAnisotropy: Double
     let environmentSourceID: String
     let environmentAmount: Double
     var environmentRotationXDegrees: Double
@@ -82,6 +92,10 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     var environmentSphereCenterZMeters: Double
     var environmentSphereRadiusMeters: Double
     let coverGlowAmount: Double
+    let coverGlowScatterFraction: Double
+    let coverGlowCoreRadiusMillimeters: Double
+    let coverGlowTailRadiusMillimeters: Double
+    let coverGlowTailFraction: Double
     let lensPresetID: String
     var focalLengthMillimeters: Double
     let lensAmount: Double
@@ -462,6 +476,7 @@ enum RustTestAuthoringCoordinator {
             sourceTint: Double(raw.source_tint),
             subpixelGeometryAmount: Double(raw.subpixel_geometry_amount),
             moireSaturation: Double(raw.moire_saturation),
+            moireFilterStrength: Double(raw.moire_filter_strength),
             panelUniformityAmount: Double(raw.panel_uniformity_amount),
             panelLightSpreadAmount: Double(raw.panel_light_spread_amount),
             capturePresetID: string(raw.capture_preset_id),
@@ -486,6 +501,15 @@ enum RustTestAuthoringCoordinator {
             coverGlassPresetID: string(raw.cover_glass_preset_id),
             coverGlassAmount: Double(raw.cover_glass_amount),
             coverAgMicrotextureAmount: Double(raw.cover_ag_microtexture_amount),
+            coverThicknessMillimeters: Double(raw.cover_thickness_millimeters),
+            coverRefractiveIndex: Double(raw.cover_refractive_index),
+            coverAREfficiency: Double(raw.cover_ar_efficiency),
+            coverAbsorptionRGB: [Double(raw.cover_absorption_rgb.0), Double(raw.cover_absorption_rgb.1), Double(raw.cover_absorption_rgb.2)],
+            coverRoughness: Double(raw.cover_roughness),
+            coverHaze: Double(raw.cover_haze),
+            coverAgRMSSlope: Double(raw.cover_ag_rms_slope),
+            coverAgCorrelationMicrometers: Double(raw.cover_ag_correlation_micrometers),
+            coverAgAnisotropy: Double(raw.cover_ag_anisotropy),
             environmentSourceID: string(raw.environment_source_id),
             environmentAmount: Double(raw.environment_amount),
             environmentRotationXDegrees: Double(raw.environment_rotation_x_degrees),
@@ -501,6 +525,10 @@ enum RustTestAuthoringCoordinator {
             environmentSphereCenterZMeters: Double(raw.environment_sphere_center_z_meters),
             environmentSphereRadiusMeters: Double(raw.environment_sphere_radius_meters),
             coverGlowAmount: Double(raw.cover_glow_amount),
+            coverGlowScatterFraction: Double(raw.cover_glow_scatter_fraction),
+            coverGlowCoreRadiusMillimeters: Double(raw.cover_glow_core_radius_millimeters),
+            coverGlowTailRadiusMillimeters: Double(raw.cover_glow_tail_radius_millimeters),
+            coverGlowTailFraction: Double(raw.cover_glow_tail_fraction),
             lensPresetID: string(raw.lens_preset_id),
             focalLengthMillimeters: Double(raw.focal_length_millimeters),
             lensAmount: Double(raw.lens_amount),
@@ -578,6 +606,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.source_tint = Float(selection.sourceTint)
                                             raw.subpixel_geometry_amount = Float(selection.subpixelGeometryAmount)
                                             raw.moire_saturation = Float(selection.moireSaturation)
+                                            raw.moire_filter_strength = Float(selection.moireFilterStrength)
                                             raw.panel_uniformity_amount = Float(selection.panelUniformityAmount)
                                             raw.panel_light_spread_amount = Float(selection.panelLightSpreadAmount)
                                             raw.capture_preset_id = captureView
@@ -604,6 +633,19 @@ enum RustTestAuthoringCoordinator {
                                             raw.cover_ag_microtexture_amount = Float(
                                                 selection.coverAgMicrotextureAmount
                                             )
+                                            raw.cover_thickness_millimeters = Float(selection.coverThicknessMillimeters)
+                                            raw.cover_refractive_index = Float(selection.coverRefractiveIndex)
+                                            raw.cover_ar_efficiency = Float(selection.coverAREfficiency)
+                                            raw.cover_absorption_rgb = (
+                                                Float(selection.coverAbsorptionRGB[0]),
+                                                Float(selection.coverAbsorptionRGB[1]),
+                                                Float(selection.coverAbsorptionRGB[2])
+                                            )
+                                            raw.cover_roughness = Float(selection.coverRoughness)
+                                            raw.cover_haze = Float(selection.coverHaze)
+                                            raw.cover_ag_rms_slope = Float(selection.coverAgRMSSlope)
+                                            raw.cover_ag_correlation_micrometers = Float(selection.coverAgCorrelationMicrometers)
+                                            raw.cover_ag_anisotropy = Float(selection.coverAgAnisotropy)
                                             raw.environment_source_id = environmentView
                                             raw.environment_amount = Float(selection.environmentAmount)
                                             raw.environment_rotation_x_degrees = Float(
@@ -631,6 +673,10 @@ enum RustTestAuthoringCoordinator {
                                             )
                                             raw.environment_sphere_radius_meters = Float(selection.environmentSphereRadiusMeters)
                                             raw.cover_glow_amount = Float(selection.coverGlowAmount)
+                                            raw.cover_glow_scatter_fraction = Float(selection.coverGlowScatterFraction)
+                                            raw.cover_glow_core_radius_millimeters = Float(selection.coverGlowCoreRadiusMillimeters)
+                                            raw.cover_glow_tail_radius_millimeters = Float(selection.coverGlowTailRadiusMillimeters)
+                                            raw.cover_glow_tail_fraction = Float(selection.coverGlowTailFraction)
                                             raw.lens_preset_id = lensView
                                             raw.focal_length_millimeters = Float(
                                                 selection.focalLengthMillimeters
