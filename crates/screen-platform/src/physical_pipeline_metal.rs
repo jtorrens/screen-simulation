@@ -1052,6 +1052,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::SubpixelRadiance
                 | PhysicalIntermediate::PanelUniformity
                 | PhysicalIntermediate::PanelLightSpread
+                | PhysicalIntermediate::PanelTemporal
                 | PhysicalIntermediate::RelativeGeometry
                 | PhysicalIntermediate::CoverEnvironment
                 | PhysicalIntermediate::CoverGlow
@@ -2944,6 +2945,118 @@ mod tests {
         assert!(
             maximum <= 3.0e-3,
             "camera rendering intent CPU/Metal deviation {maximum}"
+        );
+    }
+
+    #[test]
+    fn device_transparency_alpha_gradient_matches_metal_at_temporal_and_exterior_glow_boundaries() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (mut input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.0,
+            1.0,
+        );
+        input.width = 3;
+        input.height = 1;
+        input.acescg = vec![
+            [0.4, 0.4, 0.4, 0.0],
+            [0.4, 0.4, 0.4, 0.5],
+            [0.4, 0.4, 0.4, 1.0],
+        ];
+        input.device_signal = DeviceSignalRaster {
+            width: 3,
+            height: 1,
+            pixels: vec![DeviceRgb::new(0.4, 0.4, 0.4); 3],
+            alpha: vec![0.0, 0.5, 1.0],
+        };
+        plan.panel.native_width = 3;
+        plan.panel.native_height = 1;
+        plan.panel.active_width = Meters(0.003);
+        plan.panel.active_height = Meters(0.001);
+        plan.requested_width = 12;
+        plan.requested_height = 4;
+        plan.device_vfx_alpha_mode = DeviceVfxAlphaMode::DeviceTransparency;
+        plan.panel_uniformity.character_strength = 0.0;
+        plan.panel_light_spread.character_strength = 0.0;
+        plan.temporal_emission_amount = 1.0;
+        plan.temporal_emission_gain = 1.0;
+        plan.cover.character_strength = 1.0;
+        plan.cover.glow.character_strength = 1.0;
+        plan.cover.glow.scatter_fraction = 0.35;
+        plan.cover.glow.core_radius_millimeters = 0.75;
+        plan.cover.glow.tail_radius_millimeters = 1.5;
+        plan.cover.glow.tail_fraction = 0.35;
+
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .zip(&input.device_signal.alpha)
+            .map(|(value, alpha)| [value.r, value.g, value.b, *alpha])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+
+        let evaluate = |intermediate| {
+            let mut checkpoint_plan = plan;
+            checkpoint_plan.requested_intermediate = intermediate;
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input: input.clone(),
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    checkpoint_plan.requested_width,
+                    checkpoint_plan.requested_height,
+                ),
+                plan: checkpoint_plan,
+            })
+            .expect("CPU alpha checkpoint");
+            let gpu = backend
+                .evaluate(&source, &signal, checkpoint_plan, |_| {}, || false)
+                .expect("Metal alpha checkpoint");
+            let gpu_pixels = read(&gpu.texture);
+            let maximum = gpu_pixels
+                .iter()
+                .zip(cpu.presentation_rgba())
+                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(
+                maximum <= 2.0e-3,
+                "{intermediate:?} alpha CPU/Metal deviation {maximum}"
+            );
+            (cpu.presentation_rgba().to_vec(), gpu_pixels)
+        };
+
+        let (temporal_cpu, _) = evaluate(PhysicalIntermediate::PanelTemporal);
+        let row = plan.requested_height as usize / 2;
+        let pixel = |pixels: &[[f32; 4]], x: usize| pixels[row * plan.requested_width as usize + x];
+        let alpha_zero_temporal = pixel(&temporal_cpu, 1);
+        let alpha_half_temporal = pixel(&temporal_cpu, 5);
+        let alpha_one_temporal = pixel(&temporal_cpu, 10);
+        assert!(
+            alpha_zero_temporal[..3]
+                .iter()
+                .all(|value| value.abs() <= 1.0e-7),
+            "alpha zero must remove temporal panel emission: {alpha_zero_temporal:?}"
+        );
+        let half_energy = alpha_half_temporal[..3].iter().sum::<f32>();
+        let full_energy = alpha_one_temporal[..3].iter().sum::<f32>();
+        assert!(half_energy > 0.0 && full_energy > half_energy);
+        assert!(
+            (half_energy / full_energy - 0.5).abs() <= 0.08,
+            "temporal panel alpha must remain proportional: half={half_energy}, full={full_energy}"
+        );
+
+        let (glow_cpu, _) = evaluate(PhysicalIntermediate::CoverGlow);
+        let alpha_zero_glow = pixel(&glow_cpu, 1);
+        assert!(
+            alpha_zero_glow[..3].iter().sum::<f32>() > 0.0,
+            "resolved emission must create exterior glow across a locally transparent pixel"
+        );
+        assert!(
+            alpha_zero_glow[3].abs() <= 1.0e-7,
+            "exterior glow must not create device occlusion: {alpha_zero_glow:?}"
         );
     }
 }
