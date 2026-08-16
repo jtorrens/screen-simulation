@@ -262,7 +262,7 @@ struct SavedSceneCapture: Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
     let schemaVersion: Int
     var scenes: [SavedScene]
 

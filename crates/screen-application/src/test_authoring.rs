@@ -56,6 +56,7 @@ pub const WHITE_LUMINANCE_CONTROL_ID: &str = "white-luminance";
 pub const PLACEMENT_CONTROL_ID: &str = "placement";
 pub const PREVIEW_QUALITY_CONTROL_ID: &str = "preview-quality";
 pub const SUBPIXEL_GEOMETRY_CONTROL_ID: &str = "subpixel-geometry-amount";
+pub const MOIRE_INTENSITY_CONTROL_ID: &str = "moire-intensity";
 pub const MOIRE_SATURATION_CONTROL_ID: &str = "moire-saturation";
 pub const MOIRE_FILTER_CONTROL_ID: &str = "moire-antialias-filter";
 pub const PANEL_UNIFORMITY_CONTROL_ID: &str = "panel-uniformity-amount";
@@ -377,6 +378,7 @@ pub struct TestAuthoringSelection<'a> {
     pub frame_rate: FrameRate,
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
+    pub moire_intensity: f32,
     pub moire_saturation: f32,
     pub moire_filter_strength: f32,
     pub panel_uniformity_amount: f32,
@@ -472,6 +474,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub frame_rate: FrameRate,
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
+    pub moire_intensity: f32,
     pub moire_saturation: f32,
     pub moire_filter_strength: f32,
     pub panel_uniformity_amount: f32,
@@ -853,6 +856,7 @@ pub enum TestAuthoringError {
     InvalidWhiteLuminance,
     InvalidSourceAdjustment,
     InvalidSubpixelGeometryAmount,
+    InvalidMoireIntensity,
     InvalidMoireSaturation,
     InvalidMoireFilterStrength,
     InvalidPanelUniformityAmount,
@@ -899,6 +903,7 @@ impl core::fmt::Display for TestAuthoringError {
             Self::InvalidWhiteLuminance => "White Luminance is outside the device capability",
             Self::InvalidSourceAdjustment => "Source Adjustment is invalid",
             Self::InvalidSubpixelGeometryAmount => "Subpixel Geometry amount is outside 0..=4",
+            Self::InvalidMoireIntensity => "Moiré intensity is outside 0..=4",
             Self::InvalidMoireSaturation => "Moiré saturation is outside 0..=4",
             Self::InvalidMoireFilterStrength => "Moiré filter strength is outside 0..=4",
             Self::InvalidPanelUniformityAmount => "Panel Uniformity amount is outside 0..=4",
@@ -1012,6 +1017,7 @@ pub fn default_test_authoring_selection(
         frame_rate,
         source_adjustment: SceneLinearAdjustment::NEUTRAL,
         subpixel_geometry_amount: 1.0,
+        moire_intensity: 1.0,
         moire_saturation: 1.0,
         moire_filter_strength: 0.0,
         panel_uniformity_amount: device.uniformity.character_strength,
@@ -1146,6 +1152,9 @@ pub fn resolve_test_authoring_selection(
         || !(0.0..=4.0).contains(&selection.subpixel_geometry_amount)
     {
         return Err(TestAuthoringError::InvalidSubpixelGeometryAmount);
+    }
+    if !selection.moire_intensity.is_finite() || !(0.0..=4.0).contains(&selection.moire_intensity) {
+        return Err(TestAuthoringError::InvalidMoireIntensity);
     }
     if !selection.moire_saturation.is_finite() || !(0.0..=4.0).contains(&selection.moire_saturation)
     {
@@ -1455,6 +1464,7 @@ pub fn resolve_test_authoring_selection(
         frame_rate: selection.frame_rate,
         source_adjustment: selection.source_adjustment,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
+        moire_intensity: selection.moire_intensity,
         moire_saturation: selection.moire_saturation,
         moire_filter_strength: selection.moire_filter_strength,
         panel_uniformity_amount: selection.panel_uniformity_amount,
@@ -1988,8 +1998,26 @@ pub fn test_page_descriptor(
             "×",
         ),
         scalar_control(
+            MOIRE_INTENSITY_CONTROL_ID,
+            "Intensidad de moiré",
+            selection.moire_intensity,
+            0.0,
+            4.0,
+            1.0,
+            "×",
+        ),
+        scalar_control(
+            MOIRE_SATURATION_CONTROL_ID,
+            "Saturación del moiré",
+            selection.moire_saturation,
+            0.0,
+            4.0,
+            1.0,
+            "×",
+        ),
+        scalar_control(
             MOIRE_FILTER_CONTROL_ID,
-            "Supresión de moiré",
+            "Suavizado antialias",
             selection.moire_filter_strength,
             0.0,
             4.0,
@@ -2181,26 +2209,15 @@ pub fn test_page_descriptor(
                 input_artifact: PhysicalArtifactId::PanelEmissionRadianceV1,
                 output_artifact: PhysicalArtifactId::SubpixelRadianceV1,
                 preview_result: TestPreviewResult::PanelStructure,
-                controls: vec![
-                    scalar_control(
-                        SUBPIXEL_GEOMETRY_CONTROL_ID,
-                        "Contraste de trama",
-                        selection.subpixel_geometry_amount,
-                        0.0,
-                        4.0,
-                        1.0,
-                        "×",
-                    ),
-                    scalar_control(
-                        MOIRE_SATURATION_CONTROL_ID,
-                        "Saturación del moiré",
-                        selection.moire_saturation,
-                        0.0,
-                        4.0,
-                        1.0,
-                        "×",
-                    ),
-                ],
+                controls: vec![scalar_control(
+                    SUBPIXEL_GEOMETRY_CONTROL_ID,
+                    "Contraste de estructura",
+                    selection.subpixel_geometry_amount,
+                    0.0,
+                    4.0,
+                    1.0,
+                    "×",
+                )],
             },
             TestPhaseDescriptor {
                 id: PANEL_UNIFORMITY_PHASE_ID,
@@ -2909,6 +2926,7 @@ pub fn test_page_descriptor(
         visible_preview_choice_ids: SETUP_PREVIEW_QUALITIES.iter().map(|item| item.id).collect(),
         quick_control_ids: vec![
             SUBPIXEL_GEOMETRY_CONTROL_ID,
+            MOIRE_INTENSITY_CONTROL_ID,
             MOIRE_SATURATION_CONTROL_ID,
             MOIRE_FILTER_CONTROL_ID,
             COVER_GLOW_AMOUNT_CONTROL_ID,
@@ -3109,6 +3127,7 @@ pub fn apply_test_choice(
         },
         WHITE_LUMINANCE_CONTROL_ID
         | SUBPIXEL_GEOMETRY_CONTROL_ID
+        | MOIRE_INTENSITY_CONTROL_ID
         | MOIRE_SATURATION_CONTROL_ID
         | MOIRE_FILTER_CONTROL_ID
         | PANEL_UNIFORMITY_CONTROL_ID
@@ -3226,6 +3245,7 @@ fn unresolved_test_selection(
         frame_rate: current.frame_rate,
         source_adjustment: current.source_adjustment,
         subpixel_geometry_amount: current.subpixel_geometry_amount,
+        moire_intensity: current.moire_intensity,
         moire_saturation: current.moire_saturation,
         moire_filter_strength: current.moire_filter_strength,
         panel_uniformity_amount: current.panel_uniformity_amount,
@@ -3408,6 +3428,7 @@ pub fn apply_test_scalar(
     match control_id {
         WHITE_LUMINANCE_CONTROL_ID => next.white_luminance_nits = value,
         SUBPIXEL_GEOMETRY_CONTROL_ID => next.subpixel_geometry_amount = value,
+        MOIRE_INTENSITY_CONTROL_ID => next.moire_intensity = value,
         MOIRE_SATURATION_CONTROL_ID => next.moire_saturation = value,
         MOIRE_FILTER_CONTROL_ID => next.moire_filter_strength = value,
         PANEL_UNIFORMITY_CONTROL_ID => next.panel_uniformity_amount = value,
@@ -3552,6 +3573,7 @@ mod tests {
             frame_rate: FrameRate::new(24, 1).expect("valid test frame rate"),
             source_adjustment: SceneLinearAdjustment::NEUTRAL,
             subpixel_geometry_amount: 1.0,
+            moire_intensity: 1.0,
             moire_saturation: 1.0,
             moire_filter_strength: 0.0,
             panel_uniformity_amount: 1.0,
@@ -3649,6 +3671,7 @@ mod tests {
             page.quick_control_ids,
             [
                 SUBPIXEL_GEOMETRY_CONTROL_ID,
+                MOIRE_INTENSITY_CONTROL_ID,
                 MOIRE_SATURATION_CONTROL_ID,
                 MOIRE_FILTER_CONTROL_ID,
                 COVER_GLOW_AMOUNT_CONTROL_ID,
@@ -4362,6 +4385,10 @@ mod tests {
         assert_eq!(
             apply_test_scalar(asus(), MOIRE_FILTER_CONTROL_ID, 4.1),
             Err(TestAuthoringError::InvalidMoireFilterStrength)
+        );
+        assert_eq!(
+            apply_test_scalar(asus(), MOIRE_INTENSITY_CONTROL_ID, 4.1),
+            Err(TestAuthoringError::InvalidMoireIntensity)
         );
     }
 

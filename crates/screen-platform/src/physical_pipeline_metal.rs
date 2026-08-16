@@ -982,7 +982,9 @@ impl MetalPhysicalPipeline {
             plan.screen_amount,
             plan.emission_amount,
             plan.subpixel_geometry_amount,
+            plan.moire_intensity,
             plan.moire_saturation,
+            plan.moire_filter_strength,
             plan.temporal_emission_amount,
             plan.scene_geometry_amount,
             plan.lens_amount,
@@ -1165,7 +1167,7 @@ impl MetalPhysicalPipeline {
                 plan.panel.black_matrix_fraction,
                 plan.moire_saturation,
                 0.0,
-                0.0,
+                plan.moire_intensity,
             ],
             strengths: [
                 plan.screen_amount,
@@ -1778,6 +1780,7 @@ mod tests {
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                moire_intensity: 1.0,
                 moire_saturation: 1.0,
                 moire_filter_strength: 0.0,
                 temporal_emission_amount: 0.0,
@@ -1973,10 +1976,12 @@ mod tests {
     }
 
     #[test]
-    fn moire_controls_match_cpu_without_grading_continuous_panel_emission() {
+    fn moire_intensity_and_antialias_match_cpu_without_grading_continuous_panel_emission() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
-        for (saturation, filter_strength) in [(0.0, 0.0), (1.0, 1.0), (2.0, 4.0)] {
+        for (intensity, saturation, filter_strength) in
+            [(0.0, 1.0, 0.0), (1.0, 1.0, 1.0), (2.0, 1.0, 4.0)]
+        {
             let (input, mut plan) = fixture(
                 RasterPlacement::Stretch,
                 FlatPanelQuality::High,
@@ -1984,9 +1989,13 @@ mod tests {
                 0.32,
                 1.0,
             );
+            plan.moire_intensity = intensity;
             plan.moire_saturation = saturation;
             plan.moire_filter_strength = filter_strength;
-            plan.requested_intermediate = PhysicalIntermediate::SubpixelRadiance;
+            plan.panel_uniformity.character_strength = 0.0;
+            plan.panel_light_spread.character_strength = 0.0;
+            plan.lens_evaluation_model = screen_application::LensEvaluationModel::VfxDepthBlur;
+            plan.requested_intermediate = PhysicalIntermediate::RelativeGeometry;
             let source = texture(&device, input.width, input.height, &input.acescg);
             let signal_values = input
                 .device_signal
@@ -2007,14 +2016,15 @@ mod tests {
             let gpu = backend
                 .evaluate(&source, &signal, plan, |_| {}, || false)
                 .expect("Metal moire controls result");
-            let maximum = read(&gpu.texture)
+            let gpu_values = read(&gpu.texture);
+            let maximum = gpu_values
                 .iter()
                 .zip(cpu.presentation_rgba())
                 .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                 .fold(0.0_f32, f32::max);
             assert!(
                 maximum <= 2.0e-3,
-                "moire saturation {saturation} CPU/Metal deviation {maximum}"
+                "moire intensity {intensity}, antialias {filter_strength} CPU/Metal deviation {maximum}"
             );
         }
     }

@@ -3,7 +3,7 @@ import Testing
 @testable import ScreenSimulationNative
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 9)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 10)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }

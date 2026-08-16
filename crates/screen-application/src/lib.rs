@@ -884,6 +884,9 @@ pub struct PhysicalPipelineExecutionPlan {
     pub screen_amount: f32,
     pub emission_amount: f32,
     pub subpixel_geometry_amount: f32,
+    /// Creative amplitude of the VFX depth-blur carrier residual. One preserves
+    /// the calibrated result and zero removes that additional moiré carrier.
+    pub moire_intensity: f32,
     /// Chroma scale of the sampled subpixel interference residual. One keeps
     /// the physically sampled color, zero preserves its luminance only.
     pub moire_saturation: f32,
@@ -2002,6 +2005,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         plan.screen_amount,
         plan.emission_amount,
         plan.subpixel_geometry_amount,
+        plan.moire_intensity,
         plan.moire_saturation,
         plan.moire_filter_strength,
         plan.panel_uniformity.character_strength,
@@ -2819,6 +2823,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             } else {
                 moire_residual_with_saturation(carrier_detail, plan.moire_saturation)
             };
+            let carrier_detail = carrier_detail.map(|value| value * plan.moire_intensity);
             let glowed = if plan.lens_evaluation_model == LensEvaluationModel::VfxDepthBlur {
                 [
                     glowed[0] + plan.subpixel_geometry_amount * carrier_detail[0],
@@ -9146,6 +9151,7 @@ mod tests {
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                moire_intensity: 1.0,
                 moire_saturation: 1.0,
                 moire_filter_strength: 0.0,
                 temporal_emission_amount: 0.0,

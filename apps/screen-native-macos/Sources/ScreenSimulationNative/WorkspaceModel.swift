@@ -5669,6 +5669,7 @@ final class WorkspaceModel: ObservableObject {
             selection.environmentSphereCenterZMeters,
         ]
         authored.environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
+        authored.moireIntensity = selection.moireIntensity
         authored.moireSaturation = selection.moireSaturation
         authored.moireFilterStrength = selection.moireFilterStrength
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
@@ -5808,12 +5809,24 @@ final class WorkspaceModel: ObservableObject {
         return testPhysicalIntermediateByPhaseID[phaseID]
     }
 
+    private var setupOwnsViewerPublication: Bool {
+        (referenceMatchEnabled && referenceACEScgFrame != nil)
+            || reflectionEnvironmentEditorEnabled
+            || physicalModel.quality == .setup
+            || physicalModel.quality == .environmentSetup
+            || physicalModel.quality == .focusSetup
+    }
+
     private func publishSelectedTestPreview() {
         guard let sourceACEScgFrame else { return }
         guard isTestPageActive,
               let presentation = testPresentation,
               let result = testPreviewResultByPhaseID[presentation.selectedPhaseID]
         else {
+            // Setup renderers own the Viewer while active. `present(_:)`
+            // refreshes the selected phase after publishing their projected
+            // composition; that refresh must not expose the source artifact.
+            guard !setupOwnsViewerPublication else { return }
             if referenceACEScgFrame != nil {
                 publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
             } else {
@@ -5847,6 +5860,9 @@ final class WorkspaceModel: ObservableObject {
             rebuildPhysicalSelectedFrame()
             return
         }
+        // Preserve the selected checkpoint intent above, but never let its
+        // presentation replace an active Setup composition.
+        guard !setupOwnsViewerPublication else { return }
         if referenceACEScgFrame != nil {
             publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
             return
@@ -5957,7 +5973,8 @@ final class WorkspaceModel: ObservableObject {
                     snapshot.diagnostics.last?.message ?? "La evaluación física ha fallado."
                 )
             case .complete:
-                guard snapshot.parameterRevision == physicalModel.parameterRevision,
+                guard !setupOwnsViewerPublication,
+                      snapshot.parameterRevision == physicalModel.parameterRevision,
                       snapshot.returnedIntermediate == requestedPhysicalIntermediate,
                       let frame = snapshot.frame,
                       let effective = snapshot.effectiveDimensions

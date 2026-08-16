@@ -42,6 +42,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let sourceTemperatureKelvin: Double
     let sourceTint: Double
     let subpixelGeometryAmount: Double
+    let moireIntensity: Double
     let moireSaturation: Double
     let moireFilterStrength: Double
     let panelUniformityAmount: Double
@@ -475,6 +476,7 @@ enum RustTestAuthoringCoordinator {
             sourceTemperatureKelvin: Double(raw.source_temperature_kelvin),
             sourceTint: Double(raw.source_tint),
             subpixelGeometryAmount: Double(raw.subpixel_geometry_amount),
+            moireIntensity: Double(raw.moire_intensity),
             moireSaturation: Double(raw.moire_saturation),
             moireFilterStrength: Double(raw.moire_filter_strength),
             panelUniformityAmount: Double(raw.panel_uniformity_amount),
@@ -605,6 +607,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.source_temperature_kelvin = Float(selection.sourceTemperatureKelvin)
                                             raw.source_tint = Float(selection.sourceTint)
                                             raw.subpixel_geometry_amount = Float(selection.subpixelGeometryAmount)
+                                            raw.moire_intensity = Float(selection.moireIntensity)
                                             raw.moire_saturation = Float(selection.moireSaturation)
                                             raw.moire_filter_strength = Float(selection.moireFilterStrength)
                                             raw.panel_uniformity_amount = Float(selection.panelUniformityAmount)

@@ -6,7 +6,7 @@ struct PhysicalPipelineParams {
     uint4 output_tile;  // output width, output height, tile origin y, sample side
     uint4 semantics;    // placement, stripe layout, reserved, reserved
     float4 levels;      // gamma, black nits, white nits, temporal calibrated gain
-    float4 geometry;    // black matrix fraction, reserved, reserved, reserved
+    float4 geometry;    // black matrix fraction, moire saturation, reserved, moire intensity
     float4 strengths;   // screen, emission, subpixel geometry, temporal emission
     float4 matrix0;
     float4 matrix1;
@@ -1580,6 +1580,7 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix2.xyz, carrier_detail_native)
     ) / p.levels.z;
     const float moire_saturation = p.geometry.y;
+    const float moire_intensity = p.geometry.w;
     if (moire_saturation != 1.0f) {
         const float carrier_luminance = dot(
             carrier_detail,
@@ -1588,6 +1589,7 @@ kernel void evaluate_physical_pipeline(
         carrier_detail = carrier_luminance
             + moire_saturation * (carrier_detail - carrier_luminance);
     }
+    carrier_detail *= moire_intensity;
     float3 glass_scattered;
     if (moire_saturation == 1.0f && p.uniformity_scales.w == 0.0f) {
         glass_scattered = ideal.rgb * (1.0f - p.strengths.y)

@@ -31,6 +31,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         sourceTemperatureKelvin: 6500,
         sourceTint: 0,
         subpixelGeometryAmount: 1,
+        moireIntensity: 1,
         moireSaturation: 1,
         moireFilterStrength: 0,
         panelUniformityAmount: 1,
@@ -259,12 +260,19 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(snapshot.presentation.previewControls.count == 1)
     #expect(snapshot.presentation.phases.allSatisfy { !$0.effectSummary.isEmpty })
     #expect(snapshot.presentation.phases[4].headerControlID == "subpixel-geometry-amount")
-    #expect(snapshot.presentation.quickControlIDs.prefix(3) == [
-        "subpixel-geometry-amount", "moire-saturation", "moire-antialias-filter",
+    #expect(snapshot.presentation.quickControlIDs.prefix(4) == [
+        "subpixel-geometry-amount", "moire-intensity", "moire-saturation",
+        "moire-antialias-filter",
     ])
     #expect(snapshot.presentation.phases[4].sections.flatMap(\.controls).map(\.id) == [
-        "subpixel-geometry-amount", "moire-saturation",
+        "subpixel-geometry-amount",
     ])
+    #expect(snapshot.presentation.phases[10].sections.flatMap(\.controls).map(\.id).contains(
+        "moire-intensity"
+    ))
+    #expect(snapshot.presentation.phases[10].sections.flatMap(\.controls).map(\.id).contains(
+        "moire-saturation"
+    ))
     guard case let .scalar(subpixel) = snapshot.presentation.phases[4].sections
         .flatMap(\.controls).first
     else {
@@ -652,6 +660,31 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     let currentSource = try #require(workspace.sourceACEScgFrame)
     #expect(ObjectIdentifier(retained.texture as AnyObject)
         != ObjectIdentifier(currentSource.texture as AnyObject))
+}
+
+@Test @MainActor func selectedPhaseRefreshCannotReplaceAnActiveSetupComposition() throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectDevice(device, coverGlass: cover, amount: 0)
+    workspace.setTestPageActive(true)
+    let sourcePhase = try #require(workspace.testPresentation?.phases.first)
+
+    for qualityID in ["setup", "focus-setup"] {
+        try requestPhysicalPreview(qualityID, in: workspace)
+        let setup = try #require(workspace.metalFrame)
+        let source = try #require(workspace.sourceACEScgFrame)
+        #expect(ObjectIdentifier(setup.texture as AnyObject)
+            != ObjectIdentifier(source.texture as AnyObject))
+
+        workspace.handleTestIntent(.selectPhase(sourcePhase.id))
+
+        let retained = try #require(workspace.metalFrame)
+        #expect(ObjectIdentifier(retained.texture as AnyObject)
+            == ObjectIdentifier(setup.texture as AnyObject))
+    }
 }
 
 @Test @MainActor func deviceColorModeChangesInterpretationWithoutRecodingTheFeeder() throws {
