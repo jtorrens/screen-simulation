@@ -2596,6 +2596,57 @@ mod tests {
     }
 
     #[test]
+    fn repeated_static_temporal_samples_do_not_create_a_second_physical_image() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+
+        let single = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("single static physical sample");
+        let repeated = backend
+            .evaluate_temporal(
+                &[
+                    (&*source, &*signal, plan, 1.0_f32, None),
+                    (&*source, &*signal, plan, 1.0_f32, None),
+                ],
+                |_| {},
+                || false,
+            )
+            .expect("repeated static physical samples");
+
+        let maximum = read(&single.texture)
+            .iter()
+            .zip(read(&repeated.texture))
+            .flat_map(|(single, repeated)| {
+                single
+                    .iter()
+                    .zip(repeated)
+                    .map(|(single, repeated)| (single - repeated).abs())
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(
+            maximum <= 1.0e-7,
+            "static temporal accumulation created another image: {maximum}"
+        );
+    }
+
+    #[test]
     fn metal_rolling_executor_integrates_only_the_addressed_rows() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
