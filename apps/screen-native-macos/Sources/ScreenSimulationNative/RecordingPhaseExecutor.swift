@@ -156,7 +156,7 @@ enum RecordingPhaseExecutor {
         guard plan.adapter_kind != UInt32.max else {
             let precision = plan.unavailable_reason == 1 ? "10-bit 4:2:0" : "10-bit 4:2:2"
             throw RecordingPhaseExecutionError.unsupportedProfile(
-                "(profileID) · falta entrada nativa (precision); RGBA8 no se usa como sustituto"
+                "\(profileID) · falta entrada nativa \(precision); RGBA8 no se usa como sustituto"
             )
         }
         guard plan.medium == 0 else { throw RecordingPhaseExecutionError.sequenceRequired }
