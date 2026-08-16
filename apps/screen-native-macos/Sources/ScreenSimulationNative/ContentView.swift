@@ -1036,11 +1036,11 @@ struct ContentView: View {
             }
 
             Section("Geometría física") {
-                TextField("Anchura nativa", value: Binding(
+                TextField("Resolución nativa — ancho (px)", value: Binding(
                     get: { device.nativeWidth },
                     set: { value in library.updateSelectedDevice { $0.nativeWidth = value } }
                 ), format: .number)
-                TextField("Altura nativa", value: Binding(
+                TextField("Resolución nativa — alto (px)", value: Binding(
                     get: { device.nativeHeight },
                     set: { value in library.updateSelectedDevice { $0.nativeHeight = value } }
                 ), format: .number)

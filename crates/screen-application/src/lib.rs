@@ -2841,7 +2841,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * spread_native.b)
                     / parameters.white_level_nits,
             ];
-            let glowed = [
+            let cover_glow = [
                 (matrix[0][0] * glow_native.r
                     + matrix[0][1] * glow_native.g
                     + matrix[0][2] * glow_native.b)
@@ -2871,12 +2871,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             ];
             let glowed = if plan.lens_evaluation_model == LensEvaluationModel::VfxDepthBlur {
                 [
-                    glowed[0] + plan.subpixel_geometry_amount * carrier_detail[0],
-                    glowed[1] + plan.subpixel_geometry_amount * carrier_detail[1],
-                    glowed[2] + plan.subpixel_geometry_amount * carrier_detail[2],
+                    cover_glow[0] + plan.subpixel_geometry_amount * carrier_detail[0],
+                    cover_glow[1] + plan.subpixel_geometry_amount * carrier_detail[1],
+                    cover_glow[2] + plan.subpixel_geometry_amount * carrier_detail[2],
                 ]
             } else {
-                glowed
+                cover_glow
             };
             let sampled_panel = if plan.panel_uniformity.character_strength == 0.0 {
                 [
@@ -3024,18 +3024,15 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 }
             };
             let transmitted = cover.transmission(cover_sample.view_cosine);
-            let transmitted_emission = LinearRgb::new(
-                emitted.r * transmitted.r,
-                emitted.g * transmitted.g,
-                emitted.b * transmitted.b,
+            let exterior_glow = LinearRgb::new(
+                cover_glow[0] * temporal_gain * transmitted.r,
+                cover_glow[1] * temporal_gain * transmitted.g,
+                cover_glow[2] * temporal_gain * transmitted.b,
             );
             let covered = LinearRgb::new(
-                transmitted_emission.r
-                    + panel_coverage * (covered_with_environment.r - transmitted_emission.r),
-                transmitted_emission.g
-                    + panel_coverage * (covered_with_environment.g - transmitted_emission.g),
-                transmitted_emission.b
-                    + panel_coverage * (covered_with_environment.b - transmitted_emission.b),
+                exterior_glow.r + panel_coverage * (covered_with_environment.r - exterior_glow.r),
+                exterior_glow.g + panel_coverage * (covered_with_environment.g - exterior_glow.g),
+                exterior_glow.b + panel_coverage * (covered_with_environment.b - exterior_glow.b),
             );
             let glare_fraction = resolved_scene.0.lens.veiling_glare_fraction;
             let temporal_gate_average = LinearRgb::new(

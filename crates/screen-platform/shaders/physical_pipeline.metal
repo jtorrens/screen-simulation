@@ -1641,10 +1641,10 @@ kernel void evaluate_physical_pipeline(
         cover_footprint_half_extent_meters, environment_acescg, position, p);
     const float panel_coverage = panel_rectangle_coverage(
         cover_position_meters, cover_footprint_half_extent_meters, p);
-    const float3 transmitted_emission = temporally_integrated
+    const float3 exterior_glow = glow * temporal_gain
         * flat_cover_transmission(cover_cosine * cover_reciprocal, p);
     const float3 covered = mix(
-        transmitted_emission, covered_with_environment, panel_coverage);
+        exterior_glow, covered_with_environment, panel_coverage);
     const float3 glared = mix(covered, veiling_gate_average[0].xyz * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);
