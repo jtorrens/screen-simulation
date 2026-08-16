@@ -27,7 +27,7 @@ struct ContentView: View {
     }
     enum WorkspacePage: String, CaseIterable, Identifiable {
         case main = "Principal"
-        case test = "Test"
+        case test = "Escena"
         case settings = "Settings"
         var id: String { rawValue }
         var systemImage: String {
@@ -1567,45 +1567,6 @@ struct ContentView: View {
                         state: presentation,
                         onIntent: model.handleTestIntent
                     )
-                    TestPhaseCard(label: "Autoría de reflejos") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                            Button {
-                                referenceMatchPanel.hide(model: model)
-                                environmentReflectionFramingPanel.hide(model: model)
-                                reflectionEnvironmentPanel.toggle(model: model)
-                            } label: {
-                                Label(
-                                    reflectionEnvironmentPanel.isVisible
-                                        ? "Ocultar editor" : "Crear reflejos…",
-                                    systemImage: reflectionEnvironmentPanel.isVisible
-                                        ? "lightbulb.max.fill" : "lightbulb.max"
-                                )
-                            }
-                            Spacer()
-                            Text("genera EXR 2:1")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            }
-                            HStack {
-                                Button {
-                                    referenceMatchPanel.hide(model: model)
-                                    reflectionEnvironmentPanel.hide(model: model)
-                                    environmentReflectionFramingPanel.toggle(model: model)
-                                } label: {
-                                    Label(
-                                        environmentReflectionFramingPanel.isVisible
-                                            ? "Ocultar encuadre" : "Encuadrar HDRI…",
-                                        systemImage: "viewfinder"
-                                    )
-                                }
-                                .disabled(model.environmentSourceName == nil)
-                                Spacer()
-                                Text("pan · zoom · rotación Z")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
                     if !model.environmentSourceEvidence.isEmpty {
                         TestPhaseCard(label: "Entorno HDRI activo") {
                             VStack(alignment: .leading, spacing: 5) {
@@ -2027,21 +1988,35 @@ struct ContentView: View {
                 .labelsHidden()
                 .frame(maxWidth: 330)
                 if showTestPhasePicker, let presentation = model.testPresentation {
-                    TestPhasePicker(
-                        state: presentation,
-                        onIntent: model.handleTestIntent
-                    )
-                    .frame(maxWidth: 230)
                     TestPreviewControls(
                         state: presentation,
                         onIntent: model.handleTestIntent
                     )
                     .frame(maxWidth: 150)
-                    if model.testRequiresExplicitRender {
-                        NativeRenderButton(
-                            state: model.testNativeRenderButtonState,
-                            action: model.performNativeRenderButtonAction
-                        )
+                    NativeRenderButton(
+                        state: model.testNativeRenderButtonState,
+                        action: model.performNativeRenderButtonAction
+                    )
+                    if model.physicalModel.quality == .environmentSetup {
+                        Button {
+                            referenceMatchPanel.hide(model: model)
+                            environmentReflectionFramingPanel.hide(model: model)
+                            reflectionEnvironmentPanel.toggle(model: model)
+                        } label: {
+                            Image(systemName: reflectionEnvironmentPanel.isVisible
+                                ? "lightbulb.max.fill" : "lightbulb.max")
+                        }
+                        .help(reflectionEnvironmentPanel.isVisible
+                            ? "Ocultar creación de reflejos" : "Crear reflejos")
+                        Button {
+                            referenceMatchPanel.hide(model: model)
+                            reflectionEnvironmentPanel.hide(model: model)
+                            environmentReflectionFramingPanel.toggle(model: model)
+                        } label: {
+                            Image(systemName: "viewfinder")
+                        }
+                        .disabled(model.environmentSourceName == nil)
+                        .help("Encuadrar HDRI")
                     }
                 }
                 Spacer()

@@ -297,10 +297,10 @@ const DELIVERY_BACKGROUNDS: [TestChoiceOption; 2] = [
     },
 ];
 
-const PREVIEW_QUALITIES: [TestChoiceOption; 7] = [
+const SETUP_PREVIEW_QUALITIES: [TestChoiceOption; 3] = [
     TestChoiceOption {
         id: "setup",
-        label: "Setup",
+        label: "Setup Device",
     },
     TestChoiceOption {
         id: "environment-setup",
@@ -310,6 +310,15 @@ const PREVIEW_QUALITIES: [TestChoiceOption; 7] = [
         id: "focus-setup",
         label: "Setup foco",
     },
+];
+
+// Reference and adapter tests may still request the evaluator qualities
+// directly. They are intentionally not offered by the interactive picker;
+// Native is launched by its permanent render action.
+const PREVIEW_QUALITIES: [TestChoiceOption; 7] = [
+    SETUP_PREVIEW_QUALITIES[0],
+    SETUP_PREVIEW_QUALITIES[1],
+    SETUP_PREVIEW_QUALITIES[2],
     TestChoiceOption {
         id: "draft",
         label: "Draft",
@@ -778,6 +787,12 @@ pub struct TestPageDescriptor {
     pub default_preview_phase_id: &'static str,
     pub phases: Vec<TestPhaseDescriptor>,
     pub preview_controls: Vec<TestControlRequirement>,
+    pub visible_preview_choice_ids: Vec<&'static str>,
+    /// Model-owned presentation references for the frequently used controls.
+    /// These are references to canonical controls in `phases`, never duplicate
+    /// control definitions or UI-authored physical semantics.
+    pub quick_control_ids: Vec<&'static str>,
+    pub featured_phase_id: &'static str,
     pub selection: ResolvedTestAuthoringSelection,
 }
 
@@ -2605,6 +2620,16 @@ pub fn test_page_descriptor(
             selection.preview_quality_id,
             "setup",
         )],
+        visible_preview_choice_ids: SETUP_PREVIEW_QUALITIES.iter().map(|item| item.id).collect(),
+        quick_control_ids: vec![
+            SUBPIXEL_GEOMETRY_CONTROL_ID,
+            WHITE_LUMINANCE_CONTROL_ID,
+            F_STOP_CONTROL_ID,
+            SHUTTER_ANGLE_CONTROL_ID,
+            SHUTTER_RECIPROCAL_CONTROL_ID,
+            AUTOFOCUS_CONTROL_ID,
+        ],
+        featured_phase_id: DELIVERY_RASTER_PHASE_ID,
     })
 }
 
@@ -3242,6 +3267,22 @@ mod tests {
         let page = test_page_descriptor(asus()).unwrap();
         assert_eq!(page.schema_version, TEST_AUTHORING_SCHEMA_VERSION);
         assert_eq!(page.default_preview_phase_id, RECORDING_CODEC_PHASE_ID);
+        assert_eq!(
+            page.visible_preview_choice_ids,
+            ["setup", "environment-setup", "focus-setup"]
+        );
+        assert_eq!(page.featured_phase_id, DELIVERY_RASTER_PHASE_ID);
+        assert_eq!(
+            page.quick_control_ids,
+            [
+                SUBPIXEL_GEOMETRY_CONTROL_ID,
+                WHITE_LUMINANCE_CONTROL_ID,
+                F_STOP_CONTROL_ID,
+                SHUTTER_ANGLE_CONTROL_ID,
+                SHUTTER_RECIPROCAL_CONTROL_ID,
+                AUTOFOCUS_CONTROL_ID,
+            ]
+        );
         assert_eq!(
             page.phases.iter().map(|phase| phase.id).collect::<Vec<_>>(),
             [

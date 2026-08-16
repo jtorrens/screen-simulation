@@ -170,15 +170,24 @@ public struct TestPagePresentation: Equatable, Sendable {
     public let phases: [TestPhasePresentation]
     public let selectedPhaseID: String
     public let previewControls: [TestControlDescriptor]
+    public let visiblePreviewChoiceIDs: [String]
+    public let quickControlIDs: [String]
+    public let featuredPhaseID: String
 
     public init(
         phases: [TestPhasePresentation],
         selectedPhaseID: String,
-        previewControls: [TestControlDescriptor] = []
+        previewControls: [TestControlDescriptor] = [],
+        visiblePreviewChoiceIDs: [String] = [],
+        quickControlIDs: [String] = [],
+        featuredPhaseID: String = ""
     ) throws {
         self.phases = phases
         self.selectedPhaseID = selectedPhaseID
         self.previewControls = previewControls
+        self.visiblePreviewChoiceIDs = visiblePreviewChoiceIDs
+        self.quickControlIDs = quickControlIDs
+        self.featuredPhaseID = featuredPhaseID
         try validate()
     }
 
@@ -191,8 +200,21 @@ public struct TestPagePresentation: Equatable, Sendable {
                       && !$0.inputArtifactID.isEmpty && !$0.outputArtifactID.isEmpty
               }),
               Set(phases.map(\.id)).count == phases.count,
-              phases.contains(where: { $0.id == selectedPhaseID })
+              phases.contains(where: { $0.id == selectedPhaseID }),
+              featuredPhaseID.isEmpty || phases.contains(where: { $0.id == featuredPhaseID })
         else { throw TestPresentationError.invalidPhases }
+
+        let allControlIDs = Set(phases.flatMap { $0.sections.flatMap(\.controls).map(\.id) })
+        guard Set(quickControlIDs).count == quickControlIDs.count,
+              quickControlIDs.allSatisfy(allControlIDs.contains)
+        else { throw TestPresentationError.invalidControls("quick-controls") }
+        let previewOptionIDs = Set(previewControls.compactMap { descriptor -> [String]? in
+            if case let .choice(control) = descriptor { return control.options.map(\.id) }
+            return nil
+        }.flatMap { $0 })
+        guard Set(visiblePreviewChoiceIDs).count == visiblePreviewChoiceIDs.count,
+              visiblePreviewChoiceIDs.allSatisfy(previewOptionIDs.contains)
+        else { throw TestPresentationError.invalidControls("preview-choices") }
 
         for phase in phases {
             guard phase.sections.allSatisfy({ !$0.id.isEmpty && !$0.label.isEmpty }),

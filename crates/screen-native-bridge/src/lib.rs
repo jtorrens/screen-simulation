@@ -2809,6 +2809,49 @@ pub unsafe extern "C" fn screen_test_page_preview_control_count(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_quick_control_count(
+    descriptor: *const ScreenTestPageDescriptor,
+) -> usize {
+    unsafe { descriptor.as_ref() }.map_or(0, |value| value.page.quick_control_ids.len())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_visible_preview_choice_count(
+    descriptor: *const ScreenTestPageDescriptor,
+) -> usize {
+    unsafe { descriptor.as_ref() }.map_or(0, |value| value.page.visible_preview_choice_ids.len())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_visible_preview_choice_id(
+    descriptor: *const ScreenTestPageDescriptor,
+    choice_index: usize,
+) -> ScreenUtf8View {
+    unsafe { descriptor.as_ref() }
+        .and_then(|value| value.page.visible_preview_choice_ids.get(choice_index))
+        .map_or(utf8_view(""), |id| utf8_view(id))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_quick_control_id(
+    descriptor: *const ScreenTestPageDescriptor,
+    control_index: usize,
+) -> ScreenUtf8View {
+    unsafe { descriptor.as_ref() }
+        .and_then(|value| value.page.quick_control_ids.get(control_index))
+        .map_or(utf8_view(""), |id| utf8_view(id))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_test_page_featured_phase_id(
+    descriptor: *const ScreenTestPageDescriptor,
+) -> ScreenUtf8View {
+    unsafe { descriptor.as_ref() }.map_or(utf8_view(""), |value| {
+        utf8_view(value.page.featured_phase_id)
+    })
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_page_preview_control_descriptor(
     descriptor: *const ScreenTestPageDescriptor,
     control_index: usize,

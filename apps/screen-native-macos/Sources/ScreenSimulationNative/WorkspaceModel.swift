@@ -2596,7 +2596,11 @@ final class WorkspaceModel: ObservableObject {
             let resolved = try RustTestAuthoringCoordinator.apply(
                 .setScalar(controlID: "autofocus-target-v", value: uv.y), to: withU
             )
-            try applyTestAuthoringSelection(resolved)
+            let focusSetup = try RustTestAuthoringCoordinator.apply(
+                .setChoice(controlID: "preview-quality", optionID: "focus-setup"),
+                to: resolved
+            )
+            try applyTestAuthoringSelection(focusSetup)
             publishFocusSetup()
         } catch {
             errorMessage = error.localizedDescription
@@ -3146,12 +3150,19 @@ final class WorkspaceModel: ObservableObject {
             selection.cameraRotationZDegrees = degrees[2]
             selection.focalLengthMillimeters = camera.focalLengthMillimeters
             if selection.autofocusEnabled,
-               let resolved = try? RustTestAuthoringCoordinator.apply(
+               let focused = try? RustTestAuthoringCoordinator.apply(
                 .setScalar(
                     controlID: "autofocus-target-u",
                     value: selection.autofocusTargetU
                 ),
                 to: selection
+               ),
+               let resolved = try? RustTestAuthoringCoordinator.apply(
+                .setChoice(
+                    controlID: "preview-quality",
+                    optionID: selection.previewQualityID
+                ),
+                to: focused
                ) {
                 selection = resolved
                 authored.sceneLens.focusDistanceMeters = resolved.focusDistanceMeters
@@ -3160,7 +3171,10 @@ final class WorkspaceModel: ObservableObject {
             try? refreshTestAuthoringDescriptor()
         }
         physicalAuthoringState = authored
-        if physicalModel.quality == .setup {
+        resolvedPhysicalPipeline = try? authored.resolvedPipeline()
+        if physicalModel.quality == .focusSetup {
+            publishFocusSetup()
+        } else if physicalModel.quality == .setup {
             if referenceACEScgFrame != nil {
                 publishReferenceMatchSetup(
                     resetTargetsToVisibleFrame: false,

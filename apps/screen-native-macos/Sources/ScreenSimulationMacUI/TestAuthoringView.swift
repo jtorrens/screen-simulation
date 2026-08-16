@@ -15,34 +15,57 @@ public struct TestAuthoringView: View {
 
     public var body: some View {
         VStack(spacing: 12) {
+            if !quickControls.isEmpty {
+                TestPhaseCard(label: "General") {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                        ForEach(quickControls) { control in
+                            controlView(control)
+                        }
+                    }
+                }
+            }
+            if let featuredPhase {
+                phaseCard(featuredPhase)
+            }
             ForEach(state.phases.filter { phase in
+                phase.id != state.featuredPhaseID &&
                 phase.sections.contains { !$0.controls.isEmpty }
             }) { phase in
-                let allControls = phase.sections.flatMap(\.controls)
-                let headerControl = phase.headerControlID.flatMap { id in
-                    allControls.first(where: { $0.id == id })
-                }
-                TestPhaseCard(
-                    label: phase.label,
-                    effectSummary: phase.effectSummary,
-                    headerControl: headerControl.map { descriptor in
-                        AnyView(headerControlView(descriptor))
+                phaseCard(phase)
+            }
+        }
+    }
+
+    private var allControls: [TestControlDescriptor] {
+        state.phases.flatMap { $0.sections.flatMap(\.controls) }
+    }
+
+    private var quickControls: [TestControlDescriptor] {
+        state.quickControlIDs.compactMap { id in allControls.first { $0.id == id } }
+    }
+
+    private var featuredPhase: TestPhasePresentation? {
+        state.phases.first { $0.id == state.featuredPhaseID && !$0.sections.flatMap(\.controls).isEmpty }
+    }
+
+    private func phaseCard(_ phase: TestPhasePresentation) -> some View {
+        let controls = phase.sections.flatMap(\.controls)
+        let headerControl = phase.headerControlID.flatMap { id in
+            controls.first(where: { $0.id == id })
+        }
+        return TestPhaseCard(
+            label: phase.label,
+            effectSummary: phase.effectSummary,
+            headerControl: headerControl.map { AnyView(headerControlView($0)) }
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(phase.sections) { section in
+                    if !section.label.isEmpty {
+                        Text(section.label).font(.caption).foregroundStyle(.secondary)
                     }
-                ) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(phase.sections) { section in
-                            if !section.label.isEmpty {
-                                Text(section.label)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                                ForEach(section.controls.filter {
-                                    $0.id != phase.headerControlID
-                                }) { control in
-                                    controlView(control)
-                                }
-                            }
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                        ForEach(section.controls.filter { $0.id != phase.headerControlID }) {
+                            controlView($0)
                         }
                     }
                 }
@@ -320,10 +343,14 @@ public struct TestPreviewControls: View {
                         onIntent(.setChoice(controlID: control.id, optionID: $0))
                     }
                 )) {
-                    ForEach(control.options) { option in
+                    ForEach(control.options.filter { option in
+                        state.visiblePreviewChoiceIDs.isEmpty
+                            || state.visiblePreviewChoiceIDs.contains(option.id)
+                    }) { option in
                         Text(option.label).tag(option.id)
                     }
                 }
+                .labelsHidden()
             }
         }
     }

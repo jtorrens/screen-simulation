@@ -214,6 +214,17 @@ bool screen_test_page_choice_option(
     ScreenTestChoiceOptionV2 *option
 );
 size_t screen_test_page_preview_control_count(ScreenTestPageDescriptorRef descriptor);
+size_t screen_test_page_quick_control_count(ScreenTestPageDescriptorRef descriptor);
+size_t screen_test_page_visible_preview_choice_count(ScreenTestPageDescriptorRef descriptor);
+ScreenUTF8View screen_test_page_visible_preview_choice_id(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t choice_index
+);
+ScreenUTF8View screen_test_page_quick_control_id(
+    ScreenTestPageDescriptorRef descriptor,
+    size_t control_index
+);
+ScreenUTF8View screen_test_page_featured_phase_id(ScreenTestPageDescriptorRef descriptor);
 bool screen_test_page_preview_control_descriptor(
     ScreenTestPageDescriptorRef descriptor,
     size_t control_index,

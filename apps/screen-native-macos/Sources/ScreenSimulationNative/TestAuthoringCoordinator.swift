@@ -246,11 +246,22 @@ enum RustTestAuthoringCoordinator {
             let previewControls = try (0..<screen_test_page_preview_control_count(descriptor)).map {
                 try previewControlDescriptor(descriptor: descriptor, controlIndex: $0)
             }
+            let quickControlIDs = (0..<screen_test_page_quick_control_count(descriptor)).map {
+                string(screen_test_page_quick_control_id(descriptor, $0))
+            }
+            let visiblePreviewChoiceIDs =
+                (0..<screen_test_page_visible_preview_choice_count(descriptor)).map {
+                    string(screen_test_page_visible_preview_choice_id(descriptor, $0))
+                }
+            let featuredPhaseID = string(screen_test_page_featured_phase_id(descriptor))
             return TestAuthoringSnapshot(
                 presentation: try TestPagePresentation(
                     phases: phases,
                     selectedPhaseID: selectedPhaseID,
-                    previewControls: previewControls
+                    previewControls: previewControls,
+                    visiblePreviewChoiceIDs: visiblePreviewChoiceIDs,
+                    quickControlIDs: quickControlIDs,
+                    featuredPhaseID: featuredPhaseID
                 ),
                 previewResultByPhaseID: previewResults,
                 physicalIntermediateByPhaseID: physicalIntermediates,
