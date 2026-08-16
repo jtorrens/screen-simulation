@@ -6,7 +6,7 @@ struct PhysicalPipelineParams {
     uint4 output_tile;  // output width, output height, tile origin y, sample side
     uint4 semantics;    // placement, stripe layout, reserved, reserved
     float4 levels;      // gamma, black nits, white nits, temporal calibrated gain
-    float4 geometry;    // black matrix fraction, moire saturation, reserved, moire intensity
+    float4 geometry;    // black matrix fraction, moire saturation, alpha mode, moire intensity
     float4 strengths;   // screen, emission, subpixel geometry, temporal emission
     float4 matrix0;
     float4 matrix1;
@@ -1150,6 +1150,11 @@ inline float continuous_channel(float code, constant PhysicalPipelineParams& p) 
     return panel_linear_channel(code, p);
 }
 
+inline float resolved_device_alpha(float authored,
+    constant PhysicalPipelineParams& p) {
+    return p.geometry.z == 0.0f ? 1.0f : clamp(authored, 0.0f, 1.0f);
+}
+
 inline float native_channel_at_offset(
     texture2d<float, access::read> device_signal,
     texture2d<float, access::read> device_row_prefix,
@@ -1171,7 +1176,7 @@ inline float native_channel_at_offset(
     const float4 code = area_sample(
         device_signal, device_row_prefix, panel_minimum, panel_maximum,
         prepared_placement_scale, p);
-    return coverage * native_channel(
+    return coverage * resolved_device_alpha(code.a, p) * native_channel(
         code[channel],
         channel,
         panel_minimum * float2(p.source_panel.zw),
@@ -1344,7 +1349,6 @@ kernel void evaluate_physical_pipeline(
     float aperture_weight = 0.0f;
     const uint requested_stage = p.semantics.z;
     const bool final_optical = requested_stage >= 6;
-    const bool needs_ideal_rgb = requested_stage == 0 || final_optical;
     const bool needs_average_code = requested_stage == 1;
     const bool needs_continuous = requested_stage == 2 || final_optical;
     const bool needs_moire_decomposition = final_optical
@@ -1497,7 +1501,8 @@ kernel void evaluate_physical_pipeline(
                 const float2 device_maximum = channel_maximum * float2(p.source_panel.zw);
                 // Every Panel branch consumes the same central integral and EOTF.
                 // Only displaced spread/glow taps and the narrow carrier remain distinct.
-                const float base_linear = panel_linear_channel(code[channel], p);
+                const float local_alpha = resolved_device_alpha(code.a, p);
+                const float base_linear = panel_linear_channel(code[channel], p) * local_alpha;
                 const float base_native = native_channel_from_linear(
                     base_linear, channel, device_minimum, device_maximum, p);
                 const float base_gain = panel_uniformity_gains(
@@ -1507,7 +1512,8 @@ kernel void evaluate_physical_pipeline(
                     const float4 carrier_code = area_sample(
                         device_signal, device_row_prefix,
                         carrier_minimum, carrier_maximum, prepared_placement_scale, p);
-                    const float preserved_carrier = native_channel(
+                    const float preserved_carrier = resolved_device_alpha(carrier_code.a, p)
+                        * native_channel(
                         carrier_code[channel], channel,
                         carrier_minimum * float2(p.source_panel.zw),
                         carrier_maximum * float2(p.source_panel.zw), p);
@@ -1568,12 +1574,11 @@ kernel void evaluate_physical_pipeline(
             const float2 green_reconstructed_half_extent =
                 green_sensor_half_extent + green_continuous_half_extent
                 + half_extent * p.lens_softness.w;
-            const float4 ideal_sample = area_sample(source_acescg, source_row_prefix,
+            const float4 matte_sample = area_sample(device_signal, device_row_prefix,
                 exact_flat ? minimum_uv : green_center - green_reconstructed_half_extent,
                 exact_flat ? maximum_uv : green_center + green_reconstructed_half_extent,
                 prepared_placement_scale, p);
-            ideal.a += ideal_sample.a * layer_weight;
-            if (needs_ideal_rgb) ideal.rgb += ideal_sample.rgb * layer_weight;
+            ideal.a += resolved_device_alpha(matte_sample.a, p) * layer_weight;
             }
             }
         }
@@ -1639,23 +1644,14 @@ kernel void evaluate_physical_pipeline(
     ) / p.levels.z;
     const float moire_saturation = p.geometry.y;
     const float moire_intensity = p.geometry.w;
-    float3 sampled_panel;
-    if (p.uniformity_scales.w == 0.0f) {
-        sampled_panel = ideal.rgb * (1.0f - p.strengths.y)
-            + continuous * (p.strengths.y - p.strengths.z)
-            + physical * (p.strengths.z - 1.0f)
-            + glow
-            + carrier_detail * p.strengths.z;
-    } else {
-        sampled_panel = ideal.rgb * (1.0f - p.strengths.y)
-            + uniform_continuous * (p.strengths.y - p.strengths.z)
-            + uniform * (p.strengths.z - 1.0f)
-            + glow
-            + carrier_detail * p.strengths.z;
-    }
+    const float3 continuous_base = p.uniformity_scales.w == 0.0f
+        ? continuous : uniform_continuous;
+    const float3 resolved_glow = glow + carrier_detail * p.strengths.z;
+    const float3 sampled_panel = p.strengths.y
+        * (continuous_base + p.strengths.z * (resolved_glow - continuous_base));
     const float3 sampled_structure_residual = p.uniformity_scales.w == 0.0f
-        ? (physical - continuous) * p.strengths.z
-        : (uniform - uniform_continuous) * p.strengths.z;
+        ? (physical - continuous) * p.strengths.z * p.strengths.y
+        : (uniform - uniform_continuous) * p.strengths.z * p.strengths.y;
     const float3 structure_preserving_base = sampled_panel - sampled_structure_residual;
     float3 interference = sampled_panel - structure_preserving_base;
     if (moire_saturation != 1.0f) {
@@ -1669,19 +1665,25 @@ kernel void evaluate_physical_pipeline(
     const float3 glass_scattered = structure_preserving_base + moire_intensity * interference;
     const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
     const float3 temporally_integrated = glass_scattered * temporal_gain;
-    const float3 covered_with_environment = apply_flat_cover(temporally_integrated,
+    const float view_cosine = cover_cosine * cover_reciprocal;
+    const float3 combined_cover_response = apply_flat_cover(temporally_integrated,
         cover_cosine * cover_reciprocal, cover_reflection_direction,
         cover_irradiance * cover_reciprocal, cover_position_meters,
         cover_footprint_half_extent_meters, environment_acescg, position, p);
     const float panel_coverage = panel_rectangle_coverage(
         cover_position_meters, cover_footprint_half_extent_meters, p);
+    const float resolved_panel_coverage = mix(1.0f, panel_coverage, p.panel_angular_scene.w);
+    const float3 transmission = flat_cover_transmission(view_cosine, p);
+    const float3 transmitted_emission = temporally_integrated * transmission;
+    const float3 covered_with_environment = transmitted_emission
+        + ideal.a * (combined_cover_response - transmitted_emission);
     // The complete glow term conserves the unscattered panel base for samples
     // inside the active outline. Outside the panel only the separately
     // accumulated core/tail energy exists.
     const float3 exterior_glow = exterior_scattered_glow * temporal_gain
-        * flat_cover_transmission(cover_cosine * cover_reciprocal, p);
+        * transmission;
     const float3 covered = mix(
-        exterior_glow, covered_with_environment, panel_coverage);
+        exterior_glow, covered_with_environment, resolved_panel_coverage);
     const float3 glared = mix(covered, veiling_gate_average[0].xyz * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);
@@ -1699,9 +1701,9 @@ kernel void evaluate_physical_pipeline(
         case 8: selected = covered; break;
         case 9: selected = glared; break;
         case 10: selected = shuttered; break;
-        default: selected = ideal.rgb + p.strengths.x * (shuttered - ideal.rgb); break;
+        default: selected = p.strengths.x * shuttered; break;
     }
-    const float selected_alpha = p.semantics.z >= 7 ? panel_coverage : ideal.a;
+    const float selected_alpha = ideal.a;
     output.write(float4(selected, selected_alpha), position);
 }
 

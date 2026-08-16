@@ -83,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 quality,
                 requested_width,
                 requested_height,
+                device_vfx_alpha_mode: screen_application::DeviceVfxAlphaMode::Ignore,
                 screen_amount: 1.0,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,

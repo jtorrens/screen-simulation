@@ -1035,6 +1035,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            alpha: vec![1.0; 15],
         })
         .expect("prepared raster");
         for placement in [

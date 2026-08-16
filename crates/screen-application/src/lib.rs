@@ -15,9 +15,10 @@ pub use physical_pipeline::{
     resolve_physical_stage_contributions,
 };
 pub use recording::{
-    ConditionalRecordingControl, PreparedRecordingRequest, RecordingCharacterInterpretation,
+    ConditionalRecordingControl, PreparedRecordingRequest, RecordingAdapterAvailability,
+    RecordingAdapterKind, RecordingAdapterUnavailableReason, RecordingCharacterInterpretation,
     RecordingControlAvailability, RecordingPreparationError, RecordingSelection,
-    prepare_recording_request,
+    ResolvedRateControl, prepare_recording_execution_request, prepare_recording_request,
 };
 pub use reflection_environment::{
     REFLECTION_ENVIRONMENT_RIG_ID, ReflectionEmitter, ReflectionEnvironmentError,
@@ -727,13 +728,24 @@ pub fn placed_signal_area_fraction(
 pub struct DeviceSignalRaster {
     pub width: u32,
     pub height: u32,
+    /// Unassociated nonlinear feeder RGB. Alpha is a separate VFX visibility
+    /// sidecar and is never interpreted as a color channel or passed through
+    /// the panel EOTF.
     pub pixels: Vec<DeviceRgb>,
+    pub alpha: Vec<f32>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PreparedDeviceSignalRaster {
     source: DeviceSignalRaster,
     integral: DeviceSignalIntegral,
+    alpha_integral: DeviceSignalIntegral,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceVfxAlphaMode {
+    Ignore,
+    DeviceTransparency,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -881,6 +893,7 @@ pub struct PhysicalPipelineExecutionPlan {
     pub quality: FlatPanelQuality,
     pub requested_width: u32,
     pub requested_height: u32,
+    pub device_vfx_alpha_mode: DeviceVfxAlphaMode,
     pub screen_amount: f32,
     pub emission_amount: f32,
     pub subpixel_geometry_amount: f32,
@@ -1479,10 +1492,20 @@ impl DeviceSignalRaster {
                 actual: self.pixels.len() as u64,
             });
         }
+        if self.alpha.len() as u64 != expected {
+            return Err(ApplicationError::DeviceSignalPixelCountMismatch {
+                expected,
+                actual: self.alpha.len() as u64,
+            });
+        }
         if self
             .pixels
             .iter()
             .any(|pixel| !pixel.r.is_finite() || !pixel.g.is_finite() || !pixel.b.is_finite())
+            || self
+                .alpha
+                .iter()
+                .any(|alpha| !alpha.is_finite() || !(0.0..=1.0).contains(alpha))
         {
             return Err(ApplicationError::NonFiniteDeviceSignal);
         }
@@ -1504,7 +1527,14 @@ impl PreparedDeviceSignalRaster {
     pub fn new(source: DeviceSignalRaster) -> Result<Self, ApplicationError> {
         source.validate()?;
         let integral = DeviceSignalIntegral::new(&source);
-        Ok(Self { source, integral })
+        let alpha_integral = DeviceSignalIntegral::new_mapped_with_alpha(&source, |_, alpha| {
+            DeviceRgb::new(alpha, alpha, alpha)
+        });
+        Ok(Self {
+            source,
+            integral,
+            alpha_integral,
+        })
     }
 
     pub fn raster_size(&self) -> [u32; 2] {
@@ -1989,51 +2019,6 @@ fn panel_rectangle_coverage(
     )
 }
 
-fn sample_placed_acescg_area(
-    source_width: u32,
-    source_height: u32,
-    acescg: &[[f32; 4]],
-    device_raster: [u32; 2],
-    placement: RasterPlacement,
-    minimum: Vec2,
-    maximum: Vec2,
-) -> [f32; 4] {
-    let source_raster = [source_width, source_height];
-    let Some(first) = source_uv_unbounded(source_raster, device_raster, placement, minimum) else {
-        return [0.0; 4];
-    };
-    let Some(second) = source_uv_unbounded(source_raster, device_raster, placement, maximum) else {
-        return [0.0; 4];
-    };
-    let minimum = Vec2 {
-        x: first.x.min(second.x) * source_width as f32,
-        y: first.y.min(second.y) * source_height as f32,
-    };
-    let maximum = Vec2 {
-        x: first.x.max(second.x) * source_width as f32,
-        y: first.y.max(second.y) * source_height as f32,
-    };
-    let area = ((maximum.x - minimum.x) * (maximum.y - minimum.y)).max(1.0e-12);
-    let mut sum = [0.0_f64; 4];
-    for y in minimum.y.floor() as i64..maximum.y.ceil() as i64 {
-        if y < 0 || y >= i64::from(source_height) {
-            continue;
-        }
-        let weight_y = (maximum.y.min((y + 1) as f32) - minimum.y.max(y as f32)).max(0.0);
-        for x in minimum.x.floor() as i64..maximum.x.ceil() as i64 {
-            if x < 0 || x >= i64::from(source_width) {
-                continue;
-            }
-            let weight_x = (maximum.x.min((x + 1) as f32) - minimum.x.max(x as f32)).max(0.0);
-            let value = acescg[(y as u32 * source_width + x as u32) as usize];
-            for channel in 0..4 {
-                sum[channel] += f64::from(value[channel]) * f64::from(weight_x * weight_y);
-            }
-        }
-    }
-    sum.map(|value| (value / f64::from(area)) as f32)
-}
-
 /// Deterministic scalar oracle for the flat, orthographic physical panel surface.
 /// Product composition uses the corresponding platform backend; this function
 /// owns the reference numeric result and never applies a camera or output transform.
@@ -2115,16 +2100,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         .flat_panel_sampling(plan.quality, plan.requested_width, plan.requested_height)
         .map_err(ApplicationError::Panel)?;
 
-    // This stage can promise exact identity at zero because it returns the
-    // borrowed coarse raster domain without resampling or float arithmetic.
-    if plan.screen_amount == 0.0
-        && matches!(
-            plan.requested_intermediate,
-            PhysicalIntermediate::SourceAcesCg
-                | PhysicalIntermediate::DevelopedAcesCg
-                | PhysicalIntermediate::CameraRenderedAcesCg
-        )
-    {
+    // Origin is the sole phase allowed to publish the source ACEScg artifact.
+    // Every later phase consumes the closed placed-feeder boundary instead.
+    if plan.requested_intermediate == PhysicalIntermediate::SourceAcesCg {
         return Ok(PhysicalPipelineCpuResult {
             artifact: physical_rgba_artifact(
                 plan.requested_intermediate,
@@ -2140,15 +2118,23 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     let parameters = evaluator.device_stage_parameters();
     let source_width = request.input.width;
     let source_height = request.input.height;
-    let source_acescg = request.input.acescg;
     let prepared = PreparedDeviceSignalRaster::new(request.input.device_signal)?;
-    let emission_integral = DeviceSignalIntegral::new_mapped(&prepared.source, |value| {
-        DeviceRgb::new(
-            evaluator.native_channel(value, 0),
-            evaluator.native_channel(value, 1),
-            evaluator.native_channel(value, 2),
-        )
-    });
+    let resolved_device_alpha = |authored_alpha: f32| match plan.device_vfx_alpha_mode {
+        DeviceVfxAlphaMode::Ignore => 1.0,
+        DeviceVfxAlphaMode::DeviceTransparency => authored_alpha,
+    };
+    let emission_integral =
+        DeviceSignalIntegral::new_mapped_with_alpha(&prepared.source, |value, authored_alpha| {
+            let alpha = match plan.device_vfx_alpha_mode {
+                DeviceVfxAlphaMode::Ignore => 1.0,
+                DeviceVfxAlphaMode::DeviceTransparency => authored_alpha,
+            };
+            DeviceRgb::new(
+                evaluator.native_channel(value, 0) * alpha,
+                evaluator.native_channel(value, 1) * alpha,
+                evaluator.native_channel(value, 2) * alpha,
+            )
+        });
     let veiling_glare_gate_average =
         {
             let camera = resolved_scene.0;
@@ -2495,6 +2481,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 let area = sample_placed_area(
                                     &prepared.integral,
                                     &emission_integral,
+                                    &prepared.alpha_integral,
                                     source_raster,
                                     device_raster,
                                     plan.placement,
@@ -2514,7 +2501,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     device_minimum,
                                     device_maximum,
                                     channel,
-                                );
+                                ) * resolved_device_alpha(area.alpha);
                                 let base_gains = plan.panel_uniformity.channel_gains(
                                     plan.panel,
                                     device_minimum,
@@ -2526,6 +2513,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 let carrier_area = sample_placed_area(
                                     &prepared.integral,
                                     &emission_integral,
+                                    &prepared.alpha_integral,
                                     source_raster,
                                     device_raster,
                                     plan.placement,
@@ -2545,7 +2533,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     carrier_device_minimum,
                                     carrier_device_maximum,
                                     channel,
-                                );
+                                ) * resolved_device_alpha(carrier_area.alpha);
                                 let carrier_gains = plan.panel_uniformity.channel_gains(
                                     plan.panel,
                                     carrier_device_minimum,
@@ -2607,6 +2595,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                             let shifted = sample_placed_area(
                                                 &prepared.integral,
                                                 &emission_integral,
+                                                &prepared.alpha_integral,
                                                 source_raster,
                                                 device_raster,
                                                 plan.placement,
@@ -2628,7 +2617,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                                 shifted_device_minimum,
                                                 shifted_device_maximum,
                                                 channel,
-                                            ) * coverage
+                                            ) * resolved_device_alpha(shifted.alpha)
+                                                * coverage
                                                 * sample.weight
                                         })
                                         .sum::<f32>()
@@ -2649,6 +2639,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     let sampled = sample_placed_area(
                                         &prepared.integral,
                                         &emission_integral,
+                                        &prepared.alpha_integral,
                                         source_raster,
                                         device_raster,
                                         plan.placement,
@@ -2668,7 +2659,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         sampled_device_minimum,
                                         sampled_device_maximum,
                                         channel,
-                                    ) * coverage
+                                    ) * resolved_device_alpha(sampled.alpha)
+                                        * coverage
                                 };
                                 let value = if plan.panel_light_spread.character_strength == 0.0 {
                                     uniform_base * optical_weight
@@ -2749,6 +2741,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         uniform_continuous_native.g += uniform_continuous;
                                         average_device_code.g += area.device_code.g * layer_weight;
                                         carrier_detail_native.g += carrier_detail;
+                                        ideal[3] +=
+                                            resolved_device_alpha(area.alpha) * layer_weight;
                                     }
                                     _ => {
                                         physical_native.b += base;
@@ -2762,19 +2756,6 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         carrier_detail_native.b += carrier_detail;
                                     }
                                 }
-                            }
-                            let (ideal_minimum, ideal_maximum, _, _, _) = mapped_bounds(1);
-                            let value = sample_placed_acescg_area(
-                                source_width,
-                                source_height,
-                                &source_acescg,
-                                device_raster,
-                                plan.placement,
-                                ideal_minimum,
-                                ideal_maximum,
-                            );
-                            for channel in 0..4 {
-                                ideal[channel] += value[channel] * layer_weight;
                             }
                         }
                     }
@@ -2916,51 +2897,45 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             } else {
                 cover_glow
             };
-            let sampled_panel = if plan.panel_uniformity.character_strength == 0.0 {
-                [
-                    ideal[0] * (1.0 - plan.emission_amount)
-                        + continuous[0] * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + physical[0] * (plan.subpixel_geometry_amount - 1.0)
-                        + glowed[0],
-                    ideal[1] * (1.0 - plan.emission_amount)
-                        + continuous[1] * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + physical[1] * (plan.subpixel_geometry_amount - 1.0)
-                        + glowed[1],
-                    ideal[2] * (1.0 - plan.emission_amount)
-                        + continuous[2] * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + physical[2] * (plan.subpixel_geometry_amount - 1.0)
-                        + glowed[2],
-                ]
+            let continuous_base = if plan.panel_uniformity.character_strength == 0.0 {
+                continuous
             } else {
-                [
-                    ideal[0] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[0]
-                            * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + uniform[0] * (plan.subpixel_geometry_amount - 1.0)
-                        + glowed[0],
-                    ideal[1] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[1]
-                            * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + uniform[1] * (plan.subpixel_geometry_amount - 1.0)
-                        + glowed[1],
-                    ideal[2] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[2]
-                            * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + uniform[2] * (plan.subpixel_geometry_amount - 1.0)
-                        + glowed[2],
-                ]
+                uniform_continuous
             };
+            let sampled_panel = [
+                plan.emission_amount
+                    * (continuous_base[0]
+                        + plan.subpixel_geometry_amount * (glowed[0] - continuous_base[0])),
+                plan.emission_amount
+                    * (continuous_base[1]
+                        + plan.subpixel_geometry_amount * (glowed[1] - continuous_base[1])),
+                plan.emission_amount
+                    * (continuous_base[2]
+                        + plan.subpixel_geometry_amount * (glowed[2] - continuous_base[2])),
+            ];
             let sampled_structure_residual = if plan.panel_uniformity.character_strength == 0.0 {
                 [
-                    (physical[0] - continuous[0]) * plan.subpixel_geometry_amount,
-                    (physical[1] - continuous[1]) * plan.subpixel_geometry_amount,
-                    (physical[2] - continuous[2]) * plan.subpixel_geometry_amount,
+                    (physical[0] - continuous[0])
+                        * plan.subpixel_geometry_amount
+                        * plan.emission_amount,
+                    (physical[1] - continuous[1])
+                        * plan.subpixel_geometry_amount
+                        * plan.emission_amount,
+                    (physical[2] - continuous[2])
+                        * plan.subpixel_geometry_amount
+                        * plan.emission_amount,
                 ]
             } else {
                 [
-                    (uniform[0] - uniform_continuous[0]) * plan.subpixel_geometry_amount,
-                    (uniform[1] - uniform_continuous[1]) * plan.subpixel_geometry_amount,
-                    (uniform[2] - uniform_continuous[2]) * plan.subpixel_geometry_amount,
+                    (uniform[0] - uniform_continuous[0])
+                        * plan.subpixel_geometry_amount
+                        * plan.emission_amount,
+                    (uniform[1] - uniform_continuous[1])
+                        * plan.subpixel_geometry_amount
+                        * plan.emission_amount,
+                    (uniform[2] - uniform_continuous[2])
+                        * plan.subpixel_geometry_amount
+                        * plan.emission_amount,
                 ]
             };
             let structure_preserving_base = [
@@ -3011,6 +2986,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 footprint_half_extent_meters,
                 [plan.panel.active_width.0, plan.panel.active_height.0],
             );
+            let resolved_panel_coverage = 1.0 + plan.scene_geometry_amount * (panel_coverage - 1.0);
             let reflection_visibility = microtexture
                 .reflection_visibility(cover_position_meters, footprint_half_extent_meters);
             let emitted = LinearRgb::new(
@@ -3028,7 +3004,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     cover_irradiance[2] * reciprocal_cover / parameters.white_level_nits,
                 ),
             };
-            let covered_with_environment = match plan.environment {
+            let combined_cover_response = match plan.environment {
                 IncidentEnvironment::Procedural(_) => cover.evaluate(emitted, cover_sample),
                 IncidentEnvironment::Equirectangular(environment) => {
                     let raster = request
@@ -3062,6 +3038,20 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 }
             };
             let transmitted = cover.transmission(cover_sample.view_cosine);
+            let transmitted_emission = LinearRgb::new(
+                emitted.r * transmitted.r,
+                emitted.g * transmitted.g,
+                emitted.b * transmitted.b,
+            );
+            let local_device_matte = ideal[3].clamp(0.0, 1.0);
+            let covered_with_environment = LinearRgb::new(
+                transmitted_emission.r
+                    + local_device_matte * (combined_cover_response.r - transmitted_emission.r),
+                transmitted_emission.g
+                    + local_device_matte * (combined_cover_response.g - transmitted_emission.g),
+                transmitted_emission.b
+                    + local_device_matte * (combined_cover_response.b - transmitted_emission.b),
+            );
             let scattered = plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength;
             let exterior_scattered_glow = [
                 cover_glow[0] - spread[0] * (1.0 - scattered),
@@ -3074,9 +3064,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 exterior_scattered_glow[2] * temporal_gain * transmitted.b,
             );
             let covered = LinearRgb::new(
-                exterior_glow.r + panel_coverage * (covered_with_environment.r - exterior_glow.r),
-                exterior_glow.g + panel_coverage * (covered_with_environment.g - exterior_glow.g),
-                exterior_glow.b + panel_coverage * (covered_with_environment.b - exterior_glow.b),
+                exterior_glow.r
+                    + resolved_panel_coverage * (covered_with_environment.r - exterior_glow.r),
+                exterior_glow.g
+                    + resolved_panel_coverage * (covered_with_environment.g - exterior_glow.g),
+                exterior_glow.b
+                    + resolved_panel_coverage * (covered_with_environment.b - exterior_glow.b),
             );
             let glare_fraction = resolved_scene.0.lens.veiling_glare_fraction;
             let temporal_gate_average = LinearRgb::new(
@@ -3125,9 +3118,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::SensorReadoutRaw
                 | PhysicalIntermediate::DevelopedAcesCg
                 | PhysicalIntermediate::CameraRenderedAcesCg => [
-                    ideal[0] + plan.screen_amount * (shuttered.r - ideal[0]),
-                    ideal[1] + plan.screen_amount * (shuttered.g - ideal[1]),
-                    ideal[2] + plan.screen_amount * (shuttered.b - ideal[2]),
+                    plan.screen_amount * shuttered.r,
+                    plan.screen_amount * shuttered.g,
+                    plan.screen_amount * shuttered.b,
                 ],
             };
             let selected_alpha = match plan.requested_intermediate {
@@ -3140,7 +3133,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::SensorReadoutRaw
                 | PhysicalIntermediate::DevelopedAcesCg
-                | PhysicalIntermediate::CameraRenderedAcesCg => panel_coverage,
+                | PhysicalIntermediate::CameraRenderedAcesCg => local_device_matte,
                 _ => ideal[3],
             };
             output.push([selected[0], selected[1], selected[2], selected_alpha]);
@@ -3418,12 +3411,20 @@ impl DeviceSignalIntegral {
     }
 
     fn new_mapped(source: &DeviceSignalRaster, map: impl Fn(DeviceRgb) -> DeviceRgb) -> Self {
+        Self::new_mapped_with_alpha(source, |pixel, _| map(pixel))
+    }
+
+    fn new_mapped_with_alpha(
+        source: &DeviceSignalRaster,
+        map: impl Fn(DeviceRgb, f32) -> DeviceRgb,
+    ) -> Self {
         let stride = source.width as usize + 1;
         let mut prefix = vec![IntegralRgb::default(); stride * (source.height as usize + 1)];
         for row in 0..source.height as usize {
             let mut row_sum = IntegralRgb::default();
             for column in 0..source.width as usize {
-                let pixel = map(source.pixels[row * source.width as usize + column]);
+                let index = row * source.width as usize + column;
+                let pixel = map(source.pixels[index], source.alpha[index]);
                 row_sum.r += f64::from(pixel.r);
                 row_sum.g += f64::from(pixel.g);
                 row_sum.b += f64::from(pixel.b);
@@ -3524,6 +3525,7 @@ impl DeviceSignalIntegral {
 struct AreaSignalSample {
     device_code: DeviceRgb,
     linear_native_emission: LinearRgb,
+    alpha: f32,
 }
 
 fn linear_emission_integral(
@@ -3536,6 +3538,12 @@ fn linear_emission_integral(
             evaluator.native_channel(pixel, 1),
             evaluator.native_channel(pixel, 2),
         )
+    })
+}
+
+fn alpha_integral(source: &DeviceSignalRaster) -> DeviceSignalIntegral {
+    DeviceSignalIntegral::new_mapped_with_alpha(source, |_, alpha| {
+        DeviceRgb::new(alpha, alpha, alpha)
     })
 }
 
@@ -3590,23 +3598,23 @@ pub fn decoded_frame_to_device_signal(
         .map_err(ApplicationError::Color)?;
     let pixels = transformed
         .chunks_exact(4)
+        .map(|pixel| DeviceRgb::new(pixel[0], pixel[1], pixel[2]))
+        .collect();
+    let alpha = transformed
+        .chunks_exact(4)
         .map(|pixel| {
-            let association = if alpha_presence == AlphaPresence::Present {
+            if alpha_presence == AlphaPresence::Present {
                 pixel[3]
             } else {
                 1.0
-            };
-            DeviceRgb::new(
-                pixel[0] * association,
-                pixel[1] * association,
-                pixel[2] * association,
-            )
+            }
         })
         .collect();
     Ok(DeviceSignalRaster {
         width: frame.raster.width,
         height: frame.raster.height,
         pixels,
+        alpha,
     })
 }
 
@@ -3676,6 +3684,7 @@ fn device_rectangle_coverage(minimum: Vec2, maximum: Vec2) -> f32 {
 fn sample_placed_area(
     source_code: &DeviceSignalIntegral,
     source_emission: &DeviceSignalIntegral,
+    source_alpha: &DeviceSignalIntegral,
     source_raster: [u32; 2],
     device_raster: [u32; 2],
     placement: RasterPlacement,
@@ -3686,19 +3695,23 @@ fn sample_placed_area(
         return AreaSignalSample {
             device_code: DeviceRgb::BLACK,
             linear_native_emission: LinearRgb::new(0.0, 0.0, 0.0),
+            alpha: 0.0,
         };
     };
     let Some(second) = source_uv_unbounded(source_raster, device_raster, placement, maximum) else {
         return AreaSignalSample {
             device_code: DeviceRgb::BLACK,
             linear_native_emission: LinearRgb::new(0.0, 0.0, 0.0),
+            alpha: 0.0,
         };
     };
     let device_code = source_code.sample_area_box(first, second);
     let emission = source_emission.sample_area_box(first, second);
+    let alpha = source_alpha.sample_area_box(first, second).r;
     AreaSignalSample {
         device_code,
         linear_native_emission: LinearRgb::new(emission.r, emission.g, emission.b),
+        alpha,
     }
 }
 
@@ -5876,6 +5889,7 @@ pub fn prepare_raster_from_device_signal(
         .evaluator()
         .map_err(ApplicationError::Panel)?;
     let emission_integral = linear_emission_integral(source, panel_evaluator);
+    let alpha_integral = alpha_integral(source);
     let source_raster = [source.width, source.height];
     let device_raster = [
         request.optics.panel.native_width,
@@ -5895,6 +5909,7 @@ pub fn prepare_raster_from_device_signal(
             sample_placed_area(
                 &source_integral,
                 &emission_integral,
+                &alpha_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -5937,6 +5952,7 @@ pub fn prepare_raster_from_prepared_device_signal(
             sample_placed_area(
                 &source.integral,
                 &emission_integral,
+                &source.alpha_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -5958,6 +5974,7 @@ pub fn evaluate_linear_optics_from_device_signal(
     let source_integral = DeviceSignalIntegral::new(source);
     let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
     let emission_integral = linear_emission_integral(source, panel_evaluator);
+    let alpha_integral = alpha_integral(source);
     let source_raster = [source.width, source.height];
     let device_raster = [request.panel.native_width, request.panel.native_height];
     evaluate_optical_raster_with_signal(
@@ -5975,6 +5992,7 @@ pub fn evaluate_linear_optics_from_device_signal(
             sample_placed_area(
                 &source_integral,
                 &emission_integral,
+                &alpha_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -6011,6 +6029,7 @@ pub fn evaluate_linear_optics_from_prepared_device_signal(
             sample_placed_area(
                 &source.integral,
                 &emission_integral,
+                &source.alpha_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -6046,6 +6065,7 @@ fn evaluate_linear_optics_region_from_prepared_device_signal(
             sample_placed_area(
                 &source.integral,
                 &emission_integral,
+                &source.alpha_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -6106,6 +6126,7 @@ fn evaluate_device_signal_optical_sensor_row(
             sample_placed_area(
                 &source.integral,
                 &emission_integral,
+                &source.alpha_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -6169,6 +6190,7 @@ fn evaluate_optical_row_from_prepared_device_signal(
             sample_placed_area(
                 &source.integral,
                 &emission_integral,
+                &source.alpha_integral,
                 source_raster,
                 device_raster,
                 placement,
@@ -7353,6 +7375,7 @@ fn diagnostic_area_signal(
             linear_sum.g / 16.0,
             linear_sum.b / 16.0,
         ),
+        alpha: 1.0,
     }
 }
 
@@ -8640,6 +8663,7 @@ mod tests {
                         width: 1,
                         height: 1,
                         pixels: vec![DeviceRgb::new(0.25, 0.5, 0.75)],
+                        alpha: vec![1.0],
                     },
                 )?))
             },
@@ -8774,6 +8798,7 @@ mod tests {
                         width: 1,
                         height: 1,
                         pixels: vec![DeviceRgb::new(0.25, 0.5, 0.75)],
+                        alpha: vec![1.0],
                     },
                 )?))
             },
@@ -8789,6 +8814,7 @@ mod tests {
                         width: 1,
                         height: 1,
                         pixels: vec![DeviceRgb::new(0.25, 0.5, 0.75)],
+                        alpha: vec![1.0],
                     },
                 )?))
             },
@@ -8829,6 +8855,7 @@ mod tests {
                         width: 1,
                         height: 1,
                         pixels: vec![DeviceRgb::new(0.25, 0.5, 0.75)],
+                        alpha: vec![1.0],
                     },
                 )?))
             },
@@ -8858,6 +8885,7 @@ mod tests {
             width: 1,
             height: 1,
             pixels: vec![DeviceRgb::WHITE],
+            alpha: vec![1.0],
         })
         .expect("uniform device signal");
         let sensor = SensorProfile {
@@ -8927,6 +8955,7 @@ mod tests {
                     width: 1,
                     height: 1,
                     pixels: vec![DeviceRgb::WHITE],
+                    alpha: vec![1.0],
                 },
             )?))
         };
@@ -9019,6 +9048,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 pixels: vec![DeviceRgb::WHITE],
+                alpha: vec![1.0],
             })
             .unwrap(),
         );
@@ -9045,6 +9075,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 pixels: vec![DeviceRgb::BLACK],
+                alpha: vec![1.0],
             })
             .unwrap(),
         );
@@ -9145,6 +9176,7 @@ mod tests {
         let white_area = AreaSignalSample {
             device_code: DeviceRgb::WHITE,
             linear_native_emission: LinearRgb::new(500.0, 500.0, 500.0),
+            alpha: 1.0,
         };
         let resolved = integrate_aperture_samples(
             &resolved_spatial,
@@ -9265,6 +9297,7 @@ mod tests {
                         DeviceRgb::new(1.5, -0.25, 0.5),
                         DeviceRgb::new(0.0, 0.5, 2.0),
                     ],
+                    alpha: vec![0.25, 0.75],
                 },
                 environment_acescg: None,
             },
@@ -9280,6 +9313,7 @@ mod tests {
                 quality,
                 requested_width: 4,
                 requested_height: 2,
+                device_vfx_alpha_mode: DeviceVfxAlphaMode::Ignore,
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
@@ -9352,6 +9386,7 @@ mod tests {
                 width: 2,
                 height: 2,
                 pixels: vec![DeviceRgb::WHITE; 4],
+                alpha: vec![1.0; 4],
             },
             environment_acescg: None,
         };
@@ -9439,6 +9474,7 @@ mod tests {
                 width: 8,
                 height: 8,
                 pixels: vec![DeviceRgb::WHITE; 64],
+                alpha: vec![1.0; 64],
             },
             environment_acescg: None,
         };
@@ -10238,27 +10274,29 @@ mod tests {
     }
 
     #[test]
-    fn flat_panel_zero_is_bit_exact_identity_including_alpha_and_extremes() {
+    fn screen_zero_removes_the_device_without_reentering_source_acescg() {
         let mut request = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 0.0);
         request.input.acescg[0][0] = f32::from_bits(0x7fc0_1234);
-        let expected = request
-            .input
-            .acescg
-            .iter()
-            .flatten()
-            .map(|value| value.to_bits())
-            .collect::<Vec<_>>();
         let result = evaluate_physical_pipeline_cpu_oracle(request).expect("identity result");
-        assert_eq!((result.width(), result.height()), (2, 1));
-        assert_eq!(
-            result
-                .presentation_rgba()
-                .iter()
-                .flatten()
-                .map(|value| value.to_bits())
-                .collect::<Vec<_>>(),
-            expected
-        );
+        assert_eq!((result.width(), result.height()), (4, 2));
+        assert!(result.presentation_rgba().iter().all(|pixel| {
+            pixel[0].to_bits() == 0 && pixel[1].to_bits() == 0 && pixel[2].to_bits() == 0
+        }));
+    }
+
+    #[test]
+    fn panel_and_later_phases_are_independent_of_source_acescg_rgb() {
+        let first = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        let mut second = first.clone();
+        second.input.acescg = vec![
+            [f32::from_bits(0x7fc0_1234), -1000.0, 9000.0, 0.25],
+            [42.0, 17.0, -7.0, 0.75],
+        ];
+        let first =
+            evaluate_physical_pipeline_cpu_oracle(first).expect("first closed panel result");
+        let second =
+            evaluate_physical_pipeline_cpu_oracle(second).expect("second closed panel result");
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -10305,15 +10343,15 @@ mod tests {
             width: 1,
             height: 1,
             pixels: vec![DeviceRgb::WHITE],
+            alpha: vec![1.0],
         };
         rgb_request.plan.requested_width = 1;
         rgb_request.plan.requested_height = 1;
+        rgb_request.render_context = PhysicalRenderContext::full_frame(1, 1);
         let rgb = evaluate_physical_pipeline_cpu_oracle(rgb_request.clone()).expect("RGB native");
         rgb_request.plan.panel.stripe_layout = screen_panel::StripeLayout::Bgr;
         let bgr = evaluate_physical_pipeline_cpu_oracle(rgb_request.clone()).expect("BGR native");
         assert_eq!((rgb.width(), rgb.height()), (3, 3));
-        assert!(rgb.presentation_rgba()[0][0] > rgb.presentation_rgba()[2][0]);
-        assert!(bgr.presentation_rgba()[0][2] > bgr.presentation_rgba()[2][2]);
         assert_ne!(rgb.presentation_rgba(), bgr.presentation_rgba());
 
         rgb_request.plan.panel.black_matrix_fraction = 0.5;
@@ -10526,6 +10564,7 @@ mod tests {
                 DeviceRgb::WHITE,
                 DeviceRgb::BLACK,
             ],
+            alpha: vec![1.0; 4],
         };
         let integral = DeviceSignalIntegral::new(&raster);
         let average = integral.sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
@@ -10539,6 +10578,7 @@ mod tests {
             width: 2,
             height: 2,
             pixels: vec![DeviceRgb::new(high, high, high); 4],
+            alpha: vec![1.0; 4],
         };
         let hdr_average = DeviceSignalIntegral::new(&hdr)
             .sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
@@ -10554,6 +10594,7 @@ mod tests {
             width: 2,
             height: 1,
             pixels: vec![DeviceRgb::BLACK, DeviceRgb::WHITE],
+            alpha: vec![1.0; 2],
         };
         let emission = linear_emission_integral(&raster, evaluator)
             .sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
@@ -10577,6 +10618,7 @@ mod tests {
                 DeviceRgb::new(0.2, 0.8, 0.4),
                 DeviceRgb::new(0.9, 0.9, 0.9),
             ],
+            alpha: vec![1.0; 4],
         };
         let prepared = PreparedDeviceSignalRaster::new(source.clone()).expect("valid signal");
         let direct =
@@ -10644,9 +10686,12 @@ mod tests {
             &processor,
         )
         .expect("explicit ignored alpha");
-        assert_eq!(straight.pixels[0], DeviceRgb::new(0.4, 0.2, 0.1));
-        assert_eq!(premultiplied.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
+        assert_eq!(straight.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
+        assert_eq!(premultiplied.pixels[0], DeviceRgb::new(1.6, 0.8, 0.4));
         assert_eq!(ignored.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
+        assert_eq!(straight.alpha, vec![0.5]);
+        assert_eq!(premultiplied.alpha, vec![0.5]);
+        assert_eq!(ignored.alpha, vec![1.0]);
     }
 
     #[test]
@@ -10833,6 +10878,7 @@ mod tests {
             width: 1,
             height: 1,
             pixels: vec![DeviceRgb::new(code, code, code)],
+            alpha: vec![1.0],
         };
         let white = evaluate_linear_optics_from_device_signal(
             optics.clone(),
@@ -10887,6 +10933,7 @@ mod tests {
             width: 1,
             height: 1,
             pixels: vec![DeviceRgb::WHITE],
+            alpha: vec![1.0],
         };
         let clean = evaluate_linear_optics_from_device_signal(
             clean,
@@ -10956,6 +11003,7 @@ mod tests {
             &|_, _| AreaSignalSample {
                 device_code: DeviceRgb::WHITE,
                 linear_native_emission: LinearRgb::new(1.0, 1.0, 1.0),
+                alpha: 1.0,
             },
             cover,
         );
@@ -10982,6 +11030,7 @@ mod tests {
             width: 1,
             height: 1,
             pixels: vec![DeviceRgb::WHITE],
+            alpha: vec![1.0],
         };
         let clean = evaluate_linear_optics_from_device_signal(
             clean,

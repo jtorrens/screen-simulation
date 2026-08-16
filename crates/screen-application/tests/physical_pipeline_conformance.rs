@@ -1,6 +1,7 @@
 use screen_application::{
-    DeviceSignalRaster, PhysicalIntermediate, PhysicalPipelineExecutionPlan, PhysicalPipelineInput,
-    PhysicalPipelineRequest, RasterPlacement, evaluate_physical_pipeline_cpu_oracle,
+    DeviceSignalRaster, DeviceVfxAlphaMode, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
+    PhysicalPipelineInput, PhysicalPipelineRequest, RasterPlacement,
+    evaluate_physical_pipeline_cpu_oracle,
 };
 use screen_contracts::{DeviceRgb, Meters};
 use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile, StripeLayout};
@@ -28,6 +29,7 @@ fn request(
                     .iter()
                     .map(|value| DeviceRgb::new(value[0], value[1], value[2]))
                     .collect(),
+                alpha: acescg.iter().map(|value| value[3]).collect(),
             },
             environment_acescg: None,
             acescg,
@@ -47,6 +49,7 @@ fn request(
             quality,
             requested_width: 6,
             requested_height: 3,
+            device_vfx_alpha_mode: DeviceVfxAlphaMode::Ignore,
             screen_amount,
             emission_amount,
             subpixel_geometry_amount: geometry_amount,

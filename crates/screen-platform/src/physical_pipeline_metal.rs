@@ -8,8 +8,8 @@ use metal::{
     Texture, TextureDescriptor, TextureRef,
 };
 use screen_application::{
-    LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
-    expose_physical_pipeline_raw, physical_environment_reference_sample_count,
+    DeviceVfxAlphaMode, LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
+    RasterPlacement, expose_physical_pipeline_raw, physical_environment_reference_sample_count,
     physical_row_temporal_gain, placed_signal_area_fraction,
 };
 use screen_cover::{EnvironmentPattern, IncidentEnvironment};
@@ -1068,14 +1068,7 @@ impl MetalPhysicalPipeline {
                 "requested intermediate belongs to an unsupported stage".to_owned(),
             ));
         }
-        if plan.screen_amount == 0.0
-            && matches!(
-                plan.requested_intermediate,
-                PhysicalIntermediate::SourceAcesCg
-                    | PhysicalIntermediate::DevelopedAcesCg
-                    | PhysicalIntermediate::CameraRenderedAcesCg
-            )
-        {
+        if plan.requested_intermediate == PhysicalIntermediate::SourceAcesCg {
             report_progress(1.0);
             return Ok(MetalPhysicalPipelineResult {
                 texture: source_acescg.to_owned(),
@@ -1166,7 +1159,10 @@ impl MetalPhysicalPipeline {
             geometry: [
                 plan.panel.black_matrix_fraction,
                 plan.moire_saturation,
-                0.0,
+                match plan.device_vfx_alpha_mode {
+                    DeviceVfxAlphaMode::Ignore => 0.0,
+                    DeviceVfxAlphaMode::DeviceTransparency => 1.0,
+                },
                 plan.moire_intensity,
             ],
             strengths: [
@@ -1766,6 +1762,7 @@ mod tests {
                     width: 3,
                     height: 2,
                     pixels: device_signal,
+                    alpha: vec![1.0; 6],
                 },
                 environment_acescg: None,
             },
@@ -1777,6 +1774,7 @@ mod tests {
                 quality,
                 requested_width: 12,
                 requested_height: 8,
+                device_vfx_alpha_mode: DeviceVfxAlphaMode::Ignore,
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
