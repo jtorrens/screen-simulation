@@ -1218,37 +1218,21 @@ inline float spread_native_channel(
     return value;
 }
 
-constant float2 cover_glow_core_directions[8] = {
-    float2(1.0f, 0.0f), float2(0.70710677f, 0.70710677f),
-    float2(0.0f, 1.0f), float2(-0.70710677f, 0.70710677f),
-    float2(-1.0f, 0.0f), float2(-0.70710677f, -0.70710677f),
-    float2(0.0f, -1.0f), float2(0.70710677f, -0.70710677f)
-};
-
-constant float2 cover_glow_tail_directions[8] = {
-    float2(0.9238795f, 0.38268343f), float2(0.38268343f, 0.9238795f),
-    float2(-0.38268343f, 0.9238795f), float2(-0.9238795f, 0.38268343f),
-    float2(-0.9238795f, -0.38268343f), float2(-0.38268343f, -0.9238795f),
-    float2(0.38268343f, -0.9238795f), float2(0.9238795f, -0.38268343f)
-};
-
-inline float spread_native_channel_at_offset(
+inline float spread_native_channel_over_bounds(
     texture2d<float, access::read> device_signal,
     texture2d<float, access::read> device_row_prefix,
     uint channel,
     float2 device_minimum,
     float2 device_maximum,
-    float2 offset_uv,
     float2 prepared_placement_scale,
     constant PhysicalPipelineParams& p
 ) {
-    const float shifted_base = native_channel_at_offset(
+    const float bounds_base = native_channel_at_offset(
         device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-        offset_uv, prepared_placement_scale, p);
+        float2(0.0f), prepared_placement_scale, p);
     return spread_native_channel(
         device_signal, device_row_prefix, channel,
-        device_minimum + offset_uv, device_maximum + offset_uv,
-        shifted_base, prepared_placement_scale, p);
+        device_minimum, device_maximum, bounds_base, prepared_placement_scale, p);
 }
 
 inline float cover_glow_native_channel(
@@ -1275,20 +1259,14 @@ inline float cover_glow_native_channel(
     const float base = spread_native_channel(
         device_signal, device_row_prefix, channel, device_minimum, device_maximum,
         base_native, prepared_placement_scale, p);
-    float core_blur = 0.0f;
-    float tail_blur = 0.0f;
-    for (uint sample = 0; sample < 8; ++sample) {
-        core_blur += spread_native_channel_at_offset(
-            device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-            cover_glow_core_directions[sample] * core_extent,
-            prepared_placement_scale, p);
-        tail_blur += spread_native_channel_at_offset(
-            device_signal, device_row_prefix, channel, device_minimum, device_maximum,
-            cover_glow_tail_directions[sample] * tail_extent,
-            prepared_placement_scale, p);
-    }
-    core_blur *= 0.125f;
-    tail_blur *= 0.125f;
+    const float core_blur = spread_native_channel_over_bounds(
+        device_signal, device_row_prefix, channel,
+        device_minimum - core_extent, device_maximum + core_extent,
+        prepared_placement_scale, p);
+    const float tail_blur = spread_native_channel_over_bounds(
+        device_signal, device_row_prefix, channel,
+        device_minimum - tail_extent, device_maximum + tail_extent,
+        prepared_placement_scale, p);
     exterior_scattered = core_blur * scattered * (1.0f - p.cover_glow.w)
         + tail_blur * scattered * p.cover_glow.w;
     return base * (1.0f - scattered) + exterior_scattered;

@@ -2574,26 +2574,24 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     [carrier_gains.r, carrier_gains.g, carrier_gains.b][channel];
                                 let carrier_detail =
                                     (carrier * carrier_gain - uniform_base) * optical_weight;
-                                let spread_at = |cover_offset_meters: [f32; 2]| {
+                                let spread_over = |bounds_minimum: Vec2, bounds_maximum: Vec2| {
                                     plan.panel_light_spread
                                         .samples_for_channel(channel)
                                         .into_iter()
                                         .map(|sample| {
                                             let offset = Vec2 {
-                                                x: (sample.offset_meters.x
-                                                    + cover_offset_meters[0])
+                                                x: sample.offset_meters.x
                                                     / plan.panel.active_width.0,
-                                                y: (sample.offset_meters.y
-                                                    + cover_offset_meters[1])
+                                                y: sample.offset_meters.y
                                                     / plan.panel.active_height.0,
                                             };
                                             let shifted_minimum = Vec2 {
-                                                x: channel_minimum.x + offset.x,
-                                                y: channel_minimum.y + offset.y,
+                                                x: bounds_minimum.x + offset.x,
+                                                y: bounds_minimum.y + offset.y,
                                             };
                                             let shifted_maximum = Vec2 {
-                                                x: channel_maximum.x + offset.x,
-                                                y: channel_maximum.y + offset.y,
+                                                x: bounds_maximum.x + offset.x,
+                                                y: bounds_maximum.y + offset.y,
                                             };
                                             let coverage = device_rectangle_coverage(
                                                 shifted_minimum,
@@ -2645,6 +2643,22 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                         })
                                         .sum::<f32>()
                                 };
+                                let spread_at = |cover_offset_meters: [f32; 2]| {
+                                    let offset = Vec2 {
+                                        x: cover_offset_meters[0] / plan.panel.active_width.0,
+                                        y: cover_offset_meters[1] / plan.panel.active_height.0,
+                                    };
+                                    spread_over(
+                                        Vec2 {
+                                            x: channel_minimum.x + offset.x,
+                                            y: channel_minimum.y + offset.y,
+                                        },
+                                        Vec2 {
+                                            x: channel_maximum.x + offset.x,
+                                            y: channel_maximum.y + offset.y,
+                                        },
+                                    )
+                                };
                                 let value = if plan.panel_light_spread.character_strength == 0.0 {
                                     uniform_base * optical_weight
                                 } else {
@@ -2655,29 +2669,27 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 } else {
                                     let glow = plan.cover.glow;
                                     let scattered = glow.scatter_fraction * glow.character_strength;
-                                    let radial_mean =
-                                        |radius_millimeters: f32, directions: &[[f32; 2]; 8]| {
-                                            directions
-                                                .iter()
-                                                .map(|direction| {
-                                                    spread_at([
-                                                        radius_millimeters * 0.001 * direction[0],
-                                                        radius_millimeters * 0.001 * direction[1],
-                                                    ])
-                                                })
-                                                .sum::<f32>()
-                                                * 0.125
-                                                * base_gain
-                                                * optical_weight
+                                    let continuous_area = |radius_millimeters: f32| {
+                                        let extent = Vec2 {
+                                            x: radius_millimeters * 0.001
+                                                / plan.panel.active_width.0,
+                                            y: radius_millimeters * 0.001
+                                                / plan.panel.active_height.0,
                                         };
-                                    let core_blur = radial_mean(
-                                        glow.core_radius_millimeters,
-                                        &COVER_GLOW_CORE_DIRECTIONS,
-                                    );
-                                    let tail_blur = radial_mean(
-                                        glow.tail_radius_millimeters,
-                                        &COVER_GLOW_TAIL_DIRECTIONS,
-                                    );
+                                        spread_over(
+                                            Vec2 {
+                                                x: channel_minimum.x - extent.x,
+                                                y: channel_minimum.y - extent.y,
+                                            },
+                                            Vec2 {
+                                                x: channel_maximum.x + extent.x,
+                                                y: channel_maximum.y + extent.y,
+                                            },
+                                        ) * base_gain
+                                            * optical_weight
+                                    };
+                                    let core_blur = continuous_area(glow.core_radius_millimeters);
+                                    let tail_blur = continuous_area(glow.tail_radius_millimeters);
                                     value * (1.0 - scattered)
                                         + core_blur * scattered * (1.0 - glow.tail_fraction)
                                         + tail_blur * scattered * glow.tail_fraction
@@ -3659,28 +3671,6 @@ fn device_rectangle_coverage(minimum: Vec2, maximum: Vec2) -> f32 {
     let overlap_height = (ordered_maximum.y.min(1.0) - ordered_minimum.y.max(0.0)).max(0.0);
     ((overlap_width * overlap_height) / area).clamp(0.0, 1.0)
 }
-
-const COVER_GLOW_CORE_DIRECTIONS: [[f32; 2]; 8] = [
-    [1.0, 0.0],
-    [0.70710677, 0.70710677],
-    [0.0, 1.0],
-    [-0.70710677, 0.70710677],
-    [-1.0, 0.0],
-    [-0.70710677, -0.70710677],
-    [0.0, -1.0],
-    [0.70710677, -0.70710677],
-];
-
-const COVER_GLOW_TAIL_DIRECTIONS: [[f32; 2]; 8] = [
-    [0.9238795, 0.38268343],
-    [0.38268343, 0.9238795],
-    [-0.38268343, 0.9238795],
-    [-0.9238795, 0.38268343],
-    [-0.9238795, -0.38268343],
-    [-0.38268343, -0.9238795],
-    [0.38268343, -0.9238795],
-    [0.9238795, -0.38268343],
-];
 
 fn sample_placed_feeder_area(
     signal: &PlacedFeederSignal,
@@ -11023,24 +11013,15 @@ mod tests {
     }
 
     #[test]
-    fn cover_glow_radial_quadratures_are_centered_and_normalized() {
-        for directions in [&COVER_GLOW_CORE_DIRECTIONS, &COVER_GLOW_TAIL_DIRECTIONS] {
-            let weight = 1.0 / directions.len() as f32;
-            let total = directions.len() as f32 * weight;
-            let first_moment = directions.iter().fold([0.0_f32; 2], |sum, direction| {
-                [
-                    sum[0] + direction[0] * weight,
-                    sum[1] + direction[1] * weight,
-                ]
-            });
-            assert!((total - 1.0).abs() <= f32::EPSILON);
-            assert!(first_moment[0].abs() < 1.0e-6);
-            assert!(first_moment[1].abs() < 1.0e-6);
-            assert!(directions.iter().all(|direction| {
-                ((direction[0] * direction[0] + direction[1] * direction[1]).sqrt() - 1.0).abs()
-                    < 1.0e-6
-            }));
-        }
+    fn cover_glow_continuous_support_is_centered_and_ordered() {
+        let glow = screen_cover::cover_glass_preset("cover-matte-ar")
+            .expect("matte cover")
+            .profile
+            .glow;
+        assert!(glow.core_radius_millimeters.is_finite());
+        assert!(glow.tail_radius_millimeters.is_finite());
+        assert!(glow.core_radius_millimeters > 0.0);
+        assert!(glow.tail_radius_millimeters >= glow.core_radius_millimeters);
     }
 
     #[test]

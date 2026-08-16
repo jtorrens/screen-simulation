@@ -73,9 +73,9 @@ checkpoint terms whose algebraic coefficients are nonzero. In the final optical 
 continuous, physical, spatial-uniformity and spread contributions are combined by their exact authored coefficients;
 terms that cancel identically are not sampled merely to subtract them later. Alpha retains its
 complete aperture-integrated source evaluation. Cover glow consumes the already resolved,
-alpha-attenuated Panel Light Spread emission and evaluates two centered normalized eight-direction
-radial kernels at the authored physical core/tail radii. Its positive mixture preserves uniform linear energy and centered first moment,
-keeps support outside the active outline and is materially cheaper without introducing a second
+alpha-attenuated Panel Light Spread emission and evaluates two centered normalized continuous
+area filters at the authored physical core/tail half-supports. Their positive mixture preserves uniform linear energy,
+cannot create separated replicas, keeps support outside the active outline and is materially cheaper without introducing a second
 post-sensor path.
 
 Panel Uniformity is evaluated in the same fused optical kernel immediately after native subpixel emission. Immutable Device parameters carry explicit amplitudes, physical scales and seed; no texture name, preset lookup or frame-derived seed crosses the compute boundary. CPU and Metal evaluate the same deterministic broad and band-limited fields in device coordinates. The accepted uniformity gain at the central per-channel optical footprint is reused by the micrometre-scale Panel Light Spread and Cover Glow taps because every supported uniformity wavelength is materially larger than those supports. This is a declared scale-separation approximation, not a screen-space blur or temporal noise source. Character zero selects the exact pre-existing arithmetic composition so the inserted phase is bit-identical when disabled.
