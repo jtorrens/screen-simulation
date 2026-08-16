@@ -1380,33 +1380,35 @@ pub fn resample_physical_device_matte(
     if source_width == sensor_width && source_height == sensor_height {
         return Ok(source.iter().map(|pixel| pixel[3]).collect());
     }
-    Ok((0..sensor_height)
-        .flat_map(|output_y| {
-            (0..sensor_width).map(move |output_x| {
-                let minimum_y = output_y as f64 * source_height as f64 / sensor_height as f64;
-                let maximum_y = (output_y + 1) as f64 * source_height as f64 / sensor_height as f64;
-                let minimum_x = output_x as f64 * source_width as f64 / sensor_width as f64;
-                let maximum_x = (output_x + 1) as f64 * source_width as f64 / sensor_width as f64;
-                let mut sum = 0.0_f64;
-                let mut area = 0.0_f64;
-                for source_y in minimum_y.floor() as u32..maximum_y.ceil() as u32 {
-                    let overlap_y = (maximum_y.min(f64::from(source_y + 1))
-                        - minimum_y.max(f64::from(source_y)))
+    let output_len = (sensor_width * sensor_height) as usize;
+    Ok((0..output_len)
+        .into_par_iter()
+        .map(|output_index| {
+            let output_y = output_index as u32 / sensor_width;
+            let output_x = output_index as u32 % sensor_width;
+            let minimum_y = output_y as f64 * source_height as f64 / sensor_height as f64;
+            let maximum_y = (output_y + 1) as f64 * source_height as f64 / sensor_height as f64;
+            let minimum_x = output_x as f64 * source_width as f64 / sensor_width as f64;
+            let maximum_x = (output_x + 1) as f64 * source_width as f64 / sensor_width as f64;
+            let mut sum = 0.0_f64;
+            let mut area = 0.0_f64;
+            for source_y in minimum_y.floor() as u32..maximum_y.ceil() as u32 {
+                let overlap_y = (maximum_y.min(f64::from(source_y + 1))
+                    - minimum_y.max(f64::from(source_y)))
+                .max(0.0);
+                for source_x in minimum_x.floor() as u32..maximum_x.ceil() as u32 {
+                    let overlap_x = (maximum_x.min(f64::from(source_x + 1))
+                        - minimum_x.max(f64::from(source_x)))
                     .max(0.0);
-                    for source_x in minimum_x.floor() as u32..maximum_x.ceil() as u32 {
-                        let overlap_x = (maximum_x.min(f64::from(source_x + 1))
-                            - minimum_x.max(f64::from(source_x)))
-                        .max(0.0);
-                        let weight = overlap_x * overlap_y;
-                        let pixel = source[(source_y.min(source_height - 1) * source_width
-                            + source_x.min(source_width - 1))
-                            as usize];
-                        sum += f64::from(pixel[3]) * weight;
-                        area += weight;
-                    }
+                    let weight = overlap_x * overlap_y;
+                    let pixel = source[(source_y.min(source_height - 1) * source_width
+                        + source_x.min(source_width - 1))
+                        as usize];
+                    sum += f64::from(pixel[3]) * weight;
+                    area += weight;
                 }
-                (sum / area) as f32
-            })
+            }
+            (sum / area) as f32
         })
         .collect())
 }
@@ -7913,6 +7915,27 @@ mod tests {
             .map(f32::to_bits)
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
+
+        let resample_with_workers = |worker_count| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(worker_count)
+                .build()
+                .expect("Device matte resample worker pool")
+                .install(|| {
+                    resample_physical_device_matte(&source, 4, 3, 3, 2)
+                        .expect("resampled Device matte")
+                })
+        };
+        assert_eq!(
+            resample_with_workers(1)
+                .into_iter()
+                .map(f32::to_bits)
+                .collect::<Vec<_>>(),
+            resample_with_workers(4)
+                .into_iter()
+                .map(f32::to_bits)
+                .collect::<Vec<_>>()
+        );
 
         assert_eq!(
             resample_physical_device_matte(&source[..11], 4, 3, 3, 2),
