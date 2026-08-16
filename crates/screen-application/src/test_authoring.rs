@@ -2547,7 +2547,7 @@ pub fn test_page_descriptor(
                 controls: vec![
                     scalar_control(
                         COVER_GLOW_AMOUNT_CONTROL_ID,
-                        "Carácter del resplandor",
+                        "Intensidad del resplandor",
                         selection.cover_glow_amount,
                         0.0,
                         4.0,
@@ -2556,7 +2556,7 @@ pub fn test_page_descriptor(
                     ),
                     scalar_control(
                         COVER_GLOW_SCATTER_CONTROL_ID,
-                        "Fracción dispersada",
+                        "Energía dispersada",
                         selection.cover_glow_scatter_fraction,
                         0.0,
                         0.35,
@@ -2565,7 +2565,7 @@ pub fn test_page_descriptor(
                     ),
                     scalar_control(
                         COVER_GLOW_CORE_RADIUS_CONTROL_ID,
-                        "Radio del núcleo",
+                        "Suavidad cercana",
                         selection.cover_glow_core_radius_millimeters,
                         0.01,
                         5.0,
@@ -2574,7 +2574,7 @@ pub fn test_page_descriptor(
                     ),
                     scalar_control(
                         COVER_GLOW_TAIL_RADIUS_CONTROL_ID,
-                        "Radio de la cola",
+                        "Extensión exterior",
                         selection.cover_glow_tail_radius_millimeters,
                         0.01,
                         30.0,
@@ -2583,7 +2583,7 @@ pub fn test_page_descriptor(
                     ),
                     scalar_control(
                         COVER_GLOW_TAIL_FRACTION_CONTROL_ID,
-                        "Peso de la cola",
+                        "Reparto hacia el exterior",
                         selection.cover_glow_tail_fraction,
                         0.0,
                         1.0,
@@ -2911,6 +2911,7 @@ pub fn test_page_descriptor(
             SUBPIXEL_GEOMETRY_CONTROL_ID,
             MOIRE_SATURATION_CONTROL_ID,
             MOIRE_FILTER_CONTROL_ID,
+            COVER_GLOW_AMOUNT_CONTROL_ID,
             WHITE_LUMINANCE_CONTROL_ID,
             F_STOP_CONTROL_ID,
             SHUTTER_ANGLE_CONTROL_ID,
@@ -3650,6 +3651,7 @@ mod tests {
                 SUBPIXEL_GEOMETRY_CONTROL_ID,
                 MOIRE_SATURATION_CONTROL_ID,
                 MOIRE_FILTER_CONTROL_ID,
+                COVER_GLOW_AMOUNT_CONTROL_ID,
                 WHITE_LUMINANCE_CONTROL_ID,
                 F_STOP_CONTROL_ID,
                 SHUTTER_ANGLE_CONTROL_ID,
