@@ -31,6 +31,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         sourceTemperatureKelvin: 6500,
         sourceTint: 0,
         subpixelGeometryAmount: 1,
+        moireSaturation: 1,
         panelUniformityAmount: 1,
         panelLightSpreadAmount: 1,
         capturePresetID: "iphone-16e-main-48mp",
@@ -244,6 +245,12 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(snapshot.presentation.previewControls.count == 1)
     #expect(snapshot.presentation.phases.allSatisfy { !$0.effectSummary.isEmpty })
     #expect(snapshot.presentation.phases[4].headerControlID == "subpixel-geometry-amount")
+    #expect(snapshot.presentation.quickControlIDs.prefix(2) == [
+        "subpixel-geometry-amount", "moire-saturation",
+    ])
+    #expect(snapshot.presentation.phases[4].sections.flatMap(\.controls).map(\.id) == [
+        "subpixel-geometry-amount", "moire-saturation",
+    ])
     guard case let .scalar(subpixel) = snapshot.presentation.phases[4].sections
         .flatMap(\.controls).first
     else {

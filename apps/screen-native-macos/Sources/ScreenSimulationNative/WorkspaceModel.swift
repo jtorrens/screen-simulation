@@ -1286,7 +1286,7 @@ final class WorkspaceModel: ObservableObject {
               let source = environmentReflectionFramingSourceFrame
                 ?? environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = physicalAuthoringState,
+              var authored = physicalAuthoringState,
               let calibration = environmentSourceCalibration
         else { return }
         environmentReflectionFramingIsGenerating = true
@@ -2575,7 +2575,7 @@ final class WorkspaceModel: ObservableObject {
     func updateFocusTarget(to rasterPoint: CGPoint) {
         guard !previewTransformationsLocked,
               physicalModel.quality == .focusSetup,
-              let authored = physicalAuthoringState,
+              var authored = physicalAuthoringState,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
               let selection = testAuthoringSelection,
               selection.autofocusEnabled,
@@ -2600,7 +2600,11 @@ final class WorkspaceModel: ObservableObject {
                 .setChoice(controlID: "preview-quality", optionID: "focus-setup"),
                 to: resolved
             )
-            try applyTestAuthoringSelection(focusSetup)
+            testAuthoringSelection = focusSetup
+            authored.sceneLens.focusPolicy = "autofocus-screen"
+            authored.sceneLens.focusDistanceMeters = focusSetup.focusDistanceMeters
+            physicalAuthoringState = authored
+            resolvedPhysicalPipeline = try authored.resolvedPipeline()
             publishFocusSetup()
         } catch {
             errorMessage = error.localizedDescription
@@ -2611,6 +2615,14 @@ final class WorkspaceModel: ObservableObject {
         guard let prior = focusTargetDragStartSelection else { return }
         focusTargetDragStartSelection = nil
         guard prior != testAuthoringSelection else { return }
+        if let current = testAuthoringSelection {
+            do {
+                try applyTestAuthoringSelection(current)
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
         let manager = UndoManagerBox(undoManager)
         undoManager?.registerUndo(withTarget: self) { target in
             Task { @MainActor in
@@ -5276,6 +5288,23 @@ final class WorkspaceModel: ObservableObject {
             metalFrame = result.frame
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
+            if let selection,
+               selection.autofocusEnabled,
+               let placement = Self.deliveryPlacementCode(selection.deliveryPlacementID) {
+                focusSetupTarget = SetupFramingRenderer.projectedDevicePoint(
+                    u: Float(selection.autofocusTargetU),
+                    v: Float(selection.autofocusTargetV),
+                    authored: authored, device: device,
+                    deliveryWidth: width, deliveryHeight: height,
+                    deliveryPlacement: placement,
+                    outputWidth: result.frame.width, outputHeight: result.frame.height,
+                    applyLensDistortion: true
+                )
+                focusSetupTargetEnabled = focusSetupTarget != nil
+            } else {
+                focusSetupTarget = nil
+                focusSetupTargetEnabled = false
+            }
             if interactiveViewportSize == nil {
                 status = "Setup foco · blanco máximo foco · retícula y borde ópticos"
                 physicalPublicationSummary = "Setup foco · círculo de confusión + distorsión de lente"
@@ -5622,6 +5651,7 @@ final class WorkspaceModel: ObservableObject {
             selection.environmentSphereCenterZMeters,
         ]
         authored.environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
+        authored.moireSaturation = selection.moireSaturation
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"
         authored.sceneLens.evaluationModel = selection.lensEvaluationModelID

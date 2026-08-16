@@ -42,6 +42,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let sourceTemperatureKelvin: Double
     let sourceTint: Double
     let subpixelGeometryAmount: Double
+    let moireSaturation: Double
     let panelUniformityAmount: Double
     let panelLightSpreadAmount: Double
     let capturePresetID: String
@@ -460,6 +461,7 @@ enum RustTestAuthoringCoordinator {
             sourceTemperatureKelvin: Double(raw.source_temperature_kelvin),
             sourceTint: Double(raw.source_tint),
             subpixelGeometryAmount: Double(raw.subpixel_geometry_amount),
+            moireSaturation: Double(raw.moire_saturation),
             panelUniformityAmount: Double(raw.panel_uniformity_amount),
             panelLightSpreadAmount: Double(raw.panel_light_spread_amount),
             capturePresetID: string(raw.capture_preset_id),
@@ -575,6 +577,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.source_temperature_kelvin = Float(selection.sourceTemperatureKelvin)
                                             raw.source_tint = Float(selection.sourceTint)
                                             raw.subpixel_geometry_amount = Float(selection.subpixelGeometryAmount)
+                                            raw.moire_saturation = Float(selection.moireSaturation)
                                             raw.panel_uniformity_amount = Float(selection.panelUniformityAmount)
                                             raw.panel_light_spread_amount = Float(selection.panelLightSpreadAmount)
                                             raw.capture_preset_id = captureView

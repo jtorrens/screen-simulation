@@ -50,6 +50,7 @@ fn request(
             screen_amount,
             emission_amount,
             subpixel_geometry_amount: geometry_amount,
+            moire_saturation: 1.0,
             temporal_emission_amount: 0.0,
             temporal_emission_gain: 1.0,
             cover: screen_cover::CoverGlassProfile::NEUTRAL,

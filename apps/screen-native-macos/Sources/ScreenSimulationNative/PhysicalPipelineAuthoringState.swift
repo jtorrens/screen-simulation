@@ -4,6 +4,7 @@ import ScreenPhysicalBridge
 /// Project-owned authoring values for the ABI-v2 snapshot. Presets seed this
 /// value once; subsequent edits never mutate the global library entity.
 struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
+    var moireSaturation = 1.0
     struct Environment: Codable, Equatable, Sendable {
         var sourceKind: UInt32 = 0
         var sourceUnitRadianceCandelasPerSquareMeter = 0.0
@@ -253,6 +254,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
 
         var parameters = ScreenPhysicalPipelineParametersV2()
         parameters.abi_version = version
+        parameters.moire_saturation = Float(moireSaturation)
         parameters.cover = try coverGlass.bridgeParameters()
         parameters.environment = environmentABI
         parameters.scene_geometry_lens = scene
@@ -329,6 +331,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             sensor.fullWellElectrons > 0,
             sensor.analogGain > 0,
             develop.middleGrayIlluminanceSeconds > 0,
+            (0 ... 4).contains(moireSaturation),
             (-8 ... 8).contains(cameraRenderingIntent.exposureEV),
             (0.25 ... 4).contains(cameraRenderingIntent.contrast),
             (0 ... 4).contains(cameraRenderingIntent.saturation),

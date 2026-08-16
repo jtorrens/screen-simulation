@@ -884,6 +884,9 @@ pub struct PhysicalPipelineExecutionPlan {
     pub screen_amount: f32,
     pub emission_amount: f32,
     pub subpixel_geometry_amount: f32,
+    /// Chroma scale of the sampled subpixel interference residual. One keeps
+    /// the physically sampled color, zero preserves its luminance only.
+    pub moire_saturation: f32,
     /// Continuous contribution from the calibrated, shutter-integrated panel
     /// temporal model. Zero is exact identity and one is the resolved profile.
     pub temporal_emission_amount: f32,
@@ -1919,6 +1922,14 @@ fn add3(first: [f32; 3], second: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+fn moire_residual_with_saturation(residual: [f32; 3], saturation: f32) -> [f32; 3] {
+    // ACEScg/AP1 luminance. Only the interference residual is adjusted; panel
+    // luminance and the continuous image remain under their existing owners.
+    let luminance =
+        residual[0] * 0.272_228_72 + residual[1] * 0.674_081_74 + residual[2] * 0.053_689_517;
+    residual.map(|channel| luminance + saturation * (channel - luminance))
+}
+
 fn sample_placed_acescg_area(
     source_width: u32,
     source_height: u32,
@@ -1988,6 +1999,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         plan.screen_amount,
         plan.emission_amount,
         plan.subpixel_geometry_amount,
+        plan.moire_saturation,
         plan.panel_uniformity.character_strength,
         plan.temporal_emission_amount,
         plan.scene_geometry_amount,
@@ -2778,6 +2790,11 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * carrier_detail_native.b)
                     / parameters.white_level_nits,
             ];
+            let carrier_detail = if plan.moire_saturation == 1.0 {
+                carrier_detail
+            } else {
+                moire_residual_with_saturation(carrier_detail, plan.moire_saturation)
+            };
             let glowed = if plan.lens_evaluation_model == LensEvaluationModel::VfxDepthBlur {
                 [
                     glowed[0] + plan.subpixel_geometry_amount * carrier_detail[0],
@@ -2787,19 +2804,69 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             } else {
                 glowed
             };
-            let staged = if plan.panel_uniformity.character_strength == 0.0 {
+            let staged = if plan.moire_saturation == 1.0 {
+                if plan.panel_uniformity.character_strength == 0.0 {
+                    let structured_and_spread = [
+                        ideal[0]
+                            + plan.emission_amount * (continuous[0] - ideal[0])
+                            + plan.subpixel_geometry_amount * (physical[0] - continuous[0])
+                            + (spread[0] - physical[0]),
+                        ideal[1]
+                            + plan.emission_amount * (continuous[1] - ideal[1])
+                            + plan.subpixel_geometry_amount * (physical[1] - continuous[1])
+                            + (spread[1] - physical[1]),
+                        ideal[2]
+                            + plan.emission_amount * (continuous[2] - ideal[2])
+                            + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
+                            + (spread[2] - physical[2]),
+                    ];
+                    [
+                        structured_and_spread[0] + glowed[0] - spread[0],
+                        structured_and_spread[1] + glowed[1] - spread[1],
+                        structured_and_spread[2] + glowed[2] - spread[2],
+                    ]
+                } else {
+                    let uniformed = [
+                        ideal[0] * (1.0 - plan.emission_amount)
+                            + uniform_continuous[0]
+                                * (plan.emission_amount - plan.subpixel_geometry_amount)
+                            + uniform[0] * plan.subpixel_geometry_amount,
+                        ideal[1] * (1.0 - plan.emission_amount)
+                            + uniform_continuous[1]
+                                * (plan.emission_amount - plan.subpixel_geometry_amount)
+                            + uniform[1] * plan.subpixel_geometry_amount,
+                        ideal[2] * (1.0 - plan.emission_amount)
+                            + uniform_continuous[2]
+                                * (plan.emission_amount - plan.subpixel_geometry_amount)
+                            + uniform[2] * plan.subpixel_geometry_amount,
+                    ];
+                    [
+                        uniformed[0] + spread[0] - uniform[0] + glowed[0] - spread[0],
+                        uniformed[1] + spread[1] - uniform[1] + glowed[1] - spread[1],
+                        uniformed[2] + spread[2] - uniform[2] + glowed[2] - spread[2],
+                    ]
+                }
+            } else if plan.panel_uniformity.character_strength == 0.0 {
+                let residual = moire_residual_with_saturation(
+                    [
+                        physical[0] - continuous[0],
+                        physical[1] - continuous[1],
+                        physical[2] - continuous[2],
+                    ],
+                    plan.moire_saturation,
+                );
                 let structured_and_spread = [
                     ideal[0]
                         + plan.emission_amount * (continuous[0] - ideal[0])
-                        + plan.subpixel_geometry_amount * (physical[0] - continuous[0])
+                        + plan.subpixel_geometry_amount * residual[0]
                         + (spread[0] - physical[0]),
                     ideal[1]
                         + plan.emission_amount * (continuous[1] - ideal[1])
-                        + plan.subpixel_geometry_amount * (physical[1] - continuous[1])
+                        + plan.subpixel_geometry_amount * residual[1]
                         + (spread[1] - physical[1]),
                     ideal[2]
                         + plan.emission_amount * (continuous[2] - ideal[2])
-                        + plan.subpixel_geometry_amount * (physical[2] - continuous[2])
+                        + plan.subpixel_geometry_amount * residual[2]
                         + (spread[2] - physical[2]),
                 ];
                 [
@@ -2808,19 +2875,24 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     structured_and_spread[2] + glowed[2] - spread[2],
                 ]
             } else {
+                let residual = moire_residual_with_saturation(
+                    [
+                        uniform[0] - uniform_continuous[0],
+                        uniform[1] - uniform_continuous[1],
+                        uniform[2] - uniform_continuous[2],
+                    ],
+                    plan.moire_saturation,
+                );
                 let uniformed = [
                     ideal[0] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[0]
-                            * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + uniform[0] * plan.subpixel_geometry_amount,
+                        + uniform_continuous[0] * plan.emission_amount
+                        + residual[0] * plan.subpixel_geometry_amount,
                     ideal[1] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[1]
-                            * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + uniform[1] * plan.subpixel_geometry_amount,
+                        + uniform_continuous[1] * plan.emission_amount
+                        + residual[1] * plan.subpixel_geometry_amount,
                     ideal[2] * (1.0 - plan.emission_amount)
-                        + uniform_continuous[2]
-                            * (plan.emission_amount - plan.subpixel_geometry_amount)
-                        + uniform[2] * plan.subpixel_geometry_amount,
+                        + uniform_continuous[2] * plan.emission_amount
+                        + residual[2] * plan.subpixel_geometry_amount,
                 ];
                 [
                     uniformed[0] + spread[0] - uniform[0] + glowed[0] - spread[0],
@@ -7399,6 +7471,21 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    fn moire_saturation_scales_only_chroma_of_the_interference_residual() {
+        let residual = [0.8, -0.2, 0.35];
+        assert_eq!(moire_residual_with_saturation(residual, 1.0), residual);
+        let neutral = moire_residual_with_saturation(residual, 0.0);
+        assert_eq!(neutral[0], neutral[1]);
+        assert_eq!(neutral[1], neutral[2]);
+        let original_luminance =
+            residual[0] * 0.272_228_72 + residual[1] * 0.674_081_74 + residual[2] * 0.053_689_517;
+        let doubled = moire_residual_with_saturation(residual, 2.0);
+        let doubled_luminance =
+            doubled[0] * 0.272_228_72 + doubled[1] * 0.674_081_74 + doubled[2] * 0.053_689_517;
+        assert!((doubled_luminance - original_luminance).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn sensor_exposure_identity_specialization_matches_general_area_resampling_exactly() {
         let source = [
             [-0.0, f32::from_bits(1), 1.5, 0.2],
@@ -9035,6 +9122,7 @@ mod tests {
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                moire_saturation: 1.0,
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
                 cover: CoverGlassProfile::NEUTRAL,

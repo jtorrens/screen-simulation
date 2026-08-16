@@ -88,7 +88,7 @@ struct ContentView: View {
     @StateObject private var environmentReflectionFramingPanel = EnvironmentReflectionFramingPanelController()
     @StateObject private var trackingScenePanel = TrackingScenePanelController()
     @State private var tab = SidebarTab.output
-    @State private var page = WorkspacePage.main
+    @State private var page = WorkspacePage.test
     @State private var settingsSection = SettingsSection.application
     @State private var libraryCollection = LibraryCollection.patterns
     @State private var pendingLibraryDeletion: LibraryDeletion?

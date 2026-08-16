@@ -1569,22 +1569,59 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix1.xyz, glow_native),
         dot(p.matrix2.xyz, glow_native)
     ) / p.levels.z;
-    const float3 carrier_detail = float3(
+    float3 carrier_detail = float3(
         dot(p.matrix0.xyz, carrier_detail_native),
         dot(p.matrix1.xyz, carrier_detail_native),
         dot(p.matrix2.xyz, carrier_detail_native)
     ) / p.levels.z;
+    const float moire_saturation = p.geometry.y;
+    if (moire_saturation != 1.0f) {
+        const float carrier_luminance = dot(
+            carrier_detail,
+            float3(0.27222872f, 0.67408174f, 0.053689517f)
+        );
+        carrier_detail = carrier_luminance
+            + moire_saturation * (carrier_detail - carrier_luminance);
+    }
     float3 glass_scattered;
-    if (p.uniformity_scales.w == 0.0f) {
+    if (moire_saturation == 1.0f && p.uniformity_scales.w == 0.0f) {
         glass_scattered = ideal.rgb * (1.0f - p.strengths.y)
             + continuous * (p.strengths.y - p.strengths.z)
             + physical * (p.strengths.z - 1.0f)
             + glow
             + carrier_detail * p.strengths.z;
-    } else {
+    } else if (moire_saturation == 1.0f) {
         const float3 uniformed = ideal.rgb * (1.0f - p.strengths.y)
             + uniform_continuous * (p.strengths.y - p.strengths.z)
             + uniform * p.strengths.z;
+        glass_scattered = uniformed
+            + spread - uniform
+            + glow - spread
+            + carrier_detail * p.strengths.z;
+    } else if (p.uniformity_scales.w == 0.0f) {
+        float3 residual = physical - continuous;
+        const float residual_luminance = dot(
+            residual,
+            float3(0.27222872f, 0.67408174f, 0.053689517f)
+        );
+        residual = residual_luminance
+            + moire_saturation * (residual - residual_luminance);
+        glass_scattered = ideal.rgb * (1.0f - p.strengths.y)
+            + continuous * p.strengths.y
+            + residual * p.strengths.z
+            + glow - physical
+            + carrier_detail * p.strengths.z;
+    } else {
+        float3 residual = uniform - uniform_continuous;
+        const float residual_luminance = dot(
+            residual,
+            float3(0.27222872f, 0.67408174f, 0.053689517f)
+        );
+        residual = residual_luminance
+            + moire_saturation * (residual - residual_luminance);
+        const float3 uniformed = ideal.rgb * (1.0f - p.strengths.y)
+            + uniform_continuous * p.strengths.y
+            + residual * p.strengths.z;
         glass_scattered = uniformed
             + spread - uniform
             + glow - spread

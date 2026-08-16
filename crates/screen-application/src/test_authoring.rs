@@ -56,6 +56,7 @@ pub const WHITE_LUMINANCE_CONTROL_ID: &str = "white-luminance";
 pub const PLACEMENT_CONTROL_ID: &str = "placement";
 pub const PREVIEW_QUALITY_CONTROL_ID: &str = "preview-quality";
 pub const SUBPIXEL_GEOMETRY_CONTROL_ID: &str = "subpixel-geometry-amount";
+pub const MOIRE_SATURATION_CONTROL_ID: &str = "moire-saturation";
 pub const PANEL_UNIFORMITY_CONTROL_ID: &str = "panel-uniformity-amount";
 pub const PANEL_LIGHT_SPREAD_CONTROL_ID: &str = "panel-light-spread-amount";
 pub const CAPTURE_PRESET_CONTROL_ID: &str = "capture-preset";
@@ -360,6 +361,7 @@ pub struct TestAuthoringSelection<'a> {
     pub frame_rate: FrameRate,
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
+    pub moire_saturation: f32,
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'a str,
@@ -440,6 +442,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub frame_rate: FrameRate,
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
+    pub moire_saturation: f32,
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
     pub capture_preset_id: &'static str,
@@ -806,6 +809,7 @@ pub enum TestAuthoringError {
     InvalidWhiteLuminance,
     InvalidSourceAdjustment,
     InvalidSubpixelGeometryAmount,
+    InvalidMoireSaturation,
     InvalidPanelUniformityAmount,
     InvalidPanelLightSpreadAmount,
     UnknownCapturePreset,
@@ -849,6 +853,7 @@ impl core::fmt::Display for TestAuthoringError {
             Self::InvalidWhiteLuminance => "White Luminance is outside the device capability",
             Self::InvalidSourceAdjustment => "Source Adjustment is invalid",
             Self::InvalidSubpixelGeometryAmount => "Subpixel Geometry amount is outside 0..=4",
+            Self::InvalidMoireSaturation => "Moiré saturation is outside 0..=4",
             Self::InvalidPanelUniformityAmount => "Panel Uniformity amount is outside 0..=4",
             Self::InvalidPanelLightSpreadAmount => "Panel Light Spread amount is outside 0..=4",
             Self::UnknownCapturePreset => "unknown Test Capture preset",
@@ -955,6 +960,7 @@ pub fn default_test_authoring_selection(
         frame_rate,
         source_adjustment: SceneLinearAdjustment::NEUTRAL,
         subpixel_geometry_amount: 1.0,
+        moire_saturation: 1.0,
         panel_uniformity_amount: device.uniformity.character_strength,
         panel_light_spread_amount: device.light_spread.character_strength,
         capture_preset_id: capture.id,
@@ -1071,6 +1077,10 @@ pub fn resolve_test_authoring_selection(
         || !(0.0..=4.0).contains(&selection.subpixel_geometry_amount)
     {
         return Err(TestAuthoringError::InvalidSubpixelGeometryAmount);
+    }
+    if !selection.moire_saturation.is_finite() || !(0.0..=4.0).contains(&selection.moire_saturation)
+    {
+        return Err(TestAuthoringError::InvalidMoireSaturation);
     }
     if !selection.panel_uniformity_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.panel_uniformity_amount)
@@ -1344,6 +1354,7 @@ pub fn resolve_test_authoring_selection(
         frame_rate: selection.frame_rate,
         source_adjustment: selection.source_adjustment,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
+        moire_saturation: selection.moire_saturation,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: capture.id,
@@ -2046,15 +2057,26 @@ pub fn test_page_descriptor(
                 input_artifact: PhysicalArtifactId::PanelEmissionRadianceV1,
                 output_artifact: PhysicalArtifactId::SubpixelRadianceV1,
                 preview_result: TestPreviewResult::PanelStructure,
-                controls: vec![scalar_control(
-                    SUBPIXEL_GEOMETRY_CONTROL_ID,
-                    "Trama / subpíxel",
-                    selection.subpixel_geometry_amount,
-                    0.0,
-                    4.0,
-                    1.0,
-                    "×",
-                )],
+                controls: vec![
+                    scalar_control(
+                        SUBPIXEL_GEOMETRY_CONTROL_ID,
+                        "Intensidad trama / moiré",
+                        selection.subpixel_geometry_amount,
+                        0.0,
+                        4.0,
+                        1.0,
+                        "×",
+                    ),
+                    scalar_control(
+                        MOIRE_SATURATION_CONTROL_ID,
+                        "Saturación del moiré",
+                        selection.moire_saturation,
+                        0.0,
+                        4.0,
+                        1.0,
+                        "×",
+                    ),
+                ],
             },
             TestPhaseDescriptor {
                 id: PANEL_UNIFORMITY_PHASE_ID,
@@ -2623,6 +2645,7 @@ pub fn test_page_descriptor(
         visible_preview_choice_ids: SETUP_PREVIEW_QUALITIES.iter().map(|item| item.id).collect(),
         quick_control_ids: vec![
             SUBPIXEL_GEOMETRY_CONTROL_ID,
+            MOIRE_SATURATION_CONTROL_ID,
             WHITE_LUMINANCE_CONTROL_ID,
             F_STOP_CONTROL_ID,
             SHUTTER_ANGLE_CONTROL_ID,
@@ -2818,6 +2841,7 @@ pub fn apply_test_choice(
         },
         WHITE_LUMINANCE_CONTROL_ID
         | SUBPIXEL_GEOMETRY_CONTROL_ID
+        | MOIRE_SATURATION_CONTROL_ID
         | PANEL_UNIFORMITY_CONTROL_ID
         | PANEL_LIGHT_SPREAD_CONTROL_ID
         | CAMERA_DISTANCE_CONTROL_ID
@@ -2900,6 +2924,7 @@ fn unresolved_test_selection(
         frame_rate: current.frame_rate,
         source_adjustment: current.source_adjustment,
         subpixel_geometry_amount: current.subpixel_geometry_amount,
+        moire_saturation: current.moire_saturation,
         panel_uniformity_amount: current.panel_uniformity_amount,
         panel_light_spread_amount: current.panel_light_spread_amount,
         capture_preset_id: current.capture_preset_id,
@@ -3067,6 +3092,7 @@ pub fn apply_test_scalar(
     match control_id {
         WHITE_LUMINANCE_CONTROL_ID => next.white_luminance_nits = value,
         SUBPIXEL_GEOMETRY_CONTROL_ID => next.subpixel_geometry_amount = value,
+        MOIRE_SATURATION_CONTROL_ID => next.moire_saturation = value,
         PANEL_UNIFORMITY_CONTROL_ID => next.panel_uniformity_amount = value,
         PANEL_LIGHT_SPREAD_CONTROL_ID => next.panel_light_spread_amount = value,
         CAMERA_DISTANCE_CONTROL_ID => next.camera_distance_meters = value,
@@ -3194,6 +3220,7 @@ mod tests {
             frame_rate: FrameRate::new(24, 1).expect("valid test frame rate"),
             source_adjustment: SceneLinearAdjustment::NEUTRAL,
             subpixel_geometry_amount: 1.0,
+            moire_saturation: 1.0,
             panel_uniformity_amount: 1.0,
             panel_light_spread_amount: 1.0,
             capture_preset_id: "iphone-16e-main-48mp",
@@ -3276,6 +3303,7 @@ mod tests {
             page.quick_control_ids,
             [
                 SUBPIXEL_GEOMETRY_CONTROL_ID,
+                MOIRE_SATURATION_CONTROL_ID,
                 WHITE_LUMINANCE_CONTROL_ID,
                 F_STOP_CONTROL_ID,
                 SHUTTER_ANGLE_CONTROL_ID,

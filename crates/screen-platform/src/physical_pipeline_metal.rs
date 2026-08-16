@@ -982,6 +982,7 @@ impl MetalPhysicalPipeline {
             plan.screen_amount,
             plan.emission_amount,
             plan.subpixel_geometry_amount,
+            plan.moire_saturation,
             plan.temporal_emission_amount,
             plan.scene_geometry_amount,
             plan.lens_amount,
@@ -1160,7 +1161,12 @@ impl MetalPhysicalPipeline {
                 plan.panel.white_level_nits,
                 0.0,
             ],
-            geometry: [plan.panel.black_matrix_fraction, 0.0, 0.0, 0.0],
+            geometry: [
+                plan.panel.black_matrix_fraction,
+                plan.moire_saturation,
+                0.0,
+                0.0,
+            ],
             strengths: [
                 plan.screen_amount,
                 plan.emission_amount,
@@ -1772,6 +1778,7 @@ mod tests {
                 screen_amount: amount,
                 emission_amount: 1.0,
                 subpixel_geometry_amount: 1.0,
+                moire_saturation: 1.0,
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
                 cover: screen_cover::CoverGlassProfile::NEUTRAL,
@@ -1961,6 +1968,52 @@ mod tests {
                 .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                 .fold(0.0_f32, f32::max);
             assert!(maximum <= 2.0e-3, "temporal CPU/Metal deviation {maximum}");
+        }
+    }
+
+    #[test]
+    fn moire_saturation_matches_cpu_without_grading_continuous_panel_emission() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for saturation in [0.0, 1.0, 2.0] {
+            let (input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Rgb,
+                0.32,
+                1.0,
+            );
+            plan.moire_saturation = saturation;
+            plan.requested_intermediate = PhysicalIntermediate::SubpixelRadiance;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .map(|value| [value.r, value.g, value.b, 1.0])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input,
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    plan.requested_width,
+                    plan.requested_height,
+                ),
+                plan,
+            })
+            .expect("CPU oracle");
+            let gpu = backend
+                .evaluate(&source, &signal, plan, |_| {}, || false)
+                .expect("Metal moire-saturation result");
+            let maximum = read(&gpu.texture)
+                .iter()
+                .zip(cpu.presentation_rgba())
+                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(
+                maximum <= 2.0e-3,
+                "moire saturation {saturation} CPU/Metal deviation {maximum}"
+            );
         }
     }
 

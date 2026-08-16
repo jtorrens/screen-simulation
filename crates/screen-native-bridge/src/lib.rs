@@ -211,7 +211,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 30;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 31;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -237,6 +237,7 @@ pub struct ScreenTestAuthoringSelectionV22 {
     source_temperature_kelvin: f32,
     source_tint: f32,
     subpixel_geometry_amount: f32,
+    moire_saturation: f32,
     panel_uniformity_amount: f32,
     panel_light_spread_amount: f32,
     capture_preset_id: ScreenUtf8View,
@@ -402,7 +403,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 19;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 20;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 7;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -1490,6 +1491,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         screen_amount: request.screen_amount,
         emission_amount: amounts.emission,
         subpixel_geometry_amount: amounts.subpixel_geometry,
+        moire_saturation: pipeline.moire_saturation,
         temporal_emission_amount: amounts.temporal_emission,
         temporal_emission_gain: temporal_gain,
         cover: pipeline.cover,
@@ -2216,6 +2218,7 @@ pub struct ScreenCameraRadiometricCalibrationV2 {
 #[derive(Clone, Copy)]
 pub struct ScreenPhysicalPipelineParametersV2 {
     abi_version: u32,
+    moire_saturation: f32,
     cover: ScreenCoverGlassParametersV2,
     environment: ScreenEnvironmentParametersV2,
     scene_geometry_lens: ScreenSceneGeometryLensParametersV2,
@@ -2228,6 +2231,7 @@ pub struct ScreenPhysicalPipelineParametersV2 {
 }
 
 pub struct ScreenPhysicalPipelineSnapshot {
+    moire_saturation: f32,
     cover: CoverGlassProfile,
     environment: IncidentEnvironment,
     scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
@@ -2288,6 +2292,7 @@ unsafe fn test_selection<'a>(
             tint: selection.source_tint,
         },
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
+        moire_saturation: selection.moire_saturation,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: unsafe { borrowed_utf8(selection.capture_preset_id) }?,
@@ -2380,6 +2385,7 @@ fn test_authoring_error(error: TestAuthoringError) -> &'static [u8] {
         TestAuthoringError::InvalidSubpixelGeometryAmount => {
             b"Subpixel Geometry amount is outside 0..=4\0"
         }
+        TestAuthoringError::InvalidMoireSaturation => b"Moire saturation is outside 0..=4\0",
         TestAuthoringError::InvalidPanelUniformityAmount => {
             b"Panel Uniformity amount is outside 0..=4\0"
         }
@@ -2448,6 +2454,7 @@ fn resolved_test_selection(
         source_temperature_kelvin: selection.source_adjustment.temperature_kelvin,
         source_tint: selection.source_adjustment.tint,
         subpixel_geometry_amount: selection.subpixel_geometry_amount,
+        moire_saturation: selection.moire_saturation,
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: utf8_view(selection.capture_preset_id),
@@ -3187,6 +3194,12 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
     }
     // SAFETY: the non-null parameter block is immutable for this call.
     let parameters = unsafe { *parameters };
+    if !parameters.moire_saturation.is_finite()
+        || !(0.0..=4.0).contains(&parameters.moire_saturation)
+    {
+        unsafe { set_error(error_message, b"invalid moire saturation\0") };
+        return std::ptr::null_mut();
+    }
     if [
         parameters.abi_version,
         parameters.cover.abi_version,
@@ -3543,6 +3556,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
     }
     unsafe { set_error(error_message, b"\0") };
     Box::into_raw(Box::new(ScreenPhysicalPipelineSnapshot {
+        moire_saturation: parameters.moire_saturation,
         cover,
         environment,
         scene_geometry_lens,
@@ -4756,6 +4770,7 @@ mod tests {
         let version = SCREEN_PHYSICAL_FRAME_ABI_VERSION;
         ScreenPhysicalPipelineParametersV2 {
             abi_version: version,
+            moire_saturation: 1.0,
             cover: ScreenCoverGlassParametersV2 {
                 abi_version: version,
                 authority: 0,
