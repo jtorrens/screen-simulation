@@ -2577,25 +2577,50 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                                 x: channel_maximum.x + offset.x,
                                                 y: channel_maximum.y + offset.y,
                                             };
+                                            let coverage = device_rectangle_coverage(
+                                                shifted_minimum,
+                                                shifted_maximum,
+                                            );
+                                            if coverage == 0.0 {
+                                                return 0.0;
+                                            }
+                                            let panel_minimum = Vec2 {
+                                                x: shifted_minimum
+                                                    .x
+                                                    .min(shifted_maximum.x)
+                                                    .clamp(0.0, 1.0),
+                                                y: shifted_minimum
+                                                    .y
+                                                    .min(shifted_maximum.y)
+                                                    .clamp(0.0, 1.0),
+                                            };
+                                            let panel_maximum = Vec2 {
+                                                x: shifted_minimum
+                                                    .x
+                                                    .max(shifted_maximum.x)
+                                                    .clamp(0.0, 1.0),
+                                                y: shifted_minimum
+                                                    .y
+                                                    .max(shifted_maximum.y)
+                                                    .clamp(0.0, 1.0),
+                                            };
                                             let shifted = sample_placed_area(
                                                 &prepared.integral,
                                                 &emission_integral,
                                                 source_raster,
                                                 device_raster,
                                                 plan.placement,
-                                                shifted_minimum,
-                                                shifted_maximum,
+                                                panel_minimum,
+                                                panel_maximum,
                                             );
                                             let shifted_device_minimum = Vec2 {
-                                                x: shifted_minimum.x
-                                                    * plan.panel.native_width as f32,
-                                                y: shifted_minimum.y
+                                                x: panel_minimum.x * plan.panel.native_width as f32,
+                                                y: panel_minimum.y
                                                     * plan.panel.native_height as f32,
                                             };
                                             let shifted_device_maximum = Vec2 {
-                                                x: shifted_maximum.x
-                                                    * plan.panel.native_width as f32,
-                                                y: shifted_maximum.y
+                                                x: panel_maximum.x * plan.panel.native_width as f32,
+                                                y: panel_maximum.y
                                                     * plan.panel.native_height as f32,
                                             };
                                             evaluator.native_channel_over_device_rect(
@@ -2603,34 +2628,47 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                                 shifted_device_minimum,
                                                 shifted_device_maximum,
                                                 channel,
-                                            ) * sample.weight
+                                            ) * coverage
+                                                * sample.weight
                                         })
                                         .sum::<f32>()
                                 };
                                 let native_over_bounds = |minimum: Vec2, maximum: Vec2| {
+                                    let coverage = device_rectangle_coverage(minimum, maximum);
+                                    if coverage == 0.0 {
+                                        return 0.0;
+                                    }
+                                    let panel_minimum = Vec2 {
+                                        x: minimum.x.min(maximum.x).clamp(0.0, 1.0),
+                                        y: minimum.y.min(maximum.y).clamp(0.0, 1.0),
+                                    };
+                                    let panel_maximum = Vec2 {
+                                        x: minimum.x.max(maximum.x).clamp(0.0, 1.0),
+                                        y: minimum.y.max(maximum.y).clamp(0.0, 1.0),
+                                    };
                                     let sampled = sample_placed_area(
                                         &prepared.integral,
                                         &emission_integral,
                                         source_raster,
                                         device_raster,
                                         plan.placement,
-                                        minimum,
-                                        maximum,
+                                        panel_minimum,
+                                        panel_maximum,
                                     );
                                     let sampled_device_minimum = Vec2 {
-                                        x: minimum.x * plan.panel.native_width as f32,
-                                        y: minimum.y * plan.panel.native_height as f32,
+                                        x: panel_minimum.x * plan.panel.native_width as f32,
+                                        y: panel_minimum.y * plan.panel.native_height as f32,
                                     };
                                     let sampled_device_maximum = Vec2 {
-                                        x: maximum.x * plan.panel.native_width as f32,
-                                        y: maximum.y * plan.panel.native_height as f32,
+                                        x: panel_maximum.x * plan.panel.native_width as f32,
+                                        y: panel_maximum.y * plan.panel.native_height as f32,
                                     };
                                     evaluator.native_channel_over_device_rect(
                                         sampled.device_code,
                                         sampled_device_minimum,
                                         sampled_device_maximum,
                                         channel,
-                                    )
+                                    ) * coverage
                                 };
                                 let value = if plan.panel_light_spread.character_strength == 0.0 {
                                     uniform_base * optical_weight
@@ -3617,6 +3655,22 @@ fn source_uv_unbounded(
             device_raster[1] as f32 / source_raster[1] as f32,
         ),
     })
+}
+
+fn device_rectangle_coverage(minimum: Vec2, maximum: Vec2) -> f32 {
+    let ordered_minimum = Vec2 {
+        x: minimum.x.min(maximum.x),
+        y: minimum.y.min(maximum.y),
+    };
+    let ordered_maximum = Vec2 {
+        x: minimum.x.max(maximum.x),
+        y: minimum.y.max(maximum.y),
+    };
+    let area = ((ordered_maximum.x - ordered_minimum.x) * (ordered_maximum.y - ordered_minimum.y))
+        .max(1.0e-12);
+    let overlap_width = (ordered_maximum.x.min(1.0) - ordered_minimum.x.max(0.0)).max(0.0);
+    let overlap_height = (ordered_maximum.y.min(1.0) - ordered_minimum.y.max(0.0)).max(0.0);
+    ((overlap_width * overlap_height) / area).clamp(0.0, 1.0)
 }
 
 fn sample_placed_area(
@@ -7573,6 +7627,23 @@ mod tests {
             0.0
         );
         assert!((panel_rectangle_coverage([0.05, 0.0], [0.01, 0.01], size) - 0.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn device_rectangle_coverage_is_independent_of_source_placement() {
+        assert_eq!(
+            device_rectangle_coverage(Vec2 { x: 0.25, y: 0.25 }, Vec2 { x: 0.75, y: 0.75 }),
+            1.0
+        );
+        assert_eq!(
+            device_rectangle_coverage(Vec2 { x: 1.01, y: 0.25 }, Vec2 { x: 1.25, y: 0.75 }),
+            0.0
+        );
+        assert!(
+            (device_rectangle_coverage(Vec2 { x: 0.75, y: 0.25 }, Vec2 { x: 1.25, y: 0.75 }) - 0.5)
+                .abs()
+                < 1.0e-6
+        );
     }
 
     #[test]

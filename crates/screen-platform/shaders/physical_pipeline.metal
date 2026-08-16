@@ -987,6 +987,21 @@ inline float4 area_sample(
     return sum / area;
 }
 
+// Fraction of a Device-UV integration rectangle that belongs to the finite
+// active panel. Source placement is deliberately not involved: Fill/Crop may
+// map UVs outside the Device back into valid source pixels, but those pixels
+// do not represent emitters beyond the physical panel outline.
+inline float device_rectangle_coverage(float2 minimum, float2 maximum) {
+    const float2 ordered_minimum = min(minimum, maximum);
+    const float2 ordered_maximum = max(minimum, maximum);
+    const float2 extent = ordered_maximum - ordered_minimum;
+    const float area = max(extent.x * extent.y, 1.0e-12f);
+    const float2 overlap = max(float2(0.0f),
+        min(ordered_maximum, float2(1.0f))
+            - max(ordered_minimum, float2(0.0f)));
+    return clamp((overlap.x * overlap.y) / area, 0.0f, 1.0f);
+}
+
 kernel void build_physical_row_prefix(
     texture2d<float, access::read> source [[texture(0)]],
     texture2d<float, access::write> prefix [[texture(1)]],
@@ -1147,14 +1162,20 @@ inline float native_channel_at_offset(
 ) {
     const float2 shifted_minimum = device_minimum + offset_uv;
     const float2 shifted_maximum = device_maximum + offset_uv;
+    const float coverage = device_rectangle_coverage(shifted_minimum, shifted_maximum);
+    if (coverage == 0.0f) return 0.0f;
+    const float2 panel_minimum = clamp(
+        min(shifted_minimum, shifted_maximum), 0.0f, 1.0f);
+    const float2 panel_maximum = clamp(
+        max(shifted_minimum, shifted_maximum), 0.0f, 1.0f);
     const float4 code = area_sample(
-        device_signal, device_row_prefix, shifted_minimum, shifted_maximum,
+        device_signal, device_row_prefix, panel_minimum, panel_maximum,
         prepared_placement_scale, p);
-    return native_channel(
+    return coverage * native_channel(
         code[channel],
         channel,
-        shifted_minimum * float2(p.source_panel.zw),
-        shifted_maximum * float2(p.source_panel.zw),
+        panel_minimum * float2(p.source_panel.zw),
+        panel_maximum * float2(p.source_panel.zw),
         p
     );
 }
