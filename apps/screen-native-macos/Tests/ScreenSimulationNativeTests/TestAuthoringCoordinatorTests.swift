@@ -365,6 +365,10 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(feederMeans.allSatisfy { $0 > 0.1 })
     let texture = try #require(workspace.metalFrame?.texture)
     #expect(texture.pixelFormat == .rgba32Float)
+    let publishedTexture = try #require(workspace.metalFrame?.texture)
+    workspace.setTestPageActive(false)
+    #expect(workspace.metalFrame?.texture === publishedTexture)
+    workspace.setTestPageActive(true)
     var values = [Float](repeating: 0, count: texture.width * texture.height * 4)
     texture.getBytes(
         &values,

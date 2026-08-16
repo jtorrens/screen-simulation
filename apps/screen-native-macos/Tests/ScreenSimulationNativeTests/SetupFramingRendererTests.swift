@@ -389,7 +389,10 @@ import Testing
             let insideProjectedBounds = insideHorizontal && insideVertical
             cameraResultPixels.append(contentsOf: insideProjectedBounds
                 ? [0.7, 0.05, 0.05, 1]
-                : [0, 0, 0, 0])
+                // Physical RGB outside the Device is the panel/cover glow.
+                // Camera-result alpha may still be opaque across the raster;
+                // geometric coverage owns plate occlusion.
+                : [0.015, 0.01, 0.005, 1])
         }
     }
     let cameraResult = try display.makeACEScgFrame(
@@ -418,9 +421,17 @@ import Testing
     }
     #expect(composite.frame.width == 320)
     #expect(composite.frame.height == 180)
-    #expect(compositePixels.contains { simd_distance($0, referenceColor) < 0.001 })
     #expect(compositePixels.contains { simd_distance($0, cameraColor) < 0.001 })
-    #expect(compositePixels.contains { simd_length($0) < 0.001 })
+    let outsideOffset = try #require(stride(from: 0, to: cameraValues.count, by: 4).first {
+        cameraValues[$0] < cameraColor.x * 0.5
+    })
+    let glowColor = SIMD3(
+        cameraValues[outsideOffset], cameraValues[outsideOffset + 1], cameraValues[outsideOffset + 2]
+    )
+    #expect(compositePixels.contains {
+        simd_distance($0, referenceColor + glowColor) < 0.002
+    })
+    #expect(compositePixels.contains { simd_distance($0, glowColor) < 0.002 })
 
     let deviceOnly = try renderer.renderCameraComposite(
         cameraResult: cameraResult, reference: nil,
@@ -435,7 +446,7 @@ import Testing
     }
     #expect(deviceOnly.frame.width == 320)
     #expect(deviceOnly.frame.height == 180)
-    #expect(deviceOnlyPixels.contains { simd_length($0) < 0.001 })
+    #expect(deviceOnlyPixels.contains { simd_distance($0, glowColor) < 0.002 })
     #expect(deviceOnlyPixels.contains { simd_distance($0, cameraColor) < 0.001 })
 
     let alignedWidth = 200

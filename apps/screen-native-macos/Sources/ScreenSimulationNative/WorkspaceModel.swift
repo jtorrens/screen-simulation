@@ -809,8 +809,10 @@ final class WorkspaceModel: ObservableObject {
 
     func setModelPageActive(_ active: Bool) {
         isModelPageActive = active
-        if active { pause() }
-        rebuildPhysicalSelectedFrame()
+        if active {
+            pause()
+            rebuildPhysicalSelectedFrame()
+        }
     }
 
     func setTestPageActive(_ active: Bool) {
@@ -819,7 +821,7 @@ final class WorkspaceModel: ObservableObject {
         if active, let intermediate = selectedTestPhysicalIntermediate {
             updateRequestedPhysicalIntermediate(intermediate)
             rebuildPhysicalSelectedFrame()
-        } else {
+        } else if active {
             publishSelectedTestPreview()
         }
     }
@@ -3986,7 +3988,7 @@ final class WorkspaceModel: ObservableObject {
         originACEScgFrame = base
         sourceACEScgFrame = try adjustedSourceFrame(base)
         physicalModel.invalidateExternalParameters()
-        if !setupOwnsViewerPublication {
+        if !physicalPreviewOwnsViewerPublication {
             metalFrame = base
         }
         rebuildPhysicalSelectedFrame()
@@ -4640,7 +4642,7 @@ final class WorkspaceModel: ObservableObject {
             originACEScgFrame = base
             sourceACEScgFrame = try adjustedSourceFrame(base)
             physicalModel.invalidateExternalParameters()
-            if !setupOwnsViewerPublication {
+            if !physicalPreviewOwnsViewerPublication {
                 metalFrame = base
                 monitorOutput.update(frame: base, display: metalDisplay)
             }
@@ -4674,7 +4676,7 @@ final class WorkspaceModel: ObservableObject {
         originACEScgFrame = base
         sourceACEScgFrame = try adjustedSourceFrame(base)
         physicalModel.invalidateExternalParameters()
-        if !setupOwnsViewerPublication {
+        if !physicalPreviewOwnsViewerPublication {
             metalFrame = base
             monitorOutput.update(frame: base, display: metalDisplay)
         }
@@ -4733,7 +4735,6 @@ final class WorkspaceModel: ObservableObject {
         guard isModelPageActive || testNeedsPhysicalResult || setupOwnsViewerPublication else {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
-            if !isTestPageActive, let sourceACEScgFrame { metalFrame = sourceACEScgFrame }
             return
         }
         if referenceMatchEnabled, referenceACEScgFrame != nil {
@@ -5824,22 +5825,23 @@ final class WorkspaceModel: ObservableObject {
             || physicalModel.quality == .focusSetup
     }
 
+    /// A physical Scene checkpoint owns the Viewer until its replacement is
+    /// complete. Source decoding may refresh its canonical input meanwhile,
+    /// but must never publish that input over the last valid composition.
+    private var physicalPreviewOwnsViewerPublication: Bool {
+        setupOwnsViewerPublication
+            || (isTestPageActive && selectedTestPhysicalIntermediate != nil)
+    }
+
     private func publishSelectedTestPreview() {
         guard let sourceACEScgFrame else { return }
         guard isTestPageActive,
               let presentation = testPresentation,
               let result = testPreviewResultByPhaseID[presentation.selectedPhaseID]
         else {
-            // Setup renderers own the Viewer while active. `present(_:)`
-            // refreshes the selected phase after publishing their projected
-            // composition; that refresh must not expose the source artifact.
-            guard !setupOwnsViewerPublication else { return }
-            if referenceACEScgFrame != nil {
-                publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
-            } else {
-                metalFrame = sourceACEScgFrame
-                monitorOutput.update(frame: sourceACEScgFrame, display: metalDisplay)
-            }
+            // A page transition has no authority to replace the current
+            // Viewer publication. The destination page will explicitly
+            // request the checkpoint it owns.
             return
         }
         let presentationFrame: StudioColorMetalFrame
