@@ -2998,29 +2998,29 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + matrix[2][2] * carrier_detail_native.b)
                     / parameters.white_level_nits,
             ];
-            let glowed = if plan.lens_evaluation_model == LensEvaluationModel::VfxDepthBlur {
-                [
-                    cover_glow[0]
-                        + plan.subpixel_geometry_amount * carrier_detail[0]
-                        + soft_glow[0],
-                    cover_glow[1]
-                        + plan.subpixel_geometry_amount * carrier_detail[1]
-                        + soft_glow[1],
-                    cover_glow[2]
-                        + plan.subpixel_geometry_amount * carrier_detail[2]
-                        + soft_glow[2],
-                ]
-            } else {
-                [
-                    cover_glow[0] + soft_glow[0],
-                    cover_glow[1] + soft_glow[1],
-                    cover_glow[2] + soft_glow[2],
-                ]
-            };
             let continuous_base = if plan.panel_uniformity.character_strength == 0.0 {
                 continuous
             } else {
                 uniform_continuous
+            };
+            let moire_free_glow = [
+                continuous_base[0] + soft_glow[0],
+                continuous_base[1] + soft_glow[1],
+                continuous_base[2] + soft_glow[2],
+            ];
+            let sampled_glow = [
+                cover_glow[0] + soft_glow[0],
+                cover_glow[1] + soft_glow[1],
+                cover_glow[2] + soft_glow[2],
+            ];
+            let glowed = if plan.lens_evaluation_model == LensEvaluationModel::VfxDepthBlur {
+                [
+                    sampled_glow[0] + plan.subpixel_geometry_amount * carrier_detail[0],
+                    sampled_glow[1] + plan.subpixel_geometry_amount * carrier_detail[1],
+                    sampled_glow[2] + plan.subpixel_geometry_amount * carrier_detail[2],
+                ]
+            } else {
+                sampled_glow
             };
             let sampled_panel = [
                 plan.emission_amount
@@ -3033,47 +3033,27 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     * (continuous_base[2]
                         + plan.subpixel_geometry_amount * (glowed[2] - continuous_base[2])),
             ];
-            let sampled_structure_residual = if plan.panel_uniformity.character_strength == 0.0 {
-                [
-                    (physical[0] - continuous[0])
-                        * plan.subpixel_geometry_amount
-                        * plan.emission_amount,
-                    (physical[1] - continuous[1])
-                        * plan.subpixel_geometry_amount
-                        * plan.emission_amount,
-                    (physical[2] - continuous[2])
-                        * plan.subpixel_geometry_amount
-                        * plan.emission_amount,
-                ]
-            } else {
-                [
-                    (uniform[0] - uniform_continuous[0])
-                        * plan.subpixel_geometry_amount
-                        * plan.emission_amount,
-                    (uniform[1] - uniform_continuous[1])
-                        * plan.subpixel_geometry_amount
-                        * plan.emission_amount,
-                    (uniform[2] - uniform_continuous[2])
-                        * plan.subpixel_geometry_amount
-                        * plan.emission_amount,
-                ]
-            };
-            let structure_preserving_base = [
-                sampled_panel[0] - sampled_structure_residual[0],
-                sampled_panel[1] - sampled_structure_residual[1],
-                sampled_panel[2] - sampled_structure_residual[2],
+            let moire_free_base = [
+                plan.emission_amount
+                    * (continuous_base[0]
+                        + plan.subpixel_geometry_amount
+                            * (moire_free_glow[0] - continuous_base[0])),
+                plan.emission_amount
+                    * (continuous_base[1]
+                        + plan.subpixel_geometry_amount
+                            * (moire_free_glow[1] - continuous_base[1])),
+                plan.emission_amount
+                    * (continuous_base[2]
+                        + plan.subpixel_geometry_amount
+                            * (moire_free_glow[2] - continuous_base[2])),
             ];
-            let staged = apply_moire_look(
-                structure_preserving_base,
-                sampled_panel,
-                plan.moire_intensity,
-                plan.moire_saturation,
-            );
             let resolved_temporal_gain =
                 physical_row_temporal_gain(plan, y as usize, sampling.effective_height as usize)?;
             let temporal_gain =
                 1.0 + plan.temporal_emission_amount * (resolved_temporal_gain - 1.0);
-            let temporally_integrated = staged.map(|value| value * temporal_gain);
+            let temporally_integrated = sampled_panel.map(|value| value * temporal_gain);
+            let moire_free_temporally_integrated =
+                moire_free_base.map(|value| value * temporal_gain);
             let reciprocal_cover = if cover_weight == 0.0 {
                 1.0
             } else {
@@ -3163,6 +3143,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 emitted.g * transmitted.g,
                 emitted.b * transmitted.b,
             );
+            let moire_free_transmitted_emission = LinearRgb::new(
+                moire_free_temporally_integrated[0] * transmitted.r,
+                moire_free_temporally_integrated[1] * transmitted.g,
+                moire_free_temporally_integrated[2] * transmitted.b,
+            );
+            let reflected_environment = LinearRgb::new(
+                combined_cover_response.r - transmitted_emission.r,
+                combined_cover_response.g - transmitted_emission.g,
+                combined_cover_response.b - transmitted_emission.b,
+            );
             let local_device_matte = ideal[3].clamp(0.0, 1.0);
             let covered_with_environment = LinearRgb::new(
                 transmitted_emission.r
@@ -3185,6 +3175,32 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 exterior_glow.b
                     + resolved_panel_coverage * (covered_with_environment.b - exterior_glow.b),
             );
+            let moire_free_covered_with_environment = LinearRgb::new(
+                moire_free_transmitted_emission.r + local_device_matte * reflected_environment.r,
+                moire_free_transmitted_emission.g + local_device_matte * reflected_environment.g,
+                moire_free_transmitted_emission.b + local_device_matte * reflected_environment.b,
+            );
+            let moire_free_covered = LinearRgb::new(
+                exterior_glow.r
+                    + resolved_panel_coverage
+                        * (moire_free_covered_with_environment.r - exterior_glow.r),
+                exterior_glow.g
+                    + resolved_panel_coverage
+                        * (moire_free_covered_with_environment.g - exterior_glow.g),
+                exterior_glow.b
+                    + resolved_panel_coverage
+                        * (moire_free_covered_with_environment.b - exterior_glow.b),
+            );
+            let lens_resolved = apply_moire_look(
+                [
+                    moire_free_covered.r,
+                    moire_free_covered.g,
+                    moire_free_covered.b,
+                ],
+                [covered.r, covered.g, covered.b],
+                plan.moire_intensity,
+                plan.moire_saturation,
+            );
             let glare_fraction = resolved_scene.0.lens.veiling_glare_fraction;
             let temporal_gate_average = LinearRgb::new(
                 veiling_glare_gate_average.r * temporal_gain,
@@ -3192,9 +3208,9 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 veiling_glare_gate_average.b * temporal_gain,
             );
             let glared = LinearRgb::new(
-                covered.r + glare_fraction * (temporal_gate_average.r - covered.r),
-                covered.g + glare_fraction * (temporal_gate_average.g - covered.g),
-                covered.b + glare_fraction * (temporal_gate_average.b - covered.b),
+                lens_resolved[0] + glare_fraction * (temporal_gate_average.r - lens_resolved[0]),
+                lens_resolved[1] + glare_fraction * (temporal_gate_average.g - lens_resolved[1]),
+                lens_resolved[2] + glare_fraction * (temporal_gate_average.b - lens_resolved[2]),
             );
             let exposure_duration = plan
                 .shutter_close
@@ -7823,11 +7839,17 @@ mod tests {
     }
 
     #[test]
-    fn moire_intensity_zero_preserves_structure_and_one_is_calibrated() {
-        let structured = [0.13, 0.27, 0.41];
+    fn moire_intensity_zero_selects_continuous_emitter_and_one_is_calibrated() {
+        let continuous_emitter = [0.13, 0.27, 0.41];
         let sampled = [0.91, -0.18, 0.62];
-        assert_eq!(apply_moire_look(structured, sampled, 0.0, 4.0), structured);
-        assert_eq!(apply_moire_look(structured, sampled, 1.0, 1.0), sampled);
+        assert_eq!(
+            apply_moire_look(continuous_emitter, sampled, 0.0, 4.0),
+            continuous_emitter
+        );
+        assert_eq!(
+            apply_moire_look(continuous_emitter, sampled, 1.0, 1.0),
+            sampled
+        );
     }
 
     #[test]

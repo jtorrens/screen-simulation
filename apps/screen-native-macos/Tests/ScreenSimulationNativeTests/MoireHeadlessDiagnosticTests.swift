@@ -17,6 +17,12 @@ import Testing
         "SCREEN_MOIRE_DIAGNOSTIC_DIR",
         "SCREEN_MOIRE_DIAGNOSTIC_IDEAL_FULL_RGB",
         "SCREEN_MOIRE_RECORDING_DIAGNOSTIC",
+        "SCREEN_MOIRE_PHASE_ISOLATION",
+        "SCREEN_MOIRE_ZERO_DOWNSTREAM_ISOLATION",
+        "SCREEN_MOIRE_SETTINGS_DOCUMENT_PATH",
+        "SCREEN_MOIRE_FORCE_LENS_EVALUATION_MODEL",
+        "SCREEN_MOIRE_FORCE_INTENSITY",
+        "SCREEN_MOIRE_FORCE_BASELINE_INTERMEDIATE",
     ]
     let unexpectedInvocationSettings = Set(processSettings.keys.filter {
         ($0.hasPrefix("SCREEN_MOIRE_") && !allowedInvocationSettings.contains($0))
@@ -39,12 +45,17 @@ import Testing
     for (key, value) in fixture.settings {
         setenv(key, value, 1)
     }
-    let expectedHash = fixture.acceptedOutput?.pixelRGBA8SHA256
+    if let forcedIntermediate = processSettings["SCREEN_MOIRE_FORCE_BASELINE_INTERMEDIATE"] {
+        setenv("SCREEN_MOIRE_BASELINE_INTERMEDIATE", forcedIntermediate, 1)
+    }
+    let expectedHash = processSettings["SCREEN_MOIRE_SETTINGS_DOCUMENT_PATH"] == nil
+        ? fixture.acceptedOutput?.pixelRGBA8SHA256
+        : nil
     let deviceID = try #require(ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_ID"])
     let environmentSourcePath = ProcessInfo.processInfo.environment[
         "SCREEN_MOIRE_ENVIRONMENT_SOURCE_PATH"
     ]
-    let imported: PhysicalSettingsExchange.Imported
+    let fixtureImported: PhysicalSettingsExchange.Imported
     do {
         var device = try #require(try RustDeviceCatalog.builtIns().first { $0.id == deviceID })
         if let width = ProcessInfo.processInfo.environment["SCREEN_MOIRE_DEVICE_WIDTH"]
@@ -370,7 +381,7 @@ import Testing
             deviceID: device.id,
             environmentSourcePath: environmentSourcePath
         )
-        imported = .init(
+        fixtureImported = .init(
             device: device,
             pipeline: pipeline,
             model: PhysicalModelController().authoringState,
@@ -378,6 +389,35 @@ import Testing
             report: "Headless VFX reference battery"
         )
     }
+    let imported: PhysicalSettingsExchange.Imported
+    if let settingsPath = processSettings["SCREEN_MOIRE_SETTINGS_DOCUMENT_PATH"] {
+        let data = try Data(contentsOf: URL(fileURLWithPath: settingsPath))
+        let document = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let decoded = try PhysicalSettingsExchange.decode(from: document)
+        var pipeline = decoded.pipeline
+        if let evaluationModel = processSettings["SCREEN_MOIRE_FORCE_LENS_EVALUATION_MODEL"] {
+            pipeline.sceneLens.evaluationModel = evaluationModel
+        }
+        if let moireIntensity = processSettings["SCREEN_MOIRE_FORCE_INTENSITY"]
+            .flatMap(Double.init)
+        {
+            pipeline.moireIntensity = moireIntensity
+        }
+        imported = .init(
+            device: decoded.device,
+            pipeline: pipeline,
+            model: decoded.model,
+            context: decoded.context,
+            report: decoded.report
+        )
+    } else {
+        imported = fixtureImported
+    }
+    let resolvedEnvironmentSourcePath = imported.pipeline.environment.sourceKind == 1
+        ? environmentSourcePath
+        : nil
 
     let sourcePath = ProcessInfo.processInfo.environment["SCREEN_MOIRE_SOURCE_PATH"]
     let patternID = ProcessInfo.processInfo.environment["SCREEN_MOIRE_PATTERN_ID"]
@@ -425,7 +465,7 @@ import Testing
         display: display
     )
     let environmentFrame: EnvironmentRadianceFrame?
-    if let environmentSourcePath {
+    if let environmentSourcePath = resolvedEnvironmentSourcePath {
         let inputID = try #require(ProcessInfo.processInfo.environment[
             "SCREEN_MOIRE_ENVIRONMENT_INPUT_TRANSFORM_ID"
         ])
@@ -543,7 +583,155 @@ import Testing
         "SCREEN_MOIRE_PSF_ONLY"
     ] == "1"
     let variants: [MoireVariant]
-    if ProcessInfo.processInfo.environment["SCREEN_MOIRE_BASELINE_ONLY"] == "1" {
+    if ProcessInfo.processInfo.environment["SCREEN_MOIRE_ZERO_DOWNSTREAM_ISOLATION"] == "1" {
+        let zeroMoire: (inout PhysicalPipelineAuthoringState) throws -> Void = {
+            $0.moireIntensity = 0
+        }
+        variants = try await [
+            renderMoireVariant(
+                name: "00-device-signal-moire-0",
+                context: context,
+                identity: 30,
+                intermediate: .deviceSignal,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "01-panel-emission-moire-0",
+                context: context,
+                identity: 31,
+                intermediate: .panelEmission,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "02-subpixel-radiance-moire-0",
+                context: context,
+                identity: 32,
+                intermediate: .subpixelRadiance,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "03-panel-uniformity-moire-0",
+                context: context,
+                identity: 33,
+                intermediate: .panelUniformity,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "04-panel-light-spread-moire-0",
+                context: context,
+                identity: 34,
+                intermediate: .panelLightSpread,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "05-panel-temporal-moire-0",
+                context: context,
+                identity: 35,
+                intermediate: .panelTemporal,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "06-relative-geometry-moire-0",
+                context: context,
+                identity: 36,
+                intermediate: .relativeGeometry,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "07-cover-environment-moire-0",
+                context: context,
+                identity: 37,
+                intermediate: .coverEnvironment,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "08-cover-glow-moire-0",
+                context: context,
+                identity: 38,
+                intermediate: .coverGlow,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "09-lens-projection-moire-0",
+                context: context,
+                identity: 39,
+                intermediate: .lensProjection,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "10-shutter-motion-moire-0",
+                context: context,
+                identity: 40,
+                intermediate: .shutterMotion,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "11-computational-capture-moire-0",
+                context: context,
+                identity: 41,
+                intermediate: .computationalCapture,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "12-sensor-collection-moire-0",
+                context: context,
+                identity: 42,
+                intermediate: .sensorCollection,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "13-sensor-bloom-moire-0",
+                context: context,
+                identity: 43,
+                intermediate: .sensorBloom,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "14-sensor-readout-raw-moire-0",
+                context: context,
+                identity: 44,
+                intermediate: .sensorReadoutRaw,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "15-developed-acescg-moire-0",
+                context: context,
+                identity: 45,
+                intermediate: .developedACEScg,
+                editPipeline: zeroMoire
+            ),
+            renderMoireVariant(
+                name: "16-camera-rendered-acescg-moire-0",
+                context: context,
+                identity: 46,
+                intermediate: .cameraRenderedACEScg,
+                editPipeline: zeroMoire
+            ),
+        ]
+    } else if ProcessInfo.processInfo.environment["SCREEN_MOIRE_PHASE_ISOLATION"] == "1" {
+        variants = try await [
+            renderMoireVariant(
+                name: "before-moire-cover-glow",
+                context: context,
+                identity: 21,
+                intermediate: .coverGlow
+            ),
+            renderMoireVariant(
+                name: "after-moire-intensity-0",
+                context: context,
+                identity: 22,
+                intermediate: .lensProjection,
+                editPipeline: { $0.moireIntensity = 0 }
+            ),
+            renderMoireVariant(
+                name: "after-moire-intensity-1",
+                context: context,
+                identity: 23,
+                intermediate: .lensProjection,
+                editPipeline: { $0.moireIntensity = 1 }
+            ),
+        ]
+    } else if ProcessInfo.processInfo.environment["SCREEN_MOIRE_BASELINE_ONLY"] == "1" {
         variants = []
     } else if psfOnly {
         variants = try await [
@@ -869,6 +1057,9 @@ private func moireResolvedModel(
 ) throws -> PhysicalModelController {
     let controller = PhysicalModelController()
     try controller.restoreAuthoringState(imported.model)
+    if ProcessInfo.processInfo.environment["SCREEN_MOIRE_SETTINGS_DOCUMENT_PATH"] != nil {
+        return controller
+    }
     try controller.setContinuousAmount(
         try moireRequiredDouble("SCREEN_MOIRE_COVER_GLOW_AMOUNT"),
         stage: .screen(.coverGlow)

@@ -1666,25 +1666,17 @@ kernel void evaluate_physical_pipeline(
     const float moire_intensity = p.geometry.w;
     const float3 continuous_base = p.uniformity_scales.w == 0.0f
         ? continuous : uniform_continuous;
-    const float3 resolved_glow = glow + carrier_detail * p.strengths.z + soft_glow;
+    const float3 moire_free_glow = continuous_base + soft_glow;
+    const float3 resolved_glow = glow + soft_glow
+        + carrier_detail * p.strengths.z;
     const float3 sampled_panel = p.strengths.y
         * (continuous_base + p.strengths.z * (resolved_glow - continuous_base));
-    const float3 sampled_structure_residual = p.uniformity_scales.w == 0.0f
-        ? (physical - continuous) * p.strengths.z * p.strengths.y
-        : (uniform - uniform_continuous) * p.strengths.z * p.strengths.y;
-    const float3 structure_preserving_base = sampled_panel - sampled_structure_residual;
-    float3 interference = sampled_panel - structure_preserving_base;
-    if (moire_saturation != 1.0f) {
-        const float residual_luminance = dot(
-            interference,
-            float3(0.27222872f, 0.67408174f, 0.053689517f)
-        );
-        interference = residual_luminance
-            + moire_saturation * (interference - residual_luminance);
-    }
-    const float3 glass_scattered = structure_preserving_base + moire_intensity * interference;
+    const float3 moire_free_base = p.strengths.y
+        * (continuous_base
+            + p.strengths.z * (moire_free_glow - continuous_base));
     const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
-    const float3 temporally_integrated = glass_scattered * temporal_gain;
+    const float3 temporally_integrated = sampled_panel * temporal_gain;
+    const float3 moire_free_temporally_integrated = moire_free_base * temporal_gain;
     const float view_cosine = cover_cosine * cover_reciprocal;
     const float3 combined_cover_response = apply_flat_cover(temporally_integrated,
         cover_cosine * cover_reciprocal, cover_reflection_direction,
@@ -1695,6 +1687,10 @@ kernel void evaluate_physical_pipeline(
     const float resolved_panel_coverage = mix(1.0f, panel_coverage, p.panel_angular_scene.w);
     const float3 transmission = flat_cover_transmission(view_cosine, p);
     const float3 transmitted_emission = temporally_integrated * transmission;
+    const float3 moire_free_transmitted_emission
+        = moire_free_temporally_integrated * transmission;
+    const float3 reflected_environment
+        = combined_cover_response - transmitted_emission;
     const float3 covered_with_environment = transmitted_emission
         + ideal.a * (combined_cover_response - transmitted_emission);
     // The direct panel remains inside its finite silhouette. The VFX halo is
@@ -1703,7 +1699,22 @@ kernel void evaluate_physical_pipeline(
         * transmission;
     const float3 covered = mix(
         exterior_glow, covered_with_environment, resolved_panel_coverage);
-    const float3 glared = mix(covered, veiling_gate_average[0].xyz * temporal_gain,
+    const float3 moire_free_covered_with_environment
+        = moire_free_transmitted_emission + ideal.a * reflected_environment;
+    const float3 moire_free_covered = mix(
+        exterior_glow, moire_free_covered_with_environment, resolved_panel_coverage);
+    float3 interference = covered - moire_free_covered;
+    if (moire_saturation != 1.0f) {
+        const float residual_luminance = dot(
+            interference,
+            float3(0.27222872f, 0.67408174f, 0.053689517f)
+        );
+        interference = residual_luminance
+            + moire_saturation * (interference - residual_luminance);
+    }
+    const float3 lens_resolved
+        = moire_free_covered + moire_intensity * interference;
+    const float3 glared = mix(lens_resolved, veiling_gate_average[0].xyz * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);
     const float3 shuttered = glared * shutter_scale;
