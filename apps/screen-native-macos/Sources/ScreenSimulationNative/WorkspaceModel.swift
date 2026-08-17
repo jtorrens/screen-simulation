@@ -599,9 +599,10 @@ final class WorkspaceModel: ObservableObject {
         coverGlass: CoverGlassDefinition
     ) {
         do {
+            let builtInDeviceIDs = Set(try RustDeviceCatalog.builtIns().map(\.id))
             if let selection = testAuthoringSelection,
                selection.deviceID != definition.id,
-               try RustDeviceCatalog.builtIns().contains(where: { $0.id == definition.id }) {
+               builtInDeviceIDs.contains(definition.id) {
                 let resolved = try RustTestAuthoringCoordinator.apply(
                     .setChoice(controlID: "device", optionID: definition.id),
                     to: selection
@@ -632,6 +633,30 @@ final class WorkspaceModel: ObservableObject {
             resolvedPhysicalPipeline = try authored.resolvedPipeline()
             baseModelDeviceDefinition = definition
             basePhysicalAuthoringState = authored
+            if !builtInDeviceIDs.contains(definition.id), var selection = testAuthoringSelection {
+                selection.colorModeID = definition.colorModeID
+                selection.deviceEOTFGamma = definition.eotfGamma
+                selection.whiteLuminanceNits = definition.whiteLevelNits
+                selection.panelUniformityAmount = definition.panelUniformity.characterStrength
+                selection.panelLightSpreadAmount = definition.panelLightSpread.characterStrength
+                selection.coverGlassPresetID = coverGlass.id
+                selection.coverGlassAmount = coverGlass.characterStrength
+                selection.coverAgMicrotextureAmount = coverGlass.agMicrotextureCharacterStrength
+                selection.coverThicknessMillimeters = coverGlass.thicknessMillimeters
+                selection.coverRefractiveIndex = coverGlass.refractiveIndex
+                selection.coverAREfficiency = coverGlass.antiReflectiveEfficiency
+                selection.coverAbsorptionRGB = coverGlass.absorptionPerMillimeter
+                selection.coverRoughness = coverGlass.roughness
+                selection.coverHaze = coverGlass.haze
+                selection.coverAgRMSSlope = coverGlass.agMicrotextureRMSSlope
+                selection.coverAgCorrelationMicrometers = coverGlass.agMicrotextureCorrelationLengthMicrometers
+                selection.coverAgAnisotropy = coverGlass.agMicrotextureAnisotropy
+                selection.coverGlowAmount = coverGlass.glowCharacterStrength
+                selection.coverGlowIntensity = coverGlass.glowIntensity
+                selection.coverGlowRadiusMillimeters = coverGlass.glowRadiusMillimeters
+                selection.coverGlowThresholdRelativeWhite = coverGlass.glowThresholdRelativeWhite
+                testAuthoringSelection = selection
+            }
             try refreshTestAuthoringDescriptor()
             rebuildPhysicalSelectedFrame()
         } catch {

@@ -32,9 +32,9 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let inputTransformID: String
     let outputSignalID: String
     let deviceID: String
-    let colorModeID: String
-    let deviceEOTFGamma: Double
-    let whiteLuminanceNits: Double
+    var colorModeID: String
+    var deviceEOTFGamma: Double
+    var whiteLuminanceNits: Double
     let placementID: String
     var previewQualityID: String
     var frameRate: ExactFrameRate
@@ -47,8 +47,8 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let moireIntensity: Double
     let moireSaturation: Double
     let moireFilterStrength: Double
-    let panelUniformityAmount: Double
-    let panelLightSpreadAmount: Double
+    var panelUniformityAmount: Double
+    var panelLightSpreadAmount: Double
     let capturePresetID: String
     let captureRasterModeID: String
     let lensEvaluationModelID: String
@@ -68,18 +68,18 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     var screenRotationXDegrees: Double
     var screenYawDegrees: Double
     var screenRotationZDegrees: Double
-    let coverGlassPresetID: String
-    let coverGlassAmount: Double
-    let coverAgMicrotextureAmount: Double
-    let coverThicknessMillimeters: Double
-    let coverRefractiveIndex: Double
-    let coverAREfficiency: Double
-    let coverAbsorptionRGB: [Double]
-    let coverRoughness: Double
-    let coverHaze: Double
-    let coverAgRMSSlope: Double
-    let coverAgCorrelationMicrometers: Double
-    let coverAgAnisotropy: Double
+    var coverGlassPresetID: String
+    var coverGlassAmount: Double
+    var coverAgMicrotextureAmount: Double
+    var coverThicknessMillimeters: Double
+    var coverRefractiveIndex: Double
+    var coverAREfficiency: Double
+    var coverAbsorptionRGB: [Double]
+    var coverRoughness: Double
+    var coverHaze: Double
+    var coverAgRMSSlope: Double
+    var coverAgCorrelationMicrometers: Double
+    var coverAgAnisotropy: Double
     let environmentSourceID: String
     let environmentAmount: Double
     var environmentRotationXDegrees: Double
@@ -94,10 +94,10 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     var environmentSphereCenterYMeters: Double
     var environmentSphereCenterZMeters: Double
     var environmentSphereRadiusMeters: Double
-    let coverGlowAmount: Double
-    let coverGlowIntensity: Double
-    let coverGlowRadiusMillimeters: Double
-    let coverGlowThresholdRelativeWhite: Double
+    var coverGlowAmount: Double
+    var coverGlowIntensity: Double
+    var coverGlowRadiusMillimeters: Double
+    var coverGlowThresholdRelativeWhite: Double
     let lensPresetID: String
     var focalLengthMillimeters: Double
     let lensAmount: Double

@@ -77,6 +77,37 @@ import Testing
     #expect(workspace.modelDeviceDefinition?.nativeWidth == custom.nativeWidth)
 }
 
+@Test @MainActor func selectingAsusDerivedPhoneMaterializesItsAuthoredLuminance() throws {
+    let devices = try RustDeviceCatalog.builtIns()
+    let phone = try #require(devices.first { $0.id == "lcd-phone-4_7-retina" })
+    let asus = try #require(devices.first { $0.id == "lcd-asus-proart-pa329cv" })
+    let covers = try RustCoverGlassCatalog.builtIns()
+    let phoneCover = try #require(covers.first { $0.id == phone.defaultCoverGlassPresetID })
+    let asusCover = try #require(covers.first { $0.id == asus.defaultCoverGlassPresetID })
+    let workspace = WorkspaceModel()
+
+    workspace.selectModelDevice(phone, coverGlass: phoneCover)
+    var custom = asus
+    custom.id = UUID().uuidString.lowercased()
+    custom.name = "ASUS con proporciones Phone"
+    custom.nativeWidth = 700
+    custom.nativeHeight = 1_400
+    custom.activeWidthMeters = 0.1
+    custom.activeHeightMeters = 0.2
+    workspace.selectModelDevice(custom, coverGlass: asusCover)
+    workspace.handleTestIntent(.setScalar(controlID: "moire-intensity", value: 0.5))
+
+    #expect(workspace.errorMessage == nil)
+    #expect(workspace.modelDeviceDefinition?.id == custom.id)
+    #expect(workspace.modelDeviceDefinition?.nativeWidth == 700)
+    #expect(workspace.modelDeviceDefinition?.nativeHeight == 1_400)
+    #expect(workspace.modelDeviceDefinition?.whiteLevelNits == 350)
+    #expect(workspace.modelDeviceDefinition?.panelUniformity.characterStrength
+        == custom.panelUniformity.characterStrength)
+    #expect(workspace.modelDeviceDefinition?.panelLightSpread.characterStrength
+        == custom.panelLightSpread.characterStrength)
+}
+
 @Test @MainActor func everyAuthoredChangeReturnsNativeToSetupAndMaterializesPlacement() throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
