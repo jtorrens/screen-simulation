@@ -2941,10 +2941,14 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         y: maximum.y.clamp(0.0, 1.0),
                     },
                 );
+                // Bright-pass the resolved panel emission before the finite-panel
+                // coverage attenuates the filter support. Applying the threshold
+                // after coverage makes a valid exterior halo disappear as soon as
+                // its footprint crosses the active outline.
                 let native = [
-                    area.linear_native_emission.r * panel_coverage,
-                    area.linear_native_emission.g * panel_coverage,
-                    area.linear_native_emission.b * panel_coverage,
+                    area.linear_native_emission.r,
+                    area.linear_native_emission.g,
+                    area.linear_native_emission.b,
                 ];
                 let rgb = [
                     (matrix[0][0] * native[0]
@@ -2968,7 +2972,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 } else {
                     (luminance - threshold) / luminance.max(1.0e-8)
                 };
-                rgb.map(|value| value * threshold_scale)
+                rgb.map(|value| value * threshold_scale * panel_coverage)
             };
             let glow_strength = glow_profile.scatter_fraction * glow_profile.character_strength;
             let core_glow = soft_area(glow_profile.core_radius_millimeters);

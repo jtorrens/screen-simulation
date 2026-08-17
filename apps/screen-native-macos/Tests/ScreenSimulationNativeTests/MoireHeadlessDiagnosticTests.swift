@@ -583,7 +583,60 @@ import Testing
         "SCREEN_MOIRE_PSF_ONLY"
     ] == "1"
     let variants: [MoireVariant]
-    if ProcessInfo.processInfo.environment["SCREEN_MOIRE_ZERO_DOWNSTREAM_ISOLATION"] == "1" {
+    if ProcessInfo.processInfo.environment["SCREEN_GLOW_ISOLATION"] == "1" {
+        variants = try await [
+            renderMoireVariant(
+                name: "camera-rendered-glow-amount-0",
+                context: context,
+                identity: 47,
+                intermediate: .cameraRenderedACEScg,
+                editModel: { try $0.setContinuousAmount(0, stage: .screen(.coverGlow)) }
+            ),
+            renderMoireVariant(
+                name: "camera-rendered-glow-amount-1",
+                context: context,
+                identity: 48,
+                intermediate: .cameraRenderedACEScg,
+                editModel: { try $0.setContinuousAmount(1, stage: .screen(.coverGlow)) }
+            ),
+            renderMoireVariant(
+                name: "camera-rendered-glow-amount-4",
+                context: context,
+                identity: 49,
+                intermediate: .cameraRenderedACEScg,
+                editModel: { try $0.setContinuousAmount(4, stage: .screen(.coverGlow)) }
+            ),
+            renderMoireVariant(
+                name: "camera-rendered-glow-0-lens-0",
+                context: context,
+                identity: 50,
+                intermediate: .cameraRenderedACEScg,
+                editModel: {
+                    try $0.setContinuousAmount(0, stage: .screen(.coverGlow))
+                    try $0.setContinuousAmount(0, stage: .capture(.lens))
+                }
+            ),
+            renderMoireVariant(
+                name: "camera-rendered-glow-0-veiling-0",
+                context: context,
+                identity: 51,
+                intermediate: .cameraRenderedACEScg,
+                editPipeline: { $0.sceneLens.veilingGlareFraction = 0 },
+                editModel: { try $0.setContinuousAmount(0, stage: .screen(.coverGlow)) }
+            ),
+            renderMoireVariant(
+                name: "camera-rendered-glow-0-softness-0",
+                context: context,
+                identity: 52,
+                intermediate: .cameraRenderedACEScg,
+                editPipeline: {
+                    $0.sceneLens.centerSoftnessMicrometers = 0
+                    $0.sceneLens.edgeSoftnessMicrometers = 0
+                },
+                editModel: { try $0.setContinuousAmount(0, stage: .screen(.coverGlow)) }
+            ),
+        ]
+    } else if ProcessInfo.processInfo.environment["SCREEN_MOIRE_ZERO_DOWNSTREAM_ISOLATION"] == "1" {
         let zeroMoire: (inout PhysicalPipelineAuthoringState) throws -> Void = {
             $0.moireIntensity = 0
         }

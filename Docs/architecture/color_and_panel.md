@@ -88,6 +88,8 @@ Bundled device presets currently describe LCD geometry, a reference operating wh
 
 The current analytic library provides Uniform Neutral, Studio Softboxes, Calibration Grid, Office Ceiling, Daylight Window, Warm Practicals and Mixed Production. The image-backed source is a separate typed incident-radiance provider, not another reflection algorithm. Media owns EXR decoding, Color owns the explicit source-to-ACEScg transform, `screen-cover` owns the rough-interface integration semantics, and the Platform adapter executes the same prepared operation without inventing another model. The host retains one immutable exact single-level 2:1 texture and passes only its opaque physical view. Cover and environment character amounts are multiplicative authoring controls: zero cover is an exact identity, zero environment contributes no reflection and values above one deliberately exaggerate the current material response.
 
+The emission-glow bright pass is evaluated before finite-panel support coverage attenuates its filtered result. Reversing that order would make valid additive exterior RGB disappear at the active outline even though the authored blur support still overlaps emitting panel pixels.
+
 Panel character uses the same diagnostic convention inside the authoritative spatial evaluator. At
 zero, continuous native emission is sampled without black-matrix or subpixel structure; at one, the
 authored physical pixel layout is evaluated; values through the certified diagnostic range

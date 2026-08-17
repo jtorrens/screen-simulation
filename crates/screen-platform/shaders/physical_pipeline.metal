@@ -1627,10 +1627,14 @@ kernel void evaluate_physical_pipeline(
     const float tail_halo_coverage = device_rectangle_coverage(
         halo_center - halo_half_extent - tail_halo_extent,
         halo_center + halo_half_extent + tail_halo_extent);
+    // The authored alpha belongs to the resolved panel emission. Finite-panel
+    // coverage is applied after the bright pass so a footprint crossing the
+    // active outline retains a smooth additive halo instead of falling below
+    // threshold and disappearing abruptly.
     const float core_halo_alpha = resolved_device_alpha(
-        core_halo_code.a, core_halo_coverage, p);
+        core_halo_code.a, 1.0f, p);
     const float tail_halo_alpha = resolved_device_alpha(
-        tail_halo_code.a, tail_halo_coverage, p);
+        tail_halo_code.a, 1.0f, p);
     const float3 core_halo_native = float3(
         panel_linear_channel(core_halo_code.r, p),
         panel_linear_channel(core_halo_code.g, p),
@@ -1655,6 +1659,8 @@ kernel void evaluate_physical_pipeline(
         ? 0.0f : (core_halo_luminance - halo_threshold) / max(core_halo_luminance, 1.0e-8f);
     tail_halo *= tail_halo_luminance <= halo_threshold
         ? 0.0f : (tail_halo_luminance - halo_threshold) / max(tail_halo_luminance, 1.0e-8f);
+    core_halo *= core_halo_coverage;
+    tail_halo *= tail_halo_coverage;
     const float3 soft_glow = p.cover_glow.z
         * (core_halo * (1.0f - p.cover_glow.w) + tail_halo * p.cover_glow.w);
     float3 carrier_detail = float3(

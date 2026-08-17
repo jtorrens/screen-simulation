@@ -56,6 +56,11 @@ def main() -> int:
         action="store_true",
         help="Publica cada checkpoint desde Lens Projection con intensidad de moiré 0.",
     )
+    parser.add_argument(
+        "--glow-isolation",
+        action="store_true",
+        help="Publica Camera Rendered con Cover Glow 0, 1 y 4 sobre el mismo frame.",
+    )
     arguments = parser.parse_args()
     if arguments.ideal_full_rgb and (
         arguments.moire_phase_isolation
@@ -111,6 +116,8 @@ def main() -> int:
         environment["SCREEN_MOIRE_PHASE_ISOLATION"] = "1"
     if arguments.moire_zero_downstream_isolation:
         environment["SCREEN_MOIRE_ZERO_DOWNSTREAM_ISOLATION"] = "1"
+    if arguments.glow_isolation:
+        environment["SCREEN_GLOW_ISOLATION"] = "1"
     subprocess.run(
         ["cargo", "build", "-p", "screen-native-bridge", "--release"],
         cwd=repository,

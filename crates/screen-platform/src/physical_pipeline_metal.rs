@@ -3201,7 +3201,10 @@ mod tests {
         plan.cover.glow.core_radius_millimeters = 0.5;
         plan.cover.glow.tail_radius_millimeters = 1.5;
         plan.cover.glow.tail_fraction = 1.0;
-        plan.cover.glow.threshold_relative_to_panel_white = 0.0;
+        // Exercise the authored bright-pass as well as the exterior support.
+        // A zero threshold would not catch the historical ordering bug where
+        // finite-panel coverage attenuated the signal before thresholding.
+        plan.cover.glow.threshold_relative_to_panel_white = 0.15;
         plan.requested_intermediate = PhysicalIntermediate::CoverGlow;
 
         let source = texture(&device, input.width, input.height, &input.acescg);
