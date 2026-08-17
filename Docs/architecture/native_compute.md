@@ -73,8 +73,9 @@ checkpoint terms whose algebraic coefficients are nonzero. In the final optical 
 continuous, physical, spatial-uniformity and spread contributions are combined by their exact authored coefficients;
 terms that cancel identically are not sampled merely to subtract them later. Alpha retains its
 complete aperture-integrated source evaluation. Device emission glow consumes the already resolved,
-alpha-attenuated Panel Light Spread emission and evaluates one bounded two-scale continuous area
-filter per output pixel at the authored physical core/tail half-supports. A panel-white-relative
+alpha-attenuated Panel Light Spread emission and evaluates positive normalized three-box
+approximations of the authored physical core/tail scales per output pixel. Their outer support
+reaches twice each authored radius so the profile decays without a hard rectangular cutoff. A panel-white-relative
 threshold selects bright emission while preserving hue. The result adds bloom inside the Device and
 diffuse RGB with zero matte outside it; it cannot create separated replicas or read source/reference
 pixels, and it introduces no post-sensor path.

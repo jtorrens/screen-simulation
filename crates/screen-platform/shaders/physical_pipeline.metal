@@ -1158,6 +1158,41 @@ inline float resolved_device_alpha(float authored, float panel_coverage,
     return clamp(panel_coverage, 0.0f, 1.0f) * authored_alpha;
 }
 
+inline float3 vfx_bloom_area_sample(
+    texture2d<float, access::read> device_signal,
+    texture2d<float, access::read> device_row_prefix,
+    float2 center,
+    float2 footprint_half_extent,
+    float radius_millimeters,
+    float2 prepared_placement_scale,
+    constant PhysicalPipelineParams& p
+) {
+    const float2 extent = radius_millimeters * 0.001f / p.panel_size_meters.xy;
+    const float2 minimum = center - footprint_half_extent - extent;
+    const float2 maximum = center + footprint_half_extent + extent;
+    const float coverage = device_rectangle_coverage(minimum, maximum);
+    if (coverage == 0.0f) return 0.0f;
+    const float4 code = area_sample(
+        device_signal, device_row_prefix,
+        clamp(minimum, 0.0f, 1.0f), clamp(maximum, 0.0f, 1.0f),
+        prepared_placement_scale, p);
+    const float alpha = resolved_device_alpha(code.a, 1.0f, p);
+    const float3 native = float3(
+        panel_linear_channel(code.r, p),
+        panel_linear_channel(code.g, p),
+        panel_linear_channel(code.b, p)) * alpha;
+    float3 rgb = float3(
+        dot(p.matrix0.xyz, native),
+        dot(p.matrix1.xyz, native),
+        dot(p.matrix2.xyz, native)) / p.levels.z;
+    const float luminance = dot(
+        rgb, float3(0.27222872f, 0.67408174f, 0.053689517f));
+    const float threshold = p.glow_threshold.x;
+    rgb *= luminance <= threshold
+        ? 0.0f : (luminance - threshold) / max(luminance, 1.0e-8f);
+    return rgb * coverage;
+}
+
 inline float native_channel_at_offset(
     texture2d<float, access::read> device_signal,
     texture2d<float, access::read> device_row_prefix,
@@ -1607,59 +1642,26 @@ kernel void evaluate_physical_pipeline(
     ) / p.levels.z;
     const float2 halo_center = cover_uv * cover_reciprocal;
     const float2 halo_half_extent = cover_half_extent * cover_reciprocal;
-    const float2 inverse_panel_size = 1.0f / p.panel_size_meters.xy;
-    const float2 core_halo_extent = p.cover_glow.x * 0.001f * inverse_panel_size;
-    const float2 tail_halo_extent = p.cover_glow.y * 0.001f * inverse_panel_size;
-    const float4 core_halo_code = area_sample(
-        device_signal, device_row_prefix,
-        clamp(halo_center - halo_half_extent - core_halo_extent, 0.0f, 1.0f),
-        clamp(halo_center + halo_half_extent + core_halo_extent, 0.0f, 1.0f),
-        prepared_placement_scale, p);
-    const float4 tail_halo_code = area_sample(
-        device_signal, device_row_prefix,
-        clamp(halo_center - halo_half_extent - tail_halo_extent, 0.0f, 1.0f),
-        clamp(halo_center + halo_half_extent + tail_halo_extent, 0.0f, 1.0f),
-        prepared_placement_scale, p);
-    const float core_halo_coverage = device_rectangle_coverage(
-        halo_center - halo_half_extent - core_halo_extent,
-        halo_center + halo_half_extent + core_halo_extent);
-    const float tail_halo_coverage = device_rectangle_coverage(
-        halo_center - halo_half_extent - tail_halo_extent,
-        halo_center + halo_half_extent + tail_halo_extent);
-    // The authored alpha belongs to the resolved panel emission. Finite-panel
-    // coverage is applied after the bright pass so a footprint crossing the
-    // active outline retains a smooth additive halo instead of falling below
-    // threshold and disappearing abruptly.
-    const float core_halo_alpha = resolved_device_alpha(
-        core_halo_code.a, 1.0f, p);
-    const float tail_halo_alpha = resolved_device_alpha(
-        tail_halo_code.a, 1.0f, p);
-    const float3 core_halo_native = float3(
-        panel_linear_channel(core_halo_code.r, p),
-        panel_linear_channel(core_halo_code.g, p),
-        panel_linear_channel(core_halo_code.b, p)) * core_halo_alpha;
-    const float3 tail_halo_native = float3(
-        panel_linear_channel(tail_halo_code.r, p),
-        panel_linear_channel(tail_halo_code.g, p),
-        panel_linear_channel(tail_halo_code.b, p)) * tail_halo_alpha;
-    float3 core_halo = float3(
-        dot(p.matrix0.xyz, core_halo_native),
-        dot(p.matrix1.xyz, core_halo_native),
-        dot(p.matrix2.xyz, core_halo_native)) / p.levels.z;
-    float3 tail_halo = float3(
-        dot(p.matrix0.xyz, tail_halo_native),
-        dot(p.matrix1.xyz, tail_halo_native),
-        dot(p.matrix2.xyz, tail_halo_native)) / p.levels.z;
-    const float halo_threshold = p.glow_threshold.x;
-    const float3 acescg_luminance = float3(0.27222872f, 0.67408174f, 0.053689517f);
-    const float core_halo_luminance = dot(core_halo, acescg_luminance);
-    const float tail_halo_luminance = dot(tail_halo, acescg_luminance);
-    core_halo *= core_halo_luminance <= halo_threshold
-        ? 0.0f : (core_halo_luminance - halo_threshold) / max(core_halo_luminance, 1.0e-8f);
-    tail_halo *= tail_halo_luminance <= halo_threshold
-        ? 0.0f : (tail_halo_luminance - halo_threshold) / max(tail_halo_luminance, 1.0e-8f);
-    core_halo *= core_halo_coverage;
-    tail_halo *= tail_halo_coverage;
+    const float3 core_halo =
+        0.25f * vfx_bloom_area_sample(device_signal, device_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.x * 0.5f,
+            prepared_placement_scale, p)
+        + 0.5f * vfx_bloom_area_sample(device_signal, device_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.x,
+            prepared_placement_scale, p)
+        + 0.25f * vfx_bloom_area_sample(device_signal, device_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.x * 2.0f,
+            prepared_placement_scale, p);
+    const float3 tail_halo =
+        0.25f * vfx_bloom_area_sample(device_signal, device_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.y * 0.5f,
+            prepared_placement_scale, p)
+        + 0.5f * vfx_bloom_area_sample(device_signal, device_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.y,
+            prepared_placement_scale, p)
+        + 0.25f * vfx_bloom_area_sample(device_signal, device_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.y * 2.0f,
+            prepared_placement_scale, p);
     const float3 soft_glow = p.cover_glow.z
         * (core_halo * (1.0f - p.cover_glow.w) + tail_halo * p.cover_glow.w);
     float3 carrier_detail = float3(

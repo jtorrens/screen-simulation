@@ -2974,9 +2974,23 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 };
                 rgb.map(|value| value * threshold_scale * panel_coverage)
             };
+            // A positive, normalized three-box approximation to a Gaussian.
+            // The authored radius is the perceptual core scale; the outer
+            // support reaches two radii so the halo decays instead of ending
+            // at the edge of one rectangular average.
+            let gaussian_area = |radius_millimeters: f32| {
+                let inner = soft_area(radius_millimeters * 0.5);
+                let middle = soft_area(radius_millimeters);
+                let outer = soft_area(radius_millimeters * 2.0);
+                [
+                    0.25 * inner[0] + 0.5 * middle[0] + 0.25 * outer[0],
+                    0.25 * inner[1] + 0.5 * middle[1] + 0.25 * outer[1],
+                    0.25 * inner[2] + 0.5 * middle[2] + 0.25 * outer[2],
+                ]
+            };
             let glow_strength = glow_profile.scatter_fraction * glow_profile.character_strength;
-            let core_glow = soft_area(glow_profile.core_radius_millimeters);
-            let tail_glow = soft_area(glow_profile.tail_radius_millimeters);
+            let core_glow = gaussian_area(glow_profile.core_radius_millimeters);
+            let tail_glow = gaussian_area(glow_profile.tail_radius_millimeters);
             let soft_glow = [
                 glow_strength
                     * (core_glow[0] * (1.0 - glow_profile.tail_fraction)
