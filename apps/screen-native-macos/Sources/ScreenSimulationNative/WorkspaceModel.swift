@@ -952,7 +952,7 @@ final class WorkspaceModel: ObservableObject {
         _ operation: CameraNavigationOperation,
         viewportSize: CGSize
     ) {
-        guard !previewTransformationsLocked else { return }
+        guard physicalPlacementNavigationEnabled else { return }
         if physicalModel.quality == .environmentSetup {
             beginEnvironmentNavigation(operation, viewportSize: viewportSize)
             return
@@ -1029,6 +1029,13 @@ final class WorkspaceModel: ObservableObject {
 
     func togglePreviewTransformationsLock() {
         previewTransformationsLocked.toggle()
+    }
+
+    var physicalPlacementNavigationEnabled: Bool {
+        !previewTransformationsLocked
+            && physicalModel.quality != .native
+            && !referenceMatchEnabled
+            && !reflectionEnvironmentEditorEnabled
     }
 
     func togglePreviewGizmos() {
@@ -5738,6 +5745,7 @@ final class WorkspaceModel: ObservableObject {
         authored.moireIntensity = selection.moireIntensity
         authored.moireSaturation = selection.moireSaturation
         authored.moireFilterStrength = selection.moireFilterStrength
+        authored.coverGlowExteriorIntensity = selection.coverGlowExteriorIntensity
         authored.deviceVfxAlphaMode = selection.deviceVfxAlphaModeID
         authored.sceneLens.focusPolicy = selection.autofocusEnabled
             ? "autofocus-screen" : "manual"

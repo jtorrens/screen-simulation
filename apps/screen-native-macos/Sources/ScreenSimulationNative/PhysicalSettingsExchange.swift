@@ -1,7 +1,7 @@
 import Foundation
 
 enum PhysicalSettingsExchange {
-    static let schema = "ScreenSimulation.FrameSettings.v25"
+    static let schema = "ScreenSimulation.FrameSettings.v26"
 
     struct EnvironmentResource: Codable, Equatable, Sendable {
         enum Kind: String, Codable, Sendable { case procedural, image }

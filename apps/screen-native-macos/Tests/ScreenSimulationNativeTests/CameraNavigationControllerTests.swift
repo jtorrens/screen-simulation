@@ -170,6 +170,32 @@ import Testing
     #expect(workspace.pan == CGSize(width: 40, height: -20))
 }
 
+@Test @MainActor func nativePreviewRoutesInteractionToViewerWithoutInvalidatingRender() throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectModelDevice(device, coverGlass: cover)
+    workspace.physicalModel.setQuality(.native)
+    let beforePose = try #require(workspace.physicalAuthoringState).cameraPose
+    let beforeRevision = workspace.physicalModel.parameterRevision
+
+    #expect(!workspace.physicalPlacementNavigationEnabled)
+    workspace.beginCameraNavigation(.pan, viewportSize: CGSize(width: 1_200, height: 800))
+    workspace.updateCameraNavigation(delta: CGSize(width: 300, height: 120))
+    workspace.endCameraNavigation(undoManager: nil)
+
+    #expect(workspace.physicalAuthoringState?.cameraPose == beforePose)
+    #expect(workspace.physicalModel.quality == .native)
+    #expect(workspace.physicalModel.parameterRevision == beforeRevision)
+    workspace.pan = CGSize(width: 40, height: -20)
+    workspace.setInteractiveZoom(2)
+    #expect(workspace.pan == CGSize(width: 40, height: -20))
+    #expect(workspace.zoom == 2)
+    #expect(workspace.physicalModel.parameterRevision == beforeRevision)
+}
+
 @Test @MainActor func previewGizmoVisibilityDoesNotModifyTheScene() {
     let workspace = WorkspaceModel()
     let initialAuthoring = workspace.physicalAuthoringState

@@ -1441,7 +1441,7 @@ impl MetalPhysicalPipeline {
             cover_glow: [
                 plan.cover.glow.radius_millimeters,
                 plan.cover.glow.intensity * plan.cover.glow.character_strength,
-                0.0,
+                plan.cover_glow_exterior_intensity,
                 0.0,
             ],
             glow_threshold: [
@@ -1993,6 +1993,7 @@ mod tests {
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
                 cover: screen_cover::CoverGlassProfile::NEUTRAL,
+                cover_glow_exterior_intensity: 1.0,
                 environment: screen_cover::IncidentEnvironment::NONE,
                 scene_geometry_lens:
                     screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
@@ -3378,7 +3379,7 @@ mod tests {
         let source = texture(&device, input.width, input.height, &input.acescg);
         let signal = texture(&device, 1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
         let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
-            input,
+            input: input.clone(),
             render_context: screen_application::PhysicalRenderContext::full_frame(
                 plan.requested_width,
                 plan.requested_height,
@@ -3419,5 +3420,57 @@ mod tests {
             outside_pixel[..3].iter().sum::<f32>() > 0.0,
             "resolved panel emission must create smooth light outside the projected silhouette"
         );
+
+        let outside_energy = outside_pixel[..3].iter().sum::<f32>();
+        for (exterior_gain, relation) in [(0.0_f32, -1_i8), (4.0_f32, 1_i8)] {
+            let mut variant_plan = plan;
+            variant_plan.cover_glow_exterior_intensity = exterior_gain;
+            let variant_cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input: input.clone(),
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    variant_plan.requested_width,
+                    variant_plan.requested_height,
+                ),
+                plan: variant_plan,
+            })
+            .expect("CPU exterior spill variant");
+            let variant_gpu = backend
+                .evaluate(&source, &signal, variant_plan, |_| {}, || false)
+                .expect("Metal exterior spill variant");
+            let variant_gpu_pixels = read(&variant_gpu.texture);
+            let variant_outside = variant_cpu.presentation_rgba()[outside];
+            let variant_center = variant_cpu.presentation_rgba()[center];
+            let variant_gpu_outside = variant_gpu_pixels[outside];
+            let cpu_gpu_delta = variant_outside[..3]
+                .iter()
+                .zip(&variant_gpu_outside[..3])
+                .map(|(cpu, gpu)| (cpu - gpu).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                cpu_gpu_delta <= 2.0e-3,
+                "spill variant CPU/Metal divergence {cpu_gpu_delta}"
+            );
+            let variant_outside_energy = variant_outside[..3].iter().sum::<f32>();
+            if relation < 0 {
+                assert!(
+                    variant_outside_energy < outside_energy * 0.01,
+                    "zero exterior spill must remove the external RGB contribution"
+                );
+            } else {
+                assert!(
+                    variant_outside_energy > outside_energy * 3.0,
+                    "four-times exterior spill must amplify only external RGB"
+                );
+            }
+            let center_delta = variant_center[..3]
+                .iter()
+                .zip(&cpu.presentation_rgba()[center][..3])
+                .map(|(variant, canonical)| (variant - canonical).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                center_delta <= 2.0e-5,
+                "exterior spill must not alter the covered Device interior"
+            );
+        }
     }
 }

@@ -2291,9 +2291,7 @@ struct ContentView: View {
                         trackingPointSelectionEnabled: model.previewGizmosVisible
                             && model.trackingScaleSelectionSlot != nil,
                         sceneInteractionLocked: model.previewTransformationsLocked,
-                        cameraNavigationEnabled: !model.previewTransformationsLocked
-                            && !model.referenceMatchEnabled
-                            && !model.reflectionEnvironmentEditorEnabled,
+                        cameraNavigationEnabled: model.physicalPlacementNavigationEnabled,
                         onDisplayChange: model.publishSystemDisplayInfo,
                         onPanChange: { model.pan = $0 },
                         onZoomChange: model.setInteractiveZoom,

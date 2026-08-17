@@ -24,7 +24,7 @@ struct PhysicalPipelineParams {
     float4 cover_haze;
     float4 cover_microtexture; // character, RMS slope, correlation um, anisotropy
     uint4 cover_microtexture_seed;
-    float4 cover_glow; // radius mm, additive intensity, remaining lanes reserved
+    float4 cover_glow; // radius mm, additive intensity, exterior intensity, reserved
     float4 glow_threshold; // relative panel-white threshold, remaining lanes reserved
     float4 environment_ambient_strength;
     float4 environment_key_radius;
@@ -1727,7 +1727,14 @@ kernel void evaluate_physical_pipeline(
         + 0.28f * sample_emission_glow_lobe(glow_lobe1, halo_center)
         + 0.14f * sample_emission_glow_lobe(glow_lobe2, halo_center)
         + 0.06f * sample_emission_glow_lobe(glow_lobe3, halo_center);
-    const float3 soft_glow = p.cover_glow.y * smooth_halo;
+    // Use the transported Device matte, not the sampling integration weight:
+    // the latter is nonzero outside a finite panel and would leak spill when
+    // the author explicitly selects zero exterior contribution.
+    const float exterior_glow_gain = mix(
+        p.cover_glow.z,
+        1.0f,
+        clamp(ideal.a, 0.0f, 1.0f));
+    const float3 soft_glow = p.cover_glow.y * exterior_glow_gain * smooth_halo;
     float3 carrier_detail = float3(
         dot(p.matrix0.xyz, carrier_detail_native),
         dot(p.matrix1.xyz, carrier_detail_native),

@@ -98,6 +98,7 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     var coverGlowIntensity: Double
     var coverGlowRadiusMillimeters: Double
     var coverGlowThresholdRelativeWhite: Double
+    var coverGlowExteriorIntensity: Double
     let lensPresetID: String
     var focalLengthMillimeters: Double
     let lensAmount: Double
@@ -532,6 +533,7 @@ enum RustTestAuthoringCoordinator {
             coverGlowIntensity: Double(raw.cover_glow_intensity),
             coverGlowRadiusMillimeters: Double(raw.cover_glow_radius_millimeters),
             coverGlowThresholdRelativeWhite: Double(raw.cover_glow_threshold_relative_white),
+            coverGlowExteriorIntensity: Double(raw.cover_glow_exterior_intensity),
             lensPresetID: string(raw.lens_preset_id),
             focalLengthMillimeters: Double(raw.focal_length_millimeters),
             lensAmount: Double(raw.lens_amount),
@@ -682,6 +684,7 @@ enum RustTestAuthoringCoordinator {
                                             raw.cover_glow_intensity = Float(selection.coverGlowIntensity)
                                             raw.cover_glow_radius_millimeters = Float(selection.coverGlowRadiusMillimeters)
                                             raw.cover_glow_threshold_relative_white = Float(selection.coverGlowThresholdRelativeWhite)
+                                            raw.cover_glow_exterior_intensity = Float(selection.coverGlowExteriorIntensity)
                                             raw.lens_preset_id = lensView
                                             raw.focal_length_millimeters = Float(
                                                 selection.focalLengthMillimeters

@@ -104,6 +104,7 @@ struct PhysicalPipelineResolvedState {
 
         var parameters = ScreenPhysicalPipelineParametersV2()
         parameters.abi_version = version
+        parameters.cover_glow_exterior_intensity = 1
         parameters.cover = try coverGlass.bridgeParameters()
         parameters.environment = environment
         parameters.scene_geometry_lens = scene

@@ -115,6 +115,7 @@ pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
 pub const COVER_GLOW_INTENSITY_CONTROL_ID: &str = "cover-glow-intensity";
 pub const COVER_GLOW_RADIUS_CONTROL_ID: &str = "cover-glow-radius-millimeters";
 pub const COVER_GLOW_THRESHOLD_CONTROL_ID: &str = "cover-glow-threshold-relative-white";
+pub const COVER_GLOW_EXTERIOR_INTENSITY_CONTROL_ID: &str = "cover-glow-exterior-intensity";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
 pub const FOCAL_LENGTH_CONTROL_ID: &str = "focal-length-millimeters";
 pub const LENS_EVALUATION_MODEL_CONTROL_ID: &str = "lens-evaluation-model";
@@ -447,6 +448,9 @@ pub struct TestAuthoringSelection<'a> {
     pub cover_glow_intensity: f32,
     pub cover_glow_radius_millimeters: f32,
     pub cover_glow_threshold_relative_white: f32,
+    /// Gain applied only to the additive spill where the Device matte falls
+    /// away. One preserves the calibrated interior/exterior balance.
+    pub cover_glow_exterior_intensity: f32,
     pub lens_preset_id: &'a str,
     pub focal_length_millimeters: f32,
     pub lens_evaluation_model_id: &'a str,
@@ -543,6 +547,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub cover_glow_intensity: f32,
     pub cover_glow_radius_millimeters: f32,
     pub cover_glow_threshold_relative_white: f32,
+    pub cover_glow_exterior_intensity: f32,
     pub lens_preset_id: &'static str,
     pub focal_length_millimeters: f32,
     pub lens_evaluation_model_id: &'static str,
@@ -1103,6 +1108,7 @@ pub fn default_test_authoring_selection(
         cover_glow_intensity: cover.profile.glow.intensity,
         cover_glow_radius_millimeters: cover.profile.glow.radius_millimeters,
         cover_glow_threshold_relative_white: cover.profile.glow.threshold_relative_to_panel_white,
+        cover_glow_exterior_intensity: 1.0,
         lens_preset_id: capture.default_lens_preset_id,
         focal_length_millimeters: lens(capture.default_lens_preset_id)?.nominal_focal_length.0,
         lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
@@ -1363,6 +1369,8 @@ pub fn resolve_test_authoring_selection(
     }
     if !selection.cover_glow_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.cover_glow_amount)
+        || !selection.cover_glow_exterior_intensity.is_finite()
+        || !(0.0..=4.0).contains(&selection.cover_glow_exterior_intensity)
     {
         return Err(TestAuthoringError::InvalidCoverGlowAmount);
     }
@@ -1554,6 +1562,7 @@ pub fn resolve_test_authoring_selection(
         cover_glow_intensity: selection.cover_glow_intensity,
         cover_glow_radius_millimeters: selection.cover_glow_radius_millimeters,
         cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
+        cover_glow_exterior_intensity: selection.cover_glow_exterior_intensity,
         lens_preset_id: lens.id,
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_evaluation_model_id,
@@ -2642,6 +2651,15 @@ pub fn test_page_descriptor(
                             .threshold_relative_to_panel_white,
                         "blanco relativo",
                     ),
+                    scalar_control(
+                        COVER_GLOW_EXTERIOR_INTENSITY_CONTROL_ID,
+                        "Spill exterior",
+                        selection.cover_glow_exterior_intensity,
+                        0.0,
+                        4.0,
+                        1.0,
+                        "×",
+                    ),
                 ],
             },
             TestPhaseDescriptor {
@@ -2981,6 +2999,7 @@ pub fn test_page_descriptor(
             MOIRE_SATURATION_CONTROL_ID,
             MOIRE_FILTER_CONTROL_ID,
             COVER_GLOW_AMOUNT_CONTROL_ID,
+            COVER_GLOW_EXTERIOR_INTENSITY_CONTROL_ID,
             WHITE_LUMINANCE_CONTROL_ID,
             F_STOP_CONTROL_ID,
             SHUTTER_ANGLE_CONTROL_ID,
@@ -3286,6 +3305,7 @@ fn materialize_cover_profile(
     selection.cover_glow_radius_millimeters = cover.profile.glow.radius_millimeters;
     selection.cover_glow_threshold_relative_white =
         cover.profile.glow.threshold_relative_to_panel_white;
+    selection.cover_glow_exterior_intensity = 1.0;
     Ok(())
 }
 
@@ -3357,6 +3377,7 @@ fn unresolved_test_selection(
         cover_glow_intensity: current.cover_glow_intensity,
         cover_glow_radius_millimeters: current.cover_glow_radius_millimeters,
         cover_glow_threshold_relative_white: current.cover_glow_threshold_relative_white,
+        cover_glow_exterior_intensity: current.cover_glow_exterior_intensity,
         lens_preset_id: current.lens_preset_id,
         focal_length_millimeters: current.focal_length_millimeters,
         lens_amount: current.lens_amount,
@@ -3540,6 +3561,7 @@ pub fn apply_test_scalar(
         COVER_GLOW_INTENSITY_CONTROL_ID => next.cover_glow_intensity = value,
         COVER_GLOW_RADIUS_CONTROL_ID => next.cover_glow_radius_millimeters = value,
         COVER_GLOW_THRESHOLD_CONTROL_ID => next.cover_glow_threshold_relative_white = value,
+        COVER_GLOW_EXTERIOR_INTENSITY_CONTROL_ID => next.cover_glow_exterior_intensity = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
         FOCAL_LENGTH_CONTROL_ID => next.focal_length_millimeters = value,
         F_STOP_CONTROL_ID => next.f_stop = value,
@@ -3685,6 +3707,7 @@ mod tests {
             cover_glow_intensity: 0.10,
             cover_glow_radius_millimeters: 3.5,
             cover_glow_threshold_relative_white: 0.15,
+            cover_glow_exterior_intensity: 1.0,
             lens_preset_id: "iphone-16e-main-integrated",
             focal_length_millimeters: 4.2,
             lens_amount: 1.0,
@@ -3733,6 +3756,7 @@ mod tests {
                 MOIRE_SATURATION_CONTROL_ID,
                 MOIRE_FILTER_CONTROL_ID,
                 COVER_GLOW_AMOUNT_CONTROL_ID,
+                COVER_GLOW_EXTERIOR_INTENSITY_CONTROL_ID,
                 WHITE_LUMINANCE_CONTROL_ID,
                 F_STOP_CONTROL_ID,
                 SHUTTER_ANGLE_CONTROL_ID,
@@ -4404,6 +4428,7 @@ mod tests {
             COVER_GLOW_AMOUNT_CONTROL_ID,
             COVER_GLOW_INTENSITY_CONTROL_ID,
             COVER_GLOW_RADIUS_CONTROL_ID,
+            COVER_GLOW_THRESHOLD_CONTROL_ID,
         ] {
             assert!(
                 glow_ids.contains(&expected),

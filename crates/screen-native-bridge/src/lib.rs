@@ -233,7 +233,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 36;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 37;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -313,6 +313,7 @@ pub struct ScreenTestAuthoringSelectionV23 {
     cover_glow_intensity: f32,
     cover_glow_radius_millimeters: f32,
     cover_glow_threshold_relative_white: f32,
+    cover_glow_exterior_intensity: f32,
     lens_preset_id: ScreenUtf8View,
     focal_length_millimeters: f32,
     lens_amount: f32,
@@ -441,7 +442,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 25;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 26;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9;
@@ -1545,6 +1546,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         temporal_emission_amount: amounts.temporal_emission,
         temporal_emission_gain: temporal_gain,
         cover: pipeline.cover,
+        cover_glow_exterior_intensity: pipeline.cover_glow_exterior_intensity,
         environment: pipeline.environment,
         scene_geometry_lens: pipeline.scene_geometry_lens,
         camera_position: camera_pose.translation,
@@ -2270,6 +2272,7 @@ pub struct ScreenPhysicalPipelineParametersV2 {
     moire_intensity: f32,
     moire_saturation: f32,
     moire_filter_strength: f32,
+    cover_glow_exterior_intensity: f32,
     cover: ScreenCoverGlassParametersV2,
     environment: ScreenEnvironmentParametersV2,
     scene_geometry_lens: ScreenSceneGeometryLensParametersV2,
@@ -2285,6 +2288,7 @@ pub struct ScreenPhysicalPipelineSnapshot {
     moire_intensity: f32,
     moire_saturation: f32,
     moire_filter_strength: f32,
+    cover_glow_exterior_intensity: f32,
     cover: CoverGlassProfile,
     environment: IncidentEnvironment,
     scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
@@ -2399,6 +2403,7 @@ unsafe fn test_selection<'a>(
         cover_glow_intensity: selection.cover_glow_intensity,
         cover_glow_radius_millimeters: selection.cover_glow_radius_millimeters,
         cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
+        cover_glow_exterior_intensity: selection.cover_glow_exterior_intensity,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
@@ -2583,6 +2588,7 @@ fn resolved_test_selection(
         cover_glow_intensity: selection.cover_glow_intensity,
         cover_glow_radius_millimeters: selection.cover_glow_radius_millimeters,
         cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
+        cover_glow_exterior_intensity: selection.cover_glow_exterior_intensity,
         lens_preset_id: utf8_view(selection.lens_preset_id),
         focal_length_millimeters: selection.focal_length_millimeters,
         lens_amount: selection.lens_amount,
@@ -3300,6 +3306,12 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         unsafe { set_error(error_message, b"invalid moire filter strength\0") };
         return std::ptr::null_mut();
     }
+    if !parameters.cover_glow_exterior_intensity.is_finite()
+        || !(0.0..=4.0).contains(&parameters.cover_glow_exterior_intensity)
+    {
+        unsafe { set_error(error_message, b"invalid exterior glow intensity\0") };
+        return std::ptr::null_mut();
+    }
     if [
         parameters.abi_version,
         parameters.cover.abi_version,
@@ -3658,6 +3670,7 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         moire_intensity: parameters.moire_intensity,
         moire_saturation: parameters.moire_saturation,
         moire_filter_strength: parameters.moire_filter_strength,
+        cover_glow_exterior_intensity: parameters.cover_glow_exterior_intensity,
         cover,
         environment,
         scene_geometry_lens,
@@ -4970,6 +4983,7 @@ mod tests {
             moire_intensity: 1.0,
             moire_saturation: 1.0,
             moire_filter_strength: 0.0,
+            cover_glow_exterior_intensity: 1.0,
             cover: ScreenCoverGlassParametersV2 {
                 abi_version: version,
                 authority: 0,

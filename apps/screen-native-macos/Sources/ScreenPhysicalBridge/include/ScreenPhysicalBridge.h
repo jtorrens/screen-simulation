@@ -17,7 +17,7 @@ typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2R
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 25u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 26u
 #define SCREEN_DEVICE_VFX_ALPHA_IGNORE 0u
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
@@ -46,7 +46,7 @@ typedef struct {
     uint32_t maximum_b_frames;
 } ScreenRecordingExecutionPlanV1;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 36u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 37u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -133,6 +133,7 @@ typedef struct {
     float cover_glow_intensity;
     float cover_glow_radius_millimeters;
     float cover_glow_threshold_relative_white;
+    float cover_glow_exterior_intensity;
     ScreenUTF8View lens_preset_id;
     float focal_length_millimeters;
     float lens_amount;
@@ -747,6 +748,7 @@ typedef struct {
     float moire_intensity;
     float moire_saturation;
     float moire_filter_strength;
+    float cover_glow_exterior_intensity;
     ScreenCoverGlassParametersV2 cover;
     ScreenEnvironmentParametersV2 environment;
     ScreenSceneGeometryLensParametersV2 scene_geometry_lens;

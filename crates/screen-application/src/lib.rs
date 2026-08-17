@@ -949,6 +949,9 @@ pub struct PhysicalPipelineExecutionPlan {
     /// timing by the Rust executor. Metal only evaluates this materialized value.
     pub temporal_emission_gain: f32,
     pub cover: CoverGlassProfile,
+    /// Additive spill multiplier outside the Device matte. The same Cover-owned
+    /// glow radius remains in effect on both sides of the antialiased contour.
+    pub cover_glow_exterior_intensity: f32,
     pub environment: IncidentEnvironment,
     pub scene_geometry_lens: ResolvedSceneGeometryLensSnapshot,
     pub camera_position: Vec3,
@@ -3168,7 +3171,14 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 x: cover_uv[0] * glow_reciprocal_cover,
                 y: cover_uv[1] * glow_reciprocal_cover,
             };
-            let glow_strength = glow_profile.intensity * glow_profile.character_strength;
+            // The VFX spill boundary is the transported Device matte, not the
+            // aperture's finite-panel integration weight. At matte zero a
+            // zero spill must truly remove external RGB; a partially covered
+            // pixel transitions continuously without changing covered bloom.
+            let exterior_glow_gain =
+                1.0 + (plan.cover_glow_exterior_intensity - 1.0) * (1.0 - ideal[3].clamp(0.0, 1.0));
+            let glow_strength =
+                glow_profile.intensity * glow_profile.character_strength * exterior_glow_gain;
             let halo = prepared_emission_glow.sample(glow_center);
             let soft_glow = [
                 glow_strength * halo[0],
@@ -9810,6 +9820,7 @@ mod tests {
                 temporal_emission_amount: 0.0,
                 temporal_emission_gain: 1.0,
                 cover: CoverGlassProfile::NEUTRAL,
+                cover_glow_exterior_intensity: 1.0,
                 environment: IncidentEnvironment::NONE,
                 scene_geometry_lens: ResolvedSceneGeometryLensSnapshot::REFERENCE,
                 camera_position: Vec3 {

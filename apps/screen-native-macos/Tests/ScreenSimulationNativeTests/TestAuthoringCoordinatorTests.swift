@@ -85,6 +85,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         coverGlowIntensity: 0.025,
         coverGlowRadiusMillimeters: 3.5,
         coverGlowThresholdRelativeWhite: 0.15,
+        coverGlowExteriorIntensity: 1,
         lensPresetID: "iphone-16e-main-integrated",
         focalLengthMillimeters: 4.2,
         lensAmount: 1,
