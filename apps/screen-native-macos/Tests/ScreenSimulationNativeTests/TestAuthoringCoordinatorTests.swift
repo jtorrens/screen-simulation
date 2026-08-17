@@ -653,7 +653,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     ) < 0.001)
 }
 
-@Test @MainActor func editingAControlKeepsTheLastComposedFrameUntilReplacement() async throws {
+@Test @MainActor func editingAControlReturnsToSetupWithoutPublishingTheRawSource() async throws {
     let workspace = WorkspaceModel()
     let asus = try #require(try RustDeviceCatalog.builtIns().first {
         $0.name.contains("ASUS ProArt")
@@ -681,6 +681,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         value: 1.25
     ))
 
+    #expect(workspace.physicalModel.quality == .setup)
     let retained = try #require(workspace.metalFrame)
     let currentSource = try #require(workspace.sourceACEScgFrame)
     #expect(ObjectIdentifier(retained.texture as AnyObject)

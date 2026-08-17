@@ -128,20 +128,20 @@ import Testing
     #expect(workspace.testNativeRenderButtonState == .outdated)
 }
 
-@Test @MainActor func editingParametersPreservesTheExplicitViewerMode() throws {
+@Test @MainActor func editingAnyParameterReturnsTheViewerToDeviceSetup() throws {
     let model = PhysicalModelController()
 
     model.setQuality(.focusSetup)
     try model.setContinuousAmount(1.2, stage: .capture(.lens))
-    #expect(model.quality == .focusSetup)
+    #expect(model.quality == .setup)
 
     model.setQuality(.environmentSetup)
     try model.setContinuousAmount(1.1, stage: .screen(.environment))
-    #expect(model.quality == .environmentSetup)
+    #expect(model.quality == .setup)
 
     model.setQuality(.native)
     try model.setContinuousAmount(1.1, stage: .screen(.emission))
-    #expect(model.quality == .native)
+    #expect(model.quality == .setup)
 }
 
 @Test @MainActor func identicalNativeProgressDoesNotRepublishObservableState() throws {

@@ -77,6 +77,53 @@ import Testing
     #expect(workspace.modelDeviceDefinition?.nativeWidth == custom.nativeWidth)
 }
 
+@Test @MainActor func everyAuthoredChangeReturnsNativeToSetupAndMaterializesPlacement() throws {
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    let workspace = WorkspaceModel()
+    workspace.selectModelDevice(device, coverGlass: cover)
+    workspace.setTestPageActive(true)
+
+    workspace.handleTestIntent(.setChoice(
+        controlID: "preview-quality",
+        optionID: "native"
+    ))
+    #expect(workspace.physicalModel.quality == .native)
+
+    workspace.handleTestIntent(.setScalar(
+        controlID: "moire-intensity",
+        value: 0
+    ))
+    #expect(workspace.physicalModel.quality == .setup)
+    guard case let .choice(qualityAfterMoire) = try #require(
+        workspace.testPresentation?.previewControls.first
+    ) else {
+        Issue.record("La calidad de Preview debe continuar publicada como selección.")
+        return
+    }
+    #expect(qualityAfterMoire.selectedID == "setup")
+
+    workspace.handleTestIntent(.setChoice(
+        controlID: "preview-quality",
+        optionID: "native"
+    ))
+    workspace.handleTestIntent(.setChoice(
+        controlID: "placement",
+        optionID: "fill-crop"
+    ))
+    #expect(workspace.physicalModel.quality == .setup)
+    #expect(workspace.sourcePlacement == .fillCrop)
+    guard case let .choice(qualityAfterPlacement) = try #require(
+        workspace.testPresentation?.previewControls.first
+    ) else {
+        Issue.record("La calidad de Preview debe continuar publicada como selección.")
+        return
+    }
+    #expect(qualityAfterPlacement.selectedID == "setup")
+}
+
 @Test @MainActor func changingBuiltInDeviceAppliesItsAuthoredDefaultsAtomically() throws {
     let devices = try RustDeviceCatalog.builtIns()
     let phone = try #require(devices.first { $0.id == "lcd-phone-4_7-retina" })
