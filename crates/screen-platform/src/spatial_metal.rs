@@ -217,10 +217,10 @@ impl SpatialParams {
             ],
             cover_haze: [plan.cover.haze, 0.0, 0.0, 0.0],
             cover_glow: [
-                plan.cover.glow.core_radius_millimeters * 0.001,
-                plan.cover.glow.tail_radius_millimeters * 0.001,
-                plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength,
-                plan.cover.glow.tail_fraction,
+                plan.cover.glow.radius_millimeters * 0.001,
+                plan.cover.glow.intensity * plan.cover.glow.character_strength,
+                0.0,
+                0.0,
             ],
             environment_ambient_strength: [
                 plan.environment.ambient_radiance.0.r,

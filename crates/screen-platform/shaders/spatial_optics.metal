@@ -33,7 +33,7 @@ struct SpatialParams {
     float4 cover_geometry; // strength, thickness mm, ior, AR efficiency
     float4 cover_absorption_roughness; // absorption rgb, roughness
     float4 cover_haze;
-    float4 cover_glow; // core support m, tail support m, scattered fraction, tail fraction
+    float4 cover_glow; // radius m, additive intensity, remaining lanes reserved
     float4 environment_ambient_strength; // ambient rgb, strength
     float4 environment_key_radius; // key rgb, angular radius radians
     float4 environment_direction; // key direction xyz
@@ -65,8 +65,8 @@ inline float2 cover_glow_offset(uint sample, uint aperture, constant SpatialPara
     const float2 cross = (axis_x - axis_y) * 0.7071067811865475f;
     const float core_a = p.cover_glow.x * cover_glow_radial_scale(fract(phase + 0.125f));
     const float core_b = p.cover_glow.x * cover_glow_radial_scale(fract(phase + 0.625f));
-    const float tail_a = p.cover_glow.y * cover_glow_radial_scale(fract(phase + 0.375f));
-    const float tail_b = p.cover_glow.y * cover_glow_radial_scale(fract(phase + 0.875f));
+    const float tail_a = p.cover_glow.x * cover_glow_radial_scale(fract(phase + 0.375f));
+    const float tail_b = p.cover_glow.x * cover_glow_radial_scale(fract(phase + 0.875f));
     if (sample == 1) return axis_x * core_a;
     if (sample == 2) return -axis_x * core_a;
     if (sample == 3) return axis_y * core_b;
@@ -79,9 +79,8 @@ inline float2 cover_glow_offset(uint sample, uint aperture, constant SpatialPara
 }
 
 inline float cover_glow_weight(uint sample, constant SpatialParams& p) {
-    if (sample == 0) return 1.0f - p.cover_glow.z;
-    if (sample <= 4) return p.cover_glow.z * (1.0f - p.cover_glow.w) * 0.25f;
-    return p.cover_glow.z * p.cover_glow.w * 0.25f;
+    if (sample == 0) return 1.0f;
+    return p.cover_glow.y * 0.125f;
 }
 
 inline float3 quaternion_rotate(float4 quaternion, float3 value) {

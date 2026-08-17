@@ -5663,10 +5663,8 @@ final class WorkspaceModel: ObservableObject {
         selectedCover.agMicrotextureCorrelationLengthMicrometers = selection.coverAgCorrelationMicrometers
         selectedCover.agMicrotextureAnisotropy = selection.coverAgAnisotropy
         selectedCover.glowCharacterStrength = selection.coverGlowAmount
-        selectedCover.glowScatterFraction = selection.coverGlowScatterFraction
-        selectedCover.glowCoreRadiusMillimeters = selection.coverGlowCoreRadiusMillimeters
-        selectedCover.glowTailRadiusMillimeters = selection.coverGlowTailRadiusMillimeters
-        selectedCover.glowTailFraction = selection.coverGlowTailFraction
+        selectedCover.glowIntensity = selection.coverGlowIntensity
+        selectedCover.glowRadiusMillimeters = selection.coverGlowRadiusMillimeters
         selectedCover.glowThresholdRelativeWhite = selection.coverGlowThresholdRelativeWhite
         var authored = try PhysicalPipelineAuthoringState.seeded(
             device: device,

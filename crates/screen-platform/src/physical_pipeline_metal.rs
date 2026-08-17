@@ -139,6 +139,7 @@ pub struct MetalPhysicalPipeline {
     vfx_depth_blur_image_pipeline: ComputePipelineState,
     environment_importance_pipeline: ComputePipelineState,
     row_prefix_pipeline: ComputePipelineState,
+    glow_prefix_pipeline: ComputePipelineState,
     veiling_reduce_pipeline: ComputePipelineState,
     veiling_finalize_pipeline: ComputePipelineState,
     accumulator: ComputePipelineState,
@@ -232,6 +233,12 @@ impl MetalPhysicalPipeline {
         let row_prefix_pipeline = device
             .new_compute_pipeline_state_with_function(&row_prefix_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let glow_prefix_function = library
+            .get_function("build_physical_glow_prefix", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let glow_prefix_pipeline = device
+            .new_compute_pipeline_state_with_function(&glow_prefix_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let veiling_reduce_function = library
             .get_function("reduce_physical_veiling_source", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -276,6 +283,7 @@ impl MetalPhysicalPipeline {
             vfx_depth_blur_image_pipeline,
             environment_importance_pipeline,
             row_prefix_pipeline,
+            glow_prefix_pipeline,
             veiling_reduce_pipeline,
             veiling_finalize_pipeline,
             accumulator,
@@ -412,6 +420,49 @@ impl MetalPhysicalPipeline {
             ));
         }
         Ok((source_prefix, device_prefix))
+    }
+
+    fn glow_prefix_textures(
+        &self,
+        device_signal: &TextureRef,
+        params: &PhysicalPipelineParams,
+    ) -> Result<(Texture, Texture), MetalPhysicalPipelineError> {
+        let device = device_signal.device();
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+        descriptor.set_width(device_signal.width());
+        descriptor.set_height(device_signal.height());
+        descriptor.set_storage_mode(MTLStorageMode::Private);
+        descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+        let keyed = device.new_texture(&descriptor);
+        descriptor.set_width(device_signal.width() + 1);
+        let prefix = device.new_texture(&descriptor);
+        let command = self.queue.new_command_buffer();
+        let encoder = command.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.glow_prefix_pipeline);
+        encoder.set_texture(0, Some(device_signal));
+        encoder.set_texture(1, Some(&keyed));
+        encoder.set_texture(2, Some(&prefix));
+        encoder.set_bytes(
+            0,
+            size_of::<PhysicalPipelineParams>() as u64,
+            (params as *const PhysicalPipelineParams).cast(),
+        );
+        let width = self.glow_prefix_pipeline.thread_execution_width().max(1);
+        encoder.dispatch_threads(
+            MTLSize::new(device_signal.height(), 1, 1),
+            MTLSize::new(width, 1, 1),
+        );
+        encoder.end_encoding();
+        command.commit();
+        command.wait_until_completed();
+        if command.status() != MTLCommandBufferStatus::Completed {
+            return Err(MetalPhysicalPipelineError::Backend(
+                "physical glow-prefix construction did not complete".to_owned(),
+            ));
+        }
+        Ok((keyed, prefix))
     }
 
     fn read_physical_raster(
@@ -1271,10 +1322,10 @@ impl MetalPhysicalPipeline {
             ],
             cover_microtexture_seed: [plan.cover.anti_glare_microtexture.seed, 0, 0, 0],
             cover_glow: [
-                plan.cover.glow.core_radius_millimeters,
-                plan.cover.glow.tail_radius_millimeters,
-                plan.cover.glow.scatter_fraction * plan.cover.glow.character_strength,
-                plan.cover.glow.tail_fraction,
+                plan.cover.glow.radius_millimeters,
+                plan.cover.glow.intensity * plan.cover.glow.character_strength,
+                0.0,
+                0.0,
             ],
             glow_threshold: [
                 plan.cover.glow.threshold_relative_to_panel_white,
@@ -1483,6 +1534,7 @@ impl MetalPhysicalPipeline {
             generated_row_prefixes = self.row_prefix_textures(source_acescg, device_signal)?;
             (&*generated_row_prefixes.0, &*generated_row_prefixes.1)
         };
+        let (glow_signal, glow_row_prefix) = self.glow_prefix_textures(device_signal, &params)?;
         let zero_veiling = [0.0_f32; 4];
         let veiling_gate_average = device.new_buffer_with_data(
             zero_veiling.as_ptr().cast(),
@@ -1567,6 +1619,8 @@ impl MetalPhysicalPipeline {
             encoder.set_texture(3, Some(&source_row_prefix));
             encoder.set_texture(4, Some(&device_row_prefix));
             encoder.set_texture(5, environment_acescg);
+            encoder.set_texture(6, Some(&glow_signal));
+            encoder.set_texture(7, Some(&glow_row_prefix));
             encoder.set_bytes(
                 0,
                 size_of::<PhysicalPipelineParams>() as u64,
@@ -3084,10 +3138,8 @@ mod tests {
         plan.temporal_emission_gain = 1.0;
         plan.cover.character_strength = 1.0;
         plan.cover.glow.character_strength = 1.0;
-        plan.cover.glow.scatter_fraction = 0.35;
-        plan.cover.glow.core_radius_millimeters = 0.75;
-        plan.cover.glow.tail_radius_millimeters = 1.5;
-        plan.cover.glow.tail_fraction = 0.35;
+        plan.cover.glow.intensity = 0.35;
+        plan.cover.glow.radius_millimeters = 1.5;
         plan.cover.glow.threshold_relative_to_panel_white = 0.0;
 
         let source = texture(&device, input.width, input.height, &input.acescg);
@@ -3197,10 +3249,8 @@ mod tests {
         plan.panel_light_spread.character_strength = 0.0;
         plan.cover.character_strength = 1.0;
         plan.cover.glow.character_strength = 1.0;
-        plan.cover.glow.scatter_fraction = 0.2;
-        plan.cover.glow.core_radius_millimeters = 0.5;
-        plan.cover.glow.tail_radius_millimeters = 1.5;
-        plan.cover.glow.tail_fraction = 1.0;
+        plan.cover.glow.intensity = 0.2;
+        plan.cover.glow.radius_millimeters = 1.5;
         // Exercise the authored bright-pass as well as the exterior support.
         // A zero threshold would not catch the historical ordering bug where
         // finite-panel coverage attenuated the signal before thresholding.

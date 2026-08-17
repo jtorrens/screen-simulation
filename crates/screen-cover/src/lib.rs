@@ -61,10 +61,10 @@ pub struct CoverGlowProfile {
     /// Zero is exact identity, one is calibrated and values above one
     /// extrapolate the redistributed fraction without changing its radii.
     pub character_strength: f32,
-    pub scatter_fraction: f32,
-    pub core_radius_millimeters: f32,
-    pub tail_radius_millimeters: f32,
-    pub tail_fraction: f32,
+    /// Additive gain applied to the keyed panel emission.
+    pub intensity: f32,
+    /// Perceptual radius of the smooth halo on the physical panel surface.
+    pub radius_millimeters: f32,
     /// Relative to the authored panel white. Emission below this level does
     /// not seed the additive soft halo.
     pub threshold_relative_to_panel_white: f32,
@@ -592,76 +592,57 @@ fn microtexture_hash(mut value: u32) -> u32 {
 impl CoverGlowProfile {
     pub const NEUTRAL: Self = Self {
         character_strength: 0.0,
-        scatter_fraction: 0.0,
-        core_radius_millimeters: 0.1,
-        tail_radius_millimeters: 1.0,
-        tail_fraction: 0.5,
+        intensity: 0.0,
+        radius_millimeters: 1.0,
         threshold_relative_to_panel_white: 0.0,
     };
     pub const GLOSSY_STRONG_AR: Self = Self {
         character_strength: 1.0,
-        scatter_fraction: 0.018,
-        core_radius_millimeters: 0.12,
-        tail_radius_millimeters: 1.2,
-        tail_fraction: 0.35,
+        intensity: 0.018,
+        radius_millimeters: 1.2,
         threshold_relative_to_panel_white: 0.20,
     };
     pub const GLOSSY_STANDARD_AR: Self = Self {
         character_strength: 1.0,
-        scatter_fraction: 0.030,
-        core_radius_millimeters: 0.18,
-        tail_radius_millimeters: 1.8,
-        tail_fraction: 0.40,
+        intensity: 0.030,
+        radius_millimeters: 1.8,
         threshold_relative_to_panel_white: 0.20,
     };
     pub const SEMI_GLOSS: Self = Self {
         character_strength: 1.0,
-        scatter_fraction: 0.060,
-        core_radius_millimeters: 0.28,
-        tail_radius_millimeters: 2.5,
-        tail_fraction: 0.45,
+        intensity: 0.060,
+        radius_millimeters: 2.5,
         threshold_relative_to_panel_white: 0.18,
     };
     pub const MATTE_AR: Self = Self {
         character_strength: 1.0,
-        scatter_fraction: 0.10,
-        core_radius_millimeters: 0.42,
-        tail_radius_millimeters: 3.5,
-        tail_fraction: 0.50,
+        intensity: 0.10,
+        radius_millimeters: 3.5,
         threshold_relative_to_panel_white: 0.15,
     };
     pub const HEAVY_MATTE: Self = Self {
         character_strength: 1.0,
-        scatter_fraction: 0.16,
-        core_radius_millimeters: 0.65,
-        tail_radius_millimeters: 5.0,
-        tail_fraction: 0.55,
+        intensity: 0.16,
+        radius_millimeters: 5.0,
         threshold_relative_to_panel_white: 0.12,
     };
     pub const THICK_GLASS: Self = Self {
         character_strength: 1.0,
-        scatter_fraction: 0.035,
-        core_radius_millimeters: 0.80,
-        tail_radius_millimeters: 8.0,
-        tail_fraction: 0.65,
+        intensity: 0.035,
+        radius_millimeters: 8.0,
         threshold_relative_to_panel_white: 0.18,
     };
 
     pub fn validate(self) -> Result<Self, CoverError> {
         if !self.character_strength.is_finite()
             || !(0.0..=4.0).contains(&self.character_strength)
-            || !self.scatter_fraction.is_finite()
-            || !(0.0..=0.35).contains(&self.scatter_fraction)
-            || !self.core_radius_millimeters.is_finite()
-            || !(0.01..=5.0).contains(&self.core_radius_millimeters)
-            || !self.tail_radius_millimeters.is_finite()
-            || self.tail_radius_millimeters < self.core_radius_millimeters
-            || self.tail_radius_millimeters > 30.0
-            || !self.tail_fraction.is_finite()
-            || !(0.0..=1.0).contains(&self.tail_fraction)
+            || !self.intensity.is_finite()
+            || !(0.0..=1.0).contains(&self.intensity)
+            || !self.radius_millimeters.is_finite()
+            || !(0.01..=30.0).contains(&self.radius_millimeters)
             || !self.threshold_relative_to_panel_white.is_finite()
             || !(0.0..=1.0).contains(&self.threshold_relative_to_panel_white)
-            || self.scatter_fraction * self.character_strength > 0.95
+            || self.intensity * self.character_strength > 4.0
         {
             return Err(CoverError::InvalidGlow);
         }
@@ -670,47 +651,46 @@ impl CoverGlowProfile {
 
     pub fn samples(self) -> Result<[CoverGlowSample; 9], CoverError> {
         let profile = self.validate()?;
-        let scattered = profile.scatter_fraction * profile.character_strength;
-        let core_weight = scattered * (1.0 - profile.tail_fraction) * 0.25;
-        let tail_weight = scattered * profile.tail_fraction * 0.25;
-        let core = profile.core_radius_millimeters * 0.001;
-        let tail = profile.tail_radius_millimeters * 0.001 * core::f32::consts::FRAC_1_SQRT_2;
+        let scattered = profile.intensity * profile.character_strength;
+        let ring_weight = scattered * 0.125;
+        let radius = profile.radius_millimeters * 0.001;
+        let diagonal = radius * core::f32::consts::FRAC_1_SQRT_2;
         Ok([
             CoverGlowSample {
                 offset_meters: [0.0, 0.0],
-                weight: 1.0 - scattered,
+                weight: 1.0,
             },
             CoverGlowSample {
-                offset_meters: [core, 0.0],
-                weight: core_weight,
+                offset_meters: [radius, 0.0],
+                weight: ring_weight,
             },
             CoverGlowSample {
-                offset_meters: [-core, 0.0],
-                weight: core_weight,
+                offset_meters: [-radius, 0.0],
+                weight: ring_weight,
             },
             CoverGlowSample {
-                offset_meters: [0.0, core],
-                weight: core_weight,
+                offset_meters: [0.0, radius],
+                weight: ring_weight,
             },
             CoverGlowSample {
-                offset_meters: [0.0, -core],
-                weight: core_weight,
+                offset_meters: [0.0, -radius],
+                weight: ring_weight,
             },
             CoverGlowSample {
-                offset_meters: [tail, tail],
-                weight: tail_weight,
+                offset_meters: [diagonal, diagonal],
+                weight: ring_weight,
             },
             CoverGlowSample {
-                offset_meters: [-tail, tail],
-                weight: tail_weight,
+                offset_meters: [-diagonal, diagonal],
+                weight: ring_weight,
             },
             CoverGlowSample {
-                offset_meters: [tail, -tail],
-                weight: tail_weight,
+                offset_meters: [diagonal, -diagonal],
+                weight: ring_weight,
             },
             CoverGlowSample {
-                offset_meters: [-tail, -tail],
-                weight: tail_weight,
+                offset_meters: [-diagonal, -diagonal],
+                weight: ring_weight,
             },
         ])
     }
@@ -839,7 +819,7 @@ impl ValidatedCoverEvaluator {
             .expect("validated cover owns a validated glow profile")
     }
 
-    /// Stratifies the unit-sum core/tail quadrature over angle and radius. Every invocation
+    /// Stratifies the additive halo quadrature over angle and radius. Every invocation
     /// remains exactly centered through opposite pairs, while optical integration varies the
     /// radii deterministically so neither fixed displaced copies nor a fixed-radius ring can
     /// survive as a coherent image feature.
@@ -853,13 +833,12 @@ impl ValidatedCoverEvaluator {
         let diagonal_y = core::f32::consts::FRAC_1_SQRT_2 * (axis_x[1] + axis_y[1]);
         let cross_x = core::f32::consts::FRAC_1_SQRT_2 * (axis_x[0] - axis_y[0]);
         let cross_y = core::f32::consts::FRAC_1_SQRT_2 * (axis_x[1] - axis_y[1]);
-        let core_radius = self.cover.glow.core_radius_millimeters * 0.001;
-        let tail_radius = self.cover.glow.tail_radius_millimeters * 0.001;
+        let radius = self.cover.glow.radius_millimeters * 0.001;
         let phase = turns.rem_euclid(1.0);
-        let core_a = core_radius * smooth_radial_scale((phase + 0.125).fract());
-        let core_b = core_radius * smooth_radial_scale((phase + 0.625).fract());
-        let tail_a = tail_radius * smooth_radial_scale((phase + 0.375).fract());
-        let tail_b = tail_radius * smooth_radial_scale((phase + 0.875).fract());
+        let core_a = radius * smooth_radial_scale((phase + 0.125).fract());
+        let core_b = radius * smooth_radial_scale((phase + 0.625).fract());
+        let tail_a = radius * smooth_radial_scale((phase + 0.375).fract());
+        let tail_b = radius * smooth_radial_scale((phase + 0.875).fract());
         samples[1].offset_meters = [axis_x[0] * core_a, axis_x[1] * core_a];
         samples[2].offset_meters = [-axis_x[0] * core_a, -axis_x[1] * core_a];
         samples[3].offset_meters = [axis_y[0] * core_b, axis_y[1] * core_b];
@@ -1446,7 +1425,7 @@ mod tests {
     }
 
     #[test]
-    fn glow_kernel_is_exactly_neutral_at_zero_and_conserves_emitted_energy() {
+    fn glow_kernel_is_exactly_neutral_at_zero_and_adds_authored_halo_energy() {
         let neutral = CoverGlowProfile::NEUTRAL.samples().expect("neutral glow");
         assert_eq!(neutral[0].offset_meters, [0.0, 0.0]);
         assert_eq!(neutral[0].weight, 1.0);
@@ -1455,7 +1434,9 @@ mod tests {
         for preset in COVER_GLASS_PRESETS {
             let samples = preset.profile.glow.samples().expect("catalog glow");
             let weight = samples.iter().map(|sample| sample.weight).sum::<f32>();
-            assert!((weight - 1.0).abs() <= 2.0 * f32::EPSILON);
+            let expected =
+                1.0 + preset.profile.glow.intensity * preset.profile.glow.character_strength;
+            assert!((weight - expected).abs() <= 8.0 * f32::EPSILON);
             assert!(samples.iter().all(|sample| sample.weight >= 0.0));
             assert!(
                 samples[1..]

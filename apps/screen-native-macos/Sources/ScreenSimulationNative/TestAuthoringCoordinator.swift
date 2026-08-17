@@ -95,10 +95,8 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     var environmentSphereCenterZMeters: Double
     var environmentSphereRadiusMeters: Double
     let coverGlowAmount: Double
-    let coverGlowScatterFraction: Double
-    let coverGlowCoreRadiusMillimeters: Double
-    let coverGlowTailRadiusMillimeters: Double
-    let coverGlowTailFraction: Double
+    let coverGlowIntensity: Double
+    let coverGlowRadiusMillimeters: Double
     let coverGlowThresholdRelativeWhite: Double
     let lensPresetID: String
     var focalLengthMillimeters: Double
@@ -531,10 +529,8 @@ enum RustTestAuthoringCoordinator {
             environmentSphereCenterZMeters: Double(raw.environment_sphere_center_z_meters),
             environmentSphereRadiusMeters: Double(raw.environment_sphere_radius_meters),
             coverGlowAmount: Double(raw.cover_glow_amount),
-            coverGlowScatterFraction: Double(raw.cover_glow_scatter_fraction),
-            coverGlowCoreRadiusMillimeters: Double(raw.cover_glow_core_radius_millimeters),
-            coverGlowTailRadiusMillimeters: Double(raw.cover_glow_tail_radius_millimeters),
-            coverGlowTailFraction: Double(raw.cover_glow_tail_fraction),
+            coverGlowIntensity: Double(raw.cover_glow_intensity),
+            coverGlowRadiusMillimeters: Double(raw.cover_glow_radius_millimeters),
             coverGlowThresholdRelativeWhite: Double(raw.cover_glow_threshold_relative_white),
             lensPresetID: string(raw.lens_preset_id),
             focalLengthMillimeters: Double(raw.focal_length_millimeters),
@@ -683,10 +679,8 @@ enum RustTestAuthoringCoordinator {
                                             )
                                             raw.environment_sphere_radius_meters = Float(selection.environmentSphereRadiusMeters)
                                             raw.cover_glow_amount = Float(selection.coverGlowAmount)
-                                            raw.cover_glow_scatter_fraction = Float(selection.coverGlowScatterFraction)
-                                            raw.cover_glow_core_radius_millimeters = Float(selection.coverGlowCoreRadiusMillimeters)
-                                            raw.cover_glow_tail_radius_millimeters = Float(selection.coverGlowTailRadiusMillimeters)
-                                            raw.cover_glow_tail_fraction = Float(selection.coverGlowTailFraction)
+                                            raw.cover_glow_intensity = Float(selection.coverGlowIntensity)
+                                            raw.cover_glow_radius_millimeters = Float(selection.coverGlowRadiusMillimeters)
                                             raw.cover_glow_threshold_relative_white = Float(selection.coverGlowThresholdRelativeWhite)
                                             raw.lens_preset_id = lensView
                                             raw.focal_length_millimeters = Float(

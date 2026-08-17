@@ -757,6 +757,7 @@ pub struct PreparedDeviceSignalRaster {
 pub struct PlacedFeederSignal {
     prepared: PreparedDeviceSignalRaster,
     emission_integral: DeviceSignalIntegral,
+    keyed_glow_integral: DeviceSignalIntegral,
     device_raster: [u32; 2],
     placement: RasterPlacement,
 }
@@ -1626,12 +1627,14 @@ impl PlacedFeederSignal {
     fn new(
         prepared: PreparedDeviceSignalRaster,
         emission_integral: DeviceSignalIntegral,
+        keyed_glow_integral: DeviceSignalIntegral,
         device_raster: [u32; 2],
         placement: RasterPlacement,
     ) -> Self {
         Self {
             prepared,
             emission_integral,
+            keyed_glow_integral,
             device_raster,
             placement,
         }
@@ -1643,6 +1646,27 @@ impl PlacedFeederSignal {
 
     fn sample_area(&self, minimum: Vec2, maximum: Vec2) -> AreaSignalSample {
         sample_placed_feeder_area(self, minimum, maximum)
+    }
+
+    fn sample_keyed_glow_area(&self, minimum: Vec2, maximum: Vec2) -> LinearRgb {
+        let Some(first) = source_uv_unbounded(
+            self.source_raster(),
+            self.device_raster,
+            self.placement,
+            minimum,
+        ) else {
+            return LinearRgb::new(0.0, 0.0, 0.0);
+        };
+        let Some(second) = source_uv_unbounded(
+            self.source_raster(),
+            self.device_raster,
+            self.placement,
+            maximum,
+        ) else {
+            return LinearRgb::new(0.0, 0.0, 0.0);
+        };
+        let value = self.keyed_glow_integral.sample_area_box(first, second);
+        LinearRgb::new(value.r, value.g, value.b)
     }
 
     fn mean_resolved_emission(&self) -> LinearRgb {
@@ -2249,9 +2273,34 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 evaluator.native_channel(value, 2) * alpha,
             )
         });
+    let glow_profile = plan.cover.glow;
+    let keyed_glow_integral =
+        DeviceSignalIntegral::new_mapped_with_alpha(&prepared.source, |value, authored_alpha| {
+            let alpha = match plan.device_vfx_alpha_mode {
+                DeviceVfxAlphaMode::Ignore => 1.0,
+                DeviceVfxAlphaMode::DeviceTransparency => authored_alpha,
+            };
+            let native = [
+                evaluator.native_channel(value, 0) * alpha,
+                evaluator.native_channel(value, 1) * alpha,
+                evaluator.native_channel(value, 2) * alpha,
+            ];
+            let matrix = parameters.native_to_acescg;
+            let rgb = [
+                (matrix[0][0] * native[0] + matrix[0][1] * native[1] + matrix[0][2] * native[2])
+                    / parameters.white_level_nits,
+                (matrix[1][0] * native[0] + matrix[1][1] * native[1] + matrix[1][2] * native[2])
+                    / parameters.white_level_nits,
+                (matrix[2][0] * native[0] + matrix[2][1] * native[1] + matrix[2][2] * native[2])
+                    / parameters.white_level_nits,
+            ];
+            let scale = glow_bright_pass_scale(rgb, glow_profile.threshold_relative_to_panel_white);
+            DeviceRgb::new(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale)
+        });
     let placed_feeder = PlacedFeederSignal::new(
         prepared,
         emission_integral,
+        keyed_glow_integral,
         [plan.panel.native_width, plan.panel.native_height],
         plan.placement,
     );
@@ -2931,7 +2980,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 if panel_coverage == 0.0 {
                     return [0.0; 3];
                 }
-                let area = placed_feeder.sample_area(
+                let rgb = placed_feeder.sample_keyed_glow_area(
                     Vec2 {
                         x: minimum.x.clamp(0.0, 1.0),
                         y: minimum.y.clamp(0.0, 1.0),
@@ -2941,66 +2990,32 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         y: maximum.y.clamp(0.0, 1.0),
                     },
                 );
-                // Bright-pass the resolved panel emission before the finite-panel
-                // coverage attenuates the filter support. Applying the threshold
-                // after coverage makes a valid exterior halo disappear as soon as
-                // its footprint crosses the active outline.
-                let native = [
-                    area.linear_native_emission.r,
-                    area.linear_native_emission.g,
-                    area.linear_native_emission.b,
-                ];
-                let rgb = [
-                    (matrix[0][0] * native[0]
-                        + matrix[0][1] * native[1]
-                        + matrix[0][2] * native[2])
-                        / parameters.white_level_nits,
-                    (matrix[1][0] * native[0]
-                        + matrix[1][1] * native[1]
-                        + matrix[1][2] * native[2])
-                        / parameters.white_level_nits,
-                    (matrix[2][0] * native[0]
-                        + matrix[2][1] * native[1]
-                        + matrix[2][2] * native[2])
-                        / parameters.white_level_nits,
-                ];
-                let luminance =
-                    0.272_228_72 * rgb[0] + 0.674_081_74 * rgb[1] + 0.053_689_517 * rgb[2];
-                let threshold = glow_profile.threshold_relative_to_panel_white;
-                let threshold_scale = if luminance <= threshold {
-                    0.0
-                } else {
-                    (luminance - threshold) / luminance.max(1.0e-8)
-                };
-                rgb.map(|value| value * threshold_scale * panel_coverage)
-            };
-            // A positive, normalized three-box approximation to a Gaussian.
-            // The authored radius is the perceptual core scale; the outer
-            // support reaches two radii so the halo decays instead of ending
-            // at the edge of one rectangular average.
-            let gaussian_area = |radius_millimeters: f32| {
-                let inner = soft_area(radius_millimeters * 0.5);
-                let middle = soft_area(radius_millimeters);
-                let outer = soft_area(radius_millimeters * 2.0);
                 [
-                    0.25 * inner[0] + 0.5 * middle[0] + 0.25 * outer[0],
-                    0.25 * inner[1] + 0.5 * middle[1] + 0.25 * outer[1],
-                    0.25 * inner[2] + 0.5 * middle[2] + 0.25 * outer[2],
+                    rgb.r * panel_coverage,
+                    rgb.g * panel_coverage,
+                    rgb.b * panel_coverage,
                 ]
             };
-            let glow_strength = glow_profile.scatter_fraction * glow_profile.character_strength;
-            let core_glow = gaussian_area(glow_profile.core_radius_millimeters);
-            let tail_glow = gaussian_area(glow_profile.tail_radius_millimeters);
+            // Positive multiscale approximation to a smooth exponential halo.
+            // The keyed emission has already been resolved per source sample,
+            // so large supports cannot turn midtones into a milky plate.
+            let exponential_area = |radius_millimeters: f32| {
+                let a = soft_area(radius_millimeters * 0.5);
+                let b = soft_area(radius_millimeters * 1.25);
+                let c = soft_area(radius_millimeters * 2.5);
+                let d = soft_area(radius_millimeters * 5.0);
+                [
+                    0.4 * a[0] + 0.3 * b[0] + 0.2 * c[0] + 0.1 * d[0],
+                    0.4 * a[1] + 0.3 * b[1] + 0.2 * c[1] + 0.1 * d[1],
+                    0.4 * a[2] + 0.3 * b[2] + 0.2 * c[2] + 0.1 * d[2],
+                ]
+            };
+            let glow_strength = glow_profile.intensity * glow_profile.character_strength;
+            let halo = exponential_area(glow_profile.radius_millimeters);
             let soft_glow = [
-                glow_strength
-                    * (core_glow[0] * (1.0 - glow_profile.tail_fraction)
-                        + tail_glow[0] * glow_profile.tail_fraction),
-                glow_strength
-                    * (core_glow[1] * (1.0 - glow_profile.tail_fraction)
-                        + tail_glow[1] * glow_profile.tail_fraction),
-                glow_strength
-                    * (core_glow[2] * (1.0 - glow_profile.tail_fraction)
-                        + tail_glow[2] * glow_profile.tail_fraction),
+                glow_strength * halo[0],
+                glow_strength * halo[1],
+                glow_strength * halo[2],
             ];
             let carrier_detail = [
                 (matrix[0][0] * carrier_detail_native.r
@@ -3852,6 +3867,20 @@ fn device_rectangle_coverage(minimum: Vec2, maximum: Vec2) -> f32 {
     let overlap_width = (ordered_maximum.x.min(1.0) - ordered_minimum.x.max(0.0)).max(0.0);
     let overlap_height = (ordered_maximum.y.min(1.0) - ordered_minimum.y.max(0.0)).max(0.0);
     ((overlap_width * overlap_height) / area).clamp(0.0, 1.0)
+}
+
+fn glow_bright_pass_scale(rgb: [f32; 3], threshold: f32) -> f32 {
+    let luminance = 0.272_228_72 * rgb[0] + 0.674_081_74 * rgb[1] + 0.053_689_517 * rgb[2];
+    if luminance <= 0.0 {
+        return 0.0;
+    }
+    // Fixed soft knee: threshold owns selection while this transition avoids
+    // a visible contour at the key boundary.
+    let knee = 0.10_f32;
+    let soft = (luminance - threshold + knee).clamp(0.0, 2.0 * knee);
+    let soft = soft * soft / (4.0 * knee);
+    let contribution = (luminance - threshold).max(soft);
+    contribution.max(0.0) / luminance.max(1.0e-8)
 }
 
 fn sample_placed_feeder_area(
@@ -11229,12 +11258,14 @@ mod tests {
     }
 
     #[test]
-    fn cover_glow_multiscale_scatter_preserves_uniform_linear_energy() {
+    fn cover_glow_adds_the_authored_uniform_linear_halo_energy() {
         let mut glowed = request().optical_request();
         glowed.panel.black_level_nits = 0.0;
         glowed.cover = screen_cover::cover_glass_preset("cover-matte-ar")
             .expect("matte cover")
             .profile;
+        let expected_ratio =
+            1.0 + glowed.cover.glow.intensity * glowed.cover.glow.character_strength;
         let mut clean = glowed.clone();
         clean.cover.glow.character_strength = 0.0;
         let uniform = DeviceSignalRaster {
@@ -11263,8 +11294,8 @@ mod tests {
         let ratio =
             glowed.pixels[center].acescg_irradiance.g / clean.pixels[center].acescg_irradiance.g;
         assert!(
-            (ratio - 1.0).abs() < 5.0e-4,
-            "uniform glow energy ratio {ratio}"
+            (ratio - expected_ratio).abs() < 5.0e-4,
+            "uniform glow energy ratio {ratio}, expected {expected_ratio}"
         );
     }
 
@@ -11274,10 +11305,21 @@ mod tests {
             .expect("matte cover")
             .profile
             .glow;
-        assert!(glow.core_radius_millimeters.is_finite());
-        assert!(glow.tail_radius_millimeters.is_finite());
-        assert!(glow.core_radius_millimeters > 0.0);
-        assert!(glow.tail_radius_millimeters >= glow.core_radius_millimeters);
+        assert!(glow.radius_millimeters.is_finite());
+        assert!(glow.radius_millimeters > 0.0);
+    }
+
+    #[test]
+    fn cover_glow_keys_each_emission_sample_before_spatial_filtering() {
+        let threshold = 0.5;
+        let subthreshold = glow_bright_pass_scale([0.2, 0.2, 0.2], threshold);
+        let keyed_white = glow_bright_pass_scale([1.0, 1.0, 1.0], threshold);
+        assert_eq!(subthreshold, 0.0);
+        assert!(keyed_white > 0.0 && keyed_white < 1.0);
+        assert!(
+            glow_bright_pass_scale([2.0, 2.0, 2.0], threshold) > keyed_white,
+            "the keyed contribution must grow monotonically above the threshold"
+        );
     }
 
     #[test]
@@ -11288,10 +11330,8 @@ mod tests {
             .expect("thick cover")
             .profile;
         optics.cover.glow.character_strength = 4.0;
-        optics.cover.glow.scatter_fraction = 0.20;
-        optics.cover.glow.core_radius_millimeters = 5.0;
-        optics.cover.glow.tail_radius_millimeters = 30.0;
-        optics.cover.glow.tail_fraction = 1.0;
+        optics.cover.glow.intensity = 0.20;
+        optics.cover.glow.radius_millimeters = 30.0;
         let outside_uv = -0.020 / optics.panel.active_width.0;
         let evaluator = optics.panel.evaluator().expect("panel evaluator");
         let cover = optics

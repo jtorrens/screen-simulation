@@ -185,10 +185,8 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             },
             glow: CoverGlowProfile {
                 character_strength: device.cover.glow.character_strength,
-                scatter_fraction: device.cover.glow.scatter_fraction,
-                core_radius_millimeters: device.cover.glow.core_radius_millimeters,
-                tail_radius_millimeters: device.cover.glow.tail_radius_millimeters,
-                tail_fraction: device.cover.glow.tail_fraction,
+                intensity: device.cover.glow.intensity,
+                radius_millimeters: device.cover.glow.radius_millimeters,
                 threshold_relative_to_panel_white: device
                     .cover
                     .glow
@@ -559,10 +557,8 @@ mod tests {
                     },
                     glow: CoverGlowDocument {
                         character_strength: 1.0,
-                        scatter_fraction: 0.08,
-                        core_radius_millimeters: 0.22,
-                        tail_radius_millimeters: 1.4,
-                        tail_fraction: 0.18,
+                        intensity: 0.08,
+                        radius_millimeters: 1.4,
                         threshold_relative_to_panel_white: 0.15,
                     },
                 },

@@ -233,7 +233,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 35;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 36;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -310,10 +310,8 @@ pub struct ScreenTestAuthoringSelectionV23 {
     environment_sphere_center_z_meters: f32,
     environment_sphere_radius_meters: f32,
     cover_glow_amount: f32,
-    cover_glow_scatter_fraction: f32,
-    cover_glow_core_radius_millimeters: f32,
-    cover_glow_tail_radius_millimeters: f32,
-    cover_glow_tail_fraction: f32,
+    cover_glow_intensity: f32,
+    cover_glow_radius_millimeters: f32,
     cover_glow_threshold_relative_white: f32,
     lens_preset_id: ScreenUtf8View,
     focal_length_millimeters: f32,
@@ -443,7 +441,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 24;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 25;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9;
@@ -1948,7 +1946,7 @@ pub unsafe extern "C" fn screen_physical_frame_job_snapshot(
                     .to_owned(),
                 "synthetic HDR environment sampled independently from panel temporal emission"
                     .to_owned(),
-                "energy-preserving cover glow with physical core/tail radii".to_owned(),
+                "keyed additive emission glow with one physical radius".to_owned(),
                 "position + quaternion pose; device active dimensions are the sole screen scale"
                     .to_owned(),
                 "thin lens + distortion/CA/vignette/transmission/PSF; focal-length generalized"
@@ -2144,10 +2142,8 @@ pub struct ScreenCoverGlassParametersV2 {
     ag_microtexture_anisotropy: f32,
     ag_microtexture_seed: u32,
     glow_character_strength: f32,
-    glow_scatter_fraction: f32,
-    glow_core_radius_millimeters: f32,
-    glow_tail_radius_millimeters: f32,
-    glow_tail_fraction: f32,
+    glow_intensity: f32,
+    glow_radius_millimeters: f32,
     glow_threshold_relative_white: f32,
 }
 
@@ -2400,10 +2396,8 @@ unsafe fn test_selection<'a>(
         environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
-        cover_glow_scatter_fraction: selection.cover_glow_scatter_fraction,
-        cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
-        cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
-        cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
+        cover_glow_intensity: selection.cover_glow_intensity,
+        cover_glow_radius_millimeters: selection.cover_glow_radius_millimeters,
         cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
         lens_preset_id: unsafe { borrowed_utf8(selection.lens_preset_id) }?,
         focal_length_millimeters: selection.focal_length_millimeters,
@@ -2586,10 +2580,8 @@ fn resolved_test_selection(
         environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
-        cover_glow_scatter_fraction: selection.cover_glow_scatter_fraction,
-        cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
-        cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
-        cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
+        cover_glow_intensity: selection.cover_glow_intensity,
+        cover_glow_radius_millimeters: selection.cover_glow_radius_millimeters,
         cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
         lens_preset_id: utf8_view(selection.lens_preset_id),
         focal_length_millimeters: selection.focal_length_millimeters,
@@ -3259,10 +3251,8 @@ pub unsafe extern "C" fn screen_cover_glass_profile_create(
         },
         glow: screen_cover::CoverGlowProfile {
             character_strength: parameters.glow_character_strength,
-            scatter_fraction: parameters.glow_scatter_fraction,
-            core_radius_millimeters: parameters.glow_core_radius_millimeters,
-            tail_radius_millimeters: parameters.glow_tail_radius_millimeters,
-            tail_fraction: parameters.glow_tail_fraction,
+            intensity: parameters.glow_intensity,
+            radius_millimeters: parameters.glow_radius_millimeters,
             threshold_relative_to_panel_white: parameters.glow_threshold_relative_white,
         },
     };
@@ -3350,10 +3340,8 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
         },
         glow: screen_cover::CoverGlowProfile {
             character_strength: parameters.cover.glow_character_strength,
-            scatter_fraction: parameters.cover.glow_scatter_fraction,
-            core_radius_millimeters: parameters.cover.glow_core_radius_millimeters,
-            tail_radius_millimeters: parameters.cover.glow_tail_radius_millimeters,
-            tail_fraction: parameters.cover.glow_tail_fraction,
+            intensity: parameters.cover.glow_intensity,
+            radius_millimeters: parameters.cover.glow_radius_millimeters,
             threshold_relative_to_panel_white: parameters.cover.glow_threshold_relative_white,
         },
     };
@@ -3722,10 +3710,8 @@ fn cover_parameters(
         ag_microtexture_anisotropy: profile.anti_glare_microtexture.anisotropy,
         ag_microtexture_seed: profile.anti_glare_microtexture.seed,
         glow_character_strength: profile.glow.character_strength,
-        glow_scatter_fraction: profile.glow.scatter_fraction,
-        glow_core_radius_millimeters: profile.glow.core_radius_millimeters,
-        glow_tail_radius_millimeters: profile.glow.tail_radius_millimeters,
-        glow_tail_fraction: profile.glow.tail_fraction,
+        glow_intensity: profile.glow.intensity,
+        glow_radius_millimeters: profile.glow.radius_millimeters,
         glow_threshold_relative_white: profile.glow.threshold_relative_to_panel_white,
     }
 }
@@ -5000,10 +4986,8 @@ mod tests {
                 ag_microtexture_anisotropy: 0.0,
                 ag_microtexture_seed: 0,
                 glow_character_strength: 1.0,
-                glow_scatter_fraction: 0.03,
-                glow_core_radius_millimeters: 0.1,
-                glow_tail_radius_millimeters: 1.0,
-                glow_tail_fraction: 0.0,
+                glow_intensity: 0.03,
+                glow_radius_millimeters: 1.0,
                 glow_threshold_relative_white: 0.0,
             },
             environment: ScreenEnvironmentParametersV2 {
@@ -5413,7 +5397,7 @@ mod tests {
         assert!(messages[5].contains("position + quaternion"));
         assert!(messages[6].contains("Beer-Lambert"));
         assert!(messages[7].contains("synthetic HDR"));
-        assert!(messages[8].contains("physical core/tail radii"));
+        assert!(messages[8].contains("one physical radius"));
         assert!(messages[9].contains("thin lens"));
         assert!(messages[10].contains("STATIC_INPUT"));
         assert!(messages[11].contains("analytic exposure bracket"));
@@ -5636,10 +5620,8 @@ mod tests {
                 ag_microtexture_anisotropy: 0.0,
                 ag_microtexture_seed: 0,
                 glow_character_strength: 0.0,
-                glow_scatter_fraction: 0.0,
-                glow_core_radius_millimeters: 0.0,
-                glow_tail_radius_millimeters: 0.0,
-                glow_tail_fraction: 0.0,
+                glow_intensity: 0.0,
+                glow_radius_millimeters: 0.0,
                 glow_threshold_relative_white: 0.0,
             };
             assert!(unsafe { screen_cover_glass_preset_parameters(index, &mut parameters) });

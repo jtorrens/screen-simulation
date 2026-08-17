@@ -24,7 +24,7 @@ struct PhysicalPipelineParams {
     float4 cover_haze;
     float4 cover_microtexture; // character, RMS slope, correlation um, anisotropy
     uint4 cover_microtexture_seed;
-    float4 cover_glow; // core mm, tail mm, scattered fraction, tail fraction
+    float4 cover_glow; // radius mm, additive intensity, remaining lanes reserved
     float4 glow_threshold; // relative panel-white threshold, remaining lanes reserved
     float4 environment_ambient_strength;
     float4 environment_key_radius;
@@ -1158,9 +1158,49 @@ inline float resolved_device_alpha(float authored, float panel_coverage,
     return clamp(panel_coverage, 0.0f, 1.0f) * authored_alpha;
 }
 
+inline float glow_bright_pass_scale(float3 rgb, float threshold) {
+    const float luminance = dot(
+        rgb, float3(0.27222872f, 0.67408174f, 0.053689517f));
+    if (luminance <= 0.0f) return 0.0f;
+    const float knee = 0.10f;
+    float soft = clamp(luminance - threshold + knee, 0.0f, 2.0f * knee);
+    soft = soft * soft / (4.0f * knee);
+    const float contribution = max(max(luminance - threshold, soft), 0.0f);
+    return contribution / max(luminance, 1.0e-8f);
+}
+
+kernel void build_physical_glow_prefix(
+    texture2d<float, access::read> device_signal [[texture(0)]],
+    texture2d<float, access::write> keyed_signal [[texture(1)]],
+    texture2d<float, access::write> keyed_prefix [[texture(2)]],
+    constant PhysicalPipelineParams& p [[buffer(0)]],
+    uint row [[thread_position_in_grid]]
+) {
+    if (row >= device_signal.get_height()) return;
+    float4 accumulated = 0.0f;
+    keyed_prefix.write(accumulated, uint2(0, row));
+    for (uint x = 0; x < device_signal.get_width(); ++x) {
+        const float4 code = device_signal.read(uint2(x, row));
+        const float alpha = resolved_device_alpha(code.a, 1.0f, p);
+        const float3 native = float3(
+            panel_linear_channel(code.r, p),
+            panel_linear_channel(code.g, p),
+            panel_linear_channel(code.b, p)) * alpha;
+        float3 rgb = float3(
+            dot(p.matrix0.xyz, native),
+            dot(p.matrix1.xyz, native),
+            dot(p.matrix2.xyz, native)) / p.levels.z;
+        rgb *= glow_bright_pass_scale(rgb, p.glow_threshold.x);
+        const float4 keyed = float4(rgb, 0.0f);
+        keyed_signal.write(keyed, uint2(x, row));
+        accumulated += keyed;
+        keyed_prefix.write(accumulated, uint2(x + 1, row));
+    }
+}
+
 inline float3 vfx_bloom_area_sample(
-    texture2d<float, access::read> device_signal,
-    texture2d<float, access::read> device_row_prefix,
+    texture2d<float, access::read> keyed_signal,
+    texture2d<float, access::read> keyed_row_prefix,
     float2 center,
     float2 footprint_half_extent,
     float radius_millimeters,
@@ -1172,25 +1212,11 @@ inline float3 vfx_bloom_area_sample(
     const float2 maximum = center + footprint_half_extent + extent;
     const float coverage = device_rectangle_coverage(minimum, maximum);
     if (coverage == 0.0f) return 0.0f;
-    const float4 code = area_sample(
-        device_signal, device_row_prefix,
+    const float4 keyed = area_sample(
+        keyed_signal, keyed_row_prefix,
         clamp(minimum, 0.0f, 1.0f), clamp(maximum, 0.0f, 1.0f),
         prepared_placement_scale, p);
-    const float alpha = resolved_device_alpha(code.a, 1.0f, p);
-    const float3 native = float3(
-        panel_linear_channel(code.r, p),
-        panel_linear_channel(code.g, p),
-        panel_linear_channel(code.b, p)) * alpha;
-    float3 rgb = float3(
-        dot(p.matrix0.xyz, native),
-        dot(p.matrix1.xyz, native),
-        dot(p.matrix2.xyz, native)) / p.levels.z;
-    const float luminance = dot(
-        rgb, float3(0.27222872f, 0.67408174f, 0.053689517f));
-    const float threshold = p.glow_threshold.x;
-    rgb *= luminance <= threshold
-        ? 0.0f : (luminance - threshold) / max(luminance, 1.0e-8f);
-    return rgb * coverage;
+    return keyed.rgb * coverage;
 }
 
 inline float native_channel_at_offset(
@@ -1323,6 +1349,8 @@ kernel void evaluate_physical_pipeline(
     texture2d<float, access::read> source_row_prefix [[texture(3)]],
     texture2d<float, access::read> device_row_prefix [[texture(4)]],
     texture2d<float, access::sample> environment_acescg [[texture(5)]],
+    texture2d<float, access::read> glow_signal [[texture(6)]],
+    texture2d<float, access::read> glow_row_prefix [[texture(7)]],
     constant PhysicalPipelineParams& p [[buffer(0)]],
     device const float* row_temporal_gains [[buffer(1)]],
     device const float4* veiling_gate_average [[buffer(2)]],
@@ -1642,28 +1670,19 @@ kernel void evaluate_physical_pipeline(
     ) / p.levels.z;
     const float2 halo_center = cover_uv * cover_reciprocal;
     const float2 halo_half_extent = cover_half_extent * cover_reciprocal;
-    const float3 core_halo =
-        0.25f * vfx_bloom_area_sample(device_signal, device_row_prefix,
+    const float3 soft_glow = p.cover_glow.y * (
+        0.4f * vfx_bloom_area_sample(glow_signal, glow_row_prefix,
             halo_center, halo_half_extent, p.cover_glow.x * 0.5f,
             prepared_placement_scale, p)
-        + 0.5f * vfx_bloom_area_sample(device_signal, device_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.x,
+        + 0.3f * vfx_bloom_area_sample(glow_signal, glow_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.x * 1.25f,
             prepared_placement_scale, p)
-        + 0.25f * vfx_bloom_area_sample(device_signal, device_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.x * 2.0f,
-            prepared_placement_scale, p);
-    const float3 tail_halo =
-        0.25f * vfx_bloom_area_sample(device_signal, device_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.y * 0.5f,
+        + 0.2f * vfx_bloom_area_sample(glow_signal, glow_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.x * 2.5f,
             prepared_placement_scale, p)
-        + 0.5f * vfx_bloom_area_sample(device_signal, device_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.y,
-            prepared_placement_scale, p)
-        + 0.25f * vfx_bloom_area_sample(device_signal, device_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.y * 2.0f,
-            prepared_placement_scale, p);
-    const float3 soft_glow = p.cover_glow.z
-        * (core_halo * (1.0f - p.cover_glow.w) + tail_halo * p.cover_glow.w);
+        + 0.1f * vfx_bloom_area_sample(glow_signal, glow_row_prefix,
+            halo_center, halo_half_extent, p.cover_glow.x * 5.0f,
+            prepared_placement_scale, p));
     float3 carrier_detail = float3(
         dot(p.matrix0.xyz, carrier_detail_native),
         dot(p.matrix1.xyz, carrier_detail_native),

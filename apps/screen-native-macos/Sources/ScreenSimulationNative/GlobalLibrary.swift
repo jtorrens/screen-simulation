@@ -62,7 +62,7 @@ struct GlobalPatternDefinition: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
     let schemaVersion: Int
     var patterns: [LibraryItem<GlobalPatternDefinition>]
     var testImages: [LibraryItem<GlobalTestImage>]

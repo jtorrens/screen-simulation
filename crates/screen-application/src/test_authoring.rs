@@ -112,10 +112,8 @@ pub const ENVIRONMENT_CENTER_Z_CONTROL_ID: &str = "environment-sphere-center-z-m
 pub const ENVIRONMENT_RADIUS_CONTROL_ID: &str = "environment-sphere-radius-meters";
 pub const IMAGE_ENVIRONMENT_SOURCE_ID: &str = "environment-image";
 pub const COVER_GLOW_AMOUNT_CONTROL_ID: &str = "cover-glow-amount";
-pub const COVER_GLOW_SCATTER_CONTROL_ID: &str = "cover-glow-scatter-fraction";
-pub const COVER_GLOW_CORE_RADIUS_CONTROL_ID: &str = "cover-glow-core-radius-millimeters";
-pub const COVER_GLOW_TAIL_RADIUS_CONTROL_ID: &str = "cover-glow-tail-radius-millimeters";
-pub const COVER_GLOW_TAIL_FRACTION_CONTROL_ID: &str = "cover-glow-tail-fraction";
+pub const COVER_GLOW_INTENSITY_CONTROL_ID: &str = "cover-glow-intensity";
+pub const COVER_GLOW_RADIUS_CONTROL_ID: &str = "cover-glow-radius-millimeters";
 pub const COVER_GLOW_THRESHOLD_CONTROL_ID: &str = "cover-glow-threshold-relative-white";
 pub const LENS_PRESET_CONTROL_ID: &str = "lens-preset";
 pub const FOCAL_LENGTH_CONTROL_ID: &str = "focal-length-millimeters";
@@ -446,10 +444,8 @@ pub struct TestAuthoringSelection<'a> {
     pub environment_sphere_center_z_meters: f32,
     pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
-    pub cover_glow_scatter_fraction: f32,
-    pub cover_glow_core_radius_millimeters: f32,
-    pub cover_glow_tail_radius_millimeters: f32,
-    pub cover_glow_tail_fraction: f32,
+    pub cover_glow_intensity: f32,
+    pub cover_glow_radius_millimeters: f32,
     pub cover_glow_threshold_relative_white: f32,
     pub lens_preset_id: &'a str,
     pub focal_length_millimeters: f32,
@@ -544,10 +540,8 @@ pub struct ResolvedTestAuthoringSelection {
     pub environment_sphere_center_z_meters: f32,
     pub environment_sphere_radius_meters: f32,
     pub cover_glow_amount: f32,
-    pub cover_glow_scatter_fraction: f32,
-    pub cover_glow_core_radius_millimeters: f32,
-    pub cover_glow_tail_radius_millimeters: f32,
-    pub cover_glow_tail_fraction: f32,
+    pub cover_glow_intensity: f32,
+    pub cover_glow_radius_millimeters: f32,
     pub cover_glow_threshold_relative_white: f32,
     pub lens_preset_id: &'static str,
     pub focal_length_millimeters: f32,
@@ -1106,10 +1100,8 @@ pub fn default_test_authoring_selection(
         environment_sphere_center_z_meters: 0.0,
         environment_sphere_radius_meters: 5.0,
         cover_glow_amount: cover.profile.glow.character_strength,
-        cover_glow_scatter_fraction: cover.profile.glow.scatter_fraction,
-        cover_glow_core_radius_millimeters: cover.profile.glow.core_radius_millimeters,
-        cover_glow_tail_radius_millimeters: cover.profile.glow.tail_radius_millimeters,
-        cover_glow_tail_fraction: cover.profile.glow.tail_fraction,
+        cover_glow_intensity: cover.profile.glow.intensity,
+        cover_glow_radius_millimeters: cover.profile.glow.radius_millimeters,
         cover_glow_threshold_relative_white: cover.profile.glow.threshold_relative_to_panel_white,
         lens_preset_id: capture.default_lens_preset_id,
         focal_length_millimeters: lens(capture.default_lens_preset_id)?.nominal_focal_length.0,
@@ -1305,10 +1297,8 @@ pub fn resolve_test_authoring_selection(
         .correlation_length_micrometers = selection.cover_ag_correlation_micrometers;
     authored_cover.anti_glare_microtexture.anisotropy = selection.cover_ag_anisotropy;
     authored_cover.glow.character_strength = selection.cover_glow_amount;
-    authored_cover.glow.scatter_fraction = selection.cover_glow_scatter_fraction;
-    authored_cover.glow.core_radius_millimeters = selection.cover_glow_core_radius_millimeters;
-    authored_cover.glow.tail_radius_millimeters = selection.cover_glow_tail_radius_millimeters;
-    authored_cover.glow.tail_fraction = selection.cover_glow_tail_fraction;
+    authored_cover.glow.intensity = selection.cover_glow_intensity;
+    authored_cover.glow.radius_millimeters = selection.cover_glow_radius_millimeters;
     authored_cover.glow.threshold_relative_to_panel_white =
         selection.cover_glow_threshold_relative_white;
     authored_cover
@@ -1561,10 +1551,8 @@ pub fn resolve_test_authoring_selection(
         environment_sphere_center_z_meters: selection.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: selection.environment_sphere_radius_meters,
         cover_glow_amount: selection.cover_glow_amount,
-        cover_glow_scatter_fraction: selection.cover_glow_scatter_fraction,
-        cover_glow_core_radius_millimeters: selection.cover_glow_core_radius_millimeters,
-        cover_glow_tail_radius_millimeters: selection.cover_glow_tail_radius_millimeters,
-        cover_glow_tail_fraction: selection.cover_glow_tail_fraction,
+        cover_glow_intensity: selection.cover_glow_intensity,
+        cover_glow_radius_millimeters: selection.cover_glow_radius_millimeters,
         cover_glow_threshold_relative_white: selection.cover_glow_threshold_relative_white,
         lens_preset_id: lens.id,
         focal_length_millimeters: selection.focal_length_millimeters,
@@ -2625,40 +2613,22 @@ pub fn test_page_descriptor(
                         "×",
                     ),
                     scalar_control(
-                        COVER_GLOW_SCATTER_CONTROL_ID,
-                        "Energía dispersada",
-                        selection.cover_glow_scatter_fraction,
-                        0.0,
-                        0.35,
-                        selected_cover.profile.glow.scatter_fraction,
-                        "×",
-                    ),
-                    scalar_control(
-                        COVER_GLOW_CORE_RADIUS_CONTROL_ID,
-                        "Suavidad cercana",
-                        selection.cover_glow_core_radius_millimeters,
-                        0.01,
-                        5.0,
-                        selected_cover.profile.glow.core_radius_millimeters,
-                        "mm",
-                    ),
-                    scalar_control(
-                        COVER_GLOW_TAIL_RADIUS_CONTROL_ID,
-                        "Extensión exterior",
-                        selection.cover_glow_tail_radius_millimeters,
-                        0.01,
-                        30.0,
-                        selected_cover.profile.glow.tail_radius_millimeters,
-                        "mm",
-                    ),
-                    scalar_control(
-                        COVER_GLOW_TAIL_FRACTION_CONTROL_ID,
-                        "Reparto hacia el exterior",
-                        selection.cover_glow_tail_fraction,
+                        COVER_GLOW_INTENSITY_CONTROL_ID,
+                        "Ganancia del halo",
+                        selection.cover_glow_intensity,
                         0.0,
                         1.0,
-                        selected_cover.profile.glow.tail_fraction,
+                        selected_cover.profile.glow.intensity,
                         "×",
+                    ),
+                    scalar_control(
+                        COVER_GLOW_RADIUS_CONTROL_ID,
+                        "Radio y suavidad",
+                        selection.cover_glow_radius_millimeters,
+                        0.01,
+                        30.0,
+                        selected_cover.profile.glow.radius_millimeters,
+                        "mm",
                     ),
                     scalar_control(
                         COVER_GLOW_THRESHOLD_CONTROL_ID,
@@ -3312,10 +3282,8 @@ fn materialize_cover_profile(
         .correlation_length_micrometers;
     selection.cover_ag_anisotropy = cover.profile.anti_glare_microtexture.anisotropy;
     selection.cover_glow_amount = cover.profile.glow.character_strength;
-    selection.cover_glow_scatter_fraction = cover.profile.glow.scatter_fraction;
-    selection.cover_glow_core_radius_millimeters = cover.profile.glow.core_radius_millimeters;
-    selection.cover_glow_tail_radius_millimeters = cover.profile.glow.tail_radius_millimeters;
-    selection.cover_glow_tail_fraction = cover.profile.glow.tail_fraction;
+    selection.cover_glow_intensity = cover.profile.glow.intensity;
+    selection.cover_glow_radius_millimeters = cover.profile.glow.radius_millimeters;
     selection.cover_glow_threshold_relative_white =
         cover.profile.glow.threshold_relative_to_panel_white;
     Ok(())
@@ -3386,10 +3354,8 @@ fn unresolved_test_selection(
         environment_sphere_center_z_meters: current.environment_sphere_center_z_meters,
         environment_sphere_radius_meters: current.environment_sphere_radius_meters,
         cover_glow_amount: current.cover_glow_amount,
-        cover_glow_scatter_fraction: current.cover_glow_scatter_fraction,
-        cover_glow_core_radius_millimeters: current.cover_glow_core_radius_millimeters,
-        cover_glow_tail_radius_millimeters: current.cover_glow_tail_radius_millimeters,
-        cover_glow_tail_fraction: current.cover_glow_tail_fraction,
+        cover_glow_intensity: current.cover_glow_intensity,
+        cover_glow_radius_millimeters: current.cover_glow_radius_millimeters,
         cover_glow_threshold_relative_white: current.cover_glow_threshold_relative_white,
         lens_preset_id: current.lens_preset_id,
         focal_length_millimeters: current.focal_length_millimeters,
@@ -3571,10 +3537,8 @@ pub fn apply_test_scalar(
         ENVIRONMENT_CENTER_Z_CONTROL_ID => next.environment_sphere_center_z_meters = value,
         ENVIRONMENT_RADIUS_CONTROL_ID => next.environment_sphere_radius_meters = value,
         COVER_GLOW_AMOUNT_CONTROL_ID => next.cover_glow_amount = value,
-        COVER_GLOW_SCATTER_CONTROL_ID => next.cover_glow_scatter_fraction = value,
-        COVER_GLOW_CORE_RADIUS_CONTROL_ID => next.cover_glow_core_radius_millimeters = value,
-        COVER_GLOW_TAIL_RADIUS_CONTROL_ID => next.cover_glow_tail_radius_millimeters = value,
-        COVER_GLOW_TAIL_FRACTION_CONTROL_ID => next.cover_glow_tail_fraction = value,
+        COVER_GLOW_INTENSITY_CONTROL_ID => next.cover_glow_intensity = value,
+        COVER_GLOW_RADIUS_CONTROL_ID => next.cover_glow_radius_millimeters = value,
         COVER_GLOW_THRESHOLD_CONTROL_ID => next.cover_glow_threshold_relative_white = value,
         LENS_AMOUNT_CONTROL_ID => next.lens_amount = value,
         FOCAL_LENGTH_CONTROL_ID => next.focal_length_millimeters = value,
@@ -3718,10 +3682,8 @@ mod tests {
             environment_sphere_center_z_meters: 0.0,
             environment_sphere_radius_meters: 5.0,
             cover_glow_amount: 1.0,
-            cover_glow_scatter_fraction: 0.10,
-            cover_glow_core_radius_millimeters: 0.42,
-            cover_glow_tail_radius_millimeters: 3.5,
-            cover_glow_tail_fraction: 0.50,
+            cover_glow_intensity: 0.10,
+            cover_glow_radius_millimeters: 3.5,
             cover_glow_threshold_relative_white: 0.15,
             lens_preset_id: "iphone-16e-main-integrated",
             focal_length_millimeters: 4.2,
@@ -4440,10 +4402,8 @@ mod tests {
         }
         for expected in [
             COVER_GLOW_AMOUNT_CONTROL_ID,
-            COVER_GLOW_SCATTER_CONTROL_ID,
-            COVER_GLOW_CORE_RADIUS_CONTROL_ID,
-            COVER_GLOW_TAIL_RADIUS_CONTROL_ID,
-            COVER_GLOW_TAIL_FRACTION_CONTROL_ID,
+            COVER_GLOW_INTENSITY_CONTROL_ID,
+            COVER_GLOW_RADIUS_CONTROL_ID,
         ] {
             assert!(
                 glow_ids.contains(&expected),
@@ -4451,7 +4411,7 @@ mod tests {
             );
         }
 
-        let edited = apply_test_scalar(asus(), COVER_GLOW_TAIL_RADIUS_CONTROL_ID, 12.0).unwrap();
+        let edited = apply_test_scalar(asus(), COVER_GLOW_RADIUS_CONTROL_ID, 12.0).unwrap();
         let changed = apply_test_choice(
             unresolved_test_selection(edited),
             COVER_GLASS_CONTROL_ID,
@@ -4459,12 +4419,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            changed.cover_glow_tail_radius_millimeters,
+            changed.cover_glow_radius_millimeters,
             cover_glass_preset("cover-glossy-strong-ar")
                 .unwrap()
                 .profile
                 .glow
-                .tail_radius_millimeters
+                .radius_millimeters
         );
     }
 

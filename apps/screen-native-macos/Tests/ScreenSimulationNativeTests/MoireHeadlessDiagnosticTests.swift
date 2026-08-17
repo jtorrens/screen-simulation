@@ -122,17 +122,11 @@ import Testing
         cover.glowCharacterStrength = try moireRequiredDouble(
             "SCREEN_MOIRE_COVER_GLOW_PROFILE_STRENGTH"
         )
-        cover.glowScatterFraction = try moireRequiredDouble(
-            "SCREEN_MOIRE_COVER_GLOW_SCATTER_FRACTION"
+        cover.glowIntensity = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_GLOW_INTENSITY"
         )
-        cover.glowCoreRadiusMillimeters = try moireRequiredDouble(
-            "SCREEN_MOIRE_COVER_GLOW_CORE_RADIUS_MILLIMETERS"
-        )
-        cover.glowTailRadiusMillimeters = try moireRequiredDouble(
-            "SCREEN_MOIRE_COVER_GLOW_TAIL_RADIUS_MILLIMETERS"
-        )
-        cover.glowTailFraction = try moireRequiredDouble(
-            "SCREEN_MOIRE_COVER_GLOW_TAIL_FRACTION"
+        cover.glowRadiusMillimeters = try moireRequiredDouble(
+            "SCREEN_MOIRE_COVER_GLOW_RADIUS_MILLIMETERS"
         )
         cover.glowThresholdRelativeWhite = try moireRequiredDouble(
             "SCREEN_MOIRE_COVER_GLOW_THRESHOLD_RELATIVE_WHITE"

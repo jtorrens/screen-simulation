@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 21;
+pub const CURRENT_VERSION: u32 = 22;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -198,10 +198,8 @@ pub struct AntiGlareMicrotextureDocument {
 #[serde(deny_unknown_fields)]
 pub struct CoverGlowDocument {
     pub character_strength: f32,
-    pub scatter_fraction: f32,
-    pub core_radius_millimeters: f32,
-    pub tail_radius_millimeters: f32,
-    pub tail_fraction: f32,
+    pub intensity: f32,
+    pub radius_millimeters: f32,
     pub threshold_relative_to_panel_white: f32,
 }
 
@@ -986,10 +984,8 @@ fn validate_cover(cover: &CoverDocument) -> Result<(), PersistenceError> {
         cover.anti_glare_microtexture.correlation_length_micrometers,
         cover.anti_glare_microtexture.anisotropy,
         cover.glow.character_strength,
-        cover.glow.scatter_fraction,
-        cover.glow.core_radius_millimeters,
-        cover.glow.tail_radius_millimeters,
-        cover.glow.tail_fraction,
+        cover.glow.intensity,
+        cover.glow.radius_millimeters,
         cover.glow.threshold_relative_to_panel_white,
     ]
     .into_iter()
@@ -1382,10 +1378,8 @@ mod tests {
                     },
                     glow: CoverGlowDocument {
                         character_strength: 1.0,
-                        scatter_fraction: 0.08,
-                        core_radius_millimeters: 0.22,
-                        tail_radius_millimeters: 1.4,
-                        tail_fraction: 0.18,
+                        intensity: 0.08,
+                        radius_millimeters: 1.4,
                         threshold_relative_to_panel_white: 0.15,
                     },
                 },

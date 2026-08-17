@@ -25,10 +25,8 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
     var agMicrotextureAnisotropy: Double
     var agMicrotextureSeed: UInt32
     var glowCharacterStrength: Double
-    var glowScatterFraction: Double
-    var glowCoreRadiusMillimeters: Double
-    var glowTailRadiusMillimeters: Double
-    var glowTailFraction: Double
+    var glowIntensity: Double
+    var glowRadiusMillimeters: Double
     var glowThresholdRelativeWhite: Double
 
     func validate() throws {
@@ -80,10 +78,8 @@ struct CoverGlassDefinition: Codable, Equatable, Identifiable, Sendable {
         parameters.ag_microtexture_anisotropy = Float(agMicrotextureAnisotropy)
         parameters.ag_microtexture_seed = agMicrotextureSeed
         parameters.glow_character_strength = Float(glowCharacterStrength)
-        parameters.glow_scatter_fraction = Float(glowScatterFraction)
-        parameters.glow_core_radius_millimeters = Float(glowCoreRadiusMillimeters)
-        parameters.glow_tail_radius_millimeters = Float(glowTailRadiusMillimeters)
-        parameters.glow_tail_fraction = Float(glowTailFraction)
+        parameters.glow_intensity = Float(glowIntensity)
+        parameters.glow_radius_millimeters = Float(glowRadiusMillimeters)
         parameters.glow_threshold_relative_white = Float(glowThresholdRelativeWhite)
         return parameters
     }
@@ -125,10 +121,8 @@ enum RustCoverGlassCatalog {
                 agMicrotextureAnisotropy: Double(parameters.ag_microtexture_anisotropy),
                 agMicrotextureSeed: parameters.ag_microtexture_seed,
                 glowCharacterStrength: Double(parameters.glow_character_strength),
-                glowScatterFraction: Double(parameters.glow_scatter_fraction),
-                glowCoreRadiusMillimeters: Double(parameters.glow_core_radius_millimeters),
-                glowTailRadiusMillimeters: Double(parameters.glow_tail_radius_millimeters),
-                glowTailFraction: Double(parameters.glow_tail_fraction),
+                glowIntensity: Double(parameters.glow_intensity),
+                glowRadiusMillimeters: Double(parameters.glow_radius_millimeters),
                 glowThresholdRelativeWhite: Double(parameters.glow_threshold_relative_white)
             )
             try definition.validate()
