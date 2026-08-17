@@ -19,6 +19,128 @@ import Testing
     #expect(readRGBA32(output) == readRGBA32(fixture.source.texture))
 }
 
+@Test @MainActor func headlessVfxRoutePublishesFrontalCanvasAndIndependentOcclusion() async throws {
+    let fixture = try makePhysicalFixture(width: 32, height: 18)
+    let result = try await terminalSnapshot(submitRoute(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(),
+        route: .deviceVfxTransparency(
+            activeWidth: 32,
+            activeHeight: 18,
+            bakeDepthOfField: false
+        ),
+        identity: 9,
+        quality: .high,
+        dimensions: try PhysicalDimensions(width: 40, height: 26)
+    ))
+    #expect(result.state == .complete)
+    #expect(result.returnedIntermediate == .deviceVfxTransparency)
+    let texture = try #require(result.frame?.texture)
+    #expect(texture.width == 40)
+    #expect(texture.height == 26)
+    let values = readRGBA32(texture)
+    func pixel(_ x: Int, _ y: Int) -> ArraySlice<Float> {
+        let offset = (y * 40 + x) * 4
+        return values[offset ..< offset + 4]
+    }
+    #expect(pixel(0, 0).last == 0)
+    #expect(pixel(20, 13).last == 1)
+    #expect(pixel(4, 4).last == 1)
+    #expect(pixel(3, 4).last == 0)
+    let outsideRGB = pixel(3, 13).prefix(3)
+    #expect(outsideRGB.allSatisfy { $0.isFinite })
+}
+
+@Test @MainActor func headlessVfxRouteKeepsDistortionOutAndMakesDOFExplicit() async throws {
+    let base = try makePhysicalFixture(width: 32, height: 18)
+    func rendered(
+        fixture: PhysicalFixture,
+        bakeDOF: Bool,
+        identity: UInt64
+    ) async throws -> [Float] {
+        let snapshot = try await terminalSnapshot(submitRoute(
+            fixture: fixture,
+            screenAmount: 1,
+            contributions: try contributions(),
+            route: .deviceVfxTransparency(
+                activeWidth: 32,
+                activeHeight: 18,
+                bakeDepthOfField: bakeDOF
+            ),
+            identity: identity,
+            quality: .high,
+            dimensions: try PhysicalDimensions(width: 40, height: 26)
+        ))
+        return readRGBA32(try #require(snapshot.frame?.texture))
+    }
+    let undistorted = try await rendered(fixture: base, bakeDOF: false, identity: 90)
+    var distortedParameters = base.pipeline.parameters
+    distortedParameters.scene_geometry_lens.lens_radial_distortion = (0.3, -0.1, 0.02)
+    distortedParameters.scene_geometry_lens.lens_tangential_distortion = (0.02, -0.015)
+    let distorted = PhysicalFixture(
+        source: base.source,
+        deviceSignal: base.deviceSignal,
+        device: base.device,
+        pipeline: .init(
+            parameters: distortedParameters,
+            coverGlassID: base.pipeline.coverGlassID
+        )
+    )
+    let stillUndistorted = try await rendered(
+        fixture: distorted, bakeDOF: false, identity: 91
+    )
+    #expect(undistorted == stillUndistorted)
+
+    var defocusedParameters = base.pipeline.parameters
+    defocusedParameters.scene_geometry_lens.focus_distance_meters = 2
+    defocusedParameters.scene_geometry_lens.f_stop = 1.4
+    let defocused = PhysicalFixture(
+        source: base.source,
+        deviceSignal: base.deviceSignal,
+        device: base.device,
+        pipeline: .init(
+            parameters: defocusedParameters,
+            coverGlassID: base.pipeline.coverGlassID
+        )
+    )
+    let delegated = try await rendered(fixture: defocused, bakeDOF: false, identity: 92)
+    let baked = try await rendered(fixture: defocused, bakeDOF: true, identity: 93)
+    #expect(delegated != baked)
+}
+
+@Test @MainActor func headlessVfxRouteRejectsPartialIdealBlends() async throws {
+    let fixture = try makePhysicalFixture(width: 32, height: 18)
+    let route = PhysicalEvaluationRoute.deviceVfxTransparency(
+        activeWidth: 32,
+        activeHeight: 18,
+        bakeDepthOfField: false
+    )
+    let partialScreen = try await terminalSnapshot(submitRoute(
+        fixture: fixture,
+        screenAmount: 0.5,
+        contributions: try contributions(),
+        route: route,
+        identity: 94,
+        quality: .high,
+        dimensions: try PhysicalDimensions(width: 40, height: 26)
+    ))
+    #expect(partialScreen.state == .failed)
+    #expect(partialScreen.frame == nil)
+
+    let partialEmission = try await terminalSnapshot(submitRoute(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(emissionAmount: 0.5),
+        route: route,
+        identity: 95,
+        quality: .high,
+        dimensions: try PhysicalDimensions(width: 40, height: 26)
+    ))
+    #expect(partialEmission.state == .failed)
+    #expect(partialEmission.frame == nil)
+}
+
 @Test @MainActor func unifiedPhysicalABIReturnsEverySupportedIntermediate() async throws {
     let fixture = try makePhysicalFixture()
     for (offset, intermediate) in PhysicalIntermediate.supportedDiagnostics.enumerated() {
@@ -398,13 +520,20 @@ private func positiveRGBMean(_ texture: MTLTexture) -> Float {
 
 private func contributions(
     spreadAmount: Double = 1,
+    emissionAmount: Double = 1,
     active: Bool = true
 ) throws -> [PhysicalStageContribution] {
     try PhysicalStageID.ordered.map { stage in
         let discrete = stage == .capture(.sensorCFA)
             || stage == .capture(.developDemosaic)
-        let amount = stage == .screen(.panelLightSpread) && active
-            ? spreadAmount : active ? 1 : 0
+        let amount: Double
+        if stage == .screen(.panelLightSpread), active {
+            amount = spreadAmount
+        } else if stage == .screen(.emission), active {
+            amount = emissionAmount
+        } else {
+            amount = active ? 1 : 0
+        }
         return try PhysicalStageContribution(
             stage: stage,
             control: discrete
@@ -421,6 +550,31 @@ private func submit(
     screenAmount: Double,
     contributions: [PhysicalStageContribution],
     intermediate: PhysicalIntermediate,
+    identity: UInt64,
+    placement: PhysicalRasterPlacement = .fit,
+    quality: PhysicalQuality = .draft,
+    dimensions: PhysicalDimensions? = nil,
+    exposureSeconds: Double? = nil
+) throws -> PhysicalMetalFrameJob {
+    try submitRoute(
+        fixture: fixture,
+        screenAmount: screenAmount,
+        contributions: contributions,
+        route: .diagnostic(intermediate),
+        identity: identity,
+        placement: placement,
+        quality: quality,
+        dimensions: dimensions,
+        exposureSeconds: exposureSeconds
+    )
+}
+
+@MainActor
+private func submitRoute(
+    fixture: PhysicalFixture,
+    screenAmount: Double,
+    contributions: [PhysicalStageContribution],
+    route: PhysicalEvaluationRoute,
     identity: UInt64,
     placement: PhysicalRasterPlacement = .fit,
     quality: PhysicalQuality = .draft,
@@ -493,7 +647,7 @@ private func submit(
             bytes: [UInt8](repeating: UInt8(truncatingIfNeeded: identity), count: 32)
         ),
         rasterPlacement: placement,
-        requestedIntermediate: intermediate
+        route: route
     )
 }
 

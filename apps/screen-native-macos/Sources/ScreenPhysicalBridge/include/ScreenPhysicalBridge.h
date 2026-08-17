@@ -306,6 +306,7 @@ typedef enum {
     SCREEN_PHYSICAL_INTERMEDIATE_RAW_MOSAIC = 14,
     SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 15,
     SCREEN_PHYSICAL_INTERMEDIATE_CAMERA_RENDERED_ACESCG = 16,
+    SCREEN_PHYSICAL_INTERMEDIATE_DEVICE_VFX_TRANSPARENCY = 17,
 } ScreenPhysicalIntermediate;
 
 typedef struct {
@@ -368,6 +369,13 @@ typedef struct {
     uint64_t parameter_revision;
     uint8_t parameter_hash[SCREEN_PHYSICAL_PARAMETER_HASH_SIZE];
 } ScreenPhysicalFrameRequestV2;
+
+typedef struct {
+    uint32_t abi_version;
+    uint32_t active_width;
+    uint32_t active_height;
+    bool bake_depth_of_field;
+} ScreenPhysicalVfxTransparencySpecV1;
 
 typedef struct {
     uint32_t abi_version;
@@ -728,6 +736,11 @@ void screen_physical_camera_pose_track_v2_release(ScreenPhysicalCameraPoseTrackV
 void screen_physical_screen_pose_track_v2_release(ScreenPhysicalScreenPoseTrackV2Ref track);
 ScreenPhysicalFrameJobRef screen_physical_frame_submit(
     const ScreenPhysicalFrameRequestV2 *request,
+    const char **error_message
+);
+ScreenPhysicalFrameJobRef screen_physical_vfx_transparency_submit(
+    const ScreenPhysicalFrameRequestV2 *request,
+    const ScreenPhysicalVfxTransparencySpecV1 *spec,
     const char **error_message
 );
 bool screen_physical_frame_job_cancel(

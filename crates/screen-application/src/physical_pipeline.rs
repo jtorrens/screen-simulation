@@ -74,6 +74,7 @@ pub enum PhysicalIntermediate {
     RawMosaic = 14,
     DevelopedAcesCg = 15,
     CameraRenderedAcesCg = 16,
+    DeviceVfxTransparency = 17,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

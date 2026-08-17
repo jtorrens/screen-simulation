@@ -47,6 +47,10 @@ import Testing
 @Test func renderJobConfigurationIsAnEffectiveImmutableSnapshot() throws {
     var preset = StudioRenderPreset.builtIns[0]
     let configuration = StudioResolvedRenderConfiguration(
+        outputType: .standard,
+        jobName: "Shot010",
+        overwritePolicy: .failIfExists,
+        fusionScene: nil,
         format: .proRes4444,
         pipeline: preset.pipeline,
         target: preset.target,

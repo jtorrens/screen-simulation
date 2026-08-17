@@ -93,6 +93,13 @@ struct PhysicalPipelineParams {
     shutter: [f32; 4],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VfxTransparencyRaster {
+    pub active_width: u32,
+    pub active_height: u32,
+    pub bake_depth_of_field: bool,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RawPublicationParams {
@@ -763,6 +770,7 @@ impl MetalPhysicalPipeline {
                 physical_plan,
                 row_range,
                 Some((&prefix_cache[prefix_index].2, &prefix_cache[prefix_index].3)),
+                None,
                 |progress| report_progress(base + progress * span),
                 &is_cancelled,
             )?;
@@ -895,6 +903,7 @@ impl MetalPhysicalPipeline {
             physical_plan,
             None,
             None,
+            None,
             |progress| {
                 report_progress(if plan.sensor_enabled {
                     progress * 0.9
@@ -914,6 +923,50 @@ impl MetalPhysicalPipeline {
         )
     }
 
+    /// Headless VFX route. The requested raster is the complete padded canvas while
+    /// `active_*` identifies the centered, frontal Device rectangle inside it.
+    pub fn evaluate_vfx_transparency_with_environment(
+        &self,
+        source_acescg: &TextureRef,
+        device_signal: &TextureRef,
+        environment_acescg: Option<&TextureRef>,
+        mut plan: PhysicalPipelineExecutionPlan,
+        raster: VfxTransparencyRaster,
+        report_progress: impl FnMut(f32),
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        if raster.active_width == 0
+            || raster.active_height == 0
+            || raster.active_width > plan.requested_width
+            || raster.active_height > plan.requested_height
+            || (plan.requested_width - raster.active_width) % 2 != 0
+            || (plan.requested_height - raster.active_height) % 2 != 0
+        {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "VFX transparency requires a positive centered active raster".to_owned(),
+            ));
+        }
+        if plan.screen_amount != 1.0 || plan.emission_amount != 1.0 {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "VFX transparency requires the complete physical Device contribution".to_owned(),
+            ));
+        }
+        plan.requested_intermediate = PhysicalIntermediate::DeviceVfxTransparency;
+        plan.sensor_enabled = false;
+        plan.shutter_motion_amount = 0.0;
+        self.evaluate_rows(
+            source_acescg,
+            device_signal,
+            environment_acescg,
+            plan,
+            None,
+            None,
+            Some(raster),
+            report_progress,
+            is_cancelled,
+        )
+    }
+
     fn evaluate_rows(
         &self,
         source_acescg: &TextureRef,
@@ -922,6 +975,7 @@ impl MetalPhysicalPipeline {
         plan: PhysicalPipelineExecutionPlan,
         row_range: Option<(u32, u32)>,
         row_prefixes: Option<(&TextureRef, &TextureRef)>,
+        vfx_raster: Option<VfxTransparencyRaster>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -1036,6 +1090,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::SensorBloom
                 | PhysicalIntermediate::DevelopedAcesCg
                 | PhysicalIntermediate::CameraRenderedAcesCg
+                | PhysicalIntermediate::DeviceVfxTransparency
         ) {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
                 "requested intermediate belongs to an unsupported stage".to_owned(),
@@ -1136,7 +1191,21 @@ impl MetalPhysicalPipeline {
                 plan.panel.white_level_nits,
                 0.0,
             ],
-            geometry: [plan.panel.black_matrix_fraction, 0.0, 0.0, 0.0],
+            geometry: [
+                plan.panel.black_matrix_fraction,
+                vfx_raster.map_or(1.0, |value| {
+                    value.active_width as f32 / sampling.effective_width as f32
+                }),
+                vfx_raster.map_or(1.0, |value| {
+                    value.active_height as f32 / sampling.effective_height as f32
+                }),
+                vfx_raster.map_or(
+                    0.0,
+                    |value| {
+                        if value.bake_depth_of_field { 1.0 } else { 0.0 }
+                    },
+                ),
+            ],
             strengths: [
                 plan.screen_amount,
                 plan.emission_amount,

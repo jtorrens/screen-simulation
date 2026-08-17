@@ -379,6 +379,8 @@ fn plan(
         sensor_noise_amount: 1.0,
         development: CameraDevelopment::NEUTRAL,
         development_enabled: true,
+        rendering_intent: screen_camera::CameraRenderingIntent::NEUTRAL,
+        rendering_intent_enabled: false,
         frame_index: 0,
         requested_intermediate: intermediate,
     }

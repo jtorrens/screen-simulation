@@ -226,6 +226,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case rawMosaic = 14
     case developedACEScg = 15
     case cameraRenderedACEScg = 16
+    case deviceVfxTransparency = 17
 
     var id: UInt32 { rawValue }
 
@@ -260,6 +261,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         case .relativeGeometry: "Relative Geometry"
         case .developedACEScg: "Developed"
         case .cameraRenderedACEScg: "Camera Rendering Intent"
+        case .deviceVfxTransparency: "Device VFX Transparency"
         case .coverEnvironment: "Cover / Environment"
         case .coverGlow: "Cover Glow"
         case .lensProjection: "Lens / Projection"

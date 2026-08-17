@@ -41,31 +41,40 @@ import Testing
         .appendingPathComponent("screen-native-output-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
-    let movie = try await NativeOutputRenderer.render(
-        configuration: renderConfiguration(
+    let movieConfiguration = renderConfiguration(
             format: .h264High, preset: StudioRenderPreset.builtIns[0],
             alpha: .ignore, signalRange: .video, frameRange: 0 ... 2
-        ),
-        destination: root.appendingPathComponent("smoke.mp4"),
+        )
+    let moviePlan = try RenderOutputPlan.prepare(
+        configuration: movieConfiguration,
+        selectedDestination: root.appendingPathComponent("smoke.mp4")
+    )
+    let movie = try await NativeOutputRenderer.render(
+        configuration: movieConfiguration,
+        outputPlan: moviePlan,
         audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
     #expect(FileManager.default.fileExists(atPath: movie.path))
 
     let exrDirectory = root.appendingPathComponent("exr")
-    _ = try await NativeOutputRenderer.render(
-        configuration: renderConfiguration(
+    let exrConfiguration = renderConfiguration(
             format: .openEXR, preset: StudioRenderPreset.builtIns[5],
             alpha: .premultiplied, signalRange: .full, frameRange: 7 ... 8
-        ),
-        destination: exrDirectory, audioSource: nil,
+        )
+    let exrPlan = try RenderOutputPlan.prepare(
+        configuration: exrConfiguration, selectedDestination: exrDirectory
+    )
+    _ = try await NativeOutputRenderer.render(
+        configuration: exrConfiguration,
+        outputPlan: exrPlan, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
     #expect(FileManager.default.fileExists(
-        atPath: exrDirectory.appendingPathComponent("ScreenSimulation-00000007.exr").path
+        atPath: exrPlan.destination.appendingPathComponent("ScreenSimulation-00000007.exr").path
     ))
     #expect(FileManager.default.fileExists(
-        atPath: exrDirectory.appendingPathComponent("ScreenSimulation-00000008.exr").path
+        atPath: exrPlan.destination.appendingPathComponent("ScreenSimulation-00000008.exr").path
     ))
 
     let png = root.appendingPathComponent("current.png")
@@ -100,15 +109,19 @@ import Testing
     let expected = try display.readLinearRGBA(frame)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-native-exr-\(UUID().uuidString)")
-    _ = try await NativeOutputRenderer.render(
-        configuration: renderConfiguration(
+    let configuration = renderConfiguration(
             format: .openEXR, preset: StudioRenderPreset.builtIns[5],
             alpha: .straight, signalRange: .full, frameRange: 12 ... 12
-        ),
-        destination: root, audioSource: nil,
+        )
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: root
+    )
+    _ = try await NativeOutputRenderer.render(
+        configuration: configuration,
+        outputPlan: plan, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
-    let url = root.appendingPathComponent("ScreenSimulation-00000012.exr")
+    let url = plan.destination.appendingPathComponent("ScreenSimulation-00000012.exr")
     let session = NativeMediaSession()
     _ = try session.openImages([url])
     let sample = try #require(try await session.exactSample(at: .zero))
@@ -175,12 +188,17 @@ import Testing
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("screen-native-h265-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let url = try await NativeOutputRenderer.render(
-            configuration: renderConfiguration(
+        let configuration = renderConfiguration(
                 format: .h265High, preset: StudioRenderPreset.builtIns[1],
                 alpha: .ignore, signalRange: range, frameRange: 0 ... 0
-            ),
-            destination: root.appendingPathComponent("pq.mov"),
+            )
+        let plan = try RenderOutputPlan.prepare(
+            configuration: configuration,
+            selectedDestination: root.appendingPathComponent("pq.mov")
+        )
+        let url = try await NativeOutputRenderer.render(
+            configuration: configuration,
+            outputPlan: plan,
             audioSource: nil,
             display: display,
             frameProvider: { _ in frame },
@@ -232,16 +250,20 @@ private func movieRoundtrip(
         .appendingPathComponent("screen-native-movie-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let destination = root.appendingPathComponent("roundtrip.\(format.fileExtension)")
-    let url = try await NativeOutputRenderer.render(
-        configuration: renderConfiguration(
+    let configuration = renderConfiguration(
             format: format, preset: StudioRenderPreset.builtIns[0],
             alpha: alpha,
             signalRange: signalRange ?? (
                 format == .h264High || format == .proRes4444 ? .video : .full
             ),
             frameRange: 0 ... 2
-        ),
-        destination: destination, audioSource: nil,
+        )
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: destination
+    )
+    let url = try await NativeOutputRenderer.render(
+        configuration: configuration,
+        outputPlan: plan, audioSource: nil,
         display: display, frameProvider: { frames[$0] }, progress: { _, _ in }
     )
     let detection = await StudioMediaMetadataDetector.detect(url: url, isVideo: true)
@@ -349,14 +371,18 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
         sourceURL: sourceURL, display: display, input: input,
         alpha: alpha, matrix: matrix, range: range
     )
-    let renderedURL = try await NativeOutputRenderer.render(
-        configuration: renderConfiguration(
+    let configuration = renderConfiguration(
             format: .proRes4444, preset: StudioRenderPreset.builtIns[0],
             alpha: alpha, signalRange: .video,
             frameRate: sourceInfo.frameRate,
             frameRange: 0 ... max(0, sourceInfo.frameCount - 1)
-        ),
-        destination: outputURL, audioSource: nil, display: display,
+        )
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: outputURL
+    )
+    let renderedURL = try await NativeOutputRenderer.render(
+        configuration: configuration,
+        outputPlan: plan, audioSource: nil, display: display,
         frameProvider: { frameIndex in
             let time = CMTime(
                 value: CMTimeValue(frameIndex),
@@ -445,6 +471,10 @@ private func renderConfiguration(
     case .ignore: .ignore
     }
     return StudioResolvedRenderConfiguration(
+        outputType: .standard,
+        jobName: "ScreenSimulation",
+        overwritePolicy: .failIfExists,
+        fusionScene: nil,
         format: format,
         pipeline: preset.pipeline,
         target: preset.target,

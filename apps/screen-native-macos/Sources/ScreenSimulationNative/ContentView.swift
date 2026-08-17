@@ -1388,6 +1388,15 @@ struct ContentView: View {
 
     private var outputPanel: some View {
         Form {
+            Section("Tipo de salida") {
+                Picker("Salida", selection: Binding(
+                    get: { model.outputType },
+                    set: { model.changeOutputType($0) }
+                )) {
+                    ForEach(StudioOutputType.allCases) { Text($0.label).tag($0) }
+                }
+                TextField("Nombre del trabajo", text: $model.renderJobName)
+            }
             Section("Preset / ODT") {
                 Picker("Preset", selection: Binding(
                     get: { model.renderPreset },
@@ -1425,6 +1434,43 @@ struct ContentView: View {
                     .disabled(!model.outputFormat.supportsAlpha)
                 Toggle("Audio", isOn: $model.includeAudio)
                     .disabled(!model.outputFormat.isMovie)
+            }
+            .disabled(model.outputType == .fusionScenePackage)
+            if model.outputType == .fusionScenePackage {
+                Section("Fusion Scene Package") {
+                    LabeledContent("EXR", value: "RGBA half · ACEScg scene-linear")
+                    Picker("Profundidad de campo", selection: $model.fusionDOFMode) {
+                        ForEach(StudioFusionDOFMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    Picker("Resolución", selection: $model.fusionResolutionMode) {
+                        ForEach(StudioFusionResolutionMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    if model.fusionResolutionMode == .custom {
+                        LabeledContent("Raster activo") {
+                            TextField("Ancho", value: $model.fusionCustomActiveWidth, format: .number)
+                                .frame(width: 80)
+                            Text("×")
+                            TextField("Alto", value: $model.fusionCustomActiveHeight, format: .number)
+                                .frame(width: 80)
+                        }
+                    }
+                    LabeledContent("Threshold spill lineal") {
+                        TextField(
+                            "ACEScg",
+                            value: $model.fusionSpillThresholdSceneLinear,
+                            format: .number.precision(.fractionLength(6))
+                        ).frame(width: 110)
+                    }
+                    LabeledContent("Fade spill") {
+                        TextField(
+                            "px", value: $model.fusionSpillFadeWidthPixels, format: .number
+                        ).frame(width: 80)
+                        Text("px")
+                    }
+                    Text("La lente, la perspectiva y el motion blur se reconstruyen en Fusion. Las curvas de cámara se incluyen siempre.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("Exportación") {
                 Button("Añadir a Render Queue", action: model.enqueueExport)

@@ -45,6 +45,7 @@ use screen_panel::{
 #[cfg(target_os = "macos")]
 use screen_platform::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
+    VfxTransparencyRaster,
 };
 use screen_sensor::{BayerPattern, ComputationalCaptureProfile, SensorBloomProfile, SensorProfile};
 
@@ -338,6 +339,15 @@ pub struct ScreenPhysicalFrameRequestV2 {
     progress_identity: ScreenPhysicalIdentity128,
     parameter_revision: u64,
     parameter_hash: [u8; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalVfxTransparencySpecV1 {
+    abi_version: u32,
+    active_width: u32,
+    active_height: u32,
+    bake_depth_of_field: bool,
 }
 
 #[repr(C)]
@@ -732,6 +742,7 @@ fn intermediate(value: u32) -> Option<PhysicalIntermediate> {
         14 => PhysicalIntermediate::RawMosaic,
         15 => PhysicalIntermediate::DevelopedAcesCg,
         16 => PhysicalIntermediate::CameraRenderedAcesCg,
+        17 => PhysicalIntermediate::DeviceVfxTransparency,
         _ => return None,
     })
 }
@@ -942,9 +953,9 @@ fn effective_capture_checkpoint(
 }
 
 #[cfg(target_os = "macos")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_physical_frame_submit(
+unsafe fn physical_frame_submit_impl(
     request: *const ScreenPhysicalFrameRequestV2,
+    vfx_spec: Option<ScreenPhysicalVfxTransparencySpecV1>,
     error_message: *mut *const c_char,
 ) -> *mut ScreenPhysicalFrameJob {
     if request.is_null() {
@@ -1075,6 +1086,17 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         unsafe { set_error(error_message, b"invalid physical intermediate selector\0") };
         return std::ptr::null_mut();
     };
+    if (vfx_spec.is_some())
+        != (requested_intermediate == PhysicalIntermediate::DeviceVfxTransparency)
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"VFX transparency intermediate and specification must be selected together\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
     if !matches!(
         requested_intermediate,
         PhysicalIntermediate::SourceAcesCg
@@ -1094,6 +1116,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::RawMosaic
             | PhysicalIntermediate::DevelopedAcesCg
             | PhysicalIntermediate::CameraRenderedAcesCg
+            | PhysicalIntermediate::DeviceVfxTransparency
     ) {
         unsafe {
             set_error(
@@ -1422,16 +1445,39 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
                     (&**source, &**signal, *plan, *weight, *row)
                 })
                 .collect::<Vec<_>>();
-            backend.evaluate_temporal_with_environment(
-                &borrowed,
-                environment_texture.as_deref(),
-                |progress| {
-                    worker_shared
-                        .progress_bits
-                        .store(progress.to_bits(), Ordering::Release);
-                },
-                || worker_shared.cancelled.load(Ordering::Acquire),
-            )
+            let progress = |value: f32| {
+                worker_shared
+                    .progress_bits
+                    .store(value.to_bits(), Ordering::Release);
+            };
+            let cancelled = || worker_shared.cancelled.load(Ordering::Acquire);
+            if let Some(spec) = vfx_spec {
+                if borrowed.len() != 1 {
+                    return Err(MetalPhysicalPipelineError::InvalidPlan(
+                        "VFX transparency forbids temporal source accumulation".to_owned(),
+                    ));
+                }
+                backend.evaluate_vfx_transparency_with_environment(
+                    borrowed[0].0,
+                    borrowed[0].1,
+                    environment_texture.as_deref(),
+                    borrowed[0].2,
+                    VfxTransparencyRaster {
+                        active_width: spec.active_width,
+                        active_height: spec.active_height,
+                        bake_depth_of_field: spec.bake_depth_of_field,
+                    },
+                    progress,
+                    cancelled,
+                )
+            } else {
+                backend.evaluate_temporal_with_environment(
+                    &borrowed,
+                    environment_texture.as_deref(),
+                    progress,
+                    cancelled,
+                )
+            }
         });
         let outcome = match result {
             Ok(result) => PhysicalJobOutcome::Complete {
@@ -1475,10 +1521,54 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     }))
 }
 
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_frame_submit(
+    request: *const ScreenPhysicalFrameRequestV2,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalFrameJob {
+    unsafe { physical_frame_submit_impl(request, None, error_message) }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_vfx_transparency_submit(
+    request: *const ScreenPhysicalFrameRequestV2,
+    spec: *const ScreenPhysicalVfxTransparencySpecV1,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalFrameJob {
+    if spec.is_null() {
+        unsafe { set_error(error_message, b"missing VFX transparency specification\0") };
+        return std::ptr::null_mut();
+    }
+    let spec = unsafe { *spec };
+    if spec.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION {
+        unsafe { set_error(error_message, b"invalid VFX transparency ABI version\0") };
+        return std::ptr::null_mut();
+    }
+    unsafe { physical_frame_submit_impl(request, Some(spec), error_message) }
+}
+
 #[cfg(not(target_os = "macos"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_physical_frame_submit(
     _request: *const ScreenPhysicalFrameRequestV2,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalFrameJob {
+    unsafe {
+        set_error(
+            error_message,
+            b"Metal physical pipeline backend requires macOS\0",
+        )
+    };
+    std::ptr::null_mut()
+}
+
+#[cfg(not(target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_vfx_transparency_submit(
+    _request: *const ScreenPhysicalFrameRequestV2,
+    _spec: *const ScreenPhysicalVfxTransparencySpecV1,
     error_message: *mut *const c_char,
 ) -> *mut ScreenPhysicalFrameJob {
     unsafe {

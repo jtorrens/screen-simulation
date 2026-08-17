@@ -3,6 +3,15 @@ import Metal
 import ScreenPhysicalBridge
 import StudioColor
 
+enum PhysicalEvaluationRoute: Equatable, Sendable {
+    case diagnostic(PhysicalIntermediate)
+    case deviceVfxTransparency(
+        activeWidth: Int,
+        activeHeight: Int,
+        bakeDepthOfField: Bool
+    )
+}
+
 struct PhysicalMetalFrameSnapshot: @unchecked Sendable {
     let frame: StudioColorMetalFrame?
     let nativeDimensions: PhysicalDimensions
@@ -194,7 +203,7 @@ final class PhysicalMetalFrameEngine {
         parameterRevision: UInt64,
         parameterHash: PhysicalParameterHash,
         rasterPlacement: PhysicalRasterPlacement,
-        requestedIntermediate: PhysicalIntermediate
+        route: PhysicalEvaluationRoute
     ) throws -> PhysicalMetalFrameJob {
         var error: UnsafePointer<CChar>?
         let sourcePointer = Unmanaged.passUnretained(sourceACEScg.texture as AnyObject).toOpaque()
@@ -314,7 +323,12 @@ final class PhysicalMetalFrameEngine {
         raw.screen_amount = Float(screenAmount)
         raw.requested_width = UInt32(requestedDimensions.width)
         raw.requested_height = UInt32(requestedDimensions.height)
-        raw.requested_intermediate = requestedIntermediate.rawValue
+        switch route {
+        case let .diagnostic(intermediate):
+            raw.requested_intermediate = intermediate.rawValue
+        case .deviceVfxTransparency:
+            raw.requested_intermediate = PhysicalIntermediate.deviceVfxTransparency.rawValue
+        }
         raw.cancellation_identity = ScreenPhysicalIdentity128(
             high: cancellationIdentity.high,
             low: cancellationIdentity.low
@@ -330,7 +344,22 @@ final class PhysicalMetalFrameEngine {
         job = rawContributions.withUnsafeBufferPointer { values in
             raw.stage_contributions = values.baseAddress
             raw.stage_contribution_count = values.count
-            return screen_physical_frame_submit(&raw, &error)
+            switch route {
+            case .diagnostic:
+                return screen_physical_frame_submit(&raw, &error)
+            case let .deviceVfxTransparency(activeWidth, activeHeight, bakeDepthOfField):
+                guard activeWidth > 0, activeHeight > 0,
+                      activeWidth <= requestedDimensions.width,
+                      activeHeight <= requestedDimensions.height else {
+                    return nil
+                }
+                var spec = ScreenPhysicalVfxTransparencySpecV1()
+                spec.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+                spec.active_width = UInt32(activeWidth)
+                spec.active_height = UInt32(activeHeight)
+                spec.bake_depth_of_field = bakeDepthOfField
+                return screen_physical_vfx_transparency_submit(&raw, &spec, &error)
+            }
         }
         guard let job else {
             throw bridgeError(error, fallback: "El motor físico rechazó el frame.")

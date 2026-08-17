@@ -829,7 +829,7 @@ private func renderMoireVariant(
             bytes: [UInt8](repeating: UInt8(truncatingIfNeeded: identity), count: 32)
         ),
         rasterPlacement: .oneToOne,
-        requestedIntermediate: intermediate
+        route: .diagnostic(intermediate)
     )
     let snapshot = try await moireTerminalSnapshot(job)
     let metalElapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - metalStarted

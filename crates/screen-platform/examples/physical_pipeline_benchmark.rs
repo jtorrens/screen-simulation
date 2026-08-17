@@ -128,6 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sensor_noise_amount: 0.0,
                 development: screen_camera::CameraDevelopment::NEUTRAL,
                 development_enabled: false,
+                rendering_intent: screen_camera::CameraRenderingIntent::NEUTRAL,
+                rendering_intent_enabled: false,
                 frame_index: 0,
                 requested_intermediate: PhysicalIntermediate::DevelopedAcesCg,
             };

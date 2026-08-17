@@ -299,3 +299,11 @@ OCIO publication and staging. Forty-eight stripes project to about 2.1 s for 806
 complete 128×128 tile remained available in 0.012–0.013 s. These measured projections preserve the
 CPU-oracle spatial tolerance at full sensor coordinate phase; they do not reintroduce a faster
 phase-unstable route.
+
+The same Metal physical evaluator owns the headless `Device VFX Transparency` capability. Its typed
+raster specification supplies one exact padded output size, one centered active Device rectangle and
+one explicit baked-DOF boolean. The kernel changes only the output-coordinate mapping and accepted
+checkpoint: panel, uniformity, spread, cover and glow continue through their existing implementations.
+It publishes float32 ACEScg plus an independent aperture-coverage matte and never reads a Preview
+texture. A separate ABI entry point requires this specification together with intermediate 17;
+ordinary diagnostic submission and VFX submission cannot silently substitute for each other.

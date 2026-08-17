@@ -806,6 +806,10 @@ impl PhysicalPipelineExecutionPlan {
             PhysicalIntermediate::CoverGlow => {
                 self.lens_amount = 0.0;
             }
+            PhysicalIntermediate::DeviceVfxTransparency => {
+                self.sensor_enabled = false;
+                self.shutter_motion_amount = 0.0;
+            }
             PhysicalIntermediate::LensProjection
             | PhysicalIntermediate::ShutterMotion
             | PhysicalIntermediate::ComputationalCapture
@@ -2319,6 +2323,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::RelativeGeometry => temporally_integrated,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::CoverGlow => [covered.r, covered.g, covered.b],
+                PhysicalIntermediate::DeviceVfxTransparency => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::LensProjection => [glared.r, glared.g, glared.b],
                 PhysicalIntermediate::ShutterMotion
                 | PhysicalIntermediate::ComputationalCapture => {

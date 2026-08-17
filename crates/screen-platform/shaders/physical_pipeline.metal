@@ -223,6 +223,31 @@ inline PhysicalIdealPoint physical_invalid_ideal_point() {
     return result;
 }
 
+inline PhysicalIdealPoint physical_ideal_from_screen_uv(
+    float2 uv,
+    constant PhysicalPipelineParams& p
+) {
+    const float3 local_point = float3(
+        (uv.x - 0.5f) * p.panel_size_meters.x,
+        (0.5f - uv.y) * p.panel_size_meters.y,
+        0.0f);
+    const float3 world_point = p.screen_translation.xyz
+        + physical_quaternion_rotate(p.screen_quaternion, local_point);
+    const float3 relative = world_point - p.camera_position_focal.xyz;
+    const float depth = dot(relative, p.camera_forward_focus.xyz);
+    PhysicalIdealPoint result = physical_invalid_ideal_point();
+    if (depth < p.camera_limits.y || depth > p.camera_limits.z) return result;
+    result.point = float2(
+        2.0f * p.camera_position_focal.w
+            * dot(relative, p.camera_right_sensor_width.xyz)
+            / (depth * p.camera_right_sensor_width.w),
+        2.0f * p.camera_position_focal.w
+            * dot(relative, p.camera_up_sensor_height.xyz)
+            / (depth * p.camera_up_sensor_height.w));
+    result.valid = all(isfinite(result.point));
+    return result;
+}
+
 inline PhysicalLensOrigin physical_lens_origin(
     float2 lens_sample,
     float4 inverse_screen_quaternion,
@@ -1214,11 +1239,15 @@ kernel void evaluate_physical_pipeline(
     float2 cover_half_extent = 0.0f;
     float3 cover_irradiance = 0.0f;
     float cover_weight = 0.0f;
+    float vfx_occlusion = 0.0f;
     float aperture_weight = 0.0f;
     const uint requested_stage = p.semantics.z;
+    const bool vfx_transparency = requested_stage == 17u;
+    const bool bake_vfx_dof = !vfx_transparency || p.geometry.w != 0.0f;
     const bool final_optical = requested_stage >= 6;
     const bool needs_ideal_rgb = requested_stage == 0
-        || (final_optical && (p.strengths.y != 1.0f || p.strengths.x != 1.0f));
+        || (!vfx_transparency && final_optical
+            && (p.strengths.y != 1.0f || p.strengths.x != 1.0f));
     const bool needs_average_code = requested_stage == 1;
     const bool needs_continuous = requested_stage == 2
         || (final_optical && p.strengths.y != p.strengths.z);
@@ -1230,8 +1259,9 @@ kernel void evaluate_physical_pipeline(
     const bool needs_carrier = final_optical && VFX_DEPTH_BLUR
         && p.strengths.z != 0.0f;
     const float2 prepared_placement_scale = placement_scale(p);
-    const uint psf_samples_per_area = p.lens_softness.z == 0.0f ? 1 : 16 / (side * side);
-    const bool vfx_depth_blur = VFX_DEPTH_BLUR;
+    const uint psf_samples_per_area = !bake_vfx_dof || p.lens_softness.z == 0.0f
+        ? 1 : 16 / (side * side);
+    const bool vfx_depth_blur = VFX_DEPTH_BLUR && bake_vfx_dof;
     const float sensor_pitch_mm = p.camera_right_sensor_width.w / float(p.output_tile.x);
     const float airy_radius_mm = 1.22f * 0.000550f * p.camera_limits.x;
     const float4 inverse_screen_quaternion = float4(
@@ -1244,17 +1274,21 @@ kernel void evaluate_physical_pipeline(
         float2(0.0f, 1.0f), inverse_screen_quaternion, p);
     for (uint sy = 0; sy < side; ++sy) {
         for (uint sx = 0; sx < side; ++sx) {
-            const float2 base_minimum_uv = (
+            float2 base_minimum_uv = (
                 float2(position) + float2(sx, sy) / float(side)
             ) / float2(p.output_tile.xy);
-            const float2 base_maximum_uv = (
+            float2 base_maximum_uv = (
                 float2(position) + float2(sx + 1, sy + 1) / float(side)
             ) / float2(p.output_tile.xy);
+            if (vfx_transparency) {
+                base_minimum_uv = (base_minimum_uv - 0.5f) / p.geometry.yz + 0.5f;
+                base_maximum_uv = (base_maximum_uv - 0.5f) / p.geometry.yz + 0.5f;
+            }
             const float2 base_center = (base_minimum_uv + base_maximum_uv) * 0.5f;
             const float2 base_observed = base_center * 2.0f - 1.0f;
             const float field = clamp(dot(base_observed, base_observed) * 0.5f, 0.0f, 1.0f);
             const float softness_mm = mix(p.lens_softness.x, p.lens_softness.y, field) * 0.001f;
-            const float psf_radius_mm = vfx_depth_blur
+            const float psf_radius_mm = !bake_vfx_dof ? 0.0f : vfx_depth_blur
                 ? length(float2(softness_mm, airy_radius_mm))
                 : softness_mm + airy_radius_mm;
             const float psf_pixels = (psf_radius_mm / sensor_pitch_mm) * p.lens_softness.z;
@@ -1267,21 +1301,27 @@ kernel void evaluate_physical_pipeline(
             const float2 flat_center = base_center + psf_offset;
             const float2 observed = flat_center * 2.0f - 1.0f;
             const float2 half_extent = (maximum_uv - minimum_uv) * 0.5f;
-            const PhysicalIdealPoint center_ideal = physical_ideal_point(observed, p);
+            const PhysicalIdealPoint center_ideal = vfx_transparency
+                ? physical_ideal_from_screen_uv(flat_center, p)
+                : physical_ideal_point(observed, p);
             PhysicalIdealPoint sensor_positive_x_ideal = physical_invalid_ideal_point();
             PhysicalIdealPoint sensor_negative_x_ideal = physical_invalid_ideal_point();
             PhysicalIdealPoint sensor_positive_y_ideal = physical_invalid_ideal_point();
             PhysicalIdealPoint sensor_negative_y_ideal = physical_invalid_ideal_point();
             if (vfx_depth_blur) {
                 const float2 sensor_ndc_half_extent = half_extent * 2.0f;
-                sensor_positive_x_ideal = physical_ideal_point(
-                    observed + float2(sensor_ndc_half_extent.x, 0.0f), p);
-                sensor_negative_x_ideal = physical_ideal_point(
-                    observed - float2(sensor_ndc_half_extent.x, 0.0f), p);
-                sensor_positive_y_ideal = physical_ideal_point(
-                    observed + float2(0.0f, sensor_ndc_half_extent.y), p);
-                sensor_negative_y_ideal = physical_ideal_point(
-                    observed - float2(0.0f, sensor_ndc_half_extent.y), p);
+                sensor_positive_x_ideal = vfx_transparency
+                    ? physical_ideal_from_screen_uv(flat_center + float2(half_extent.x, 0.0f), p)
+                    : physical_ideal_point(observed + float2(sensor_ndc_half_extent.x, 0.0f), p);
+                sensor_negative_x_ideal = vfx_transparency
+                    ? physical_ideal_from_screen_uv(flat_center - float2(half_extent.x, 0.0f), p)
+                    : physical_ideal_point(observed - float2(sensor_ndc_half_extent.x, 0.0f), p);
+                sensor_positive_y_ideal = vfx_transparency
+                    ? physical_ideal_from_screen_uv(flat_center + float2(0.0f, half_extent.y), p)
+                    : physical_ideal_point(observed + float2(0.0f, sensor_ndc_half_extent.y), p);
+                sensor_negative_y_ideal = vfx_transparency
+                    ? physical_ideal_from_screen_uv(flat_center - float2(0.0f, half_extent.y), p)
+                    : physical_ideal_point(observed - float2(0.0f, sensor_ndc_half_extent.y), p);
             }
             // Irradiance depends only on the resolved ideal sensor point and
             // channel, never on the sampled point across the physical pupil.
@@ -1292,9 +1332,9 @@ kernel void evaluate_physical_pipeline(
                     physical_irradiance_weight_from_ideal(center_ideal.point, 2, p)
                 )
                 : float3(0.0f);
-            const uint aperture_sample_count = vfx_depth_blur ? 1 : 32;
+            const uint aperture_sample_count = !bake_vfx_dof || vfx_depth_blur ? 1 : 32;
             for (uint aperture = 0; aperture < aperture_sample_count; ++aperture) {
-            const float2 lens_sample = vfx_depth_blur
+            const float2 lens_sample = !bake_vfx_dof || vfx_depth_blur
                 ? float2(0.0f) : physical_aperture_sample(aperture);
             PhysicalLensOrigin lens_origin = sensor_origin;
             if (!vfx_depth_blur) {
@@ -1408,6 +1448,10 @@ kernel void evaluate_physical_pipeline(
                 }
             }
             const PhysicalRayHit green_hit = green_footprint.hit;
+            if (vfx_transparency && green_hit.valid
+                && all(green_hit.uv >= 0.0f) && all(green_hit.uv <= 1.0f)) {
+                vfx_occlusion += layer_weight;
+            }
             const float2 green_continuous_half_extent =
                 green_footprint.continuous_half_extent;
             const float2 green_projected_sensor_half_extent =
@@ -1530,9 +1574,21 @@ kernel void evaluate_physical_pipeline(
         case 8: selected = covered; break;
         case 9: selected = glared; break;
         case 10: selected = shuttered; break;
+        case 17: {
+            const float2 uv = (float2(position) + 0.5f) / float2(p.output_tile.xy);
+            const float2 device_uv = (uv - 0.5f) / p.geometry.yz + 0.5f;
+            const bool inside_device = all(device_uv >= 0.0f) && all(device_uv <= 1.0f);
+            selected = inside_device ? covered : glow;
+            break;
+        }
         default: selected = ideal.rgb + p.strengths.x * (shuttered - ideal.rgb); break;
     }
-    output.write(float4(selected, ideal.a), position);
+    if (vfx_transparency) {
+        const float matte = clamp(vfx_occlusion * reciprocal, 0.0f, 1.0f);
+        output.write(float4(selected, matte), position);
+    } else {
+        output.write(float4(selected, ideal.a), position);
+    }
 }
 
 kernel void accumulate_physical_pipeline(
