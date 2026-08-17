@@ -757,9 +757,25 @@ pub struct PreparedDeviceSignalRaster {
 pub struct PlacedFeederSignal {
     prepared: PreparedDeviceSignalRaster,
     emission_integral: DeviceSignalIntegral,
-    keyed_glow_integral: DeviceSignalIntegral,
+    glow_emission_integral: DeviceSignalIntegral,
     device_raster: [u32; 2],
     placement: RasterPlacement,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedGlowLobe {
+    width: u32,
+    height: u32,
+    padding: u32,
+    rgb: Vec<[f32; 3]>,
+}
+
+/// Panel-native keyed emission convolved into four positive Gaussian lobes.
+/// Every lobe owns transparent padding, so the optical result can extend past
+/// the Device without extending its matte or clamping a bright panel edge.
+#[derive(Clone, Debug)]
+struct PreparedEmissionGlow {
+    lobes: Vec<PreparedGlowLobe>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1627,14 +1643,14 @@ impl PlacedFeederSignal {
     fn new(
         prepared: PreparedDeviceSignalRaster,
         emission_integral: DeviceSignalIntegral,
-        keyed_glow_integral: DeviceSignalIntegral,
+        glow_emission_integral: DeviceSignalIntegral,
         device_raster: [u32; 2],
         placement: RasterPlacement,
     ) -> Self {
         Self {
             prepared,
             emission_integral,
-            keyed_glow_integral,
+            glow_emission_integral,
             device_raster,
             placement,
         }
@@ -1648,7 +1664,7 @@ impl PlacedFeederSignal {
         sample_placed_feeder_area(self, minimum, maximum)
     }
 
-    fn sample_keyed_glow_area(&self, minimum: Vec2, maximum: Vec2) -> LinearRgb {
+    fn sample_glow_emission_area(&self, minimum: Vec2, maximum: Vec2) -> LinearRgb {
         let Some(first) = source_uv_unbounded(
             self.source_raster(),
             self.device_raster,
@@ -1665,7 +1681,7 @@ impl PlacedFeederSignal {
         ) else {
             return LinearRgb::new(0.0, 0.0, 0.0);
         };
-        let value = self.keyed_glow_integral.sample_area_box(first, second);
+        let value = self.glow_emission_integral.sample_area_box(first, second);
         LinearRgb::new(value.r, value.g, value.b)
     }
 
@@ -1674,6 +1690,192 @@ impl PlacedFeederSignal {
             .emission_integral
             .sample_area_box(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
         LinearRgb::new(emission.r, emission.g, emission.b)
+    }
+}
+
+impl PreparedEmissionGlow {
+    const PADDING: u32 = 32;
+    const TARGET_SIGMA_PIXELS: f32 = 8.0;
+    const SCALES_AND_WEIGHTS: [(f32, f32); 4] =
+        [(0.3, 0.52), (1.0, 0.28), (3.0, 0.14), (7.5, 0.06)];
+
+    fn new_with_radius(
+        feeder: &PlacedFeederSignal,
+        threshold_relative_to_panel_white: f32,
+        radius_millimeters: f32,
+        panel_size_meters: Vec2,
+    ) -> Self {
+        let [source_width, source_height] = feeder.device_raster;
+        let lobes = Self::SCALES_AND_WEIGHTS
+            .into_iter()
+            .map(|(scale, _)| {
+                let physical_radius = radius_millimeters * scale;
+                let native_sigma_x =
+                    physical_radius * 0.001 / panel_size_meters.x * source_width as f32;
+                let native_sigma_y =
+                    physical_radius * 0.001 / panel_size_meters.y * source_height as f32;
+                let native_sigma = (native_sigma_x * native_sigma_y).max(1.0e-8).sqrt();
+                let reduction = (Self::TARGET_SIGMA_PIXELS / native_sigma).min(1.0);
+                let inner_width = ((source_width as f32 * reduction).round() as u32).max(1);
+                let inner_height = ((source_height as f32 * reduction).round() as u32).max(1);
+                let sigma_x = physical_radius * 0.001 / panel_size_meters.x * inner_width as f32;
+                let sigma_y = physical_radius * 0.001 / panel_size_meters.y * inner_height as f32;
+                let sigma = (sigma_x * sigma_y).max(1.0e-8).sqrt();
+                let padding = Self::PADDING;
+                let width = inner_width + 2 * padding;
+                let height = inner_height + 2 * padding;
+                let keyed = (0..height)
+                    .into_par_iter()
+                    .flat_map_iter(|y| {
+                        (0..width).map(move |x| {
+                            if x < padding
+                                || x >= padding + inner_width
+                                || y < padding
+                                || y >= padding + inner_height
+                            {
+                                return [0.0; 3];
+                            }
+                            let panel_x = x - padding;
+                            let panel_y = y - padding;
+                            let minimum = Vec2 {
+                                x: panel_x as f32 / inner_width as f32,
+                                y: panel_y as f32 / inner_height as f32,
+                            };
+                            let maximum = Vec2 {
+                                x: (panel_x + 1) as f32 / inner_width as f32,
+                                y: (panel_y + 1) as f32 / inner_height as f32,
+                            };
+                            let emission = feeder.sample_glow_emission_area(minimum, maximum);
+                            let value = [emission.r, emission.g, emission.b];
+                            let key =
+                                glow_bright_pass_scale(value, threshold_relative_to_panel_white);
+                            [value[0] * key, value[1] * key, value[2] * key]
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let kernel_radius = (4.0 * sigma).ceil().min(padding as f32) as i32;
+                let horizontal = (0..height)
+                    .into_par_iter()
+                    .flat_map_iter(|y| {
+                        let keyed = &keyed;
+                        (0..width).map(move |x| {
+                            Self::gaussian_sample(
+                                keyed,
+                                width,
+                                height,
+                                x as i32,
+                                y as i32,
+                                kernel_radius,
+                                sigma,
+                                true,
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let rgb = (0..height)
+                    .into_par_iter()
+                    .flat_map_iter(|y| {
+                        let horizontal = &horizontal;
+                        (0..width).map(move |x| {
+                            Self::gaussian_sample(
+                                horizontal,
+                                width,
+                                height,
+                                x as i32,
+                                y as i32,
+                                kernel_radius,
+                                sigma,
+                                false,
+                            )
+                        })
+                    })
+                    .collect();
+                PreparedGlowLobe {
+                    width,
+                    height,
+                    padding,
+                    rgb,
+                }
+            })
+            .collect();
+        Self { lobes }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn gaussian_sample(
+        source: &[[f32; 3]],
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        radius: i32,
+        sigma: f32,
+        horizontal: bool,
+    ) -> [f32; 3] {
+        let mut sum = [0.0_f32; 3];
+        let mut total = 0.0_f32;
+        for offset in -radius..=radius {
+            let sample_x = if horizontal { x + offset } else { x };
+            let sample_y = if horizontal { y } else { y + offset };
+            if sample_x < 0 || sample_y < 0 || sample_x >= width as i32 || sample_y >= height as i32
+            {
+                continue;
+            }
+            let weight = (-(offset as f32 * offset as f32) / (2.0 * sigma * sigma)).exp();
+            let value = source[(sample_y as u32 * width + sample_x as u32) as usize];
+            sum[0] += value[0] * weight;
+            sum[1] += value[1] * weight;
+            sum[2] += value[2] * weight;
+            total += weight;
+        }
+        if total > 0.0 {
+            [sum[0] / total, sum[1] / total, sum[2] / total]
+        } else {
+            [0.0; 3]
+        }
+    }
+
+    fn sample_lobe(lobe: &PreparedGlowLobe, uv: Vec2) -> [f32; 3] {
+        let inner_width = lobe.width - 2 * lobe.padding;
+        let inner_height = lobe.height - 2 * lobe.padding;
+        let x = uv.x * inner_width as f32 + lobe.padding as f32 - 0.5;
+        let y = uv.y * inner_height as f32 + lobe.padding as f32 - 0.5;
+        if x < 0.0 || y < 0.0 || x > (lobe.width - 1) as f32 || y > (lobe.height - 1) as f32 {
+            return [0.0; 3];
+        }
+        let x0 = x.floor() as u32;
+        let y0 = y.floor() as u32;
+        let x1 = (x0 + 1).min(lobe.width - 1);
+        let y1 = (y0 + 1).min(lobe.height - 1);
+        let tx = x - x0 as f32;
+        let ty = y - y0 as f32;
+        let at = |px: u32, py: u32| {
+            lobe.rgb[(u64::from(py) * u64::from(lobe.width) + u64::from(px)) as usize]
+        };
+        let a = at(x0, y0);
+        let b = at(x1, y0);
+        let c = at(x0, y1);
+        let d = at(x1, y1);
+        let mut result = [0.0; 3];
+        for channel in 0..3 {
+            let top = a[channel] + (b[channel] - a[channel]) * tx;
+            let bottom = c[channel] + (d[channel] - c[channel]) * tx;
+            result[channel] = top + (bottom - top) * ty;
+        }
+        result
+    }
+
+    fn sample(&self, uv: Vec2) -> [f32; 3] {
+        self.lobes.iter().zip(Self::SCALES_AND_WEIGHTS).fold(
+            [0.0_f32; 3],
+            |mut sum, (lobe, (_, weight))| {
+                let value = Self::sample_lobe(lobe, uv);
+                sum[0] += value[0] * weight;
+                sum[1] += value[1] * weight;
+                sum[2] += value[2] * weight;
+                sum
+            },
+        )
     }
 }
 
@@ -2273,8 +2475,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 evaluator.native_channel(value, 2) * alpha,
             )
         });
-    let glow_profile = plan.cover.glow;
-    let keyed_glow_integral =
+    let glow_emission_integral =
         DeviceSignalIntegral::new_mapped_with_alpha(&prepared.source, |value, authored_alpha| {
             let alpha = match plan.device_vfx_alpha_mode {
                 DeviceVfxAlphaMode::Ignore => 1.0,
@@ -2294,15 +2495,23 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 (matrix[2][0] * native[0] + matrix[2][1] * native[1] + matrix[2][2] * native[2])
                     / parameters.white_level_nits,
             ];
-            let scale = glow_bright_pass_scale(rgb, glow_profile.threshold_relative_to_panel_white);
-            DeviceRgb::new(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale)
+            DeviceRgb::new(rgb[0], rgb[1], rgb[2])
         });
     let placed_feeder = PlacedFeederSignal::new(
         prepared,
         emission_integral,
-        keyed_glow_integral,
+        glow_emission_integral,
         [plan.panel.native_width, plan.panel.native_height],
         plan.placement,
+    );
+    let prepared_emission_glow = PreparedEmissionGlow::new_with_radius(
+        &placed_feeder,
+        plan.cover.glow.threshold_relative_to_panel_white,
+        plan.cover.glow.radius_millimeters,
+        Vec2 {
+            x: plan.panel.active_width.0,
+            y: plan.panel.active_height.0,
+        },
     );
     let veiling_glare_gate_average = {
         let camera = resolved_scene.0;
@@ -2959,59 +3168,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 x: cover_uv[0] * glow_reciprocal_cover,
                 y: cover_uv[1] * glow_reciprocal_cover,
             };
-            let glow_half_extent = Vec2 {
-                x: cover_half_extent[0] * glow_reciprocal_cover,
-                y: cover_half_extent[1] * glow_reciprocal_cover,
-            };
-            let soft_area = |radius_millimeters: f32| {
-                let extent = Vec2 {
-                    x: radius_millimeters * 0.001 / plan.panel.active_width.0,
-                    y: radius_millimeters * 0.001 / plan.panel.active_height.0,
-                };
-                let minimum = Vec2 {
-                    x: glow_center.x - glow_half_extent.x - extent.x,
-                    y: glow_center.y - glow_half_extent.y - extent.y,
-                };
-                let maximum = Vec2 {
-                    x: glow_center.x + glow_half_extent.x + extent.x,
-                    y: glow_center.y + glow_half_extent.y + extent.y,
-                };
-                let panel_coverage = device_rectangle_coverage(minimum, maximum);
-                if panel_coverage == 0.0 {
-                    return [0.0; 3];
-                }
-                let rgb = placed_feeder.sample_keyed_glow_area(
-                    Vec2 {
-                        x: minimum.x.clamp(0.0, 1.0),
-                        y: minimum.y.clamp(0.0, 1.0),
-                    },
-                    Vec2 {
-                        x: maximum.x.clamp(0.0, 1.0),
-                        y: maximum.y.clamp(0.0, 1.0),
-                    },
-                );
-                [
-                    rgb.r * panel_coverage,
-                    rgb.g * panel_coverage,
-                    rgb.b * panel_coverage,
-                ]
-            };
-            // Positive multiscale approximation to a smooth exponential halo.
-            // The keyed emission has already been resolved per source sample,
-            // so large supports cannot turn midtones into a milky plate.
-            let exponential_area = |radius_millimeters: f32| {
-                let a = soft_area(radius_millimeters * 0.5);
-                let b = soft_area(radius_millimeters * 1.25);
-                let c = soft_area(radius_millimeters * 2.5);
-                let d = soft_area(radius_millimeters * 5.0);
-                [
-                    0.4 * a[0] + 0.3 * b[0] + 0.2 * c[0] + 0.1 * d[0],
-                    0.4 * a[1] + 0.3 * b[1] + 0.2 * c[1] + 0.1 * d[1],
-                    0.4 * a[2] + 0.3 * b[2] + 0.2 * c[2] + 0.1 * d[2],
-                ]
-            };
             let glow_strength = glow_profile.intensity * glow_profile.character_strength;
-            let halo = exponential_area(glow_profile.radius_millimeters);
+            let halo = prepared_emission_glow.sample(glow_center);
             let soft_glow = [
                 glow_strength * halo[0],
                 glow_strength * halo[1],
@@ -11307,10 +11465,40 @@ mod tests {
             .glow;
         assert!(glow.radius_millimeters.is_finite());
         assert!(glow.radius_millimeters > 0.0);
+
+        let rgb = (0..5)
+            .flat_map(|y: i32| {
+                (0..5).map(move |x: i32| {
+                    let distance_squared = (x - 2).pow(2) + (y - 2).pow(2);
+                    let value = (-0.5 * distance_squared as f32).exp();
+                    [value, value, value]
+                })
+            })
+            .collect();
+        let prepared = PreparedEmissionGlow {
+            lobes: vec![PreparedGlowLobe {
+                width: 5,
+                height: 5,
+                padding: 2,
+                rgb,
+            }],
+        };
+        let samples =
+            [0.5_f32, 1.0, 1.5, 2.0].map(|panel_x| prepared.sample(Vec2 { x: panel_x, y: 0.5 }));
+        for sample in samples {
+            assert!((sample[0] - sample[1]).abs() <= 1.0e-7);
+            assert!((sample[1] - sample[2]).abs() <= 1.0e-7);
+        }
+        for pair in samples.windows(2) {
+            assert!(
+                pair[0][0] > pair[1][0],
+                "the exterior Gaussian profile must decrease continuously without plateaus"
+            );
+        }
     }
 
     #[test]
-    fn cover_glow_keys_each_emission_sample_before_spatial_filtering() {
+    fn cover_glow_keys_locally_integrated_emission_monotonically() {
         let threshold = 0.5;
         let subthreshold = glow_bright_pass_scale([0.2, 0.2, 0.2], threshold);
         let keyed_white = glow_bright_pass_scale([1.0, 1.0, 1.0], threshold);
@@ -11320,6 +11508,22 @@ mod tests {
             glow_bright_pass_scale([2.0, 2.0, 2.0], threshold) > keyed_white,
             "the keyed contribution must grow monotonically above the threshold"
         );
+        let balanced_rgb = [
+            ([1.0, 0.0, 0.0], 1.0 / 3.0),
+            ([0.0, 1.0, 0.0], 1.0 / 3.0),
+            ([0.0, 0.0, 1.0], 1.0 / 3.0),
+        ]
+        .into_iter()
+        .fold([0.0; 3], |mut integrated, (rgb, weight)| {
+            integrated[0] += weight * rgb[0];
+            integrated[1] += weight * rgb[1];
+            integrated[2] += weight * rgb[2];
+            integrated
+        });
+        let balanced_key = glow_bright_pass_scale(balanced_rgb, 0.0);
+        let keyed = balanced_rgb.map(|channel| channel * balanced_key);
+        assert!((keyed[0] - keyed[1]).abs() <= 1.0e-7);
+        assert!((keyed[1] - keyed[2]).abs() <= 1.0e-7);
     }
 
     #[test]

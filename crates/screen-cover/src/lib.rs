@@ -598,37 +598,37 @@ impl CoverGlowProfile {
     };
     pub const GLOSSY_STRONG_AR: Self = Self {
         character_strength: 1.0,
-        intensity: 0.018,
+        intensity: 0.0045,
         radius_millimeters: 1.2,
         threshold_relative_to_panel_white: 0.20,
     };
     pub const GLOSSY_STANDARD_AR: Self = Self {
         character_strength: 1.0,
-        intensity: 0.030,
+        intensity: 0.0075,
         radius_millimeters: 1.8,
         threshold_relative_to_panel_white: 0.20,
     };
     pub const SEMI_GLOSS: Self = Self {
         character_strength: 1.0,
-        intensity: 0.060,
+        intensity: 0.015,
         radius_millimeters: 2.5,
         threshold_relative_to_panel_white: 0.18,
     };
     pub const MATTE_AR: Self = Self {
         character_strength: 1.0,
-        intensity: 0.10,
+        intensity: 0.025,
         radius_millimeters: 3.5,
         threshold_relative_to_panel_white: 0.15,
     };
     pub const HEAVY_MATTE: Self = Self {
         character_strength: 1.0,
-        intensity: 0.16,
+        intensity: 0.040,
         radius_millimeters: 5.0,
         threshold_relative_to_panel_white: 0.12,
     };
     pub const THICK_GLASS: Self = Self {
         character_strength: 1.0,
-        intensity: 0.035,
+        intensity: 0.00875,
         radius_millimeters: 8.0,
         threshold_relative_to_panel_white: 0.18,
     };

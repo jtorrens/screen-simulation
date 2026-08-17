@@ -57,6 +57,15 @@ struct EnvironmentImportanceParams {
     uint first_level;
 };
 
+struct GlowConvolutionParams {
+    uint2 inner_raster;
+    uint padding;
+    uint kernel_radius;
+    float sigma_pixels;
+    uint horizontal;
+    uint2 _padding;
+};
+
 kernel void build_environment_importance(
     texture2d<float, access::read> source [[texture(0)]],
     texture2d<float, access::write> destination [[texture(1)]],
@@ -1169,16 +1178,16 @@ inline float glow_bright_pass_scale(float3 rgb, float threshold) {
     return contribution / max(luminance, 1.0e-8f);
 }
 
-kernel void build_physical_glow_prefix(
+kernel void build_physical_glow_signal_prefix(
     texture2d<float, access::read> device_signal [[texture(0)]],
-    texture2d<float, access::write> keyed_signal [[texture(1)]],
-    texture2d<float, access::write> keyed_prefix [[texture(2)]],
+    texture2d<float, access::write> emission_signal [[texture(1)]],
+    texture2d<float, access::write> emission_prefix [[texture(2)]],
     constant PhysicalPipelineParams& p [[buffer(0)]],
     uint row [[thread_position_in_grid]]
 ) {
     if (row >= device_signal.get_height()) return;
     float4 accumulated = 0.0f;
-    keyed_prefix.write(accumulated, uint2(0, row));
+    emission_prefix.write(accumulated, uint2(0, row));
     for (uint x = 0; x < device_signal.get_width(); ++x) {
         const float4 code = device_signal.read(uint2(x, row));
         const float alpha = resolved_device_alpha(code.a, 1.0f, p);
@@ -1186,37 +1195,79 @@ kernel void build_physical_glow_prefix(
             panel_linear_channel(code.r, p),
             panel_linear_channel(code.g, p),
             panel_linear_channel(code.b, p)) * alpha;
-        float3 rgb = float3(
+        const float3 rgb = float3(
             dot(p.matrix0.xyz, native),
             dot(p.matrix1.xyz, native),
             dot(p.matrix2.xyz, native)) / p.levels.z;
-        rgb *= glow_bright_pass_scale(rgb, p.glow_threshold.x);
-        const float4 keyed = float4(rgb, 0.0f);
-        keyed_signal.write(keyed, uint2(x, row));
-        accumulated += keyed;
-        keyed_prefix.write(accumulated, uint2(x + 1, row));
+        const float4 emission = float4(rgb, 0.0f);
+        emission_signal.write(emission, uint2(x, row));
+        accumulated += emission;
+        emission_prefix.write(accumulated, uint2(x + 1, row));
     }
 }
 
-inline float3 vfx_bloom_area_sample(
-    texture2d<float, access::read> keyed_signal,
-    texture2d<float, access::read> keyed_row_prefix,
-    float2 center,
-    float2 footprint_half_extent,
-    float radius_millimeters,
-    float2 prepared_placement_scale,
-    constant PhysicalPipelineParams& p
+kernel void build_physical_glow_base(
+    texture2d<float, access::read> emission_signal [[texture(0)]],
+    texture2d<float, access::read> emission_prefix [[texture(1)]],
+    texture2d<float, access::write> glow_base [[texture(2)]],
+    constant PhysicalPipelineParams& p [[buffer(0)]],
+    constant GlowConvolutionParams& convolution [[buffer(1)]],
+    uint2 position [[thread_position_in_grid]]
 ) {
-    const float2 extent = radius_millimeters * 0.001f / p.panel_size_meters.xy;
-    const float2 minimum = center - footprint_half_extent - extent;
-    const float2 maximum = center + footprint_half_extent + extent;
-    const float coverage = device_rectangle_coverage(minimum, maximum);
-    if (coverage == 0.0f) return 0.0f;
-    const float4 keyed = area_sample(
-        keyed_signal, keyed_row_prefix,
-        clamp(minimum, 0.0f, 1.0f), clamp(maximum, 0.0f, 1.0f),
-        prepared_placement_scale, p);
-    return keyed.rgb * coverage;
+    if (position.x >= glow_base.get_width() || position.y >= glow_base.get_height()) return;
+    if (position.x < convolution.padding || position.y < convolution.padding
+        || position.x >= convolution.padding + convolution.inner_raster.x
+        || position.y >= convolution.padding + convolution.inner_raster.y) {
+        glow_base.write(float4(0.0f), position);
+        return;
+    }
+    const uint2 panel_position = position - convolution.padding;
+    const float2 panel_size = float2(convolution.inner_raster);
+    const float2 minimum = float2(panel_position) / panel_size;
+    const float2 maximum = float2(panel_position + 1) / panel_size;
+    const float3 rgb = area_sample(
+        emission_signal, emission_prefix, minimum, maximum, placement_scale(p), p).rgb;
+    const float key = glow_bright_pass_scale(rgb, p.glow_threshold.x);
+    glow_base.write(float4(rgb * key, 0.0f), position);
+}
+
+kernel void blur_physical_glow(
+    texture2d<float, access::read> source [[texture(0)]],
+    texture2d<float, access::write> destination [[texture(1)]],
+    constant GlowConvolutionParams& convolution [[buffer(0)]],
+    uint2 position [[thread_position_in_grid]]
+) {
+    if (position.x >= destination.get_width() || position.y >= destination.get_height()) return;
+    float3 sum = 0.0f;
+    float total = 0.0f;
+    const int2 direction = convolution.horizontal != 0u ? int2(1, 0) : int2(0, 1);
+    for (int offset = -int(convolution.kernel_radius);
+        offset <= int(convolution.kernel_radius); ++offset) {
+        const int2 sample_position = int2(position) + direction * offset;
+        if (sample_position.x < 0 || sample_position.y < 0
+            || sample_position.x >= int(source.get_width())
+            || sample_position.y >= int(source.get_height())) continue;
+        const float weight = exp(
+            -float(offset * offset)
+            / (2.0f * convolution.sigma_pixels * convolution.sigma_pixels));
+        sum += source.read(uint2(sample_position)).rgb * weight;
+        total += weight;
+    }
+    destination.write(float4(total > 0.0f ? sum / total : 0.0f, 0.0f), position);
+}
+
+inline float3 sample_emission_glow_lobe(
+    texture2d<float, access::sample> lobe,
+    float2 panel_uv
+) {
+    constexpr float padding = 32.0f;
+    const float2 texture_size = float2(lobe.get_width(), lobe.get_height());
+    const float2 inner_size = texture_size - 2.0f * padding;
+    const float2 pixel = panel_uv * inner_size + padding - 0.5f;
+    if (any(pixel < 0.0f) || any(pixel > texture_size - 1.0f)) return 0.0f;
+    constexpr sampler linear_sampler(
+        coord::normalized, address::clamp_to_zero, filter::linear);
+    return lobe.sample(linear_sampler, (pixel + 0.5f) / texture_size).rgb;
 }
 
 inline float native_channel_at_offset(
@@ -1349,8 +1400,10 @@ kernel void evaluate_physical_pipeline(
     texture2d<float, access::read> source_row_prefix [[texture(3)]],
     texture2d<float, access::read> device_row_prefix [[texture(4)]],
     texture2d<float, access::sample> environment_acescg [[texture(5)]],
-    texture2d<float, access::read> glow_signal [[texture(6)]],
-    texture2d<float, access::read> glow_row_prefix [[texture(7)]],
+    texture2d<float, access::sample> glow_lobe0 [[texture(6)]],
+    texture2d<float, access::sample> glow_lobe1 [[texture(7)]],
+    texture2d<float, access::sample> glow_lobe2 [[texture(8)]],
+    texture2d<float, access::sample> glow_lobe3 [[texture(9)]],
     constant PhysicalPipelineParams& p [[buffer(0)]],
     device const float* row_temporal_gains [[buffer(1)]],
     device const float4* veiling_gate_average [[buffer(2)]],
@@ -1669,20 +1722,12 @@ kernel void evaluate_physical_pipeline(
         dot(p.matrix2.xyz, glow_native)
     ) / p.levels.z;
     const float2 halo_center = cover_uv * cover_reciprocal;
-    const float2 halo_half_extent = cover_half_extent * cover_reciprocal;
-    const float3 soft_glow = p.cover_glow.y * (
-        0.4f * vfx_bloom_area_sample(glow_signal, glow_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.x * 0.5f,
-            prepared_placement_scale, p)
-        + 0.3f * vfx_bloom_area_sample(glow_signal, glow_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.x * 1.25f,
-            prepared_placement_scale, p)
-        + 0.2f * vfx_bloom_area_sample(glow_signal, glow_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.x * 2.5f,
-            prepared_placement_scale, p)
-        + 0.1f * vfx_bloom_area_sample(glow_signal, glow_row_prefix,
-            halo_center, halo_half_extent, p.cover_glow.x * 5.0f,
-            prepared_placement_scale, p));
+    const float3 smooth_halo =
+        0.52f * sample_emission_glow_lobe(glow_lobe0, halo_center)
+        + 0.28f * sample_emission_glow_lobe(glow_lobe1, halo_center)
+        + 0.14f * sample_emission_glow_lobe(glow_lobe2, halo_center)
+        + 0.06f * sample_emission_glow_lobe(glow_lobe3, halo_center);
+    const float3 soft_glow = p.cover_glow.y * smooth_halo;
     float3 carrier_detail = float3(
         dot(p.matrix0.xyz, carrier_detail_native),
         dot(p.matrix1.xyz, carrier_detail_native),

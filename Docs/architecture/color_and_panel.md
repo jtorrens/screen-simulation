@@ -112,7 +112,7 @@ The developed camera result enters `screen-color` as immutable linear ACEScg. Ca
 
 The direct panel term exists only inside the antialiased active-panel coverage. The Device emission
 glow receives only the already-resolved, placed and alpha-attenuated panel emission and applies a
-bounded two-scale soft VFX filter above an authored panel-white threshold. It contributes bloom
+bounded four-lobe Gaussian VFX filter above an authored panel-white threshold. It contributes bloom
 inside the Device and additive RGB with zero matte outside the active outline. Every filter support
 is intersected with the finite Device domain before placement is evaluated, so Fill/Crop or another
 placement can never extend the emitter. Original feeder/source pixels, the reference plate,

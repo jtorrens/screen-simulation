@@ -131,6 +131,17 @@ struct EnvironmentImportanceParams {
     first_level: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GlowConvolutionParams {
+    inner_raster: [u32; 2],
+    padding: u32,
+    kernel_radius: u32,
+    sigma_pixels: f32,
+    horizontal: u32,
+    _padding: [u32; 2],
+}
+
 pub struct MetalPhysicalPipeline {
     queue: metal::CommandQueue,
     thin_lens_procedural_pipeline: ComputePipelineState,
@@ -139,7 +150,9 @@ pub struct MetalPhysicalPipeline {
     vfx_depth_blur_image_pipeline: ComputePipelineState,
     environment_importance_pipeline: ComputePipelineState,
     row_prefix_pipeline: ComputePipelineState,
-    glow_prefix_pipeline: ComputePipelineState,
+    glow_signal_prefix_pipeline: ComputePipelineState,
+    glow_base_pipeline: ComputePipelineState,
+    glow_blur_pipeline: ComputePipelineState,
     veiling_reduce_pipeline: ComputePipelineState,
     veiling_finalize_pipeline: ComputePipelineState,
     accumulator: ComputePipelineState,
@@ -233,11 +246,23 @@ impl MetalPhysicalPipeline {
         let row_prefix_pipeline = device
             .new_compute_pipeline_state_with_function(&row_prefix_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let glow_prefix_function = library
-            .get_function("build_physical_glow_prefix", None)
+        let glow_signal_prefix_function = library
+            .get_function("build_physical_glow_signal_prefix", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let glow_prefix_pipeline = device
-            .new_compute_pipeline_state_with_function(&glow_prefix_function)
+        let glow_signal_prefix_pipeline = device
+            .new_compute_pipeline_state_with_function(&glow_signal_prefix_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let glow_base_function = library
+            .get_function("build_physical_glow_base", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let glow_base_pipeline = device
+            .new_compute_pipeline_state_with_function(&glow_base_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let glow_blur_function = library
+            .get_function("blur_physical_glow", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let glow_blur_pipeline = device
+            .new_compute_pipeline_state_with_function(&glow_blur_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let veiling_reduce_function = library
             .get_function("reduce_physical_veiling_source", None)
@@ -283,7 +308,9 @@ impl MetalPhysicalPipeline {
             vfx_depth_blur_image_pipeline,
             environment_importance_pipeline,
             row_prefix_pipeline,
-            glow_prefix_pipeline,
+            glow_signal_prefix_pipeline,
+            glow_base_pipeline,
+            glow_blur_pipeline,
             veiling_reduce_pipeline,
             veiling_finalize_pipeline,
             accumulator,
@@ -422,47 +449,137 @@ impl MetalPhysicalPipeline {
         Ok((source_prefix, device_prefix))
     }
 
-    fn glow_prefix_textures(
+    fn glow_lobe_textures(
         &self,
         device_signal: &TextureRef,
         params: &PhysicalPipelineParams,
-    ) -> Result<(Texture, Texture), MetalPhysicalPipelineError> {
+    ) -> Result<Vec<Texture>, MetalPhysicalPipelineError> {
+        const PADDING: u32 = 32;
+        const TARGET_SIGMA_PIXELS: f32 = 8.0;
+        const SCALES: [f32; 4] = [0.3, 1.0, 3.0, 7.5];
         let device = device_signal.device();
-        let descriptor = TextureDescriptor::new();
-        descriptor.set_texture_type(MTLTextureType::D2);
-        descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
-        descriptor.set_width(device_signal.width());
-        descriptor.set_height(device_signal.height());
-        descriptor.set_storage_mode(MTLStorageMode::Private);
-        descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
-        let keyed = device.new_texture(&descriptor);
-        descriptor.set_width(device_signal.width() + 1);
-        let prefix = device.new_texture(&descriptor);
+        let source_descriptor = TextureDescriptor::new();
+        source_descriptor.set_texture_type(MTLTextureType::D2);
+        source_descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+        source_descriptor.set_width(device_signal.width());
+        source_descriptor.set_height(device_signal.height());
+        source_descriptor.set_storage_mode(MTLStorageMode::Private);
+        source_descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+        let emission_signal = device.new_texture(&source_descriptor);
+        source_descriptor.set_width(device_signal.width() + 1);
+        let emission_prefix = device.new_texture(&source_descriptor);
         let command = self.queue.new_command_buffer();
-        let encoder = command.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.glow_prefix_pipeline);
-        encoder.set_texture(0, Some(device_signal));
-        encoder.set_texture(1, Some(&keyed));
-        encoder.set_texture(2, Some(&prefix));
-        encoder.set_bytes(
+        let prefix_encoder = command.new_compute_command_encoder();
+        prefix_encoder.set_compute_pipeline_state(&self.glow_signal_prefix_pipeline);
+        prefix_encoder.set_texture(0, Some(device_signal));
+        prefix_encoder.set_texture(1, Some(&emission_signal));
+        prefix_encoder.set_texture(2, Some(&emission_prefix));
+        prefix_encoder.set_bytes(
             0,
             size_of::<PhysicalPipelineParams>() as u64,
             (params as *const PhysicalPipelineParams).cast(),
         );
-        let width = self.glow_prefix_pipeline.thread_execution_width().max(1);
-        encoder.dispatch_threads(
+        let prefix_width = self
+            .glow_signal_prefix_pipeline
+            .thread_execution_width()
+            .max(1);
+        prefix_encoder.dispatch_threads(
             MTLSize::new(device_signal.height(), 1, 1),
-            MTLSize::new(width, 1, 1),
+            MTLSize::new(prefix_width, 1, 1),
         );
-        encoder.end_encoding();
+        prefix_encoder.end_encoding();
+        let source_width = params.source_panel[2];
+        let source_height = params.source_panel[3];
+        let panel_width = params.panel_size_meters[0];
+        let panel_height = params.panel_size_meters[1];
+        let mut lobes = Vec::with_capacity(SCALES.len());
+        for scale in SCALES {
+            let physical_radius = params.cover_glow[0] * scale;
+            let native_sigma_x = physical_radius * 0.001 / panel_width * source_width as f32;
+            let native_sigma_y = physical_radius * 0.001 / panel_height * source_height as f32;
+            let native_sigma = (native_sigma_x * native_sigma_y).max(1.0e-8).sqrt();
+            let reduction = (TARGET_SIGMA_PIXELS / native_sigma).min(1.0);
+            let inner_width = ((source_width as f32 * reduction).round() as u32).max(1);
+            let inner_height = ((source_height as f32 * reduction).round() as u32).max(1);
+            let sigma_x = physical_radius * 0.001 / panel_width * inner_width as f32;
+            let sigma_y = physical_radius * 0.001 / panel_height * inner_height as f32;
+            let sigma = (sigma_x * sigma_y).max(1.0e-8).sqrt();
+            let convolution = GlowConvolutionParams {
+                inner_raster: [inner_width, inner_height],
+                padding: PADDING,
+                kernel_radius: (4.0 * sigma).ceil().min(PADDING as f32) as u32,
+                sigma_pixels: sigma,
+                horizontal: 0,
+                _padding: [0; 2],
+            };
+            let descriptor = TextureDescriptor::new();
+            descriptor.set_texture_type(MTLTextureType::D2);
+            descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+            descriptor.set_width(u64::from(inner_width + 2 * PADDING));
+            descriptor.set_height(u64::from(inner_height + 2 * PADDING));
+            descriptor.set_storage_mode(MTLStorageMode::Private);
+            descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+            let base = device.new_texture(&descriptor);
+            let temporary = device.new_texture(&descriptor);
+            let blurred = device.new_texture(&descriptor);
+
+            let encoder = command.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&self.glow_base_pipeline);
+            encoder.set_texture(0, Some(&emission_signal));
+            encoder.set_texture(1, Some(&emission_prefix));
+            encoder.set_texture(2, Some(&base));
+            encoder.set_bytes(
+                0,
+                size_of::<PhysicalPipelineParams>() as u64,
+                (params as *const PhysicalPipelineParams).cast(),
+            );
+            encoder.set_bytes(
+                1,
+                size_of::<GlowConvolutionParams>() as u64,
+                (&convolution as *const GlowConvolutionParams).cast(),
+            );
+            let width = self.glow_base_pipeline.thread_execution_width().max(1);
+            let height =
+                (self.glow_base_pipeline.max_total_threads_per_threadgroup() / width).max(1);
+            encoder.dispatch_threads(
+                MTLSize::new(base.width(), base.height(), 1),
+                MTLSize::new(width, height, 1),
+            );
+            encoder.end_encoding();
+
+            for (source, destination, horizontal) in
+                [(&base, &temporary, 1_u32), (&temporary, &blurred, 0_u32)]
+            {
+                let mut direction = convolution;
+                direction.horizontal = horizontal;
+                let encoder = command.new_compute_command_encoder();
+                encoder.set_compute_pipeline_state(&self.glow_blur_pipeline);
+                encoder.set_texture(0, Some(source));
+                encoder.set_texture(1, Some(destination));
+                encoder.set_bytes(
+                    0,
+                    size_of::<GlowConvolutionParams>() as u64,
+                    (&direction as *const GlowConvolutionParams).cast(),
+                );
+                let width = self.glow_blur_pipeline.thread_execution_width().max(1);
+                let height =
+                    (self.glow_blur_pipeline.max_total_threads_per_threadgroup() / width).max(1);
+                encoder.dispatch_threads(
+                    MTLSize::new(destination.width(), destination.height(), 1),
+                    MTLSize::new(width, height, 1),
+                );
+                encoder.end_encoding();
+            }
+            lobes.push(blurred);
+        }
         command.commit();
         command.wait_until_completed();
         if command.status() != MTLCommandBufferStatus::Completed {
             return Err(MetalPhysicalPipelineError::Backend(
-                "physical glow-prefix construction did not complete".to_owned(),
+                "physical Gaussian glow construction did not complete".to_owned(),
             ));
         }
-        Ok((keyed, prefix))
+        Ok(lobes)
     }
 
     fn read_physical_raster(
@@ -1534,7 +1651,7 @@ impl MetalPhysicalPipeline {
             generated_row_prefixes = self.row_prefix_textures(source_acescg, device_signal)?;
             (&*generated_row_prefixes.0, &*generated_row_prefixes.1)
         };
-        let (glow_signal, glow_row_prefix) = self.glow_prefix_textures(device_signal, &params)?;
+        let glow_lobes = self.glow_lobe_textures(device_signal, &params)?;
         let zero_veiling = [0.0_f32; 4];
         let veiling_gate_average = device.new_buffer_with_data(
             zero_veiling.as_ptr().cast(),
@@ -1619,8 +1736,9 @@ impl MetalPhysicalPipeline {
             encoder.set_texture(3, Some(&source_row_prefix));
             encoder.set_texture(4, Some(&device_row_prefix));
             encoder.set_texture(5, environment_acescg);
-            encoder.set_texture(6, Some(&glow_signal));
-            encoder.set_texture(7, Some(&glow_row_prefix));
+            for (index, lobe) in glow_lobes.iter().enumerate() {
+                encoder.set_texture(6 + index as u64, Some(lobe));
+            }
             encoder.set_bytes(
                 0,
                 size_of::<PhysicalPipelineParams>() as u64,
