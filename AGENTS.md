@@ -95,6 +95,7 @@ These rules apply to every task in this repository.
 
 ## Phase-gated implementation
 
+- Do not implement, edit code, alter contracts, run state-changing build or packaging steps, or create external artifacts merely because a problem, desired behavior or possible solution is discussed. First explain the proposed change and wait for an explicit implementation authorization from the user, such as “implementa”, “hazlo”, or an equivalent unambiguous instruction. This applies even when a previous request established a broader implementation goal; a later discussion, diagnosis or clarification does not renew that authorization.
 - Before changing or adding a simulation phase, present a non-technical high-level summary and wait for explicit user confirmation.
 - The summary states what the phase represents, what it receives and delivers, which controls become visible, which cumulative Preview option is added, and how it will be compared with the previous model.
 - A phase is complete only after checking owner-supplied parameters and presets, limits and units, exact consumption of the prior canonical artifact, cumulative Preview selection, color/alpha/raster/placement identity, comparable old/new diagnostic PNGs, visual observations with user review, compilation and owning contract/architecture tests.
