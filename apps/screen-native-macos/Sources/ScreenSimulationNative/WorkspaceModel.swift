@@ -3279,10 +3279,44 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func applyTrackingCameraAtCurrentFrame() {
-        // Tracking is an external per-frame override. It must never be written back into
-        // scene authoring: Setup, native render and Render Queue all obtain it through
-        // resolveSceneFrame(_:), using exactly the requested timeline frame.
-        guard trackingCameraEnabled, selectedTrackingCamera != nil else { return }
+        guard let resolved = try? resolveSceneFrame(currentFrame),
+              trackingCameraEnabled,
+              let camera = selectedTrackingCamera
+        else { return }
+        var authored = resolved.authored
+        if var selection = testAuthoringSelection {
+            let degrees = PoseRotationProjection.degrees(from: authored.cameraPose.quaternion)
+            selection.geometryModeID = "free"
+            selection.cameraPositionXMeters = authored.cameraPose.position[0]
+            selection.cameraPositionYMeters = authored.cameraPose.position[1]
+            selection.cameraPositionZMeters = authored.cameraPose.position[2]
+            selection.cameraRotationXDegrees = degrees[0]
+            selection.cameraRotationYDegrees = degrees[1]
+            selection.cameraRotationZDegrees = degrees[2]
+            selection.focalLengthMillimeters = camera.focalLengthMillimeters
+            if selection.autofocusEnabled,
+               let focused = try? RustTestAuthoringCoordinator.apply(
+                .setScalar(
+                    controlID: "autofocus-target-u",
+                    value: selection.autofocusTargetU
+                ),
+                to: selection
+               ),
+               let focusResolved = try? RustTestAuthoringCoordinator.apply(
+                .setChoice(
+                    controlID: "preview-quality",
+                    optionID: selection.previewQualityID
+                ),
+                to: focused
+               ) {
+                selection = focusResolved
+                authored.sceneLens.focusDistanceMeters = focusResolved.focusDistanceMeters
+            }
+            testAuthoringSelection = selection
+            try? refreshTestAuthoringDescriptor()
+        }
+        physicalAuthoringState = authored
+        resolvedPhysicalPipeline = try? authored.resolvedPipeline()
         physicalModel.invalidateExternalParameters()
     }
 
@@ -6410,6 +6444,30 @@ final class WorkspaceModel: ObservableObject {
         selectedCapturePresetID = capture.id
         selectedCaptureRasterModeID = selection.captureRasterModeID
         selectedLensPresetID = selection.lensPresetID
+        if trackingCameraEnabled,
+           let scale = trackingMetersPerSourceUnit,
+           let camera = selectedTrackingCamera {
+            let exactFrameRate = ReferenceTimelineAuthority.resolve(
+                source: sourceTimelineInfo,
+                reference: referenceTimelineInfo,
+                referenceVisible: referenceControlsTimeline,
+                tracking: trackingTimelineInfo
+            ).exactFrameRate
+            guard let sample = camera.sample(
+                atTimelineFrame: currentFrame,
+                timelineFrameRate: exactFrameRate.framesPerSecond
+            ) else {
+                throw SceneLibraryError.invalidDocument(
+                    "El tracking no contiene una muestra para el frame solicitado."
+                )
+            }
+            Self.applyImportedTrackingCamera(
+                camera,
+                sample: sample,
+                metersPerSourceUnit: scale,
+                to: &authored
+            )
+        }
         physicalAuthoringState = authored
         resolvedPhysicalPipeline = try authored.resolvedPipeline()
         baseModelDeviceDefinition = device
