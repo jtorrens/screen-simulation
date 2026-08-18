@@ -1129,7 +1129,7 @@ enum FusionScenePackageWriter {
           CustomData = { Role = "saved-reference-idt", InputTransformID = "\(reference.inputTransformID)", ColorTransformContract = "\(reference.ocioSourceColorSpace) to ACEScg" },
           ViewInfo = OperatorInfo { Pos = { 1265, 346.5 } }
         },
-        ReferenceResize = Resize {
+        ReferenceResize = BetterResize {
           Inputs = {
             Width = Input { Value = \(resizedWidth) },
             Height = Input { Value = \(resizedHeight) },

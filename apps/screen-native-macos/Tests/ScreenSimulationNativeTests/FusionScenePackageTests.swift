@@ -399,7 +399,7 @@ private func temporaryDirectory() throws -> URL {
     #expect(comp.contains("ReferenceToACEScg = OCIOColorSpace"))
     #expect(comp.contains("SourceSpace = Input { Value = FuID { \"ARRI LogC4\" } }"))
     #expect(comp.contains("OutputSpace = Input { Value = FuID { \"ACEScg\" } }"))
-    #expect(comp.contains("ReferenceResize = Resize"))
+    #expect(comp.contains("ReferenceResize = BetterResize"))
     #expect(comp.contains("PlateInput = Merge"))
     #expect(comp.contains("Placement = \"fill-crop\""))
 }
