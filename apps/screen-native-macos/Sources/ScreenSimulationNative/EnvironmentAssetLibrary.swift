@@ -79,35 +79,7 @@ enum EnvironmentAssetLibrary {
         do { data = try Data(contentsOf: source, options: .mappedIfSafe) }
         catch { throw EnvironmentAssetLibraryError.unreadable }
         guard !data.isEmpty else { throw EnvironmentAssetLibraryError.unreadable }
-        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        if let existing = try asset(
-            sha256: hash,
-            originalFileName: source.lastPathComponent,
-            libraryRoot: libraryRoot
-        ) {
-            return existing
-        }
-        let directory = try environmentDirectory(libraryRoot: libraryRoot)
-        let stem = source.deletingPathExtension().lastPathComponent
-            .replacingOccurrences(of: "/", with: "-")
-        let destination = directory.appendingPathComponent(
-            "\(stem)--\(hash).\(pathExtension)"
-        )
-        if !FileManager.default.fileExists(atPath: destination.path) {
-            let temporary = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
-            do {
-                try data.write(to: temporary, options: .atomic)
-                try FileManager.default.moveItem(at: temporary, to: destination)
-            } catch {
-                try? FileManager.default.removeItem(at: temporary)
-                throw EnvironmentAssetLibraryError.copyFailed(error.localizedDescription)
-            }
-        }
-        return .init(
-            url: destination,
-            originalFileName: source.lastPathComponent,
-            sha256: hash
-        )
+        return .init(url: source, originalFileName: source.lastPathComponent, sha256: "")
     }
 
     static func storeGeneratedEXR(
