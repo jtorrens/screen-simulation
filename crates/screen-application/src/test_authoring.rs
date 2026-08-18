@@ -833,6 +833,10 @@ pub enum TestPreviewResult {
     PanelTemporal = 22,
 }
 
+// Tracking solutions may use an arbitrary world origin. Only relative camera/device
+// geometry is physically constrained, while absolute coordinates need a large finite guard.
+const MAX_WORLD_COORDINATE_METERS: f32 = 1_000_000.0;
+
 impl TestPreviewResult {
     pub const fn physical_intermediate(self) -> Option<PhysicalIntermediate> {
         match self {
@@ -1258,7 +1262,7 @@ pub fn resolve_test_authoring_selection(
             selection.screen_position_z_meters,
         ]
         .into_iter()
-        .any(|value| value.abs() > 100.0)
+        .any(|value| value.abs() > MAX_WORLD_COORDINATE_METERS)
         || [
             selection.camera_rotation_x_degrees,
             selection.camera_rotation_y_degrees,
@@ -1360,8 +1364,10 @@ pub fn resolve_test_authoring_selection(
     .into_iter()
     .any(|value| !value.is_finite() || value.abs() > 1_000.0)
         || !selection.environment_sphere_radius_meters.is_finite()
-        || !(minimum_environment_radius..=1_000.0)
-            .contains(&selection.environment_sphere_radius_meters)
+        || selection.environment_sphere_radius_meters <= 0.0
+        || selection.environment_sphere_radius_meters > 1_000.0
+        || (environment_projection_id == "finite-sphere"
+            && selection.environment_sphere_radius_meters < minimum_environment_radius)
         || (selection.environment_source_id != IMAGE_ENVIRONMENT_SOURCE_ID
             && selection.environment_projection_id != "distant")
     {
@@ -1850,8 +1856,8 @@ pub fn test_page_descriptor(
                 SCREEN_POSITION_X_CONTROL_ID,
                 "Pantalla X",
                 selection.screen_position_x_meters,
-                -5.0,
-                5.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 0.0,
                 "m",
             ),
@@ -1859,8 +1865,8 @@ pub fn test_page_descriptor(
                 SCREEN_POSITION_Y_CONTROL_ID,
                 "Pantalla Y",
                 selection.screen_position_y_meters,
-                -5.0,
-                5.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 0.0,
                 "m",
             ),
@@ -1868,8 +1874,8 @@ pub fn test_page_descriptor(
                 SCREEN_POSITION_Z_CONTROL_ID,
                 "Pantalla Z",
                 selection.screen_position_z_meters,
-                -5.0,
-                5.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 0.0,
                 "m",
             ),
@@ -1889,8 +1895,8 @@ pub fn test_page_descriptor(
                 CAMERA_POSITION_X_CONTROL_ID,
                 "Cámara X",
                 selection.camera_position_x_meters,
-                -100.0,
-                100.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 seed_camera_x,
                 "m",
             ),
@@ -1898,8 +1904,8 @@ pub fn test_page_descriptor(
                 CAMERA_POSITION_Y_CONTROL_ID,
                 "Cámara Y",
                 selection.camera_position_y_meters,
-                -100.0,
-                100.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 0.0,
                 "m",
             ),
@@ -1907,8 +1913,8 @@ pub fn test_page_descriptor(
                 CAMERA_POSITION_Z_CONTROL_ID,
                 "Cámara Z",
                 selection.camera_position_z_meters,
-                -100.0,
-                100.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 seed_camera_z,
                 "m",
             ),
@@ -1943,8 +1949,8 @@ pub fn test_page_descriptor(
                 SCREEN_POSITION_X_CONTROL_ID,
                 "Pantalla X",
                 selection.screen_position_x_meters,
-                -5.0,
-                5.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 0.0,
                 "m",
             ),
@@ -1952,8 +1958,8 @@ pub fn test_page_descriptor(
                 SCREEN_POSITION_Y_CONTROL_ID,
                 "Pantalla Y",
                 selection.screen_position_y_meters,
-                -5.0,
-                5.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 0.0,
                 "m",
             ),
@@ -1961,8 +1967,8 @@ pub fn test_page_descriptor(
                 SCREEN_POSITION_Z_CONTROL_ID,
                 "Pantalla Z",
                 selection.screen_position_z_meters,
-                -5.0,
-                5.0,
+                -MAX_WORLD_COORDINATE_METERS,
+                MAX_WORLD_COORDINATE_METERS,
                 0.0,
                 "m",
             ),
@@ -4103,6 +4109,33 @@ mod tests {
             .unwrap();
             assert_eq!(resolved.frame_rate, rate);
         }
+    }
+
+    #[test]
+    fn free_geometry_accepts_a_tracking_world_with_a_large_absolute_origin() {
+        let mut selection = unresolved_test_selection(
+            default_test_authoring_selection(
+                "srgb-encoded-rec709",
+                "lcd-asus-proart-pa329cv",
+                FrameRate::new(24, 1).unwrap(),
+            )
+            .unwrap(),
+        );
+        selection.geometry_mode_id = "free";
+        selection.camera_position_x_meters = 12_001.0;
+        selection.camera_position_y_meters = -7_500.0;
+        selection.camera_position_z_meters = 320.0;
+        selection.screen_position_x_meters = 12_000.0;
+        selection.screen_position_y_meters = -7_500.0;
+        selection.screen_position_z_meters = 319.85;
+        let resolved = resolve_test_authoring_selection(selection);
+        assert!(resolved.is_ok(), "{resolved:?}");
+
+        selection.screen_position_x_meters = MAX_WORLD_COORDINATE_METERS + 1.0;
+        assert_eq!(
+            resolve_test_authoring_selection(selection),
+            Err(TestAuthoringError::InvalidGeometry)
+        );
     }
 
     #[test]

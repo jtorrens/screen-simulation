@@ -39,6 +39,39 @@ import Testing
     #expect(try store.load() == document)
 }
 
+@MainActor
+@Test func autosaveSurvivesSceneDeletionAndRestoresAsANewScene() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-autosave-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let controller = SceneLibraryController(store: try SceneLibraryStore(directoryURL: root))
+    let capture = SavedSceneCapture(
+        snapshot: .init(
+            source: .init(
+                kind: .syntheticPattern, patternRawValue: SyntheticPattern.eyeChart.rawValue,
+                assets: [], missingMedia: nil
+            ),
+            currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+            viewerIsFitted: true,
+            settingsDocument: try JSONSerialization.data(
+                withJSONObject: ["settings": ["schema": PhysicalSettingsExchange.schema]]
+            )
+        ),
+        thumbnailPNG: Data([1, 2, 3]), generatedEnvironmentEXR: nil
+    )
+    let scene = try controller.add(capture: capture)
+    #expect(try controller.autosaves(for: controller.autosaveHistoryTarget(for: scene)).count == 1)
+
+    try controller.delete(scene)
+    let target = try #require(controller.deletedAutosaveHistoryTargets().first)
+    let revision = try #require(try controller.autosaves(for: target).first)
+    let restored = try controller.restoreAutosave(revision)
+
+    #expect(restored.id != scene.id)
+    #expect(restored.snapshot == scene.snapshot)
+    #expect(controller.document.scenes.contains(where: { $0.id == restored.id }))
+}
+
 @Test func sceneLibraryPreservesMissingMediaTimingAndInterpretationContext() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-missing-\(UUID().uuidString)")

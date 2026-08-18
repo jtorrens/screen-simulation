@@ -212,7 +212,9 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         try tracking?.validate()
     }
 
-    func replacingGeneratedEnvironment(_ asset: SavedSceneAsset?) throws -> Self {
+    func replacingGeneratedEnvironment(
+        _ asset: SavedSceneAsset?, absolutePath: String? = nil
+    ) throws -> Self {
         guard let asset else {
             return Self(
                 source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
@@ -229,7 +231,14 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         else { throw SceneLibraryError.invalidDocument("La escena no contiene el recurso de entorno.") }
         environment["kind"] = "image"
         environment["fileName"] = asset.fileName
-        environment["sha256"] = asset.sha256
+        guard let resolvedAbsolutePath = absolutePath
+            ?? (environment["absolutePath"] as? String),
+            resolvedAbsolutePath.hasPrefix("/")
+        else {
+            throw SceneLibraryError.invalidDocument("Falta la ruta del entorno generado.")
+        }
+        environment.removeValue(forKey: "sha256")
+        environment["absolutePath"] = resolvedAbsolutePath
         environment["inputTransformID"] = "acescg"
         context["environmentResource"] = environment
         settings["context"] = context
@@ -274,6 +283,54 @@ struct SavedSceneCapture: Sendable {
     let snapshot: SavedSceneSnapshot
     let thumbnailPNG: Data
     let generatedEnvironmentEXR: Data?
+}
+
+/// A self-contained recovery point. External resources intentionally remain external paths;
+/// only app-generated HDRI bytes are retained because their scene-owned file may be replaced.
+struct SceneAutosaveRevision: Codable, Equatable, Identifiable, Sendable {
+    static let schema = "ScreenSimulation.SceneAutosave.v1"
+    let schema: String
+    let id: UUID
+    let originalSceneID: UUID
+    let sceneName: String
+    let savedAt: Date
+    let snapshot: SavedSceneSnapshot
+    let thumbnailFileName: String
+    let generatedEnvironmentFileName: String?
+
+    init(
+        id: UUID = UUID(), originalSceneID: UUID, sceneName: String,
+        savedAt: Date = Date(), snapshot: SavedSceneSnapshot,
+        hasGeneratedEnvironment: Bool
+    ) {
+        schema = Self.schema
+        self.id = id
+        self.originalSceneID = originalSceneID
+        self.sceneName = sceneName
+        self.savedAt = savedAt
+        self.snapshot = snapshot
+        thumbnailFileName = "\(id.uuidString.lowercased()).png"
+        generatedEnvironmentFileName = hasGeneratedEnvironment
+            ? "\(id.uuidString.lowercased()).exr" : nil
+    }
+
+    func validate() throws {
+        guard schema == Self.schema,
+              !sceneName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              savedAt.timeIntervalSinceReferenceDate.isFinite,
+              thumbnailFileName == "\(id.uuidString.lowercased()).png",
+              generatedEnvironmentFileName == nil
+                || generatedEnvironmentFileName == "\(id.uuidString.lowercased()).exr"
+        else { throw SceneLibraryError.invalidDocument("La copia de recuperación no es válida.") }
+        try snapshot.validate()
+    }
+}
+
+struct SceneAutosaveHistoryTarget: Identifiable, Sendable {
+    let sceneID: UUID
+    let sceneName: String
+    let isDeletedScene: Bool
+    var id: UUID { sceneID }
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
@@ -400,6 +457,90 @@ struct SceneLibraryStore: Sendable {
         try data.write(to: thumbnailURL(for: scene), options: .atomic)
     }
 
+    func autosaveDirectory(for sceneID: UUID) -> URL {
+        directoryURL.deletingLastPathComponent()
+            .appendingPathComponent("Autosave", isDirectory: true)
+            .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
+    }
+
+    func writeAutosave(
+        scene: SavedScene,
+        thumbnailPNG: Data,
+        generatedEnvironmentEXR: Data?
+    ) throws -> SceneAutosaveRevision {
+        guard !thumbnailPNG.isEmpty else {
+            throw SceneLibraryError.invalidDocument("La miniatura de recuperación está vacía.")
+        }
+        let directory = autosaveDirectory(for: scene.id)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let revision = SceneAutosaveRevision(
+            originalSceneID: scene.id, sceneName: scene.name, snapshot: scene.snapshot,
+            hasGeneratedEnvironment: generatedEnvironmentEXR != nil
+        )
+        try revision.validate()
+        try thumbnailPNG.write(
+            to: directory.appendingPathComponent(revision.thumbnailFileName), options: .atomic
+        )
+        if let generatedEnvironmentEXR {
+            try generatedEnvironmentEXR.write(
+                to: directory.appendingPathComponent(
+                    try requiredGeneratedEnvironmentFileName(revision)
+                ), options: .atomic
+            )
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do {
+            try encoder.encode(revision).write(
+                to: directory.appendingPathComponent("\(revision.id.uuidString.lowercased()).json"),
+                options: .atomic
+            )
+        } catch {
+            try? FileManager.default.removeItem(
+                at: directory.appendingPathComponent(revision.thumbnailFileName)
+            )
+            if let fileName = revision.generatedEnvironmentFileName {
+                try? FileManager.default.removeItem(at: directory.appendingPathComponent(fileName))
+            }
+            throw error
+        }
+        return revision
+    }
+
+    func autosaves(for sceneID: UUID) throws -> [SceneAutosaveRevision] {
+        let directory = autosaveDirectory(for: sceneID)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "json" }
+        let revisions = try urls.map { url -> SceneAutosaveRevision in
+            let data = try Data(contentsOf: url)
+            let revision = try JSONDecoder().decode(SceneAutosaveRevision.self, from: data)
+            try revision.validate()
+            guard revision.originalSceneID == sceneID,
+                  FileManager.default.fileExists(
+                      atPath: directory.appendingPathComponent(revision.thumbnailFileName).path
+                  ),
+                  revision.generatedEnvironmentFileName.map({
+                      FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
+                  }) ?? true
+            else { throw SceneLibraryError.invalidDocument("La copia de recuperación está incompleta.") }
+            return revision
+        }
+        return revisions.sorted { $0.savedAt > $1.savedAt }
+    }
+
+    func autosaveThumbnailURL(_ revision: SceneAutosaveRevision) -> URL {
+        autosaveDirectory(for: revision.originalSceneID).appendingPathComponent(revision.thumbnailFileName)
+    }
+
+    func autosaveGeneratedEnvironmentEXR(_ revision: SceneAutosaveRevision) throws -> Data? {
+        guard let fileName = revision.generatedEnvironmentFileName else { return nil }
+        return try Data(contentsOf: autosaveDirectory(for: revision.originalSceneID)
+            .appendingPathComponent(fileName), options: .mappedIfSafe)
+    }
+
     func removeThumbnail(for scene: SavedScene) throws {
         let url = thumbnailURL(for: scene)
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -442,8 +583,6 @@ struct SceneLibraryStore: Sendable {
                                 "absolutePath", "cameraID", "pointGroupID", "visibleMeshIDs",
                                 "pointsVisible", "geometryVisible", "cameraEnabled", "calibration",
                             ],
-                            let asset = tracking["asset"] as? [String: Any],
-                            Set(asset.keys) == ["fileName", "sha256"],
                             let calibration = tracking["calibration"] as? [String: Any],
                             Set(calibration.keys) == [
                                 "pointAID", "pointBID", "measuredDistanceMeters", "metersPerSourceUnit",
@@ -453,6 +592,15 @@ struct SceneLibraryStore: Sendable {
             else { throw SceneLibraryError.invalidDocument("La escena contiene campos desconocidos.") }
         }
     }
+}
+
+private func requiredGeneratedEnvironmentFileName(
+    _ revision: SceneAutosaveRevision
+) throws -> String {
+    guard let fileName = revision.generatedEnvironmentFileName else {
+        throw SceneLibraryError.invalidDocument("La copia de recuperación no contiene entorno generado.")
+    }
+    return fileName
 }
 
 enum SceneThumbnailRenderer {
@@ -558,8 +706,51 @@ final class SceneLibraryController: ObservableObject {
         document.scenes.first { $0.id == id }
     }
 
+    func autosaveHistoryTarget(for scene: SavedScene) -> SceneAutosaveHistoryTarget {
+        .init(sceneID: scene.id, sceneName: scene.name, isDeletedScene: false)
+    }
+
+    func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
+        guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
+        let root = store.directoryURL.deletingLastPathComponent()
+            .appendingPathComponent("Autosave", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        ).compactMap { directory -> SceneAutosaveHistoryTarget? in
+            guard let id = UUID(uuidString: directory.lastPathComponent),
+                  !document.scenes.contains(where: { $0.id == id }),
+                  let revision = try store.autosaves(for: id).first
+            else { return nil }
+            return .init(sceneID: id, sceneName: revision.sceneName, isDeletedScene: true)
+        }.sorted { $0.sceneName.localizedStandardCompare($1.sceneName) == .orderedAscending }
+    }
+
+    func autosaves(for target: SceneAutosaveHistoryTarget) throws -> [SceneAutosaveRevision] {
+        guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
+        return try store.autosaves(for: target.sceneID)
+    }
+
+    func autosaveThumbnailURL(for revision: SceneAutosaveRevision) -> URL? {
+        store?.autosaveThumbnailURL(revision)
+    }
+
     @discardableResult
-    func add(capture: SavedSceneCapture) throws -> SavedScene {
+    func restoreAutosave(_ revision: SceneAutosaveRevision) throws -> SavedScene {
+        guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
+        let thumbnail = try Data(contentsOf: store.autosaveThumbnailURL(revision))
+        let generatedEnvironment = try store.autosaveGeneratedEnvironmentEXR(revision)
+        return try add(
+            capture: .init(
+                snapshot: revision.snapshot, thumbnailPNG: thumbnail,
+                generatedEnvironmentEXR: generatedEnvironment
+            ),
+            name: "\(revision.sceneName) recuperada"
+        )
+    }
+
+    @discardableResult
+    func add(capture: SavedSceneCapture, name: String? = nil) throws -> SavedScene {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let id = UUID()
         let asset = try capture.generatedEnvironmentEXR.map {
@@ -571,11 +762,15 @@ final class SceneLibraryController: ObservableObject {
         let snapshot = try capture.snapshot.replacingGeneratedEnvironment(asset)
         let scene = SavedScene(
             id: id,
-            name: "Escena \(document.scenes.count + 1)",
+            name: name ?? "Escena \(document.scenes.count + 1)",
             thumbnailFileName: "\(id.uuidString.lowercased()).png",
             snapshot: snapshot
         )
         try scene.validate()
+        _ = try store.writeAutosave(
+            scene: scene, thumbnailPNG: capture.thumbnailPNG,
+            generatedEnvironmentEXR: capture.generatedEnvironmentEXR
+        )
         try store.writeThumbnail(capture.thumbnailPNG, for: scene)
         var candidate = document
         candidate.scenes.insert(scene, at: 0)
@@ -650,6 +845,10 @@ final class SceneLibraryController: ObservableObject {
         }
         candidate.scenes[index].snapshot = try capture.snapshot.replacingGeneratedEnvironment(asset)
         try candidate.scenes[index].validate()
+        _ = try store.writeAutosave(
+            scene: candidate.scenes[index], thumbnailPNG: capture.thumbnailPNG,
+            generatedEnvironmentEXR: capture.generatedEnvironmentEXR
+        )
         let thumbnailURL = store.thumbnailURL(for: candidate.scenes[index])
         let previousThumbnail = try Data(contentsOf: thumbnailURL)
         do {
@@ -728,6 +927,11 @@ final class SceneLibraryController: ObservableObject {
         candidate.scenes[index].snapshot = try candidate.scenes[index].snapshot
             .replacingGeneratedEnvironment(asset)
         try candidate.scenes[index].validate()
+        _ = try store.writeAutosave(
+            scene: candidate.scenes[index],
+            thumbnailPNG: Data(contentsOf: store.thumbnailURL(for: candidate.scenes[index])),
+            generatedEnvironmentEXR: data
+        )
         do { try store.save(candidate) }
         catch {
             if let previousData {
@@ -773,6 +977,15 @@ final class SceneLibraryController: ObservableObject {
         )
         try duplicate.validate()
         let thumbnail = try Data(contentsOf: store.thumbnailURL(for: scene))
+        _ = try store.writeAutosave(
+            scene: duplicate, thumbnailPNG: thumbnail,
+            generatedEnvironmentEXR: asset.flatMap { copiedAsset in
+                try? EnvironmentAssetLibrary.asset(
+                    sha256: copiedAsset.sha256, originalFileName: copiedAsset.fileName,
+                    libraryRoot: store.environmentLibraryRoot
+                ).flatMap { try? Data(contentsOf: $0.url, options: .mappedIfSafe) }
+            } ?? nil
+        )
         try store.writeThumbnail(thumbnail, for: duplicate)
         var candidate = document
         candidate.scenes.insert(duplicate, at: 0)
@@ -800,6 +1013,9 @@ final class SceneLibraryController: ObservableObject {
                 libraryRoot: store.environmentLibraryRoot
             ).map { try Data(contentsOf: $0.url, options: .mappedIfSafe) }
         }
+        _ = try store.writeAutosave(
+            scene: scene, thumbnailPNG: thumbnail, generatedEnvironmentEXR: environment
+        )
         var candidate = document
         candidate.scenes.removeAll { $0.id == scene.id }
         try store.removeThumbnail(for: scene)

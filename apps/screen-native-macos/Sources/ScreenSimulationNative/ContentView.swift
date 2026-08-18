@@ -96,6 +96,7 @@ struct ContentView: View {
     @State private var pendingSceneAction: PendingSceneAction?
     @State private var pendingScene: SavedScene?
     @State private var pendingRenderScene: SavedScene?
+    @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -162,6 +163,19 @@ struct ContentView: View {
         message: { Text(model.errorMessage ?? "") }
         .sheet(item: $pendingRenderScene) { scene in
             renderOptionsSheet(scene)
+        }
+        .sheet(item: $autosaveHistoryTarget) { target in
+            SceneAutosaveHistoryView(
+                target: target,
+                controller: scenes,
+                onRestore: { revision in
+                    do {
+                        let restored = try scenes.restoreAutosave(revision)
+                        model.markActiveScene(restored.id)
+                        autosaveHistoryTarget = nil
+                    } catch { model.errorMessage = error.localizedDescription }
+                }
+            )
         }
         .confirmationDialog(
             "¿Eliminar \(pendingLibraryDeletion?.rawValue ?? "elemento")?",
@@ -1347,6 +1361,20 @@ struct ContentView: View {
                 }
                 .disabled(model.metalFrame == nil || scenes.blockedError != nil)
                 .help("Guardar la escena completa activa")
+                Button {
+                    do {
+                        guard let target = try scenes.deletedAutosaveHistoryTargets().first else {
+                            model.errorMessage = "No hay escenas eliminadas recuperables."
+                            return
+                        }
+                        autosaveHistoryTarget = target
+                    } catch { model.errorMessage = error.localizedDescription }
+                } label: {
+                    Label("Recuperar escena eliminada", systemImage: "clock.arrow.circlepath")
+                        .labelStyle(.iconOnly)
+                }
+                .disabled(scenes.blockedError != nil)
+                .help("Recuperar autosaves de una escena eliminada")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -1381,6 +1409,7 @@ struct ContentView: View {
                                     catch { model.errorMessage = error.localizedDescription }
                                 },
                                 onRender: { requestSceneRender(scene) },
+                                onHistory: { autosaveHistoryTarget = scenes.autosaveHistoryTarget(for: scene) },
                                 onDelete: { requestSceneAction(.delete, scene: scene) }
                             )
                         }
@@ -3657,6 +3686,51 @@ struct SplitAutosaveProbe: NSViewRepresentable {
     }
 }
 
+private struct SceneAutosaveHistoryView: View {
+    let target: SceneAutosaveHistoryTarget
+    @ObservedObject var controller: SceneLibraryController
+    let onRestore: (SceneAutosaveRevision) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(target.isDeletedScene ? "Recuperar escena eliminada" : "Historial de escena")
+                .font(.headline)
+            Text(target.sceneName).foregroundStyle(.secondary)
+            let revisions = revisionsResult
+            if revisions.isEmpty {
+                ContentUnavailableView("Sin copias", systemImage: "clock.badge.xmark")
+            } else {
+                List(revisions) { revision in
+                    HStack(spacing: 10) {
+                        if let url = controller.autosaveThumbnailURL(for: revision),
+                           let image = NSImage(contentsOf: url) {
+                            Image(nsImage: image).resizable().scaledToFit()
+                                .frame(width: 96, height: 54).background(.black)
+                        }
+                        VStack(alignment: .leading) {
+                            Text(revision.savedAt.formatted(date: .abbreviated, time: .standard))
+                            Text(revision.generatedEnvironmentFileName == nil
+                                ? "Recursos externos por ruta" : "Incluye HDRI generado")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Restaurar como nueva") { onRestore(revision) }
+                    }
+                }
+                .frame(minHeight: 220)
+            }
+            HStack { Spacer(); Button("Cerrar") { dismiss() } }
+        }
+        .padding()
+        .frame(width: 560, height: 420)
+    }
+
+    private var revisionsResult: [SceneAutosaveRevision] {
+        (try? controller.autosaves(for: target)) ?? []
+    }
+}
+
 private struct SceneLibraryItemView: View {
     let scene: SavedScene
     let thumbnailURL: URL?
@@ -3665,6 +3739,7 @@ private struct SceneLibraryItemView: View {
     let onUpdate: () -> Void
     let onDuplicate: () -> Void
     let onRender: () -> Void
+    let onHistory: () -> Void
     let onDelete: () -> Void
     @State private var draftName: String
 
@@ -3676,6 +3751,7 @@ private struct SceneLibraryItemView: View {
         onUpdate: @escaping () -> Void,
         onDuplicate: @escaping () -> Void,
         onRender: @escaping () -> Void,
+        onHistory: @escaping () -> Void,
         onDelete: @escaping () -> Void
     ) {
         self.scene = scene
@@ -3685,6 +3761,7 @@ private struct SceneLibraryItemView: View {
         self.onUpdate = onUpdate
         self.onDuplicate = onDuplicate
         self.onRender = onRender
+        self.onHistory = onHistory
         self.onDelete = onDelete
         _draftName = State(initialValue: scene.name)
     }
@@ -3718,6 +3795,7 @@ private struct SceneLibraryItemView: View {
             Button("Actualizar con el estado actual", action: onUpdate)
             Button("Duplicar escena", action: onDuplicate)
             Button("Añadir a Render Queue…", action: onRender)
+            Button("Historial…", action: onHistory)
             Divider()
             Button("Eliminar escena", role: .destructive, action: onDelete)
         }
