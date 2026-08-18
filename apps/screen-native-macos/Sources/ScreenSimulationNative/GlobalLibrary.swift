@@ -364,7 +364,9 @@ final class GlobalLibraryController: ObservableObject {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.png, UTType(filenameExtension: "exr")!]
+        FileDialogDirectory.libraryTestImage.apply(to: panel)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        FileDialogDirectory.libraryTestImage.remember(url)
         do {
             let bookmark = try url.bookmarkData(
                 options: .withSecurityScope,

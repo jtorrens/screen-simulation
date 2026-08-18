@@ -161,10 +161,13 @@ pub const DEVICE_VFX_ALPHA_MODES: [TestChoiceOption; 2] = [
     },
 ];
 
-fn focal_length_bounds(lens: screen_geometry::LensPreset) -> (f32, f32) {
+fn focal_length_bounds(_lens: screen_geometry::LensPreset) -> (f32, f32) {
     (
-        lens.nominal_focal_length.0 * 0.5,
-        lens.nominal_focal_length.0 * 2.0,
+        // A selected lens preset supplies optical character, not a hard
+        // capture-camera focal restriction. Imported tracking focal length is
+        // authoritative while the preset continues to supply all other lens
+        // characteristics.
+        0.1, 500.0,
     )
 }
 
@@ -4136,6 +4139,15 @@ mod tests {
             resolve_test_authoring_selection(selection),
             Err(TestAuthoringError::InvalidGeometry)
         );
+    }
+
+    #[test]
+    fn imported_tracking_focal_overrides_the_nominal_lens_focal() {
+        let mut selection = asus();
+        selection.lens_preset_id = "iphone-16e-main-integrated";
+        selection.focal_length_millimeters = 39.548_26;
+        let resolved = resolve_test_authoring_selection(selection).unwrap();
+        assert!((resolved.focal_length_millimeters - 39.548_26).abs() < 1.0e-5);
     }
 
     #[test]

@@ -1607,12 +1607,7 @@ final class WorkspaceModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        do {
-            panel.directoryURL = try EnvironmentAssetLibrary.environmentDirectory()
-        } catch {
-            errorMessage = error.localizedDescription
-            return
-        }
+        FileDialogDirectory.environment.apply(to: panel)
         panel.allowedContentTypes = [.image] + ["exr", "hdr"].compactMap {
             UTType(filenameExtension: $0)
         }
@@ -1643,6 +1638,7 @@ final class WorkspaceModel: ObservableObject {
               let exposureStops = Double(exposureField.stringValue), exposureStops.isFinite,
               (-16 ... 16).contains(exposureStops)
         else { return }
+        FileDialogDirectory.environment.remember(url)
         generatedReflectionEnvironmentData = nil
         environmentReflectionFramingSourceFrame = nil
         Task {
@@ -2483,7 +2479,9 @@ final class WorkspaceModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.movie, .image, .folder]
+        FileDialogDirectory.sourceMedia.apply(to: panel)
         guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        FileDialogDirectory.sourceMedia.remember(panel.urls[0])
         Task { await load(panel.urls) }
     }
 
@@ -2493,7 +2491,9 @@ final class WorkspaceModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.movie, .image]
         panel.message = "Selecciona la imagen o película usada como referencia de encuadre."
+        FileDialogDirectory.referenceMedia.apply(to: panel)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        FileDialogDirectory.referenceMedia.remember(url)
         Task { await loadReferenceFrame(url) }
     }
 
@@ -3159,7 +3159,9 @@ final class WorkspaceModel: ObservableObject {
         panel.allowedContentTypes = [UTType(filenameExtension: "comp")!]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
+        FileDialogDirectory.trackingComposition.apply(to: panel)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        FileDialogDirectory.trackingComposition.remember(url)
         do {
             let managed = try TrackingAssetLibrary.importAsset(from: url)
             let imported = try FusionTrackingImporter().load(managed.url)
@@ -3642,6 +3644,7 @@ final class WorkspaceModel: ObservableObject {
             panel.canCreateDirectories = true
             panel.nameFieldStringValue = sourceName.replacingOccurrences(of: ".", with: "-")
             panel.allowedContentTypes = [.movie]
+            FileDialogDirectory.renderOutput.apply(to: panel)
             url = panel.runModal() == .OK ? panel.url : nil
         } else {
             let panel = NSOpenPanel()
@@ -3649,9 +3652,11 @@ final class WorkspaceModel: ObservableObject {
             panel.canChooseFiles = false
             panel.canCreateDirectories = true
             panel.allowsMultipleSelection = false
+            FileDialogDirectory.renderOutput.apply(to: panel)
             url = panel.runModal() == .OK ? panel.url : nil
         }
         guard let url else { return }
+        FileDialogDirectory.renderOutput.remember(url)
         let range = activeFrameRange
         let exactFrameRate = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
@@ -4248,7 +4253,9 @@ final class WorkspaceModel: ObservableObject {
         panel.nameFieldStringValue = String(
             format: "ScreenSimulation-%@-%08d.png", quality, currentFrame
         )
+        FileDialogDirectory.frameExport.apply(to: panel)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        FileDialogDirectory.frameExport.remember(url)
         do {
             try NativeOutputRenderer.renderCurrentFrame(
                 frame: metalFrame, displayTransform: previewTransform,
@@ -4641,7 +4648,9 @@ final class WorkspaceModel: ObservableObject {
         panel.allowedContentTypes = [.png]
         panel.allowsMultipleSelection = false
         panel.message = "Recupera todos los ajustes que generaron el frame; zoom y pan se conservan."
+        FileDialogDirectory.settingsImport.apply(to: panel)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        FileDialogDirectory.settingsImport.remember(url)
         do {
             let png = try Data(contentsOf: url)
             guard let metadata = FrameCheckPNG.metadata(in: png),
