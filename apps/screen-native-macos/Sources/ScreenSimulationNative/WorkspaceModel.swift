@@ -3322,18 +3322,10 @@ final class WorkspaceModel: ObservableObject {
         }
         physicalAuthoringState = authored
         resolvedPhysicalPipeline = try? authored.resolvedPipeline()
-        if physicalModel.quality == .focusSetup {
-            publishFocusSetup()
-        } else if physicalModel.quality == .setup {
-            if referenceACEScgFrame != nil {
-                publishReferenceMatchSetup(
-                    resetTargetsToVisibleFrame: false,
-                    authoredOverride: authored
-                )
-            } else {
-                publishSetupFraming(authoredOverride: authored)
-            }
-        }
+        // The tracking sample is part of the immutable physical request, not merely a Setup
+        // overlay. This invokes the model's normal quality dispatcher, which republishes
+        // Setup/Focus Setup or submits the current physical quality as appropriate.
+        physicalModel.invalidateExternalParameters()
     }
 
     private static func applyImportedTrackingCamera(
