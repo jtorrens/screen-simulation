@@ -2154,9 +2154,16 @@ struct ContentView: View {
                 if model.jobs.contains(where: { $0.state == .rendering }) {
                     Button("Cancelar", action: model.cancelRender)
                 }
+                if model.outputQueue.isPaused {
+                    Button("Reanudar", action: model.runQueue)
+                } else if model.jobs.contains(where: { $0.state == .pending || $0.state == .rendering }) {
+                    Button("Pausa", action: model.pauseRenderQueue)
+                }
+                Button("Limpiar completados", action: model.clearCompletedRenders)
+                    .disabled(!model.jobs.contains { $0.state == .completed })
                 Spacer()
                 Button("Render Queue", action: model.runQueue)
-                    .disabled(!model.jobs.contains { $0.state == .pending })
+                    .disabled(!model.outputQueue.isPaused && !model.jobs.contains { $0.state == .pending })
             }
             .padding(8)
         }

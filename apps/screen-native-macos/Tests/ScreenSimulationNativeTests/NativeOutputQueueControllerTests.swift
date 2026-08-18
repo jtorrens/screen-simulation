@@ -3,8 +3,8 @@ import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
 
-@Test @MainActor func outputQueueOwnsSequentialJobLifecycle() async {
-    let controller = NativeOutputQueueController()
+@Test @MainActor func outputQueueOwnsSequentialJobLifecycle() async throws {
+    let controller = try queueTestController()
     let configuration = outputQueueTestConfiguration()
     controller.enqueue(
         scene: outputQueueTestScene(name: "Primera"),
@@ -31,11 +31,11 @@ import Testing
     #expect(controller.jobs.map(\.detail) == ["first.mov", "second.mov"])
 }
 
-@Test @MainActor func outputQueuePublishesFailureWithoutASecondLifecycleOwner() async {
+@Test @MainActor func outputQueuePublishesFailureWithoutASecondLifecycleOwner() async throws {
     struct ExpectedFailure: LocalizedError {
         var errorDescription: String? { "fallo controlado" }
     }
-    let controller = NativeOutputQueueController()
+    let controller = try queueTestController()
     controller.enqueue(
         scene: outputQueueTestScene(name: "Fallo"),
         generatedEnvironmentEXR: nil,
@@ -53,8 +53,8 @@ import Testing
     #expect(failure == "fallo controlado")
 }
 
-@Test @MainActor func outputQueueFreezesTheSavedSceneAtEnqueueTime() {
-    let controller = NativeOutputQueueController()
+@Test @MainActor func outputQueueFreezesTheSavedSceneAtEnqueueTime() throws {
+    let controller = try queueTestController()
     var scene = outputQueueTestScene(name: "Guardada")
     controller.enqueue(
         scene: scene,
@@ -71,8 +71,8 @@ import Testing
     #expect(controller.jobs.first?.configuration.motionSamples == 8)
 }
 
-@Test @MainActor func completedJobCanBeRequeuedWithoutChangingItsSnapshot() async {
-    let controller = NativeOutputQueueController()
+@Test @MainActor func completedJobCanBeRequeuedWithoutChangingItsSnapshot() async throws {
+    let controller = try queueTestController()
     controller.enqueue(
         scene: outputQueueTestScene(name: "Congelada"),
         generatedEnvironmentEXR: Data([4, 2]),
@@ -92,6 +92,49 @@ import Testing
     #expect(controller.jobs.first?.scene.snapshot == snapshot)
     #expect(controller.jobs.first?.configuration == configuration)
     #expect(!controller.requeueCompletedJob(id: completed.id))
+}
+
+@Test @MainActor func outputQueuePersistsFrozenJobsAndPausedStateAcrossSessions() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-queue-persistence-\(UUID().uuidString)")
+    let store = try RenderQueueStore(directoryURL: root)
+    let first = try NativeOutputQueueController(store: store)
+    first.enqueue(
+        scene: outputQueueTestScene(name: "Persistida"),
+        generatedEnvironmentEXR: Data([9, 4]),
+        outputPlan: queueTestPlan("/tmp/persisted.mov"),
+        configuration: outputQueueTestConfiguration()
+    )
+    first.pause()
+
+    let restored = try NativeOutputQueueController(store: store)
+    #expect(restored.isPaused)
+    #expect(restored.jobs.count == 1)
+    #expect(restored.jobs[0].scene.name == "Persistida")
+    #expect(restored.jobs[0].generatedEnvironmentEXR == Data([9, 4]))
+    #expect(restored.jobs[0].configuration.overwritePolicy == .failIfExists)
+    #expect(restored.jobs[0].state == .pending)
+}
+
+@Test @MainActor func renderingJobRestoresAsPendingWithoutAutoRun() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-queue-interrupted-\(UUID().uuidString)")
+    let store = try RenderQueueStore(directoryURL: root)
+    let controller = try NativeOutputQueueController(store: store)
+    controller.enqueue(
+        scene: outputQueueTestScene(name: "Interrumpida"), generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/interrupted.mov"), configuration: outputQueueTestConfiguration()
+    )
+    controller.run(operation: { _, _ in
+        try await Task.sleep(for: .seconds(10))
+        throw CancellationError()
+    }, onFailure: { _ in })
+    while controller.jobs.first?.state != .rendering { await Task.yield() }
+    let restored = try NativeOutputQueueController(store: store)
+    #expect(!restored.isRendering)
+    #expect(restored.jobs.first?.state == .pending)
+    #expect(restored.jobs.first?.detail == "Interrumpido al cerrar la aplicación")
+    controller.cancel()
 }
 
 @Test @MainActor func isolatedQueueWorkspaceRestoresAStrictSavedSceneWithoutPriorState() async throws {
@@ -141,6 +184,12 @@ private func outputQueueTestScene(name: String) -> SavedScene {
             )
         )
     )
+}
+
+@MainActor private func queueTestController() throws -> NativeOutputQueueController {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-queue-test-\(UUID().uuidString)")
+    return try NativeOutputQueueController(store: RenderQueueStore(directoryURL: root))
 }
 
 private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration {

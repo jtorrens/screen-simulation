@@ -3,9 +3,9 @@ import StudioMedia
 
 @MainActor
 final class NativeOutputQueueController: ObservableObject {
-    struct RenderJob: Identifiable {
-        enum State: String { case pending, rendering, completed, failed, cancelled }
-        let id = UUID()
+    struct RenderJob: Codable, Identifiable {
+        enum State: String, Codable { case pending, rendering, completed, failed, cancelled }
+        let id: UUID
         let scene: SavedScene
         let generatedEnvironmentEXR: Data?
         let outputPlan: RenderOutputPlan
@@ -14,6 +14,21 @@ final class NativeOutputQueueController: ObservableObject {
         var state: State = .pending
         var progress = 0.0
         var detail = "Pendiente"
+
+        init(
+            id: UUID = UUID(), scene: SavedScene, generatedEnvironmentEXR: Data?,
+            outputPlan: RenderOutputPlan, configuration: StudioResolvedRenderConfiguration,
+            state: State = .pending, progress: Double = 0, detail: String = "Pendiente"
+        ) {
+            self.id = id
+            self.scene = scene
+            self.generatedEnvironmentEXR = generatedEnvironmentEXR
+            self.outputPlan = outputPlan
+            self.configuration = configuration
+            self.state = state
+            self.progress = progress
+            self.detail = detail
+        }
     }
 
     typealias Progress = @MainActor (_ completed: Int, _ total: Int) -> Void
@@ -22,8 +37,31 @@ final class NativeOutputQueueController: ObservableObject {
         _ progress: @escaping Progress
     ) async throws -> URL
 
-    @Published private(set) var jobs: [RenderJob] = []
+    @Published private(set) var jobs: [RenderJob]
+    @Published private(set) var isPaused: Bool
+    @Published private(set) var persistenceError: String?
+    private let store: RenderQueueStore
     private var activeTask: Task<Void, Never>?
+
+    init(store: RenderQueueStore) throws {
+        self.store = store
+        let document = try store.load()
+        var resumedInterruptedJob = false
+        jobs = document.jobs.map { job in
+            guard job.state == .rendering else { return job }
+            resumedInterruptedJob = true
+            return RenderJob(
+                id: job.id, scene: job.scene,
+                generatedEnvironmentEXR: job.generatedEnvironmentEXR,
+                outputPlan: job.outputPlan, configuration: job.configuration,
+                state: .pending, progress: 0,
+                detail: "Interrumpido al cerrar la aplicación"
+            )
+        }
+        isPaused = document.isPaused
+        persistenceError = nil
+        if resumedInterruptedJob { persist() }
+    }
 
     var hasPendingJobs: Bool { jobs.contains { $0.state == .pending } }
     var isRendering: Bool { activeTask != nil }
@@ -40,17 +78,19 @@ final class NativeOutputQueueController: ObservableObject {
             outputPlan: outputPlan,
             configuration: configuration
         ))
+        persist()
     }
 
     func run(
         operation: @escaping RenderOperation,
         onFailure: @escaping @MainActor (String) -> Void
     ) {
-        guard activeTask == nil,
+        guard !isPaused, activeTask == nil,
               let index = jobs.firstIndex(where: { $0.state == .pending })
         else { return }
         jobs[index].state = .rendering
         jobs[index].detail = "Preparando grafo Metal"
+        persist()
         let job = jobs[index]
         activeTask = Task {
             do {
@@ -61,21 +101,25 @@ final class NativeOutputQueueController: ObservableObject {
                     else { return }
                     self.jobs[live].progress = min(1, max(0, Double(completed) / Double(total)))
                     self.jobs[live].detail = "\(completed) / \(total)"
+                    self.persist()
                 }
                 if let live = jobs.firstIndex(where: { $0.id == job.id }) {
                     jobs[live].state = .completed
                     jobs[live].progress = 1
                     jobs[live].detail = url.lastPathComponent
+                    persist()
                 }
             } catch is CancellationError {
                 if let live = jobs.firstIndex(where: { $0.id == job.id }) {
                     jobs[live].state = .cancelled
                     jobs[live].detail = "Cancelado"
+                    persist()
                 }
             } catch {
                 if let live = jobs.firstIndex(where: { $0.id == job.id }) {
                     jobs[live].state = .failed
                     jobs[live].detail = error.localizedDescription
+                    persist()
                 }
                 onFailure(error.localizedDescription)
             }
@@ -86,6 +130,21 @@ final class NativeOutputQueueController: ObservableObject {
 
     func cancel() {
         activeTask?.cancel()
+    }
+
+    func pause() {
+        isPaused = true
+        persist()
+    }
+
+    func resume() {
+        isPaused = false
+        persist()
+    }
+
+    func clearCompleted() {
+        jobs.removeAll { $0.state == .completed }
+        persist()
     }
 
     /// Reopens only a terminal successful job. Its immutable scene snapshot and resolved
@@ -99,6 +158,16 @@ final class NativeOutputQueueController: ObservableObject {
         jobs[index].state = .pending
         jobs[index].progress = 0
         jobs[index].detail = "Pendiente"
+        persist()
         return true
+    }
+
+    private func persist() {
+        do {
+            try store.save(.init(isPaused: isPaused, jobs: jobs))
+            persistenceError = nil
+        } catch {
+            persistenceError = error.localizedDescription
+        }
     }
 }

@@ -601,7 +601,10 @@ private func temporaryDirectory() throws -> URL {
     let plan = try RenderOutputPlan.prepare(
         configuration: configuration, selectedDestination: root
     )
-    let queue = NativeOutputQueueController()
+    let queueRoot = try temporaryDirectory()
+    let queue = try NativeOutputQueueController(
+        store: RenderQueueStore(directoryURL: queueRoot)
+    )
     queue.enqueue(
         scene: scene, generatedEnvironmentEXR: nil,
         outputPlan: plan, configuration: configuration

@@ -31,8 +31,8 @@ enum RenderOutputCollision: Equatable, Sendable {
     }
 }
 
-struct RenderOutputPlan: Equatable, Sendable {
-    enum Kind: Equatable, Sendable {
+struct RenderOutputPlan: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Equatable, Sendable {
         case singleFile
         case imageSequence
         case fusionScenePackage

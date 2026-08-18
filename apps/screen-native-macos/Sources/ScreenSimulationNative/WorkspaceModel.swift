@@ -385,7 +385,7 @@ final class WorkspaceModel: ObservableObject {
     let monitorOutput = MonitorOutputController()
     let physicalModel = PhysicalModelController()
     let viewerNavigation = ViewerNavigationController()
-    let outputQueue = NativeOutputQueueController()
+    let outputQueue: NativeOutputQueueController
     private var viewerNavigationSubscription: AnyCancellable?
     private var outputQueueSubscription: AnyCancellable?
 
@@ -498,6 +498,7 @@ final class WorkspaceModel: ObservableObject {
 
     init() {
         metalDisplay = try! StudioColorMetalDisplay()
+        outputQueue = try! NativeOutputQueueController(store: RenderQueueStore())
         physicalModel.interactiveInvalidation = { [weak self] in
             self?.rebuildPhysicalSelectedFrame()
         }
@@ -3713,6 +3714,7 @@ final class WorkspaceModel: ObservableObject {
 
     func runQueue() {
         pause()
+        outputQueue.resume()
         outputQueue.run(
             operation: { job, progress in
                 let executor = WorkspaceModel()
@@ -4145,6 +4147,16 @@ final class WorkspaceModel: ObservableObject {
 
     func cancelRender() {
         outputQueue.cancel()
+    }
+
+    func pauseRenderQueue() {
+        outputQueue.pause()
+        status = "Render Queue en pausa"
+    }
+
+    func clearCompletedRenders() {
+        outputQueue.clearCompleted()
+        status = "Renders completados eliminados de la cola"
     }
 
     func showRenderDestinationInFinder(_ job: NativeOutputQueueController.RenderJob) {
