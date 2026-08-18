@@ -123,19 +123,27 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
 /// The selected catalog IDs are resolved again when the scene opens, so a current device, camera
 /// or lens definition remains the authority for its defaults and capabilities.
 struct SceneAuthoringDocument: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SceneAuthoring.v1"
+    static let schema = "ScreenSimulation.SceneAuthoring.v2"
 
     let schema: String
+    /// Catalog identities, not embedded profile snapshots. The live Global Library remains
+    /// authoritative when the scene is reopened.
+    let deviceProfileID: String
+    let coverGlassProfileID: String
     let context: PhysicalSettingsExchange.FrameContext
     let model: PhysicalModelAuthoringState
     let environmentCalibration: EnvironmentAssetCalibration?
 
     init(
+        deviceProfileID: String,
+        coverGlassProfileID: String,
         context: PhysicalSettingsExchange.FrameContext,
         model: PhysicalModelAuthoringState,
         environmentCalibration: EnvironmentAssetCalibration?
     ) {
         schema = Self.schema
+        self.deviceProfileID = deviceProfileID
+        self.coverGlassProfileID = coverGlassProfileID
         self.context = context
         self.model = model
         self.environmentCalibration = environmentCalibration
@@ -145,11 +153,14 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
         guard schema == Self.schema else {
             throw SceneLibraryError.invalidDocument("El documento de autoría de escena no es válido.")
         }
+        guard !deviceProfileID.isEmpty, !coverGlassProfileID.isEmpty else {
+            throw SceneLibraryError.invalidDocument("La escena no contiene las identidades de Device y Cover Glass.")
+        }
     }
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v18"
+    static let schema = "ScreenSimulation.SavedScene.v19"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -276,6 +287,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
             viewerIsFitted: viewerIsFitted,
             authoring: .init(
+                deviceProfileID: authoring.deviceProfileID,
+                coverGlassProfileID: authoring.coverGlassProfileID,
                 context: context, model: authoring.model,
                 environmentCalibration: authoring.environmentCalibration
             ),
@@ -357,7 +370,7 @@ struct SceneAutosaveHistoryTarget: Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 18
+    static let currentSchemaVersion = 19
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -421,7 +434,7 @@ struct SceneLibraryStore: Sendable {
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
         self.trackingLibraryRoot = trackingLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v18.json")
+        documentURL = directory.appendingPathComponent("Scenes.v19.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -482,7 +495,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v18", isDirectory: true)
+            .appendingPathComponent("Autosave.v19", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -736,7 +749,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v18", isDirectory: true)
+            .appendingPathComponent("Autosave.v19", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]

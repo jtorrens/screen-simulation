@@ -16,6 +16,8 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
         inputTransformID: input.id, deviceID: device.id, frameRate: .fps24
     )
     return .init(
+        deviceProfileID: device.id,
+        coverGlassProfileID: try #require(try RustCoverGlassCatalog.builtIns().first).id,
         context: .init(
             selection: selection,
             sourceInputTransformID: input.id,
@@ -35,12 +37,12 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 18)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 19)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v18.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v19.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(

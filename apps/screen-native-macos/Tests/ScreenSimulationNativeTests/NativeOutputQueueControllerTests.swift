@@ -190,6 +190,8 @@ private func outputQueueTestScene(name: String) -> SavedScene {
         inputTransformID: input.id, deviceID: device.id, frameRate: .fps24
     )
     let authoring = SceneAuthoringDocument(
+        deviceProfileID: device.id,
+        coverGlassProfileID: try! RustCoverGlassCatalog.builtIns().first!.id,
         context: .init(
             selection: selection, sourceInputTransformID: input.id,
             sourceAlphaMode: StudioAlphaMode.ignore.rawValue,

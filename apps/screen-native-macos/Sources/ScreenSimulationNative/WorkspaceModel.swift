@@ -3279,45 +3279,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func applyTrackingCameraAtCurrentFrame() {
-        guard var authored = try? resolvedPhysicalAuthoringState(forFrame: currentFrame)
-        else { return }
-        guard trackingCameraEnabled, let camera = selectedTrackingCamera else { return }
-        if var selection = testAuthoringSelection {
-            let degrees = PoseRotationProjection.degrees(from: authored.cameraPose.quaternion)
-            selection.geometryModeID = "free"
-            selection.cameraPositionXMeters = authored.cameraPose.position[0]
-            selection.cameraPositionYMeters = authored.cameraPose.position[1]
-            selection.cameraPositionZMeters = authored.cameraPose.position[2]
-            selection.cameraRotationXDegrees = degrees[0]
-            selection.cameraRotationYDegrees = degrees[1]
-            selection.cameraRotationZDegrees = degrees[2]
-            selection.focalLengthMillimeters = camera.focalLengthMillimeters
-            if selection.autofocusEnabled,
-               let focused = try? RustTestAuthoringCoordinator.apply(
-                .setScalar(
-                    controlID: "autofocus-target-u",
-                    value: selection.autofocusTargetU
-                ),
-                to: selection
-               ),
-               let resolved = try? RustTestAuthoringCoordinator.apply(
-                .setChoice(
-                    controlID: "preview-quality",
-                    optionID: selection.previewQualityID
-                ),
-                to: focused
-               ) {
-                selection = resolved
-                authored.sceneLens.focusDistanceMeters = resolved.focusDistanceMeters
-            }
-            testAuthoringSelection = selection
-            try? refreshTestAuthoringDescriptor()
-        }
-        physicalAuthoringState = authored
-        resolvedPhysicalPipeline = try? authored.resolvedPipeline()
-        // The tracking sample is part of the immutable physical request, not merely a Setup
-        // overlay. This invokes the model's normal quality dispatcher, which republishes
-        // Setup/Focus Setup or submits the current physical quality as appropriate.
+        // Tracking is an external per-frame override. It must never be written back into
+        // scene authoring: Setup, native render and Render Queue all obtain it through
+        // resolveSceneFrame(_:), using exactly the requested timeline frame.
+        guard trackingCameraEnabled, selectedTrackingCamera != nil else { return }
         physicalModel.invalidateExternalParameters()
     }
 
@@ -3332,7 +3297,8 @@ final class WorkspaceModel: ObservableObject {
     /// remains the base; an active external track replaces only the parameters it owns.
     /// Every renderer must consume this result rather than applying tracking independently.
     private func resolvedPhysicalAuthoringState(
-        forFrame frame: Int
+        forFrame frame: Int,
+        exactFrameRate: ExactFrameRate
     ) throws -> PhysicalPipelineAuthoringState {
         guard var authored = physicalAuthoringState else {
             throw DeviceDomainError.invalidPhysicalProfile(
@@ -3343,7 +3309,8 @@ final class WorkspaceModel: ObservableObject {
               let camera = selectedTrackingCamera, !camera.samples.isEmpty
         else { return authored }
         guard let sample = camera.sample(
-            atTimelineFrame: frame, timelineFrameRate: frameRate
+            atTimelineFrame: frame,
+            timelineFrameRate: exactFrameRate.framesPerSecond
         ) else {
             throw SceneLibraryError.invalidDocument(
                 "El tracking no contiene una muestra para el frame solicitado."
@@ -3373,7 +3340,10 @@ final class WorkspaceModel: ObservableObject {
             frameIndex: Int64(frame), timeNumerator: timeNumerator,
             timeDenominator: exactFrameRate.numerator
         )
-        let authored = try resolvedPhysicalAuthoringState(forFrame: frame)
+        let authored = try resolvedPhysicalAuthoringState(
+            forFrame: frame,
+            exactFrameRate: exactFrameRate
+        )
         return .init(
             selection: selection, authored: authored,
             orchestration: try authored.orchestration(for: selection), device: device
@@ -3899,7 +3869,7 @@ final class WorkspaceModel: ObservableObject {
     ) async throws -> StudioColorMetalFrame {
         try Task.checkCancellation()
         currentFrame = index
-        applyTrackingCameraAtCurrentFrame()
+        let resolvedSceneFrame = try resolveSceneFrame(index)
         let source = try await renderFrame(index)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
@@ -3924,9 +3894,7 @@ final class WorkspaceModel: ObservableObject {
             case .complete:
                 guard snapshot.returnedIntermediate == .cameraRenderedACEScg,
                       let camera = snapshot.frame,
-                      let selection = testAuthoringSelection,
-                      let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-                      let authored = physicalAuthoringState
+                      let selection = testAuthoringSelection
                 else {
                     throw PhysicalMetalFrameEngineError.bridge(
                         "Render Queue no recibió el checkpoint de cámara solicitado."
@@ -3958,8 +3926,8 @@ final class WorkspaceModel: ObservableObject {
                     cameraResult: camera,
                     reference: reference,
                     referencePlacement: referencePlacement,
-                    device: device,
-                    pipeline: authored,
+                    device: resolvedSceneFrame.device.definition,
+                    pipeline: resolvedSceneFrame.authored,
                     deliveryWidth: Int(selection.deliveryWidth),
                     deliveryHeight: Int(selection.deliveryHeight),
                     deliveryPlacementID: selection.deliveryPlacementID,
@@ -4159,7 +4127,6 @@ final class WorkspaceModel: ObservableObject {
         sourceOverscan: Int
     ) async throws -> FusionRawPhysicalFrame {
         currentFrame = frameIndex
-        applyTrackingCameraAtCurrentFrame()
         let source = try await renderFrame(frameIndex)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
@@ -4373,6 +4340,8 @@ final class WorkspaceModel: ObservableObject {
             viewerPanY: pan.height,
             viewerIsFitted: previewIsFitted,
             authoring: .init(
+                deviceProfileID: try requiredSceneDeviceProfileID(),
+                coverGlassProfileID: try requiredSceneCoverGlassProfileID(),
                 context: context, model: physicalModel.authoringState,
                 environmentCalibration: environmentSourceCalibration
             ),
@@ -4699,6 +4668,20 @@ final class WorkspaceModel: ObservableObject {
         )
     }
 
+    private func requiredSceneDeviceProfileID() throws -> String {
+        guard let id = modelDeviceDefinition?.id, !id.isEmpty else {
+            throw SceneLibraryError.invalidDocument("La escena no tiene un Device seleccionado.")
+        }
+        return id
+    }
+
+    private func requiredSceneCoverGlassProfileID() throws -> String {
+        guard let id = physicalAuthoringState?.coverGlass.id, !id.isEmpty else {
+            throw SceneLibraryError.invalidDocument("La escena no tiene un Cover Glass seleccionado.")
+        }
+        return id
+    }
+
     private func applyPhysicalSettings(
         _ imported: PhysicalSettingsExchange.Imported,
         undoManager: UndoManager?
@@ -4760,6 +4743,17 @@ final class WorkspaceModel: ObservableObject {
     /// Scene documents resolve against the live catalogs. They deliberately do not restore the
     /// resolved DeviceDefinition or PhysicalPipelineAuthoringState carried by PNG exchanges.
     private func validateSceneAuthoringResources(_ authoring: SceneAuthoringDocument) throws {
+        let library = try GlobalLibraryStore().load()
+        guard library.devices.contains(where: { $0.id == authoring.deviceProfileID }) else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena requiere el Device \(authoring.deviceProfileID), que no existe en la biblioteca global."
+            )
+        }
+        guard library.coverGlasses.contains(where: { $0.id == authoring.coverGlassProfileID }) else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena requiere el Cover Glass \(authoring.coverGlassProfileID), que no existe en la biblioteca global."
+            )
+        }
         try authoring.context.environmentResource.validate()
         try authoring.context.referenceResource.validate()
         if authoring.context.environmentResource.kind == .image {
@@ -4802,6 +4796,17 @@ final class WorkspaceModel: ObservableObject {
         undoManager: UndoManager?
     ) throws {
         let context = authoring.context
+        let library = try GlobalLibraryStore().load()
+        guard let sceneDevice = library.devices.first(where: {
+            $0.id == authoring.deviceProfileID
+        })?.value,
+        let sceneCoverGlass = library.coverGlasses.first(where: {
+            $0.id == authoring.coverGlassProfileID
+        })?.value else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena requiere un Device o Cover Glass que ya no existe en la biblioteca global."
+            )
+        }
         guard let output = StudioColorOutputTransform.catalog.first(where: {
             $0.id == context.previewOutputTransformID
         }), let placement = SourcePlacement(stableID: context.sourcePlacementID),
@@ -4815,7 +4820,11 @@ final class WorkspaceModel: ObservableObject {
         try prepareSceneSourceInterpretation(context)
         previewTransform = output
         sourcePlacement = placement
-        try applyTestAuthoringSelection(context.selection)
+        try applyTestAuthoringSelection(
+            context.selection,
+            profileDevice: sceneDevice,
+            profileCoverGlass: sceneCoverGlass
+        )
         try physicalModel.restoreAuthoringState(authoring.model)
         if let quality = PhysicalQuality(stableID: context.selection.previewQualityID) {
             physicalModel.setQuality(quality)
@@ -5594,11 +5603,9 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func publishReferenceComposite(_ foreground: StudioColorMetalFrame) {
-        guard let reference = referenceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = physicalAuthoringState
-        else { return }
+        guard let reference = referenceACEScgFrame else { return }
         do {
+            let resolved = try resolveSceneFrame(currentFrame)
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: foreground.texture.device)
             }
@@ -5607,8 +5614,8 @@ final class WorkspaceModel: ObservableObject {
                 cameraResult: foreground,
                 reference: reference,
                 referencePlacement: referencePlacement,
-                device: device,
-                pipeline: authored,
+                device: resolved.device.definition,
+                pipeline: resolved.authored,
                 deliveryWidth: delivery.width,
                 deliveryHeight: delivery.height,
                 deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit",
@@ -5860,13 +5867,13 @@ final class WorkspaceModel: ObservableObject {
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
         guard let environmentSourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = authoredOverride ?? physicalAuthoringState
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition
         else {
             errorMessage = "Setup entorno necesita un HDRI / EXR seleccionado."
             return
         }
         do {
+            let authored = try authoredOverride ?? resolveSceneFrame(currentFrame).authored
             let setupSource = environmentReflectionFramingEnabled
                 ? environmentReflectionFramingSourceFrame ?? environmentSourceACEScgFrame
                 : environmentSourceACEScgFrame
@@ -6122,7 +6129,9 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func applyTestAuthoringSelection(
-        _ selection: TestAuthoringResolvedSelection
+        _ selection: TestAuthoringResolvedSelection,
+        profileDevice: DeviceDefinition? = nil,
+        profileCoverGlass: CoverGlassDefinition? = nil
     ) throws {
         let previous = testAuthoringSelection
         let sourceAdjustmentChanged = previous.map {
@@ -6170,7 +6179,9 @@ final class WorkspaceModel: ObservableObject {
         }
         let devicePresetChanged = previous?.deviceID != selection.deviceID
         var device: DeviceDefinition
-        if !devicePresetChanged, let current = modelDeviceDefinition {
+        if let profileDevice {
+            device = profileDevice
+        } else if !devicePresetChanged, let current = modelDeviceDefinition {
             device = current
         } else if let builtIn = try RustDeviceCatalog.builtIns().first(where: {
             $0.id == selection.deviceID
@@ -6227,9 +6238,10 @@ final class WorkspaceModel: ObservableObject {
             selection.panelLightSpreadAmount,
             stage: .screen(.panelLightSpread)
         )
-        guard let cover = try RustCoverGlassCatalog.builtIns().first(where: {
+        let catalogCover = try RustCoverGlassCatalog.builtIns().first(where: {
             $0.id == selection.coverGlassPresetID
-        }) else {
+        })
+        guard let cover = profileCoverGlass ?? catalogCover else {
             throw TestAuthoringCoordinatorError.malformedDescriptor(
                 "El Device seleccionado no resuelve su Cover Glass."
             )
@@ -6398,20 +6410,6 @@ final class WorkspaceModel: ObservableObject {
         selectedCapturePresetID = capture.id
         selectedCaptureRasterModeID = selection.captureRasterModeID
         selectedLensPresetID = selection.lensPresetID
-        if trackingCameraEnabled,
-           let scale = trackingMetersPerSourceUnit,
-           let camera = selectedTrackingCamera,
-           let sample = camera.sample(
-               atTimelineFrame: currentFrame,
-               timelineFrameRate: frameRate
-           ) {
-            Self.applyImportedTrackingCamera(
-                camera,
-                sample: sample,
-                metersPerSourceUnit: scale,
-                to: &authored
-            )
-        }
         physicalAuthoringState = authored
         resolvedPhysicalPipeline = try authored.resolvedPipeline()
         baseModelDeviceDefinition = device
