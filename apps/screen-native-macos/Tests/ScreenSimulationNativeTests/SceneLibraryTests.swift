@@ -3,12 +3,12 @@ import Testing
 @testable import ScreenSimulationNative
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 15)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 16)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v15.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v16.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(
@@ -57,9 +57,9 @@ import Testing
     )
     let snapshot = SavedSceneSnapshot(
         source: .init(
-            kind: .managedMedia,
+            kind: .externalMedia,
             patternRawValue: nil,
-            assets: [.init(fileName: "plate.mov", sha256: String(repeating: "a", count: 64))],
+            assets: [.init(absolutePath: "/Volumes/plates/plate.mov")],
             missingMedia: missing
         ),
         currentFrame: 73,
@@ -111,15 +111,13 @@ import Testing
     let source = root.appendingPathComponent("solve.comp")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     try Data("fusion fixture".utf8).write(to: source)
-    let trackingRoot = root.appendingPathComponent("tracking-assets")
-    let managed = try TrackingAssetLibrary.importAsset(from: source, libraryRoot: trackingRoot)
+    let managed = try TrackingAssetLibrary.importAsset(from: source)
     let store = try SceneLibraryStore(
-        directoryURL: root.appendingPathComponent("scenes"),
-        trackingLibraryRoot: trackingRoot
+        directoryURL: root.appendingPathComponent("scenes")
     )
     let id = UUID()
     let tracking = SavedTrackingScene(
-        asset: .init(fileName: managed.originalFileName, sha256: managed.sha256),
+        absolutePath: managed.url.path,
         cameraID: "/Camera01", pointGroupID: "/Camera01Trackers",
         visibleMeshIDs: ["/Plane01"], pointsVisible: true,
         geometryVisible: false, cameraEnabled: true,
@@ -155,34 +153,17 @@ import Testing
     #expect(restored.snapshot.tracking == tracking)
 }
 
-@Test func sourceAssetsAreContentAddressedAndResolvedWithoutFilenameInference() throws {
+@Test func sourceAssetsPreserveTheirAuthoredAbsolutePath() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scene-source-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let source = root.appendingPathComponent("plate.png")
     try Data([9, 8, 7, 6]).write(to: source)
-    let libraryRoot = root.appendingPathComponent("managed")
-
-    let managed = try SourceAssetLibrary.importAsset(from: source, libraryRoot: libraryRoot)
-    let candidate = try SourceAssetLibrary.asset(
-        sha256: managed.sha256,
-        originalFileName: managed.originalFileName,
-        libraryRoot: libraryRoot
-    )
-    let resolved = try #require(candidate)
-    #expect(try Data(contentsOf: resolved.url) == Data([9, 8, 7, 6]))
-    #expect(try SourceAssetLibrary.asset(
-        sha256: String(repeating: "0", count: 64),
-        originalFileName: managed.originalFileName,
-        libraryRoot: libraryRoot
-    ) == nil)
-    try Data([0, 0, 0, 0]).write(to: resolved.url, options: .atomic)
-    #expect(try SourceAssetLibrary.asset(
-        sha256: managed.sha256,
-        originalFileName: managed.originalFileName,
-        libraryRoot: libraryRoot
-    ) == nil)
+    let managed = try SourceAssetLibrary.importAsset(from: source)
+    #expect(managed.url == source)
+    #expect(managed.originalFileName == "plate.png")
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("managed").path))
 }
 
 @MainActor

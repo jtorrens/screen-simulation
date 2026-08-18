@@ -7,19 +7,18 @@ enum PhysicalSettingsExchange {
         enum Kind: String, Codable, Sendable { case procedural, image }
         let kind: Kind
         let fileName: String?
-        let sha256: String?
+        let absolutePath: String?
         let inputTransformID: String?
 
         func validate() throws {
             switch kind {
             case .procedural:
-                guard fileName == nil, sha256 == nil, inputTransformID == nil else {
+                guard fileName == nil, absolutePath == nil, inputTransformID == nil else {
                     throw ImportError.invalidEnvironmentResource
                 }
             case .image:
                 guard let fileName, !fileName.isEmpty,
-                      let sha256, sha256.count == 64,
-                      sha256.allSatisfy({ $0.isHexDigit }),
+                      let absolutePath, absolutePath.hasPrefix("/"),
                       let inputTransformID, !inputTransformID.isEmpty
                 else { throw ImportError.invalidEnvironmentResource }
             }
@@ -44,7 +43,7 @@ enum PhysicalSettingsExchange {
         enum Kind: String, Codable, Sendable { case none, imageOrVideo }
         let kind: Kind
         let fileName: String?
-        let sha256: String?
+        let absolutePath: String?
         let inputTransformID: String?
         let alphaMode: String?
         let signalColorModel: String?
@@ -56,14 +55,14 @@ enum PhysicalSettingsExchange {
         func validate() throws {
             switch kind {
             case .none:
-                guard fileName == nil, sha256 == nil, inputTransformID == nil,
+                guard fileName == nil, absolutePath == nil, inputTransformID == nil,
                       alphaMode == nil, signalColorModel == nil, signalMatrix == nil,
                       signalRange == nil, placementID == nil,
                       corners.isEmpty
                 else { throw ImportError.invalidReferenceResource }
             case .imageOrVideo:
                 guard let fileName, !fileName.isEmpty,
-                      let sha256, sha256.count == 64, sha256.allSatisfy(\.isHexDigit),
+                      let absolutePath, absolutePath.hasPrefix("/"),
                       let inputTransformID, !inputTransformID.isEmpty,
                       let alphaMode, !alphaMode.isEmpty,
                       let signalColorModel, !signalColorModel.isEmpty,

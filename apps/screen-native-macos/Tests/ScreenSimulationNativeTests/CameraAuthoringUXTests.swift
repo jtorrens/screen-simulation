@@ -121,7 +121,7 @@ import Testing
     let text = try String(contentsOf: source, encoding: .utf8)
 
     #expect(text.contains("model.setZoomPercentage"))
-    #expect(text.contains("Label(\"Guardar frame\""))
+    #expect(text.contains("Button(\"Frame\", action: model.renderCurrentFrame)"))
     #expect(text.contains("Label(\"Recuperar ajustes\""))
     #expect(text.contains("model.importPhysicalSettings(undoManager: undoManager)"))
     #expect(text.contains("model.renderCurrentFrame()"))

@@ -17,6 +17,20 @@ struct SavedSceneAsset: Codable, Equatable, Sendable {
     }
 }
 
+/// An authored external dependency. Its absolute path is the sole identity; the user may
+/// deliberately replace the file at that path without changing the saved scene.
+struct SavedExternalAsset: Codable, Equatable, Sendable {
+    let absolutePath: String
+
+    var url: URL { URL(fileURLWithPath: absolutePath) }
+
+    func validate() throws {
+        guard absolutePath.hasPrefix("/"), !url.lastPathComponent.isEmpty else {
+            throw SceneLibraryError.invalidDocument("Una ruta externa guardada no es válida.")
+        }
+    }
+}
+
 struct SavedMissingMediaDescriptor: Codable, Equatable, Sendable {
     let originalName: String
     let width: Int
@@ -49,10 +63,10 @@ struct SavedMissingMediaDescriptor: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSource: Codable, Equatable, Sendable {
-    enum Kind: String, Codable, Sendable { case syntheticPattern, managedMedia }
+    enum Kind: String, Codable, Sendable { case syntheticPattern, externalMedia }
     let kind: Kind
     let patternRawValue: UInt32?
-    let assets: [SavedSceneAsset]
+    let assets: [SavedExternalAsset]
     let missingMedia: SavedMissingMediaDescriptor?
 
     func validate() throws {
@@ -62,7 +76,7 @@ struct SavedSceneSource: Codable, Equatable, Sendable {
                   assets.isEmpty, missingMedia == nil else {
                 throw SceneLibraryError.invalidDocument("La fuente sintética guardada no es válida.")
             }
-        case .managedMedia:
+        case .externalMedia:
             guard patternRawValue == nil, !assets.isEmpty, let missingMedia else {
                 throw SceneLibraryError.invalidDocument("La escena no contiene sus medios fuente.")
             }
@@ -88,7 +102,7 @@ struct SavedTrackingCalibration: Codable, Equatable, Sendable {
 }
 
 struct SavedTrackingScene: Codable, Equatable, Sendable {
-    let asset: SavedSceneAsset
+    let absolutePath: String
     let cameraID: String
     let pointGroupID: String
     let visibleMeshIDs: [String]
@@ -98,7 +112,7 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
     let calibration: SavedTrackingCalibration
 
     func validate() throws {
-        try asset.validate()
+        try SavedExternalAsset(absolutePath: absolutePath).validate()
         guard !cameraID.isEmpty, !pointGroupID.isEmpty,
               Set(visibleMeshIDs).count == visibleMeshIDs.count else {
             throw SceneLibraryError.invalidDocument("La selección de tracking guardada no es válida.")
@@ -108,7 +122,7 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v15"
+    static let schema = "ScreenSimulation.SavedScene.v16"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -263,7 +277,7 @@ struct SavedSceneCapture: Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 15
+    static let currentSchemaVersion = 16
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -327,7 +341,7 @@ struct SceneLibraryStore: Sendable {
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
         self.trackingLibraryRoot = trackingLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v15.json")
+        documentURL = directory.appendingPathComponent("Scenes.v16.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -358,11 +372,7 @@ struct SceneLibraryStore: Sendable {
                 }
             }
             if let tracking = scene.snapshot.tracking {
-                guard try TrackingAssetLibrary.asset(
-                    sha256: tracking.asset.sha256,
-                    originalFileName: tracking.asset.fileName,
-                    libraryRoot: trackingLibraryRoot
-                ) != nil else {
+                guard FileManager.default.fileExists(atPath: tracking.absolutePath) else {
                     throw SceneLibraryError.invalidDocument(
                         "Falta la composición Fusion de tracking de “\(scene.name)”."
                     )
@@ -415,7 +425,7 @@ struct SceneLibraryStore: Sendable {
                   Set(source.keys) == ["kind", "assets", "missingMedia"]
                     || Set(source.keys) == ["kind", "patternRawValue", "assets"],
                   let assets = source["assets"] as? [[String: Any]],
-                  assets.allSatisfy({ Set($0.keys) == ["fileName", "sha256"] }),
+                  assets.allSatisfy({ Set($0.keys) == ["absolutePath"] }),
                   (source["missingMedia"] == nil || {
                       guard let missing = source["missingMedia"] as? [String: Any] else {
                           return false
@@ -429,7 +439,7 @@ struct SceneLibraryStore: Sendable {
                   (snapshot["tracking"] == nil || snapshot["tracking"] is NSNull || {
                       guard let tracking = snapshot["tracking"] as? [String: Any],
                             Set(tracking.keys) == [
-                                "asset", "cameraID", "pointGroupID", "visibleMeshIDs",
+                                "absolutePath", "cameraID", "pointGroupID", "visibleMeshIDs",
                                 "pointsVisible", "geometryVisible", "cameraEnabled", "calibration",
                             ],
                             let asset = tracking["asset"] as? [String: Any],

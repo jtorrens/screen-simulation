@@ -2006,7 +2006,12 @@ final class WorkspaceModel: ObservableObject {
                 sourceUnitRadianceCandelasPerSquareMeter: unitRadiance,
                 exposureEV: exposureStops
             )
-            try EnvironmentAssetLibrary.saveCalibration(calibration, for: managed)
+            // Generated HDRIs are app-owned and may retain their calibration sidecar.
+            // External assets stay entirely at their authored path; their calibration is
+            // persisted with the scene/settings contract instead of beside the source file.
+            if knownHash != nil {
+                try EnvironmentAssetLibrary.saveCalibration(calibration, for: managed)
+            }
             let decoded = try await NativeMediaDecoder.decode(url: managed.url, time: .zero)
             guard decoded.width == decoded.height * 2 else {
                 throw EnvironmentRadianceFrameError.invalidEquirectangularRaster
@@ -2051,7 +2056,7 @@ final class WorkspaceModel: ObservableObject {
             environmentSourceName = managed.originalFileName
             environmentSourceResolution = CGSize(width: decoded.width, height: decoded.height)
             environmentSourceInputTransformID = inputTransformID
-            environmentSourceHash = managed.sha256
+            environmentSourceHash = knownHash
             environmentSourceURL = managed.url
             environmentSourceCalibration = calibration
             guard let current = currentTestAuthoringSelection() else {
@@ -2547,7 +2552,7 @@ final class WorkspaceModel: ObservableObject {
             referenceForegroundIsDeliveryAligned = false
             referenceSourceURL = managed.url
             referenceInputTransformID = referenceInputTransform.id
-            referenceSourceHash = managed.sha256
+            referenceSourceHash = nil
             referenceTimelineInfo = isVideo
                 ? NativeVideoTimelineInfo(
                     exactFrameRate: info.exactFrameRate,
@@ -4263,16 +4268,10 @@ final class WorkspaceModel: ObservableObject {
             guard !urls.isEmpty else {
                 throw SceneLibraryError.invalidDocument("La fuente externa no está disponible.")
             }
-            let assets = try urls.map { url in
-                let managed = try SourceAssetLibrary.importAsset(from: url)
-                return SavedSceneAsset(
-                    fileName: managed.originalFileName,
-                    sha256: managed.sha256
-                )
-            }
+            let assets = urls.map { SavedExternalAsset(absolutePath: $0.path) }
             let raster = originACEScgFrame ?? frame
             source = .init(
-                kind: .managedMedia,
+                kind: .externalMedia,
                 patternRawValue: nil,
                 assets: assets,
                 missingMedia: .init(
@@ -4301,7 +4300,7 @@ final class WorkspaceModel: ObservableObject {
                 )
             }
             savedTracking = .init(
-                asset: .init(fileName: asset.originalFileName, sha256: asset.sha256),
+                absolutePath: asset.url.path,
                 cameraID: cameraID, pointGroupID: pointGroupID,
                 visibleMeshIDs: visibleTrackingMeshIDs.sorted(),
                 pointsVisible: trackingPointsVisible,
@@ -4357,32 +4356,18 @@ final class WorkspaceModel: ObservableObject {
                       let pattern = SyntheticPattern(rawValue: rawValue)
                 else { throw SceneLibraryError.invalidDocument("El patrón de la escena no existe.") }
                 choosePattern(pattern, undoManager: nil)
-            case .managedMedia:
-                var urls: [URL] = []
-                for identity in source.assets {
-                    guard let managed = try SourceAssetLibrary.asset(
-                        sha256: identity.sha256,
-                        originalFileName: identity.fileName
-                    ) else { continue }
-                    urls.append(managed.url)
+            case .externalMedia:
+                let urls = source.assets.map(\.url)
+                guard urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
+                    throw SceneLibraryError.invalidDocument("Falta una fuente externa guardada.")
                 }
-                if urls.count == source.assets.count {
-                    errorMessage = nil
-                    await load(urls)
-                    guard errorMessage == nil, !sourceIsPattern,
-                          session.sourceURLs.count == urls.count else {
-                        throw SceneLibraryError.invalidDocument(
-                            "No se pudo reconstruir la fuente guardada."
-                        )
-                    }
-                } else {
-                    try applyPhysicalSettings(imported, undoManager: undoManager)
-                    guard let descriptor = source.missingMedia else {
-                        throw SceneLibraryError.invalidDocument(
-                            "La escena no describe el medio ausente."
-                        )
-                    }
-                    try publishMissingMedia(descriptor, source: source)
+                errorMessage = nil
+                await load(urls)
+                guard errorMessage == nil, !sourceIsPattern,
+                      session.sourceURLs.count == urls.count else {
+                    throw SceneLibraryError.invalidDocument(
+                        "No se pudo abrir la fuente externa guardada."
+                    )
                 }
             }
             if missingMediaSource == nil {
@@ -4426,16 +4411,17 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         try saved.validate()
-        guard let asset = try TrackingAssetLibrary.asset(
-            sha256: saved.asset.sha256, originalFileName: saved.asset.fileName
-        ) else { throw SceneLibraryError.invalidDocument("Falta la composición Fusion de tracking guardada.") }
-        let imported = try FusionTrackingImporter().load(asset.url)
+        let url = URL(fileURLWithPath: saved.absolutePath)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw SceneLibraryError.invalidDocument("Falta la composición Fusion de tracking guardada.")
+        }
+        let imported = try FusionTrackingImporter().load(url)
         guard imported.cameras.contains(where: { $0.id == saved.cameraID }),
               imported.pointGroups.contains(where: { $0.id == saved.pointGroupID }),
               Set(saved.visibleMeshIDs).isSubset(of: Set(imported.meshes.map(\.id))) else {
             throw SceneLibraryError.invalidDocument("La selección guardada no existe en la composición Fusion.")
         }
-        trackingAsset = asset
+        trackingAsset = .init(url: url, originalFileName: url.lastPathComponent)
         trackingScene = imported
         selectedTrackingCameraID = saved.cameraID
         selectedTrackingPointGroupID = saved.pointGroupID
@@ -4676,13 +4662,13 @@ final class WorkspaceModel: ObservableObject {
             environmentResource: .init(
                 kind: environmentRadianceFrame == nil ? .procedural : .image,
                 fileName: environmentSourceName,
-                sha256: environmentSourceHash,
+                absolutePath: environmentSourceURL?.path,
                 inputTransformID: environmentSourceInputTransformID
             ),
             referenceResource: .init(
                 kind: referenceACEScgFrame == nil ? .none : .imageOrVideo,
                 fileName: referenceFrameName,
-                sha256: referenceSourceHash,
+                absolutePath: referenceSourceURL?.path,
                 inputTransformID: referenceInputTransformID,
                 alphaMode: referenceACEScgFrame == nil ? nil : referenceAlphaMode.rawValue,
                 signalColorModel: referenceACEScgFrame == nil
@@ -4735,11 +4721,8 @@ final class WorkspaceModel: ObservableObject {
     ) throws {
         if let resource = imported.context?.environmentResource,
            resource.kind == .image {
-            guard let hash = resource.sha256,
-                  let name = resource.fileName,
-                  try EnvironmentAssetLibrary.asset(
-                      sha256: hash, originalFileName: name
-                  ) != nil
+            guard let path = resource.absolutePath,
+                  FileManager.default.fileExists(atPath: path)
             else {
                 throw PhysicalSettingsExchange.ImportError.unavailableEnvironmentResource(
                     resource.fileName ?? "sin nombre"
@@ -4748,8 +4731,8 @@ final class WorkspaceModel: ObservableObject {
         }
         if let resource = imported.context?.referenceResource,
            resource.kind == .imageOrVideo {
-            guard let hash = resource.sha256, let name = resource.fileName,
-                  try ReferenceAssetLibrary.asset(sha256: hash, originalFileName: name) != nil
+            guard let path = resource.absolutePath,
+                  FileManager.default.fileExists(atPath: path)
             else {
                 throw PhysicalSettingsExchange.ImportError.unavailableReferenceResource(
                     resource.fileName ?? "sin nombre"
@@ -4803,24 +4786,22 @@ final class WorkspaceModel: ObservableObject {
             case .image:
                 authoredImageEnvironment = state.pipeline.environment
                 environmentSourceName = context.environmentResource.fileName
-                environmentSourceHash = context.environmentResource.sha256
+                environmentSourceHash = nil
                 environmentSourceInputTransformID = context.environmentResource.inputTransformID
-                if let hash = context.environmentResource.sha256,
+                if let path = context.environmentResource.absolutePath,
                    let name = context.environmentResource.fileName,
                    let transform = context.environmentResource.inputTransformID,
-                   let asset = try EnvironmentAssetLibrary.asset(
-                       sha256: hash, originalFileName: name
-                   ) {
-                    environmentSourceURL = asset.url
+                   FileManager.default.fileExists(atPath: path) {
+                    let url = URL(fileURLWithPath: path)
+                    environmentSourceURL = url
                     Task { [weak self] in
                         await self?.loadEnvironment(
-                            asset.url,
+                            url,
                             inputTransformID: transform,
                             unitRadiance: state.pipeline.environment
                                 .sourceUnitRadianceCandelasPerSquareMeter,
                             exposureStops: state.pipeline.environment.exposureStops,
-                            originalFileName: name,
-                            knownHash: hash
+                            originalFileName: name
                         )
                     }
                 }
@@ -4841,7 +4822,7 @@ final class WorkspaceModel: ObservableObject {
                 referenceMatchProjectedCorners = []
                 referenceMatchEnabled = false
             case .imageOrVideo:
-                guard let hash = context.referenceResource.sha256,
+                guard let path = context.referenceResource.absolutePath,
                       let name = context.referenceResource.fileName,
                       let transform = context.referenceResource.inputTransformID,
                       let input = StudioColorInputTransform.catalog.first(where: {
@@ -4857,14 +4838,15 @@ final class WorkspaceModel: ObservableObject {
                       let range = StudioSignalRange(rawValue: rangeRaw),
                       let placementRaw = context.referenceResource.placementID,
                       let referencePlacement = SourcePlacement(stableID: placementRaw),
-                      let asset = try ReferenceAssetLibrary.asset(
-                          sha256: hash, originalFileName: name
-                      )
+                      FileManager.default.fileExists(atPath: path)
                 else {
                     throw PhysicalSettingsExchange.ImportError.unavailableReferenceResource(
                         context.referenceResource.fileName ?? "sin nombre"
                     )
                 }
+                let asset = ManagedReferenceAsset(
+                    url: URL(fileURLWithPath: path), originalFileName: name
+                )
                 referenceSourceURL = asset.url
                 referenceInputTransformID = transform
                 referenceInputTransform = input
@@ -4873,7 +4855,7 @@ final class WorkspaceModel: ObservableObject {
                 referenceSignalMatrix = matrix
                 referenceSignalRange = range
                 self.referencePlacement = referencePlacement
-                referenceSourceHash = hash
+                referenceSourceHash = nil
                 referenceFrameName = name
                 referenceMatchCorners = context.referenceResource.corners.map {
                     CGPoint(x: $0.x, y: $0.y)

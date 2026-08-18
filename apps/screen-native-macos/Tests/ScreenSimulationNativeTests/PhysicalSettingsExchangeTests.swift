@@ -138,7 +138,7 @@ import Testing
     let resource = PhysicalSettingsExchange.EnvironmentResource(
         kind: .image,
         fileName: "room.exr",
-        sha256: "not-a-sha",
+        absolutePath: "relative/room.exr",
         inputTransformID: "linear-rec709"
     )
     #expect(throws: PhysicalSettingsExchange.ImportError.self) {
@@ -150,7 +150,7 @@ import Testing
     let resource = PhysicalSettingsExchange.ReferenceResource(
         kind: .imageOrVideo,
         fileName: "reference.mov",
-        sha256: String(repeating: "a", count: 64),
+        absolutePath: "/Volumes/plates/reference.mov",
         inputTransformID: "srgb-encoded-rec709",
         alphaMode: "Ignorar",
         signalColorModel: "RGB",
@@ -204,10 +204,10 @@ private func canonicalFrameContext(
         previewOutputTransformID: "aces2-srgb-sdr-100",
         previewPhaseID: "recording-codec",
         environmentResource: .init(
-            kind: .procedural, fileName: nil, sha256: nil, inputTransformID: nil
+            kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil
         ),
         referenceResource: .init(
-            kind: .none, fileName: nil, sha256: nil, inputTransformID: nil,
+            kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil,
             alphaMode: nil, signalColorModel: nil, signalMatrix: nil,
             signalRange: nil, placementID: nil,
             corners: []

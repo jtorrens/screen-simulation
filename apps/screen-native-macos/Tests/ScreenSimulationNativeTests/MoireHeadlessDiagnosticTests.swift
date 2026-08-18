@@ -996,21 +996,17 @@ private func moireFrameContext(
                 "El fixture HDRI no publicó su Input Transform obligatorio."
             )
         }
-        let environmentData = try Data(contentsOf: URL(fileURLWithPath: environmentSourcePath))
-        let environmentHash = SHA256.hash(data: environmentData)
-            .map { String(format: "%02x", $0) }
-            .joined()
         environmentResource = .init(
             kind: .image,
             fileName: URL(fileURLWithPath: environmentSourcePath).lastPathComponent,
-            sha256: environmentHash,
+            absolutePath: environmentSourcePath,
             inputTransformID: environmentInputTransformID
         )
     } else {
         environmentResource = .init(
             kind: .procedural,
             fileName: nil,
-            sha256: nil,
+            absolutePath: nil,
             inputTransformID: nil
         )
     }
@@ -1035,7 +1031,7 @@ private func moireFrameContext(
         referenceResource: .init(
             kind: .none,
             fileName: nil,
-            sha256: nil,
+            absolutePath: nil,
             inputTransformID: nil,
             alphaMode: nil,
             signalColorModel: nil,
