@@ -3816,7 +3816,9 @@ final class WorkspaceModel: ObservableObject {
             fileName: managed.originalFileName,
             sha256: managed.sha256
         )
-        let snapshot = try scene.snapshot.replacingGeneratedEnvironment(asset)
+        let snapshot = try scene.snapshot.replacingGeneratedEnvironment(
+            asset, absolutePath: managed.url.path
+        )
         let clone = SavedScene(
             id: queueSceneID,
             name: scene.name,
@@ -4268,20 +4270,8 @@ final class WorkspaceModel: ObservableObject {
 
     func captureSavedScene() throws -> SavedSceneCapture {
         guard let frame = metalFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let pipeline = physicalAuthoringState,
-              let context = currentSettingsContext(),
-              let settings = PhysicalSettingsExchange.metadata(
-                device: device,
-                pipeline: pipeline,
-                model: physicalModel.authoringState,
-                context: context
-              )
+              let context = currentSettingsContext()
         else { throw SceneLibraryError.invalidDocument("La escena todavía no tiene un estado completo.") }
-        let settingsDocument = try JSONSerialization.data(
-            withJSONObject: ["settings": settings],
-            options: [.sortedKeys]
-        )
         let source: SavedSceneSource
         if sourceIsPattern {
             source = .init(
@@ -4346,7 +4336,10 @@ final class WorkspaceModel: ObservableObject {
             viewerPanX: pan.width,
             viewerPanY: pan.height,
             viewerIsFitted: previewIsFitted,
-            settingsDocument: settingsDocument,
+            authoring: .init(
+                context: context, model: physicalModel.authoringState,
+                environmentCalibration: environmentSourceCalibration
+            ),
             tracking: savedTracking
         )
         try snapshot.validate()
@@ -4368,13 +4361,10 @@ final class WorkspaceModel: ObservableObject {
     ) async {
         do {
             try scene.validate()
-            guard let document = try JSONSerialization.jsonObject(
-                with: scene.snapshot.settingsDocument
-            ) as? [String: Any] else {
-                throw SceneLibraryError.invalidDocument("Los ajustes de la escena no son legibles.")
-            }
-            let imported = try PhysicalSettingsExchange.decode(from: document)
-            try validatePhysicalSettingsResources(imported)
+            let authoring = scene.snapshot.authoring
+            try authoring.validate()
+            try validateSceneAuthoringResources(authoring)
+            try prepareSceneSourceInterpretation(authoring.context)
             let source = scene.snapshot.source
             switch source.kind {
             case .syntheticPattern:
@@ -4396,9 +4386,7 @@ final class WorkspaceModel: ObservableObject {
                     )
                 }
             }
-            if missingMediaSource == nil {
-                try applyPhysicalSettings(imported, undoManager: undoManager)
-            }
+            if missingMediaSource == nil { try applySceneAuthoring(authoring, undoManager: undoManager) }
             currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
             try restoreTrackingScene(scene.snapshot.tracking)
             viewerNavigation.restore(
@@ -4589,7 +4577,7 @@ final class WorkspaceModel: ObservableObject {
         if let colorSpaceName = previewTransform.colorSpace?.name {
             output["embeddedICCColorSpace"] = colorSpaceName as String
         }
-        var document: [String: Any] = [
+        let document: [String: Any] = [
             "schema": FrameCheckPNG.metadataKeyword,
             "schemaVersion": 1,
             "producer": [
@@ -4629,42 +4617,7 @@ final class WorkspaceModel: ObservableObject {
                 "warnings": errorMessage.map { [$0] } ?? [],
             ],
         ]
-        if let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-           let state = physicalAuthoringState,
-           let context = currentSettingsContext(),
-           let settings = PhysicalSettingsExchange.metadata(
-               device: device,
-               pipeline: state,
-               model: physicalModel.authoringState,
-               context: context
-           ) {
-            document["settings"] = settings
-        }
         return document
-    }
-
-    func importPhysicalSettings(undoManager: UndoManager?) {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png]
-        panel.allowsMultipleSelection = false
-        panel.message = "Recupera todos los ajustes que generaron el frame; zoom y pan se conservan."
-        FileDialogDirectory.settingsImport.apply(to: panel)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        FileDialogDirectory.settingsImport.remember(url)
-        do {
-            let png = try Data(contentsOf: url)
-            guard let metadata = FrameCheckPNG.metadata(in: png),
-                  let document = try JSONSerialization.jsonObject(with: metadata) as? [String: Any]
-            else {
-                throw PhysicalSettingsExchange.ImportError.missingSettings
-            }
-            let imported = try PhysicalSettingsExchange.decode(from: document)
-            guard confirmPhysicalSettingsImport(imported.report) else { return }
-            try applyPhysicalSettings(imported, undoManager: undoManager)
-            status = "Ajustes físicos importados · \(url.lastPathComponent)"
-        } catch {
-            errorMessage = error.localizedDescription
-        }
     }
 
     private struct ImportedPhysicalState {
@@ -4766,6 +4719,133 @@ final class WorkspaceModel: ObservableObject {
                 )
             }
         }
+    }
+
+    /// Scene documents resolve against the live catalogs. They deliberately do not restore the
+    /// resolved DeviceDefinition or PhysicalPipelineAuthoringState carried by PNG exchanges.
+    private func validateSceneAuthoringResources(_ authoring: SceneAuthoringDocument) throws {
+        try authoring.context.environmentResource.validate()
+        try authoring.context.referenceResource.validate()
+        if authoring.context.environmentResource.kind == .image {
+            guard let path = authoring.context.environmentResource.absolutePath,
+                  FileManager.default.fileExists(atPath: path) else {
+                throw SceneLibraryError.invalidDocument("Falta el HDRI externo guardado.")
+            }
+        }
+        if authoring.context.referenceResource.kind == .imageOrVideo {
+            guard let path = authoring.context.referenceResource.absolutePath,
+                  FileManager.default.fileExists(atPath: path) else {
+                throw SceneLibraryError.invalidDocument("Falta la referencia externa guardada.")
+            }
+        }
+    }
+
+    private func prepareSceneSourceInterpretation(
+        _ context: PhysicalSettingsExchange.FrameContext
+    ) throws {
+        guard let input = StudioColorInputTransform.catalog.first(where: {
+            $0.id == context.sourceInputTransformID
+        }), let alpha = StudioAlphaMode(rawValue: context.sourceAlphaMode),
+              let colorModel = StudioSignalColorModel(rawValue: context.sourceColorModel),
+              let matrix = StudioSignalMatrix(rawValue: context.sourceYUVMatrix),
+              let range = StudioSignalRange(rawValue: context.sourceSignalRange)
+        else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena requiere una interpretación de fuente que ya no existe."
+            )
+        }
+        inputTransform = input
+        alphaMode = alpha
+        signalColorModel = colorModel
+        signalMatrix = matrix
+        signalRange = range
+    }
+
+    private func applySceneAuthoring(
+        _ authoring: SceneAuthoringDocument,
+        undoManager: UndoManager?
+    ) throws {
+        let context = authoring.context
+        guard let output = StudioColorOutputTransform.catalog.first(where: {
+            $0.id == context.previewOutputTransformID
+        }), let placement = SourcePlacement(stableID: context.sourcePlacementID),
+              capturePresets.contains(where: { $0.id == context.selection.capturePresetID }),
+              lensPresets.contains(where: { $0.id == context.selection.lensPresetID })
+        else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena requiere un perfil o una opción de catálogo que ya no existe."
+            )
+        }
+        try prepareSceneSourceInterpretation(context)
+        previewTransform = output
+        sourcePlacement = placement
+        try applyTestAuthoringSelection(context.selection)
+        try physicalModel.restoreAuthoringState(authoring.model)
+        if let quality = PhysicalQuality(stableID: context.selection.previewQualityID) {
+            physicalModel.setQuality(quality)
+        }
+        physicalModel.invalidateExternalParameters()
+        switch context.environmentResource.kind {
+        case .procedural:
+            environmentRadianceFrame = nil
+            environmentSourceACEScgFrame = nil
+            environmentSourceURL = nil
+            environmentSourceCalibration = nil
+        case .image:
+            guard let path = context.environmentResource.absolutePath,
+                  let transform = context.environmentResource.inputTransformID,
+                  let calibration = authoring.environmentCalibration else {
+                throw SceneLibraryError.invalidDocument(
+                    "El HDRI externo no tiene su calibración de radiancia explícita."
+                )
+            }
+            Task { [weak self] in
+                _ = await self?.loadEnvironment(
+                    URL(fileURLWithPath: path), inputTransformID: transform,
+                    unitRadiance: calibration.sourceUnitRadianceCandelasPerSquareMeter,
+                    exposureStops: calibration.exposureEV,
+                    originalFileName: context.environmentResource.fileName
+                )
+            }
+        }
+        // Resource pixels are intentionally external and are restored only through their exact
+        // authored path and interpretation, never through a library copy or hash lookup.
+        switch context.referenceResource.kind {
+        case .none:
+            referenceACEScgFrame = nil
+            referenceForegroundFrame = nil
+            referenceSourceURL = nil
+            referenceFrameName = nil
+        case .imageOrVideo:
+            guard let path = context.referenceResource.absolutePath,
+                  let name = context.referenceResource.fileName,
+                  let transform = context.referenceResource.inputTransformID,
+                  let input = StudioColorInputTransform.catalog.first(where: { $0.id == transform }),
+                  let alphaRaw = context.referenceResource.alphaMode,
+                  let alpha = StudioAlphaMode(rawValue: alphaRaw),
+                  let colorRaw = context.referenceResource.signalColorModel,
+                  let color = StudioSignalColorModel(rawValue: colorRaw),
+                  let matrixRaw = context.referenceResource.signalMatrix,
+                  let matrix = StudioSignalMatrix(rawValue: matrixRaw),
+                  let rangeRaw = context.referenceResource.signalRange,
+                  let range = StudioSignalRange(rawValue: rangeRaw),
+                  let placementRaw = context.referenceResource.placementID,
+                  let referencePlacement = SourcePlacement(stableID: placementRaw)
+            else { throw SceneLibraryError.invalidDocument("La referencia guardada no es compatible.") }
+            let asset = ManagedReferenceAsset(url: URL(fileURLWithPath: path), originalFileName: name)
+            referenceSourceURL = asset.url
+            referenceInputTransformID = transform
+            referenceInputTransform = input
+            referenceAlphaMode = alpha
+            referenceSignalColorModel = color
+            referenceSignalMatrix = matrix
+            referenceSignalRange = range
+            self.referencePlacement = referencePlacement
+            referenceFrameName = name
+            referenceMatchCorners = context.referenceResource.corners.map { CGPoint(x: $0.x, y: $0.y) }
+            Task { [weak self] in await self?.loadManagedReferenceFrame(asset, keepAuthoredCorners: true) }
+        }
+        _ = undoManager // Opening a scene deliberately starts a new authoring baseline.
     }
 
     private func restoreImportedPhysicalState(_ state: ImportedPhysicalState) throws {

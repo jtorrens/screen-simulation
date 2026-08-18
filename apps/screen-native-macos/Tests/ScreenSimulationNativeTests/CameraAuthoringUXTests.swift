@@ -122,8 +122,8 @@ import Testing
 
     #expect(text.contains("model.setZoomPercentage"))
     #expect(text.contains("Button(\"Frame\", action: model.renderCurrentFrame)"))
-    #expect(text.contains("Label(\"Recuperar ajustes\""))
-    #expect(text.contains("model.importPhysicalSettings(undoManager: undoManager)"))
+    #expect(!text.contains("Recuperar ajustes"))
+    #expect(!text.contains("importPhysicalSettings"))
     #expect(text.contains("model.renderCurrentFrame()"))
     #expect(text.contains("NativeTimelineView("))
     #expect(text.contains("Divider()\n            transport\n            Divider()"))

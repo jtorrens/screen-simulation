@@ -1323,13 +1323,6 @@ struct ContentView: View {
             }
             .disabled(page == .settings)
             .help("Importar cámara, point cloud, geometrías y lente desde Fusion")
-            Button {
-                model.importPhysicalSettings(undoManager: undoManager)
-            } label: {
-                Label("Recuperar ajustes", systemImage: "arrow.down.doc")
-            }
-            .disabled(page != .test)
-            .help("Recuperar desde un PNG guardado por SCREEN-SIMULATION los ajustes con los que se generó")
             Button("Frame", action: model.renderCurrentFrame)
                 .disabled(page != .main || model.metalFrame == nil)
                 .help("Renderizar el frame actual horneando la transformación del visor")

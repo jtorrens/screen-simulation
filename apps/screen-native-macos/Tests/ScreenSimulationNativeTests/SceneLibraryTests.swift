@@ -1,14 +1,46 @@
 import Foundation
+import StudioColor
+import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
 
+private func sceneAuthoring() throws -> SceneAuthoringDocument {
+    let input = try #require(StudioColorInputTransform.catalog.first {
+        $0.id == "srgb-encoded-rec709"
+    })
+    let output = try #require(StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-srgb-sdr-100"
+    })
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let selection = try RustTestAuthoringCoordinator.defaultSelection(
+        inputTransformID: input.id, deviceID: device.id, frameRate: .fps24
+    )
+    return .init(
+        context: .init(
+            selection: selection,
+            sourceInputTransformID: input.id,
+            sourceAlphaMode: StudioAlphaMode.ignore.rawValue,
+            sourceColorModel: StudioSignalColorModel.rgb.rawValue,
+            sourceYUVMatrix: StudioSignalMatrix.bt709.rawValue,
+            sourceSignalRange: StudioSignalRange.full.rawValue,
+            sourcePlacementID: "fit",
+            previewOutputTransformID: output.id,
+            previewPhaseID: "recording-codec",
+            environmentResource: .init(kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil),
+            referenceResource: .init(kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil, alphaMode: nil, signalColorModel: nil, signalMatrix: nil, signalRange: nil, placementID: nil, corners: [])
+        ),
+        model: .init(screen: .init(storedAmount: 1, isBypassed: false), stages: []),
+        environmentCalibration: nil
+    )
+}
+
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 17)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 18)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v17.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v18.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(
@@ -22,9 +54,7 @@ import Testing
         viewerPanX: 12,
         viewerPanY: -8,
         viewerIsFitted: false,
-        settingsDocument: try JSONSerialization.data(
-            withJSONObject: ["settings": ["schema": PhysicalSettingsExchange.schema]]
-        )
+        authoring: try sceneAuthoring()
     )
     let scene = SavedScene(
         id: id,
@@ -53,9 +83,7 @@ import Testing
             ),
             currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
             viewerIsFitted: true,
-            settingsDocument: try JSONSerialization.data(
-                withJSONObject: ["settings": ["schema": PhysicalSettingsExchange.schema]]
-            )
+            authoring: try sceneAuthoring()
         ),
         thumbnailPNG: Data([1, 2, 3]), generatedEnvironmentEXR: nil
     )
@@ -100,9 +128,7 @@ import Testing
         viewerPanX: -41,
         viewerPanY: 19,
         viewerIsFitted: false,
-        settingsDocument: try JSONSerialization.data(
-            withJSONObject: ["settings": ["schema": PhysicalSettingsExchange.schema]]
-        )
+        authoring: try sceneAuthoring()
     )
     let scene = SavedScene(
         id: id,
@@ -168,9 +194,7 @@ import Testing
         ),
         currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
         viewerIsFitted: true,
-        settingsDocument: try JSONSerialization.data(
-            withJSONObject: ["settings": ["schema": PhysicalSettingsExchange.schema]]
-        ),
+        authoring: try sceneAuthoring(),
         tracking: tracking
     )
     let scene = SavedScene(
@@ -209,17 +233,6 @@ import Testing
         environmentLibraryRoot: environmentRoot
     )
     let controller = SceneLibraryController(store: store)
-    let settings = try JSONSerialization.data(withJSONObject: [
-        "settings": [
-            "schema": PhysicalSettingsExchange.schema,
-            "context": [
-                "environmentResource": [
-                    "kind": "procedural",
-                    "presetID": "environment-none",
-                ],
-            ],
-        ],
-    ])
     let snapshot = SavedSceneSnapshot(
         source: .init(
             kind: .syntheticPattern,
@@ -227,7 +240,7 @@ import Testing
             assets: [], missingMedia: nil
         ),
         currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
-        viewerIsFitted: true, settingsDocument: settings
+        viewerIsFitted: true, authoring: try sceneAuthoring()
     )
     let originalData = Data([1, 2, 3, 4])
     let scene = try controller.add(capture: .init(
@@ -287,15 +300,7 @@ import Testing
             currentFrame: frame,
             viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
             viewerIsFitted: true,
-            settingsDocument: try JSONSerialization.data(
-                withJSONObject: ["settings": [
-                    "schema": PhysicalSettingsExchange.schema,
-                    "context": ["environmentResource": [
-                        "kind": "procedural",
-                        "presetID": "environment-none",
-                    ]],
-                ]]
-            )
+            authoring: try sceneAuthoring()
         )
     }
     let originalEnvironment = Data([1, 2, 3, 4])

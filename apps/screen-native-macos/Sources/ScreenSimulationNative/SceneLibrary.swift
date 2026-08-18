@@ -119,8 +119,37 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
     }
 }
 
+/// Scene persistence intentionally records authoring, not a resolved physical-profile snapshot.
+/// The selected catalog IDs are resolved again when the scene opens, so a current device, camera
+/// or lens definition remains the authority for its defaults and capabilities.
+struct SceneAuthoringDocument: Codable, Equatable, Sendable {
+    static let schema = "ScreenSimulation.SceneAuthoring.v1"
+
+    let schema: String
+    let context: PhysicalSettingsExchange.FrameContext
+    let model: PhysicalModelAuthoringState
+    let environmentCalibration: EnvironmentAssetCalibration?
+
+    init(
+        context: PhysicalSettingsExchange.FrameContext,
+        model: PhysicalModelAuthoringState,
+        environmentCalibration: EnvironmentAssetCalibration?
+    ) {
+        schema = Self.schema
+        self.context = context
+        self.model = model
+        self.environmentCalibration = environmentCalibration
+    }
+
+    func validate() throws {
+        guard schema == Self.schema else {
+            throw SceneLibraryError.invalidDocument("El documento de autoría de escena no es válido.")
+        }
+    }
+}
+
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v17"
+    static let schema = "ScreenSimulation.SavedScene.v18"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -128,13 +157,13 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
     let viewerPanX: Double
     let viewerPanY: Double
     let viewerIsFitted: Bool
-    let settingsDocument: Data
+    let authoring: SceneAuthoringDocument
     let generatedEnvironment: SavedSceneAsset?
     let tracking: SavedTrackingScene?
 
     private enum CodingKeys: String, CodingKey {
         case schema, source, currentFrame, viewerZoom, viewerPanX, viewerPanY
-        case viewerIsFitted, settingsDocument, generatedEnvironment, tracking
+        case viewerIsFitted, authoring, generatedEnvironment, tracking
     }
 
     init(
@@ -144,7 +173,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         viewerPanX: Double,
         viewerPanY: Double,
         viewerIsFitted: Bool,
-        settingsDocument: Data,
+        authoring: SceneAuthoringDocument,
         generatedEnvironment: SavedSceneAsset? = nil,
         tracking: SavedTrackingScene? = nil
     ) {
@@ -155,7 +184,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         self.viewerPanX = viewerPanX
         self.viewerPanY = viewerPanY
         self.viewerIsFitted = viewerIsFitted
-        self.settingsDocument = settingsDocument
+        self.authoring = authoring
         self.generatedEnvironment = generatedEnvironment
         self.tracking = tracking
     }
@@ -169,7 +198,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         viewerPanX = try values.decode(Double.self, forKey: .viewerPanX)
         viewerPanY = try values.decode(Double.self, forKey: .viewerPanY)
         viewerIsFitted = try values.decode(Bool.self, forKey: .viewerIsFitted)
-        settingsDocument = try values.decode(Data.self, forKey: .settingsDocument)
+        authoring = try values.decode(SceneAuthoringDocument.self, forKey: .authoring)
         generatedEnvironment = try values.decodeIfPresent(
             SavedSceneAsset.self, forKey: .generatedEnvironment
         )
@@ -185,7 +214,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         try values.encode(viewerPanX, forKey: .viewerPanX)
         try values.encode(viewerPanY, forKey: .viewerPanY)
         try values.encode(viewerIsFitted, forKey: .viewerIsFitted)
-        try values.encode(settingsDocument, forKey: .settingsDocument)
+        try values.encode(authoring, forKey: .authoring)
         if let generatedEnvironment {
             try values.encode(generatedEnvironment, forKey: .generatedEnvironment)
         } else {
@@ -199,13 +228,10 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         guard schema == Self.schema, currentFrame >= 0,
               viewerZoom.isFinite, viewerZoom > 0,
               viewerPanX.isFinite, viewerPanY.isFinite,
-              !settingsDocument.isEmpty,
-              let object = try JSONSerialization.jsonObject(with: settingsDocument)
-                as? [String: Any],
-              let settings = object["settings"] as? [String: Any],
-              settings["schema"] as? String == PhysicalSettingsExchange.schema
+              authoring.schema == SceneAuthoringDocument.schema
         else { throw SceneLibraryError.invalidDocument("El snapshot de escena no es válido.") }
         try source.validate()
+        try authoring.validate()
         try generatedEnvironment?.validate()
         try tracking?.validate()
     }
@@ -217,46 +243,45 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             return Self(
                 source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
                 viewerPanX: viewerPanX, viewerPanY: viewerPanY,
-                viewerIsFitted: viewerIsFitted, settingsDocument: settingsDocument,
+                viewerIsFitted: viewerIsFitted, authoring: authoring,
                 generatedEnvironment: nil,
                 tracking: tracking
             )
         }
-        var root = try requireObject(settingsDocument)
-        guard var settings = root["settings"] as? [String: Any],
-              var context = settings["context"] as? [String: Any],
-              var environment = context["environmentResource"] as? [String: Any]
-        else { throw SceneLibraryError.invalidDocument("La escena no contiene el recurso de entorno.") }
-        environment["kind"] = "image"
-        environment["fileName"] = asset.fileName
         guard let resolvedAbsolutePath = absolutePath
-            ?? (environment["absolutePath"] as? String),
+            ?? authoring.context.environmentResource.absolutePath,
             resolvedAbsolutePath.hasPrefix("/")
         else {
             throw SceneLibraryError.invalidDocument("Falta la ruta del entorno generado.")
         }
-        environment.removeValue(forKey: "sha256")
-        environment["absolutePath"] = resolvedAbsolutePath
-        environment["inputTransformID"] = "acescg"
-        context["environmentResource"] = environment
-        settings["context"] = context
-        root["settings"] = settings
-        let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+        let previous = authoring.context
+        let context = PhysicalSettingsExchange.FrameContext(
+            selection: previous.selection,
+            sourceInputTransformID: previous.sourceInputTransformID,
+            sourceAlphaMode: previous.sourceAlphaMode,
+            sourceColorModel: previous.sourceColorModel,
+            sourceYUVMatrix: previous.sourceYUVMatrix,
+            sourceSignalRange: previous.sourceSignalRange,
+            sourcePlacementID: previous.sourcePlacementID,
+            previewOutputTransformID: previous.previewOutputTransformID,
+            previewPhaseID: previous.previewPhaseID,
+            environmentResource: .init(
+                kind: .image, fileName: asset.fileName,
+                absolutePath: resolvedAbsolutePath, inputTransformID: "acescg"
+            ),
+            referenceResource: previous.referenceResource
+        )
         return Self(
             source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
-            viewerIsFitted: viewerIsFitted, settingsDocument: data,
-            generatedEnvironment: asset,
-            tracking: tracking
+            viewerIsFitted: viewerIsFitted,
+            authoring: .init(
+                context: context, model: authoring.model,
+                environmentCalibration: authoring.environmentCalibration
+            ),
+            generatedEnvironment: asset, tracking: tracking
         )
     }
-}
-
-private func requireObject(_ data: Data) throws -> [String: Any] {
-    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        throw SceneLibraryError.invalidDocument("Los ajustes de escena no son un objeto.")
-    }
-    return object
 }
 
 struct SavedScene: Codable, Equatable, Identifiable, Sendable {
@@ -332,7 +357,7 @@ struct SceneAutosaveHistoryTarget: Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 17
+    static let currentSchemaVersion = 18
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -396,7 +421,7 @@ struct SceneLibraryStore: Sendable {
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
         self.trackingLibraryRoot = trackingLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v17.json")
+        documentURL = directory.appendingPathComponent("Scenes.v18.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -457,7 +482,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave", isDirectory: true)
+            .appendingPathComponent("Autosave.v18", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -557,7 +582,7 @@ struct SceneLibraryStore: Sendable {
                   let snapshot = scene["snapshot"] as? [String: Any],
                   Set(snapshot.keys) == [
                       "schema", "source", "currentFrame", "viewerZoom", "viewerPanX",
-                      "viewerPanY", "viewerIsFitted", "settingsDocument",
+                      "viewerPanY", "viewerIsFitted", "authoring",
                       "generatedEnvironment", "tracking",
                   ],
                   let source = snapshot["source"] as? [String: Any],
@@ -711,7 +736,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave", isDirectory: true)
+            .appendingPathComponent("Autosave.v18", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
@@ -751,13 +776,13 @@ final class SceneLibraryController: ObservableObject {
     func add(capture: SavedSceneCapture, name: String? = nil) throws -> SavedScene {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let id = UUID()
-        let asset = try capture.generatedEnvironmentEXR.map {
+        let generated = try capture.generatedEnvironmentEXR.map {
             let managed = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
                 $0, sceneID: id, libraryRoot: store.environmentLibraryRoot
             )
-            return SavedSceneAsset(fileName: managed.originalFileName, sha256: managed.sha256)
+            return (SavedSceneAsset(fileName: managed.originalFileName, sha256: managed.sha256), managed.url.path)
         }
-        let snapshot = try capture.snapshot.replacingGeneratedEnvironment(asset)
+        let snapshot = try capture.snapshot.replacingGeneratedEnvironment(generated?.0, absolutePath: generated?.1)
         let scene = SavedScene(
             id: id,
             name: name ?? "Escena \(document.scenes.count + 1)",
@@ -778,7 +803,7 @@ final class SceneLibraryController: ObservableObject {
             return scene
         } catch {
             try? store.removeThumbnail(for: scene)
-            if asset != nil {
+            if generated != nil {
                 try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
                     sceneID: id, libraryRoot: store.environmentLibraryRoot
                 )
@@ -835,13 +860,13 @@ final class SceneLibraryController: ObservableObject {
                 libraryRoot: store.environmentLibraryRoot
             ).map { try Data(contentsOf: $0.url, options: .mappedIfSafe) }
         }
-        let asset = try capture.generatedEnvironmentEXR.map {
+        let generated = try capture.generatedEnvironmentEXR.map {
             let managed = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
                 $0, sceneID: scene.id, libraryRoot: store.environmentLibraryRoot
             )
-            return SavedSceneAsset(fileName: managed.originalFileName, sha256: managed.sha256)
+            return (SavedSceneAsset(fileName: managed.originalFileName, sha256: managed.sha256), managed.url.path)
         }
-        candidate.scenes[index].snapshot = try capture.snapshot.replacingGeneratedEnvironment(asset)
+        candidate.scenes[index].snapshot = try capture.snapshot.replacingGeneratedEnvironment(generated?.0, absolutePath: generated?.1)
         try candidate.scenes[index].validate()
         _ = try store.writeAutosave(
             scene: candidate.scenes[index], thumbnailPNG: capture.thumbnailPNG,
@@ -859,14 +884,14 @@ final class SceneLibraryController: ObservableObject {
                     previousEnvironmentData, sceneID: scene.id,
                     libraryRoot: store.environmentLibraryRoot
                 )
-            } else if asset != nil {
+            } else if generated != nil {
                 try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
                     sceneID: scene.id, libraryRoot: store.environmentLibraryRoot
                 )
             }
             throw error
         }
-        if previousAsset != nil, asset == nil {
+        if previousAsset != nil, generated == nil {
             try EnvironmentAssetLibrary.removeSceneGeneratedEXR(
                 sceneID: scene.id, libraryRoot: store.environmentLibraryRoot
             )
@@ -923,7 +948,7 @@ final class SceneLibraryController: ObservableObject {
         let asset = SavedSceneAsset(fileName: managed.originalFileName, sha256: managed.sha256)
         var candidate = document
         candidate.scenes[index].snapshot = try candidate.scenes[index].snapshot
-            .replacingGeneratedEnvironment(asset)
+            .replacingGeneratedEnvironment(asset, absolutePath: managed.url.path)
         try candidate.scenes[index].validate()
         _ = try store.writeAutosave(
             scene: candidate.scenes[index],
@@ -954,6 +979,7 @@ final class SceneLibraryController: ObservableObject {
         else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
         let id = UUID()
         let asset: SavedSceneAsset?
+        let copiedAbsolutePath: String?
         if let sourceAsset = scene.snapshot.generatedEnvironment,
            let source = try EnvironmentAssetLibrary.asset(
                sha256: sourceAsset.sha256, originalFileName: sourceAsset.fileName,
@@ -964,14 +990,18 @@ final class SceneLibraryController: ObservableObject {
                 data, sceneID: id, libraryRoot: store.environmentLibraryRoot
             )
             asset = .init(fileName: copied.originalFileName, sha256: copied.sha256)
+            copiedAbsolutePath = copied.url.path
         } else {
             asset = nil
+            copiedAbsolutePath = nil
         }
         let duplicate = SavedScene(
             id: id,
             name: "\(scene.name) copia",
             thumbnailFileName: "\(id.uuidString.lowercased()).png",
-            snapshot: try scene.snapshot.replacingGeneratedEnvironment(asset)
+            snapshot: try scene.snapshot.replacingGeneratedEnvironment(
+                asset, absolutePath: copiedAbsolutePath
+            )
         )
         try duplicate.validate()
         let thumbnail = try Data(contentsOf: store.thumbnailURL(for: scene))

@@ -1,4 +1,5 @@
 import Foundation
+import StudioColor
 import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
@@ -177,11 +178,30 @@ import Testing
     await executor.openSavedScene(scene, undoManager: nil)
 
     #expect(executor.errorMessage == nil)
-    #expect(try executor.captureSavedScene().snapshot.settingsDocument
-        == capture.snapshot.settingsDocument)
+    #expect(try executor.captureSavedScene().snapshot.authoring
+        == capture.snapshot.authoring)
 }
 
 private func outputQueueTestScene(name: String) -> SavedScene {
+    let input = StudioColorInputTransform.catalog.first { $0.id == "srgb-encoded-rec709" }!
+    let output = StudioColorOutputTransform.catalog.first { $0.id == "aces2-srgb-sdr-100" }!
+    let device = try! RustDeviceCatalog.builtIns().first!
+    let selection = try! RustTestAuthoringCoordinator.defaultSelection(
+        inputTransformID: input.id, deviceID: device.id, frameRate: .fps24
+    )
+    let authoring = SceneAuthoringDocument(
+        context: .init(
+            selection: selection, sourceInputTransformID: input.id,
+            sourceAlphaMode: StudioAlphaMode.ignore.rawValue,
+            sourceColorModel: StudioSignalColorModel.rgb.rawValue,
+            sourceYUVMatrix: StudioSignalMatrix.bt709.rawValue,
+            sourceSignalRange: StudioSignalRange.full.rawValue,
+            sourcePlacementID: "fit", previewOutputTransformID: output.id,
+            previewPhaseID: "recording-codec",
+            environmentResource: .init(kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil),
+            referenceResource: .init(kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil, alphaMode: nil, signalColorModel: nil, signalMatrix: nil, signalRange: nil, placementID: nil, corners: [])
+        ), model: .init(screen: .init(storedAmount: 1, isBypassed: false), stages: []), environmentCalibration: nil
+    )
     let id = UUID()
     return SavedScene(
         id: id,
@@ -199,9 +219,7 @@ private func outputQueueTestScene(name: String) -> SavedScene {
             viewerPanX: 0,
             viewerPanY: 0,
             viewerIsFitted: true,
-            settingsDocument: try! JSONSerialization.data(
-                withJSONObject: ["settings": ["schema": PhysicalSettingsExchange.schema]]
-            )
+            authoring: authoring
         )
     )
 }
