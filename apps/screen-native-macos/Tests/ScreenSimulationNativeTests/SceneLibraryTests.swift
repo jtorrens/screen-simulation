@@ -3,12 +3,12 @@ import Testing
 @testable import ScreenSimulationNative
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 16)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 17)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v16.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v17.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(
@@ -155,9 +155,8 @@ import Testing
         visibleMeshIDs: ["/Plane01"], pointsVisible: true,
         geometryVisible: false, cameraEnabled: true,
         calibration: .init(
-            pointAID: "/Camera01Trackers/P01",
-            pointBID: "/Camera01Trackers/P02",
-            measuredDistanceMeters: 1.75,
+            unitValue: 1,
+            unit: "m",
             metersPerSourceUnit: 0.01
         )
     )

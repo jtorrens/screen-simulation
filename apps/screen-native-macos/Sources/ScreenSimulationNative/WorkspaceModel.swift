@@ -314,9 +314,11 @@ final class WorkspaceModel: ObservableObject {
     @Published var trackingPointsVisible = true
     @Published var trackingGeometryVisible = true
     @Published var visibleTrackingMeshIDs: Set<String> = []
-    @Published private(set) var trackingScalePointAID: String?
-    @Published private(set) var trackingScalePointBID: String?
-    @Published var trackingMeasuredDistanceMeters = 1.0
+    @Published var trackingSynthEyesUnitValue = 1.0
+    @Published var trackingSynthEyesUnit = "m"
+    private var trackingScalePointAID: String?
+    private var trackingScalePointBID: String?
+    private var trackingMeasuredDistanceMeters = 1.0
     @Published private(set) var trackingMetersPerSourceUnit: Double?
     @Published private(set) var trackingScaleSelectionSlot: Int?
     @Published private(set) var testPresentation: TestPagePresentation?
@@ -3170,7 +3172,10 @@ final class WorkspaceModel: ObservableObject {
             trackingScalePointBID = nil
             trackingMetersPerSourceUnit = nil
             trackingScaleSelectionSlot = nil
-            status = "Tracking importado · selecciona cámara y nube · escala pendiente"
+            trackingSynthEyesUnitValue = 1
+            trackingSynthEyesUnit = "m"
+            trackingMetersPerSourceUnit = 1
+            status = "Tracking importado · 1 unidad SynthEyes = 1 m"
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -3202,6 +3207,23 @@ final class WorkspaceModel: ObservableObject {
         trackingScalePointBID = nil
         trackingMetersPerSourceUnit = nil
         trackingScaleSelectionSlot = nil
+    }
+
+    func applyTrackingUnitScale() {
+        guard trackingSynthEyesUnitValue.isFinite, trackingSynthEyesUnitValue > 0 else {
+            errorMessage = "La escala de SynthEyes debe ser positiva."
+            return
+        }
+        trackingMetersPerSourceUnit = trackingSynthEyesUnit == "cm"
+            ? trackingSynthEyesUnitValue / 100 : trackingSynthEyesUnitValue
+        applyTrackingCameraAtCurrentFrame()
+    }
+
+    func trackingMeshDimensions(_ mesh: TrackingMesh) -> SIMD3<Double>? {
+        guard let scale = trackingMetersPerSourceUnit, !mesh.sourceVertices.isEmpty else { return nil }
+        let minimum = mesh.sourceVertices.reduce(SIMD3(repeating: Double.infinity), simd_min)
+        let maximum = mesh.sourceVertices.reduce(SIMD3(repeating: -Double.infinity), simd_max)
+        return (maximum - minimum) * scale
     }
 
     func resolveTrackingScale() {
@@ -4292,8 +4314,6 @@ final class WorkspaceModel: ObservableObject {
             guard let asset = trackingAsset,
                   let cameraID = selectedTrackingCameraID,
                   let pointGroupID = selectedTrackingPointGroupID,
-                  let pointAID = trackingScalePointAID,
-                  let pointBID = trackingScalePointBID,
                   let scale = trackingMetersPerSourceUnit else {
                 throw SceneLibraryError.invalidDocument(
                     "Resuelve la cámara, la nube y la escala del tracking antes de guardar la escena."
@@ -4307,8 +4327,7 @@ final class WorkspaceModel: ObservableObject {
                 geometryVisible: trackingGeometryVisible,
                 cameraEnabled: trackingCameraEnabled,
                 calibration: .init(
-                    pointAID: pointAID, pointBID: pointBID,
-                    measuredDistanceMeters: trackingMeasuredDistanceMeters,
+                    unitValue: trackingSynthEyesUnitValue, unit: trackingSynthEyesUnit,
                     metersPerSourceUnit: scale
                 )
             )
@@ -4429,9 +4448,8 @@ final class WorkspaceModel: ObservableObject {
         trackingPointsVisible = saved.pointsVisible
         trackingGeometryVisible = saved.geometryVisible
         trackingCameraEnabled = saved.cameraEnabled
-        trackingScalePointAID = saved.calibration.pointAID
-        trackingScalePointBID = saved.calibration.pointBID
-        trackingMeasuredDistanceMeters = saved.calibration.measuredDistanceMeters
+        trackingSynthEyesUnitValue = saved.calibration.unitValue
+        trackingSynthEyesUnit = saved.calibration.unit
         trackingMetersPerSourceUnit = saved.calibration.metersPerSourceUnit
         applyTrackingCameraAtCurrentFrame()
     }

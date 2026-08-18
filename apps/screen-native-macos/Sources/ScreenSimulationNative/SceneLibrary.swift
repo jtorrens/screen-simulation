@@ -87,14 +87,12 @@ struct SavedSceneSource: Codable, Equatable, Sendable {
 }
 
 struct SavedTrackingCalibration: Codable, Equatable, Sendable {
-    let pointAID: String
-    let pointBID: String
-    let measuredDistanceMeters: Double
+    let unitValue: Double
+    let unit: String
     let metersPerSourceUnit: Double
 
     func validate() throws {
-        guard !pointAID.isEmpty, !pointBID.isEmpty, pointAID != pointBID,
-              measuredDistanceMeters.isFinite, measuredDistanceMeters > 0,
+        guard unitValue.isFinite, unitValue > 0, unit == "m" || unit == "cm",
               metersPerSourceUnit.isFinite, metersPerSourceUnit > 0 else {
             throw SceneLibraryError.invalidDocument("La calibración métrica del tracking no es válida.")
         }
@@ -122,7 +120,7 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v16"
+    static let schema = "ScreenSimulation.SavedScene.v17"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -334,7 +332,7 @@ struct SceneAutosaveHistoryTarget: Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 16
+    static let currentSchemaVersion = 17
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -398,7 +396,7 @@ struct SceneLibraryStore: Sendable {
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
         self.trackingLibraryRoot = trackingLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v16.json")
+        documentURL = directory.appendingPathComponent("Scenes.v17.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -585,7 +583,7 @@ struct SceneLibraryStore: Sendable {
                             ],
                             let calibration = tracking["calibration"] as? [String: Any],
                             Set(calibration.keys) == [
-                                "pointAID", "pointBID", "measuredDistanceMeters", "metersPerSourceUnit",
+                                "unitValue", "unit", "metersPerSourceUnit",
                             ] else { return false }
                       return true
                   }())

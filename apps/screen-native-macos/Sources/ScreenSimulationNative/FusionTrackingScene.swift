@@ -464,31 +464,29 @@ private struct TrackingScenePanel: View {
                                 Text("\(mesh.sourceVertices.count) vértices · \(mesh.faceVertexCounts.count) caras")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                                if let dimensions = model.trackingMeshDimensions(mesh) {
+                                    Text("\(dimensions.x.formatted(.number.precision(.fractionLength(2)))) × \(dimensions.y.formatted(.number.precision(.fractionLength(2)))) × \(dimensions.z.formatted(.number.precision(.fractionLength(2)))) m")
+                                        .font(.caption2.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                         .help(mesh.id)
                     }
                 }
                 Section("Escala métrica") {
-                    Text("Activa A o B y haz clic sobre dos puntos en el Viewer. Después introduce su distancia real.")
+                    Text("Define directamente cuánto mide una unidad de SynthEyes.")
                         .font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Button(model.trackingScalePointAID == nil ? "Elegir A" : "A ✓") {
-                            model.beginTrackingScalePointSelection(slot: 0)
-                        }
-                        Button(model.trackingScalePointBID == nil ? "Elegir B" : "B ✓") {
-                            model.beginTrackingScalePointSelection(slot: 1)
-                        }
-                        Button("Limpiar", action: model.clearTrackingScaleCalibration)
-                    }
-                    LabeledContent("Distancia real") {
-                        TextField("m", value: $model.trackingMeasuredDistanceMeters, format: .number)
+                    LabeledContent("1 unidad SynthEyes") {
+                        TextField("Valor", value: $model.trackingSynthEyesUnitValue, format: .number)
                             .frame(width: 90)
-                        Text("m")
+                        Picker("Unidad", selection: $model.trackingSynthEyesUnit) {
+                            Text("m").tag("m")
+                            Text("cm").tag("cm")
+                        }.labelsHidden().frame(width: 80)
                     }
-                    Button("Resolver escala", action: model.resolveTrackingScale)
+                    Button("Aplicar escala", action: model.applyTrackingUnitScale)
                         .buttonStyle(.borderedProminent)
-                        .disabled(model.trackingScalePointAID == nil || model.trackingScalePointBID == nil)
                     if let scale = model.trackingMetersPerSourceUnit {
                         Text("1 unidad Fusion = \(scale.formatted(.number.precision(.fractionLength(6)))) m")
                             .font(.caption.monospacedDigit())
