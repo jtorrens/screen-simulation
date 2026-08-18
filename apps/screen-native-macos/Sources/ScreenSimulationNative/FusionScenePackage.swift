@@ -12,6 +12,7 @@ enum FusionScenePackageError: Error, LocalizedError, Equatable {
     case lensNotRepresentableBySynthEyesDE4
     case nonFinitePixel
     case incompletePhysicalDeviceContribution
+    case unsupportedReferenceInputTransform
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +26,8 @@ enum FusionScenePackageError: Error, LocalizedError, Equatable {
         case .nonFinitePixel: "El raster VFX contiene un valor no finito."
         case .incompletePhysicalDeviceContribution:
             "Fusion Scene Package requiere Screen y Panel Emission al 100 % para exportar la contribución física completa sin consultar el RGB ideal."
+        case .unsupportedReferenceInputTransform:
+            "El Input Transform de la referencia no está disponible en la configuración OCIO Fusion 2.4 del paquete."
         }
     }
 }
@@ -567,6 +570,11 @@ struct FusionScenePackageRequest: Equatable, Sendable {
                 throw FusionScenePackageError.lensNotRepresentableBySynthEyesDE4
             }
         }
+        if let referencePlate {
+            guard StudioColorEngine.fusionSupportedSourceColorSpaces.contains(
+                referencePlate.ocioSourceColorSpace
+            ) else { throw FusionScenePackageError.unsupportedReferenceInputTransform }
+        }
     }
 }
 
@@ -596,11 +604,11 @@ enum FusionScenePackageWriter {
         try request.outputPlan.prepareDirectories()
         try request.outputPlan.authorizeWrite(
             to: request.outputPlan.destination.appendingPathComponent(
-                "metadata/\(StudioColorEngine.configurationFileName).ocio"
+                "metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio"
             ),
             policy: configuration.overwritePolicy
         )
-        try writeOCIOConfiguration(to: request.outputPlan.destination)
+        try writeFusionOCIOConfiguration(to: request.outputPlan.destination)
         if let reference = request.referencePlate {
             let destination = request.outputPlan.destination.appendingPathComponent(reference.relativePath)
             try FileManager.default.createDirectory(
@@ -703,7 +711,7 @@ enum FusionScenePackageWriter {
               metadata.raster.activeDeviceRect.width == request.activeRaster.activeWidth,
               metadata.raster.activeDeviceRect.height == request.activeRaster.activeHeight
         else { throw FusionScenePackageError.invalidRaster }
-        try writeOCIOConfiguration(to: request.outputPlan.destination)
+        try writeFusionOCIOConfiguration(to: request.outputPlan.destination)
         let prepared = FusionPreparedPhysicalFrame(
             width: metadata.raster.width,
             height: metadata.raster.height,
@@ -722,14 +730,14 @@ enum FusionScenePackageWriter {
             .write(to: compURL, atomically: true, encoding: .utf8)
     }
 
-    private static func writeOCIOConfiguration(to package: URL) throws {
+    private static func writeFusionOCIOConfiguration(to package: URL) throws {
         let destination = package.appendingPathComponent(
-            "metadata/\(StudioColorEngine.configurationFileName).ocio"
+            "metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio"
         )
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
         )
-        let source = try StudioColorEngine.bundledConfigurationURL()
+        let source = try StudioColorEngine.bundledFusionConfigurationURL()
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
@@ -1121,7 +1129,7 @@ enum FusionScenePackageWriter {
         },
         ReferenceToACEScg = OCIOColorSpace {
           Inputs = {
-            OCIOConfig = Input { Value = "Comp:/../metadata/\(StudioColorEngine.configurationFileName).ocio" },
+            OCIOConfig = Input { Value = "Comp:/../metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio" },
             SourceSpace = Input { Value = FuID { "\(reference.ocioSourceColorSpace)" } },
             OutputSpace = Input { Value = FuID { "ACEScg" } },
             Input = Input { SourceOp = "ReferenceLoader", Source = "Output" }

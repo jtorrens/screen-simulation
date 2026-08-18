@@ -397,11 +397,48 @@ private func temporaryDirectory() throws -> URL {
         prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, rgba: [])
     )
     #expect(comp.contains("ReferenceToACEScg = OCIOColorSpace"))
+    #expect(comp.contains("studio-fusion-ocio-v2.4.ocio"))
+    #expect(!comp.contains(StudioColorEngine.configurationFileName))
     #expect(comp.contains("SourceSpace = Input { Value = FuID { \"ARRI LogC4\" } }"))
     #expect(comp.contains("OutputSpace = Input { Value = FuID { \"ACEScg\" } }"))
     #expect(comp.contains("ReferenceResize = BetterResize"))
     #expect(comp.contains("PlateInput = Merge"))
     #expect(comp.contains("Placement = \"fill-crop\""))
+}
+
+@Test func fusionOCIOConfigurationIsExplicitOCIO24Subset() throws {
+    let configuration = try String(
+        contentsOf: StudioColorEngine.bundledFusionConfigurationURL(), encoding: .utf8
+    )
+    #expect(configuration.contains("ocio_profile_version: 2"))
+    #expect(configuration.contains("name: Gamma 2.4 Encoded Rec.709"))
+    #expect(configuration.contains("name: ARRI LogC4"))
+    #expect(configuration.contains("name: ACEScg"))
+    #expect(!configuration.contains("ACES-OUTPUT"))
+    #expect(!configuration.contains("interop_id:"))
+    #expect(!configuration.contains("amf_transform_ids:"))
+}
+
+@Test func fusionPackageRejectsAnUnrepresentedReferenceIDT() throws {
+    let configuration = fusionConfiguration()
+    let root = try temporaryDirectory()
+    let request = FusionScenePackageRequest(
+        configuration: configuration,
+        outputPlan: try RenderOutputPlan.prepare(configuration: configuration, selectedDestination: root),
+        deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
+        activeRaster: .init(activeWidth: 8, activeHeight: 4, pixelsPerMeter: 25),
+        sourceOverscanPixels: 2, deliveryWidth: 1920, deliveryHeight: 1080,
+        camera: [camera(frame: 1), camera(frame: 2)], lens: [lens(frame: 1), lens(frame: 2)],
+        motionBlur: .init(bakedInEXR: false, enabledInFusion: true, shutterAngleDegrees: 180, shutterPhaseDegrees: 0),
+        referencePlate: .init(
+            sourceURL: URL(fileURLWithPath: "/reference.mov"), relativePath: "reference/plate.mov",
+            inputTransformID: "canon-log3", ocioSourceColorSpace: "CanonLog3 CinemaGamut D55",
+            placementID: "fit", width: 1920, height: 1080
+        )
+    )
+    #expect(throws: FusionScenePackageError.unsupportedReferenceInputTransform) {
+        try request.validate()
+    }
 }
 
 @Test @MainActor func fusionOutputCannotFallThroughTheStandardSourceFrameRenderer() async throws {
@@ -487,6 +524,11 @@ private func temporaryDirectory() throws -> URL {
     ))
     #expect(!FileManager.default.fileExists(
         atPath: plan.destination.appendingPathComponent("media/Shot010_STMap.00000002.exr").path
+    ))
+    #expect(FileManager.default.fileExists(
+        atPath: plan.destination.appendingPathComponent(
+            "metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio"
+        ).path
     ))
     let metadataURL = plan.destination.appendingPathComponent(
         "metadata/Shot010_FusionScene.json"

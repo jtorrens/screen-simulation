@@ -4037,6 +4037,9 @@ final class WorkspaceModel: ObservableObject {
             }), case let .colorSpace(sourceColorSpace) = input.processor else {
                 throw FusionScenePackageError.invalidRaster
             }
+            guard StudioColorEngine.fusionSupportedSourceColorSpaces.contains(sourceColorSpace) else {
+                throw FusionScenePackageError.unsupportedReferenceInputTransform
+            }
             let fileName = referenceURL.lastPathComponent
             guard !fileName.isEmpty else { throw FusionScenePackageError.invalidRaster }
             let relativePath = "reference/\(fileName)"
