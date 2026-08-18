@@ -1,4 +1,5 @@
 import Foundation
+import StudioColor
 import StudioMedia
 
 enum RenderOutputPlanningError: Error, LocalizedError, Equatable {
@@ -59,6 +60,7 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
             }
             relative.append("fusion/\(configuration.jobName).comp")
             relative.append("metadata/\(configuration.jobName)_FusionScene.json")
+            relative.append("metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio")
             return Self(
                 kind: .fusionScenePackage,
                 destination: destination,

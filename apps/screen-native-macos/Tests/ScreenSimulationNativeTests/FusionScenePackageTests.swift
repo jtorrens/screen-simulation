@@ -279,6 +279,9 @@ private func temporaryDirectory() throws -> URL {
     )
     #expect(package.destination.deletingLastPathComponent().path == root.path)
     #expect(package.destination.lastPathComponent == "Shot010_FusionScene")
+    #expect(package.generatedRelativePaths.contains(
+        "metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio"
+    ))
     #expect(package.generatedRelativePaths.contains("fusion/Shot010.comp"))
     #expect(package.generatedRelativePaths.allSatisfy { !$0.hasPrefix("/") })
     #expect(package.generatedRelativePaths.allSatisfy { !$0.contains("STMap") })
