@@ -2135,7 +2135,11 @@ struct ContentView: View {
                 }
                 .accessibilityElement(children: .combine)
                 .contextMenu {
-                    if job.state == .completed {
+                    if job.state == .pending {
+                        Button("Eliminar de la cola", role: .destructive) {
+                            model.removePendingRender(job)
+                        }
+                    } else if job.state == .completed {
                         Button("Mostrar directorio en Finder") {
                             model.showRenderDestinationInFinder(job)
                         }

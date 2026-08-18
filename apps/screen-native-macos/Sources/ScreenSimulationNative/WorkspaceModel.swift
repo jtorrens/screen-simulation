@@ -4156,6 +4156,11 @@ final class WorkspaceModel: ObservableObject {
         status = "Renders completados eliminados de la cola"
     }
 
+    func removePendingRender(_ job: NativeOutputQueueController.RenderJob) {
+        guard outputQueue.removePendingJob(id: job.id) else { return }
+        status = "Trabajo pendiente eliminado · \(job.scene.name)"
+    }
+
     func showRenderDestinationInFinder(_ job: NativeOutputQueueController.RenderJob) {
         guard job.state == .completed else { return }
         let directory: URL

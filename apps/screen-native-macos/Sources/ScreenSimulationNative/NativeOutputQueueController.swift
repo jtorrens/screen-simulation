@@ -147,6 +147,16 @@ final class NativeOutputQueueController: ObservableObject {
         persist()
     }
 
+    /// Removes only an idle queued record. It never deletes scene data or generated output.
+    @discardableResult
+    func removePendingJob(id: RenderJob.ID) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              jobs[index].state == .pending else { return false }
+        jobs.remove(at: index)
+        persist()
+        return true
+    }
+
     /// Reopens only a terminal successful job. Its immutable scene snapshot and resolved
     /// output configuration remain unchanged, so a later edit to the live workspace can
     /// never redirect a queued render.

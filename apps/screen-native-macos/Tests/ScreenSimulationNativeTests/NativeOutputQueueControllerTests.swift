@@ -116,6 +116,26 @@ import Testing
     #expect(restored.jobs[0].state == .pending)
 }
 
+@Test @MainActor func pendingJobCanBeRemovedWithoutTouchingAnyOutput() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-queue-remove-\(UUID().uuidString)")
+    let outputURL = root.appendingPathComponent("existing.mov")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data([1, 2, 3]).write(to: outputURL)
+    let controller = try NativeOutputQueueController(
+        store: RenderQueueStore(directoryURL: root.appendingPathComponent("queue"))
+    )
+    controller.enqueue(
+        scene: outputQueueTestScene(name: "Eliminar"), generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan(outputURL.path), configuration: outputQueueTestConfiguration()
+    )
+    let job = try #require(controller.jobs.first)
+    #expect(controller.removePendingJob(id: job.id))
+    #expect(controller.jobs.isEmpty)
+    #expect(FileManager.default.fileExists(atPath: outputURL.path))
+    #expect(!controller.removePendingJob(id: job.id))
+}
+
 @Test @MainActor func renderingJobRestoresAsPendingWithoutAutoRun() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("render-queue-interrupted-\(UUID().uuidString)")
