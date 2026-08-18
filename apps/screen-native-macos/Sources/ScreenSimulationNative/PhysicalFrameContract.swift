@@ -283,6 +283,38 @@ struct PhysicalDimensions: Equatable, Sendable {
     }
 }
 
+/// The largest centered square-pixel recording window with the authored gate aspect.
+/// This is a sensor crop: no source or sensor image is stretched to obtain it.
+struct PhysicalActiveSensorWindow: Equatable, Sendable {
+    let originX: Int
+    let originY: Int
+    let width: Int
+    let height: Int
+
+    init(
+        fullWidth: Int,
+        fullHeight: Int,
+        gateWidth: Double,
+        gateHeight: Double
+    ) throws {
+        guard fullWidth > 0, fullHeight > 0,
+              gateWidth.isFinite, gateHeight.isFinite,
+              gateWidth > 0, gateHeight > 0
+        else { throw PhysicalContractError.invalidDimensions }
+        let gateAspect = gateWidth / gateHeight
+        let fullAspect = Double(fullWidth) / Double(fullHeight)
+        if gateAspect >= fullAspect {
+            width = fullWidth
+            height = min(fullHeight, max(1, Int((Double(fullWidth) / gateAspect).rounded(.down))))
+        } else {
+            height = fullHeight
+            width = min(fullWidth, max(1, Int((Double(fullHeight) * gateAspect).rounded(.down))))
+        }
+        originX = (fullWidth - width) / 2
+        originY = (fullHeight - height) / 2
+    }
+}
+
 struct PhysicalExactPositiveRatio: Equatable, Sendable {
     static let one = PhysicalExactPositiveRatio(uncheckedNumerator: 1, denominator: 1)
 
@@ -376,6 +408,33 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case deviceVfxTransparency = 18
 
     var id: UInt32 { rawValue }
+
+    /// The raster whose sampling lattice owns evaluation of this checkpoint.
+    /// Capture checkpoints must never inherit the Device aspect ratio: their
+    /// pixels are camera photosites (or values developed from those photosites).
+    var usesCaptureRaster: Bool {
+        switch self {
+        case .sensorCollection, .sensorBloom, .sensorReadoutRaw,
+             .developedACEScg, .cameraRenderedACEScg:
+            true
+        case .sourceACEScg, .deviceSignal, .panelEmission, .subpixelRadiance,
+             .panelUniformity, .panelLightSpread, .relativeGeometry,
+             .coverEnvironment, .coverGlow, .lensProjection, .shutterMotion,
+             .computationalCapture, .panelTemporal, .deviceVfxTransparency:
+            false
+        }
+    }
+
+    func nativeRasterSize(
+        deviceWidth: Int,
+        deviceHeight: Int,
+        captureWidth: Int,
+        captureHeight: Int
+    ) -> (width: Int, height: Int) {
+        usesCaptureRaster
+            ? (captureWidth, captureHeight)
+            : (deviceWidth, deviceHeight)
+    }
 
     static let supportedDiagnostics: [Self] = [
         .sourceACEScg,

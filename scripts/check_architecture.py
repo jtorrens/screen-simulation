@@ -486,7 +486,7 @@ def validate_native_model_authority() -> None:
     ).read_text(encoding="utf-8")
     for required in (
         "final class NativeOutputQueueController",
-        "struct RenderJob: Identifiable",
+        "struct RenderJob: Codable, Identifiable",
         "func enqueue(",
         "func cancel()",
     ):

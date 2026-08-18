@@ -3323,8 +3323,14 @@ final class WorkspaceModel: ObservableObject {
     private struct ResolvedSceneFrame {
         let selection: PhysicalFrameSelection
         let authored: PhysicalPipelineAuthoringState
+        let activeSensorWindow: PhysicalActiveSensorWindow
         let orchestration: PhysicalFrameOrchestration
         let device: ResolvedDevice
+    }
+
+    private struct ResolvedPhysicalAuthoring {
+        let state: PhysicalPipelineAuthoringState
+        let activeSensorWindow: PhysicalActiveSensorWindow
     }
 
     /// The sole per-frame materialization point for the physical request. The scene authoring
@@ -3333,27 +3339,50 @@ final class WorkspaceModel: ObservableObject {
     private func resolvedPhysicalAuthoringState(
         forFrame frame: Int,
         exactFrameRate: ExactFrameRate
-    ) throws -> PhysicalPipelineAuthoringState {
-        guard var authored = physicalAuthoringState else {
+    ) throws -> ResolvedPhysicalAuthoring {
+        guard var authored = basePhysicalAuthoringState else {
             throw DeviceDomainError.invalidPhysicalProfile(
                 "La escena no tiene autoría física que resolver."
             )
         }
-        guard trackingCameraEnabled, let scale = trackingMetersPerSourceUnit,
-              let camera = selectedTrackingCamera, !camera.samples.isEmpty
-        else { return authored }
-        guard let sample = camera.sample(
-            atTimelineFrame: frame,
-            timelineFrameRate: exactFrameRate.framesPerSecond
-        ) else {
-            throw SceneLibraryError.invalidDocument(
-                "El tracking no contiene una muestra para el frame solicitado."
+        if trackingCameraEnabled, let scale = trackingMetersPerSourceUnit,
+           let camera = selectedTrackingCamera, !camera.samples.isEmpty {
+            guard let sample = camera.sample(
+                atTimelineFrame: frame,
+                timelineFrameRate: exactFrameRate.framesPerSecond
+            ) else {
+                throw SceneLibraryError.invalidDocument(
+                    "El tracking no contiene una muestra para el frame solicitado."
+                )
+            }
+            Self.applyImportedTrackingCamera(
+                camera,
+                sample: sample,
+                metersPerSourceUnit: scale,
+                to: &authored
             )
         }
-        Self.applyImportedTrackingCamera(
-            camera, sample: sample, metersPerSourceUnit: scale, to: &authored
+        let activeSensorWindow = try Self.applyActiveSensorWindow(
+            fullSensorRaster: try selectedCaptureFullRaster(),
+            to: &authored
         )
-        return authored
+        return .init(state: authored, activeSensorWindow: activeSensorWindow)
+    }
+
+    private func selectedCaptureFullRaster() throws -> CapturePresetDefinition.RasterMode {
+        guard let selection = testAuthoringSelection,
+              let capture = capturePresets.first(where: {
+                  $0.id == selection.capturePresetID
+              }),
+              let raster = capture.rasterModes.first(where: {
+                  $0.id == selection.captureRasterModeID
+              })
+        else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "La escena no tiene un raster completo de cámara resuelto."
+            )
+        }
+        return raster
     }
 
     private func resolveSceneFrame(_ frame: Int) throws -> ResolvedSceneFrame {
@@ -3374,13 +3403,16 @@ final class WorkspaceModel: ObservableObject {
             frameIndex: Int64(frame), timeNumerator: timeNumerator,
             timeDenominator: exactFrameRate.numerator
         )
-        let authored = try resolvedPhysicalAuthoringState(
+        let resolvedAuthoring = try resolvedPhysicalAuthoringState(
             forFrame: frame,
             exactFrameRate: exactFrameRate
         )
         return .init(
-            selection: selection, authored: authored,
-            orchestration: try authored.orchestration(for: selection), device: device
+            selection: selection,
+            authored: resolvedAuthoring.state,
+            activeSensorWindow: resolvedAuthoring.activeSensorWindow,
+            orchestration: try resolvedAuthoring.state.orchestration(for: selection),
+            device: device
         )
     }
 
@@ -3415,6 +3447,22 @@ final class WorkspaceModel: ObservableObject {
             authored.sceneLens.radialDistortion = [degree2 * 0.5, degree4 * 0.25, 0]
         }
         authored.sceneLens.tangentialDistortion = [0, 0]
+    }
+
+    @discardableResult
+    private static func applyActiveSensorWindow(
+        fullSensorRaster: CapturePresetDefinition.RasterMode,
+        to authored: inout PhysicalPipelineAuthoringState
+    ) throws -> PhysicalActiveSensorWindow {
+        let window = try PhysicalActiveSensorWindow(
+            fullWidth: Int(fullSensorRaster.width),
+            fullHeight: Int(fullSensorRaster.height),
+            gateWidth: authored.sceneLens.sensorWidthMillimeters,
+            gateHeight: authored.sceneLens.sensorHeightMillimeters
+        )
+        authored.sensor.nativeWidth = UInt32(window.width)
+        authored.sensor.nativeHeight = UInt32(window.height)
+        return window
     }
 
     private func projectTrackingPoint(_ source: SIMD3<Double>) -> CGPoint? {
@@ -4445,6 +4493,10 @@ final class WorkspaceModel: ObservableObject {
             } else {
                 generatedReflectionEnvironmentData = nil
             }
+            // Opening a scene is one atomic materialization. Intermediate preview
+            // invalidations emitted while its source is being selected do not own
+            // the final error state once the complete strict scene has resolved.
+            errorMessage = nil
             status = missingMediaSource == nil
                 ? "Escena abierta · \(scene.name)"
                 : "Escena abierta · \(scene.name) · MEDIA MISSING"
@@ -6082,7 +6134,13 @@ final class WorkspaceModel: ObservableObject {
             )
         }
         let requestedDimensions = try requestedDimensionsOverride
-            ?? physicalRequestedDimensions(quality: quality, device: resolvedFrame.device.definition)
+            ?? physicalRequestedDimensions(
+                quality: quality,
+                intermediate: effectiveIntermediate,
+                device: resolvedFrame.device.definition,
+                captureWidth: Int(effectiveAuthoringState.sensor.nativeWidth),
+                captureHeight: Int(effectiveAuthoringState.sensor.nativeHeight)
+            )
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
@@ -6444,6 +6502,7 @@ final class WorkspaceModel: ObservableObject {
         selectedCapturePresetID = capture.id
         selectedCaptureRasterModeID = selection.captureRasterModeID
         selectedLensPresetID = selection.lensPresetID
+        let baseAuthored = authored
         if trackingCameraEnabled,
            let scale = trackingMetersPerSourceUnit,
            let camera = selectedTrackingCamera {
@@ -6461,17 +6520,28 @@ final class WorkspaceModel: ObservableObject {
                     "El tracking no contiene una muestra para el frame solicitado."
                 )
             }
+            guard let fullSensorRaster = capture.rasterModes.first(where: {
+                $0.id == selection.captureRasterModeID
+            }) else {
+                throw DeviceDomainError.invalidPhysicalProfile(
+                    "La cámara seleccionada no contiene el raster solicitado."
+                )
+            }
             Self.applyImportedTrackingCamera(
                 camera,
                 sample: sample,
                 metersPerSourceUnit: scale,
                 to: &authored
             )
+            try Self.applyActiveSensorWindow(
+                fullSensorRaster: fullSensorRaster,
+                to: &authored
+            )
         }
         physicalAuthoringState = authored
         resolvedPhysicalPipeline = try authored.resolvedPipeline()
         baseModelDeviceDefinition = device
-        basePhysicalAuthoringState = authored
+        basePhysicalAuthoringState = baseAuthored
         try refreshTestAuthoringDescriptor()
         // The source artifact is replaced above only when its own adjustment
         // changes. Keep the last complete composition visible while a new
@@ -6729,18 +6799,29 @@ final class WorkspaceModel: ObservableObject {
 
     private func physicalRequestedDimensions(
         quality: PhysicalQuality,
-        device: DeviceDefinition
+        intermediate: PhysicalIntermediate,
+        device: DeviceDefinition,
+        captureWidth: Int,
+        captureHeight: Int
     ) throws -> PhysicalDimensions {
         if quality == .setup || quality == .environmentSetup || quality == .focusSetup {
             throw PhysicalEvaluationAvailabilityError.sectionPending(.capture(.geometry))
         }
+        let nativeRaster = intermediate.nativeRasterSize(
+            deviceWidth: device.nativeWidth,
+            deviceHeight: device.nativeHeight,
+            captureWidth: captureWidth,
+            captureHeight: captureHeight
+        )
+        let nativeWidth = nativeRaster.width
+        let nativeHeight = nativeRaster.height
         if quality == .native {
             return try PhysicalDimensions(
-                width: device.nativeWidth,
-                height: device.nativeHeight
+                width: nativeWidth,
+                height: nativeHeight
             )
         }
-        let aspect = Double(device.nativeWidth) / Double(device.nativeHeight)
+        let aspect = Double(nativeWidth) / Double(nativeHeight)
         var width = max(1, Int(modelViewport.width.rounded(.down)))
         var height = max(1, Int((Double(width) / aspect).rounded(.down)))
         if height > Int(modelViewport.height) {
@@ -6757,8 +6838,8 @@ final class WorkspaceModel: ObservableObject {
         case .native: 1
         }
         return try PhysicalDimensions(
-            width: min(device.nativeWidth, max(1, Int(Double(width) * scale))),
-            height: min(device.nativeHeight, max(1, Int(Double(height) * scale)))
+            width: min(nativeWidth, max(1, Int(Double(width) * scale))),
+            height: min(nativeHeight, max(1, Int(Double(height) * scale)))
         )
     }
 

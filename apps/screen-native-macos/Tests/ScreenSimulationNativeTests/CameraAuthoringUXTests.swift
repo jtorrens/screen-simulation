@@ -2,6 +2,42 @@ import Foundation
 import Testing
 @testable import ScreenSimulationNative
 
+@Test func captureCheckpointsOwnTheCameraRasterInsteadOfTheDeviceRaster() {
+    let captureOwned: [PhysicalIntermediate] = [
+        .sensorCollection, .sensorBloom, .sensorReadoutRaw,
+        .developedACEScg, .cameraRenderedACEScg,
+    ]
+    for intermediate in PhysicalIntermediate.allCases {
+        #expect(intermediate.usesCaptureRaster == captureOwned.contains(intermediate))
+    }
+    let camera = PhysicalIntermediate.cameraRenderedACEScg.nativeRasterSize(
+        deviceWidth: 700, deviceHeight: 1_400,
+        captureWidth: 4_608, captureHeight: 2_592
+    )
+    #expect(camera.width == 4_608)
+    #expect(camera.height == 2_592)
+    let panel = PhysicalIntermediate.panelEmission.nativeRasterSize(
+        deviceWidth: 700, deviceHeight: 1_400,
+        captureWidth: 4_608, captureHeight: 3_164
+    )
+    #expect(panel.width == 700)
+    #expect(panel.height == 1_400)
+}
+
+@Test func importedGateSelectsTheLargestCenteredSensorCropWithoutScaling() throws {
+    let window = try PhysicalActiveSensorWindow(
+        fullWidth: 4_608,
+        fullHeight: 3_164,
+        gateWidth: 0.98 * 25.4,
+        gateHeight: 0.55125 * 25.4
+    )
+    #expect(window.originX == 0)
+    #expect(window.originY == 286)
+    #expect(window.width == 4_608)
+    #expect(window.height == 2_592)
+    #expect(Double(window.width) / Double(window.height) == 16.0 / 9.0)
+}
+
 @Test func rotationXYZProjectionRoundTripsAndExpressesMinusFiveDegrees() {
     let authored = [12.5, -5.0, 27.5]
     let quaternion = PoseRotationProjection.quaternion(fromDegrees: authored)
