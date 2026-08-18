@@ -3279,16 +3279,9 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func applyTrackingCameraAtCurrentFrame() {
-        guard trackingCameraEnabled, let scale = trackingMetersPerSourceUnit,
-              let camera = selectedTrackingCamera, !camera.samples.isEmpty,
-              var authored = physicalAuthoringState else { return }
-        guard let sample = camera.sample(
-            atTimelineFrame: currentFrame,
-            timelineFrameRate: frameRate
-        ) else { return }
-        Self.applyImportedTrackingCamera(
-            camera, sample: sample, metersPerSourceUnit: scale, to: &authored
-        )
+        guard var authored = try? resolvedPhysicalAuthoringState(forFrame: currentFrame)
+        else { return }
+        guard trackingCameraEnabled, let camera = selectedTrackingCamera else { return }
         if var selection = testAuthoringSelection {
             let degrees = PoseRotationProjection.degrees(from: authored.cameraPose.quaternion)
             selection.geometryModeID = "free"
@@ -3326,6 +3319,33 @@ final class WorkspaceModel: ObservableObject {
         // overlay. This invokes the model's normal quality dispatcher, which republishes
         // Setup/Focus Setup or submits the current physical quality as appropriate.
         physicalModel.invalidateExternalParameters()
+    }
+
+    /// The sole per-frame materialization point for the physical request. The scene authoring
+    /// remains the base; an active external track replaces only the parameters it owns.
+    /// Every renderer must consume this result rather than applying tracking independently.
+    private func resolvedPhysicalAuthoringState(
+        forFrame frame: Int
+    ) throws -> PhysicalPipelineAuthoringState {
+        guard var authored = physicalAuthoringState else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "La escena no tiene autoría física que resolver."
+            )
+        }
+        guard trackingCameraEnabled, let scale = trackingMetersPerSourceUnit,
+              let camera = selectedTrackingCamera, !camera.samples.isEmpty
+        else { return authored }
+        guard let sample = camera.sample(
+            atTimelineFrame: frame, timelineFrameRate: frameRate
+        ) else {
+            throw SceneLibraryError.invalidDocument(
+                "El tracking no contiene una muestra para el frame solicitado."
+            )
+        }
+        Self.applyImportedTrackingCamera(
+            camera, sample: sample, metersPerSourceUnit: scale, to: &authored
+        )
+        return authored
     }
 
     private static func applyImportedTrackingCamera(
@@ -5938,16 +5958,9 @@ final class WorkspaceModel: ObservableObject {
                 "El modelo físico necesita un snapshot de Device resuelto."
             )
         }
-        guard let resolvedPhysicalPipeline else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "El modelo físico necesita un snapshot completo resuelto."
-            )
-        }
-        guard var effectiveAuthoringState = physicalAuthoringState else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "El modelo físico necesita overrides de proyecto resueltos."
-            )
-        }
+        var effectiveAuthoringState = try resolvedPhysicalAuthoringState(
+            forFrame: frameIndexOverride ?? currentFrame
+        )
         if let temporalSamplesOverride {
             guard (1...64).contains(temporalSamplesOverride) else {
                 throw DeviceDomainError.invalidPhysicalProfile(
@@ -5994,7 +6007,7 @@ final class WorkspaceModel: ObservableObject {
         effectiveDeviceDefinition.panelUniformity.characterStrength = uniformityAmount
         effectiveDeviceDefinition.panelLightSpread.characterStrength = spreadAmount
         let effectiveDevice = try effectiveDeviceDefinition.resolved()
-        let effectivePipeline = try resolvedPhysicalPipeline.resolving(
+        let effectivePipeline = try effectiveAuthoringState.resolvedPipeline().resolving(
             contributions: contributions
         )
         physicalIdentityCounter &+= 1
