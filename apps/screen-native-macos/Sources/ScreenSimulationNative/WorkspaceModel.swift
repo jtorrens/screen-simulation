@@ -3321,6 +3321,13 @@ final class WorkspaceModel: ObservableObject {
         physicalModel.invalidateExternalParameters()
     }
 
+    private struct ResolvedSceneFrame {
+        let selection: PhysicalFrameSelection
+        let authored: PhysicalPipelineAuthoringState
+        let orchestration: PhysicalFrameOrchestration
+        let device: ResolvedDevice
+    }
+
     /// The sole per-frame materialization point for the physical request. The scene authoring
     /// remains the base; an active external track replaces only the parameters it owns.
     /// Every renderer must consume this result rather than applying tracking independently.
@@ -3346,6 +3353,31 @@ final class WorkspaceModel: ObservableObject {
             camera, sample: sample, metersPerSourceUnit: scale, to: &authored
         )
         return authored
+    }
+
+    private func resolveSceneFrame(_ frame: Int) throws -> ResolvedSceneFrame {
+        guard let device = resolvedDevice else {
+            throw DeviceDomainError.invalidPhysicalProfile("La escena no tiene un Device resuelto.")
+        }
+        let exactFrameRate = ReferenceTimelineAuthority.resolve(
+            source: sourceTimelineInfo,
+            reference: referenceTimelineInfo,
+            referenceVisible: referenceControlsTimeline,
+            tracking: trackingTimelineInfo
+        ).exactFrameRate
+        let (timeNumerator, overflow) = Int64(frame).multipliedReportingOverflow(
+            by: Int64(exactFrameRate.denominator)
+        )
+        guard !overflow else { throw PhysicalContractError.invalidFrameTime }
+        let selection = try PhysicalFrameSelection(
+            frameIndex: Int64(frame), timeNumerator: timeNumerator,
+            timeDenominator: exactFrameRate.numerator
+        )
+        let authored = try resolvedPhysicalAuthoringState(forFrame: frame)
+        return .init(
+            selection: selection, authored: authored,
+            orchestration: try authored.orchestration(for: selection), device: device
+        )
     }
 
     private static func applyImportedTrackingCamera(
@@ -3957,18 +3989,10 @@ final class WorkspaceModel: ObservableObject {
         var shutter: PhysicalPipelineAuthoringState.ShutterMotion?
         for frame in job.configuration.frameRange {
             currentFrame = frame
-            applyTrackingCameraAtCurrentFrame()
-            guard let authored = physicalAuthoringState else {
-                throw FusionScenePackageError.invalidCamera
-            }
+            let resolved = try resolveSceneFrame(frame)
+            let authored = resolved.authored
             shutter = authored.shutterMotion
-            let timeNumerator = Int64(frame) * Int64(job.configuration.frameRate.denominator)
-            let frameSelection = try PhysicalFrameSelection(
-                frameIndex: Int64(frame),
-                timeNumerator: timeNumerator,
-                timeDenominator: job.configuration.frameRate.numerator
-            )
-            let orchestration = try authored.orchestration(for: frameSelection)
+            let orchestration = resolved.orchestration
             let cameraPosition = SIMD3<Double>(
                 Double(orchestration.cameraPose.position.x),
                 Double(orchestration.cameraPose.position.y),
@@ -5430,10 +5454,10 @@ final class WorkspaceModel: ObservableObject {
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
         guard let sourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = authoredOverride ?? physicalAuthoringState
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition
         else { return }
         do {
+            let authored = try authoredOverride ?? resolveSceneFrame(currentFrame).authored
             let started = CACurrentMediaTime()
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: sourceACEScgFrame.texture.device)
@@ -5519,10 +5543,10 @@ final class WorkspaceModel: ObservableObject {
     ) {
         guard let reference = referenceACEScgFrame,
               let source = sourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              var authored = authoredOverride ?? physicalAuthoringState
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition
         else { return }
         do {
+            var authored = try authoredOverride ?? resolveSceneFrame(currentFrame).authored
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: source.texture.device)
             }
@@ -5884,10 +5908,10 @@ final class WorkspaceModel: ObservableObject {
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
         guard let sourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = authoredOverride ?? physicalAuthoringState
+              let device = modelDeviceDefinition ?? resolvedDevice?.definition
         else { return }
         do {
+            let authored = try authoredOverride ?? resolveSceneFrame(currentFrame).authored
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: sourceACEScgFrame.texture.device)
             }
@@ -5953,14 +5977,8 @@ final class WorkspaceModel: ObservableObject {
         guard let sourceACEScgFrame = sourceFrameOverride ?? sourceACEScgFrame else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
         }
-        guard let resolvedDevice else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "El modelo físico necesita un snapshot de Device resuelto."
-            )
-        }
-        var effectiveAuthoringState = try resolvedPhysicalAuthoringState(
-            forFrame: frameIndexOverride ?? currentFrame
-        )
+        let resolvedFrame = try resolveSceneFrame(frameIndexOverride ?? currentFrame)
+        var effectiveAuthoringState = resolvedFrame.authored
         if let temporalSamplesOverride {
             guard (1...64).contains(temporalSamplesOverride) else {
                 throw DeviceDomainError.invalidPhysicalProfile(
@@ -6003,7 +6021,7 @@ final class WorkspaceModel: ObservableObject {
                 "Falta la contribución resuelta de Panel Light Spread."
             )
         }
-        var effectiveDeviceDefinition = resolvedDevice.definition
+        var effectiveDeviceDefinition = resolvedFrame.device.definition
         effectiveDeviceDefinition.panelUniformity.characterStrength = uniformityAmount
         effectiveDeviceDefinition.panelLightSpread.characterStrength = spreadAmount
         let effectiveDevice = try effectiveDeviceDefinition.resolved()
@@ -6022,31 +6040,13 @@ final class WorkspaceModel: ObservableObject {
                 "submit source=\(sourceACEScgFrame.width)x\(sourceACEScgFrame.height) device=\(deviceSignal.width)x\(deviceSignal.height) quality=\(quality.uiLabel, privacy: .public) intermediate=\(effectiveIntermediate.uiLabel, privacy: .public) cameraZ=\(effectiveAuthoringState.cameraPose.position[2])"
             )
         }
-        let exactFrameRate = ReferenceTimelineAuthority.resolve(
-            source: sourceTimelineInfo,
-            reference: referenceTimelineInfo,
-            referenceVisible: referenceControlsTimeline,
-            tracking: trackingTimelineInfo
-        ).exactFrameRate
-        let effectiveFrameIndex = frameIndexOverride ?? currentFrame
-        let (timeNumerator, timeOverflow) = Int64(effectiveFrameIndex).multipliedReportingOverflow(
-            by: Int64(exactFrameRate.denominator)
-        )
-        guard !timeOverflow else {
-            throw PhysicalContractError.invalidFrameTime
-        }
-        let selection = try PhysicalFrameSelection(
-            frameIndex: Int64(effectiveFrameIndex),
-            timeNumerator: timeNumerator,
-            timeDenominator: exactFrameRate.numerator
-        )
         let requestedDimensions = try requestedDimensionsOverride
-            ?? physicalRequestedDimensions(quality: quality, device: resolvedDevice.definition)
+            ?? physicalRequestedDimensions(quality: quality, device: resolvedFrame.device.definition)
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
             environmentACEScg: environmentRadianceFrame,
-            orchestration: try effectiveAuthoringState.orchestration(for: selection),
+            orchestration: try effectiveAuthoringState.orchestration(for: resolvedFrame.selection),
             resolvedDevice: effectiveDevice,
             resolvedPipeline: effectivePipeline,
             quality: quality,
@@ -6060,7 +6060,7 @@ final class WorkspaceModel: ObservableObject {
             parameterRevision: physicalModel.parameterRevision,
             parameterHash: try physicalParameterHash(
                 quality: quality,
-                device: resolvedDevice.definition
+                device: resolvedFrame.device.definition
             ),
             rasterPlacement: sourcePlacement.physicalRasterPlacement,
             requestedIntermediate: effectiveIntermediate,
