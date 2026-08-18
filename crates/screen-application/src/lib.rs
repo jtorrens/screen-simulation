@@ -49,11 +49,59 @@ pub enum CaptureOpticsAuthority {
     IntegratedFixedLens,
 }
 
+/// Explicit, reproducible radiometric anchor for a capture preset.
+///
+/// This does not claim a manufacturer spectral characterization. It defines the
+/// neutral 18% Lambertian test condition used to map an EI change, shutter and
+/// ND to the image-plane illuminance exposure consumed by `screen-sensor`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaptureRadiometricCalibration {
+    pub reference_reflectance: f32,
+    pub reference_illuminance_lux: f32,
+    pub reference_shutter_seconds: f32,
+    pub reference_exposure_index: f32,
+    pub incident_lux_seconds_to_sensor_illuminance_seconds: f32,
+    pub expected_developed_acescg: f32,
+}
+
+impl CaptureRadiometricCalibration {
+    pub fn validate(self) -> bool {
+        [
+            self.reference_reflectance,
+            self.reference_illuminance_lux,
+            self.reference_shutter_seconds,
+            self.reference_exposure_index,
+            self.incident_lux_seconds_to_sensor_illuminance_seconds,
+            self.expected_developed_acescg,
+        ]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0.0)
+            && self.reference_reflectance <= 1.0
+    }
+
+    /// Image-plane illuminance exposure in lux-seconds before CFA/ADC.
+    pub fn sensor_exposure_seconds(
+        self,
+        illuminance_lux: f32,
+        shutter_seconds: f32,
+        exposure_index: f32,
+        neutral_density_stops: f32,
+    ) -> f32 {
+        illuminance_lux
+            * self.reference_reflectance
+            * shutter_seconds
+            * self.incident_lux_seconds_to_sensor_illuminance_seconds
+            * (exposure_index / self.reference_exposure_index)
+            * 2.0_f32.powf(-neutral_density_stops)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CaptureDevicePreset {
     pub id: &'static str,
     pub label: &'static str,
     pub calibration: &'static str,
+    pub radiometric: CaptureRadiometricCalibration,
     pub sensor: SensorProfile,
     pub gate_width: Millimeters,
     pub gate_height: Millimeters,
@@ -73,6 +121,14 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         id: "arri-alexa-35-open-gate",
         label: "ARRI ALEXA 35 · 4.6K Open Gate",
         calibration: "Published ALEV 4 geometry · reference 50 mm lens",
+        radiometric: CaptureRadiometricCalibration {
+            reference_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_shutter_seconds: 1.0 / 48.0,
+            reference_exposure_index: 800.0,
+            incident_lux_seconds_to_sensor_illuminance_seconds: 1.0 / 30.0,
+            expected_developed_acescg: 0.18,
+        },
         sensor: SensorProfile {
             native_width: 4_608,
             native_height: 3_164,
@@ -101,6 +157,14 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         id: "iphone-16e-main-48mp",
         label: "iPhone 16e Main · 48 MP",
         calibration: "Calibrated approximation · 4.2 mm EXIF / 26 mm equivalent",
+        radiometric: CaptureRadiometricCalibration {
+            reference_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_shutter_seconds: 1.0 / 48.0,
+            reference_exposure_index: 100.0,
+            incident_lux_seconds_to_sensor_illuminance_seconds: 4.0 / 15.0,
+            expected_developed_acescg: 0.18,
+        },
         sensor: SensorProfile {
             native_width: 8_064,
             native_height: 6_048,
@@ -124,6 +188,78 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         default_temporal_samples: 1,
         default_readout_duration_milliseconds: 12.0,
         optics_authority: CaptureOpticsAuthority::IntegratedFixedLens,
+    },
+    CaptureDevicePreset {
+        id: "red-v-raptor-8k-vv",
+        label: "RED V-RAPTOR 8K VV",
+        calibration: "ISO-anchored neutral reference · 18% Lambertian · 100 lux · 1/48 s · EI 800; model constants, not vendor spectral characterization",
+        radiometric: CaptureRadiometricCalibration {
+            reference_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_shutter_seconds: 1.0 / 48.0,
+            reference_exposure_index: 800.0,
+            incident_lux_seconds_to_sensor_illuminance_seconds: 1.0 / 30.0,
+            expected_developed_acescg: 0.18,
+        },
+        sensor: SensorProfile {
+            native_width: 8192,
+            native_height: 4320,
+            bayer_pattern: BayerPattern::Rggb,
+            acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
+            saturation_illuminance_seconds: LinearRgb::new(2.4, 2.4, 2.4),
+            full_well_electrons: 60_000.0,
+            dark_current_electrons_per_second: 0.1,
+            read_noise_electrons_rms: 2.0,
+            analog_gain: 1.0,
+            adc_bits: 16,
+        },
+        gate_width: Millimeters(40.96),
+        gate_height: Millimeters(21.6),
+        focal_length: Millimeters(50.0),
+        default_lens_preset_id: "generic-prime-50mm",
+        f_stop: 4.0,
+        reference_exposure_index: 800.0,
+        middle_gray_illuminance_seconds_at_reference_ei: 0.0125,
+        default_shutter_angle_degrees: 180.0,
+        default_temporal_samples: 1,
+        default_readout_duration_milliseconds: 8.0,
+        optics_authority: CaptureOpticsAuthority::InterchangeableReferenceLens,
+    },
+    CaptureDevicePreset {
+        id: "canon-eos-550d-1080p",
+        label: "Canon EOS 550D / Rebel T2i · 1080p",
+        calibration: "ISO-anchored neutral reference · 18% Lambertian · 100 lux · 1/48 s · ISO 100; model constants, not vendor spectral characterization",
+        radiometric: CaptureRadiometricCalibration {
+            reference_reflectance: 0.18,
+            reference_illuminance_lux: 100.0,
+            reference_shutter_seconds: 1.0 / 48.0,
+            reference_exposure_index: 100.0,
+            incident_lux_seconds_to_sensor_illuminance_seconds: 0.16,
+            expected_developed_acescg: 0.18,
+        },
+        sensor: SensorProfile {
+            native_width: 1920,
+            native_height: 1080,
+            bayer_pattern: BayerPattern::Rggb,
+            acescg_to_sensor: SensorProfile::REFERENCE.acescg_to_sensor,
+            saturation_illuminance_seconds: LinearRgb::new(1.6, 1.6, 1.6),
+            full_well_electrons: 18_000.0,
+            dark_current_electrons_per_second: 0.12,
+            read_noise_electrons_rms: 3.0,
+            analog_gain: 1.0,
+            adc_bits: 14,
+        },
+        gate_width: Millimeters(22.3),
+        gate_height: Millimeters(12.54375),
+        focal_length: Millimeters(50.0),
+        default_lens_preset_id: "generic-prime-50mm",
+        f_stop: 4.0,
+        reference_exposure_index: 100.0,
+        middle_gray_illuminance_seconds_at_reference_ei: 0.06,
+        default_shutter_angle_degrees: 180.0,
+        default_temporal_samples: 1,
+        default_readout_duration_milliseconds: 20.0,
+        optics_authority: CaptureOpticsAuthority::InterchangeableReferenceLens,
     },
 ];
 
@@ -5365,6 +5501,15 @@ mod tests {
                 .expect("capture template lens must resolve");
             assert_eq!(lens.nominal_focal_length, preset.focal_length);
             assert!((25.0..=12_800.0).contains(&preset.reference_exposure_index));
+            assert!(
+                preset.radiometric.validate(),
+                "{} has no valid radiometric anchor",
+                preset.id
+            );
+            assert_eq!(
+                preset.radiometric.reference_exposure_index,
+                preset.reference_exposure_index
+            );
             assert!(preset.middle_gray_illuminance_seconds_at_reference_ei > 0.0);
             assert!((1.0..=360.0).contains(&preset.default_shutter_angle_degrees));
             let raster_aspect =
@@ -5374,6 +5519,45 @@ mod tests {
             assert_eq!(capture_device_preset(preset.id), Some(*preset));
         }
         assert_eq!(capture_device_preset("unknown-or-retired"), None);
+    }
+
+    #[test]
+    fn capture_radiometric_anchors_obey_stops_ei_and_nd_goldens() {
+        for preset in CAPTURE_DEVICE_PRESETS {
+            let calibration = preset.radiometric;
+            let reference = calibration.sensor_exposure_seconds(
+                calibration.reference_illuminance_lux,
+                calibration.reference_shutter_seconds,
+                calibration.reference_exposure_index,
+                0.0,
+            );
+            assert!(
+                (reference - preset.middle_gray_illuminance_seconds_at_reference_ei).abs() < 1e-6,
+                "{} reference exposure must meet its develop anchor",
+                preset.id
+            );
+            let plus_stop = calibration.sensor_exposure_seconds(
+                calibration.reference_illuminance_lux,
+                calibration.reference_shutter_seconds * 2.0,
+                calibration.reference_exposure_index,
+                0.0,
+            );
+            let plus_ei = calibration.sensor_exposure_seconds(
+                calibration.reference_illuminance_lux,
+                calibration.reference_shutter_seconds,
+                calibration.reference_exposure_index * 2.0,
+                0.0,
+            );
+            let minus_nd = calibration.sensor_exposure_seconds(
+                calibration.reference_illuminance_lux,
+                calibration.reference_shutter_seconds,
+                calibration.reference_exposure_index,
+                1.0,
+            );
+            assert!((plus_stop / reference - 2.0).abs() < 1e-6);
+            assert!((plus_ei / reference - 2.0).abs() < 1e-6);
+            assert!((minus_nd / reference - 0.5).abs() < 1e-6);
+        }
     }
 
     #[test]

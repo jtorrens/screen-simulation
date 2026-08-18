@@ -309,6 +309,16 @@ typedef struct {
 
 typedef struct {
     uint32_t abi_version;
+    float reference_reflectance;
+    float reference_illuminance_lux;
+    float reference_shutter_seconds;
+    float reference_exposure_index;
+    float incident_lux_seconds_to_sensor_illuminance_seconds;
+    float expected_developed_acescg;
+} ScreenCaptureRadiometricCalibrationV2;
+
+typedef struct {
+    uint32_t abi_version;
     ScreenCoverGlassParametersV2 cover;
     ScreenEnvironmentParametersV2 environment;
     ScreenSceneGeometryLensParametersV2 scene_geometry_lens;
@@ -358,6 +368,10 @@ ScreenUTF8View screen_capture_preset_default_lens_id(size_t index);
 bool screen_capture_preset_parameters(
     size_t index,
     ScreenCapturePresetParametersV2 *parameters
+);
+bool screen_capture_preset_radiometric_calibration(
+    size_t index,
+    ScreenCaptureRadiometricCalibrationV2 *calibration
 );
 /*
  * Physical-frame ABI v2. These declarations are the single UI/engine contract.

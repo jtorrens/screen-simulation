@@ -64,6 +64,21 @@ pub struct ScreenCapturePresetParametersV2 {
     default_readout_duration_milliseconds: f32,
 }
 
+/// Mandatory ISO/radiometric anchor exposed independently from mutable camera
+/// controls. Values are a neutral Lambertian calibration contract, not a
+/// vendor spectral response claim.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenCaptureRadiometricCalibrationV2 {
+    abi_version: u32,
+    reference_reflectance: f32,
+    reference_illuminance_lux: f32,
+    reference_shutter_seconds: f32,
+    reference_exposure_index: f32,
+    incident_lux_seconds_to_sensor_illuminance_seconds: f32,
+    expected_developed_acescg: f32,
+}
+
 pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 2;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -2026,6 +2041,33 @@ pub unsafe extern "C" fn screen_capture_preset_parameters(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_capture_preset_radiometric_calibration(
+    index: usize,
+    calibration: *mut ScreenCaptureRadiometricCalibrationV2,
+) -> bool {
+    let Some(preset) = CAPTURE_DEVICE_PRESETS.get(index) else {
+        return false;
+    };
+    if calibration.is_null() {
+        return false;
+    }
+    let source = preset.radiometric;
+    unsafe {
+        *calibration = ScreenCaptureRadiometricCalibrationV2 {
+            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+            reference_reflectance: source.reference_reflectance,
+            reference_illuminance_lux: source.reference_illuminance_lux,
+            reference_shutter_seconds: source.reference_shutter_seconds,
+            reference_exposure_index: source.reference_exposure_index,
+            incident_lux_seconds_to_sensor_illuminance_seconds: source
+                .incident_lux_seconds_to_sensor_illuminance_seconds,
+            expected_developed_acescg: source.expected_developed_acescg,
+        };
+    }
+    true
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn screen_device_preset_id(index: usize) -> ScreenUtf8View {
     preset_at(index).map_or(utf8_view(""), |preset| utf8_view(preset.id))
 }
@@ -2935,9 +2977,9 @@ mod tests {
     }
 
     #[test]
-    fn capture_catalog_exposes_the_two_authoritative_camera_presets() {
+    fn capture_catalog_exposes_radiometrically_anchored_camera_presets() {
         assert_eq!(screen_capture_preset_count(), CAPTURE_DEVICE_PRESETS.len());
-        assert_eq!(screen_capture_preset_count(), 2);
+        assert_eq!(screen_capture_preset_count(), 4);
         for index in 0..screen_capture_preset_count() {
             let mut parameters: ScreenCapturePresetParametersV2 = unsafe { std::mem::zeroed() };
             assert!(unsafe { screen_capture_preset_parameters(index, &mut parameters) });
@@ -2950,6 +2992,19 @@ mod tests {
             assert!(parameters.f_stop > 0.0);
             assert!(parameters.default_temporal_samples > 0);
             assert!(parameters.default_readout_duration_milliseconds >= 0.0);
+            let mut radiometric: ScreenCaptureRadiometricCalibrationV2 =
+                unsafe { std::mem::zeroed() };
+            assert!(unsafe {
+                screen_capture_preset_radiometric_calibration(index, &mut radiometric)
+            });
+            assert_eq!(radiometric.abi_version, SCREEN_PHYSICAL_FRAME_ABI_VERSION);
+            assert!(radiometric.reference_reflectance > 0.0);
+            assert!(radiometric.reference_illuminance_lux > 0.0);
+            assert!(radiometric.reference_shutter_seconds > 0.0);
+            assert_eq!(
+                radiometric.reference_exposure_index,
+                parameters.reference_exposure_index
+            );
             assert!(!screen_capture_preset_id(index).bytes.is_null());
             assert!(!screen_capture_preset_label(index).bytes.is_null());
             assert!(!screen_capture_preset_default_lens_id(index).bytes.is_null());
@@ -2957,6 +3012,14 @@ mod tests {
         let mut invalid: ScreenCapturePresetParametersV2 = unsafe { std::mem::zeroed() };
         assert!(!unsafe {
             screen_capture_preset_parameters(screen_capture_preset_count(), &mut invalid)
+        });
+        let mut invalid_calibration: ScreenCaptureRadiometricCalibrationV2 =
+            unsafe { std::mem::zeroed() };
+        assert!(!unsafe {
+            screen_capture_preset_radiometric_calibration(
+                screen_capture_preset_count(),
+                &mut invalid_calibration,
+            )
         });
     }
 

@@ -7,19 +7,24 @@ struct CapturePresetDefinition: Identifiable {
     let calibration: String
     let defaultLensID: String
     let parameters: ScreenCapturePresetParametersV2
+    let radiometricCalibration: ScreenCaptureRadiometricCalibrationV2
 
     static func catalog() throws -> [Self] {
         try (0..<screen_capture_preset_count()).map { index in
             var parameters = ScreenCapturePresetParametersV2()
+            var radiometricCalibration = ScreenCaptureRadiometricCalibrationV2()
             guard screen_capture_preset_parameters(index, &parameters),
+                  screen_capture_preset_radiometric_calibration(index, &radiometricCalibration),
                   parameters.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION
+                    && radiometricCalibration.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION
             else { throw CapturePresetError.invalidCatalog(index) }
             return Self(
                 id: text(screen_capture_preset_id(index)),
                 name: text(screen_capture_preset_label(index)),
                 calibration: text(screen_capture_preset_calibration(index)),
                 defaultLensID: text(screen_capture_preset_default_lens_id(index)),
-                parameters: parameters
+                parameters: parameters,
+                radiometricCalibration: radiometricCalibration
             )
         }
     }

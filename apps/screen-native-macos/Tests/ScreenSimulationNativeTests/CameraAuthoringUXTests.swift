@@ -21,9 +21,16 @@ import Testing
 
 @Test func capturePresetCatalogComesFromRustAndAppliesAnImmutableSnapshot() throws {
     let catalog = try CapturePresetDefinition.catalog()
-    #expect(catalog.count == 2)
+    #expect(catalog.count == 4)
     #expect(catalog.contains { $0.name.contains("ARRI ALEXA 35") })
     #expect(catalog.contains { $0.name.contains("iPhone 16e") })
+    #expect(catalog.contains { $0.name.contains("RED V-RAPTOR 8K VV") })
+    #expect(catalog.contains { $0.name.contains("Canon EOS 550D") })
+    #expect(catalog.allSatisfy {
+        $0.radiometricCalibration.reference_reflectance > 0
+            && $0.radiometricCalibration.reference_illuminance_lux > 0
+            && $0.radiometricCalibration.expected_developed_acescg > 0
+    })
 
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
