@@ -580,7 +580,6 @@ struct FusionScenePackageRequest: Equatable, Sendable {
 
 struct FusionReferencePlate: Equatable, Sendable {
     let sourceURL: URL
-    let relativePath: String
     let inputTransformID: String
     let ocioSourceColorSpace: String
     let placementID: String
@@ -609,26 +608,6 @@ enum FusionScenePackageWriter {
             policy: configuration.overwritePolicy
         )
         try writeFusionOCIOConfiguration(to: request.outputPlan.destination)
-        if let reference = request.referencePlate {
-            let destination = request.outputPlan.destination.appendingPathComponent(reference.relativePath)
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try request.outputPlan.authorizeWrite(
-                to: destination, policy: configuration.overwritePolicy
-            )
-            if FileManager.default.fileExists(atPath: destination.path) {
-                let staging = destination.deletingLastPathComponent().appendingPathComponent(
-                    ".\(UUID().uuidString).reference-staging"
-                )
-                try FileManager.default.copyItem(at: reference.sourceURL, to: staging)
-                _ = try FileManager.default.replaceItemAt(
-                    destination, withItemAt: staging, backupItemName: nil, options: []
-                )
-            } else {
-                try FileManager.default.copyItem(at: reference.sourceURL, to: destination)
-            }
-        }
         var firstPrepared: FusionPreparedPhysicalFrame?
         let frames = Array(configuration.frameRange)
         let fixedThresholdSupport = request.sourceOverscanPixels
@@ -1123,7 +1102,7 @@ enum FusionScenePackageWriter {
         _ = sourceAspect
         return """
         ReferenceLoader = Loader {
-          Clips = { Clip { Filename = "Comp:/../\(reference.relativePath)", StartFrame = \(firstFrame), GlobalStart = \(firstFrame), GlobalEnd = \(lastFrame) } },
+          Clips = { Clip { Filename = "\(fusionEscapedPath(reference.sourceURL))", StartFrame = \(firstFrame), GlobalStart = \(firstFrame), GlobalEnd = \(lastFrame) } },
           GlobalIn = \(firstFrame), GlobalOut = \(lastFrame),
           ViewInfo = OperatorInfo { Pos = { 1100, 346.5 } }
         },
@@ -1162,6 +1141,11 @@ enum FusionScenePackageWriter {
           ViewInfo = OperatorInfo { Pos = { 1595, 346.5 } }
         },
         """
+    }
+
+    private static func fusionEscapedPath(_ url: URL) -> String {
+        url.path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private static func fusionSpline(_ values: [(Int, Double)]) -> String {

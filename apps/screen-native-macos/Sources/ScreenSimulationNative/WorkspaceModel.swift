@@ -4042,16 +4042,13 @@ final class WorkspaceModel: ObservableObject {
             guard StudioColorEngine.fusionSupportedSourceColorSpaces.contains(sourceColorSpace) else {
                 throw FusionScenePackageError.unsupportedReferenceInputTransform
             }
-            let fileName = referenceURL.lastPathComponent
-            guard !fileName.isEmpty else { throw FusionScenePackageError.invalidRaster }
-            let relativePath = "reference/\(fileName)"
+            guard !referenceURL.path.isEmpty else { throw FusionScenePackageError.invalidRaster }
             guard let referenceRaster = referenceACEScgFrame else {
                 throw FusionScenePackageError.invalidRaster
             }
-            outputPlan = try job.outputPlan.addingGeneratedRelativePath(relativePath)
+            outputPlan = job.outputPlan
             referencePlate = .init(
                 sourceURL: referenceURL,
-                relativePath: relativePath,
                 inputTransformID: input.id,
                 ocioSourceColorSpace: sourceColorSpace,
                 placementID: referencePlacement.stableID,

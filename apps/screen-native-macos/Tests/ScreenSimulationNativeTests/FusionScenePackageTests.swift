@@ -387,7 +387,7 @@ private func temporaryDirectory() throws -> URL {
         camera: [camera(frame: 1), camera(frame: 2)], lens: [lens(frame: 1), lens(frame: 2)],
         motionBlur: .init(bakedInEXR: false, enabledInFusion: true, shutterAngleDegrees: 180, shutterPhaseDegrees: 0),
         referencePlate: .init(
-            sourceURL: URL(fileURLWithPath: "/reference.mov"), relativePath: "reference/plate.mov",
+            sourceURL: URL(fileURLWithPath: "/reference.mov"),
             inputTransformID: "arri-logc4", ocioSourceColorSpace: "ARRI LogC4",
             placementID: "fill-crop", width: 2048, height: 858
         )
@@ -397,6 +397,8 @@ private func temporaryDirectory() throws -> URL {
         prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, rgba: [])
     )
     #expect(comp.contains("ReferenceToACEScg = OCIOColorSpace"))
+    #expect(comp.contains("Filename = \"/reference.mov\""))
+    #expect(!comp.contains("Comp:/../reference/"))
     #expect(comp.contains("studio-fusion-ocio-v2.4.ocio"))
     #expect(!comp.contains(StudioColorEngine.configurationFileName))
     #expect(comp.contains("SourceSpace = Input { Value = FuID { \"ARRI LogC4\" } }"))
@@ -431,7 +433,7 @@ private func temporaryDirectory() throws -> URL {
         camera: [camera(frame: 1), camera(frame: 2)], lens: [lens(frame: 1), lens(frame: 2)],
         motionBlur: .init(bakedInEXR: false, enabledInFusion: true, shutterAngleDegrees: 180, shutterPhaseDegrees: 0),
         referencePlate: .init(
-            sourceURL: URL(fileURLWithPath: "/reference.mov"), relativePath: "reference/plate.mov",
+            sourceURL: URL(fileURLWithPath: "/reference.mov"),
             inputTransformID: "canon-log3", ocioSourceColorSpace: "CanonLog3 CinemaGamut D55",
             placementID: "fit", width: 1920, height: 1080
         )
