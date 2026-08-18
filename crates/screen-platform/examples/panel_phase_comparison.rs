@@ -357,6 +357,7 @@ fn plan(
         temporal_emission_amount: 0.0,
         temporal_emission_gain: 1.0,
         cover,
+        cover_glow_exterior_intensity: 1.0,
         environment: screen_cover::IncidentEnvironment::Procedural(environment),
         scene_geometry_lens,
         camera_position,

@@ -214,6 +214,25 @@ public final class StudioColorEngine: @unchecked Sendable {
     public static let configurationFileName =
         "studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
 
+    /// The exact OCIO configuration used by the application. Interchange writers copy this
+    /// self-contained config when a downstream host must reproduce an authored IDT.
+    public static func bundledConfigurationURL() throws -> URL {
+        #if DEBUG
+        let resourceBundle = Bundle.module
+        #else
+        guard let resourceURL = Bundle.main.resourceURL,
+              let resourceBundle = Bundle(
+                url: resourceURL.appendingPathComponent("StudioColor_StudioColor.bundle")
+              )
+        else { throw StudioColorError.missingBundledConfiguration }
+        #endif
+        guard let configurationURL = resourceBundle.url(
+            forResource: configurationFileName,
+            withExtension: "ocio"
+        ) else { throw StudioColorError.missingBundledConfiguration }
+        return configurationURL
+    }
+
     public static var runtimeVersion: String {
         #if canImport(StudioColorABI)
         String(cString: SCVersion())
@@ -242,21 +261,7 @@ public final class StudioColorEngine: @unchecked Sendable {
 
     public static func bundled() throws -> StudioColorEngine {
         #if canImport(StudioColorABI)
-        #if DEBUG
-        let resourceBundle = Bundle.module
-        #else
-        guard let resourceURL = Bundle.main.resourceURL,
-              let resourceBundle = Bundle(
-                url: resourceURL.appendingPathComponent("StudioColor_StudioColor.bundle")
-              )
-        else { throw StudioColorError.missingBundledConfiguration }
-        #endif
-        guard let configurationURL = resourceBundle.url(
-            forResource: configurationFileName,
-            withExtension: "ocio"
-        ) else {
-            throw StudioColorError.missingBundledConfiguration
-        }
+        let configurationURL = try bundledConfigurationURL()
         var error: UnsafeMutablePointer<CChar>?
         let reference = configurationURL.path.withCString { path in
             SCConfigCreate(path, &error)

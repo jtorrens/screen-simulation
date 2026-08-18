@@ -252,3 +252,83 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: originalURL.path))
     #expect(FileManager.default.fileExists(atPath: duplicateURL.path))
 }
+
+@MainActor
+@Test func updatingASceneParticipatesInUndoAndRedoAsOneCompleteOperation() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-update-undo-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let environmentRoot = root.appendingPathComponent("assets")
+    let store = try SceneLibraryStore(
+        directoryURL: root.appendingPathComponent("scenes"),
+        environmentLibraryRoot: environmentRoot
+    )
+    let controller = SceneLibraryController(store: store)
+    func snapshot(frame: Int) throws -> SavedSceneSnapshot {
+        SavedSceneSnapshot(
+            source: .init(
+                kind: .syntheticPattern,
+                patternRawValue: SyntheticPattern.eyeChart.rawValue,
+                assets: [], missingMedia: nil
+            ),
+            currentFrame: frame,
+            viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+            viewerIsFitted: true,
+            settingsDocument: try JSONSerialization.data(
+                withJSONObject: ["settings": [
+                    "schema": PhysicalSettingsExchange.schema,
+                    "context": ["environmentResource": [
+                        "kind": "procedural",
+                        "presetID": "environment-none",
+                    ]],
+                ]]
+            )
+        )
+    }
+    let originalEnvironment = Data([1, 2, 3, 4])
+    let scene = try controller.add(capture: .init(
+        snapshot: try snapshot(frame: 3),
+        thumbnailPNG: Data([10]),
+        generatedEnvironmentEXR: originalEnvironment
+    ))
+    let undo = UndoManager()
+    let updatedEnvironment = Data([5, 6, 7, 8])
+    try controller.update(
+        scene,
+        capture: .init(
+            snapshot: try snapshot(frame: 27),
+            thumbnailPNG: Data([20]),
+            generatedEnvironmentEXR: updatedEnvironment
+        ),
+        undoManager: undo
+    )
+
+    func currentState() throws -> (SavedScene, Data, Data) {
+        let current = try #require(controller.scene(id: scene.id))
+        let thumbnail = try Data(contentsOf: store.thumbnailURL(for: current))
+        let asset = try #require(current.snapshot.generatedEnvironment)
+        let managed = try #require(try EnvironmentAssetLibrary.asset(
+            sha256: asset.sha256,
+            originalFileName: asset.fileName,
+            libraryRoot: environmentRoot
+        ))
+        return (current, thumbnail, try Data(contentsOf: managed.url))
+    }
+
+    var state = try currentState()
+    #expect(state.0.snapshot.currentFrame == 27)
+    #expect(state.1 == Data([20]))
+    #expect(state.2 == updatedEnvironment)
+    #expect(undo.canUndo)
+    undo.undo()
+    state = try currentState()
+    #expect(state.0.snapshot.currentFrame == 3)
+    #expect(state.1 == Data([10]))
+    #expect(state.2 == originalEnvironment)
+    #expect(undo.canRedo)
+    undo.redo()
+    state = try currentState()
+    #expect(state.0.snapshot.currentFrame == 27)
+    #expect(state.1 == Data([20]))
+    #expect(state.2 == updatedEnvironment)
+}

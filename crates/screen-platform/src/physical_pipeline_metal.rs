@@ -94,6 +94,14 @@ struct PhysicalPipelineParams {
     screen_quaternion: [f32; 4],
     panel_angular_scene: [f32; 4],
     shutter: [f32; 4],
+    vfx_raster: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VfxTransparencyRaster {
+    pub active_width: u32,
+    pub active_height: u32,
+    pub bake_depth_of_field: bool,
 }
 
 #[repr(C)]
@@ -148,6 +156,10 @@ pub struct MetalPhysicalPipeline {
     thin_lens_image_pipeline: ComputePipelineState,
     vfx_depth_blur_procedural_pipeline: ComputePipelineState,
     vfx_depth_blur_image_pipeline: ComputePipelineState,
+    vfx_frontal_thin_lens_procedural_pipeline: ComputePipelineState,
+    vfx_frontal_thin_lens_image_pipeline: ComputePipelineState,
+    vfx_frontal_depth_blur_procedural_pipeline: ComputePipelineState,
+    vfx_frontal_depth_blur_image_pipeline: ComputePipelineState,
     environment_importance_pipeline: ComputePipelineState,
     row_prefix_pipeline: ComputePipelineState,
     glow_signal_prefix_pipeline: ComputePipelineState,
@@ -211,29 +223,39 @@ impl MetalPhysicalPipeline {
         let library = device
             .new_library_with_data(SHADER_LIBRARY)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let specialized_pipeline = |vfx_depth_blur: bool, image_environment: bool| {
-            let constants = FunctionConstantValues::new();
-            constants.set_constant_value_at_index(
-                (&raw const vfx_depth_blur).cast(),
-                MTLDataType::Bool,
-                0,
-            );
-            constants.set_constant_value_at_index(
-                (&raw const image_environment).cast(),
-                MTLDataType::Bool,
-                1,
-            );
-            let function = library
-                .get_function("evaluate_physical_pipeline", Some(constants))
-                .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-            device
-                .new_compute_pipeline_state_with_function(&function)
-                .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))
-        };
-        let thin_lens_procedural_pipeline = specialized_pipeline(false, false)?;
-        let thin_lens_image_pipeline = specialized_pipeline(false, true)?;
-        let vfx_depth_blur_procedural_pipeline = specialized_pipeline(true, false)?;
-        let vfx_depth_blur_image_pipeline = specialized_pipeline(true, true)?;
+        let specialized_pipeline =
+            |vfx_depth_blur: bool, image_environment: bool, device_vfx_frontal: bool| {
+                let constants = FunctionConstantValues::new();
+                constants.set_constant_value_at_index(
+                    (&raw const vfx_depth_blur).cast(),
+                    MTLDataType::Bool,
+                    0,
+                );
+                constants.set_constant_value_at_index(
+                    (&raw const image_environment).cast(),
+                    MTLDataType::Bool,
+                    1,
+                );
+                constants.set_constant_value_at_index(
+                    (&raw const device_vfx_frontal).cast(),
+                    MTLDataType::Bool,
+                    2,
+                );
+                let function = library
+                    .get_function("evaluate_physical_pipeline", Some(constants))
+                    .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+                device
+                    .new_compute_pipeline_state_with_function(&function)
+                    .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))
+            };
+        let thin_lens_procedural_pipeline = specialized_pipeline(false, false, false)?;
+        let thin_lens_image_pipeline = specialized_pipeline(false, true, false)?;
+        let vfx_depth_blur_procedural_pipeline = specialized_pipeline(true, false, false)?;
+        let vfx_depth_blur_image_pipeline = specialized_pipeline(true, true, false)?;
+        let vfx_frontal_thin_lens_procedural_pipeline = specialized_pipeline(false, false, true)?;
+        let vfx_frontal_thin_lens_image_pipeline = specialized_pipeline(false, true, true)?;
+        let vfx_frontal_depth_blur_procedural_pipeline = specialized_pipeline(true, false, true)?;
+        let vfx_frontal_depth_blur_image_pipeline = specialized_pipeline(true, true, true)?;
         let environment_importance_function = library
             .get_function("build_environment_importance", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -306,6 +328,10 @@ impl MetalPhysicalPipeline {
             thin_lens_image_pipeline,
             vfx_depth_blur_procedural_pipeline,
             vfx_depth_blur_image_pipeline,
+            vfx_frontal_thin_lens_procedural_pipeline,
+            vfx_frontal_thin_lens_image_pipeline,
+            vfx_frontal_depth_blur_procedural_pipeline,
+            vfx_frontal_depth_blur_image_pipeline,
             environment_importance_pipeline,
             row_prefix_pipeline,
             glow_signal_prefix_pipeline,
@@ -963,6 +989,7 @@ impl MetalPhysicalPipeline {
                 physical_plan,
                 row_range,
                 Some((&prefix_cache[prefix_index].2, &prefix_cache[prefix_index].3)),
+                None,
                 |progress| report_progress(base + progress * span),
                 &is_cancelled,
             )?;
@@ -1095,6 +1122,7 @@ impl MetalPhysicalPipeline {
             physical_plan,
             None,
             None,
+            None,
             |progress| {
                 report_progress(if plan.sensor_enabled {
                     progress * 0.9
@@ -1114,6 +1142,75 @@ impl MetalPhysicalPipeline {
         )
     }
 
+    pub fn evaluate_vfx_transparency_with_environment(
+        &self,
+        source_acescg: &TextureRef,
+        device_signal: &TextureRef,
+        environment_acescg: Option<&TextureRef>,
+        mut plan: PhysicalPipelineExecutionPlan,
+        raster: VfxTransparencyRaster,
+        mut report_progress: impl FnMut(f32),
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        if raster.active_width == 0
+            || raster.active_height == 0
+            || raster.active_width > plan.requested_width
+            || raster.active_height > plan.requested_height
+            || (plan.requested_width - raster.active_width) % 2 != 0
+            || (plan.requested_height - raster.active_height) % 2 != 0
+        {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "VFX transparency requires a positive centered active raster".to_owned(),
+            ));
+        }
+        if plan.screen_amount != 1.0 || plan.emission_amount != 1.0 {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "VFX transparency requires the complete physical Device contribution".to_owned(),
+            ));
+        }
+        // This is the normal Camera Rendered ACEScg route on a frontal raster:
+        // perspective and Brown distortion are selected out by the specialized
+        // shader, while shutter exposure, sensor/develop and rendering intent
+        // remain the same authored operations as a normal render.  The virtual
+        // sensor has the explicit export raster so no hidden resampling can
+        // substitute the requested Device sampling density.
+        let virtual_width = u16::try_from(plan.requested_width).map_err(|_| {
+            MetalPhysicalPipelineError::InvalidPlan(
+                "Fusion Scene Package raster exceeds the supported sensor domain".to_owned(),
+            )
+        })?;
+        let virtual_height = u16::try_from(plan.requested_height).map_err(|_| {
+            MetalPhysicalPipelineError::InvalidPlan(
+                "Fusion Scene Package raster exceeds the supported sensor domain".to_owned(),
+            )
+        })?;
+        plan.sensor.native_width = virtual_width;
+        plan.sensor.native_height = virtual_height;
+        plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
+        plan.sensor_enabled = true;
+        plan.rendering_intent_enabled = true;
+        let mut physical_plan = plan;
+        physical_plan.sensor_enabled = false;
+        physical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+        let physical = self.evaluate_rows(
+            source_acescg,
+            device_signal,
+            environment_acescg,
+            physical_plan,
+            None,
+            None,
+            Some(raster),
+            |progress| report_progress(progress * 0.9),
+            &is_cancelled,
+        )?;
+        self.evaluate_sensor_raw(
+            physical,
+            plan,
+            |progress| report_progress(0.9 + progress * 0.1),
+            is_cancelled,
+        )
+    }
+
     fn evaluate_rows(
         &self,
         source_acescg: &TextureRef,
@@ -1122,6 +1219,7 @@ impl MetalPhysicalPipeline {
         plan: PhysicalPipelineExecutionPlan,
         row_range: Option<(u32, u32)>,
         row_prefixes: Option<(&TextureRef, &TextureRef)>,
+        vfx_raster: Option<VfxTransparencyRaster>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -1262,6 +1360,7 @@ impl MetalPhysicalPipeline {
                 | PhysicalIntermediate::SensorReadoutRaw
                 | PhysicalIntermediate::DevelopedAcesCg
                 | PhysicalIntermediate::CameraRenderedAcesCg
+                | PhysicalIntermediate::DeviceVfxTransparency
         ) {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
                 "requested intermediate belongs to an unsupported stage".to_owned(),
@@ -1631,6 +1730,21 @@ impl MetalPhysicalPipeline {
                 plan.shutter_motion.neutral_density_stops,
                 0.0,
             ],
+            vfx_raster: [
+                vfx_raster.map_or(1.0, |value| {
+                    value.active_width as f32 / sampling.effective_width as f32
+                }),
+                vfx_raster.map_or(1.0, |value| {
+                    value.active_height as f32 / sampling.effective_height as f32
+                }),
+                vfx_raster.map_or(
+                    0.0,
+                    |value| {
+                        if value.bake_depth_of_field { 1.0 } else { 0.0 }
+                    },
+                ),
+                0.0,
+            ],
         };
         params.levels[3] = plan.temporal_emission_gain;
         let row_temporal_gains = (0..sampling.effective_height)
@@ -1706,18 +1820,34 @@ impl MetalPhysicalPipeline {
             ));
         }
         let tile_count = work_height.div_ceil(TILE_ROWS);
-        let physical_pipeline = match (plan.lens_evaluation_model, plan.environment) {
-            (LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
+        let physical_pipeline = match (
+            vfx_raster.is_some(),
+            plan.lens_evaluation_model,
+            plan.environment,
+        ) {
+            (false, LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
                 &self.thin_lens_procedural_pipeline
             }
-            (LensEvaluationModel::ThinLens, IncidentEnvironment::Equirectangular(_)) => {
+            (false, LensEvaluationModel::ThinLens, IncidentEnvironment::Equirectangular(_)) => {
                 &self.thin_lens_image_pipeline
             }
-            (LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Procedural(_)) => {
+            (false, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Procedural(_)) => {
                 &self.vfx_depth_blur_procedural_pipeline
             }
-            (LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Equirectangular(_)) => {
+            (false, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Equirectangular(_)) => {
                 &self.vfx_depth_blur_image_pipeline
+            }
+            (true, LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
+                &self.vfx_frontal_thin_lens_procedural_pipeline
+            }
+            (true, LensEvaluationModel::ThinLens, IncidentEnvironment::Equirectangular(_)) => {
+                &self.vfx_frontal_thin_lens_image_pipeline
+            }
+            (true, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Procedural(_)) => {
+                &self.vfx_frontal_depth_blur_procedural_pipeline
+            }
+            (true, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Equirectangular(_)) => {
+                &self.vfx_frontal_depth_blur_image_pipeline
             }
         };
         for tile in 0..tile_count {
@@ -2129,7 +2259,17 @@ mod tests {
         let source = texture(&device, input.width, input.height, &input.acescg);
         let signal = texture(&device, input.width, input.height, &input.acescg);
         let result = backend
-            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .evaluate(
+                &source,
+                &signal,
+                {
+                    let mut plan = plan;
+                    plan.requested_intermediate = PhysicalIntermediate::SourceAcesCg;
+                    plan
+                },
+                |_| {},
+                || false,
+            )
             .expect("identity result");
         assert!(core::ptr::eq(&*source, &*result.texture));
         let mut active = plan;
@@ -2751,6 +2891,7 @@ mod tests {
             0.0,
         );
         plan.screen_amount = 0.0;
+        plan.requested_intermediate = PhysicalIntermediate::SourceAcesCg;
         let first_values = vec![[0.0, 0.5, 1.0, 0.25]; input.acescg.len()];
         let second_values = vec![[2.0, 1.5, -1.0, 0.75]; input.acescg.len()];
         let first = texture(&device, input.width, input.height, &first_values);
@@ -2838,6 +2979,7 @@ mod tests {
             0.0,
         );
         plan.screen_amount = 0.0;
+        plan.requested_intermediate = PhysicalIntermediate::SourceAcesCg;
         plan.requested_width = input.width;
         plan.requested_height = input.height;
         let dark_values = vec![[0.0, 0.0, 0.0, 0.25]; input.acescg.len()];

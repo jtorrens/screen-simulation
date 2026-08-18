@@ -4534,6 +4534,7 @@ dependencies = [
  "screen-contracts",
  "screen-cover",
  "screen-geometry",
+ "screen-media",
  "screen-panel",
  "screen-platform",
  "screen-recording",

@@ -373,6 +373,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     case developedACEScg = 15
     case cameraRenderedACEScg = 16
     case panelTemporal = 17
+    case deviceVfxTransparency = 18
 
     var id: UInt32 { rawValue }
 
@@ -409,6 +410,7 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         case .relativeGeometry: "Relative Geometry"
         case .developedACEScg: "Developed"
         case .cameraRenderedACEScg: "Camera Rendering Intent"
+        case .deviceVfxTransparency: "Device VFX Transparency"
         case .coverEnvironment: "Cover / Environment"
         case .coverGlow: "Cover Glow"
         case .lensProjection: "Lens / Projection"
@@ -455,6 +457,12 @@ struct PhysicalRationalTime: Equatable, Sendable {
 struct PhysicalShutterInterval: Equatable, Sendable {
     let open: PhysicalRationalTime
     let close: PhysicalRationalTime
+}
+
+struct PhysicalVfxTransparencyRequest: Equatable, Sendable {
+    let activeWidth: Int
+    let activeHeight: Int
+    let bakeDepthOfField: Bool
 }
 
 struct ResolvedPhysicalPipelineSnapshot: @unchecked Sendable {

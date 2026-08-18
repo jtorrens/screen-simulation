@@ -59,6 +59,7 @@ fn request(
             temporal_emission_amount: 0.0,
             temporal_emission_gain: 1.0,
             cover: screen_cover::CoverGlassProfile::NEUTRAL,
+            cover_glow_exterior_intensity: 1.0,
             environment: screen_cover::IncidentEnvironment::NONE,
             scene_geometry_lens: screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
             camera_position: screen_contracts::Vec3 {
@@ -147,11 +148,11 @@ fn domain_and_stage_amounts_have_independent_continuous_meaning() {
     let identity =
         evaluate_physical_pipeline_cpu_oracle(request(FlatPanelQuality::Native, 0.0, 4.0, 4.0))
             .expect("screen identity");
+    // Developed output owns the requested raster. Screen amount zero removes
+    // Device radiance without re-entering the ideal Source as a substitute.
     assert_eq!(
         identity.presentation_rgba(),
-        request(FlatPanelQuality::Native, 0.0, 4.0, 4.0)
-            .input
-            .acescg
+        &vec![[0.0, 0.0, 0.0, 1.0]; 18]
     );
 
     let ideal =
@@ -387,13 +388,13 @@ fn supported_intermediate_outputs_match_frozen_domain_goldens() {
     assert_eq!(
         hashes,
         [
-            17_533_449_732_142_382_789,
-            7_175_188_628_288_640_885,
-            1_821_817_943_419_426_288,
-            7_822_282_370_568_033_078,
-            7_822_282_370_568_033_078,
-            7_008_296_159_193_486_740,
-            16_849_740_274_292_448_334,
+            5_154_025_612_764_658_117,
+            12_306_879_375_584_860_021,
+            10_426_809_767_957_796_336,
+            15_321_147_244_573_496_118,
+            15_321_147_244_573_496_118,
+            585_697_277_097_709_086,
+            2_555_214_578_077_310_480,
         ]
     );
 }

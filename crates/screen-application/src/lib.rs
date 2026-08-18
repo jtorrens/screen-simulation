@@ -1032,6 +1032,10 @@ impl PhysicalPipelineExecutionPlan {
             PhysicalIntermediate::CoverGlow => {
                 self.lens_amount = 0.0;
             }
+            PhysicalIntermediate::DeviceVfxTransparency => {
+                self.sensor_enabled = false;
+                self.shutter_motion_amount = 0.0;
+            }
             PhysicalIntermediate::LensProjection
             | PhysicalIntermediate::ShutterMotion
             | PhysicalIntermediate::ComputationalCapture
@@ -1234,6 +1238,9 @@ fn physical_rgba_artifact(
             Ok(PhysicalPipelineCpuArtifact::CoverEnvironment(raster))
         }
         PhysicalIntermediate::CoverGlow => Ok(PhysicalPipelineCpuArtifact::CoverGlow(raster)),
+        PhysicalIntermediate::DeviceVfxTransparency => {
+            Err(ApplicationError::UnsupportedPhysicalIntermediate)
+        }
         PhysicalIntermediate::LensProjection => {
             Ok(PhysicalPipelineCpuArtifact::LensProjection(raster))
         }
@@ -3440,6 +3447,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::RelativeGeometry => temporally_integrated,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::CoverGlow => [covered.r, covered.g, covered.b],
+                PhysicalIntermediate::DeviceVfxTransparency => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::LensProjection => [glared.r, glared.g, glared.b],
                 PhysicalIntermediate::ShutterMotion
                 | PhysicalIntermediate::ComputationalCapture => {
@@ -3472,6 +3480,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 | PhysicalIntermediate::SensorReadoutRaw
                 | PhysicalIntermediate::DevelopedAcesCg
                 | PhysicalIntermediate::CameraRenderedAcesCg => local_device_matte,
+                PhysicalIntermediate::DeviceVfxTransparency => local_device_matte,
                 _ => ideal[3],
             };
             output.push([selected[0], selected[1], selected[2], selected_alpha]);

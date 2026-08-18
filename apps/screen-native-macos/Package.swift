@@ -7,6 +7,7 @@ let packageDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent
 let repositoryRoot = packageDirectory.deletingLastPathComponent().deletingLastPathComponent()
 let rustLibraryDirectory = repositoryRoot.appendingPathComponent("target/debug").path
 let rustReleaseLibraryDirectory = repositoryRoot.appendingPathComponent("target/release").path
+let ffmpegLibraryDirectory = "/opt/homebrew/opt/ffmpeg/lib"
 
 let package = Package(
     name: "ScreenSimulationNative",
@@ -32,7 +33,12 @@ let package = Package(
             path: "Sources/ScreenPhysicalBridge",
             publicHeadersPath: "include",
             linkerSettings: [
-                .unsafeFlags(["-L", rustReleaseLibraryDirectory, "-L", rustLibraryDirectory]),
+                .unsafeFlags([
+                    "-L", rustReleaseLibraryDirectory,
+                    "-L", rustLibraryDirectory,
+                    "-L", ffmpegLibraryDirectory,
+                    "-lavformat", "-lavcodec", "-lswscale", "-lavutil",
+                ]),
                 .linkedLibrary("screen_native_bridge"),
             ]
         ),

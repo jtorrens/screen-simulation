@@ -134,6 +134,125 @@ public enum StudioRenderPipeline: String, Codable, Sendable {
     case davinciColorManaged
 }
 
+public enum StudioOutputType: String, Codable, CaseIterable, Identifiable, Sendable {
+    case standard
+    case fusionScenePackage
+
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .standard: "Render estándar"
+        case .fusionScenePackage: "Fusion Scene Package"
+        }
+    }
+}
+
+public enum StudioOverwritePolicy: String, Codable, CaseIterable, Sendable {
+    case failIfExists
+    case replaceGeneratedFiles
+}
+
+public enum StudioFusionDOFMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case disabled
+    case baked
+    case fusion
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .disabled: "Sin DOF"
+        case .baked: "Baked"
+        case .fusion: "Fusion"
+        }
+    }
+}
+
+public enum StudioFusionResolutionMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case maximumProjectedDensity
+    case nativeDevice
+    case custom
+
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .maximumProjectedDensity: "Máxima resolución proyectada"
+        case .nativeDevice: "Resolución nativa del Device"
+        case .custom: "Personalizada"
+        }
+    }
+}
+
+public struct StudioFusionSceneConfiguration: Codable, Equatable, Sendable {
+    public let dofMode: StudioFusionDOFMode
+    public let resolutionMode: StudioFusionResolutionMode
+    public let customActiveWidth: Int?
+    public let customActiveHeight: Int?
+    public let spillThresholdSceneLinear: Double
+    public let spillFadeWidthPixels: Int
+
+    public init(
+        dofMode: StudioFusionDOFMode,
+        resolutionMode: StudioFusionResolutionMode,
+        customActiveWidth: Int?,
+        customActiveHeight: Int?,
+        spillThresholdSceneLinear: Double,
+        spillFadeWidthPixels: Int
+    ) {
+        self.dofMode = dofMode
+        self.resolutionMode = resolutionMode
+        self.customActiveWidth = customActiveWidth
+        self.customActiveHeight = customActiveHeight
+        self.spillThresholdSceneLinear = spillThresholdSceneLinear
+        self.spillFadeWidthPixels = spillFadeWidthPixels
+    }
+
+    public func validate() throws {
+        guard spillThresholdSceneLinear.isFinite,
+              spillThresholdSceneLinear > 0,
+              spillFadeWidthPixels >= 0 else {
+            throw StudioOutputContractError.invalidFusionSpillSupport
+        }
+        if resolutionMode == .custom {
+            guard let customActiveWidth, let customActiveHeight,
+                  customActiveWidth > 0, customActiveHeight > 0 else {
+                throw StudioOutputContractError.invalidFusionCustomResolution
+            }
+        } else if customActiveWidth != nil || customActiveHeight != nil {
+            throw StudioOutputContractError.unexpectedFusionCustomResolution
+        }
+    }
+
+}
+
+public enum StudioOutputContractError: Error, LocalizedError, Equatable {
+    case invalidJobName
+    case invalidFrameRange
+    case invalidFusionSpillSupport
+    case invalidFusionCustomResolution
+    case unexpectedFusionCustomResolution
+    case fusionConfigurationRequired
+    case fusionConfigurationForbidden
+    case fusionRequiresOpenEXRACEScg
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidJobName: "El nombre del trabajo no puede estar vacío."
+        case .invalidFrameRange: "El rango del trabajo no es válido."
+        case .invalidFusionSpillSupport:
+            "El threshold ACEScg scene-linear debe ser positivo y el fade no puede ser negativo."
+        case .invalidFusionCustomResolution:
+            "La resolución personalizada requiere ancho y alto positivos."
+        case .unexpectedFusionCustomResolution:
+            "Solo la resolución personalizada puede declarar ancho y alto propios."
+        case .fusionConfigurationRequired:
+            "Fusion Scene Package requiere su configuración explícita."
+        case .fusionConfigurationForbidden:
+            "Una salida estándar no puede contener configuración Fusion."
+        case .fusionRequiresOpenEXRACEScg:
+            "Fusion Scene Package requiere OpenEXR RGBA float16 ACEScg lineal, alpha independiente y sin audio."
+        }
+    }
+}
+
 public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var id: UUID
     public var name: String
@@ -217,6 +336,10 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
 /// Immutable options owned by one render job. A global preset only seeds these
 /// fields and is never retained as a dynamic dependency.
 public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
+    public let outputType: StudioOutputType
+    public let jobName: String
+    public let overwritePolicy: StudioOverwritePolicy
+    public let fusionScene: StudioFusionSceneConfiguration?
     public let composition: StudioRenderComposition
     public let motionBlurEnabled: Bool
     public let motionSamples: UInt16
@@ -236,6 +359,10 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let lastFrame: Int
 
     public init(
+        outputType: StudioOutputType,
+        jobName: String,
+        overwritePolicy: StudioOverwritePolicy,
+        fusionScene: StudioFusionSceneConfiguration?,
         composition: StudioRenderComposition,
         motionBlurEnabled: Bool,
         motionSamples: UInt16,
@@ -254,6 +381,10 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         firstFrame: Int,
         lastFrame: Int
     ) {
+        self.outputType = outputType
+        self.jobName = jobName
+        self.overwritePolicy = overwritePolicy
+        self.fusionScene = fusionScene
         self.composition = composition
         self.motionBlurEnabled = motionBlurEnabled
         self.motionSamples = motionSamples
@@ -274,6 +405,45 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     }
 
     public var frameRange: ClosedRange<Int> { firstFrame ... lastFrame }
+
+    public func validate() throws {
+        guard !jobName.isEmpty else { throw StudioOutputContractError.invalidJobName }
+        guard firstFrame <= lastFrame else { throw StudioOutputContractError.invalidFrameRange }
+        switch outputType {
+        case .standard:
+            guard fusionScene == nil else {
+                throw StudioOutputContractError.fusionConfigurationForbidden
+            }
+        case .fusionScenePackage:
+            guard format == .openEXR, target == .acescg,
+                  pixelEncoding == .rgba16Float, signalRange == .full,
+                  alpha == .straight, !includeAudio,
+                  composition == .deviceOnly,
+                  motionBlurEnabled == false else {
+                throw StudioOutputContractError.fusionRequiresOpenEXRACEScg
+            }
+            guard let fusionScene else {
+                throw StudioOutputContractError.fusionConfigurationRequired
+            }
+            try fusionScene.validate()
+        }
+    }
+
+    public func replacingOverwritePolicy(
+        _ policy: StudioOverwritePolicy
+    ) -> StudioResolvedRenderConfiguration {
+        StudioResolvedRenderConfiguration(
+            outputType: outputType, jobName: jobName,
+            overwritePolicy: policy, fusionScene: fusionScene,
+            composition: composition, motionBlurEnabled: motionBlurEnabled,
+            motionSamples: motionSamples, format: format, pipeline: pipeline,
+            target: target, peakNits: peakNits, display: display, view: view,
+            vfxInterchangeEncodingID: vfxInterchangeEncodingID,
+            pixelEncoding: pixelEncoding, signalRange: signalRange, alpha: alpha,
+            includeAudio: includeAudio, frameRate: frameRate,
+            firstFrame: firstFrame, lastFrame: lastFrame
+        )
+    }
 }
 
 public enum StudioRenderComposition: String, CaseIterable, Identifiable, Codable, Sendable {

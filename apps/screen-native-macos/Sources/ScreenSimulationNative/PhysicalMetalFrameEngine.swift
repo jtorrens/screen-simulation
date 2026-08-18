@@ -196,7 +196,8 @@ final class PhysicalMetalFrameEngine {
         parameterRevision: UInt64,
         parameterHash: PhysicalParameterHash,
         rasterPlacement: PhysicalRasterPlacement,
-        requestedIntermediate: PhysicalIntermediate
+        requestedIntermediate: PhysicalIntermediate,
+        vfxTransparency: PhysicalVfxTransparencyRequest? = nil
     ) throws -> PhysicalMetalFrameJob {
         var error: UnsafePointer<CChar>?
         let sourcePointer = Unmanaged.passUnretained(sourceACEScg.texture as AnyObject).toOpaque()
@@ -352,6 +353,18 @@ final class PhysicalMetalFrameEngine {
         job = rawContributions.withUnsafeBufferPointer { values in
             raw.stage_contributions = values.baseAddress
             raw.stage_contribution_count = values.count
+            if let vfxTransparency {
+                guard requestedIntermediate == .deviceVfxTransparency,
+                      vfxTransparency.activeWidth > 0,
+                      vfxTransparency.activeHeight > 0 else { return nil }
+                var spec = ScreenPhysicalVfxTransparencySpecV1()
+                spec.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+                spec.active_width = UInt32(vfxTransparency.activeWidth)
+                spec.active_height = UInt32(vfxTransparency.activeHeight)
+                spec.bake_depth_of_field = vfxTransparency.bakeDepthOfField
+                return screen_physical_vfx_transparency_submit(&raw, &spec, &error)
+            }
+            guard requestedIntermediate != .deviceVfxTransparency else { return nil }
             return screen_physical_frame_submit(&raw, &error)
         }
         guard let job else {

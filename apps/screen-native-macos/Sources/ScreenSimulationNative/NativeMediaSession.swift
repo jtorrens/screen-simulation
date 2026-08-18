@@ -24,10 +24,58 @@ struct NativeSourceInfo: Sendable {
 }
 
 @MainActor
+final class NativeFFmpegSource {
+    let url: URL
+    let colorModel: StudioSignalColorModel
+    let matrix: StudioSignalMatrix
+    let range: StudioSignalRange
+    private(set) var currentTime: CMTime = .zero
+    private var playbackStartedAt: CFTimeInterval?
+
+    init(
+        url: URL,
+        colorModel: StudioSignalColorModel,
+        matrix: StudioSignalMatrix,
+        range: StudioSignalRange
+    ) {
+        self.url = url
+        self.colorModel = colorModel
+        self.matrix = matrix
+        self.range = range
+    }
+
+    var isPlaying: Bool { playbackStartedAt != nil }
+
+    func play() {
+        guard playbackStartedAt == nil else { return }
+        playbackStartedAt = CACurrentMediaTime()
+    }
+
+    func pause() {
+        currentTime = resolvedCurrentTime()
+        playbackStartedAt = nil
+    }
+
+    func seek(to time: CMTime) {
+        currentTime = time
+        playbackStartedAt = playbackStartedAt.map { _ in CACurrentMediaTime() }
+    }
+
+    func resolvedCurrentTime() -> CMTime {
+        guard let playbackStartedAt else { return currentTime }
+        return CMTimeAdd(
+            currentTime,
+            CMTime(seconds: CACurrentMediaTime() - playbackStartedAt, preferredTimescale: 60_000)
+        )
+    }
+}
+
+@MainActor
 final class NativeMediaSession {
     enum Source {
         case none
         case video(player: AVPlayer, output: AVPlayerItemVideoOutput)
+        case ffmpeg(NativeFFmpegSource)
         case images([URL])
     }
 
@@ -42,6 +90,7 @@ final class NativeMediaSession {
         switch source {
         case .none: []
         case .video: sourceURL.map { [$0] } ?? []
+        case .ffmpeg: sourceURL.map { [$0] } ?? []
         case let .images(urls): urls
         }
     }
@@ -58,6 +107,7 @@ final class NativeMediaSession {
 
     var isPlaying: Bool {
         if case let .video(player, _) = source { return player.rate != 0 }
+        if case let .ffmpeg(source) = source { return source.isPlaying }
         return false
     }
 
@@ -65,9 +115,16 @@ final class NativeMediaSession {
         _ url: URL,
         hasAlpha: Bool,
         colorModel: StudioSignalColorModel,
+        matrix: StudioSignalMatrix,
         decodedRange: StudioSignalRange
     ) async throws -> NativeSourceInfo {
         let asset = AVURLAsset(url: url)
+        let isPlayable = try await asset.load(.isPlayable)
+        if !isPlayable {
+            return try openFFmpegVideo(
+                url, colorModel: colorModel, matrix: matrix, range: decodedRange
+            )
+        }
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw NativeMediaError.unreadable(url.lastPathComponent)
         }
@@ -156,10 +213,12 @@ final class NativeMediaSession {
 
     func play() {
         if case let .video(player, _) = source { player.play() }
+        if case let .ffmpeg(source) = source { source.play() }
     }
 
     func pause() {
         if case let .video(player, _) = source { player.pause() }
+        if case let .ffmpeg(source) = source { source.pause() }
     }
 
     func seek(to time: CMTime) async throws {
@@ -170,6 +229,9 @@ final class NativeMediaSession {
                 completionHandler: { _ in }
             )
             output.requestNotificationOfMediaDataChange(withAdvanceInterval: 0.01)
+        }
+        if case let .ffmpeg(source) = source {
+            source.seek(to: bounded(time))
         }
     }
 
@@ -193,6 +255,15 @@ final class NativeMediaSession {
                 return nil
             }
             return NativeMediaSample(pixelBuffer: buffer, time: time)
+        case let .ffmpeg(source):
+            let time = requested ?? source.resolvedCurrentTime()
+            let decoded = try NativeFFmpegMedia.decode(
+                url: source.url, time: bounded(time), colorModel: source.colorModel,
+                matrix: source.matrix, range: source.range
+            )
+            return NativeMediaSample(
+                pixelBuffer: try Self.decodedPixelBuffer(decoded), time: bounded(time)
+            )
         case let .images(urls):
             guard let rate = info?.exactFrameRate else {
                 throw NativeMediaError.invalidFrameRate
@@ -212,6 +283,14 @@ final class NativeMediaSession {
 
     func exactSample(at requested: CMTime) async throws -> NativeMediaSample? {
         if case .images = source { return try currentSample(at: requested) }
+        if case let .ffmpeg(source) = source {
+            let bounded = bounded(requested)
+            let decoded = try NativeFFmpegMedia.decode(
+                url: source.url, time: bounded, colorModel: source.colorModel,
+                matrix: source.matrix, range: source.range
+            )
+            return NativeMediaSample(pixelBuffer: try Self.decodedPixelBuffer(decoded), time: bounded)
+        }
         guard let asset = videoAsset, let track = videoTrack else { return nil }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(
@@ -277,6 +356,58 @@ final class NativeMediaSession {
                 | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { throw NativeMediaError.invalidRaster }
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return buffer
+    }
+
+    private func openFFmpegVideo(
+        _ url: URL,
+        colorModel: StudioSignalColorModel,
+        matrix: StudioSignalMatrix,
+        range: StudioSignalRange
+    ) throws -> NativeSourceInfo {
+        let decoded = try NativeFFmpegMedia.probe(url: url)
+        let source = NativeFFmpegSource(
+            url: url, colorModel: colorModel, matrix: matrix, range: range
+        )
+        self.source = .ffmpeg(source)
+        sourceURL = url
+        videoAsset = nil
+        videoTrack = nil
+        videoPixelAttributes = [:]
+        let result = NativeSourceInfo(
+            name: url.lastPathComponent,
+            detail: "Video FFmpeg · \(decoded.width) × \(decoded.height) · \(Int(decoded.exactFrameRate.framesPerSecond.rounded())) fps · sin audio",
+            duration: decoded.duration,
+            exactFrameRate: decoded.exactFrameRate,
+            frameCount: decoded.frameCount,
+            hasAudio: false
+        )
+        info = result
+        return result
+    }
+
+    private static func decodedPixelBuffer(_ decoded: DecodedNativeFrame) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferMetalCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+        ]
+        guard CVPixelBufferCreate(
+            nil, decoded.width, decoded.height, kCVPixelFormatType_64RGBAHalf,
+            attributes as CFDictionary, &buffer
+        ) == kCVReturnSuccess, let buffer else { throw NativeMediaError.invalidRaster }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { throw NativeMediaError.invalidRaster }
+        let rowStride = CVPixelBufferGetBytesPerRow(buffer) / MemoryLayout<Float16>.stride
+        let destination = base.assumingMemoryBound(to: Float16.self)
+        for row in 0 ..< decoded.height {
+            let sourceStart = row * decoded.width * 4
+            let destinationStart = row * rowStride
+            for column in 0 ..< decoded.width * 4 {
+                destination[destinationStart + column] = Float16(decoded.rgba[sourceStart + column])
+            }
+        }
         return buffer
     }
 

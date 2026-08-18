@@ -55,6 +55,10 @@ import Testing
     var preset = StudioRenderPreset.builtIns[0]
     let exactFrameRate = try StudioFrameRate(numerator: 24_000, denominator: 1_001)
     let configuration = StudioResolvedRenderConfiguration(
+        outputType: .standard,
+        jobName: "standard-snapshot",
+        overwritePolicy: .failIfExists,
+        fusionScene: nil,
         composition: .deviceOnly,
         motionBlurEnabled: true,
         motionSamples: 8,
@@ -89,6 +93,10 @@ import Testing
 
 @Test func vfxRenderJobFreezesCodecAndLogGamutIndependentlyOfCamera() throws {
     let configuration = StudioResolvedRenderConfiguration(
+        outputType: .standard,
+        jobName: "vfx-master",
+        overwritePolicy: .failIfExists,
+        fusionScene: nil,
         composition: .deviceWithReference,
         motionBlurEnabled: false,
         motionSamples: 8,

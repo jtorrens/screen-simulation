@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import CoreGraphics
+import CoreMedia
 import Foundation
 import ImageIO
 import ScreenPhysicalBridge
@@ -34,6 +35,103 @@ enum NativeMediaError: Error, LocalizedError {
         case .invalidRaster: "El frame decodificado no tiene un raster RGB válido."
         case .invalidFrameRate: "La cadencia del medio no es una fracción positiva válida."
         }
+    }
+}
+
+struct NativeFFmpegVideoInfo: Sendable {
+    let width: Int
+    let height: Int
+    let exactFrameRate: ExactFrameRate
+    let duration: CMTime
+    let frameCount: Int
+    let hasAlpha: Bool
+}
+
+enum NativeFFmpegMedia {
+    private static let abiVersion = UInt32(SCREEN_FFMPEG_MEDIA_ABI_VERSION)
+
+    static func probe(url: URL) throws -> NativeFFmpegVideoInfo {
+        var info = ScreenFfmpegMediaInfoV1()
+        var message: UnsafePointer<CChar>?
+        let succeeded = url.withUnsafeFileSystemRepresentation { path in
+            screen_ffmpeg_probe_media_v1(path, &info, &message)
+        }
+        guard succeeded,
+              info.abi_version == abiVersion,
+              info.width > 0, info.height > 0,
+              info.frame_rate_numerator > 0, info.frame_rate_denominator > 0,
+              info.has_duration, info.duration_denominator > 0
+        else {
+            throw NativeMediaError.unreadable(
+                message.map(String.init(cString:)) ?? url.lastPathComponent
+            )
+        }
+        let frameRate = try ExactFrameRate(
+            numerator: info.frame_rate_numerator,
+            denominator: info.frame_rate_denominator
+        )
+        let duration = CMTime(
+            value: CMTimeValue(info.duration_numerator),
+            timescale: CMTimeScale(info.duration_denominator)
+        )
+        guard duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0 else {
+            throw NativeMediaError.invalidFrameRate
+        }
+        return NativeFFmpegVideoInfo(
+            width: Int(info.width), height: Int(info.height),
+            exactFrameRate: frameRate,
+            duration: duration,
+            frameCount: max(1, Int((duration.seconds * frameRate.framesPerSecond).rounded())),
+            hasAlpha: info.has_alpha
+        )
+    }
+
+    static func decode(
+        url: URL,
+        time: CMTime,
+        colorModel: StudioSignalColorModel,
+        matrix: StudioSignalMatrix,
+        range: StudioSignalRange
+    ) throws -> DecodedNativeFrame {
+        guard time.isNumeric, time.timescale > 0 else { throw NativeMediaError.invalidFrameRate }
+        var frame = ScreenFfmpegDecodedFrameV1()
+        var message: UnsafePointer<CChar>?
+        let succeeded = url.withUnsafeFileSystemRepresentation { path in
+            screen_ffmpeg_decode_frame_v1(
+                path,
+                time.value,
+                UInt32(time.timescale),
+                0, // Exact is the authored source-sampling policy for this host request.
+                colorModel == .rgb ? 0 : 1,
+                matrix == .bt601 ? 0 : (matrix == .bt709 ? 1 : 2),
+                range == .video ? 0 : 1,
+                &frame,
+                &message
+            )
+        }
+        defer {
+            if let pixels = frame.pixels_rgba {
+                screen_ffmpeg_free_rgba_float_v1(pixels, frame.width, frame.height)
+            }
+        }
+        guard succeeded,
+              frame.width > 0, frame.height > 0,
+              frame.timestamp_denominator > 0,
+              let pixels = frame.pixels_rgba
+        else {
+            throw NativeMediaError.unreadable(
+                message.map(String.init(cString:)) ?? "frame \(time.seconds)"
+            )
+        }
+        let count = Int(frame.width) * Int(frame.height) * 4
+        let rgba = Array(UnsafeBufferPointer(start: pixels, count: count))
+        guard rgba.allSatisfy(\.isFinite) else {
+            throw NativeMediaError.unreadable("FFmpeg devolvió muestras no finitas")
+        }
+        return DecodedNativeFrame(
+            width: Int(frame.width), height: Int(frame.height), rgba: rgba,
+            sourceDescription: "\(url.lastPathComponent) · \(Double(frame.timestamp_numerator) / Double(frame.timestamp_denominator)) s"
+        )
     }
 }
 

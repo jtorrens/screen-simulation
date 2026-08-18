@@ -507,6 +507,25 @@ enum SceneThumbnailRenderer {
 
 @MainActor
 final class SceneLibraryController: ObservableObject {
+    private final class UndoManagerBox: @unchecked Sendable {
+        weak var value: UndoManager?
+        init(_ value: UndoManager?) { self.value = value }
+    }
+
+    private struct StoredUpdate {
+        let snapshot: SavedSceneSnapshot
+        let thumbnailPNG: Data
+        let generatedEnvironmentEXR: Data?
+
+        var capture: SavedSceneCapture {
+            SavedSceneCapture(
+                snapshot: snapshot,
+                thumbnailPNG: thumbnailPNG,
+                generatedEnvironmentEXR: generatedEnvironmentEXR
+            )
+        }
+    }
+
     @Published private(set) var document = SceneLibraryDocument()
     @Published private(set) var blockedError: String?
     private let store: SceneLibraryStore?
@@ -574,9 +593,37 @@ final class SceneLibraryController: ObservableObject {
         document = candidate
     }
 
-    func update(_ scene: SavedScene, capture: SavedSceneCapture) throws {
-        guard let store, let index = document.scenes.firstIndex(where: { $0.id == scene.id })
+    func update(
+        _ scene: SavedScene,
+        capture: SavedSceneCapture,
+        undoManager: UndoManager? = nil
+    ) throws {
+        let prior = try storedUpdate(sceneID: scene.id)
+        try applyUpdate(sceneID: scene.id, capture: capture)
+        registerUpdateUndo(sceneID: scene.id, state: prior, undoManager: undoManager)
+    }
+
+    private func storedUpdate(sceneID: UUID) throws -> StoredUpdate {
+        guard let store,
+              let scene = document.scenes.first(where: { $0.id == sceneID })
         else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
+        let environment = try scene.snapshot.generatedEnvironment.flatMap {
+            try EnvironmentAssetLibrary.asset(
+                sha256: $0.sha256, originalFileName: $0.fileName,
+                libraryRoot: store.environmentLibraryRoot
+            ).map { try Data(contentsOf: $0.url, options: .mappedIfSafe) }
+        }
+        return try StoredUpdate(
+            snapshot: scene.snapshot,
+            thumbnailPNG: Data(contentsOf: store.thumbnailURL(for: scene)),
+            generatedEnvironmentEXR: environment
+        )
+    }
+
+    private func applyUpdate(sceneID: UUID, capture: SavedSceneCapture) throws {
+        guard let store, let index = document.scenes.firstIndex(where: { $0.id == sceneID })
+        else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
+        let scene = document.scenes[index]
         var candidate = document
         let previousAsset = scene.snapshot.generatedEnvironment
         let previousEnvironmentData = try previousAsset.flatMap {
@@ -618,6 +665,39 @@ final class SceneLibraryController: ObservableObject {
             )
         }
         document = candidate
+    }
+
+    private func registerUpdateUndo(
+        sceneID: UUID,
+        state: StoredUpdate,
+        undoManager: UndoManager?
+    ) {
+        guard let undoManager else { return }
+        let manager = UndoManagerBox(undoManager)
+        undoManager.registerUndo(withTarget: self) { target in
+            MainActor.assumeIsolated {
+                target.restoreUpdate(
+                    sceneID: sceneID,
+                    state: state,
+                    undoManager: manager.value
+                )
+            }
+        }
+        undoManager.setActionName("Actualizar escena")
+    }
+
+    private func restoreUpdate(
+        sceneID: UUID,
+        state: StoredUpdate,
+        undoManager: UndoManager?
+    ) {
+        do {
+            let inverse = try storedUpdate(sceneID: sceneID)
+            try applyUpdate(sceneID: sceneID, capture: state.capture)
+            registerUpdateUndo(sceneID: sceneID, state: inverse, undoManager: undoManager)
+        } catch {
+            blockedError = "No se pudo restaurar ‘Actualizar escena’: \(error.localizedDescription)"
+        }
     }
 
     func replaceGeneratedEnvironment(sceneID: UUID, data: Data) throws -> ManagedEnvironmentAsset {

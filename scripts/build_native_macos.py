@@ -28,7 +28,7 @@ BRIDGE = (
     / "macos-arm64_x86_64/libCreditsNativeBridge.a"
 )
 EXPECTED_CONFIG_HASH = "ebe2293968975e3540c6b32cfbee2ca1274b5bf3c9ff610235abb07b65da970b"
-EXPECTED_BRIDGE_HASH = "680eef3911af83b3579d7b7dbe27c9970d273859edd3b5fbdc0a2cc8968ee67f"
+EXPECTED_BRIDGE_HASH = "471bc5e68c0c8e08ba49741eea994fa7cc560b1ad1002211747153f9121a1c9c"
 
 
 def run(arguments: list[str], cwd: Path = ROOT) -> None:
@@ -48,6 +48,50 @@ def verify_hash(path: Path, expected: str) -> None:
         raise RuntimeError(f"hash mismatch for {path}: {actual}")
 
 
+def macho_dependencies(path: Path) -> list[str]:
+    output = subprocess.run(
+        ["otool", "-L", str(path)], check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    ).stdout.splitlines()[1:]
+    return [line.strip().split(" (", 1)[0] for line in output if line.strip()]
+
+
+def bundle_ffmpeg_libraries(executable: Path, frameworks: Path) -> None:
+    """Bundle the complete Homebrew FFmpeg dylib closure under one app-local rpath."""
+    frameworks.mkdir(parents=True, exist_ok=True)
+    pending = [executable]
+    copied: dict[str, Path] = {}
+    while pending:
+        subject = pending.pop()
+        for dependency in macho_dependencies(subject):
+            if not dependency.startswith("/opt/homebrew/"):
+                continue
+            source = Path(dependency).resolve()
+            if not source.is_file():
+                raise RuntimeError(f"required FFmpeg dependency is missing: {dependency}")
+            destination = frameworks / Path(dependency).name
+            if dependency not in copied:
+                if not destination.exists():
+                    shutil.copy2(source, destination)
+                copied[dependency] = destination
+                copied[str(source)] = destination
+                if destination not in pending:
+                    pending.append(destination)
+    if not copied:
+        raise RuntimeError("native executable did not link the required FFmpeg libraries")
+    bundle_targets = [executable, *sorted(set(copied.values()))]
+    for target in bundle_targets:
+        for dependency in macho_dependencies(target):
+            if dependency.startswith("/opt/homebrew/"):
+                destination = copied.get(dependency) or copied.get(str(Path(dependency).resolve()))
+                if destination is None:
+                    raise RuntimeError(f"unbundled FFmpeg dependency: {dependency}")
+                run(["install_name_tool", "-change", dependency, f"@rpath/{destination.name}", str(target)])
+        if target != executable:
+            run(["install_name_tool", "-id", f"@rpath/{target.name}", str(target)])
+    run(["install_name_tool", "-add_rpath", "@executable_path/../Frameworks", str(executable)])
+
+
 def main() -> int:
     verify_hash(CONFIG, EXPECTED_CONFIG_HASH)
     verify_hash(BRIDGE, EXPECTED_BRIDGE_HASH)
@@ -57,10 +101,12 @@ def main() -> int:
         shutil.rmtree(BUNDLE)
     macos = BUNDLE / "Contents" / "MacOS"
     resources = BUNDLE / "Contents" / "Resources"
+    frameworks = BUNDLE / "Contents" / "Frameworks"
     macos.mkdir(parents=True)
     resources.mkdir(parents=True)
     shutil.copy2(EXECUTABLE, macos / "ScreenSimulationNative")
     shutil.copytree(RESOURCE_BUNDLE, resources / RESOURCE_BUNDLE.name)
+    bundle_ffmpeg_libraries(macos / "ScreenSimulationNative", frameworks)
     info = {
         "CFBundleDevelopmentRegion": "en",
         "CFBundleDisplayName": "SCREEN-SIMULATION",

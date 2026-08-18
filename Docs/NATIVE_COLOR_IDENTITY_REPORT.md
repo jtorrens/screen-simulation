@@ -25,7 +25,7 @@ alpha edges, hidden RGB, negative values, and values above one.
 - OCIO: 2.5.2.
 - ACES Studio Config: 4.0.0 / ACES 2.0.
 - Config SHA-256: `ebe2293968975e3540c6b32cfbee2ca1274b5bf3c9ff610235abb07b65da970b`.
-- Native bridge SHA-256: `680eef3911af83b3579d7b7dbe27c9970d273859edd3b5fbdc0a2cc8968ee67f`.
+- Native bridge SHA-256: `471bc5e68c0c8e08ba49741eea994fa7cc560b1ad1002211747153f9121a1c9c`.
 - Working contract: premultiplied RGBA16Float, linear ACEScg. Negative and
   above-one values remain available before an output transform.
 

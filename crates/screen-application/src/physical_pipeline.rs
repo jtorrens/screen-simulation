@@ -232,6 +232,7 @@ pub enum PhysicalIntermediate {
     /// Temporally integrated panel radiance. Appended rather than inserted in
     /// the numeric ABI so existing stable intermediate identities do not move.
     PanelTemporal = 17,
+    DeviceVfxTransparency = 18,
 }
 
 impl TryFrom<u32> for PhysicalIntermediate {
@@ -257,6 +258,7 @@ impl TryFrom<u32> for PhysicalIntermediate {
             15 => Ok(Self::DevelopedAcesCg),
             16 => Ok(Self::CameraRenderedAcesCg),
             17 => Ok(Self::PanelTemporal),
+            18 => Ok(Self::DeviceVfxTransparency),
             _ => Err(()),
         }
     }

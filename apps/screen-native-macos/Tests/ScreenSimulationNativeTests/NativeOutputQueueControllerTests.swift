@@ -9,13 +9,13 @@ import Testing
     controller.enqueue(
         scene: outputQueueTestScene(name: "Primera"),
         generatedEnvironmentEXR: nil,
-        destination: URL(fileURLWithPath: "/tmp/first.mov"),
+        outputPlan: queueTestPlan("/tmp/first.mov"),
         configuration: configuration
     )
     controller.enqueue(
         scene: outputQueueTestScene(name: "Segunda"),
         generatedEnvironmentEXR: nil,
-        destination: URL(fileURLWithPath: "/tmp/second.mov"),
+        outputPlan: queueTestPlan("/tmp/second.mov"),
         configuration: configuration
     )
 
@@ -39,7 +39,7 @@ import Testing
     controller.enqueue(
         scene: outputQueueTestScene(name: "Fallo"),
         generatedEnvironmentEXR: nil,
-        destination: URL(fileURLWithPath: "/tmp/failure.mov"),
+        outputPlan: queueTestPlan("/tmp/failure.mov"),
         configuration: outputQueueTestConfiguration()
     )
     var failure: String?
@@ -59,7 +59,7 @@ import Testing
     controller.enqueue(
         scene: scene,
         generatedEnvironmentEXR: Data([1, 2, 3]),
-        destination: URL(fileURLWithPath: "/tmp/frozen.mov"),
+        outputPlan: queueTestPlan("/tmp/frozen.mov"),
         configuration: outputQueueTestConfiguration()
     )
     scene.name = "Modificada después"
@@ -69,6 +69,29 @@ import Testing
     #expect(controller.jobs.first?.scene.snapshot == outputQueueTestScene(name: "Otra").snapshot)
     #expect(controller.jobs.first?.configuration.motionBlurEnabled == true)
     #expect(controller.jobs.first?.configuration.motionSamples == 8)
+}
+
+@Test @MainActor func completedJobCanBeRequeuedWithoutChangingItsSnapshot() async {
+    let controller = NativeOutputQueueController()
+    controller.enqueue(
+        scene: outputQueueTestScene(name: "Congelada"),
+        generatedEnvironmentEXR: Data([4, 2]),
+        outputPlan: queueTestPlan("/tmp/requeue.mov"),
+        configuration: outputQueueTestConfiguration()
+    )
+    controller.run(operation: { job, _ in job.destination }, onFailure: { _ in })
+    while controller.isRendering { await Task.yield() }
+    let completed = try! #require(controller.jobs.first)
+    let snapshot = completed.scene.snapshot
+    let configuration = completed.configuration
+
+    #expect(controller.requeueCompletedJob(id: completed.id))
+    #expect(controller.jobs.first?.state == .pending)
+    #expect(controller.jobs.first?.progress == 0)
+    #expect(controller.jobs.first?.detail == "Pendiente")
+    #expect(controller.jobs.first?.scene.snapshot == snapshot)
+    #expect(controller.jobs.first?.configuration == configuration)
+    #expect(!controller.requeueCompletedJob(id: completed.id))
 }
 
 @Test @MainActor func isolatedQueueWorkspaceRestoresAStrictSavedSceneWithoutPriorState() async throws {
@@ -122,6 +145,10 @@ private func outputQueueTestScene(name: String) -> SavedScene {
 
 private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
+        outputType: .standard,
+        jobName: "QueueTest",
+        overwritePolicy: .failIfExists,
+        fusionScene: nil,
         composition: .deviceOnly,
         motionBlurEnabled: true,
         motionSamples: 8,
@@ -139,5 +166,14 @@ private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration
         frameRate: .fps24,
         firstFrame: 0,
         lastFrame: 1
+    )
+}
+
+private func queueTestPlan(_ path: String) -> RenderOutputPlan {
+    let url = URL(fileURLWithPath: path)
+    return RenderOutputPlan(
+        kind: .singleFile,
+        destination: url,
+        generatedRelativePaths: [url.lastPathComponent]
     )
 }

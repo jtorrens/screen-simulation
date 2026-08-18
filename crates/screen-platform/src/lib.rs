@@ -28,6 +28,7 @@ pub use native_metal::{MetalNativeError, MetalRawDevelopment};
 ))]
 pub use physical_pipeline_metal::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
+    VfxTransparencyRaster,
 };
 #[cfg(all(target_os = "macos", feature = "full-platform"))]
 pub use presentation_cpu::{

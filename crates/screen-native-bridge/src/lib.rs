@@ -44,6 +44,10 @@ use screen_geometry::{
     Quaternion, TrackingScaleCalibration, TransformKeyframe, TransformTrack,
     solve_planar_reference_camera,
 };
+use screen_media::{
+    FrameSelectionPolicy, PixelEncoding, ResolvedSignalRange, ResolvedSourceDecode,
+    ResolvedYuvInterpretation, ResolvedYuvMatrix,
+};
 use screen_panel::{
     AnalyticBanding, Chromaticity, DEVICE_PRESETS, FlatPanelQuality, LcdProfile, PanelColorimetry,
     PanelLightSpreadProfile, PanelTechnology, PanelTemporalEmission, PanelUniformityProfile,
@@ -53,6 +57,33 @@ use screen_recording::{ChromaSampling, RecordingMedium};
 
 pub const SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION: u32 = 2;
 pub const SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION: u32 = 1;
+pub const SCREEN_FFMPEG_MEDIA_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenFfmpegMediaInfoV1 {
+    pub abi_version: u32,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate_numerator: u32,
+    pub frame_rate_denominator: u32,
+    pub duration_numerator: i64,
+    pub duration_denominator: u32,
+    pub has_duration: bool,
+    pub has_alpha: bool,
+    /// 0 RGB, 1 YUV, 2 monochrome.
+    pub pixel_encoding: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenFfmpegDecodedFrameV1 {
+    pub pixels_rgba: *mut f32,
+    pub width: u32,
+    pub height: u32,
+    pub timestamp_numerator: i64,
+    pub timestamp_denominator: u32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -90,7 +121,7 @@ pub struct ScreenReflectionEmitterV2 {
 #[cfg(target_os = "macos")]
 use screen_platform::{
     MetalPhysicalPipeline, MetalPhysicalPipelineError, MetalPhysicalPipelineResult,
-    MetalSceneAdjustment,
+    MetalSceneAdjustment, VfxTransparencyRaster,
 };
 use screen_sensor::{BayerPattern, ComputationalCaptureProfile, SensorBloomProfile, SensorProfile};
 
@@ -133,6 +164,190 @@ pub struct ScreenTrackingScaleCalibrationV1 {
     first_point_xyz: [f32; 3],
     second_point_xyz: [f32; 3],
     measured_distance_meters: f32,
+}
+
+fn ffmpeg_source_decode(
+    descriptor_encoding: PixelEncoding,
+    authored_color_model: u32,
+    authored_matrix: u32,
+    authored_range: u32,
+) -> Option<ResolvedSourceDecode> {
+    let range = match authored_range {
+        0 => ResolvedSignalRange::Limited,
+        1 => ResolvedSignalRange::Full,
+        _ => return None,
+    };
+    match descriptor_encoding {
+        PixelEncoding::Rgb if authored_color_model == 0 => Some(ResolvedSourceDecode::Rgb),
+        PixelEncoding::Yuv if authored_color_model == 1 => {
+            let matrix = match authored_matrix {
+                0 => ResolvedYuvMatrix::Bt601,
+                1 => ResolvedYuvMatrix::Bt709,
+                2 => ResolvedYuvMatrix::Bt2020,
+                _ => return None,
+            };
+            Some(ResolvedSourceDecode::Yuv(ResolvedYuvInterpretation {
+                matrix,
+                range,
+            }))
+        }
+        PixelEncoding::Monochrome if authored_color_model == 1 => {
+            Some(ResolvedSourceDecode::Monochrome(range))
+        }
+        _ => None,
+    }
+}
+
+fn ffmpeg_pixel_encoding(value: PixelEncoding) -> u32 {
+    match value {
+        PixelEncoding::Rgb => 0,
+        PixelEncoding::Yuv => 1,
+        PixelEncoding::Monochrome => 2,
+    }
+}
+
+/// Probes the shipped FFmpeg adapter without selecting an IDT or decode interpretation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_ffmpeg_probe_media_v1(
+    file_path: *const c_char,
+    output: *mut ScreenFfmpegMediaInfoV1,
+    error_message: *mut *const c_char,
+) -> bool {
+    if file_path.is_null() || output.is_null() {
+        unsafe { set_error(error_message, b"invalid FFmpeg media probe request\0") };
+        return false;
+    }
+    let Ok(path) = unsafe { std::ffi::CStr::from_ptr(file_path) }.to_str() else {
+        unsafe { set_error(error_message, b"FFmpeg media path is not UTF-8\0") };
+        return false;
+    };
+    let Ok(descriptor) = screen_platform::probe_media(std::path::Path::new(path)) else {
+        unsafe { set_error(error_message, b"FFmpeg cannot probe the selected video\0") };
+        return false;
+    };
+    let (frame_rate_numerator, frame_rate_denominator) = match descriptor.cadence {
+        screen_media::FrameCadence::Constant { frame_rate } => (
+            u32::try_from(frame_rate.numerator()).unwrap_or(0),
+            frame_rate.denominator(),
+        ),
+        screen_media::FrameCadence::Variable => (0, 0),
+    };
+    if frame_rate_numerator == 0 || frame_rate_denominator == 0 {
+        unsafe { set_error(error_message, b"FFmpeg video has no constant positive cadence\0") };
+        return false;
+    }
+    let (duration_numerator, duration_denominator, has_duration) = descriptor.duration.map_or(
+        (0, 0, false),
+        |duration| (duration.numerator(), duration.denominator(), true),
+    );
+    unsafe {
+        *output = ScreenFfmpegMediaInfoV1 {
+            abi_version: SCREEN_FFMPEG_MEDIA_ABI_VERSION,
+            width: descriptor.raster.width,
+            height: descriptor.raster.height,
+            frame_rate_numerator,
+            frame_rate_denominator,
+            duration_numerator,
+            duration_denominator,
+            has_duration,
+            has_alpha: descriptor.alpha == screen_media::AlphaPresence::Present,
+            pixel_encoding: ffmpeg_pixel_encoding(descriptor.pixel_encoding),
+        };
+        set_error(error_message, b"\0");
+    }
+    true
+}
+
+/// Decodes one explicitly selected source sample through the shipped FFmpeg adapter.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_ffmpeg_decode_frame_v1(
+    file_path: *const c_char,
+    requested_time_numerator: i64,
+    requested_time_denominator: u32,
+    selection_policy: u32,
+    authored_color_model: u32,
+    authored_matrix: u32,
+    authored_range: u32,
+    output: *mut ScreenFfmpegDecodedFrameV1,
+    error_message: *mut *const c_char,
+) -> bool {
+    if file_path.is_null() || output.is_null() || requested_time_denominator == 0 {
+        unsafe { set_error(error_message, b"invalid FFmpeg frame decode request\0") };
+        return false;
+    }
+    let Ok(path) = unsafe { std::ffi::CStr::from_ptr(file_path) }.to_str() else {
+        unsafe { set_error(error_message, b"FFmpeg media path is not UTF-8\0") };
+        return false;
+    };
+    let policy = match selection_policy {
+        0 => FrameSelectionPolicy::Exact,
+        1 => FrameSelectionPolicy::Floor,
+        2 => FrameSelectionPolicy::Nearest,
+        _ => {
+            unsafe { set_error(error_message, b"invalid FFmpeg frame-selection policy\0") };
+            return false;
+        }
+    };
+    let Ok(requested_time) = RationalTime::new(requested_time_numerator, requested_time_denominator)
+    else {
+        unsafe { set_error(error_message, b"invalid FFmpeg requested rational time\0") };
+        return false;
+    };
+    let Ok(descriptor) = screen_platform::probe_media(std::path::Path::new(path)) else {
+        unsafe { set_error(error_message, b"FFmpeg cannot probe the selected video\0") };
+        return false;
+    };
+    let Some(interpretation) = ffmpeg_source_decode(
+        descriptor.pixel_encoding,
+        authored_color_model,
+        authored_matrix,
+        authored_range,
+    ) else {
+        unsafe { set_error(error_message, b"authored source interpretation does not match FFmpeg media\0") };
+        return false;
+    };
+    let Ok((_, frame)) = screen_platform::decode_frame_at_time(
+        std::path::Path::new(path),
+        requested_time,
+        policy,
+        interpretation,
+    ) else {
+        unsafe { set_error(error_message, b"FFmpeg cannot decode the requested video frame\0") };
+        return false;
+    };
+    let mut pixels = Vec::with_capacity(frame.pixels.len().saturating_mul(4));
+    for pixel in frame.pixels {
+        pixels.extend([pixel.r, pixel.g, pixel.b, pixel.a]);
+    }
+    let pixels_rgba = Box::into_raw(pixels.into_boxed_slice()) as *mut f32;
+    unsafe {
+        *output = ScreenFfmpegDecodedFrameV1 {
+            pixels_rgba,
+            width: frame.raster.width,
+            height: frame.raster.height,
+            timestamp_numerator: frame.timestamp.numerator(),
+            timestamp_denominator: frame.timestamp.denominator(),
+        };
+        set_error(error_message, b"\0");
+    }
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_ffmpeg_free_rgba_float_v1(
+    pixels: *mut f32,
+    width: u32,
+    height: u32,
+) {
+    if pixels.is_null() {
+        return;
+    }
+    let Some(count) = usize::try_from(u64::from(width) * u64::from(height) * 4).ok() else {
+        return;
+    };
+    // SAFETY: the only producer is `screen_ffmpeg_decode_frame_v1`, which returns this exact
+    // allocation and requires these dimensions for release.
+    unsafe { drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(pixels, count))) };
 }
 
 #[unsafe(no_mangle)]
@@ -587,6 +802,15 @@ pub struct ScreenPhysicalFrameRequestV2 {
     progress_identity: ScreenPhysicalIdentity128,
     parameter_revision: u64,
     parameter_hash: [u8; SCREEN_PHYSICAL_PARAMETER_HASH_SIZE],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenPhysicalVfxTransparencySpecV1 {
+    abi_version: u32,
+    active_width: u32,
+    active_height: u32,
+    bake_depth_of_field: bool,
 }
 
 #[repr(C)]
@@ -1202,8 +1426,9 @@ fn effective_capture_checkpoint(
 
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_physical_frame_submit(
+unsafe fn physical_frame_submit_impl(
     request: *const ScreenPhysicalFrameRequestV2,
+    vfx_spec: Option<ScreenPhysicalVfxTransparencySpecV1>,
     error_message: *mut *const c_char,
 ) -> *mut ScreenPhysicalFrameJob {
     if request.is_null() {
@@ -1373,6 +1598,16 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
         unsafe { set_error(error_message, b"invalid physical intermediate selector\0") };
         return std::ptr::null_mut();
     };
+    if vfx_spec.is_some() != (requested_intermediate == PhysicalIntermediate::DeviceVfxTransparency)
+    {
+        unsafe {
+            set_error(
+                error_message,
+                b"VFX transparency intermediate and specification must be selected together\0",
+            )
+        };
+        return std::ptr::null_mut();
+    }
     if !matches!(
         requested_intermediate,
         PhysicalIntermediate::SourceAcesCg
@@ -1393,6 +1628,7 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
             | PhysicalIntermediate::SensorReadoutRaw
             | PhysicalIntermediate::DevelopedAcesCg
             | PhysicalIntermediate::CameraRenderedAcesCg
+            | PhysicalIntermediate::DeviceVfxTransparency
     ) {
         unsafe {
             set_error(
@@ -1730,16 +1966,39 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
                     (&**source, &**signal, *plan, *weight, *row)
                 })
                 .collect::<Vec<_>>();
-            backend.evaluate_temporal_with_environment(
-                &borrowed,
-                environment_texture.as_deref(),
-                |progress| {
-                    worker_shared
-                        .progress_bits
-                        .store(progress.to_bits(), Ordering::Release);
-                },
-                || worker_shared.cancelled.load(Ordering::Acquire),
-            )
+            let progress = |progress: f32| {
+                worker_shared
+                    .progress_bits
+                    .store(progress.to_bits(), Ordering::Release);
+            };
+            let cancelled = || worker_shared.cancelled.load(Ordering::Acquire);
+            if let Some(spec) = vfx_spec {
+                if borrowed.len() != 1 {
+                    return Err(MetalPhysicalPipelineError::InvalidPlan(
+                        "VFX transparency forbids temporal source accumulation".to_owned(),
+                    ));
+                }
+                backend.evaluate_vfx_transparency_with_environment(
+                    borrowed[0].0,
+                    borrowed[0].1,
+                    environment_texture.as_deref(),
+                    borrowed[0].2,
+                    VfxTransparencyRaster {
+                        active_width: spec.active_width,
+                        active_height: spec.active_height,
+                        bake_depth_of_field: spec.bake_depth_of_field,
+                    },
+                    progress,
+                    cancelled,
+                )
+            } else {
+                backend.evaluate_temporal_with_environment(
+                    &borrowed,
+                    environment_texture.as_deref(),
+                    progress,
+                    cancelled,
+                )
+            }
         });
         let outcome = match result {
             Ok(result) => PhysicalJobOutcome::Complete {
@@ -1783,10 +2042,54 @@ pub unsafe extern "C" fn screen_physical_frame_submit(
     }))
 }
 
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_frame_submit(
+    request: *const ScreenPhysicalFrameRequestV2,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalFrameJob {
+    unsafe { physical_frame_submit_impl(request, None, error_message) }
+}
+
+#[cfg(target_os = "macos")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_vfx_transparency_submit(
+    request: *const ScreenPhysicalFrameRequestV2,
+    spec: *const ScreenPhysicalVfxTransparencySpecV1,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalFrameJob {
+    if spec.is_null() {
+        unsafe { set_error(error_message, b"missing VFX transparency specification\0") };
+        return std::ptr::null_mut();
+    }
+    let spec = unsafe { *spec };
+    if spec.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION {
+        unsafe { set_error(error_message, b"invalid VFX transparency ABI version\0") };
+        return std::ptr::null_mut();
+    }
+    unsafe { physical_frame_submit_impl(request, Some(spec), error_message) }
+}
+
 #[cfg(not(target_os = "macos"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_physical_frame_submit(
     _request: *const ScreenPhysicalFrameRequestV2,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPhysicalFrameJob {
+    unsafe {
+        set_error(
+            error_message,
+            b"Metal physical pipeline backend requires macOS\0",
+        )
+    };
+    std::ptr::null_mut()
+}
+
+#[cfg(not(target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_vfx_transparency_submit(
+    _request: *const ScreenPhysicalFrameRequestV2,
+    _spec: *const ScreenPhysicalVfxTransparencySpecV1,
     error_message: *mut *const c_char,
 ) -> *mut ScreenPhysicalFrameJob {
     unsafe {

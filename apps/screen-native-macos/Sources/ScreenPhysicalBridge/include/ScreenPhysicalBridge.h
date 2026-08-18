@@ -24,6 +24,7 @@ typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 9u
 #define SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION 1u
+#define SCREEN_FFMPEG_MEDIA_ABI_VERSION 1u
 
 typedef struct {
     const uint8_t *bytes;
@@ -45,6 +46,28 @@ typedef struct {
     uint32_t fixed_gop_frames;
     uint32_t maximum_b_frames;
 } ScreenRecordingExecutionPlanV1;
+
+typedef struct {
+    uint32_t abi_version;
+    uint32_t width;
+    uint32_t height;
+    uint32_t frame_rate_numerator;
+    uint32_t frame_rate_denominator;
+    int64_t duration_numerator;
+    uint32_t duration_denominator;
+    bool has_duration;
+    bool has_alpha;
+    /* 0 RGB, 1 YUV, 2 monochrome. */
+    uint32_t pixel_encoding;
+} ScreenFfmpegMediaInfoV1;
+
+typedef struct {
+    float *pixels_rgba;
+    uint32_t width;
+    uint32_t height;
+    int64_t timestamp_numerator;
+    uint32_t timestamp_denominator;
+} ScreenFfmpegDecodedFrameV1;
 
 #define SCREEN_TEST_AUTHORING_ABI_VERSION 37u
 
@@ -399,7 +422,15 @@ typedef enum {
     SCREEN_PHYSICAL_INTERMEDIATE_DEVELOPED_ACESCG = 15,
     SCREEN_PHYSICAL_INTERMEDIATE_CAMERA_RENDERED_ACESCG = 16,
     SCREEN_PHYSICAL_INTERMEDIATE_PANEL_TEMPORAL = 17,
+    SCREEN_PHYSICAL_INTERMEDIATE_DEVICE_VFX_TRANSPARENCY = 18,
 } ScreenPhysicalIntermediate;
+
+typedef struct {
+    uint32_t abi_version;
+    uint32_t active_width;
+    uint32_t active_height;
+    bool bake_depth_of_field;
+} ScreenPhysicalVfxTransparencySpecV1;
 
 typedef struct {
     uint64_t high;
@@ -905,6 +936,11 @@ ScreenPhysicalFrameJobRef screen_physical_frame_submit(
     const ScreenPhysicalFrameRequestV2 *request,
     const char **error_message
 );
+ScreenPhysicalFrameJobRef screen_physical_vfx_transparency_submit(
+    const ScreenPhysicalFrameRequestV2 *request,
+    const ScreenPhysicalVfxTransparencySpecV1 *spec,
+    const char **error_message
+);
 bool screen_physical_frame_job_cancel(
     ScreenPhysicalFrameJobRef job,
     ScreenPhysicalIdentity128 cancellation_identity
@@ -990,5 +1026,23 @@ bool screen_openexr_decode_rgba_float(
     char **error_message
 );
 void screen_openexr_free(void *pointer);
+
+bool screen_ffmpeg_probe_media_v1(
+    const char *file_path,
+    ScreenFfmpegMediaInfoV1 *output,
+    const char **error_message
+);
+bool screen_ffmpeg_decode_frame_v1(
+    const char *file_path,
+    int64_t requested_time_numerator,
+    uint32_t requested_time_denominator,
+    uint32_t selection_policy,
+    uint32_t authored_color_model,
+    uint32_t authored_matrix,
+    uint32_t authored_range,
+    ScreenFfmpegDecodedFrameV1 *output,
+    const char **error_message
+);
+void screen_ffmpeg_free_rgba_float_v1(float *pixels, uint32_t width, uint32_t height);
 
 #endif

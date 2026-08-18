@@ -42,6 +42,25 @@ import Testing
     }
 }
 
+@Test @MainActor func unifiedPhysicalABIPublishesHeadlessFrontalDeviceVfxTransparency() async throws {
+    let fixture = try makePhysicalFixture()
+    let job = try submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: try contributions(),
+        intermediate: .deviceVfxTransparency,
+        identity: 29,
+        dimensions: try PhysicalDimensions(width: 6, height: 6),
+        vfxTransparency: .init(activeWidth: 4, activeHeight: 4, bakeDepthOfField: false)
+    )
+    let result = try await terminalSnapshot(job)
+    #expect(result.state == .complete)
+    #expect(result.returnedIntermediate == .deviceVfxTransparency)
+    let texture = try #require(result.frame?.texture)
+    #expect(texture.width == 6)
+    #expect(texture.height == 6)
+}
+
 @Test @MainActor func unifiedPhysicalABIReportsStaticInputForCompletePipeline() async throws {
     let fixture = try makePhysicalFixture()
     let job = try submit(
@@ -426,7 +445,8 @@ private func submit(
     placement: PhysicalRasterPlacement = .fit,
     quality: PhysicalQuality = .draft,
     dimensions: PhysicalDimensions? = nil,
-    exposureSeconds: Double? = nil
+    exposureSeconds: Double? = nil,
+    vfxTransparency: PhysicalVfxTransparencyRequest? = nil
 ) throws -> PhysicalMetalFrameJob {
     let uniformityAmount = try #require(contributions.first {
         $0.stage == .screen(.panelUniformity)
@@ -497,7 +517,8 @@ private func submit(
             bytes: [UInt8](repeating: UInt8(truncatingIfNeeded: identity), count: 32)
         ),
         rasterPlacement: placement,
-        requestedIntermediate: intermediate
+        requestedIntermediate: intermediate,
+        vfxTransparency: vfxTransparency
     )
 }
 

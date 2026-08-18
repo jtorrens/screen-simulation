@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject FFmpeg from the native macOS dependency graph and product."""
+"""Verify the shipped FFmpeg media adapter is self-contained in the macOS bundle."""
 
 from __future__ import annotations
 
@@ -9,14 +9,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BANNED = (
-    "ffmpeg",
-    "avcodec",
-    "avformat",
-    "avutil",
-    "swscale",
-    "swresample",
-)
+REQUIRED = ("libavcodec", "libavformat", "libavutil", "libswscale")
 
 
 def capture(arguments: list[str]) -> str:
@@ -30,11 +23,10 @@ def capture(arguments: list[str]) -> str:
     ).stdout
 
 
-def reject(label: str, content: str) -> None:
-    lowered = content.lower()
-    matches = sorted(token for token in BANNED if token in lowered)
-    if matches:
-        raise RuntimeError(f"native macOS {label} contains forbidden FFmpeg tokens: {matches}")
+def require(label: str, content: str) -> None:
+    missing = [token for token in REQUIRED if token not in content]
+    if missing:
+        raise RuntimeError(f"native macOS {label} is missing FFmpeg libraries: {missing}")
 
 
 def validate_dependency_graph() -> None:
@@ -50,23 +42,32 @@ def validate_dependency_graph() -> None:
             "none",
         ]
     )
-    reject("Rust bridge dependency graph", graph)
+    if "ffmpeg-next" not in graph:
+        raise RuntimeError("Rust bridge dependency graph does not include the FFmpeg adapter")
 
 
 def validate_macho(binary: Path) -> None:
     if not binary.is_file():
         raise RuntimeError(f"native macOS binary does not exist: {binary}")
-    reject(f"linked dylibs for {binary.name}", capture(["otool", "-L", str(binary)]))
-    reject(f"load commands/rpaths for {binary.name}", capture(["otool", "-l", str(binary)]))
-    reject(f"symbols for {binary.name}", capture(["nm", "-a", str(binary)]))
-    reject(f"embedded strings for {binary.name}", capture(["strings", str(binary)]))
+    dylibs = capture(["otool", "-L", str(binary)])
+    require(f"linked dylibs for {binary.name}", dylibs)
+    if "/opt/homebrew/" in dylibs:
+        raise RuntimeError("native executable retains a Homebrew FFmpeg install name")
+    rpaths = capture(["otool", "-l", str(binary)])
+    if "@executable_path/../Frameworks" not in rpaths:
+        raise RuntimeError("native executable has no app-local Frameworks rpath")
 
 
 def validate_bundle(bundle: Path) -> None:
     if not bundle.is_dir():
         raise RuntimeError(f"native macOS bundle does not exist: {bundle}")
-    for path in bundle.rglob("*"):
-        reject("bundle resource path", path.relative_to(bundle).as_posix())
+    frameworks = bundle / "Contents" / "Frameworks"
+    if not frameworks.is_dir():
+        raise RuntimeError("bundle has no Frameworks directory for FFmpeg")
+    names = {path.name for path in frameworks.iterdir() if path.is_file()}
+    missing = [token for token in REQUIRED if not any(name.startswith(token) for name in names)]
+    if missing:
+        raise RuntimeError(f"bundle is missing FFmpeg dylibs: {missing}")
 
 
 def main() -> int:
@@ -80,7 +81,7 @@ def main() -> int:
     bundle = Path(sys.argv[2]).resolve()
     validate_macho(executable)
     validate_bundle(bundle)
-    print("native macOS FFmpeg graph, Mach-O, symbol, rpath and bundle gate passed")
+    print("native macOS FFmpeg graph, Mach-O, rpath and bundle gate passed")
     return 0
 
 

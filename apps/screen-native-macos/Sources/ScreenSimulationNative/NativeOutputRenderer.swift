@@ -35,7 +35,31 @@ enum NativeOutputRenderer {
         frameProvider: FrameProvider,
         progress: Progress
     ) async throws -> URL {
+        let plan = try RenderOutputPlan.prepare(
+            configuration: configuration,
+            selectedDestination: destination
+        )
+        return try await render(
+            configuration: configuration, outputPlan: plan,
+            audioSource: audioSource, display: display,
+            frameProvider: frameProvider, progress: progress
+        )
+    }
+
+    static func render(
+        configuration: StudioResolvedRenderConfiguration,
+        outputPlan: RenderOutputPlan,
+        audioSource: URL?,
+        display: StudioColorMetalDisplay,
+        frameProvider: FrameProvider,
+        progress: Progress
+    ) async throws -> URL {
         let format = configuration.format
+        guard configuration.outputType == .standard else {
+            throw NativeOutputError.unsupported("Fusion Scene Package requiere su escritor físico dedicado")
+        }
+        try configuration.validate()
+        try outputPlan.prepareDirectories()
         let frameRange = configuration.frameRange
         let frameRate = configuration.frameRate
         let alpha = configuration.alpha.colorAssociation
@@ -48,9 +72,13 @@ enum NativeOutputRenderer {
             guard let output else {
                 throw NativeOutputError.unsupported("los masters scene-linear requieren secuencia OpenEXR")
             }
-            let finalURL = destination.deletingPathExtension()
-                .appendingPathExtension(format.fileExtension)
-            try? FileManager.default.removeItem(at: finalURL)
+            let finalURL = outputPlan.destination
+            try outputPlan.authorizeWrite(
+                to: finalURL, policy: configuration.overwritePolicy
+            )
+            if FileManager.default.fileExists(atPath: finalURL.path) {
+                try FileManager.default.removeItem(at: finalURL)
+            }
             let writerURL = configuration.includeAudio && audioSource != nil
                 ? finalURL.deletingLastPathComponent()
                     .appendingPathComponent(".\(UUID().uuidString)-video")
@@ -93,13 +121,15 @@ enum NativeOutputRenderer {
             }
             return finalURL
         }
-        let directory = destination
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let directory = outputPlan.destination
         for (position, index) in frames.enumerated() {
             try Task.checkCancellation()
             let frame = index == firstIndex ? first : try await frameProvider(index)
-            let name = String(format: "ScreenSimulation-%08d", index)
+            let name = String(format: "%@-%08d", configuration.jobName, index)
             let url = directory.appendingPathComponent(name).appendingPathExtension(format.fileExtension)
+            try outputPlan.authorizeWrite(
+                to: url, policy: configuration.overwritePolicy
+            )
             switch format {
             case .openEXR:
                 var values = try display.readLinearRGBA(frame)
@@ -285,7 +315,7 @@ enum NativeOutputRenderer {
         guard exporter.status == .completed else { throw NativeOutputError.cannotFinish }
     }
 
-    private static func encodeEXR(_ values: [Float], width: Int, height: Int) throws -> Data {
+    static func encodeEXR(_ values: [Float], width: Int, height: Int) throws -> Data {
         var bytes: UnsafeMutablePointer<UInt8>?
         var count = 0
         var message: UnsafeMutablePointer<CChar>?

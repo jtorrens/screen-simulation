@@ -123,6 +123,6 @@ public enum StudioColorBuildIdentity {
     public static let acesConfigVersion = "4.0.0 / ACES 2.0"
     public static let sourceRepository = "CREDITOS-HDR"
     public static let sourceCommit = "150ef31ffa69fec562a017d2165006f7b2913520"
-    public static let nativeBridgeSHA256 = "680eef3911af83b3579d7b7dbe27c9970d273859edd3b5fbdc0a2cc8968ee67f"
+    public static let nativeBridgeSHA256 = "471bc5e68c0c8e08ba49741eea994fa7cc560b1ad1002211747153f9121a1c9c"
     public static let configurationSHA256 = "ebe2293968975e3540c6b32cfbee2ca1274b5bf3c9ff610235abb07b65da970b"
 }

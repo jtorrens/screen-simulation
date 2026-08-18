@@ -1417,6 +1417,7 @@ struct ContentView: View {
     }
 
     private func requestSceneRender(_ scene: SavedScene) {
+        model.renderJobName = scene.name
         do {
             if try model.savedSceneNeedsUpdate(scene) {
                 requestSceneAction(.renderAfterUpdate, scene: scene)
@@ -1446,13 +1447,13 @@ struct ContentView: View {
         case .update:
             do {
                 let capture = try model.captureSavedScene()
-                try scenes.update(scene, capture: capture)
+                try scenes.update(scene, capture: capture, undoManager: undoManager)
                 model.markActiveScene(scene.id)
             } catch { model.errorMessage = error.localizedDescription }
         case .renderAfterUpdate:
             do {
                 let capture = try model.captureSavedScene()
-                try scenes.update(scene, capture: capture)
+                try scenes.update(scene, capture: capture, undoManager: undoManager)
                 model.markActiveScene(scene.id)
                 guard let updated = scenes.scene(id: scene.id) else {
                     throw SceneLibraryError.inaccessible("La escena actualizada no existe.")
@@ -1482,6 +1483,13 @@ struct ContentView: View {
             Divider()
             Form {
                 Section("Salida") {
+                    Picker("Tipo de salida", selection: $model.renderOutputType) {
+                        ForEach(StudioOutputType.allCases) { type in
+                            Text(type.label).tag(type)
+                        }
+                    }
+                    TextField("Nombre del trabajo", text: $model.renderJobName)
+                    if model.renderOutputType == .standard {
                     Picker("Preset", selection: Binding(
                         get: { model.renderPreset },
                         set: { model.applyRenderPreset($0) }
@@ -1523,6 +1531,35 @@ struct ContentView: View {
                             Text(composition.label).tag(composition)
                         }
                     }
+                    } else {
+                        Picker("DOF", selection: $model.fusionDOFMode) {
+                            ForEach(StudioFusionDOFMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("Resolución", selection: $model.fusionResolutionMode) {
+                            ForEach(StudioFusionResolutionMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        if model.fusionResolutionMode == .custom {
+                            LabeledContent("Ancho activo") {
+                                TextField("px", value: $model.fusionCustomWidth, format: .number)
+                                    .frame(width: 90)
+                            }
+                            LabeledContent("Alto activo") {
+                                TextField("px", value: $model.fusionCustomHeight, format: .number)
+                                    .frame(width: 90)
+                            }
+                        }
+                        LabeledContent("Threshold ACEScg lineal") {
+                            TextField("threshold", value: $model.fusionSpillThresholdSceneLinear, format: .number)
+                                .frame(width: 110)
+                        }
+                        LabeledContent("Fade de spill") {
+                            TextField("px", value: $model.fusionSpillFadeWidthPixels, format: .number)
+                                .frame(width: 90)
+                        }
+                        Text("OpenEXR RGBA half-float ACEScg lineal. Perspectiva, distorsión SynthEyes DE4 y motion blur se reconstruyen en Fusion.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Picker("Rango", selection: $model.renderRange) {
                         Text("Todo").tag(StudioRenderRange.all)
                         Text("IN / OUT").tag(StudioRenderRange.inOut)
@@ -1539,6 +1576,7 @@ struct ContentView: View {
                     }
                 }
                 Section("Movimiento") {
+                    if model.renderOutputType == .standard {
                     Toggle("Desenfoque de movimiento", isOn: $model.renderMotionBlurEnabled)
                     LabeledContent("Muestras temporales") {
                         Stepper(
@@ -1555,8 +1593,14 @@ struct ContentView: View {
                     Text("Integra cámara, Device y emisión durante el intervalo físico de obturación. No aplica un blur 2D posterior.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    } else {
+                        Text("El motion blur no se hornea en los EXR; Fusion recibe el shutter y las curvas animadas de cámara.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Section("Codificación") {
+                    if model.renderOutputType == .standard {
                     LabeledContent("Píxel", value: model.outputPixelEncoding.label)
                     Picker("Rango de señal", selection: $model.outputSignalRange) {
                         ForEach(StudioSignalRange.allCases) { range in
@@ -1574,6 +1618,11 @@ struct ContentView: View {
                     .disabled(!model.outputFormat.supportsAlpha)
                     Toggle("Audio", isOn: $model.includeAudio)
                         .disabled(!model.outputFormat.isMovie)
+                    } else {
+                        LabeledContent("Píxel", value: "RGBA float16")
+                        LabeledContent("Espacio", value: "ACEScg scene-linear")
+                        LabeledContent("Alpha", value: "Matte de oclusión independiente")
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -2085,6 +2134,21 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
+                .contextMenu {
+                    if job.state == .completed {
+                        Button("Mostrar directorio en Finder") {
+                            model.showRenderDestinationInFinder(job)
+                        }
+                        if job.configuration.outputType == .fusionScenePackage {
+                            Button("Actualizar comp Fusion") {
+                                model.refreshFusionComposition(job)
+                            }
+                        }
+                        Button("Volver a renderizar") {
+                            model.requeueCompletedRender(job)
+                        }
+                    }
+                }
             }
             HStack {
                 if model.jobs.contains(where: { $0.state == .rendering }) {
@@ -2171,9 +2235,10 @@ struct ContentView: View {
                         display: model.metalDisplay
                     )
                 } label: {
-                    Image(systemName: model.monitorOutput.isActive
-                        ? "rectangle.connected.to.line.below.fill"
-                        : "rectangle.connected.to.line.below")
+                    previewBarLabel(
+                        "Monitor", systemImage: model.monitorOutput.isActive
+                            ? "rectangle.connected.to.line.below.fill" : "rectangle.connected.to.line.below"
+                    )
                 }
                 .foregroundStyle(model.monitorOutput.isActive ? .blue : .secondary)
                 .help(model.monitorOutput.isActive
@@ -2183,7 +2248,7 @@ struct ContentView: View {
                     ? "Detener monitorización DeckLink"
                     : "Iniciar monitorización DeckLink")
                 Button { model.zoomBy(0.8) } label: {
-                    Image(systemName: "minus.magnifyingglass")
+                    previewBarLabel("Alejar", systemImage: "minus.magnifyingglass")
                 }
                 .help("Reducir zoom")
                 .accessibilityLabel("Reducir zoom")
@@ -2194,16 +2259,24 @@ struct ContentView: View {
                     .frame(width: 52)
                     .accessibilityLabel("Escala del visor en porcentaje")
                 Text("%").foregroundStyle(.secondary)
-                Button("Fit", action: model.fitPreview)
+                Button(action: model.fitPreview) {
+                    previewBarLabel("Fit", systemImage: "arrow.down.right.and.arrow.up.left")
+                }
                     .help("Ajustar imagen al visor")
-                Button("1:1", action: model.showPreviewOneToOne)
+                Button(action: model.showPreviewOneToOne) {
+                    previewBarLabel("1:1", systemImage: "1.magnifyingglass")
+                }
                     .help("Un píxel calculado por píxel lógico del visor")
-                Button { model.zoomBy(1.25) } label: { Image(systemName: "plus.magnifyingglass") }
+                Button { model.zoomBy(1.25) } label: {
+                    previewBarLabel("Acercar", systemImage: "plus.magnifyingglass")
+                }
                     .help("Aumentar zoom")
                     .accessibilityLabel("Aumentar zoom")
                 Button(action: model.togglePreviewTransformationsLock) {
-                    Image(systemName: model.previewTransformationsLocked
-                        ? "lock.fill" : "lock.open")
+                    previewBarLabel(
+                        "Bloquear", systemImage: model.previewTransformationsLocked
+                            ? "lock.fill" : "lock.open"
+                    )
                 }
                 .foregroundStyle(model.previewTransformationsLocked ? .orange : .secondary)
                 .help(model.previewTransformationsLocked
@@ -2213,7 +2286,9 @@ struct ContentView: View {
                     ? "Desbloquear transformaciones del Viewer"
                     : "Bloquear transformaciones del Viewer")
                 Button(action: model.togglePreviewGizmos) {
-                    Image(systemName: model.previewGizmosVisible ? "eye" : "eye.slash")
+                    previewBarLabel(
+                        "Gizmos", systemImage: model.previewGizmosVisible ? "eye" : "eye.slash"
+                    )
                 }
                 .foregroundStyle(model.previewGizmosVisible ? Color.secondary : Color.orange)
                 .help(model.previewGizmosVisible
@@ -2225,7 +2300,7 @@ struct ContentView: View {
                 Button {
                     model.renderCurrentFrame()
                 } label: {
-                    Label("Guardar frame", systemImage: "square.and.arrow.down")
+                    previewBarLabel("Guardar", systemImage: "square.and.arrow.down")
                 }
                 .disabled(model.metalFrame == nil)
                 .help("Guardar el fotograma actual")
@@ -2233,7 +2308,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 10)
-            .frame(height: 36)
+            .frame(height: 58)
             .background(Color(nsColor: .windowBackgroundColor))
             Divider()
             ZStack {
@@ -2341,6 +2416,14 @@ struct ContentView: View {
             .frame(height: 30)
             .background(Color(nsColor: .windowBackgroundColor))
         }
+    }
+
+    private func previewBarLabel(_ title: String, systemImage: String) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: systemImage)
+            Text(title).font(.caption2)
+        }
+        .frame(minWidth: 42)
     }
 
     private var transport: some View {

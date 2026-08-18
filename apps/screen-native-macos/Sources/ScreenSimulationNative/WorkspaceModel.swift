@@ -270,9 +270,17 @@ final class WorkspaceModel: ObservableObject {
     @Published var inFrame = 0
     @Published var outFrame = 0
     @Published var renderRange = StudioRenderRange.all
+    @Published var renderOutputType = StudioOutputType.standard
+    @Published var renderJobName = "ScreenSimulation"
     @Published var renderComposition = StudioRenderComposition.deviceOnly
     @Published var renderMotionBlurEnabled = true
     @Published var renderMotionSamples: UInt16 = 8
+    @Published var fusionDOFMode = StudioFusionDOFMode.fusion
+    @Published var fusionResolutionMode = StudioFusionResolutionMode.maximumProjectedDensity
+    @Published var fusionCustomWidth = 3840
+    @Published var fusionCustomHeight = 2160
+    @Published var fusionSpillThresholdSceneLinear = 0.0001
+    @Published var fusionSpillFadeWidthPixels = 32
     @Published var loopPlayback = false
     @Published var outputFormat = StudioOutputFormat.proRes4444
     @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
@@ -460,7 +468,8 @@ final class WorkspaceModel: ObservableObject {
             // viewport. Do not retain the aspect of the previously published frame
             // while the replacement physical job is being evaluated.
             return Double(sensor.nativeWidth) / Double(sensor.nativeHeight)
-        case .sourceACEScg, .deviceSignal, .shutterMotion, .computationalCapture:
+        case .sourceACEScg, .deviceSignal, .shutterMotion, .computationalCapture,
+             .deviceVfxTransparency:
             guard let metalFrame, metalFrame.height > 0 else { return nil }
             return Double(metalFrame.width) / Double(metalFrame.height)
         }
@@ -481,7 +490,7 @@ final class WorkspaceModel: ObservableObject {
         case .computationalCapture:
             guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return nil }
             return "Panel \(device.nativeWidth * 3)×\(device.nativeHeight * 3)"
-        case .sourceACEScg, .deviceSignal:
+        case .sourceACEScg, .deviceSignal, .deviceVfxTransparency:
             guard let metalFrame else { return nil }
             return "Fuente \(metalFrame.width)×\(metalFrame.height)"
         }
@@ -2355,6 +2364,47 @@ final class WorkspaceModel: ObservableObject {
         return nil
     }
 
+    /// An import proposal is materialized before either media adapter opens the
+    /// source. This makes AVFoundation and FFmpeg consume the same authored
+    /// interpretation rather than inheriting controls from the prior source.
+    private func adoptDetectedSourceInterpretation(_ proposal: StudioMediaDetection) throws {
+        guard let inputID = proposal.proposedInputTransformID,
+              let input = StudioColorInputTransform.catalog.first(where: { $0.id == inputID }),
+              let alpha = proposal.alpha,
+              let matrix = proposal.matrix,
+              let range = proposal.range,
+              let colorModel = proposal.colorModel
+        else {
+            throw NativeMediaError.unreadable(
+                "La metadata no proporciona una interpretación completa para importar el vídeo."
+            )
+        }
+        inputTransform = input
+        alphaMode = alpha
+        signalMatrix = matrix
+        signalRange = range
+        signalColorModel = colorModel
+    }
+
+    private func adoptDetectedReferenceInterpretation(_ proposal: StudioMediaDetection) throws {
+        guard let inputID = proposal.proposedInputTransformID,
+              let input = StudioColorInputTransform.catalog.first(where: { $0.id == inputID }),
+              let alpha = proposal.alpha,
+              let matrix = proposal.matrix,
+              let range = proposal.range,
+              let colorModel = proposal.colorModel
+        else {
+            throw NativeMediaError.unreadable(
+                "La metadata no proporciona una interpretación completa para importar el vídeo de referencia."
+            )
+        }
+        referenceInputTransform = input
+        referenceAlphaMode = alpha
+        referenceSignalMatrix = matrix
+        referenceSignalRange = range
+        referenceSignalColorModel = colorModel
+    }
+
     func choosePattern(_ pattern: SyntheticPattern, undoManager: UndoManager?) {
         let prior = selectedPattern
         undoManager?.registerUndo(withTarget: self) { target in
@@ -2481,12 +2531,14 @@ final class WorkspaceModel: ObservableObject {
             referenceDetection = await StudioMediaMetadataDetector.detect(
                 url: managed.url, isVideo: isVideo
             )
+            if isVideo { try adoptDetectedReferenceInterpretation(referenceDetection) }
             referencePlacement = .fit
             let info = isVideo
                 ? try await referenceSession.openVideo(
                     managed.url,
                     hasAlpha: referenceDetection.hasAlpha,
                     colorModel: referenceSignalColorModel,
+                    matrix: referenceSignalMatrix,
                     decodedRange: referenceSignalRange
                 )
                 : try referenceSession.openImages([managed.url], frameRate: .fps24)
@@ -2568,6 +2620,7 @@ final class WorkspaceModel: ObservableObject {
                         url,
                         hasAlpha: referenceDetection.hasAlpha,
                         colorModel: referenceSignalColorModel,
+                        matrix: referenceSignalMatrix,
                         decodedRange: referenceSignalRange
                     )
                 }
@@ -2791,11 +2844,13 @@ final class WorkspaceModel: ObservableObject {
         let isVideo = Self.isVideo(first) && expanded.count == 1
         detection = await StudioMediaMetadataDetector.detect(url: first, isVideo: isVideo)
         do {
+            if isVideo { try adoptDetectedSourceInterpretation(detection) }
             let info = isVideo
                 ? try await session.openVideo(
                     first,
                     hasAlpha: detection.hasAlpha,
                     colorModel: signalColorModel,
+                    matrix: signalMatrix,
                     decodedRange: signalRange
                 )
                 : try session.openImages(
@@ -2875,6 +2930,7 @@ final class WorkspaceModel: ObservableObject {
                         first,
                         hasAlpha: detection.hasAlpha,
                         colorModel: signalColorModel,
+                        matrix: signalMatrix,
                         decodedRange: signalRange
                     )
                 } else {
@@ -3553,7 +3609,7 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         let url: URL?
-        if outputFormat.isMovie {
+        if renderOutputType == .standard && outputFormat.isMovie {
             let panel = NSSavePanel()
             panel.canCreateDirectories = true
             panel.nameFieldStringValue = sourceName.replacingOccurrences(of: ".", with: "-")
@@ -3575,30 +3631,73 @@ final class WorkspaceModel: ObservableObject {
             referenceVisible: referenceControlsTimeline,
             tracking: trackingTimelineInfo
         ).exactFrameRate
-        let configuration = StudioResolvedRenderConfiguration(
-            composition: renderComposition,
-            motionBlurEnabled: renderMotionBlurEnabled,
+        let fusion = renderOutputType == .fusionScenePackage
+            ? StudioFusionSceneConfiguration(
+                dofMode: fusionDOFMode,
+                resolutionMode: fusionResolutionMode,
+                customActiveWidth: fusionResolutionMode == .custom ? fusionCustomWidth : nil,
+                customActiveHeight: fusionResolutionMode == .custom ? fusionCustomHeight : nil,
+                spillThresholdSceneLinear: fusionSpillThresholdSceneLinear,
+                spillFadeWidthPixels: fusionSpillFadeWidthPixels
+            ) : nil
+        var configuration = StudioResolvedRenderConfiguration(
+            outputType: renderOutputType,
+            jobName: renderJobName,
+            overwritePolicy: .failIfExists,
+            fusionScene: fusion,
+            composition: renderOutputType == .fusionScenePackage ? .deviceOnly : renderComposition,
+            motionBlurEnabled: renderOutputType == .fusionScenePackage ? false : renderMotionBlurEnabled,
             motionSamples: renderMotionSamples,
-            format: outputFormat,
-            pipeline: renderPreset.pipeline,
-            target: renderPreset.target,
-            peakNits: peakNits,
-            display: renderPreset.display,
-            view: renderPreset.view,
-            vfxInterchangeEncodingID: renderPreset.target == .vfxLog
+            format: renderOutputType == .fusionScenePackage ? .openEXR : outputFormat,
+            pipeline: renderOutputType == .fusionScenePackage ? .aces : renderPreset.pipeline,
+            target: renderOutputType == .fusionScenePackage ? .acescg : renderPreset.target,
+            peakNits: renderOutputType == .fusionScenePackage ? 0 : peakNits,
+            display: renderOutputType == .fusionScenePackage ? nil : renderPreset.display,
+            view: renderOutputType == .fusionScenePackage ? nil : renderPreset.view,
+            vfxInterchangeEncodingID: renderOutputType == .standard && renderPreset.target == .vfxLog
                 ? vfxInterchangeEncodingID : nil,
-            pixelEncoding: outputPixelEncoding,
-            signalRange: outputSignalRange,
-            alpha: outputFormat.supportsAlpha ? outputAlphaMode : .ignore,
-            includeAudio: outputFormat.isMovie && includeAudio,
+            pixelEncoding: renderOutputType == .fusionScenePackage ? .rgba16Float : outputPixelEncoding,
+            signalRange: renderOutputType == .fusionScenePackage ? .full : outputSignalRange,
+            alpha: renderOutputType == .fusionScenePackage
+                ? .straight : (outputFormat.supportsAlpha ? outputAlphaMode : .ignore),
+            includeAudio: renderOutputType == .standard && outputFormat.isMovie && includeAudio,
             frameRate: exactFrameRate,
             firstFrame: range.lowerBound,
             lastFrame: range.upperBound
         )
+        let outputPlan: RenderOutputPlan
+        do {
+            try configuration.validate()
+            outputPlan = try RenderOutputPlan.prepare(
+                configuration: configuration, selectedDestination: url
+            )
+            let collision = try outputPlan.inspectCollision()
+            if collision.requiresConfirmation {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = outputPlan.kind == .singleFile
+                    ? "El archivo ya existe" : "La carpeta de salida contiene archivos"
+                alert.informativeText = switch collision {
+                case .none:
+                    ""
+                case .singleFile:
+                    "El trabajo no se creará salvo que autorices reemplazar este archivo."
+                case let .populatedDirectory(_, matching, total):
+                    "La carpeta contiene \(total) archivo(s); \(matching) coincide(n) con el manifiesto de este trabajo. Solo se reemplazarán esos archivos generados y la carpeta nunca se vaciará."
+                }
+                alert.addButton(withTitle: "Cancelar")
+                alert.addButton(withTitle: "Sobrescribir archivos existentes")
+                guard alert.runModal() == .alertSecondButtonReturn else { return }
+                configuration = configuration.replacingOverwritePolicy(.replaceGeneratedFiles)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         outputQueue.enqueue(
             scene: scene,
             generatedEnvironmentEXR: generatedEnvironmentEXR,
-            destination: url,
+            outputPlan: outputPlan,
             configuration: configuration
         )
     }
@@ -3623,19 +3722,33 @@ final class WorkspaceModel: ObservableObject {
                 )
                 defer { materialized.cleanup() }
                 try await executor.prepareQueuedScene(materialized.scene)
-                return try await NativeOutputRenderer.render(
-                    configuration: job.configuration,
-                    destination: job.destination,
-                    audioSource: executor.session.sourceURL,
-                    display: executor.metalDisplay,
-                    frameProvider: { frame in
-                        try await executor.renderQueuedSceneFrame(
-                            frame,
-                            configuration: job.configuration
-                        )
-                    },
-                    progress: progress
-                )
+                switch job.configuration.outputType {
+                case .standard:
+                    return try await NativeOutputRenderer.render(
+                        configuration: job.configuration,
+                        outputPlan: job.outputPlan,
+                        audioSource: executor.session.sourceURL,
+                        display: executor.metalDisplay,
+                        frameProvider: { frame in
+                            try await executor.renderQueuedSceneFrame(
+                                frame, configuration: job.configuration
+                            )
+                        },
+                        progress: progress
+                    )
+                case .fusionScenePackage:
+                    let package = try executor.makeFusionPackageRequest(job: job)
+                    return try await FusionScenePackageWriter.render(
+                        request: package.request,
+                        frameProvider: { frame in
+                            try await executor.renderFusionPhysicalFrame(
+                                frame, request: package.request,
+                                sourceOverscan: package.sourceOverscan
+                            )
+                        },
+                        progress: progress
+                    )
+                }
             },
             onFailure: { [weak self] message in self?.errorMessage = message }
         )
@@ -3692,6 +3805,10 @@ final class WorkspaceModel: ObservableObject {
             )
         }
         setModelPageActive(true)
+        // Queue materialization starts reference loading asynchronously for interactive Open.
+        // Fusion package creation needs its exact raster dimensions synchronously to reproduce
+        // the saved Delivery Raster, so wait for this one decoded reference frame here.
+        try await prepareQueuedReferenceRaster()
         requestedPhysicalIntermediate = .cameraRenderedACEScg
         physicalModel.setQuality(.native)
     }
@@ -3772,8 +3889,303 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    func makeFusionPackageRequest(
+        job: NativeOutputQueueController.RenderJob
+    ) throws -> (request: FusionScenePackageRequest, sourceOverscan: Int) {
+        guard let options = job.configuration.fusionScene,
+              let device = resolvedDevice?.definition,
+              let selection = testAuthoringSelection else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "Fusion Scene Package requiere Device, cámara y Test resueltos."
+            )
+        }
+        let contributions = physicalModel.orderedContributions
+        guard physicalModel.effectiveScreenAmount == 1,
+              contributions.first(where: { $0.stage == .screen(.emission) })?.amount == 1 else {
+            throw FusionScenePackageError.incompletePhysicalDeviceContribution
+        }
+        var cameras: [FusionCameraKeyframe] = []
+        var lenses: [FusionLensKeyframe] = []
+        var shutter: PhysicalPipelineAuthoringState.ShutterMotion?
+        for frame in job.configuration.frameRange {
+            currentFrame = frame
+            applyTrackingCameraAtCurrentFrame()
+            guard let authored = physicalAuthoringState else {
+                throw FusionScenePackageError.invalidCamera
+            }
+            shutter = authored.shutterMotion
+            let timeNumerator = Int64(frame) * Int64(job.configuration.frameRate.denominator)
+            let frameSelection = try PhysicalFrameSelection(
+                frameIndex: Int64(frame),
+                timeNumerator: timeNumerator,
+                timeDenominator: job.configuration.frameRate.numerator
+            )
+            let orchestration = try authored.orchestration(for: frameSelection)
+            let cameraPosition = SIMD3<Double>(
+                Double(orchestration.cameraPose.position.x),
+                Double(orchestration.cameraPose.position.y),
+                Double(orchestration.cameraPose.position.z)
+            )
+            let screenPosition = SIMD3<Double>(
+                Double(orchestration.screenPose.position.x),
+                Double(orchestration.screenPose.position.y),
+                Double(orchestration.screenPose.position.z)
+            )
+            let cameraQ = simd_quatd(
+                ix: Double(orchestration.cameraPose.rotation.x),
+                iy: Double(orchestration.cameraPose.rotation.y),
+                iz: Double(orchestration.cameraPose.rotation.z),
+                r: Double(orchestration.cameraPose.rotation.w)
+            )
+            let screenQ = simd_quatd(
+                ix: Double(orchestration.screenPose.rotation.x),
+                iy: Double(orchestration.screenPose.rotation.y),
+                iz: Double(orchestration.screenPose.rotation.z),
+                r: Double(orchestration.screenPose.rotation.w)
+            )
+            let localCameraPosition = screenQ.inverse.act(cameraPosition - screenPosition)
+            let localCameraQ = screenQ.inverse * cameraQ
+            let lens = authored.sceneLens
+            cameras.append(FusionCameraKeyframe(
+                frame: frame,
+                positionMeters: [
+                    localCameraPosition.x, localCameraPosition.y, localCameraPosition.z,
+                ],
+                quaternionXYZW: [
+                    localCameraQ.imag.x, localCameraQ.imag.y,
+                    localCameraQ.imag.z, localCameraQ.real,
+                ],
+                focalLengthMillimeters: lens.focalLengthMillimeters,
+                horizontalFOVDegrees: 2 * atan(
+                    lens.sensorWidthMillimeters / (2 * lens.focalLengthMillimeters)
+                ) * 180 / .pi,
+                sensorWidthMillimeters: lens.sensorWidthMillimeters,
+                sensorHeightMillimeters: lens.sensorHeightMillimeters,
+                lensShiftXY: lens.lensShift,
+                focusDistanceMeters: lens.focusDistanceMeters,
+                fStop: lens.fStop,
+                nearClipMeters: lens.nearClipMeters,
+                farClipMeters: lens.farClipMeters
+            ))
+            lenses.append(FusionLensKeyframe(
+                frame: frame,
+                radialK1K2K3: lens.radialDistortion,
+                tangentialP1P2: lens.tangentialDistortion,
+                opticalCenterXY: [0, 0]
+            ))
+        }
+        let activeRaster: FusionProjectedRaster
+        switch options.resolutionMode {
+        case .maximumProjectedDensity:
+            activeRaster = try FusionProjectionResolver.maximumProjectedDensity(
+                cameraSamples: cameras,
+                deviceWidthMeters: device.activeWidthMeters,
+                deviceHeightMeters: device.activeHeightMeters,
+                deliveryWidth: Int(selection.deliveryWidth),
+                deliveryHeight: Int(selection.deliveryHeight)
+            )
+        case .nativeDevice:
+            activeRaster = try FusionProjectionResolver.nativeDevice(
+                width: device.nativeWidth, height: device.nativeHeight,
+                deviceWidthMeters: device.activeWidthMeters,
+                deviceHeightMeters: device.activeHeightMeters
+            )
+        case .custom:
+            guard let width = options.customActiveWidth,
+                  let height = options.customActiveHeight else {
+                throw FusionScenePackageError.invalidRaster
+            }
+            activeRaster = try FusionProjectionResolver.customFit(
+                maximumWidth: width, maximumHeight: height,
+                deviceWidthMeters: device.activeWidthMeters,
+                deviceHeightMeters: device.activeHeightMeters
+            )
+        }
+        let spreadAmount = contributions.first(where: {
+            $0.stage == .screen(.panelLightSpread)
+        })?.amount ?? 0
+        let glowAmount = contributions.first(where: {
+            $0.stage == .screen(.coverGlow)
+        })?.amount ?? 0
+        let dofSupport = options.dofMode == .baked
+            ? try FusionProjectionResolver.depthOfFieldSupportPixels(
+                cameraSamples: cameras,
+                deviceWidthMeters: device.activeWidthMeters,
+                deviceHeightMeters: device.activeHeightMeters,
+                pixelsPerMeter: activeRaster.pixelsPerMeter
+            ) : 0
+        let sourceOverscan = try FusionPhysicalSupportResolver.sourceOverscanPixels(
+            panelTailRadiusMicrometers: device.panelLightSpread.tailRadiusMicrometers.max() ?? 0,
+            panelSpreadAmount: spreadAmount,
+            glowRadiusMillimeters: physicalAuthoringState?.coverGlass.glowRadiusMillimeters ?? 0,
+            glowAmount: glowAmount,
+            dofSupportPixels: dofSupport,
+            fadeWidthPixels: options.spillFadeWidthPixels,
+            pixelsPerMeter: activeRaster.pixelsPerMeter
+        )
+        guard let shutter else { throw FusionScenePackageError.invalidCamera }
+        let frameDuration = 1 / job.configuration.frameRate.framesPerSecond
+        let open = Double(shutter.openOffsetNumerator)
+            / Double(shutter.openOffsetDenominator)
+        let close = Double(shutter.closeOffsetNumerator)
+            / Double(shutter.closeOffsetDenominator)
+        let referencePlate: FusionReferencePlate?
+        let outputPlan: RenderOutputPlan
+        if let referenceURL = referenceSourceURL {
+            guard let input = StudioColorInputTransform.catalog.first(where: {
+                $0.id == referenceInputTransformID
+            }), case let .colorSpace(sourceColorSpace) = input.processor else {
+                throw FusionScenePackageError.invalidRaster
+            }
+            let fileName = referenceURL.lastPathComponent
+            guard !fileName.isEmpty else { throw FusionScenePackageError.invalidRaster }
+            let relativePath = "reference/\(fileName)"
+            guard let referenceRaster = referenceACEScgFrame else {
+                throw FusionScenePackageError.invalidRaster
+            }
+            outputPlan = try job.outputPlan.addingGeneratedRelativePath(relativePath)
+            referencePlate = .init(
+                sourceURL: referenceURL,
+                relativePath: relativePath,
+                inputTransformID: input.id,
+                ocioSourceColorSpace: sourceColorSpace,
+                placementID: referencePlacement.stableID,
+                width: referenceRaster.width,
+                height: referenceRaster.height
+            )
+        } else {
+            outputPlan = job.outputPlan
+            referencePlate = nil
+        }
+        return (
+            FusionScenePackageRequest(
+                configuration: job.configuration,
+                outputPlan: outputPlan,
+                deviceWidthMeters: device.activeWidthMeters,
+                deviceHeightMeters: device.activeHeightMeters,
+                activeRaster: activeRaster,
+                sourceOverscanPixels: sourceOverscan,
+                deliveryWidth: Int(selection.deliveryWidth),
+                deliveryHeight: Int(selection.deliveryHeight),
+                camera: cameras,
+                lens: lenses,
+                motionBlur: .init(
+                    bakedInEXR: false,
+                    enabledInFusion: true,
+                    shutterAngleDegrees: (close - open) / frameDuration * 360,
+                    shutterPhaseDegrees: (open + close) * 0.5 / frameDuration * 360
+                ),
+                referencePlate: referencePlate
+            ),
+            sourceOverscan
+        )
+    }
+
+    func renderFusionPhysicalFrame(
+        _ frameIndex: Int,
+        request: FusionScenePackageRequest,
+        sourceOverscan: Int
+    ) async throws -> FusionRawPhysicalFrame {
+        currentFrame = frameIndex
+        applyTrackingCameraAtCurrentFrame()
+        let source = try await renderFrame(frameIndex)
+        sourceACEScgFrame = source
+        physicalModel.invalidateExternalParameters()
+        let active = request.activeRaster
+        let width = active.activeWidth + sourceOverscan * 2
+        let height = active.activeHeight + sourceOverscan * 2
+        let dimensions = try PhysicalDimensions(width: width, height: height)
+        let job = try submitPhysicalJob(
+            quality: .high,
+            temporalSamplesOverride: 1,
+            sourceFrameOverride: source,
+            frameIndexOverride: frameIndex,
+            requestedDimensionsOverride: dimensions,
+            requestedIntermediateOverride: .deviceVfxTransparency,
+            vfxTransparency: .init(
+                activeWidth: active.activeWidth,
+                activeHeight: active.activeHeight,
+                bakeDepthOfField: request.configuration.fusionScene!.dofMode == .baked
+            ),
+            publishesPreviewState: false
+        )
+        while true {
+            do { try Task.checkCancellation() }
+            catch { _ = job.cancel(); throw error }
+            let snapshot = try job.snapshot()
+            switch snapshot.state {
+            case .idle, .stale, .rendering:
+                try await Task.sleep(for: .milliseconds(8))
+            case .cancelled:
+                throw CancellationError()
+            case .failed:
+                throw PhysicalMetalFrameEngineError.bridge(
+                    snapshot.diagnostics.last?.message ?? "Falló Device VFX Transparency."
+                )
+            case .complete:
+                guard snapshot.returnedIntermediate == .deviceVfxTransparency,
+                      let output = snapshot.frame,
+                      output.width == width, output.height == height else {
+                    throw PhysicalMetalFrameEngineError.invalidSnapshot
+                }
+                return FusionRawPhysicalFrame(
+                    width: width, height: height,
+                    activeRect: .init(
+                        x: sourceOverscan, y: sourceOverscan,
+                        width: active.activeWidth, height: active.activeHeight
+                    ),
+                    rgba: try metalDisplay.readLinearRGBA(output)
+                )
+            }
+        }
+    }
+
     func cancelRender() {
         outputQueue.cancel()
+    }
+
+    func showRenderDestinationInFinder(_ job: NativeOutputQueueController.RenderJob) {
+        guard job.state == .completed else { return }
+        let directory: URL
+        switch job.outputPlan.kind {
+        case .singleFile:
+            directory = job.destination.deletingLastPathComponent()
+        case .imageSequence, .fusionScenePackage:
+            directory = job.destination
+        }
+        guard FileManager.default.fileExists(atPath: directory.path) else {
+            errorMessage = "No existe el directorio de salida de este render."
+            return
+        }
+        NSWorkspace.shared.open(directory)
+    }
+
+    func requeueCompletedRender(_ job: NativeOutputQueueController.RenderJob) {
+        guard outputQueue.requeueCompletedJob(id: job.id) else { return }
+        status = "Render reactivado · \(job.scene.name)"
+    }
+
+    /// Regenerates only the Fusion composition for a completed package. The queued scene and
+    /// output configuration remain immutable; EXR media are neither evaluated nor rewritten.
+    func refreshFusionComposition(_ job: NativeOutputQueueController.RenderJob) {
+        guard job.state == .completed,
+              job.configuration.outputType == .fusionScenePackage else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let executor = WorkspaceModel()
+                let materialized = try executor.materializeQueuedScene(
+                    job.scene, generatedEnvironmentEXR: job.generatedEnvironmentEXR
+                )
+                defer { materialized.cleanup() }
+                try await executor.prepareQueuedScene(materialized.scene)
+                let package = try executor.makeFusionPackageRequest(job: job)
+                try FusionScenePackageWriter.refreshComposition(request: package.request)
+                status = "Comp Fusion actualizada · \(job.scene.name)"
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func renderCurrentFrame() {
@@ -4486,11 +4898,13 @@ final class WorkspaceModel: ObservableObject {
             referenceDetection = await StudioMediaMetadataDetector.detect(
                 url: managed.url, isVideo: isVideo
             )
+            if isVideo { try adoptDetectedReferenceInterpretation(referenceDetection) }
             let info = isVideo
                 ? try await referenceSession.openVideo(
                     managed.url,
                     hasAlpha: referenceDetection.hasAlpha,
                     colorModel: referenceSignalColorModel,
+                    matrix: referenceSignalMatrix,
                     decodedRange: referenceSignalRange
                 )
                 : try referenceSession.openImages([managed.url], frameRate: .fps24)
@@ -4610,6 +5024,26 @@ final class WorkspaceModel: ObservableObject {
                 self.errorMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Queue setup cannot rely on the interactive reference-loading task: the Fusion package
+    /// needs this exact raster before it can resolve a portable Delivery Raster.
+    private func prepareQueuedReferenceRaster() async throws {
+        guard let url = referenceSourceURL else { return }
+        let isVideo = Self.isVideo(url)
+        referenceDetection = await StudioMediaMetadataDetector.detect(url: url, isVideo: isVideo)
+        if isVideo {
+            _ = try await referenceSession.openVideo(
+                url,
+                hasAlpha: referenceDetection.hasAlpha,
+                colorModel: referenceSignalColorModel,
+                matrix: referenceSignalMatrix,
+                decodedRange: referenceSignalRange
+            )
+        } else {
+            _ = try referenceSession.openImages([url], frameRate: .fps24)
+        }
+        try await rebuildReferenceFrame()
     }
 
     private func rebuildReferenceFrame() async throws {
@@ -5390,9 +5824,15 @@ final class WorkspaceModel: ObservableObject {
 
     private func submitPhysicalJob(
         quality: PhysicalQuality,
-        temporalSamplesOverride: UInt16? = nil
+        temporalSamplesOverride: UInt16? = nil,
+        sourceFrameOverride: StudioColorMetalFrame? = nil,
+        frameIndexOverride: Int? = nil,
+        requestedDimensionsOverride: PhysicalDimensions? = nil,
+        requestedIntermediateOverride: PhysicalIntermediate? = nil,
+        vfxTransparency: PhysicalVfxTransparencyRequest? = nil,
+        publishesPreviewState: Bool = true
     ) throws -> PhysicalMetalFrameJob {
-        guard let sourceACEScgFrame else {
+        guard let sourceACEScgFrame = sourceFrameOverride ?? sourceACEScgFrame else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
         }
         guard let resolvedDevice else {
@@ -5435,7 +5875,7 @@ final class WorkspaceModel: ObservableObject {
             ),
             display: metalDisplay
         )
-        deviceSignalCheckpoint = checkpoint
+        if publishesPreviewState { deviceSignalCheckpoint = checkpoint }
         let deviceSignal = checkpoint.deviceSignal
         let contributions = physicalModel.orderedContributions
         guard let uniformityAmount = contributions.first(where: {
@@ -5464,31 +5904,33 @@ final class WorkspaceModel: ObservableObject {
             high: physicalModel.parameterRevision,
             low: physicalIdentityCounter
         )
-        physicalPublicationSummary = "Source \(sourceACEScgFrame.width)×\(sourceACEScgFrame.height) · Device \(deviceSignal.width)×\(deviceSignal.height) · \(quality.uiLabel)/\(requestedPhysicalIntermediate.uiLabel) · enviado"
-        physicalPublicationLog.notice(
-            "submit source=\(sourceACEScgFrame.width)x\(sourceACEScgFrame.height) device=\(deviceSignal.width)x\(deviceSignal.height) quality=\(quality.uiLabel, privacy: .public) intermediate=\(self.requestedPhysicalIntermediate.uiLabel, privacy: .public) cameraZ=\(effectiveAuthoringState.cameraPose.position[2])"
-        )
+        let effectiveIntermediate = requestedIntermediateOverride ?? requestedPhysicalIntermediate
+        if publishesPreviewState {
+            physicalPublicationSummary = "Source \(sourceACEScgFrame.width)×\(sourceACEScgFrame.height) · Device \(deviceSignal.width)×\(deviceSignal.height) · \(quality.uiLabel)/\(effectiveIntermediate.uiLabel) · enviado"
+            physicalPublicationLog.notice(
+                "submit source=\(sourceACEScgFrame.width)x\(sourceACEScgFrame.height) device=\(deviceSignal.width)x\(deviceSignal.height) quality=\(quality.uiLabel, privacy: .public) intermediate=\(effectiveIntermediate.uiLabel, privacy: .public) cameraZ=\(effectiveAuthoringState.cameraPose.position[2])"
+            )
+        }
         let exactFrameRate = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
             reference: referenceTimelineInfo,
             referenceVisible: referenceControlsTimeline,
             tracking: trackingTimelineInfo
         ).exactFrameRate
-        let (timeNumerator, timeOverflow) = Int64(currentFrame).multipliedReportingOverflow(
+        let effectiveFrameIndex = frameIndexOverride ?? currentFrame
+        let (timeNumerator, timeOverflow) = Int64(effectiveFrameIndex).multipliedReportingOverflow(
             by: Int64(exactFrameRate.denominator)
         )
         guard !timeOverflow else {
             throw PhysicalContractError.invalidFrameTime
         }
         let selection = try PhysicalFrameSelection(
-            frameIndex: Int64(currentFrame),
+            frameIndex: Int64(effectiveFrameIndex),
             timeNumerator: timeNumerator,
             timeDenominator: exactFrameRate.numerator
         )
-        let requestedDimensions = try physicalRequestedDimensions(
-            quality: quality,
-            device: resolvedDevice.definition
-        )
+        let requestedDimensions = try requestedDimensionsOverride
+            ?? physicalRequestedDimensions(quality: quality, device: resolvedDevice.definition)
         return try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
@@ -5510,7 +5952,8 @@ final class WorkspaceModel: ObservableObject {
                 device: resolvedDevice.definition
             ),
             rasterPlacement: sourcePlacement.physicalRasterPlacement,
-            requestedIntermediate: requestedPhysicalIntermediate
+            requestedIntermediate: effectiveIntermediate,
+            vfxTransparency: vfxTransparency
         )
     }
 

@@ -16,8 +16,9 @@ screen-color = { path = "../screen-color" }
 screen-contracts = { path = "../screen-contracts" }
 screen-cover = { path = "../screen-cover" }
 screen-geometry = { path = "../screen-geometry" }
+screen-media = { path = "../screen-media" }
 screen-panel = { path = "../screen-panel" }
-screen-platform = { path = "../screen-platform", default-features = false, features = ["flat-panel-metal", "scene-adjustment-metal"] }
+screen-platform = { path = "../screen-platform", default-features = false, features = ["flat-panel-metal", "scene-adjustment-metal", "ffmpeg-media"] }
 screen-recording = { path = "../screen-recording" }
 screen-sensor = { path = "../screen-sensor" }
 

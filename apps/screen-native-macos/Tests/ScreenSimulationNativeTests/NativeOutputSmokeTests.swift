@@ -61,11 +61,12 @@ import Testing
         destination: exrDirectory, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
+    let ownedEXRDirectory = exrDirectory.appendingPathComponent("ScreenSimulation")
     #expect(FileManager.default.fileExists(
-        atPath: exrDirectory.appendingPathComponent("ScreenSimulation-00000007.exr").path
+        atPath: ownedEXRDirectory.appendingPathComponent("ScreenSimulation-00000007.exr").path
     ))
     #expect(FileManager.default.fileExists(
-        atPath: exrDirectory.appendingPathComponent("ScreenSimulation-00000008.exr").path
+        atPath: ownedEXRDirectory.appendingPathComponent("ScreenSimulation-00000008.exr").path
     ))
 
     let png = root.appendingPathComponent("current.png")
@@ -108,7 +109,11 @@ import Testing
         destination: root, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
-    let url = root.appendingPathComponent("ScreenSimulation-00000012.exr")
+    let url = root.appendingPathComponent("ScreenSimulation/ScreenSimulation-00000012.exr")
+    let exrBytes = try Data(contentsOf: url)
+    let chunkTable = try firstEXRChunkOffset(in: exrBytes)
+    #expect(chunkTable.offset >= UInt64(chunkTable.minimumOffset))
+    #expect(chunkTable.offset < UInt64(exrBytes.count))
     let session = NativeMediaSession()
     _ = try session.openImages([url], frameRate: .fps24)
     let sample = try #require(try await session.exactSample(at: .zero))
@@ -120,6 +125,47 @@ import Testing
     let actual = try display.readLinearRGBA(decoded)
     #expect(actual.count == expected.count)
     #expect(zip(actual, expected).map { abs($0 - $1) }.max() ?? 0 <= 0.001)
+}
+
+private enum EXRChunkTableInspectionError: Error {
+    case malformedHeader
+}
+
+private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minimumOffset: Int) {
+    guard data.count >= 8, Array(data.prefix(4)) == [0x76, 0x2f, 0x31, 0x01] else {
+        throw EXRChunkTableInspectionError.malformedHeader
+    }
+    var cursor = 8
+    func skipNullTerminatedString() throws {
+        guard let terminator = data[cursor...].firstIndex(of: 0) else {
+            throw EXRChunkTableInspectionError.malformedHeader
+        }
+        cursor = terminator + 1
+    }
+    while cursor < data.count, data[cursor] != 0 {
+        try skipNullTerminatedString()
+        try skipNullTerminatedString()
+        guard cursor + 4 <= data.count else {
+            throw EXRChunkTableInspectionError.malformedHeader
+        }
+        let attributeSize = (0 ..< 4).reduce(0) {
+            $0 | Int(data[cursor + $1]) << ($1 * 8)
+        }
+        cursor += 4
+        guard attributeSize >= 0, cursor + attributeSize < data.count else {
+            throw EXRChunkTableInspectionError.malformedHeader
+        }
+        cursor += attributeSize
+    }
+    cursor += 1
+    let minimumOffset = cursor + 8
+    guard minimumOffset <= data.count else {
+        throw EXRChunkTableInspectionError.malformedHeader
+    }
+    let offset = (0 ..< 8).reduce(UInt64(0)) {
+        $0 | UInt64(data[cursor + $1]) << UInt64($1 * 8)
+    }
+    return (offset, minimumOffset)
 }
 
 @Test @MainActor func proRes4444RoundtripPreservesFramesMetadataAndAlpha() async throws {
@@ -297,6 +343,7 @@ private func movieRoundtrip(
         url,
         hasAlpha: detection.hasAlpha,
         colorModel: .ycbcr,
+        matrix: .bt709,
         decodedRange: .video
     )
     let inverse = StudioColorInputTransform.catalog.first {
@@ -391,6 +438,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
         sourceURL,
         hasAlpha: detection.hasAlpha,
         colorModel: colorModel,
+        matrix: .bt709,
         decodedRange: detectedRange
     )
     let display = try StudioColorMetalDisplay()
@@ -446,6 +494,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
         renderedURL,
         hasAlpha: outputDetection.hasAlpha,
         colorModel: try #require(outputDetection.colorModel),
+        matrix: try #require(outputDetection.matrix),
         decodedRange: try #require(outputDetection.range)
     )
     var maximum: Float = 0
@@ -519,6 +568,10 @@ private func renderConfiguration(
     case .ignore: .ignore
     }
     return StudioResolvedRenderConfiguration(
+        outputType: .standard,
+        jobName: "ScreenSimulation",
+        overwritePolicy: .failIfExists,
+        fusionScene: nil,
         composition: .deviceOnly,
         motionBlurEnabled: false,
         motionSamples: 8,

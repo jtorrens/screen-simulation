@@ -8,8 +8,9 @@ final class NativeOutputQueueController: ObservableObject {
         let id = UUID()
         let scene: SavedScene
         let generatedEnvironmentEXR: Data?
-        let destination: URL
+        let outputPlan: RenderOutputPlan
         let configuration: StudioResolvedRenderConfiguration
+        var destination: URL { outputPlan.destination }
         var state: State = .pending
         var progress = 0.0
         var detail = "Pendiente"
@@ -30,13 +31,13 @@ final class NativeOutputQueueController: ObservableObject {
     func enqueue(
         scene: SavedScene,
         generatedEnvironmentEXR: Data?,
-        destination: URL,
+        outputPlan: RenderOutputPlan,
         configuration: StudioResolvedRenderConfiguration
     ) {
         jobs.append(RenderJob(
             scene: scene,
             generatedEnvironmentEXR: generatedEnvironmentEXR,
-            destination: destination,
+            outputPlan: outputPlan,
             configuration: configuration
         ))
     }
@@ -85,5 +86,19 @@ final class NativeOutputQueueController: ObservableObject {
 
     func cancel() {
         activeTask?.cancel()
+    }
+
+    /// Reopens only a terminal successful job. Its immutable scene snapshot and resolved
+    /// output configuration remain unchanged, so a later edit to the live workspace can
+    /// never redirect a queued render.
+    @discardableResult
+    func requeueCompletedJob(id: RenderJob.ID) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == id }),
+              jobs[index].state == .completed
+        else { return false }
+        jobs[index].state = .pending
+        jobs[index].progress = 0
+        jobs[index].detail = "Pendiente"
+        return true
     }
 }

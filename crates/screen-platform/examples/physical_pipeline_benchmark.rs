@@ -93,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 temporal_emission_amount: 1.0,
                 temporal_emission_gain: 1.0,
                 cover: screen_cover::CoverGlassProfile::NEUTRAL,
+                cover_glow_exterior_intensity: 1.0,
                 environment: screen_cover::IncidentEnvironment::NONE,
                 scene_geometry_lens:
                     screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE,
