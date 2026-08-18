@@ -1,0 +1,173 @@
+ocio_profile_version: 2
+search_path: ""
+strictparsing: true
+name: studio-fusion-ocio-v2.4
+description: |
+  Fusion Scene Package OCIO subset.
+  This file is intentionally restricted to OCIO 2.4 constructs and the direct
+  reference input transforms exported by Screen Simulation. It has no display
+  views, ACES 2.0 output transforms, AMF metadata, or interop identifiers.
+
+roles:
+  aces_interchange: ACES2065-1
+  data: Raw
+  default: ACEScg
+  scene_linear: ACEScg
+
+displays:
+  Fusion:
+    - !<View> {name: Raw, colorspace: Raw}
+active_displays: [Fusion]
+active_views: [Raw]
+
+colorspaces:
+  - !<ColorSpace>
+    name: ACES2065-1
+    family: ACES
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+
+  - !<ColorSpace>
+    name: ACEScg
+    family: ACES
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<MatrixTransform> {matrix: [1.45143931614567, -0.23651074689374, -0.214928569251925, 0, -0.0765537733960206, 1.17622969983357, -0.0996759264375522, 0, 0.00831614842569772, -0.00603244979102102, 0.997716301365323, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: Raw
+    family: Utility
+    bitdepth: 32f
+    isdata: true
+    allocation: uniform
+
+  - !<ColorSpace>
+    name: Gamma 2.2 Encoded Rec.709
+    family: Utility
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    from_scene_reference: !<GroupTransform>
+      children:
+        - !<MatrixTransform> {matrix: [2.52168618674388, -1.13413098823972, -0.387555198504164, 0, -0.276479914229922, 1.37271908766826, -0.096239173438334, 0, -0.0153780649660342, -0.152975335867399, 1.16835340083343, 0, 0, 0, 0, 1]}
+        - !<ExponentTransform> {value: 2.2, style: pass_thru, direction: inverse}
+
+  - !<ColorSpace>
+    name: Gamma 2.4 Encoded Rec.709
+    family: Utility
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    from_scene_reference: !<GroupTransform>
+      children:
+        - !<MatrixTransform> {matrix: [2.52168618674388, -1.13413098823972, -0.387555198504164, 0, -0.276479914229922, 1.37271908766826, -0.096239173438334, 0, -0.0153780649660342, -0.152975335867399, 1.16835340083343, 0, 0, 0, 0, 1]}
+        - !<ExponentTransform> {value: 2.4, style: pass_thru, direction: inverse}
+
+  - !<ColorSpace>
+    name: Input - Rec.709
+    family: Utility/ITU
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    from_scene_reference: !<GroupTransform>
+      children:
+        - !<MatrixTransform> {matrix: [2.52168618674388, -1.13413098823972, -0.387555198504164, 0, -0.276479914229922, 1.37271908766826, -0.096239173438334, 0, -0.0153780649660342, -0.152975335867399, 1.16835340083343, 0, 0, 0, 0, 1]}
+        - !<ExponentWithLinearTransform> {gamma: 2.22222222222222, offset: 0.099, direction: inverse}
+
+  - !<ColorSpace>
+    name: sRGB Encoded Rec.709 (sRGB)
+    family: Utility
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    from_scene_reference: !<GroupTransform>
+      children:
+        - !<MatrixTransform> {matrix: [2.52168618674388, -1.13413098823972, -0.387555198504164, 0, -0.276479914229922, 1.37271908766826, -0.096239173438334, 0, -0.0153780649660342, -0.152975335867399, 1.16835340083343, 0, 0, 0, 0, 1]}
+        - !<ExponentWithLinearTransform> {gamma: 2.4, offset: 0.055, direction: inverse}
+
+  - !<ColorSpace>
+    name: Linear Rec.709 (sRGB)
+    family: Utility
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    from_scene_reference: !<MatrixTransform> {matrix: [2.52168618674388, -1.13413098823972, -0.387555198504164, 0, -0.276479914229922, 1.37271908766826, -0.096239173438334, 0, -0.0153780649660342, -0.152975335867399, 1.16835340083343, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: ARRI LogC3 (EI800)
+    family: Input/ARRI
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<GroupTransform>
+      children:
+        - !<LogCameraTransform> {base: 10, log_side_slope: 0.247189638318671, log_side_offset: 0.385536998692443, lin_side_slope: 5.55555555555556, lin_side_offset: 0.0522722750251688, lin_side_break: 0.0105909904954696, direction: inverse}
+        - !<MatrixTransform> {matrix: [0.680205505106279, 0.236136601606481, 0.0836578932872398, 0, 0.0854149797421404, 1.01747087860704, -0.102885858349182, 0, 0.00205652166929683, -0.0625625003847921, 1.06050597871549, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: ARRI LogC4
+    family: Input/ARRI
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<GroupTransform>
+      children:
+        - !<LogCameraTransform> {log_side_slope: 0.0647954196341293, log_side_offset: -0.295908392682586, lin_side_slope: 2231.82630906769, lin_side_offset: 64, lin_side_break: -0.0180569961199113, direction: inverse}
+        - !<MatrixTransform> {matrix: [0.750957362824734, 0.144422786709757, 0.104619850465509, 0, 0.000821837079380207, 1.007397584885, -0.00821942196438358, 0, -0.000499952143533471, -0.000854177231436971, 1.00135412937497, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: BMDFilm WideGamut Gen5
+    family: Input/BlackmagicDesign
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<GroupTransform>
+      children:
+        - !<LogCameraTransform> {base: 2.71828182845905, log_side_slope: 0.0869287606549122, log_side_offset: 0.530013339229194, lin_side_offset: 0.00549407243225781, lin_side_break: 0.005, direction: inverse}
+        - !<MatrixTransform> {matrix: [0.647091325580708, 0.242595385134207, 0.110313289285085, 0, 0.0651915997328519, 1.02504756760476, -0.0902391673376125, 0, -0.0275570729194699, -0.0805887097177784, 1.10814578263725, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: DaVinci Intermediate WideGamut
+    family: Input/BlackmagicDesign
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<GroupTransform>
+      children:
+        - !<LogCameraTransform> {log_side_slope: 0.07329248, log_side_offset: 0.51304736, lin_side_offset: 0.0075, lin_side_break: 0.00262409, linear_slope: 10.44426855, direction: inverse}
+        - !<MatrixTransform> {matrix: [0.748270290272981, 0.167694659554328, 0.0840350501726906, 0, 0.0208421234689102, 1.11190474268894, -0.132746866157851, 0, -0.0915122574225729, -0.127746712807307, 1.21925897022988, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: V-Log V-Gamut
+    family: Input/Panasonic
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<GroupTransform>
+      children:
+        - !<LogCameraTransform> {base: 10, log_side_slope: 0.241514, log_side_offset: 0.598206, lin_side_offset: 0.00873, lin_side_break: 0.01, direction: inverse}
+        - !<MatrixTransform> {matrix: [0.72461670413153, 0.166915288193706, 0.108468007674764, 0, 0.021390245413146, 0.984908155703054, -0.00629840111620089, 0, -0.00923556287076561, -0.00105690563900513, 1.01029246850977, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: Log3G10 REDWideGamutRGB
+    family: Input/RED
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<GroupTransform>
+      children:
+        - !<LogCameraTransform> {base: 10, log_side_slope: 0.224282, lin_side_slope: 155.975327, lin_side_offset: 2.55975327, lin_side_break: -0.01, direction: inverse}
+        - !<MatrixTransform> {matrix: [0.785058804068092, 0.0838587565440846, 0.131082439387823, 0, 0.0231738348454756, 1.08789754919233, -0.111071384037806, 0, -0.0737604353682082, -0.314590072290208, 1.38835050765842, 0, 0, 0, 0, 1]}
+
+  - !<ColorSpace>
+    name: S-Log3 S-Gamut3.Cine
+    family: Input/Sony
+    bitdepth: 32f
+    isdata: false
+    allocation: uniform
+    to_scene_reference: !<GroupTransform>
+      children:
+        - !<LogCameraTransform> {base: 10, log_side_slope: 0.255620723362659, log_side_offset: 0.410557184750733, lin_side_slope: 5.26315789473684, lin_side_offset: 0.0526315789473684, lin_side_break: 0.01125, linear_slope: 6.62194371177582, direction: inverse}
+        - !<MatrixTransform> {matrix: [0.638788667185978, 0.272351433711262, 0.0888598991027595, 0, -0.00391590602528224, 1.0880732308974, -0.0841573248721177, 0, -0.0299072021239151, -0.0264325799101947, 1.05633978203411, 0, 0, 0, 0, 1]}

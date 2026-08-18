@@ -213,10 +213,38 @@ public final class StudioColorEngine: @unchecked Sendable {
     public static let configurationVersion = "4.0.0"
     public static let configurationFileName =
         "studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
+    /// Deliberately limited interchange configuration for Fusion's bundled OCIO 2.4.
+    /// It contains only direct reference IDTs that the Fusion package can reproduce.
+    public static let fusionConfigurationFileName = "studio-fusion-ocio-v2.4"
+    public static let fusionSupportedSourceColorSpaces: Set<String> = [
+        "ACEScg",
+        "Gamma 2.2 Encoded Rec.709",
+        "Gamma 2.4 Encoded Rec.709",
+        "Input - Rec.709",
+        "sRGB Encoded Rec.709 (sRGB)",
+        "Linear Rec.709 (sRGB)",
+        "ARRI LogC3 (EI800)",
+        "ARRI LogC4",
+        "BMDFilm WideGamut Gen5",
+        "DaVinci Intermediate WideGamut",
+        "V-Log V-Gamut",
+        "Log3G10 REDWideGamutRGB",
+        "S-Log3 S-Gamut3.Cine",
+    ]
 
     /// The exact OCIO configuration used by the application. Interchange writers copy this
     /// self-contained config when a downstream host must reproduce an authored IDT.
     public static func bundledConfigurationURL() throws -> URL {
+        try bundledConfigurationURL(named: configurationFileName)
+    }
+
+    /// Exact OCIO 2.4-compatible subset shipped with a Fusion Scene Package.
+    /// It intentionally excludes ACES 2.0 view/ODT and AMF/interoperability constructs.
+    public static func bundledFusionConfigurationURL() throws -> URL {
+        try bundledConfigurationURL(named: fusionConfigurationFileName)
+    }
+
+    private static func bundledConfigurationURL(named fileName: String) throws -> URL {
         #if DEBUG
         let resourceBundle = Bundle.module
         #else
@@ -227,7 +255,7 @@ public final class StudioColorEngine: @unchecked Sendable {
         else { throw StudioColorError.missingBundledConfiguration }
         #endif
         guard let configurationURL = resourceBundle.url(
-            forResource: configurationFileName,
+            forResource: fileName,
             withExtension: "ocio"
         ) else { throw StudioColorError.missingBundledConfiguration }
         return configurationURL
@@ -260,8 +288,17 @@ public final class StudioColorEngine: @unchecked Sendable {
     #endif
 
     public static func bundled() throws -> StudioColorEngine {
+        try engine(configurationURL: bundledConfigurationURL())
+    }
+
+    /// Loads the constrained Fusion interchange configuration for validation tooling.
+    /// Application rendering always uses `bundled()` and its OCIO 2.5 configuration.
+    public static func fusionInterchange() throws -> StudioColorEngine {
+        try engine(configurationURL: bundledFusionConfigurationURL())
+    }
+
+    private static func engine(configurationURL: URL) throws -> StudioColorEngine {
         #if canImport(StudioColorABI)
-        let configurationURL = try bundledConfigurationURL()
         var error: UnsafeMutablePointer<CChar>?
         let reference = configurationURL.path.withCString { path in
             SCConfigCreate(path, &error)
