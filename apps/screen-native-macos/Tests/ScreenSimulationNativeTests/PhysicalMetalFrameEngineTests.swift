@@ -524,7 +524,14 @@ private func submit(
         trackingCamera: nil,
         trackingMetersPerSourceUnit: nil
     )
-    return try PhysicalMetalFrameEngine().submit(
+    let engine = PhysicalMetalFrameEngine()
+    let preparedRender = try engine.prepare(
+        sceneResolver: resolver,
+        orchestration: orchestration,
+        sampleCount: 1,
+        renderContext: .fullFrame(requestedDimensions)
+    )
+    return try engine.submit(
         temporalInputs: [.init(
             time: try .init(
                 numerator: orchestration.frame.timeNumerator,
@@ -534,14 +541,12 @@ private func submit(
             deviceSignal: fixture.deviceSignal
         )],
         environmentACEScg: nil,
-        orchestration: orchestration,
-        sceneResolver: resolver,
+        preparedRender: preparedRender,
         quality: quality,
         deviceVfxAlphaMode: "device-transparency",
         screenAmount: screenAmount,
         contributions: contributions,
         requestedDimensions: requestedDimensions,
-        renderContext: .fullFrame(requestedDimensions),
         cancellationIdentity: .init(high: identity, low: identity),
         progressIdentity: .init(high: identity, low: identity),
         parameterRevision: identity,

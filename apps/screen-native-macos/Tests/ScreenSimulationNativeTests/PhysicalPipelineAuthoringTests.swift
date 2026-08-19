@@ -2,25 +2,6 @@ import Foundation
 import Testing
 @testable import ScreenSimulationNative
 
-@Test @MainActor func applicationPublishesEveryExactGlobalShutterSampleRequirement() throws {
-    let engine = PhysicalMetalFrameEngine()
-    let requirements = try engine.temporalRequirements(
-        shutter: .init(
-            open: try .init(numerator: -1, denominator: 48),
-            close: try .init(numerator: 1, denominator: 48)
-        ),
-        sampleCount: 4
-    )
-
-    #expect(requirements.count == 4)
-    #expect(Set(requirements.map { "\($0.time.numerator)/\($0.time.denominator)" }).count == 4)
-    let times = requirements.map {
-        Double($0.time.numerator) / Double($0.time.denominator)
-    }
-    #expect(times == times.sorted())
-    #expect(abs(requirements.map(\.weightSeconds).reduce(0, +) - (1.0 / 24.0)) < 1e-12)
-}
-
 @Test @MainActor func physicalAuthoringRoundTripsEverySnapshotDomainAndNativeUndo() async throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {

@@ -19,7 +19,7 @@ use screen_application::{
     CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, DeliveryRasterBackground,
     DeliveryRasterPlacement, DeliveryRasterRequest, DeviceVfxAlphaMode, FullSensorRaster,
     HostRenderContext, PHYSICAL_STAGE_DESCRIPTORS, PhaseSpatialRequirement, PhysicalIntermediate,
-    PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, PhysicalStageControl,
+    PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, PhysicalStageControl, PreparedRender,
     ProceduralTestPattern, RasterExtent, RasterPlacement, RecordingAdapterAvailability,
     RecordingAdapterKind, ReflectionEmitter, ReflectionEnvironmentRig, ReflectionLightAppearance,
     ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight, RenderScale, RenderWindow,
@@ -680,7 +680,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 31;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 32;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9;
@@ -804,6 +804,15 @@ pub struct ScreenSceneFrameResolverV1 {
     resolver: SceneFrameResolver,
     device: ScreenDeviceProfile,
     pipeline: ScreenPhysicalPipelineSnapshot,
+}
+
+/// Opaque Application-owned render materialization. It closes scene identity, exact temporal
+/// samples and host raster context before the host acquires any media.
+pub struct ScreenPreparedRenderV1 {
+    prepared: PreparedRender,
+    device: ScreenDeviceProfile,
+    pipeline: ScreenPhysicalPipelineSnapshot,
+    is_temporally_varying: bool,
 }
 
 #[repr(C)]
@@ -943,23 +952,15 @@ pub struct ScreenPhysicalStageContributionV3 {
 }
 
 #[repr(C)]
-pub struct ScreenPhysicalFrameRequestV2 {
+#[derive(Clone, Copy)]
+pub struct ScreenPreparedRenderRequestV1 {
     abi_version: u32,
     frame_index: i64,
-    timed_inputs: *const ScreenPhysicalTimedInputSetV2,
-    environment_acescg: *const ScreenPhysicalTexture,
-    scene_resolver: *const ScreenSceneFrameResolverV1,
     shutter_open_numerator: i64,
     shutter_open_denominator: u32,
     shutter_close_numerator: i64,
     shutter_close_denominator: u32,
-    quality: u32,
-    device_vfx_alpha_mode: u32,
-    screen_amount: f32,
-    stage_contributions: *const ScreenPhysicalStageContributionV3,
-    stage_contribution_count: usize,
-    requested_width: u32,
-    requested_height: u32,
+    temporal_sample_count: u16,
     render_full_width: u32,
     render_full_height: u32,
     render_window_x: u32,
@@ -972,6 +973,21 @@ pub struct ScreenPhysicalFrameRequestV2 {
     render_scale_y_denominator: u32,
     pixel_aspect_numerator: u32,
     pixel_aspect_denominator: u32,
+}
+
+#[repr(C)]
+pub struct ScreenPhysicalFrameRequestV2 {
+    abi_version: u32,
+    timed_inputs: *const ScreenPhysicalTimedInputSetV2,
+    environment_acescg: *const ScreenPhysicalTexture,
+    prepared_render: *const ScreenPreparedRenderV1,
+    quality: u32,
+    device_vfx_alpha_mode: u32,
+    screen_amount: f32,
+    stage_contributions: *const ScreenPhysicalStageContributionV3,
+    stage_contribution_count: usize,
+    requested_width: u32,
+    requested_height: u32,
     requested_intermediate: u32,
     cancellation_identity: ScreenPhysicalIdentity128,
     progress_identity: ScreenPhysicalIdentity128,
@@ -2079,41 +2095,137 @@ fn sample_index_for_times(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_physical_temporal_sample_requirements_v1(
-    shutter_open_numerator: i64,
-    shutter_open_denominator: u32,
-    shutter_close_numerator: i64,
-    shutter_close_denominator: u32,
-    temporal_sample_count: u16,
+pub unsafe extern "C" fn screen_prepared_render_v1_create(
+    resolver: *const ScreenSceneFrameResolverV1,
+    request: *const ScreenPreparedRenderRequestV1,
+    error_message: *mut *const c_char,
+) -> *mut ScreenPreparedRenderV1 {
+    if resolver.is_null() || request.is_null() {
+        unsafe { set_error(error_message, b"missing prepared-render input\0") };
+        return std::ptr::null_mut();
+    }
+    let resolver = unsafe { &*resolver };
+    let request = unsafe { &*request };
+    if request.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION || request.frame_index < 0 {
+        unsafe { set_error(error_message, b"invalid prepared-render request\0") };
+        return std::ptr::null_mut();
+    }
+    let (Ok(shutter_open), Ok(shutter_close)) = (
+        RationalTime::new(
+            request.shutter_open_numerator,
+            request.shutter_open_denominator,
+        ),
+        RationalTime::new(
+            request.shutter_close_numerator,
+            request.shutter_close_denominator,
+        ),
+    ) else {
+        unsafe { set_error(error_message, b"invalid prepared-render shutter interval\0") };
+        return std::ptr::null_mut();
+    };
+    let Ok(exposure_duration) = shutter_close.checked_sub(shutter_open) else {
+        unsafe { set_error(error_message, b"invalid prepared-render shutter duration\0") };
+        return std::ptr::null_mut();
+    };
+    let Ok(frame_time) = exposure_duration
+        .checked_mul_ratio(1, 2)
+        .and_then(|half| shutter_open.checked_add(half))
+    else {
+        unsafe { set_error(error_message, b"invalid prepared-render midpoint\0") };
+        return std::ptr::null_mut();
+    };
+    let Ok(center) = resolver
+        .resolver
+        .resolve_at(request.frame_index, frame_time)
+    else {
+        unsafe {
+            set_error(
+                error_message,
+                b"scene cannot be resolved at render midpoint\0",
+            )
+        };
+        return std::ptr::null_mut();
+    };
+    let context = RasterExtent::new(request.render_full_width, request.render_full_height)
+        .and_then(|full| {
+            let window = RenderWindow::new(
+                full,
+                request.render_window_x,
+                request.render_window_y,
+                request.render_window_width,
+                request.render_window_height,
+            )?;
+            let scale = RenderScale::new(
+                request.render_scale_x_numerator,
+                request.render_scale_x_denominator,
+                request.render_scale_y_numerator,
+                request.render_scale_y_denominator,
+            )?;
+            HostRenderContext::new(
+                frame_time,
+                center.frame_rate(),
+                window,
+                scale,
+                request.pixel_aspect_numerator,
+                request.pixel_aspect_denominator,
+            )
+        });
+    let Ok(context) = context else {
+        unsafe { set_error(error_message, b"invalid prepared-render host context\0") };
+        return std::ptr::null_mut();
+    };
+    let prepared = match prepare_capture_render(
+        &resolver.resolver,
+        request.frame_index,
+        context,
+        shutter_open,
+        shutter_close,
+        request.temporal_sample_count,
+        PhaseSpatialRequirement::FullFrame,
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            unsafe { set_error(error_message, b"Application could not prepare the render\0") };
+            return std::ptr::null_mut();
+        }
+    };
+    unsafe { set_error(error_message, b"\0") };
+    Box::into_raw(Box::new(ScreenPreparedRenderV1 {
+        prepared,
+        device: resolver.device,
+        pipeline: resolver.pipeline,
+        is_temporally_varying: resolver.resolver.is_temporally_varying(),
+    }))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_prepared_render_v1_temporal_requirements(
+    prepared: *const ScreenPreparedRenderV1,
     requirements: *mut ScreenPhysicalTemporalSampleRequirementV1,
     requirement_capacity: usize,
     requirement_count: *mut usize,
     error_message: *mut *const c_char,
 ) -> bool {
-    let (Ok(open), Ok(close)) = (
-        RationalTime::new(shutter_open_numerator, shutter_open_denominator),
-        RationalTime::new(shutter_close_numerator, shutter_close_denominator),
-    ) else {
-        unsafe { set_error(error_message, b"invalid temporal requirement interval\0") };
+    if prepared.is_null() {
+        unsafe { set_error(error_message, b"missing prepared render\0") };
         return false;
-    };
-    let Ok(samples) = screen_application::physical_shutter_schedule(
-        open,
-        close,
-        temporal_sample_count,
-    ) else {
-        unsafe { set_error(error_message, b"invalid temporal sample requirements\0") };
-        return false;
-    };
-    if requirement_count.is_null()
-        || requirements.is_null()
-        || requirement_capacity < samples.len()
+    }
+    let samples = unsafe { &*prepared }
+        .prepared
+        .requirements()
+        .temporal_samples();
+    if requirement_count.is_null() || requirements.is_null() || requirement_capacity < samples.len()
     {
-        unsafe { set_error(error_message, b"insufficient temporal requirement storage\0") };
+        unsafe {
+            set_error(
+                error_message,
+                b"insufficient temporal requirement storage\0",
+            )
+        };
         return false;
     }
     let output = unsafe { std::slice::from_raw_parts_mut(requirements, samples.len()) };
-    for (destination, sample) in output.iter_mut().zip(samples) {
+    for (destination, sample) in output.iter_mut().zip(samples.iter()) {
         *destination = ScreenPhysicalTemporalSampleRequirementV1 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             start_numerator: sample.start.numerator(),
@@ -2130,6 +2242,13 @@ pub unsafe extern "C" fn screen_physical_temporal_sample_requirements_v1(
         set_error(error_message, b"\0");
     }
     true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_prepared_render_v1_release(prepared: *mut ScreenPreparedRenderV1) {
+    if !prepared.is_null() {
+        drop(unsafe { Box::from_raw(prepared) });
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2193,36 +2312,13 @@ unsafe fn physical_frame_submit_impl(
     }
     // SAFETY: the non-null request is immutable for this call.
     let request = unsafe { &*request };
-    let render_window_end_x = request
-        .render_window_x
-        .checked_add(request.render_window_width);
-    let render_window_end_y = request
-        .render_window_y
-        .checked_add(request.render_window_height);
     if request.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION
-        || request.frame_index < 0
         || request.timed_inputs.is_null()
-        || request.scene_resolver.is_null()
-        || request.shutter_open_denominator == 0
-        || request.shutter_close_denominator == 0
+        || request.prepared_render.is_null()
         || quality(request.quality).is_none()
         || request.device_vfx_alpha_mode > SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY
         || request.requested_width == 0
         || request.requested_height == 0
-        || request.render_full_width == 0
-        || request.render_full_height == 0
-        || request.render_window_width == 0
-        || request.render_window_height == 0
-        || request.render_scale_x_numerator == 0
-        || request.render_scale_x_denominator == 0
-        || request.render_scale_y_numerator == 0
-        || request.render_scale_y_denominator == 0
-        || request.pixel_aspect_numerator == 0
-        || request.pixel_aspect_denominator == 0
-        || render_window_end_x.is_none()
-        || render_window_end_y.is_none()
-        || render_window_end_x.is_some_and(|end| end > request.render_full_width)
-        || render_window_end_y.is_some_and(|end| end > request.render_full_height)
         || !request.screen_amount.is_finite()
         || !(0.0..=4.0).contains(&request.screen_amount)
         || request.stage_contributions.is_null()
@@ -2235,15 +2331,20 @@ unsafe fn physical_frame_submit_impl(
         };
         return std::ptr::null_mut();
     }
-    if request.render_full_width != request.requested_width
-        || request.render_full_height != request.requested_height
-        || request.render_window_x != 0
-        || request.render_window_y != 0
-        || request.render_window_width != request.render_full_width
-        || request.render_window_height != request.render_full_height
-        || request.render_scale_x_numerator != request.render_scale_x_denominator
-        || request.render_scale_y_numerator != request.render_scale_y_denominator
-        || request.pixel_aspect_numerator != request.pixel_aspect_denominator
+    let prepared = unsafe { &*request.prepared_render };
+    let render_context = prepared.prepared.context();
+    let render_window = render_context.output_window();
+    let (scale_x_numerator, scale_x_denominator) = render_context.render_scale().x();
+    let (scale_y_numerator, scale_y_denominator) = render_context.render_scale().y();
+    let (pixel_aspect_numerator, pixel_aspect_denominator) = render_context.pixel_aspect();
+    if render_window.full().width() != request.requested_width
+        || render_window.full().height() != request.requested_height
+        || render_window.origin_x() != 0
+        || render_window.origin_y() != 0
+        || render_window.extent() != render_window.full()
+        || scale_x_numerator != scale_x_denominator
+        || scale_y_numerator != scale_y_denominator
+        || pixel_aspect_numerator != pixel_aspect_denominator
     {
         unsafe {
             set_error(
@@ -2269,11 +2370,11 @@ unsafe fn physical_frame_submit_impl(
         };
         return std::ptr::null_mut();
     };
-    // SAFETY: validated opaque handles remain borrowed for the job lifetime by ABI contract.
+    // SAFETY: validated opaque handles remain borrowed for this call; the job copies every value
+    // and retains the submitted textures before returning.
     let input = unsafe { &*request.timed_inputs };
-    let scene_resolver = unsafe { &*request.scene_resolver };
-    let device = &scene_resolver.device;
-    let pipeline = &scene_resolver.pipeline;
+    let device = &prepared.device;
+    let pipeline = &prepared.pipeline;
     let environment_texture = match (pipeline.environment, request.environment_acescg.is_null()) {
         (IncidentEnvironment::Procedural(_), true) => None,
         (IncidentEnvironment::Equirectangular(_), false) => {
@@ -2294,26 +2395,15 @@ unsafe fn physical_frame_submit_impl(
         unsafe { set_error(error_message, b"invalid physical raster placement\0") };
         return std::ptr::null_mut();
     };
-    let shutter_open = match RationalTime::new(
-        request.shutter_open_numerator,
-        request.shutter_open_denominator,
-    ) {
-        Ok(value) => value,
-        Err(_) => {
-            unsafe { set_error(error_message, b"invalid shutter-open rational time\0") };
-            return std::ptr::null_mut();
-        }
+    let Some(first_sample) = prepared.prepared.samples().first() else {
+        unsafe { set_error(error_message, b"prepared render has no temporal samples\0") };
+        return std::ptr::null_mut();
     };
-    let shutter_close = match RationalTime::new(
-        request.shutter_close_numerator,
-        request.shutter_close_denominator,
-    ) {
-        Ok(value) if value > shutter_open => value,
-        _ => {
-            unsafe { set_error(error_message, b"invalid shutter interval\0") };
-            return std::ptr::null_mut();
-        }
+    let Some(last_sample) = prepared.prepared.samples().last() else {
+        unreachable!("first prepared sample exists")
     };
+    let shutter_open = first_sample.use_().start;
+    let shutter_close = last_sample.use_().end;
     let exposure_duration = match shutter_close.checked_sub(shutter_open) {
         Ok(value) => value,
         Err(_) => {
@@ -2321,75 +2411,22 @@ unsafe fn physical_frame_submit_impl(
             return std::ptr::null_mut();
         }
     };
-    let frame_time = match shutter_open.checked_add(
-        exposure_duration
-            .checked_mul_ratio(1, 2)
-            .expect("validated exposure can be halved"),
-    ) {
-        Ok(value) => value,
-        Err(_) => {
-            unsafe { set_error(error_message, b"invalid shutter midpoint\0") };
-            return std::ptr::null_mut();
-        }
+    let frame_time = prepared.prepared.center().time();
+    let expected_sample_count = if amounts.shutter_motion == 0.0 {
+        1
+    } else {
+        usize::from(pipeline.shutter_motion.temporal_samples)
     };
-    let initial_center = match scene_resolver
-        .resolver
-        .resolve_at(request.frame_index, frame_time)
-    {
-        Ok(value) => value,
-        Err(_) => {
-            unsafe { set_error(error_message, b"scene cannot be resolved at frame time\0") };
-            return std::ptr::null_mut();
-        }
-    };
-    let prepared_context = RasterExtent::new(request.render_full_width, request.render_full_height)
-        .and_then(|full| {
-            let window = RenderWindow::new(
-                full,
-                request.render_window_x,
-                request.render_window_y,
-                request.render_window_width,
-                request.render_window_height,
-            )?;
-            let scale = RenderScale::new(
-                request.render_scale_x_numerator,
-                request.render_scale_x_denominator,
-                request.render_scale_y_numerator,
-                request.render_scale_y_denominator,
-            )?;
-            HostRenderContext::new(
-                frame_time,
-                initial_center.frame_rate(),
-                window,
-                scale,
-                request.pixel_aspect_numerator,
-                request.pixel_aspect_denominator,
+    if prepared.prepared.samples().len() != expected_sample_count {
+        unsafe {
+            set_error(
+                error_message,
+                b"prepared temporal sample count does not match resolved contributions\0",
             )
-        });
-    let Ok(prepared_context) = prepared_context else {
-        unsafe { set_error(error_message, b"invalid host render context\0") };
+        };
         return std::ptr::null_mut();
-    };
-    let prepared = match prepare_capture_render(
-        &scene_resolver.resolver,
-        request.frame_index,
-        prepared_context,
-        shutter_open,
-        shutter_close,
-        if amounts.shutter_motion == 0.0 {
-            1
-        } else {
-            pipeline.shutter_motion.temporal_samples
-        },
-        PhaseSpatialRequirement::FullFrame,
-    ) {
-        Ok(value) => value,
-        Err(_) => {
-            unsafe { set_error(error_message, b"Application could not prepare the render\0") };
-            return std::ptr::null_mut();
-        }
-    };
-    let resolved_center = prepared.center();
+    }
+    let resolved_center = prepared.prepared.center();
     let Some(quality) = quality(request.quality) else {
         unsafe { set_error(error_message, b"invalid physical quality\0") };
         return std::ptr::null_mut();
@@ -2597,11 +2634,11 @@ unsafe fn physical_frame_submit_impl(
         rendering_intent: pipeline.rendering_intent,
         rendering_intent_enabled: requested_intermediate
             == PhysicalIntermediate::CameraRenderedAcesCg,
-        frame_index: request.frame_index,
+        frame_index: resolved_center.frame_index(),
         requested_intermediate,
     };
-    let mut temporal_inputs = Vec::with_capacity(prepared.samples().len());
-    for prepared_sample in prepared.samples() {
+    let mut temporal_inputs = Vec::with_capacity(prepared.prepared.samples().len());
+    for prepared_sample in prepared.prepared.samples() {
         let use_ = prepared_sample.use_();
         let Some(index) = timed_sample_index(&input.samples, use_.time, input.sampling_policy)
         else {
@@ -2733,7 +2770,7 @@ unsafe fn physical_frame_submit_impl(
         },
         parameter_revision: request.parameter_revision,
         parameter_hash: request.parameter_hash,
-        static_input: input.samples.len() == 1 && !scene_resolver.resolver.is_temporally_varying(),
+        static_input: input.samples.len() == 1 && !prepared.is_temporally_varying,
         sensor_enabled: capture_checkpoint.sensor_enabled,
         sensor_noise_amount: capture_checkpoint.sensor_noise_amount,
         development_enabled: capture_checkpoint.development_enabled,
@@ -7299,23 +7336,14 @@ mod tests {
         contributions[15].discrete_enabled = true;
         assert!(contribution_amounts(&contributions).is_some());
         let identity = ScreenPhysicalIdentity128 { high: 7, low: 9 };
-        let mut request = ScreenPhysicalFrameRequestV2 {
+        let mut prepare_request = ScreenPreparedRenderRequestV1 {
             abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
             frame_index: 0,
-            timed_inputs: input,
-            environment_acescg: std::ptr::null(),
-            scene_resolver,
             shutter_open_numerator: -1,
             shutter_open_denominator: 96,
             shutter_close_numerator: 1,
             shutter_close_denominator: 96,
-            quality: 1,
-            device_vfx_alpha_mode: SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY,
-            screen_amount: 1.0,
-            stage_contributions: contributions.as_ptr(),
-            stage_contribution_count: contributions.len(),
-            requested_width: 4,
-            requested_height: 2,
+            temporal_sample_count: 1,
             render_full_width: 4,
             render_full_height: 2,
             render_window_x: 0,
@@ -7328,6 +7356,23 @@ mod tests {
             render_scale_y_denominator: 1,
             pixel_aspect_numerator: 1,
             pixel_aspect_denominator: 1,
+        };
+        let prepared_render = unsafe {
+            screen_prepared_render_v1_create(scene_resolver, &prepare_request, std::ptr::null_mut())
+        };
+        assert!(!prepared_render.is_null());
+        let mut request = ScreenPhysicalFrameRequestV2 {
+            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+            timed_inputs: input,
+            environment_acescg: std::ptr::null(),
+            prepared_render,
+            quality: 1,
+            device_vfx_alpha_mode: SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY,
+            screen_amount: 1.0,
+            stage_contributions: contributions.as_ptr(),
+            stage_contribution_count: contributions.len(),
+            requested_width: 4,
+            requested_height: 2,
             requested_intermediate: PhysicalIntermediate::DevelopedAcesCg as u32,
             cancellation_identity: identity,
             progress_identity: ScreenPhysicalIdentity128 { high: 1, low: 2 },
@@ -7346,7 +7391,12 @@ mod tests {
             "invalid or unsupported physical frame request"
         );
         request.device_vfx_alpha_mode = SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY;
-        request.render_window_width = 2;
+        prepare_request.render_window_width = 2;
+        let partial_prepared = unsafe {
+            screen_prepared_render_v1_create(scene_resolver, &prepare_request, std::ptr::null_mut())
+        };
+        assert!(!partial_prepared.is_null());
+        request.prepared_render = partial_prepared;
         let mut unsupported_error = std::ptr::null();
         let unsupported_job =
             unsafe { screen_physical_frame_submit(&request, &mut unsupported_error) };
@@ -7356,7 +7406,8 @@ mod tests {
                 .to_string_lossy()
                 .contains("unsupported render window")
         );
-        request.render_window_width = 4;
+        unsafe { screen_prepared_render_v1_release(partial_prepared) };
+        request.prepared_render = prepared_render;
         let mut error = std::ptr::null();
         let job = unsafe { screen_physical_frame_submit(&request, &mut error) };
         let message = if error.is_null() {
@@ -7373,6 +7424,7 @@ mod tests {
             screen_physical_camera_intrinsics_track_v1_release(intrinsics_track);
             screen_physical_screen_pose_track_v2_release(screen_track);
             screen_scene_frame_resolver_v1_release(scene_resolver);
+            screen_prepared_render_v1_release(prepared_render);
             screen_physical_texture_release(source);
             screen_physical_texture_release(signal);
         }

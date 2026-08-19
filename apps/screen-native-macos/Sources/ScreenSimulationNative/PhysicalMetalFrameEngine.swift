@@ -29,12 +29,29 @@ struct PhysicalTemporalSampleRequirement: Equatable, Sendable {
     let weightSeconds: Double
 }
 
+final class PhysicalPreparedRender: @unchecked Sendable {
+    let reference: ScreenPreparedRenderV1Ref
+    let temporalRequirements: [PhysicalTemporalSampleRequirement]
+
+    init(
+        reference: ScreenPreparedRenderV1Ref,
+        temporalRequirements: [PhysicalTemporalSampleRequirement]
+    ) {
+        self.reference = reference
+        self.temporalRequirements = temporalRequirements
+    }
+
+    deinit {
+        screen_prepared_render_v1_release(reference)
+    }
+}
+
 final class PhysicalMetalFrameJob: @unchecked Sendable {
     let cancellationIdentity: PhysicalFrameIdentity
 
     private let handle: ScreenPhysicalFrameJobRef
     private let timedInputs: ScreenPhysicalTimedInputSetV2Ref
-    private let sceneResolver: RustSceneFrameResolver
+    private let preparedRender: PhysicalPreparedRender
     private let sourceTextures: [ScreenPhysicalTextureRef]
     private let deviceSignalTextures: [ScreenPhysicalTextureRef]
     private let environmentTexture: ScreenPhysicalTextureRef?
@@ -45,7 +62,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     init(
         handle: ScreenPhysicalFrameJobRef,
         timedInputs: ScreenPhysicalTimedInputSetV2Ref,
-        sceneResolver: RustSceneFrameResolver,
+        preparedRender: PhysicalPreparedRender,
         sourceTextures: [ScreenPhysicalTextureRef],
         deviceSignalTextures: [ScreenPhysicalTextureRef],
         environmentTexture: ScreenPhysicalTextureRef?,
@@ -56,7 +73,7 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     ) {
         self.handle = handle
         self.timedInputs = timedInputs
-        self.sceneResolver = sceneResolver
+        self.preparedRender = preparedRender
         self.sourceTextures = sourceTextures
         self.deviceSignalTextures = deviceSignalTextures
         self.environmentTexture = environmentTexture
@@ -178,22 +195,49 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
 
 @MainActor
 final class PhysicalMetalFrameEngine {
-    func temporalRequirements(
-        shutter: PhysicalShutterInterval,
-        sampleCount: UInt16
-    ) throws -> [PhysicalTemporalSampleRequirement] {
+    func prepare(
+        sceneResolver: RustSceneFrameResolver,
+        orchestration: PhysicalFrameOrchestration,
+        sampleCount: UInt16,
+        renderContext: PhysicalRenderContext
+    ) throws -> PhysicalPreparedRender {
+        var request = ScreenPreparedRenderRequestV1()
+        request.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+        request.frame_index = orchestration.frame.frameIndex
+        request.shutter_open_numerator = orchestration.shutter.open.numerator
+        request.shutter_open_denominator = orchestration.shutter.open.denominator
+        request.shutter_close_numerator = orchestration.shutter.close.numerator
+        request.shutter_close_denominator = orchestration.shutter.close.denominator
+        request.temporal_sample_count = sampleCount
+        request.render_full_width = UInt32(renderContext.fullDimensions.width)
+        request.render_full_height = UInt32(renderContext.fullDimensions.height)
+        request.render_window_x = renderContext.window.originX
+        request.render_window_y = renderContext.window.originY
+        request.render_window_width = renderContext.window.width
+        request.render_window_height = renderContext.window.height
+        request.render_scale_x_numerator = renderContext.scaleX.numerator
+        request.render_scale_x_denominator = renderContext.scaleX.denominator
+        request.render_scale_y_numerator = renderContext.scaleY.numerator
+        request.render_scale_y_denominator = renderContext.scaleY.denominator
+        request.pixel_aspect_numerator = renderContext.pixelAspect.numerator
+        request.pixel_aspect_denominator = renderContext.pixelAspect.denominator
+        var error: UnsafePointer<CChar>?
+        guard let prepared = screen_prepared_render_v1_create(
+            sceneResolver.reference, &request, &error
+        ) else {
+            throw bridgeError(error, fallback: "Application no pudo preparar el render.")
+        }
+        var succeeded = false
+        defer {
+            if !succeeded { screen_prepared_render_v1_release(prepared) }
+        }
         var raw = [ScreenPhysicalTemporalSampleRequirementV1](
             repeating: .init(), count: Int(sampleCount)
         )
         var count = 0
-        var error: UnsafePointer<CChar>?
         let accepted = raw.withUnsafeMutableBufferPointer { values in
-            screen_physical_temporal_sample_requirements_v1(
-                shutter.open.numerator,
-                shutter.open.denominator,
-                shutter.close.numerator,
-                shutter.close.denominator,
-                sampleCount,
+            screen_prepared_render_v1_temporal_requirements(
+                prepared,
                 values.baseAddress,
                 values.count,
                 &count,
@@ -206,7 +250,7 @@ final class PhysicalMetalFrameEngine {
                 fallback: "Application no pudo preparar las muestras temporales exactas."
             )
         }
-        return try raw.map { value in
+        let requirements = try raw.map { value in
             guard value.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION else {
                 throw PhysicalMetalFrameEngineError.invalidSnapshot
             }
@@ -226,19 +270,22 @@ final class PhysicalMetalFrameEngine {
                 weightSeconds: value.weight_seconds
             )
         }
+        succeeded = true
+        return PhysicalPreparedRender(
+            reference: prepared,
+            temporalRequirements: requirements
+        )
     }
 
     func submit(
         temporalInputs: [PhysicalTemporalInput],
         environmentACEScg: EnvironmentRadianceFrame?,
-        orchestration: PhysicalFrameOrchestration,
-        sceneResolver: RustSceneFrameResolver,
+        preparedRender: PhysicalPreparedRender,
         quality: PhysicalQuality,
         deviceVfxAlphaMode: String,
         screenAmount: Double,
         contributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
-        renderContext: PhysicalRenderContext,
         cancellationIdentity: PhysicalFrameIdentity,
         progressIdentity: PhysicalFrameIdentity,
         parameterRevision: UInt64,
@@ -310,15 +357,9 @@ final class PhysicalMetalFrameEngine {
         let rawContributions = contributions.map(rawContribution)
         var raw = ScreenPhysicalFrameRequestV2()
         raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
-        raw.frame_index = orchestration.frame.frameIndex
         raw.timed_inputs = timedInputs
         raw.environment_acescg = environmentTexture
-        raw.scene_resolver = sceneResolver.reference
-        let shutter = orchestration.shutter
-        raw.shutter_open_numerator = shutter.open.numerator
-        raw.shutter_open_denominator = shutter.open.denominator
-        raw.shutter_close_numerator = shutter.close.numerator
-        raw.shutter_close_denominator = shutter.close.denominator
+        raw.prepared_render = preparedRender.reference
         raw.quality = quality.rawValue
         switch deviceVfxAlphaMode {
         case "ignore":
@@ -331,18 +372,6 @@ final class PhysicalMetalFrameEngine {
         raw.screen_amount = Float(screenAmount)
         raw.requested_width = UInt32(requestedDimensions.width)
         raw.requested_height = UInt32(requestedDimensions.height)
-        raw.render_full_width = UInt32(renderContext.fullDimensions.width)
-        raw.render_full_height = UInt32(renderContext.fullDimensions.height)
-        raw.render_window_x = renderContext.window.originX
-        raw.render_window_y = renderContext.window.originY
-        raw.render_window_width = renderContext.window.width
-        raw.render_window_height = renderContext.window.height
-        raw.render_scale_x_numerator = renderContext.scaleX.numerator
-        raw.render_scale_x_denominator = renderContext.scaleX.denominator
-        raw.render_scale_y_numerator = renderContext.scaleY.numerator
-        raw.render_scale_y_denominator = renderContext.scaleY.denominator
-        raw.pixel_aspect_numerator = renderContext.pixelAspect.numerator
-        raw.pixel_aspect_denominator = renderContext.pixelAspect.denominator
         raw.requested_intermediate = requestedIntermediate.rawValue
         raw.cancellation_identity = ScreenPhysicalIdentity128(
             high: cancellationIdentity.high,
@@ -379,7 +408,7 @@ final class PhysicalMetalFrameEngine {
         return PhysicalMetalFrameJob(
             handle: job,
             timedInputs: timedInputs,
-            sceneResolver: sceneResolver,
+            preparedRender: preparedRender,
             sourceTextures: sourceTextures,
             deviceSignalTextures: deviceSignalTextures,
             environmentTexture: environmentTexture,

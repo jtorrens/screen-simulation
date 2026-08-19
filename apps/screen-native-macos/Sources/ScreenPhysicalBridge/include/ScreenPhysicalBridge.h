@@ -16,11 +16,12 @@ typedef struct ScreenPhysicalCameraPoseTrackV2 *ScreenPhysicalCameraPoseTrackV2R
 typedef struct ScreenPhysicalCameraIntrinsicsTrackV1 *ScreenPhysicalCameraIntrinsicsTrackV1Ref;
 typedef struct ScreenPhysicalScreenPoseTrackV2 *ScreenPhysicalScreenPoseTrackV2Ref;
 typedef struct ScreenSceneFrameResolverV1 *ScreenSceneFrameResolverV1Ref;
+typedef struct ScreenPreparedRenderV1 *ScreenPreparedRenderV1Ref;
 typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 typedef struct ScreenTestAuthoringProfileContext *ScreenTestAuthoringProfileContextRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 31u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 32u
 #define SCREEN_DEVICE_VFX_ALPHA_IGNORE 0u
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
@@ -671,20 +672,11 @@ typedef struct {
 typedef struct {
     uint32_t abi_version;
     int64_t frame_index;
-    ScreenPhysicalTimedInputSetV2Ref timed_inputs;
-    ScreenPhysicalTextureRef environment_acescg;
-    ScreenSceneFrameResolverV1Ref scene_resolver;
     int64_t shutter_open_numerator;
     uint32_t shutter_open_denominator;
     int64_t shutter_close_numerator;
     uint32_t shutter_close_denominator;
-    uint32_t quality;
-    uint32_t device_vfx_alpha_mode;
-    float screen_amount;
-    const ScreenPhysicalStageContributionV3 *stage_contributions;
-    size_t stage_contribution_count;
-    uint32_t requested_width;
-    uint32_t requested_height;
+    uint16_t temporal_sample_count;
     uint32_t render_full_width;
     uint32_t render_full_height;
     uint32_t render_window_x;
@@ -697,6 +689,20 @@ typedef struct {
     uint32_t render_scale_y_denominator;
     uint32_t pixel_aspect_numerator;
     uint32_t pixel_aspect_denominator;
+} ScreenPreparedRenderRequestV1;
+
+typedef struct {
+    uint32_t abi_version;
+    ScreenPhysicalTimedInputSetV2Ref timed_inputs;
+    ScreenPhysicalTextureRef environment_acescg;
+    ScreenPreparedRenderV1Ref prepared_render;
+    uint32_t quality;
+    uint32_t device_vfx_alpha_mode;
+    float screen_amount;
+    const ScreenPhysicalStageContributionV3 *stage_contributions;
+    size_t stage_contribution_count;
+    uint32_t requested_width;
+    uint32_t requested_height;
     uint32_t requested_intermediate;
     ScreenPhysicalIdentity128 cancellation_identity;
     ScreenPhysicalIdentity128 progress_identity;
@@ -1222,17 +1228,19 @@ ScreenPhysicalFrameJobRef screen_physical_frame_submit(
     const ScreenPhysicalFrameRequestV2 *request,
     const char **error_message
 );
-bool screen_physical_temporal_sample_requirements_v1(
-    int64_t shutter_open_numerator,
-    uint32_t shutter_open_denominator,
-    int64_t shutter_close_numerator,
-    uint32_t shutter_close_denominator,
-    uint16_t temporal_sample_count,
+ScreenPreparedRenderV1Ref screen_prepared_render_v1_create(
+    ScreenSceneFrameResolverV1Ref resolver,
+    const ScreenPreparedRenderRequestV1 *request,
+    const char **error_message
+);
+bool screen_prepared_render_v1_temporal_requirements(
+    ScreenPreparedRenderV1Ref prepared,
     ScreenPhysicalTemporalSampleRequirementV1 *requirements,
     size_t requirement_capacity,
     size_t *requirement_count,
     const char **error_message
 );
+void screen_prepared_render_v1_release(ScreenPreparedRenderV1Ref prepared);
 ScreenPhysicalFrameJobRef screen_physical_vfx_transparency_submit(
     const ScreenPhysicalFrameRequestV2 *request,
     const ScreenPhysicalVfxTransparencySpecV1 *spec,

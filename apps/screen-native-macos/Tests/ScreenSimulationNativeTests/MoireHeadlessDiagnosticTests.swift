@@ -1222,7 +1222,14 @@ private func renderMoireVariant(
         trackingMetersPerSourceUnit: nil
     )
     let orchestration = try pipeline.orchestration(for: frame)
-    let job = try PhysicalMetalFrameEngine().submit(
+    let engine = PhysicalMetalFrameEngine()
+    let preparedRender = try engine.prepare(
+        sceneResolver: resolver,
+        orchestration: orchestration,
+        sampleCount: 1,
+        renderContext: .fullFrame(requestedDimensions)
+    )
+    let job = try engine.submit(
         temporalInputs: [.init(
             time: try .init(
                 numerator: orchestration.frame.timeNumerator,
@@ -1232,14 +1239,12 @@ private func renderMoireVariant(
             deviceSignal: context.deviceSignal
         )],
         environmentACEScg: context.environment,
-        orchestration: orchestration,
-        sceneResolver: resolver,
+        preparedRender: preparedRender,
         quality: .native,
         deviceVfxAlphaMode: "device-transparency",
         screenAmount: controller.effectiveScreenAmount,
         contributions: contributions,
         requestedDimensions: requestedDimensions,
-        renderContext: .fullFrame(requestedDimensions),
         cancellationIdentity: frameIdentity,
         progressIdentity: frameIdentity,
         parameterRevision: identity,

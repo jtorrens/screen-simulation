@@ -857,8 +857,20 @@ def validate_exact_temporal_inputs() -> None:
         ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
     ).read_text(encoding="utf-8")
     bridge = (ROOT / "crates/screen-native-bridge/src/lib.rs").read_text(encoding="utf-8")
+    if "screen_physical_temporal_sample_requirements_v1" in bridge:
+        raise ValidationError("bridge restored the independent temporal schedule API")
+    for retired in (
+        "raw.scene_resolver =",
+        "raw.shutter_open_numerator =",
+        "raw.render_full_width =",
+    ):
+        if retired in engine:
+            raise ValidationError(
+                "macOS submit can bypass opaque PreparedRender through: " + retired
+            )
     for required in (
-        "func temporalRequirements(",
+        "func prepare(",
+        "PhysicalPreparedRender",
         "temporalInputs: [PhysicalTemporalInput]",
         "ScreenPhysicalTimedInputSampleV2",
         "SCREEN_PHYSICAL_SOURCE_SAMPLE_EXACT",
@@ -866,14 +878,16 @@ def validate_exact_temporal_inputs() -> None:
         if required not in engine:
             raise ValidationError("macOS host omits exact temporal input contract: " + required)
     for required in (
-        "physicalEngine.temporalRequirements(",
+        "physicalEngine.prepare(",
+        "preparedRender.temporalRequirements",
         "renderFrame(at: requirement.time)",
         "temporalInputs: temporalInputs",
     ):
         if required not in workspace:
             raise ValidationError("physical submit freezes nominal media during shutter: " + required)
     for required in (
-        "screen_physical_temporal_sample_requirements_v1",
+        "screen_prepared_render_v1_create",
+        "screen_prepared_render_v1_temporal_requirements",
         "prepare_capture_render(",
         "source sampling policy cannot resolve an exact prepared sample time",
     ):

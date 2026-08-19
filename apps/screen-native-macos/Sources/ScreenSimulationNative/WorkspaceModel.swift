@@ -6932,10 +6932,22 @@ final class WorkspaceModel: ObservableObject {
         })?.amount ?? 0
         let temporalCount: UInt16 = shutterMotionAmount == 0
             ? 1 : effectiveAuthoringState.shutterMotion.temporalSamples
-        let requirements = try physicalEngine.temporalRequirements(
-            shutter: orchestration.shutter,
-            sampleCount: temporalCount
+        let effectiveIntermediate = requestedIntermediateOverride ?? requestedPhysicalIntermediate
+        let requestedDimensions = try requestedDimensionsOverride
+            ?? physicalRequestedDimensions(
+                quality: quality,
+                intermediate: effectiveIntermediate,
+                device: resolvedFrame.device.definition,
+                captureWidth: resolvedFrame.activeSensorWindow.width,
+                captureHeight: resolvedFrame.activeSensorWindow.height
+            )
+        let preparedRender = try physicalEngine.prepare(
+            sceneResolver: resolvedFrame.resolver,
+            orchestration: orchestration,
+            sampleCount: temporalCount,
+            renderContext: .fullFrame(requestedDimensions)
         )
+        let requirements = preparedRender.temporalRequirements
         let nominalTime = CMTime(
             value: CMTimeValue(resolvedFrame.selection.timeNumerator),
             timescale: CMTimeScale(resolvedFrame.selection.timeDenominator)
@@ -7006,32 +7018,21 @@ final class WorkspaceModel: ObservableObject {
             high: physicalModel.parameterRevision,
             low: physicalIdentityCounter
         )
-        let effectiveIntermediate = requestedIntermediateOverride ?? requestedPhysicalIntermediate
         if publishesPreviewState {
             physicalPublicationSummary = "Source \(publicationInput.sourceACEScg.width)×\(publicationInput.sourceACEScg.height) · Device \(publicationInput.deviceSignal.width)×\(publicationInput.deviceSignal.height) · \(quality.uiLabel)/\(effectiveIntermediate.uiLabel) · \(temporalInputs.count) muestras exactas · enviado"
             physicalPublicationLog.notice(
                 "submit source=\(publicationInput.sourceACEScg.width)x\(publicationInput.sourceACEScg.height) device=\(publicationInput.deviceSignal.width)x\(publicationInput.deviceSignal.height) samples=\(temporalInputs.count) quality=\(quality.uiLabel, privacy: .public) intermediate=\(effectiveIntermediate.uiLabel, privacy: .public) cameraZ=\(effectiveAuthoringState.cameraPose.position[2])"
             )
         }
-        let requestedDimensions = try requestedDimensionsOverride
-            ?? physicalRequestedDimensions(
-                quality: quality,
-                intermediate: effectiveIntermediate,
-                device: resolvedFrame.device.definition,
-                captureWidth: resolvedFrame.activeSensorWindow.width,
-                captureHeight: resolvedFrame.activeSensorWindow.height
-            )
         let job = try physicalEngine.submit(
             temporalInputs: temporalInputs,
             environmentACEScg: environmentRadianceFrame,
-            orchestration: orchestration,
-            sceneResolver: resolvedFrame.resolver,
+            preparedRender: preparedRender,
             quality: quality,
             deviceVfxAlphaMode: effectiveAuthoringState.deviceVfxAlphaMode,
             screenAmount: physicalModel.effectiveScreenAmount,
             contributions: contributions,
             requestedDimensions: requestedDimensions,
-            renderContext: .fullFrame(requestedDimensions),
             cancellationIdentity: identity,
             progressIdentity: identity,
             parameterRevision: physicalModel.parameterRevision,
