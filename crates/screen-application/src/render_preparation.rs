@@ -445,7 +445,16 @@ pub fn prepare_capture_render(
         .map(|use_| {
             Ok(PreparedSceneSample {
                 use_,
-                scene: resolver.resolve_at(frame_index, use_.time)?,
+                scene: if use_.time == center.time() {
+                    center
+                } else {
+                    resolver.resolve_prepared_at(
+                        frame_index,
+                        use_.time,
+                        center.active_sensor(),
+                        context,
+                    )?
+                },
             })
         })
         .collect::<Result<Vec<_>, PreparedRenderError>>()?;
@@ -577,6 +586,41 @@ mod tests {
         );
         assert!(prepared.samples()[0].scene().camera().position.x < 0.0);
         assert!(prepared.samples()[1].scene().camera().position.x > 0.0);
+    }
+
+    #[test]
+    fn repeated_preparation_reuses_only_exact_resolved_scene_samples() {
+        let resolver = crate::scene_resolution::tests::resolver_for_sensor(8, 6, 4.0 / 3.0);
+        resolver.set_temporal_cache_configuration(crate::TemporalCacheConfiguration::new(4096));
+        let context = HostRenderContext::new(
+            RationalTime::new(0, 1).unwrap(),
+            FrameRate::new(24, 1).unwrap(),
+            RenderWindow::full_frame(RasterExtent::new(8, 6).unwrap()),
+            RenderScale::ONE,
+            1,
+            1,
+        )
+        .unwrap();
+        let prepare = || {
+            prepare_capture_render(
+                &resolver,
+                0,
+                context,
+                RationalTime::new(-1, 48).unwrap(),
+                RationalTime::new(1, 48).unwrap(),
+                2,
+                PhaseSpatialRequirement::FullFrame,
+            )
+            .unwrap()
+        };
+        let first = prepare();
+        let after_first = resolver.temporal_cache_stats();
+        let second = prepare();
+        let after_second = resolver.temporal_cache_stats();
+        assert_eq!(first.samples(), second.samples());
+        assert_eq!(after_first.misses, 2);
+        assert_eq!(after_second.hits, 2);
+        assert_eq!(after_second.misses, after_first.misses);
     }
 
     #[test]

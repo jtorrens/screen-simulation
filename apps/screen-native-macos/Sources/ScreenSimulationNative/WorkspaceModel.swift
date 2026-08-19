@@ -460,6 +460,13 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceACEScgFrame: StudioColorMetalFrame?
     private var sourceAdjustmentOwner: SceneAdjustmentFrame?
     private var environmentAdjustmentOwner: SceneAdjustmentFrame?
+    private struct CachedSceneResolver {
+        let revision: UInt64
+        let frameRate: ExactFrameRate
+        let temporalSamplesOverride: UInt16?
+        let resolver: RustSceneFrameResolver
+    }
+    private var cachedSceneResolver: CachedSceneResolver?
     private var authoredImageEnvironment: PhysicalPipelineAuthoringState.Environment?
     private var environmentSourceHash: String?
     private var environmentSourceInputTransformID: String?
@@ -3933,19 +3940,34 @@ final class WorkspaceModel: ObservableObject {
         deviceDefinition.panelLightSpread.characterStrength = spreadAmount
         let device = try deviceDefinition.resolved()
         let pipeline = try authored.resolvedPipeline().resolving(contributions: contributions)
-        let resolver = try RustSceneFrameResolver(
-            revision: physicalModel.parameterRevision,
-            frameRate: exactFrameRate,
-            base: authored,
-            resolvedDevice: device,
-            resolvedPipeline: pipeline,
-            trackingCamera: trackingCameraEnabled ? selectedTrackingCamera : nil,
-            trackingMetersPerSourceUnit: trackingCameraEnabled
-                ? trackingMetersPerSourceUnit : nil,
-            autofocusEnabled: authoringSelection.autofocusEnabled,
-            autofocusTargetU: authoringSelection.autofocusTargetU,
-            autofocusTargetV: authoringSelection.autofocusTargetV
-        )
+        let revision = physicalModel.parameterRevision
+        let resolver: RustSceneFrameResolver
+        if let cachedSceneResolver,
+           cachedSceneResolver.revision == revision,
+           cachedSceneResolver.frameRate == exactFrameRate,
+           cachedSceneResolver.temporalSamplesOverride == temporalSamplesOverride {
+            resolver = cachedSceneResolver.resolver
+        } else {
+            resolver = try RustSceneFrameResolver(
+                revision: revision,
+                frameRate: exactFrameRate,
+                base: authored,
+                resolvedDevice: device,
+                resolvedPipeline: pipeline,
+                trackingCamera: trackingCameraEnabled ? selectedTrackingCamera : nil,
+                trackingMetersPerSourceUnit: trackingCameraEnabled
+                    ? trackingMetersPerSourceUnit : nil,
+                autofocusEnabled: authoringSelection.autofocusEnabled,
+                autofocusTargetU: authoringSelection.autofocusTargetU,
+                autofocusTargetV: authoringSelection.autofocusTargetV
+            )
+            cachedSceneResolver = .init(
+                revision: revision,
+                frameRate: exactFrameRate,
+                temporalSamplesOverride: temporalSamplesOverride,
+                resolver: resolver
+            )
+        }
         let raw = try resolver.resolve(selection)
         Self.applyResolvedScene(raw, to: &authored)
         let activeSensorWindow = try PhysicalActiveSensorWindow(

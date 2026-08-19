@@ -7,6 +7,123 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::{ActiveSensorWindow, HostRenderContext, SceneRevision};
+use screen_contracts::RationalTime;
+
+/// Current workstation budget for exact resolved scene samples. Hosts do not choose the key or
+/// retention policy; a future product control may replace this explicit Application value.
+pub const WORKSTATION_RESOLVED_SCENE_CACHE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Typed Application artifact retained by the temporal cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TemporalArtifactIdentity {
+    ResolvedSceneFrameV1,
+}
+
+/// Numeric implementation identity for a cached artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TemporalBackendIdentity {
+    HostNeutralReference,
+}
+
+/// Quality identity for a cached artifact. Scene resolution is exact and has no preview tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TemporalQualityIdentity {
+    Exact,
+}
+
+/// Complete exact identity of one temporal render artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TemporalArtifactKey {
+    scene_revision: SceneRevision,
+    frame_index: i64,
+    time_numerator: i64,
+    time_denominator: u32,
+    artifact: TemporalArtifactIdentity,
+    full_sensor_width: u32,
+    full_sensor_height: u32,
+    active_origin_x: u32,
+    active_origin_y: u32,
+    active_width: u32,
+    active_height: u32,
+    render_full_width: u32,
+    render_full_height: u32,
+    render_origin_x: u32,
+    render_origin_y: u32,
+    render_width: u32,
+    render_height: u32,
+    render_scale_x_numerator: u32,
+    render_scale_x_denominator: u32,
+    render_scale_y_numerator: u32,
+    render_scale_y_denominator: u32,
+    pixel_aspect_numerator: u32,
+    pixel_aspect_denominator: u32,
+    quality: TemporalQualityIdentity,
+    backend: TemporalBackendIdentity,
+}
+
+impl TemporalArtifactKey {
+    pub fn resolved_scene_frame(
+        scene_revision: SceneRevision,
+        frame_index: i64,
+        time: RationalTime,
+        active_sensor: ActiveSensorWindow,
+        context: HostRenderContext,
+    ) -> Self {
+        let (time_numerator, time_denominator) = canonical_time(time);
+        let full_sensor = active_sensor.full_sensor().extent();
+        let active = active_sensor.extent();
+        let window = context.output_window();
+        let render_full = window.full();
+        let render_extent = window.extent();
+        let (scale_x_numerator, scale_x_denominator) = context.render_scale().x();
+        let (scale_y_numerator, scale_y_denominator) = context.render_scale().y();
+        let (pixel_aspect_numerator, pixel_aspect_denominator) = context.pixel_aspect();
+        Self {
+            scene_revision,
+            frame_index,
+            time_numerator,
+            time_denominator,
+            artifact: TemporalArtifactIdentity::ResolvedSceneFrameV1,
+            full_sensor_width: full_sensor.width(),
+            full_sensor_height: full_sensor.height(),
+            active_origin_x: active_sensor.origin_x(),
+            active_origin_y: active_sensor.origin_y(),
+            active_width: active.width(),
+            active_height: active.height(),
+            render_full_width: render_full.width(),
+            render_full_height: render_full.height(),
+            render_origin_x: window.origin_x(),
+            render_origin_y: window.origin_y(),
+            render_width: render_extent.width(),
+            render_height: render_extent.height(),
+            render_scale_x_numerator: scale_x_numerator,
+            render_scale_x_denominator: scale_x_denominator,
+            render_scale_y_numerator: scale_y_numerator,
+            render_scale_y_denominator: scale_y_denominator,
+            pixel_aspect_numerator,
+            pixel_aspect_denominator,
+            quality: TemporalQualityIdentity::Exact,
+            backend: TemporalBackendIdentity::HostNeutralReference,
+        }
+    }
+}
+
+fn canonical_time(time: RationalTime) -> (i64, u32) {
+    let mut left = time.numerator().unsigned_abs();
+    let mut right = u64::from(time.denominator());
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    let divisor = left.max(1);
+    (
+        time.numerator() / i64::try_from(divisor).expect("time divisor fits i64"),
+        time.denominator() / u32::try_from(divisor).expect("time divisor fits u32"),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TemporalCacheConfiguration {
     maximum_bytes: u64,
@@ -238,6 +355,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{RasterExtent, RenderScale, RenderWindow};
+    use screen_contracts::FrameRate;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
 
@@ -355,5 +474,60 @@ mod tests {
             .unwrap();
         assert_eq!(cache.stats().entries, 0);
         assert_eq!(cache.stats().resident_bytes, 0);
+    }
+
+    #[test]
+    fn resolved_scene_key_separates_exact_time_and_global_render_region() {
+        let full = crate::FullSensorRaster::new(4608, 3164).unwrap();
+        let active = crate::ActiveSensorWindow::new(full, 0, 286, 4608, 2592).unwrap();
+        let context = |origin_x| {
+            HostRenderContext::new(
+                RationalTime::new(0, 1).unwrap(),
+                FrameRate::new(24, 1).unwrap(),
+                RenderWindow::new(
+                    RasterExtent::new(3840, 2160).unwrap(),
+                    origin_x,
+                    0,
+                    1920,
+                    1080,
+                )
+                .unwrap(),
+                RenderScale::ONE,
+                1,
+                1,
+            )
+            .unwrap()
+        };
+        let base = TemporalArtifactKey::resolved_scene_frame(
+            SceneRevision::new(3),
+            12,
+            RationalTime::new(1, 2).unwrap(),
+            active,
+            context(0),
+        );
+        let another_time = TemporalArtifactKey::resolved_scene_frame(
+            SceneRevision::new(3),
+            12,
+            RationalTime::new(49, 96).unwrap(),
+            active,
+            context(0),
+        );
+        let another_region = TemporalArtifactKey::resolved_scene_frame(
+            SceneRevision::new(3),
+            12,
+            RationalTime::new(1, 2).unwrap(),
+            active,
+            context(1920),
+        );
+        assert_ne!(base, another_time);
+        assert_ne!(base, another_region);
+        let equivalent_time = TemporalArtifactKey::resolved_scene_frame(
+            SceneRevision::new(3),
+            12,
+            RationalTime::new(2, 4).unwrap(),
+            active,
+            context(0),
+        );
+        assert_eq!(base, equivalent_time);
     }
 }

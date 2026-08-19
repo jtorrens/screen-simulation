@@ -41,7 +41,9 @@ pub use scene_resolution::{
     SceneFrameResolver,
 };
 pub use temporal_cache::{
-    CacheArtifact, TemporalArtifactCache, TemporalCacheConfiguration, TemporalCacheStats,
+    CacheArtifact, TemporalArtifactCache, TemporalArtifactIdentity, TemporalArtifactKey,
+    TemporalBackendIdentity, TemporalCacheConfiguration, TemporalCacheStats,
+    TemporalQualityIdentity, WORKSTATION_RESOLVED_SCENE_CACHE_BYTES,
 };
 pub use test_authoring::{
     COLOR_MODE_CONTROL_ID, DEVICE_CONTROL_ID, DEVICE_INTERPRETATION_PHASE_ID,

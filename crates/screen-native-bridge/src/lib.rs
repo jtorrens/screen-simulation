@@ -25,18 +25,18 @@ use screen_application::{
     ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight, RenderScale, RenderWindow,
     ResolvedRateControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
     SceneFocusAuthoring, SceneFrameAuthoring, SceneFrameResolver, SceneRevision,
-    TestAuthoringError, TestAuthoringProfileSource, TestAuthoringSelection,
-    TestCaptureAuthoringProfile, TestCaptureRasterMode, TestControlRequirement,
-    TestCoverAuthoringProfile, TestDeviceAuthoringProfile, TestEnvironmentAuthoringProfile,
-    TestLensAuthoringProfile, TestOwnedChoiceOption,
-    TestPageDescriptor as ApplicationTestPageDescriptor, apply_test_choice,
-    apply_test_choice_with_profiles, apply_test_scalar, apply_test_scalar_with_profiles,
-    apply_test_toggle, apply_test_toggle_with_profiles, compile_reflection_environment,
-    default_test_authoring_selection, default_test_authoring_selection_with_profiles,
-    device_focus_target_at_preview_pixel, diagnostic_signal, evaluate_delivery_raster_rgba32f,
-    evaluate_tracking_overlay, prepare_capture_render, prepare_recording_execution_request,
-    project_device_focus_target, resolve_physical_stage_contributions, test_page_descriptor,
-    test_page_descriptor_with_profiles,
+    TemporalCacheConfiguration, TestAuthoringError, TestAuthoringProfileSource,
+    TestAuthoringSelection, TestCaptureAuthoringProfile, TestCaptureRasterMode,
+    TestControlRequirement, TestCoverAuthoringProfile, TestDeviceAuthoringProfile,
+    TestEnvironmentAuthoringProfile, TestLensAuthoringProfile, TestOwnedChoiceOption,
+    TestPageDescriptor as ApplicationTestPageDescriptor, WORKSTATION_RESOLVED_SCENE_CACHE_BYTES,
+    apply_test_choice, apply_test_choice_with_profiles, apply_test_scalar,
+    apply_test_scalar_with_profiles, apply_test_toggle, apply_test_toggle_with_profiles,
+    compile_reflection_environment, default_test_authoring_selection,
+    default_test_authoring_selection_with_profiles, device_focus_target_at_preview_pixel,
+    diagnostic_signal, evaluate_delivery_raster_rgba32f, evaluate_tracking_overlay,
+    prepare_capture_render, prepare_recording_execution_request, project_device_focus_target,
+    resolve_physical_stage_contributions, test_page_descriptor, test_page_descriptor_with_profiles,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -1581,7 +1581,10 @@ pub unsafe extern "C" fn screen_scene_frame_resolver_v1_create(
     };
     unsafe { set_error(error_message, b"\0") };
     Box::into_raw(Box::new(ScreenSceneFrameResolverV1 {
-        resolver: SceneFrameResolver::new(authoring),
+        resolver: SceneFrameResolver::with_temporal_cache(
+            authoring,
+            TemporalCacheConfiguration::new(WORKSTATION_RESOLVED_SCENE_CACHE_BYTES),
+        ),
         device: *device,
         pipeline: *pipeline,
     }))

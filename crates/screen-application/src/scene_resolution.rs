@@ -5,8 +5,9 @@
 //! consult profiles, tracking assets or mutable host state.
 
 use crate::{
-    ActiveSensorWindow, FullSensorRaster, PhysicalPipelineSnapshot,
-    ResolvedSceneGeometryLensSnapshot, SceneRevision,
+    ActiveSensorWindow, CacheArtifact, FullSensorRaster, HostRenderContext,
+    PhysicalPipelineSnapshot, ResolvedSceneGeometryLensSnapshot, SceneRevision,
+    TemporalArtifactCache, TemporalArtifactKey, TemporalCacheConfiguration, TemporalCacheStats,
 };
 use screen_contracts::{FrameRate, Meters, RationalTime, Vec3};
 use screen_geometry::{
@@ -95,14 +96,35 @@ impl SceneFrameAuthoring {
 }
 
 /// Immutable scene owner retained across frame requests.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct SceneFrameResolver {
     authoring: SceneFrameAuthoring,
+    temporal_cache: std::sync::Arc<
+        TemporalArtifactCache<TemporalArtifactKey, ResolvedSceneFrame, SceneFrameResolutionError>,
+    >,
 }
 
 impl SceneFrameResolver {
-    pub const fn new(authoring: SceneFrameAuthoring) -> Self {
-        Self { authoring }
+    pub fn new(authoring: SceneFrameAuthoring) -> Self {
+        Self::with_temporal_cache(authoring, TemporalCacheConfiguration::new(0))
+    }
+
+    pub fn with_temporal_cache(
+        authoring: SceneFrameAuthoring,
+        configuration: TemporalCacheConfiguration,
+    ) -> Self {
+        Self {
+            authoring,
+            temporal_cache: std::sync::Arc::new(TemporalArtifactCache::new(configuration)),
+        }
+    }
+
+    pub fn temporal_cache_stats(&self) -> TemporalCacheStats {
+        self.temporal_cache.stats()
+    }
+
+    pub fn set_temporal_cache_configuration(&self, configuration: TemporalCacheConfiguration) {
+        self.temporal_cache.set_configuration(configuration);
     }
 
     pub fn resolve_frame(
@@ -186,6 +208,31 @@ impl SceneFrameResolver {
         })
     }
 
+    pub(crate) fn resolve_prepared_at(
+        &self,
+        frame_index: i64,
+        time: RationalTime,
+        expected_active_sensor: ActiveSensorWindow,
+        context: HostRenderContext,
+    ) -> Result<ResolvedSceneFrame, SceneFrameResolutionError> {
+        let key = TemporalArtifactKey::resolved_scene_frame(
+            self.authoring.revision,
+            frame_index,
+            time,
+            expected_active_sensor,
+            context,
+        );
+        self.temporal_cache
+            .get_or_try_insert_with(key, || {
+                let value = self.resolve_at(frame_index, time)?;
+                Ok(CacheArtifact {
+                    value,
+                    resident_bytes: std::mem::size_of::<ResolvedSceneFrame>() as u64,
+                })
+            })
+            .map(|value| *value)
+    }
+
     pub fn covers(&self, start: RationalTime, end: RationalTime) -> bool {
         fn track_covers(
             track: &screen_geometry::TransformTrack,
@@ -220,6 +267,22 @@ impl SceneFrameResolver {
         self.authoring.camera.transform.keyframes.len() > 1
             || self.authoring.camera.intrinsics.keyframes.len() > 1
             || self.authoring.screen.keyframes.len() > 1
+    }
+}
+
+impl std::fmt::Debug for SceneFrameResolver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SceneFrameResolver")
+            .field("authoring", &self.authoring)
+            .field("temporal_cache_stats", &self.temporal_cache.stats())
+            .finish()
+    }
+}
+
+impl PartialEq for SceneFrameResolver {
+    fn eq(&self, other: &Self) -> bool {
+        self.authoring == other.authoring
     }
 }
 

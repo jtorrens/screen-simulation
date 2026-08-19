@@ -857,6 +857,15 @@ def validate_exact_temporal_inputs() -> None:
         ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
     ).read_text(encoding="utf-8")
     bridge = (ROOT / "crates/screen-native-bridge/src/lib.rs").read_text(encoding="utf-8")
+    resolver = (
+        ROOT / "crates/screen-application/src/scene_resolution.rs"
+    ).read_text(encoding="utf-8")
+    preparation = (
+        ROOT / "crates/screen-application/src/render_preparation.rs"
+    ).read_text(encoding="utf-8")
+    temporal_cache = (
+        ROOT / "crates/screen-application/src/temporal_cache.rs"
+    ).read_text(encoding="utf-8")
     if "screen_physical_temporal_sample_requirements_v1" in bridge:
         raise ValidationError("bridge restored the independent temporal schedule API")
     for retired in (
@@ -893,6 +902,31 @@ def validate_exact_temporal_inputs() -> None:
     ):
         if required not in bridge:
             raise ValidationError("Application temporal preparation is incomplete: " + required)
+    for required in (
+        "TemporalArtifactKey",
+        "scene_revision",
+        "time_numerator",
+        "active_origin_x",
+        "render_origin_x",
+        "TemporalQualityIdentity",
+        "TemporalBackendIdentity",
+        "WORKSTATION_RESOLVED_SCENE_CACHE_BYTES",
+        "get_or_try_insert_with",
+    ):
+        if required not in temporal_cache:
+            raise ValidationError("Application temporal cache identity is incomplete: " + required)
+    if "resolve_prepared_at(" not in resolver or "self.temporal_cache" not in resolver:
+        raise ValidationError("resolved scene samples do not consume the Application cache")
+    if "resolver.resolve_prepared_at(" not in preparation:
+        raise ValidationError("PreparedRender bypasses the exact temporal cache")
+    for required in (
+        "CachedSceneResolver",
+        "cachedSceneResolver.revision == revision",
+        "cachedSceneResolver.frameRate == exactFrameRate",
+        "cachedSceneResolver.temporalSamplesOverride == temporalSamplesOverride",
+    ):
+        if required not in workspace:
+            raise ValidationError("workstation does not retain the exact scene resolver: " + required)
 
 
 def main() -> int:

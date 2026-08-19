@@ -74,6 +74,7 @@
       "enforcement": [
         "crates/screen-application/src/scene_resolution.rs",
         "crates/screen-application/src/render_preparation.rs",
+        "crates/screen-application/src/temporal_cache.rs",
         "crates/screen-native-bridge/src/lib.rs",
         "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalMetalFrameEngine.swift",
