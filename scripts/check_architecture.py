@@ -620,7 +620,7 @@ def validate_scene_self_containment() -> None:
         ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
     ).read_text(encoding="utf-8")
     restore = re.search(
-        r"private func restoreTrackingScene\(.*?\n    }\n\n    private func publishMissingMedia",
+        r"private func restoreTrackingScene\(.*?\n    }\n\n    private func currentFrameCheckMetadata",
         workspace,
         flags=re.DOTALL,
     )
@@ -628,6 +628,12 @@ def validate_scene_self_containment() -> None:
         raise ValidationError("Scene Open does not restore embedded 3D authoring directly")
     if any(value in restore.group(0) for value in ("FusionTrackingImporter", "FileManager", ".comp")):
         raise ValidationError("Scene Open re-enters the 3D importer boundary")
+    for forbidden in ("MEDIA MISSING", "publishMissingMedia", "missingMediaFrame"):
+        if forbidden in workspace:
+            raise ValidationError(
+                "Saved Scene external media still exposes a retired placeholder route: "
+                + forbidden
+            )
 
 
 def validate_fusion_scene_color_contract() -> None:

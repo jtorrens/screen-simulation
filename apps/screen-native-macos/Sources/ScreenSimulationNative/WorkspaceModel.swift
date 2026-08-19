@@ -547,7 +547,6 @@ final class WorkspaceModel: ObservableObject {
     }
     private var session = NativeMediaSession()
     private var sourceIsPattern = true
-    private var missingMediaSource: SavedSceneSource?
     private var tickSubscription: AnyCancellable?
     private var physicalSubscription: AnyCancellable?
     private var physicalNativeTask: Task<Void, Never>?
@@ -2882,7 +2881,6 @@ final class WorkspaceModel: ObservableObject {
         pause()
         selectedPattern = pattern
         sourceIsPattern = true
-        missingMediaSource = nil
         sourceName = pattern.label
         sourceDetail = "Patrón SCREEN canónico"
         detection = pattern.sourceDetection
@@ -3352,7 +3350,6 @@ final class WorkspaceModel: ObservableObject {
                     frameRate: sourceTimelineInfo.exactFrameRate
                 )
             sourceIsPattern = false
-            missingMediaSource = nil
             sourceName = info.name
             sourceDetail = info.detail + (detection.note.map { " · Metadata: \($0)" } ?? "")
             sourceTimelineInfo = NativeVideoTimelineInfo(
@@ -3406,7 +3403,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func reconfigureSourceDecode() {
-        guard !sourceIsPattern, missingMediaSource == nil else {
+        guard !sourceIsPattern else {
             rebuildCurrent()
             return
         }
@@ -3472,7 +3469,7 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         isPlaying = true
-        if sourceIsPattern || missingMediaSource != nil { return }
+        if sourceIsPattern { return }
         session.play()
     }
 
@@ -3487,8 +3484,6 @@ final class WorkspaceModel: ObservableObject {
         currentFrame = min(max(0, frame), max(0, frameCount - 1))
         if sourceIsPattern {
             renderPattern()
-            refreshReferenceFrameForCurrentTime()
-        } else if missingMediaSource != nil {
             refreshReferenceFrameForCurrentTime()
         } else {
             Task {
@@ -4839,8 +4834,6 @@ final class WorkspaceModel: ObservableObject {
                 assets: [],
                 missingMedia: nil
             )
-        } else if let missingMediaSource {
-            source = missingMediaSource
         } else {
             let urls = session.sourceURLs
             guard !urls.isEmpty else {
@@ -5045,9 +5038,7 @@ final class WorkspaceModel: ObservableObject {
                 choosePattern(.animatedCheckerboard, undoManager: nil)
             }
         }
-        if missingMediaSource == nil {
-            try await applySceneAuthoring(authoring, undoManager: nil)
-        }
+        try await applySceneAuthoring(authoring, undoManager: nil)
         currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
         try restoreTrackingScene(scene.snapshot.tracking)
         try ensureFiniteEnvironmentEnclosesTimeline()
@@ -5074,9 +5065,7 @@ final class WorkspaceModel: ObservableObject {
             ? nil
             : "La escena se abrió, pero se descartaron recursos externos no disponibles:\n\n"
                 + savedSceneOpenWarnings.map { "• \($0)" }.joined(separator: "\n")
-        status = missingMediaSource == nil
-            ? "Escena abierta · \(scene.name)"
-            : "Escena abierta · \(scene.name) · MEDIA MISSING"
+        status = "Escena abierta · \(scene.name)"
     }
 
     /// Publishes a fully materialized scene in one synchronous MainActor commit.
@@ -5108,7 +5097,6 @@ final class WorkspaceModel: ObservableObject {
         sourceName = staged.sourceName
         sourceDetail = staged.sourceDetail
         sourceIsPattern = staged.sourceIsPattern
-        missingMediaSource = staged.missingMediaSource
         sourceTimelineInfo = staged.sourceTimelineInfo
         includeAudio = staged.includeAudio
         frameCount = staged.frameCount
@@ -5238,76 +5226,6 @@ final class WorkspaceModel: ObservableObject {
         trackingSynthEyesUnit = saved.calibration.unit
         trackingMetersPerSourceUnit = saved.calibration.metersPerSourceUnit
         applyTrackingCameraAtCurrentFrame()
-    }
-
-    private func publishMissingMedia(
-        _ descriptor: SavedMissingMediaDescriptor,
-        source: SavedSceneSource,
-        resetTimeline: Bool = true
-    ) throws {
-        try descriptor.validate()
-        pause()
-        session.reset()
-        sourceIsPattern = false
-        missingMediaSource = source
-        sourceName = "MEDIA MISSING · \(descriptor.originalName)"
-        let exactFrameRate = try descriptor.exactFrameRate
-        sourceDetail = "Medio ausente · \(descriptor.width) × \(descriptor.height) · \(descriptor.frameCount) frames · \(exactFrameRate.framesPerSecond.formatted(.number.precision(.fractionLength(0 ... 3)))) fps"
-        sourceTimelineInfo = .init(
-            exactFrameRate: exactFrameRate,
-            frameCount: descriptor.frameCount
-        )
-        if resetTimeline { applyTimelineAuthority(resetRange: true) }
-        let decoded = Self.missingMediaFrame(
-            width: descriptor.width,
-            height: descriptor.height
-        )
-        let base = try metalDisplay.makeACEScgFrame(
-            width: decoded.width,
-            height: decoded.height,
-            encodedRGBA: decoded.rgba,
-            input: inputTransform,
-            alpha: effectiveAlpha
-        )
-        originACEScgFrame = base
-        sourceACEScgFrame = try adjustedSourceFrame(base)
-        physicalModel.invalidateExternalParameters()
-        if !physicalPreviewOwnsViewerPublication {
-            publishCurrentSceneFrame(base)
-        }
-        rebuildPhysicalSelectedFrame()
-        publishSelectedTestPreview()
-    }
-
-    private static func missingMediaFrame(width: Int, height: Int) -> DecodedNativeFrame {
-        var rgba = [Float](repeating: 0, count: width * height * 4)
-        let stripe = max(8, min(width, height) / 18)
-        for y in 0 ..< height {
-            for x in 0 ..< width {
-                let index = (y * width + x) * 4
-                let checker = ((x / stripe) + (y / stripe)).isMultiple(of: 2)
-                let diagonal = abs(x * height - y * width) < stripe * max(width, height)
-                    || abs((width - 1 - x) * height - y * width)
-                        < stripe * max(width, height)
-                if diagonal {
-                    rgba[index] = 0.9
-                    rgba[index + 1] = 0.05
-                    rgba[index + 2] = 0.08
-                } else {
-                    let level: Float = checker ? 0.18 : 0.08
-                    rgba[index] = level
-                    rgba[index + 1] = level
-                    rgba[index + 2] = level
-                }
-                rgba[index + 3] = 1
-            }
-        }
-        return .init(
-            width: width,
-            height: height,
-            rgba: rgba,
-            sourceDescription: "MEDIA MISSING"
-        )
     }
 
     private func currentFrameCheckMetadata(
@@ -6006,7 +5924,7 @@ final class WorkspaceModel: ObservableObject {
             testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
             testPhysicalIntermediateByPhaseID = snapshot.physicalIntermediateByPhaseID
             physicalModel.setQuality(quality)
-            if !sourceIsPattern, missingMediaSource == nil, !session.sourceURLs.isEmpty {
+            if !sourceIsPattern, !session.sourceURLs.isEmpty {
                 reconfigureSourceDecode()
             }
         }
@@ -6102,7 +6020,6 @@ final class WorkspaceModel: ObservableObject {
             currentFrame = target
             if sourceIsPattern {
                 renderPattern()
-            } else if missingMediaSource != nil {
             } else {
                 renderCurrentMediaFrame(at: CMTime(
                     seconds: requestedSeconds, preferredTimescale: 60_000
@@ -6123,11 +6040,6 @@ final class WorkspaceModel: ObservableObject {
             let next = currentFrame + 1
             currentFrame = next
             renderPattern()
-            refreshReferenceFrameForCurrentTime()
-            return
-        }
-        if missingMediaSource != nil {
-            currentFrame += 1
             refreshReferenceFrameForCurrentTime()
             return
         }
@@ -6211,7 +6123,6 @@ final class WorkspaceModel: ObservableObject {
             isPlaying = true
             if sourceIsPattern {
                 renderPattern()
-            } else if missingMediaSource != nil {
             } else {
                 renderCurrentMediaFrame(at: CMTime(
                     seconds: requestedSeconds, preferredTimescale: 60_000
@@ -6223,10 +6134,6 @@ final class WorkspaceModel: ObservableObject {
         if sourceIsPattern {
             isPlaying = true
             renderPattern()
-            return
-        }
-        if missingMediaSource != nil {
-            isPlaying = true
             return
         }
         Task {
@@ -6246,15 +6153,6 @@ final class WorkspaceModel: ObservableObject {
     private func rebuildCurrent() {
         if sourceIsPattern {
             renderPattern()
-        } else if let missingMediaSource,
-                  let descriptor = missingMediaSource.missingMedia {
-            do {
-                try publishMissingMedia(
-                    descriptor,
-                    source: missingMediaSource,
-                    resetTimeline: false
-                )
-            } catch { errorMessage = error.localizedDescription }
         } else {
             renderCurrentMediaFrame(at: CMTime(
                 seconds: requestedSeconds,
@@ -6345,9 +6243,6 @@ final class WorkspaceModel: ObservableObject {
                 encodedRGBA: decoded.rgba, input: inputTransform, alpha: effectiveAlpha
             )
             return try adjustedSourceFrame(base)
-        }
-        if missingMediaSource != nil, let originACEScgFrame {
-            return try adjustedSourceFrame(originACEScgFrame)
         }
         let time = CMTime(
             seconds: Double(index) / frameRate, preferredTimescale: 60_000
