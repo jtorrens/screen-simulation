@@ -926,6 +926,16 @@ inline float3 flat_cover_transmission(float view_cosine,
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
 }
 
+inline bool rounded_panel_contains(float2 position_meters,
+    constant PhysicalPipelineParams& p) {
+    const float2 panel_half_extent = 0.5f * p.panel_size_meters.xy;
+    const float radius = p.panel_size_meters.z;
+    if (radius <= 0.0f) return all(abs(position_meters) <= panel_half_extent);
+    const float2 q = max(abs(position_meters) - (panel_half_extent - radius), 0.0f);
+    return all(abs(position_meters) <= panel_half_extent)
+        && dot(q, q) <= radius * radius;
+}
+
 inline float panel_rectangle_coverage(float2 position_meters,
     float2 footprint_half_extent_meters, constant PhysicalPipelineParams& p) {
     const float2 panel_half_extent = 0.5f * p.panel_size_meters.xy;
@@ -944,7 +954,22 @@ inline float panel_rectangle_coverage(float2 position_meters,
             coverage[axis] = clamp(overlap / (2.0f * footprint), 0.0f, 1.0f);
         }
     }
-    return coverage.x * coverage.y;
+    const float rectangular = coverage.x * coverage.y;
+    const float radius = p.panel_size_meters.z;
+    if (radius <= 0.0f || rectangular == 0.0f) return rectangular;
+    if (all(footprint_half_extent_meters <= 1.0e-9f)) {
+        return rounded_panel_contains(position_meters, p) ? 1.0f : 0.0f;
+    }
+    uint covered = 0;
+    constexpr uint grid = 4;
+    for (uint y = 0; y < grid; ++y) {
+        for (uint x = 0; x < grid; ++x) {
+            const float2 phase = (float2(x, y) + 0.5f) / float(grid) * 2.0f - 1.0f;
+            covered += rounded_panel_contains(
+                position_meters + phase * footprint_half_extent_meters, p) ? 1 : 0;
+        }
+    }
+    return float(covered) / float(grid * grid);
 }
 
 inline float2 placement_scale(constant PhysicalPipelineParams& p) {
@@ -1028,7 +1053,17 @@ inline float4 area_sample(
 // active panel. Source placement is deliberately not involved: Fill/Crop may
 // map UVs outside the Device back into valid source pixels, but those pixels
 // do not represent emitters beyond the physical panel outline.
-inline float device_rectangle_coverage(float2 minimum, float2 maximum) {
+inline bool rounded_device_contains(float2 point, constant PhysicalPipelineParams& p) {
+    if (any(point < 0.0f) || any(point > 1.0f)) return false;
+    const float2 radius = p.panel_size_meters.z / p.panel_size_meters.xy;
+    if (any(radius <= 0.0f)) return true;
+    const float2 q = abs(point - 0.5f) - (0.5f - radius);
+    const float2 normalized = max(q, 0.0f) / radius;
+    return dot(normalized, normalized) <= 1.0f;
+}
+
+inline float device_rectangle_coverage(float2 minimum, float2 maximum,
+    constant PhysicalPipelineParams& p) {
     const float2 ordered_minimum = min(minimum, maximum);
     const float2 ordered_maximum = max(minimum, maximum);
     const float2 extent = ordered_maximum - ordered_minimum;
@@ -1036,7 +1071,22 @@ inline float device_rectangle_coverage(float2 minimum, float2 maximum) {
     const float2 overlap = max(float2(0.0f),
         min(ordered_maximum, float2(1.0f))
             - max(ordered_minimum, float2(0.0f)));
-    return clamp((overlap.x * overlap.y) / area, 0.0f, 1.0f);
+    const float rectangular = clamp((overlap.x * overlap.y) / area, 0.0f, 1.0f);
+    if (p.panel_size_meters.z <= 0.0f || rectangular == 0.0f) return rectangular;
+    const float2 radius = p.panel_size_meters.z / p.panel_size_meters.xy;
+    if (extent.x * extent.y <= 1.0e-12f) {
+        return rounded_device_contains(ordered_minimum, p) ? 1.0f : 0.0f;
+    }
+    uint covered = 0;
+    constexpr uint grid = 4;
+    for (uint y = 0; y < grid; ++y) {
+        for (uint x = 0; x < grid; ++x) {
+            const float2 point = ordered_minimum
+                + (float2(x, y) + 0.5f) / float(grid) * extent;
+            covered += rounded_device_contains(point, p) ? 1 : 0;
+        }
+    }
+    return float(covered) / float(grid * grid);
 }
 
 kernel void build_physical_row_prefix(
@@ -1309,7 +1359,7 @@ inline float native_channel_at_offset(
 ) {
     const float2 shifted_minimum = device_minimum + offset_uv;
     const float2 shifted_maximum = device_maximum + offset_uv;
-    const float coverage = device_rectangle_coverage(shifted_minimum, shifted_maximum);
+    const float coverage = device_rectangle_coverage(shifted_minimum, shifted_maximum, p);
     if (coverage == 0.0f) return 0.0f;
     const float2 panel_minimum = clamp(
         min(shifted_minimum, shifted_maximum), 0.0f, 1.0f);
@@ -1432,8 +1482,7 @@ kernel void evaluate_physical_pipeline(
     texture2d<float, access::sample> glow_lobe2 [[texture(8)]],
     texture2d<float, access::sample> glow_lobe3 [[texture(9)]],
     constant PhysicalPipelineParams& p [[buffer(0)]],
-    device const float* row_temporal_gains [[buffer(1)]],
-    device const float4* veiling_gate_average [[buffer(2)]],
+    device const float4* veiling_gate_average [[buffer(1)]],
     uint2 local_position [[thread_position_in_grid]]
 ) {
     const uint2 position = uint2(local_position.x, local_position.y + p.output_tile.z);
@@ -1622,7 +1671,7 @@ kernel void evaluate_physical_pipeline(
                 // Every Panel branch consumes the same central integral and EOTF.
                 // Only displaced spread/glow taps and the narrow carrier remain distinct.
                 const float local_panel_coverage = device_rectangle_coverage(
-                    channel_minimum, channel_maximum);
+                    channel_minimum, channel_maximum, p);
                 const float local_alpha = resolved_device_alpha(
                     code.a, local_panel_coverage, p);
                 const float base_linear = panel_linear_channel(code[channel], p) * local_alpha;
@@ -1636,7 +1685,7 @@ kernel void evaluate_physical_pipeline(
                         device_signal, device_row_prefix,
                         carrier_minimum, carrier_maximum, prepared_placement_scale, p);
                     const float carrier_panel_coverage = device_rectangle_coverage(
-                        carrier_minimum, carrier_maximum);
+                        carrier_minimum, carrier_maximum, p);
                     const float preserved_carrier = resolved_device_alpha(
                         carrier_code.a, carrier_panel_coverage, p)
                         * native_channel(
@@ -1706,7 +1755,7 @@ kernel void evaluate_physical_pipeline(
             const float4 matte_sample = area_sample(device_signal, device_row_prefix,
                 matte_minimum, matte_maximum, prepared_placement_scale, p);
             const float matte_panel_coverage = device_rectangle_coverage(
-                matte_minimum, matte_maximum);
+                matte_minimum, matte_maximum, p);
             ideal.a += resolved_device_alpha(
                 matte_sample.a, matte_panel_coverage, p) * layer_weight;
             }
@@ -1792,7 +1841,7 @@ kernel void evaluate_physical_pipeline(
     const float3 moire_free_base = p.strengths.y
         * (continuous_base
             + p.strengths.z * (moire_free_glow - continuous_base));
-    const float temporal_gain = 1.0f + p.strengths.w * (row_temporal_gains[position.y] - 1.0f);
+    const float temporal_gain = 1.0f + p.strengths.w * (p.levels.w - 1.0f);
     const float3 temporally_integrated = sampled_panel * temporal_gain;
     const float3 moire_free_temporally_integrated = moire_free_base * temporal_gain;
     const float view_cosine = cover_cosine * cover_reciprocal;
@@ -1853,7 +1902,7 @@ kernel void evaluate_physical_pipeline(
         case 18: {
             const float2 uv = (float2(position) + 0.5f) / float2(p.output_tile.xy);
             const float2 device_uv = (uv - 0.5f) / p.vfx_raster.xy + 0.5f;
-            const bool inside_device = all(device_uv >= 0.0f) && all(device_uv <= 1.0f);
+            const bool inside_device = rounded_device_contains(device_uv, p);
             selected = inside_device ? covered : glow;
             break;
         }
@@ -1866,15 +1915,14 @@ kernel void evaluate_physical_pipeline(
 kernel void accumulate_physical_pipeline(
     texture2d<float, access::read> sample [[texture(0)]],
     texture2d<float, access::read_write> accumulated [[texture(1)]],
-    constant float4 &weight_reset_row [[buffer(0)]],
+    constant float2 &weight_reset [[buffer(0)]],
     uint2 position [[thread_position_in_grid]])
 {
-    const uint2 target = uint2(position.x, position.y + uint(weight_reset_row.z));
-    if (target.x >= sample.get_width() || target.y >= sample.get_height()
-        || position.y >= uint(weight_reset_row.w)) {
+    if (position.x >= sample.get_width() || position.y >= sample.get_height()) {
         return;
     }
-    const float4 weighted = sample.read(target) * weight_reset_row.x;
-    accumulated.write(weight_reset_row.y != 0.0f ? weighted : accumulated.read(target) + weighted,
-        target);
+    const float4 weighted = sample.read(position) * weight_reset.x;
+    accumulated.write(weight_reset.y != 0.0f
+        ? weighted
+        : accumulated.read(position) + weighted, position);
 }

@@ -666,8 +666,7 @@ mod tests {
     use screen_application::{
         CAPTURE_DEVICE_PRESETS, DeviceSignalRaster, FrameCaptureRequest, OpticalRequest,
         PanelTemporalEvaluation, PreparedDeviceSignalRaster, ProceduralTestPattern,
-        RasterPlacement, RollingDirection, SensorReadout,
-        capture_and_develop_procedural_region_with_backend,
+        RasterPlacement, capture_and_develop_procedural_region_with_backend,
         capture_and_develop_procedural_region_with_compute_backends,
         evaluate_device_signal_spatial_cpu_oracle, evaluate_procedural_spatial_cpu_oracle,
         prepare_device_signal_spatial_plan, prepare_procedural_spatial_plan,
@@ -721,6 +720,7 @@ mod tests {
                 native_height: 1080,
                 active_width: Meters(0.531),
                 active_height: Meters(0.299),
+                corner_radius: Meters(0.0),
                 stripe_layout: StripeLayout::Rgb,
                 black_matrix_fraction: 0.1,
                 eotf_gamma: 2.2,
@@ -1119,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_rolling_capture_preserves_cpu_oracle_codes_with_eight_motion_samples() {
+    fn complete_global_capture_preserves_cpu_oracle_codes_with_eight_motion_samples() {
         let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
         let (sensor, region) = sensor_and_region();
         let capture = FrameCaptureRequest {
@@ -1128,10 +1128,6 @@ mod tests {
             frame_index: 17,
             duration: RationalTime::new(1, 192).expect("shutter"),
             temporal_samples: 8,
-            readout: SensorReadout::Rolling {
-                duration: RationalTime::new(1, 80).expect("readout"),
-                direction: RollingDirection::TopToBottom,
-            },
             neutral_density_stops: 0.0,
             noise_seed: 0x5EED,
         };
@@ -1172,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn static_reuse_matches_cpu_for_rolling_analytic_banding_and_eight_samples() {
+    fn static_reuse_matches_cpu_for_global_analytic_banding_and_eight_samples() {
         let metal = MetalRawDevelopment::new().expect("Metal backend on supported Mac");
         let (sensor, region) = sensor_and_region();
         let mut optics = request();
@@ -1189,10 +1185,6 @@ mod tests {
             frame_index: 17,
             duration: RationalTime::new(1, 800).expect("shutter"),
             temporal_samples: 8,
-            readout: SensorReadout::Rolling {
-                duration: RationalTime::new(1, 100).expect("readout"),
-                direction: RollingDirection::TopToBottom,
-            },
             neutral_density_stops: 0.0,
             noise_seed: 0x0B4A_D1A6,
         };
@@ -1268,10 +1260,6 @@ mod tests {
             frame_index: 17,
             duration: RationalTime::new(1, 800).expect("shutter"),
             temporal_samples: 8,
-            readout: SensorReadout::Rolling {
-                duration: RationalTime::new(1, 100).expect("readout"),
-                direction: RollingDirection::TopToBottom,
-            },
             neutral_density_stops: 0.0,
             noise_seed: 0x051A_17E5,
         };

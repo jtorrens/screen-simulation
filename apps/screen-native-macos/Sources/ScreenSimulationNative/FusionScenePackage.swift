@@ -12,7 +12,6 @@ enum FusionScenePackageError: Error, LocalizedError, Equatable {
     case lensNotRepresentableBySynthEyesDE4
     case nonFinitePixel
     case incompletePhysicalDeviceContribution
-    case unsupportedReferenceInputTransform
 
     var errorDescription: String? {
         switch self {
@@ -26,8 +25,6 @@ enum FusionScenePackageError: Error, LocalizedError, Equatable {
         case .nonFinitePixel: "El raster VFX contiene un valor no finito."
         case .incompletePhysicalDeviceContribution:
             "Fusion Scene Package requiere Screen y Panel Emission al 100 % para exportar la contribución física completa sin consultar el RGB ideal."
-        case .unsupportedReferenceInputTransform:
-            "El Input Transform de la referencia no está disponible en la configuración OCIO Fusion 2.4 del paquete."
         }
     }
 }
@@ -570,18 +567,22 @@ struct FusionScenePackageRequest: Equatable, Sendable {
                 throw FusionScenePackageError.lensNotRepresentableBySynthEyesDE4
             }
         }
-        if let referencePlate {
-            guard StudioColorEngine.fusionSupportedSourceColorSpaces.contains(
-                referencePlate.ocioSourceColorSpace
-            ) else { throw FusionScenePackageError.unsupportedReferenceInputTransform }
-        }
+    }
+}
+
+enum FusionReferenceColorTransform: String, Equatable, Sendable {
+    case rec709GammaToACESAP1
+    case disabled
+
+    static func resolve(inputTransformID: String) -> Self {
+        inputTransformID == "input-rec709" ? .rec709GammaToACESAP1 : .disabled
     }
 }
 
 struct FusionReferencePlate: Equatable, Sendable {
     let sourceURL: URL
     let inputTransformID: String
-    let ocioSourceColorSpace: String
+    let colorTransform: FusionReferenceColorTransform
     let placementID: String
     let width: Int
     let height: Int
@@ -601,13 +602,6 @@ enum FusionScenePackageWriter {
         let configuration = request.configuration
         let options = configuration.fusionScene!
         try request.outputPlan.prepareDirectories()
-        try request.outputPlan.authorizeWrite(
-            to: request.outputPlan.destination.appendingPathComponent(
-                "metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio"
-            ),
-            policy: configuration.overwritePolicy
-        )
-        try writeFusionOCIOConfiguration(to: request.outputPlan.destination)
         var firstPrepared: FusionPreparedPhysicalFrame?
         let frames = Array(configuration.frameRange)
         let fixedThresholdSupport = request.sourceOverscanPixels
@@ -690,7 +684,6 @@ enum FusionScenePackageWriter {
               metadata.raster.activeDeviceRect.width == request.activeRaster.activeWidth,
               metadata.raster.activeDeviceRect.height == request.activeRaster.activeHeight
         else { throw FusionScenePackageError.invalidRaster }
-        try writeFusionOCIOConfiguration(to: request.outputPlan.destination)
         let prepared = FusionPreparedPhysicalFrame(
             width: metadata.raster.width,
             height: metadata.raster.height,
@@ -707,20 +700,6 @@ enum FusionScenePackageWriter {
         )
         try fusionComp(request: request, prepared: prepared)
             .write(to: compURL, atomically: true, encoding: .utf8)
-    }
-
-    private static func writeFusionOCIOConfiguration(to package: URL) throws {
-        let destination = package.appendingPathComponent(
-            "metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio"
-        )
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        let source = try StudioColorEngine.bundledFusionConfigurationURL()
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.copyItem(at: source, to: destination)
     }
 
     static func metadata(
@@ -843,12 +822,20 @@ enum FusionScenePackageWriter {
           Tools = ordered() {
             DeviceRGBA = Loader {
               Clips = { Clip {
+                ID = "Clip1",
                 Filename = "\(media)",
+                FormatID = "OpenEXRFormat",
                 StartFrame = \(configuration.firstFrame),
-                Multiframe = true,
                 Length = \(configuration.frameRange.count),
+                LengthSetManually = true,
                 TrimIn = 0,
                 TrimOut = \(configuration.frameRange.count - 1),
+                ExtendFirst = 0,
+                ExtendLast = 0,
+                Loop = 0,
+                AspectMode = 0,
+                Depth = 0,
+                TimeCode = 0,
                 GlobalStart = \(configuration.firstFrame),
                 GlobalEnd = \(configuration.lastFrame)
               } },
@@ -969,7 +956,8 @@ enum FusionScenePackageWriter {
                 ["RendererOpenGL.EnableAccumEffects"] = Input { Value = \(dofEnabled) },
                 ["RendererOpenGL.EnableAccumDepthOfField"] = Input { Value = \(dofEnabled) },
                 ["RendererOpenGL.AccumQuality"] = Input { Value = 32 },
-                ["RendererOpenGL.DoFBlur"] = Input { SourceOp = "CameraApertureRadius", Source = "Value" }
+                ["RendererOpenGL.DoFBlur"] = Input { SourceOp = "CameraApertureRadius", Source = "Value" },
+                ["RendererOpenGL.MaximumTextureDepth"] = Input { Value = 4 }
               },
               ViewInfo = OperatorInfo { Pos = { 770, 148.5 } }
             },
@@ -1099,22 +1087,49 @@ enum FusionScenePackageWriter {
             : max(Double(deliveryWidth) / Double(reference.width), Double(deliveryHeight) / Double(reference.height)))
         let resizedWidth = stretch ? deliveryWidth : Int((Double(reference.width) * scale).rounded())
         let resizedHeight = stretch ? deliveryHeight : Int((Double(reference.height) * scale).rounded())
+        let colorTransformPassThrough = reference.colorTransform == .disabled
+            ? "  PassThrough = true,\n" : ""
+        let colorTransformEnabled = reference.colorTransform == .disabled ? "false" : "true"
         _ = sourceAspect
         return """
         ReferenceLoader = Loader {
-          Clips = { Clip { Filename = "\(fusionEscapedPath(reference.sourceURL))", StartFrame = \(firstFrame), GlobalStart = \(firstFrame), GlobalEnd = \(lastFrame) } },
+          Clips = { Clip {
+            ID = "Clip1",
+            Filename = "\(fusionEscapedPath(reference.sourceURL))",
+            FormatID = "QuickTimeMovies",
+            StartFrame = \(firstFrame),
+            Length = \(lastFrame - firstFrame + 1),
+            Multiframe = true,
+            TrimIn = 0,
+            TrimOut = \(lastFrame - firstFrame),
+            ExtendFirst = 0,
+            ExtendLast = 0,
+            Loop = 1,
+            AspectMode = 0,
+            Depth = 0,
+            TimeCode = 0,
+            GlobalStart = \(firstFrame),
+            GlobalEnd = \(lastFrame)
+          } },
           GlobalIn = \(firstFrame), GlobalOut = \(lastFrame),
           ViewInfo = OperatorInfo { Pos = { 1100, 346.5 } }
         },
-        ReferenceToACEScg = OCIOColorSpace {
+        ReferenceToACEScg = ColorSpaceTransform {
+        \(colorTransformPassThrough)  CustomData = { Role = "saved-reference-color-transform", InputTransformID = "\(reference.inputTransformID)", ColorTransformContract = "REC709_GAMMA to ACES_AP1_COLORSPACE", Enabled = \(colorTransformEnabled) },
+          CtrlWZoom = false,
           Inputs = {
-            OCIOConfig = Input { Value = "Comp:/../metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio" },
-            SourceSpace = Input { Value = FuID { "\(reference.ocioSourceColorSpace)" } },
-            OutputSpace = Input { Value = FuID { "ACEScg" } },
+            InputGamma = Input { Value = FuID { "REC709_GAMMA" } },
+            OutputColorSpace = Input { Value = FuID { "ACES_AP1_COLORSPACE" } },
+            ToneMappingMethod = Input { Value = FuID { "TM_NONE" } },
+            SrcLumMax = Input { Disabled = true },
+            DstLumMax = Input { Disabled = true },
+            UseHDRStandardConversions = Input { Value = 1 },
+            IsRec2390ScalingEnabled = Input { Value = 1 },
+            IsInitialNotify = Input { Value = 0 },
             Input = Input { SourceOp = "ReferenceLoader", Source = "Output" }
           },
-          CustomData = { Role = "saved-reference-idt", InputTransformID = "\(reference.inputTransformID)", ColorTransformContract = "\(reference.ocioSourceColorSpace) to ACEScg" },
-          ViewInfo = OperatorInfo { Pos = { 1265, 346.5 } }
+          ViewInfo = OperatorInfo { Pos = { 1265, 346.5 } },
+          Version = 1
         },
         ReferenceResize = BetterResize {
           Inputs = {

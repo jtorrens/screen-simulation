@@ -24,6 +24,9 @@ struct ContentView: View {
         case renderPreset = "preset de render"
         case device = "device preset"
         case coverGlass = "preset de Cover Glass"
+        case camera = "perfil de cámara"
+        case lens = "perfil de lente"
+        case environment = "perfil de entorno"
     }
     enum WorkspacePage: String, CaseIterable, Identifiable {
         case main = "Principal"
@@ -66,6 +69,9 @@ struct ContentView: View {
         case renderPresets = "Presets de render"
         case devices = "Devices"
         case coverGlasses = "Cover Glass"
+        case cameras = "Cámaras"
+        case lenses = "Lentes"
+        case environments = "Entornos"
 
         var id: String { rawValue }
         var systemImage: String {
@@ -75,6 +81,9 @@ struct ContentView: View {
             case .renderPresets: "slider.horizontal.3"
             case .devices: "display"
             case .coverGlasses: "square.3.layers.3d"
+            case .cameras: "camera"
+            case .lenses: "camera.aperture"
+            case .environments: "globe"
             }
         }
     }
@@ -149,6 +158,9 @@ struct ContentView: View {
                 model.selectDevice(first.value, coverGlass: cover.value, amount: 0)
             }
         }
+        .onChange(of: library.document) { _, _ in
+            model.refreshActiveSceneFromGlobalLibrary()
+        }
         .onChange(of: page) { _, destination in
             model.setModelPageActive(false)
             model.setTestPageActive(destination == .test)
@@ -192,6 +204,9 @@ struct ContentView: View {
                 case .renderPreset: library.removeSelectedPreset()
                 case .device: library.removeSelectedDevice()
                 case .coverGlass: library.removeSelectedCoverGlass()
+                case .camera: library.removeSelectedCamera()
+                case .lens: library.removeSelectedLens()
+                case .environment: library.removeSelectedEnvironment()
                 case nil: break
                 }
                 pendingLibraryDeletion = nil
@@ -496,6 +511,9 @@ struct ContentView: View {
                 case .renderPresets: renderPresetLibrary
                 case .devices: deviceLibrary
                 case .coverGlasses: coverGlassLibrary
+                case .cameras: cameraLibrary
+                case .lenses: lensLibrary
+                case .environments: environmentLibrary
                 }
             }
         }
@@ -828,6 +846,175 @@ struct ContentView: View {
         }
     }
 
+    private var cameraLibrary: some View {
+        VSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedCameraID) {
+                    ForEach(library.document.cameras) { item in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(item.name)
+                                Text("\(item.gateWidthMillimeters, format: .number) × \(item.gateHeightMillimeters, format: .number) mm")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if item.isLocked { Image(systemName: "lock.fill") }
+                        }.tag(item.id)
+                    }
+                }
+                HStack {
+                    Button(action: library.addCamera) { Image(systemName: "plus") }
+                        .help("Crear cámara global")
+                    Button(action: library.duplicateSelectedCamera) { Image(systemName: "plus.square.on.square") }
+                        .disabled(library.selectedCameraID == nil)
+                    Button(action: library.unlockSelectedCamera) { Image(systemName: "lock.open") }
+                        .disabled(library.selectedCameraItem?.isLocked != true)
+                    Button { pendingLibraryDeletion = .camera } label: { Image(systemName: "trash") }
+                        .disabled(library.selectedCameraItem?.isLocked != false)
+                    Spacer()
+                }.buttonStyle(.borderless).padding(8)
+            }.frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
+            if let camera = library.selectedCameraItem?.value {
+                Form {
+                    Section("Identidad y sensor") {
+                        TextField("Nombre", text: Binding(
+                            get: { camera.name },
+                            set: { value in library.updateSelectedCamera { $0.name = value } }
+                        ))
+                        TextField("Gate ancho (mm)", value: Binding(
+                            get: { camera.gateWidthMillimeters },
+                            set: { value in library.updateSelectedCamera { $0.gateWidthMillimeters = value } }
+                        ), format: .number)
+                        TextField("Gate alto (mm)", value: Binding(
+                            get: { camera.gateHeightMillimeters },
+                            set: { value in library.updateSelectedCamera { $0.gateHeightMillimeters = value } }
+                        ), format: .number)
+                        TextField("F-stop predeterminado", value: Binding(
+                            get: { camera.defaultFStop },
+                            set: { value in library.updateSelectedCamera { $0.defaultFStop = value } }
+                        ), format: .number)
+                        Picker("Lente predeterminada", selection: Binding(
+                            get: { camera.defaultLensID },
+                            set: { value in library.updateSelectedCamera { $0.defaultLensID = value } }
+                        )) {
+                            ForEach(library.document.lenses.filter {
+                                camera.compatibleLensIDs.contains($0.id)
+                            }) { Text($0.name).tag($0.id) }
+                        }
+                    }
+                }.formStyle(.grouped).disabled(library.selectedCameraItem?.isLocked == true)
+            } else {
+                ContentUnavailableView("Sin cámara", systemImage: "camera")
+            }
+        }
+    }
+
+    private var lensLibrary: some View {
+        VSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedLensID) {
+                    ForEach(library.document.lenses) { item in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(item.name)
+                                Text("\(item.nominalFocalLengthMillimeters, format: .number) mm")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if item.isLocked { Image(systemName: "lock.fill") }
+                        }.tag(item.id)
+                    }
+                }
+                HStack {
+                    Button(action: library.addLens) { Image(systemName: "plus") }
+                        .help("Crear lente global")
+                    Button(action: library.duplicateSelectedLens) { Image(systemName: "plus.square.on.square") }
+                        .disabled(library.selectedLensID == nil)
+                    Button(action: library.unlockSelectedLens) { Image(systemName: "lock.open") }
+                        .disabled(library.selectedLensItem?.isLocked != true)
+                    Button { pendingLibraryDeletion = .lens } label: { Image(systemName: "trash") }
+                        .disabled(library.selectedLensItem?.isLocked != false)
+                    Spacer()
+                }.buttonStyle(.borderless).padding(8)
+            }.frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
+            if let lens = library.selectedLensItem?.value {
+                Form {
+                    Section("Perfil óptico") {
+                        TextField("Nombre", text: Binding(
+                            get: { lens.name },
+                            set: { value in library.updateSelectedLens { $0.name = value } }
+                        ))
+                        TextField("Focal nominal (mm)", value: Binding(
+                            get: { lens.nominalFocalLengthMillimeters },
+                            set: { value in library.updateSelectedLens { $0.nominalFocalLengthMillimeters = value } }
+                        ), format: .number)
+                        TextField("Viñeteo", value: Binding(
+                            get: { lens.vignettingStrength },
+                            set: { value in library.updateSelectedLens { $0.vignettingStrength = value } }
+                        ), format: .number)
+                        TextField("Veiling glare", value: Binding(
+                            get: { lens.veilingGlareFraction },
+                            set: { value in library.updateSelectedLens { $0.veilingGlareFraction = value } }
+                        ), format: .number)
+                    }
+                }.formStyle(.grouped).disabled(library.selectedLensItem?.isLocked == true)
+            } else {
+                ContentUnavailableView("Sin lente", systemImage: "camera.aperture")
+            }
+        }
+    }
+
+    private var environmentLibrary: some View {
+        VSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedEnvironmentID) {
+                    ForEach(library.document.environments) { item in
+                        HStack {
+                            Text(item.name)
+                            Spacer()
+                            if item.isLocked { Image(systemName: "lock.fill") }
+                        }.tag(item.id)
+                    }
+                }
+                HStack {
+                    Button(action: library.addEnvironment) { Image(systemName: "plus") }
+                        .help("Crear entorno global")
+                    Button(action: library.duplicateSelectedEnvironment) { Image(systemName: "plus.square.on.square") }
+                        .disabled(library.selectedEnvironmentID == nil)
+                    Button(action: library.unlockSelectedEnvironment) { Image(systemName: "lock.open") }
+                        .disabled(library.selectedEnvironmentItem?.isLocked != true)
+                    Button { pendingLibraryDeletion = .environment } label: { Image(systemName: "trash") }
+                        .disabled(library.selectedEnvironmentItem?.isLocked != false)
+                    Spacer()
+                }.buttonStyle(.borderless).padding(8)
+            }.frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
+            if let profile = library.selectedEnvironmentItem?.value {
+                Form {
+                    Section("Entorno procedural") {
+                        TextField("Nombre", text: Binding(
+                            get: { profile.name },
+                            set: { value in library.updateSelectedEnvironment { $0.name = value } }
+                        ))
+                        TextField("Radio angular key (°)", value: Binding(
+                            get: { profile.environment.keyAngularRadiusDegrees },
+                            set: { value in library.updateSelectedEnvironment { $0.environment.keyAngularRadiusDegrees = value } }
+                        ), format: .number)
+                        TextField("Rotación X (°)", value: Binding(
+                            get: { profile.environment.rotationXDegrees },
+                            set: { value in library.updateSelectedEnvironment { $0.environment.rotationXDegrees = value } }
+                        ), format: .number)
+                        TextField("Rotación Y (°)", value: Binding(
+                            get: { profile.environment.rotationYDegrees },
+                            set: { value in library.updateSelectedEnvironment { $0.environment.rotationYDegrees = value } }
+                        ), format: .number)
+                    }
+                }.formStyle(.grouped).disabled(library.selectedEnvironmentItem?.isLocked == true)
+            } else {
+                ContentUnavailableView("Sin entorno", systemImage: "globe")
+            }
+        }
+    }
+
     private var coverGlassLibrary: some View {
         VSplitView {
             VStack(spacing: 0) {
@@ -1089,6 +1276,12 @@ struct ContentView: View {
                     get: { device.activeHeightMeters },
                     set: { value in library.updateSelectedDevice { $0.activeHeightMeters = value } }
                 ), format: .number.precision(.fractionLength(6)))
+                TextField("Corner Radius (mm)", value: Binding(
+                    get: { device.cornerRadiusMeters * 1_000 },
+                    set: { value in
+                        library.updateSelectedDevice { $0.cornerRadiusMeters = value / 1_000 }
+                    }
+                ), format: .number.precision(.fractionLength(2)))
                 LabeledContent("Diagonal", value: "\(device.diagonalInches.formatted(.number.precision(.fractionLength(1)))) in")
                 LabeledContent("PPI", value: device.pixelsPerInch.formatted(.number.precision(.fractionLength(1))))
                 LabeledContent("Pixel pitch", value: "\(device.pixelPitchMicrometers.formatted(.number.precision(.fractionLength(1)))) µm")
@@ -1681,7 +1874,16 @@ struct ContentView: View {
                     TestAuthoringView(
                         state: presentation,
                         excludedControlIDs: ["device", "color-mode", "white-luminance"],
-                        onIntent: model.handleTestIntent
+                        onScalarEditingChanged: { controlID, editing in
+                            if editing {
+                                model.beginSceneControlEdit(controlID)
+                            } else {
+                                model.endSceneControlEdit(
+                                    controlID, undoManager: undoManager
+                                )
+                            }
+                        },
+                        onIntent: { model.handleTestIntent($0, undoManager: undoManager) }
                     )
                     if !model.environmentSourceEvidence.isEmpty {
                         TestPhaseCard(label: "Entorno HDRI activo") {
@@ -1724,7 +1926,11 @@ struct ContentView: View {
                               })
                         else { return }
                         library.selectedDeviceID = id
-                        model.selectModelDevice(item.value, coverGlass: cover.value)
+                        model.selectModelDevice(
+                            item.value,
+                            coverGlass: cover.value,
+                            undoManager: undoManager
+                        )
                     }
                 )) {
                     ForEach(library.document.devices) { item in
@@ -1740,7 +1946,7 @@ struct ContentView: View {
                         set: { id in
                             model.handleTestIntent(.setChoice(
                                 controlID: "color-mode", optionID: id
-                            ))
+                            ), undoManager: undoManager)
                         }
                     )) {
                         ForEach(selected.colorModeIDs, id: \.self) { id in
@@ -1758,18 +1964,27 @@ struct ContentView: View {
                                 set: { value in
                                     model.handleTestIntent(.setScalar(
                                         controlID: "white-luminance", value: value
-                                    ))
+                                    ), undoManager: undoManager)
                                 }
                             ),
                             in: selected.minimumWhiteLuminance...selected.maximumWhiteLuminance,
-                            step: selected.whiteLuminanceStep
+                            step: selected.whiteLuminanceStep,
+                            onEditingChanged: { editing in
+                                if editing {
+                                    model.beginSceneControlEdit("white-luminance")
+                                } else {
+                                    model.endSceneControlEdit(
+                                        "white-luminance", undoManager: undoManager
+                                    )
+                                }
+                            }
                         )
                         TextField("cd/m²", value: Binding(
                             get: { selected.whiteLevelNits },
                             set: { value in
                                 model.handleTestIntent(.setScalar(
                                     controlID: "white-luminance", value: value
-                                ))
+                                ), undoManager: undoManager)
                             }
                         ), format: .number)
                         .frame(width: 72)
@@ -2157,11 +2372,12 @@ struct ContentView: View {
                 }
                 .accessibilityElement(children: .combine)
                 .contextMenu {
-                    if job.state == .pending {
+                    if [.pending, .failed, .completed].contains(job.state) {
                         Button("Eliminar de la cola", role: .destructive) {
-                            model.removePendingRender(job)
+                            model.removeInactiveRender(job)
                         }
-                    } else if job.state == .completed {
+                    }
+                    if job.state == .completed {
                         Button("Mostrar directorio en Finder") {
                             model.showRenderDestinationInFinder(job)
                         }
@@ -2185,8 +2401,10 @@ struct ContentView: View {
                 } else if model.jobs.contains(where: { $0.state == .pending || $0.state == .rendering }) {
                     Button("Pausa", action: model.pauseRenderQueue)
                 }
-                Button("Limpiar completados", action: model.clearCompletedRenders)
-                    .disabled(!model.jobs.contains { $0.state == .completed })
+                Button("Limpiar terminados", action: model.clearCompletedAndFailedRenders)
+                    .disabled(!model.jobs.contains {
+                        $0.state == .completed || $0.state == .failed
+                    })
                 Spacer()
                 Button("Render Queue", action: model.runQueue)
                     .disabled(!model.outputQueue.isPaused && !model.jobs.contains { $0.state == .pending })
@@ -2232,7 +2450,7 @@ struct ContentView: View {
                 if showTestPhasePicker, let presentation = model.testPresentation {
                     TestPreviewControls(
                         state: presentation,
-                        onIntent: model.handleTestIntent
+                        onIntent: { model.handleTestIntent($0, undoManager: undoManager) }
                     )
                     .frame(maxWidth: 150)
                     NativeRenderButton(

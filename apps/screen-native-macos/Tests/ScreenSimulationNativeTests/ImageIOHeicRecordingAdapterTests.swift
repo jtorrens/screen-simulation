@@ -48,6 +48,59 @@ import UniformTypeIdentifiers
     #expect(codec.encodedSHA256Hex.count == 64)
 }
 
+@MainActor
+@Test func opaqueProResCodecPreservesTheIndependentPhysicalMatte() throws {
+    let width = 96, height = 64
+    let display = try StudioColorMetalDisplay()
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba32Float, width: width, height: height, mipmapped: false
+    )
+    descriptor.storageMode = .shared
+    descriptor.usage = [.shaderRead]
+    let texture = try #require(device.makeTexture(descriptor: descriptor))
+    var pixels = [Float](repeating: 0, count: width * height * 4)
+    let mattes: [Float] = [0, 0.5, 1]
+    for pixel in 0 ..< width * height {
+        let offset = pixel * 4
+        pixels[offset] = 0.18
+        pixels[offset + 1] = 0.08
+        pixels[offset + 2] = 0.03
+        pixels[offset + 3] = mattes[pixel % mattes.count]
+    }
+    pixels.withUnsafeBytes {
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+            withBytes: $0.baseAddress!, bytesPerRow: width * 4 * MemoryLayout<Float>.size
+        )
+    }
+    let output = try RecordingPhaseExecutor.output(
+        cameraRendered: StudioColorMetalFrame(texture: texture),
+        transformID: "generic-rec2100-pq-recording-full-v1",
+        display: display
+    )
+    let codec = try RecordingPhaseExecutor.codec(
+        output: output,
+        profileID: "generic-prores-422-hq-v1",
+        character: 1,
+        outputTransformID: "generic-rec2100-pq-recording-full-v1",
+        display: display
+    )
+    let outputPixels = try display.readLinearRGBA(output.frame)
+    let decodedPixels = try display.readLinearRGBA(codec.frame)
+    for pixel in 0 ..< width * height {
+        let expected = mattes[pixel % mattes.count]
+        #expect(outputPixels[pixel * 4 + 3] == expected)
+        #expect(decodedPixels[pixel * 4 + 3] == expected)
+    }
+    // Spill/additive RGB remains usable even where the matte is zero.
+    #expect(decodedPixels[0] > 0)
+    #expect(decodedPixels[1] > 0)
+    #expect(codec.decodedRGBA8[3] == 0)
+    #expect(codec.decodedRGBA8[7] == 128)
+    #expect(codec.decodedRGBA8[11] == 255)
+}
+
 @Test func imageIOHeicAdapterExecutesOneRealIntraRoundTrip() throws {
     let width = 320
     let height = 192
@@ -112,26 +165,28 @@ import UniformTypeIdentifiers
         rgba[index + 1] = 128
         rgba[index + 2] = 220
     }
-    for codec in [
-        AVFoundationRecordingRequest.Codec.hevcMain8,
-        AVFoundationRecordingRequest.Codec.h264High8,
+    let floatRGBA = rgba.map { Float($0) / 255 }
+    for (codec, color) in [
+        (AVFoundationRecordingRequest.Codec.h264High8, AVFoundationRecordingRequest.Color.rec709),
+        (.hevcMain10, .rec2100PQ),
+        (.proRes422HQ, .rec2100PQ),
+        (.proRes4444, .rec2100PQ),
     ] {
         let result = try AVFoundationRecordingAdapter.roundTrip(.init(
             codec: codec,
+            color: color,
             width: width,
             height: height,
             frameRateNumerator: 24,
             frameRateDenominator: 1,
             firstFrameIndex: 0,
             bitsPerSecond: 4_000_000,
-            fixedGOPFrames: 12,
-            maximumBFrames: 0,
-            frames: [.init(frameIndex: 0, rgba8: rgba)]
+            frames: [.init(frameIndex: 0, rgba: floatRGBA)]
         ))
         #expect(result.encodedData.count > 0)
         #expect(result.encodedSHA256.count == 32)
         #expect(result.frames.count == 1)
-        #expect(result.frames[0].rgba8.count == rgba.count)
+        #expect(result.frames[0].rgba.count == rgba.count)
     }
 }
 

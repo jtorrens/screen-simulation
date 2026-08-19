@@ -3,13 +3,6 @@ import Testing
 import AppKit
 import Metal
 
-@Test func fusionInterchangeConfigurationContainsEveryDeclaredDirectIDT() throws {
-    let fusion = try StudioColorEngine.fusionInterchange()
-    for source in StudioColorEngine.fusionSupportedSourceColorSpaces {
-        _ = try fusion.makeColorSpaceProcessor(source: source, destination: "ACEScg")
-    }
-}
-
 @Test func buildIdentityIsPinned() {
     #expect(StudioColorBuildIdentity.ocioVersion == "2.5.2")
     #expect(StudioColorBuildIdentity.configurationSHA256.count == 64)

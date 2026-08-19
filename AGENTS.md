@@ -8,6 +8,16 @@ These rules apply to every task in this repository.
 - Active architecture documents describe only the current system. They contain no migration ledger, superseded decision, compatibility plan, or speculative implementation route.
 - Every semantic rule has one canonical owner. Update that owner and its enforcement in the same revision.
 
+## Decision coherence gate
+<!-- decision-owner: architecture.decision-coherence -->
+
+- Before changing architecture, persisted contracts or behavior governed by an active decision, identify its stable decision id in `architecture/decision-authority.json`, read the canonical owner section and run the declared enforcement. The registry is an index; it never restates the decision.
+- Compare the user's current decision, the canonical owner, every marked reference, the implementation contract and the owning tests before choosing an implementation. Scope qualifiers are normative: a rule for a workstation scene, portable project, imported asset or external resource cannot be broadened to another scope.
+- If two active statements, tests or contracts imply different observable outcomes, stop before editing that behavior. Report the exact conflict and ask the user to resolve it. Do not choose by recency, convenience, majority, perceived strictness or audit severity.
+- A review or audit finding is evidence, not product authority. It cannot override an explicit user decision or the canonical owner. When it conflicts with either, surface the conflict instead of implementing the finding.
+- A new or changed product decision is incomplete until the same revision updates its canonical owner, registry entry or references, implementation and focused enforcement. Unregistered semantic prose is an architecture error, not an alternate authority.
+- When a task exposes an unregistered decision, register its owner before changing the governed implementation. If the correct owner or scope is ambiguous, stop and ask the user.
+
 ## Historical archive is sealed
 
 - `Docs/old` is a sealed historical archive.

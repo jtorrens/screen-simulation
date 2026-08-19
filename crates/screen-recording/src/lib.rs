@@ -18,6 +18,7 @@ pub const GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID: &str = "generic-hevc-main-video-v1
 pub const GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID: &str = "generic-hevc-main10-video-v1";
 pub const GENERIC_H264_HIGH_VIDEO_PROFILE_ID: &str = "generic-h264-high-video-v1";
 pub const GENERIC_PRORES_422_HQ_PROFILE_ID: &str = "generic-prores-422-hq-v1";
+pub const GENERIC_PRORES_4444_PROFILE_ID: &str = "generic-prores-4444-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordingMedium {
@@ -98,7 +99,6 @@ pub enum RateControl {
     /// One causal pass with explicitly bounded future inspection.
     SinglePassTargetBitrate {
         bits_per_second: u64,
-        lookahead_frames: u16,
     },
 }
 
@@ -122,12 +122,6 @@ impl EncoderExecutionPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InterFrameStructure {
-    pub fixed_gop_frames: u16,
-    pub maximum_b_frames: u8,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordingProfile {
     pub id: &'static str,
@@ -137,7 +131,6 @@ pub struct RecordingProfile {
     pub chroma_location: ChromaLocation,
     pub alpha_policy: AlphaPolicy,
     pub reference_rate_control: RateControl,
-    pub inter_frame: Option<InterFrameStructure>,
 }
 
 impl RecordingProfile {
@@ -152,32 +145,16 @@ impl RecordingProfile {
             self.alpha_policy,
         )?;
         validate_rate_control(self.codec, self.reference_rate_control)?;
-        match (self.codec.is_intra_only(), self.inter_frame) {
-            (true, None) => {}
-            (false, Some(inter)) if inter.fixed_gop_frames > 0 => {
-                if u16::from(inter.maximum_b_frames) >= inter.fixed_gop_frames {
-                    return Err(RecordingError::InvalidInterFrameStructure);
-                }
-            }
-            _ => return Err(RecordingError::InvalidInterFrameStructure),
-        }
         Ok(self)
     }
 
     pub fn temporal_requirement(&self) -> Result<RecordingTemporalRequirement, RecordingError> {
         self.validate()?;
-        let lookahead = match self.reference_rate_control {
-            RateControl::SinglePassTargetBitrate {
-                lookahead_frames, ..
-            } => lookahead_frames,
-            _ => 0,
-        };
-        let future_frames = self
-            .inter_frame
-            .map_or(0, |inter| lookahead.max(u16::from(inter.maximum_b_frames)));
+        // Recording Codec evaluates every requested frame as one independently coded picture.
+        // Container chronology remains explicit, but no GOP/B-frame/lookahead dependency exists.
         Ok(RecordingTemporalRequirement {
-            chronological_sequence_required: self.codec.medium() == RecordingMedium::MovingImage,
-            future_frames,
+            chronological_sequence_required: false,
+            future_frames: 0,
             complete_clip_preanalysis: false,
         })
     }
@@ -337,7 +314,6 @@ pub fn bundled_profiles() -> [RecordingProfile; 6] {
             chroma_location: ChromaLocation::Left,
             alpha_policy: AlphaPolicy::Opaque,
             reference_rate_control: RateControl::ConstantQuality { quality: 0.82 },
-            inter_frame: None,
         },
         RecordingProfile {
             id: GENERIC_JPEG_PHOTO_PROFILE_ID,
@@ -347,23 +323,6 @@ pub fn bundled_profiles() -> [RecordingProfile; 6] {
             chroma_location: ChromaLocation::Center,
             alpha_policy: AlphaPolicy::Opaque,
             reference_rate_control: RateControl::ConstantQuality { quality: 0.90 },
-            inter_frame: None,
-        },
-        RecordingProfile {
-            id: GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID,
-            codec: RecordingCodecProfile::HevcMain,
-            bit_depth: 8,
-            chroma_sampling: ChromaSampling::Yuv420,
-            chroma_location: ChromaLocation::Left,
-            alpha_policy: AlphaPolicy::Opaque,
-            reference_rate_control: RateControl::SinglePassTargetBitrate {
-                bits_per_second: 80_000_000,
-                lookahead_frames: 16,
-            },
-            inter_frame: Some(InterFrameStructure {
-                fixed_gop_frames: 48,
-                maximum_b_frames: 2,
-            }),
         },
         RecordingProfile {
             id: GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
@@ -374,12 +333,7 @@ pub fn bundled_profiles() -> [RecordingProfile; 6] {
             alpha_policy: AlphaPolicy::Opaque,
             reference_rate_control: RateControl::SinglePassTargetBitrate {
                 bits_per_second: 80_000_000,
-                lookahead_frames: 16,
             },
-            inter_frame: Some(InterFrameStructure {
-                fixed_gop_frames: 48,
-                maximum_b_frames: 2,
-            }),
         },
         RecordingProfile {
             id: GENERIC_H264_HIGH_VIDEO_PROFILE_ID,
@@ -390,12 +344,7 @@ pub fn bundled_profiles() -> [RecordingProfile; 6] {
             alpha_policy: AlphaPolicy::Opaque,
             reference_rate_control: RateControl::SinglePassTargetBitrate {
                 bits_per_second: 100_000_000,
-                lookahead_frames: 16,
             },
-            inter_frame: Some(InterFrameStructure {
-                fixed_gop_frames: 48,
-                maximum_b_frames: 2,
-            }),
         },
         RecordingProfile {
             id: GENERIC_PRORES_422_HQ_PROFILE_ID,
@@ -405,7 +354,15 @@ pub fn bundled_profiles() -> [RecordingProfile; 6] {
             chroma_location: ChromaLocation::Left,
             alpha_policy: AlphaPolicy::Opaque,
             reference_rate_control: RateControl::ProfileDefinedIntra,
-            inter_frame: None,
+        },
+        RecordingProfile {
+            id: GENERIC_PRORES_4444_PROFILE_ID,
+            codec: RecordingCodecProfile::ProRes4444,
+            bit_depth: 12,
+            chroma_sampling: ChromaSampling::Yuv444,
+            chroma_location: ChromaLocation::Center,
+            alpha_policy: AlphaPolicy::Opaque,
+            reference_rate_control: RateControl::ProfileDefinedIntra,
         },
     ]
 }
@@ -463,10 +420,9 @@ fn validate_rate_control(
                         | RecordingCodecProfile::ProRes4444
                 )
         }
-        RateControl::SinglePassTargetBitrate {
-            bits_per_second,
-            lookahead_frames,
-        } => bits_per_second > 0 && lookahead_frames <= 120 && !codec.is_intra_only(),
+        RateControl::SinglePassTargetBitrate { bits_per_second } => {
+            bits_per_second > 0 && !codec.is_intra_only()
+        }
     };
     if valid {
         Ok(())
@@ -480,7 +436,6 @@ pub enum RecordingError {
     InvalidProfile,
     UnsupportedCodecFormat,
     InvalidRateControl,
-    InvalidInterFrameStructure,
     InvalidCharacter,
     InvalidSequence,
     NonChronologicalSequence,
@@ -495,7 +450,6 @@ impl fmt::Display for RecordingError {
             Self::InvalidProfile => "invalid recording profile",
             Self::UnsupportedCodecFormat => "codec profile does not support the authored bit depth, chroma sampling, or alpha policy",
             Self::InvalidRateControl => "invalid or incompatible recording rate control",
-            Self::InvalidInterFrameStructure => "invalid intra/GOP/B-frame structure",
             Self::InvalidCharacter => "recording character must be finite in 0...4",
             Self::InvalidSequence => "recording medium does not match the authored frame sequence",
             Self::NonChronologicalSequence => "moving-image frames must be supplied once in exact chronological order",
@@ -530,7 +484,6 @@ mod tests {
         );
         assert_eq!(profile.codec.medium(), RecordingMedium::StillImage);
         assert!(profile.codec.is_intra_only());
-        assert_eq!(profile.inter_frame, None);
         assert_eq!(
             profile
                 .temporal_requirement()
@@ -592,11 +545,11 @@ mod tests {
     }
 
     #[test]
-    fn video_requirement_is_bounded_and_never_requests_complete_clip_analysis() {
+    fn video_requirement_has_no_temporal_dependency() {
         let profile = &bundled_profiles()[2];
         let requirement = profile.temporal_requirement().expect("requirement");
-        assert!(requirement.chronological_sequence_required);
-        assert_eq!(requirement.future_frames, 16);
+        assert!(!requirement.chronological_sequence_required);
+        assert_eq!(requirement.future_frames, 0);
         assert!(!requirement.complete_clip_preanalysis);
     }
 

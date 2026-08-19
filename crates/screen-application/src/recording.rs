@@ -7,29 +7,23 @@
 use core::fmt;
 use screen_contracts::FrameRate;
 use screen_recording::{
-    EncoderExecutionPolicy, InterFrameStructure, RateControl, RecordingCodecProfile,
-    RecordingError, RecordingMedium, RecordingProfile, RecordingRequest,
-    RecordingTemporalRequirement, bundled_profiles,
+    EncoderExecutionPolicy, RateControl, RecordingCodecProfile, RecordingError, RecordingMedium,
+    RecordingProfile, RecordingRequest, RecordingTemporalRequirement, bundled_profiles,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordingAdapterKind {
     ImageIoHeic,
     ImageIoJpeg,
-    AvFoundationHevcMain8,
     AvFoundationH264High8,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecordingAdapterUnavailableReason {
-    NativeTenBit420InputNotImplemented,
-    NativeTenBit422InputNotImplemented,
+    AvFoundationHevcMain10,
+    AvFoundationProRes422Hq,
+    AvFoundationProRes4444,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordingAdapterAvailability {
     Available(RecordingAdapterKind),
-    Unavailable(RecordingAdapterUnavailableReason),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,10 +31,7 @@ pub enum ResolvedRateControl {
     ProfileDefinedIntra,
     ConstantQuality(f32),
     ConstantQuantizer(u8),
-    SinglePassTargetBitrate {
-        bits_per_second: u64,
-        lookahead_frames: u16,
-    },
+    SinglePassTargetBitrate { bits_per_second: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,9 +57,6 @@ pub struct RecordingControlAvailability {
     pub quality: ConditionalRecordingControl<f32>,
     pub quantizer: ConditionalRecordingControl<u8>,
     pub target_bits_per_second: ConditionalRecordingControl<u64>,
-    pub lookahead_frames: ConditionalRecordingControl<u16>,
-    pub fixed_gop_frames: ConditionalRecordingControl<u16>,
-    pub maximum_b_frames: ConditionalRecordingControl<u8>,
 }
 
 impl RecordingControlAvailability {
@@ -77,9 +65,6 @@ impl RecordingControlAvailability {
             quality: ConditionalRecordingControl::Unavailable,
             quantizer: ConditionalRecordingControl::Unavailable,
             target_bits_per_second: ConditionalRecordingControl::Unavailable,
-            lookahead_frames: ConditionalRecordingControl::Unavailable,
-            fixed_gop_frames: ConditionalRecordingControl::Unavailable,
-            maximum_b_frames: ConditionalRecordingControl::Unavailable,
         };
         match profile.reference_rate_control {
             RateControl::ProfileDefinedIntra => {}
@@ -93,29 +78,11 @@ impl RecordingControlAvailability {
                     calibrated_value: qp,
                 };
             }
-            RateControl::SinglePassTargetBitrate {
-                bits_per_second,
-                lookahead_frames,
-            } => {
+            RateControl::SinglePassTargetBitrate { bits_per_second } => {
                 controls.target_bits_per_second = ConditionalRecordingControl::Available {
                     calibrated_value: bits_per_second,
                 };
-                controls.lookahead_frames = ConditionalRecordingControl::Available {
-                    calibrated_value: lookahead_frames,
-                };
             }
-        }
-        if let Some(InterFrameStructure {
-            fixed_gop_frames,
-            maximum_b_frames,
-        }) = profile.inter_frame
-        {
-            controls.fixed_gop_frames = ConditionalRecordingControl::Available {
-                calibrated_value: fixed_gop_frames,
-            };
-            controls.maximum_b_frames = ConditionalRecordingControl::Available {
-                calibrated_value: maximum_b_frames,
-            };
         }
         controls
     }
@@ -199,21 +166,25 @@ pub fn prepare_recording_request(
         RecordingCodecProfile::JpegStill => {
             RecordingAdapterAvailability::Available(RecordingAdapterKind::ImageIoJpeg)
         }
-        RecordingCodecProfile::HevcMain => {
-            RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationHevcMain8)
-        }
         RecordingCodecProfile::H264High => {
             RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationH264High8)
         }
-        RecordingCodecProfile::HevcMain10 => RecordingAdapterAvailability::Unavailable(
-            RecordingAdapterUnavailableReason::NativeTenBit420InputNotImplemented,
-        ),
-        RecordingCodecProfile::HevcMain42210
-        | RecordingCodecProfile::ProRes422
-        | RecordingCodecProfile::ProRes422Hq
-        | RecordingCodecProfile::ProRes4444 => RecordingAdapterAvailability::Unavailable(
-            RecordingAdapterUnavailableReason::NativeTenBit422InputNotImplemented,
-        ),
+        RecordingCodecProfile::HevcMain10 => {
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationHevcMain10)
+        }
+        RecordingCodecProfile::ProRes422Hq => {
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationProRes422Hq)
+        }
+        RecordingCodecProfile::ProRes4444 => {
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationProRes4444)
+        }
+        RecordingCodecProfile::HevcMain
+        | RecordingCodecProfile::HevcMain42210
+        | RecordingCodecProfile::ProRes422 => {
+            return Err(RecordingPreparationError::UnknownProfile(
+                selection.profile_id.to_owned(),
+            ));
+        }
     };
     let pressure = selection.character.max(0.25);
     let rate_control = match profile.reference_rate_control {
@@ -222,13 +193,11 @@ pub fn prepare_recording_request(
             ResolvedRateControl::ConstantQuality((quality / pressure).clamp(0.0, 1.0))
         }
         RateControl::ConstantQuantizer { qp } => ResolvedRateControl::ConstantQuantizer(qp),
-        RateControl::SinglePassTargetBitrate {
-            bits_per_second,
-            lookahead_frames,
-        } => ResolvedRateControl::SinglePassTargetBitrate {
-            bits_per_second: ((bits_per_second as f64) / f64::from(pressure)).round() as u64,
-            lookahead_frames,
-        },
+        RateControl::SinglePassTargetBitrate { bits_per_second } => {
+            ResolvedRateControl::SinglePassTargetBitrate {
+                bits_per_second: ((bits_per_second as f64) / f64::from(pressure)).round() as u64,
+            }
+        }
     };
 
     Ok(PreparedRecordingRequest {
@@ -341,10 +310,6 @@ mod tests {
             prepared.controls.target_bits_per_second,
             ConditionalRecordingControl::Unavailable
         );
-        assert_eq!(
-            prepared.controls.fixed_gop_frames,
-            ConditionalRecordingControl::Unavailable
-        );
         assert!(
             !prepared
                 .temporal_requirement
@@ -354,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn moving_profile_exposes_bitrate_and_finite_temporal_controls() {
+    fn moving_profile_exposes_bitrate_without_temporal_dependencies() {
         let prepared = prepare_recording_request(RecordingSelection {
             profile_id: GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
             character: 1.0,
@@ -370,18 +335,12 @@ mod tests {
                 calibrated_value: 80_000_000
             }
         );
-        assert_eq!(
-            prepared.controls.fixed_gop_frames,
-            ConditionalRecordingControl::Available {
-                calibrated_value: 48
-            }
-        );
         assert!(
-            prepared
+            !prepared
                 .temporal_requirement
                 .chronological_sequence_required
         );
-        assert_eq!(prepared.temporal_requirement.future_frames, 16);
+        assert_eq!(prepared.temporal_requirement.future_frames, 0);
         assert!(!prepared.temporal_requirement.complete_clip_preanalysis);
     }
 
@@ -444,7 +403,7 @@ mod tests {
             ResolvedRateControl::ConstantQuality(0.41)
         );
 
-        let unavailable = prepare_recording_request(RecordingSelection {
+        let hdr_video = prepare_recording_request(RecordingSelection {
             profile_id: GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID,
             character: 1.0,
             frame_rate: Some(FrameRate::new(24, 1).expect("rate")),
@@ -452,12 +411,10 @@ mod tests {
             frame_count: 24,
             execution: EncoderExecutionPolicy::SINGLE_PASS,
         })
-        .expect("valid but unavailable profile");
+        .expect("valid HDR video profile");
         assert_eq!(
-            unavailable.adapter,
-            RecordingAdapterAvailability::Unavailable(
-                RecordingAdapterUnavailableReason::NativeTenBit420InputNotImplemented
-            )
+            hdr_video.adapter,
+            RecordingAdapterAvailability::Available(RecordingAdapterKind::AvFoundationHevcMain10)
         );
     }
 }

@@ -86,7 +86,11 @@ import Testing
     let stage = PhysicalStageID.screen(.environment)
     workspace.changePhysicalStageBypass(true, stage: stage, undoManager: undo)
     #expect(workspace.physicalModel.stageValue(stage).isBypassed)
+    #expect(undo.canUndo)
+    #expect(undo.groupingLevel == 0)
     undo.undo()
+    #expect(workspace.errorMessage == nil)
+    #expect(!workspace.physicalModel.stageValue(stage).isBypassed)
     await Task.yield()
     #expect(!workspace.physicalModel.stageValue(stage).isBypassed)
 }
@@ -142,6 +146,18 @@ import Testing
     model.setQuality(.native)
     try model.setContinuousAmount(1.1, stage: .screen(.emission))
     #expect(model.quality == .setup)
+}
+
+@Test @MainActor func transientResolvedSceneEditPreservesItsSetupMode() {
+    let model = PhysicalModelController()
+
+    model.setQuality(.focusSetup)
+    model.invalidateExternalParameters(preservingQuality: true)
+    #expect(model.quality == .focusSetup)
+
+    model.setQuality(.environmentSetup)
+    model.invalidateExternalParameters(preservingQuality: true)
+    #expect(model.quality == .environmentSetup)
 }
 
 @Test @MainActor func identicalNativeProgressDoesNotRepublishObservableState() throws {

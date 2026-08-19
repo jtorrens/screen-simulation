@@ -139,7 +139,9 @@ import Testing
     let selection = try PhysicalFrameSelection(
         frameIndex: 17,
         timeNumerator: 17,
-        timeDenominator: 25
+        timeDenominator: 25,
+        frameRateNumerator: 25,
+        frameRateDenominator: 1
     )
     let orchestration = try authored.orchestration(for: selection)
     let openSeconds = Double(orchestration.shutter.open.numerator)
@@ -248,11 +250,11 @@ import Testing
 
     let arri = try #require(workspace.capturePresets.first { $0.name.contains("ARRI") })
     workspace.selectCapturePreset(arri, undoManager: nil)
-    let arriSensor = arri.parameters.sensor
+    let arriSensor = arri.sensor
     #expect(workspace.physicalPreviewSurfaceAspect
-        == Double(arriSensor.native_width) / Double(arriSensor.native_height))
+        == Double(arriSensor.nativeWidth) / Double(arriSensor.nativeHeight))
     #expect(workspace.physicalNativeOutputDescription
-        == "Captura \(arriSensor.native_width)×\(arriSensor.native_height)")
+        == "Captura \(arriSensor.nativeWidth)×\(arriSensor.nativeHeight)")
 
     workspace.selectCapturePreset(iphone, undoManager: nil)
 
@@ -266,7 +268,9 @@ import Testing
     let selection = try PhysicalFrameSelection(
         frameIndex: 3,
         timeNumerator: 3,
-        timeDenominator: 24
+        timeDenominator: 24,
+        frameRateNumerator: 24,
+        frameRateDenominator: 1
     )
     let orchestration = try state.orchestration(for: selection)
     #expect(orchestration.cameraPose.position.z == 0.5)

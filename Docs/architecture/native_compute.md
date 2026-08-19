@@ -2,17 +2,25 @@
 
 Status: normative.
 
+## Current boundary
+<!-- decision-owner: native.compute-boundary -->
+
 The host-only `Setup` preview is deliberately outside the native physical frame ABI. It evaluates only ideal pinhole projection from the authored camera and screen geometry, samples the source with its authored placement, applies Delivery Raster placement, and draws the diagnostic Device boundary. No panel, cover, environment, lens-aberration, exposure, sensor or develop kernel is dispatched in Setup.
 
-`Setup entorno` is also host-only. Its Metal kernel uses the same pinhole camera, screen plane, Delivery Raster and distant/finite Environment projection contract, but replaces the complete material and capture pipeline with a perfect-mirror lookup solely for interactive placement. The kernel evaluates supersampled projected Device coverage, keeps the lookup at unit gain inside that coverage and applies a fixed 0.20 presentation gain outside it; the latter is contextual dimming and is absent from the physical evaluator and generated environment asset. Finite mode intersects the world-space reflected ray with the authored sphere center and radius and uses the same owner-published enclosure requirement as the product evaluator. MMB translates that sphere in camera-local axes, Alt-MMB rotates it with one locked axis per gesture, and Shift-MMB or wheel changes its radius multiplicatively; none of those gestures changes camera or Device.
+`Setup entorno` is also host-only. Its Metal kernel consumes the same immutable Rust-resolved scene frame, camera, screen plane and Delivery Raster as the other Setup diagnostics, but replaces the complete material and capture pipeline with a perfect-mirror lookup solely for interactive placement. The kernel evaluates supersampled projected Device coverage, keeps the lookup at unit gain inside that coverage and applies a fixed 0.20 presentation gain outside it; the latter is contextual dimming and is absent from the physical evaluator and generated environment asset. Finite mode intersects the world-space reflected ray with the authored sphere center and radius and uses the same owner-published enclosure requirement as the product evaluator. MMB translates that sphere in camera-local axes, Alt-MMB rotates it with one locked axis per gesture, and Shift-MMB or wheel changes its radius multiplicatively; none of those gestures changes camera or Device.
+
+For an animated scene, Application evaluates that finite-sphere enclosure from every exact
+Rust-resolved camera and Device sample in the active timeline. Entering `Setup entorno` raises an
+undersized authored radius once to the maximum required value and publishes the change; individual
+render backends never clamp, infer or replace the sphere.
 
 The planar HDRI-framing diagnostic is another host-only Metal path. It samples a pan/zoom/roll crop of the exact decoded ACEScg source inside the projected Device while retaining dimmed spherical context outside. Its explicit bake kernel runs once per authoring action, inverts the ideal planar-mirror relation for every output environment direction, preserves the rotated source outside the directions covered by the Device and writes RGBA32F for OpenEXR encoding. The product evaluator never contains this kernel or a framing branch.
 
 The product evaluator separately exposes the typed headless-only `device-vfx-transparency-v1` publication used by Fusion Scene Package. Its request carries one centred active frontal raster and one explicit DOF mode: disabled, baked, or Fusion. It is the normal Camera Rendered ACEScg route with only explicit export overrides: Metal maps the raster into Device-local UV, bypasses perspective and Brown distortion, uses one shutter sample rather than motion accumulation, and evaluates depth of field only in baked mode. Panel, cover, glow, lens transmission/vignetting/chromatic character/veiling glare, shutter exposure, sensor development and Camera Rendering Intent remain the authored normal-render operations. The virtual sensor raster is exactly the requested padded export raster, so the route never applies an inferred rescale. The returned float RGBA is complete additive Device RGB plus independent occlusion matte and is never preview-transformed, alpha-divided or passed through another ACEScg transform. Source overscan is an explicit physical support contract resolved before the first frame at the maximum exported Device sampling density: panel-tail support is the shader's diagonal tail offset, glow support is exactly twice the authored physical glow radius at every positive authored glow amount, baked-DOF support is added only in baked mode, and the declared radiometric fade width is added last. That fixed raster lets the host evaluate and write every output frame exactly once. The declared scene-linear threshold remains package metadata; it does not trigger a sequence-analysis pass or expand the fixed raster. The exterior fade band attenuates additive RGB only, from the outer edge of the declared support to zero at the raster boundary, while preserving the independent occlusion matte. The host requests one temporal sample because camera motion blur is reconstructed from exported camera curves and shutter angle/phase in Fusion. The path rejects any partial Screen or Panel Emission contribution because it cannot consult Source or rebuild omitted radiometry.
 
-Color additionally owns the portable `studio-fusion-ocio-v2.4` resource used only by Fusion Scene Package reference plates. It is a closed OCIO 2.4-compatible ACEScg/direct-IDT subset; it is neither a replacement for the application's OCIO 2.5 configuration nor a display/output route. Application validates the saved reference transform against Color's declared subset before the package writer copies that resource.
+Color owns the application's pinned OCIO processing, but Fusion Scene Package does not export or reference that configuration. Application resolves the saved Rec.709 reference Input Transform to one exact standard-Fusion-node contract before writing: `ColorSpaceTransform`, `REC709_GAMMA` to `ACES_AP1_COLORSPACE`, HDR-standard conversion enabled and Rec.2390 scaling enabled. The Device EXR is already scene-linear ACEScg/AP1. A different authored reference transform does not block the job and does not select another conversion: the writer emits this named node with explicit `PassThrough = true` and records the disabled state beside the original authored id. There is no OCIO, LUT or inferred color-transform fallback in the composition.
 
-`Setup foco` is host-only and uses the Setup Metal boundary rather than the physical ABI. It evaluates the analytic thin-lens circle of confusion only at the camera-ray/Device intersection, emits a grayscale focus diagnostic, and draws a Device-local red grid through the current Brown-Conrady radial/tangential distortion. The sampled red Device outline uses that same distortion while retaining one viewer-space pixel after presentation scaling. Its green autofocus gizmo is a presentation overlay, but its normalized Device-local target is model-authored state. Platform projects and inversely picks that target through the same gate, lens shift, Delivery Raster placement and Brown-Conrady coefficients; Application alone resolves the per-frame optical-axis focus distance consumed by the physical request.
+`Setup foco` is host-only and uses the Setup Metal boundary rather than the physical ABI. It evaluates the analytic thin-lens circle of confusion only at the camera-ray/Device intersection, emits a grayscale focus diagnostic, and draws a Device-local red grid through the current Brown-Conrady radial/tangential distortion. The sampled red Device outline uses that same distortion while retaining one viewer-space pixel after presentation scaling. Its green autofocus gizmo is a presentation overlay, but its normalized Device-local target is model-authored state. Application projects and inversely picks that target from the same immutable resolved scene frame through the same gate, lens shift, Delivery Raster placement and Brown-Conrady coefficients; Application also resolves the per-frame optical-axis focus distance only after sampling camera and Device tracks. Platform displays the returned pixel and forwards pointer positions.
 
 The Platform scene-adjustment adapter evaluates the Color-owned operator in RGBA32F Metal before Feeder Output and during one-time image-Environment preparation. Neutral values are exact identity, alpha is unchanged, and Environment adjustment uses the non-negative incident-radiance policy rather than a display transform.
 
@@ -21,6 +29,10 @@ prepare and validate immutable inputs; a narrow compute port may execute an owne
 without acquiring its semantics. A platform backend receives complete typed values and must return
 the same authoritative result type. It cannot choose quality, samples, shutter behavior, placement,
 color interpretation, sensor identity or development settings.
+
+Application prepares every host request before dispatch. The preparation contract carries exact rational time and frame rate, full sensor and active sensor window, global render window, rational render scale, rational pixel aspect, requested quality, model-declared spatial support and the ordered temporal samples required by global-shutter integration. A backend may execute those samples in tiles or in parallel, but it cannot request another time or localize coordinates by discarding the full-sensor and render-window origins.
+
+Repeated temporal work may use one Application-owned cache with explicit byte capacity. Exact cache identity includes scene revision, rational sample time, typed artifact, raster/window/region and result-affecting quality/backend values. The cache is single-flight for concurrent equal requests and evicts least-recently-used completed entries to remain within capacity. Capacity zero, eviction and cache misses only change execution cost: recomputation must publish the identical artifact. A nearest-frame lookup, frame-number rounding, implicit quality reduction or host-owned semantic cache is forbidden.
 
 On the supported macOS product, Native RAW development is executed by `screen-platform` through
 Metal. `screen-camera` owns validation, Bayer reconstruction, native-sensor white balance, the
@@ -175,36 +187,29 @@ character. The explicit channel tolerance is maximum absolute `2e-3` or maximum 
 panel-hit identity must be exact.
 
 Desktop selects the same `MetalRawDevelopment` adapter for both Application compute ports. There is
-no product CPU route or legacy PWM route. Application owns shutter scheduling and multiplies the
-modulation-free Metal result by each analytically integrated panel gain exactly once. Tests prove
-that `analytic_banding.amount == 0` is exact identity, that eight requested motion samples create
-eight spatial samples, and that a complete eight-sample rolling capture preserves CPU-oracle RAW
-codes and clipping masks exactly. Developed ACEScg remains within `2e-5`.
+no product CPU route or legacy PWM route. Application owns global-shutter scheduling and multiplies
+the modulation-free Metal result by each analytically integrated frame-global panel gain exactly
+once. Tests prove that the authored number of motion samples creates the same number of ordered
+complete-frame temporal samples and that CPU-oracle RAW codes, clipping masks and Developed ACEScg
+remain within their declared tolerances.
 
-Rolling row/sample plans are submitted through the batch port. Plans that share procedural or
+Complete-frame temporal plans are submitted through the batch port. Plans that share procedural or
 static raster storage use one parameter array, one signal upload and one Metal dispatch; distinct
-animated raster samples retain their exact authored source and may require separate dispatches.
-The batch changes command granularity only and never drops a row or motion sample.
+animated raster samples retain their exact authored source and may require separate dispatches. The
+batch changes command granularity only and never drops a motion sample.
 
-Application reuses a spatial result only when the source is explicitly static and camera
-transform, camera intrinsics and screen transform each contain exactly one authored keyframe. It
-still constructs and integrates every requested shutter interval and its analytical per-row gain;
-only the identical modulation-free spatial value is referenced more than once. An animated
-procedural source, media sequence or any multi-keyframe spatial track selects the complete plan
-batch automatically. This is an optimization inside the same result contract, not another route.
+Application reuses a spatial result only when the source is explicitly static and camera transform,
+camera intrinsics and screen transform each contain exactly one authored keyframe. It still
+constructs and integrates every requested global-shutter interval; only the identical
+modulation-free spatial value is referenced more than once. An animated procedural source, media
+sequence or any multi-keyframe spatial track selects the complete plan batch automatically. This is
+an optimization inside the same result contract, not another route.
 
-When the camera transform, camera intrinsics and screen transform each contain one authored key,
-Application may also clone one fully validated procedural plan template for later exact times and
-sensor rows. It changes only the rational time, procedural time and sensor window, and recomputes
-the representative signal fields exactly. It does not reuse a spatial result: every authored
-motion sample is still evaluated by the backend. Conformance requires each instantiated plan to be
-field-for-field equal to a freshly prepared plan.
-
-Temporal integration parallelizes independent sensor pixels for global shutter and independent
-sensor rows for rolling shutter. Sample accumulation inside a pixel or row retains its authored
-order, so thread scheduling cannot change floating-point addition order. Sensor exposure likewise
-parallelizes independent photosites; CFA phase and counter-based noise remain keyed to global
-coordinates. Tests require identical exposures and RAW results with one and multiple Rayon workers.
+Temporal integration parallelizes independent sensor pixels. Sample accumulation inside every
+pixel retains authored order, so thread scheduling cannot change floating-point addition order.
+Sensor exposure likewise parallelizes independent photosites; CFA phase and counter-based noise
+remain keyed to global coordinates. Tests require identical exposures and RAW results with one and
+multiple Rayon workers.
 
 Native work retains 128-pixel sensor tiles as its logical progress and cancellation boundary, but
 the macOS scheduler evaluates all horizontal tiles in a 128-row stripe as one exact product region.
@@ -244,71 +249,18 @@ The reproducible benchmark is:
 cargo run --release -p screen-desktop --bin native_benchmark
 ```
 
-`SCREEN_BENCH_STRIPE_HEIGHT` may override the diagnostic stripe height for profiling only. It does
-not alter the product's 128-row physical stripe or 128-pixel logical progress boundary.
+`SCREEN_BENCH_STRIPE_HEIGHT` may override diagnostic stripe height for profiling only. It does not
+alter the product's 128-row physical stripe or 128-pixel logical progress boundary. The benchmark
+reports cold Metal setup, time to first complete Native tile, complete-frame global-shutter
+throughput for one and multiple motion samples, staged ROI and stripe breakdowns and isolated
+CPU/Metal RAW-development time. Metal uses unified `StorageModeShared`; shared-buffer result
+materialization is included in the Metal stage. Measurements and extrapolations are diagnostic
+workstation evidence, never a product guarantee or a quality selector.
 
-It reports cold Metal setup, time to the first complete Native tile, end-to-end physical throughput
-for the iPhone 16e model with rolling shutter for both the default one-motion-sample case and a
-static eight-motion-sample case, a staged 1536×1152 ROI breakdown, the actual 8064×128 product
-stripe, measured 48 MP extrapolations, and isolated CPU/Metal RAW-development time. Metal uses
-unified `StorageModeShared`, so explicit device/host transfer is zero; shared-buffer result
-materialization is included in the Metal stage. Extrapolation is diagnostic evidence, not a
-promise: it assumes linear stripe scaling for the same authored scene and hardware.
-
-The pre-port 2026-08-05 release measurement on Apple M3 Ultra reported 2.065 s to the first
-128×128 product tile, 7,936 sensor pixels/s and a 1.7 h linear 8064×6048 extrapolation.
-
-After exact static reuse, the representative release run reported 0.047 s cold setup and 0.080 s
-to the first complete 128×128 default tile. The default rolling/one-motion-sample path measured
-205,276 sensor pixels/s, corresponding to a 4.0 minute linear iPhone 16e 48 MP extrapolation. The
-static/eight-motion-sample case preserved 1,048 authored row/sample intervals while referencing 131
-unique spatial plans, completed the tile in 0.071 s at 231,147 pixels/s and extrapolated to 3.5
-minutes. Run-to-run GPU variance makes the small ordering difference between those two cases
-non-semantic; both execute one unique spatial evaluation per rolling row.
-
-The large-ROI run established the real fixed cost. A 1536×1152 default capture took 0.649 s:
-0.575 s CPU plan preparation, 0.032 s Metal plus shared result materialization, 0.036 s temporal
-integration and sensor, and 0.006 s RAW Metal. Static/eight took 0.664 s with the same exact
-integration. Thus the previous minute-scale number was an invalid extrapolation of per-tile plan
-preparation, not sustained GPU work.
-
-With horizontal stripe scheduling connected to the product, an actual 8064×128 iPhone stripe took
-about 0.10 s through developed linear ACEScg for both default/one-sample and static/eight. Before
-the presentation change, serial CPU OCIO plus RGBA8 assembly added about 0.248 s.
-
-The 2026-08-05 release measurement of the exact parallel publication backend on Apple M3 Ultra
-reported 0.013 s setup and 0.018–0.021 s per 8064×128 stripe. The unchanged serial oracle split was
-0.002 s float RGBA materialization, 0.241 s OCIO and 0.002 s quantization/assembly. Product stripes
-completed in 0.124 s default/one-sample and 0.126 s static/eight, including 0.000 s output copy and
-0.003 s staging, and exposed 63 logical progress tiles. Forty-eight stripes project to 5.9 s and
-6.1 s respectively for the 8064×6048 sensor. This projection includes exact eight-interval temporal
-integration in the static case and applies analytic row gain once; it changes no capture samples.
-
-Static rolling rows now clone one fully validated spatial-plan template and change only its exact
-time and sensor-row window. This optimization is enabled by the same explicit static/single-key
-proof as spatial reuse. A conformance test requires the instantiated template to equal a freshly
-prepared plan field for field, and the rolling test requires one preparation while retaining all
-eight authored gain intervals and one backend plan per row. Animated sources and any multi-keyframe
-spatial track still prepare the complete plans.
-
-After exact procedural template instantiation and deterministic parallel integration/sensor
-exposure, three representative 2026-08-05 release runs on Apple M3 Ultra measured 2.3–2.6 s and
-2.4–2.7 s projected for the complete 8064×6048 sensor with CPU publication. Replacing only that
-boundary with the single Metal authority reduced publication from roughly 0.019–0.026 s to
-0.004–0.005 s per 8064×128 stripe. Three complete product-path measurements projected 1.5–1.6 s for
-animated default/one-motion-sample and 1.8–1.9 s for static/eight. These are measured projections,
-not a product latency guarantee. Motion samples, per-row rolling timing, analytic panel gain, RAW
-and development are unchanged. Old PWM subdivision and CPU optics remain absent from the product
-route.
-
-Remaining performance work is precisely bounded:
-
-1. Reduce exact spatial Metal cost without introducing another evaluator or loosening parity.
-2. Share prepared linear-emission storage across time-equivalent decoded media samples.
-3. Extend proof of static intervals beyond single-key tracks only where exact keyframe-segment
-   identity can be established without heuristic tolerances.
-4. Reduce exact CPU row-plan construction for moving spatial tracks without weakening
-authored motion detection, source sampling or temporal integration.
+Remaining performance work is bounded to reducing exact spatial Metal and plan-preparation cost,
+sharing prepared linear-emission storage across provably time-equivalent samples and extending
+static-interval proofs only where exact keyframe-segment identity exists. No optimization may add a
+second evaluator, omit an authored complete-frame temporal sample or weaken CPU/Metal parity.
 
 After enabling phase-stable spatial compilation, the representative 2026-08-06 Apple M3 Ultra
 measurement reported 0.043 s for either an animated one-motion-sample or static eight-sample
@@ -317,3 +269,5 @@ OCIO publication and staging. Forty-eight stripes project to about 2.1 s for 806
 complete 128×128 tile remained available in 0.012–0.013 s. These measured projections preserve the
 CPU-oracle spatial tolerance at full sensor coordinate phase; they do not reintroduce a faster
 phase-unstable route.
+
+Recording Codec is a separate host-adapter boundary after the Color-owned Recording Output. The macOS adapter executes one independent picture per requested frame: BGRA8 for H.264 High, P010 for HEVC Main10, v210 for ProRes 422 HQ and RGBA half for ProRes 4444. Every picture is encoded by AVFoundation and decoded back from the resulting payload before the exact inverse Color transform. The contract contains no GOP, B-frame, lookahead or whole-clip state, and the bundled profile catalog contains no profile without an executable adapter.

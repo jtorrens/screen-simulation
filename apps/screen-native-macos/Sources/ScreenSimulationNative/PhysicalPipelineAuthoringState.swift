@@ -51,10 +51,6 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
 
     struct ShutterMotion: Codable, Equatable, Sendable {
         var temporalSamples: UInt16 = 1
-        var readoutKind: UInt16 = 0
-        var readoutDurationNumerator: Int64 = 1
-        var readoutDurationDenominator: UInt32 = 48
-        var readoutDirection: UInt32 = 0
         var neutralDensityStops = 0.0
         var noiseSeed: UInt64 = 7
         var openOffsetNumerator: Int64 = -1
@@ -207,10 +203,6 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var shutter = ScreenShutterMotionParametersV2()
         shutter.abi_version = version
         shutter.temporal_samples = shutterMotion.temporalSamples
-        shutter.readout_kind = shutterMotion.readoutKind
-        shutter.readout_duration_numerator = shutterMotion.readoutDurationNumerator
-        shutter.readout_duration_denominator = shutterMotion.readoutDurationDenominator
-        shutter.readout_direction = shutterMotion.readoutDirection
         shutter.neutral_density_stops = Float(shutterMotion.neutralDensityStops)
         shutter.noise_seed = shutterMotion.noiseSeed
 
@@ -318,7 +310,6 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             (1 ... 8).contains(computationalCapture.exposureCount),
             computationalCapture.bracketSpacingStops.isFinite,
             (0 ... 1).contains(computationalCapture.bracketSpacingStops),
-            shutterMotion.readoutDurationDenominator > 0,
             shutterMotion.openOffsetDenominator > 0,
             shutterMotion.closeOffsetDenominator > 0,
             sensor.nativeWidth > 0, sensor.nativeHeight > 0,
@@ -398,7 +389,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         denominator: UInt32
     ) throws -> PhysicalRationalTime {
         // Add the two rationals through their least common denominator. Capture
-        // presets commonly author shutter/readout values against a 1 GHz clock;
+        // presets commonly author shutter values against a 1 GHz clock;
         // multiplying that denominator directly by 24/25/30 fps overflowed the
         // UInt32 ABI denominator and left the previous preview frame visible.
         let reduction = gcd(numerator.magnitude, UInt64(denominator))

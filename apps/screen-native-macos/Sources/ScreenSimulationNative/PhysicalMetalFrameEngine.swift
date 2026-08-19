@@ -21,13 +21,10 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
 
     private let handle: ScreenPhysicalFrameJobRef
     private let timedInputs: ScreenPhysicalTimedInputSetV2Ref
-    private let cameraPoseTrack: ScreenPhysicalCameraPoseTrackV2Ref
-    private let screenPoseTrack: ScreenPhysicalScreenPoseTrackV2Ref
+    private let sceneResolver: RustSceneFrameResolver
     private let sourceTexture: ScreenPhysicalTextureRef
     private let deviceSignalTexture: ScreenPhysicalTextureRef
     private let environmentTexture: ScreenPhysicalTextureRef?
-    private let deviceProfile: ScreenDeviceProfileRef
-    private let pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef
     private let sourceFrame: StudioColorMetalFrame
     private let deviceSignalFrame: StudioColorMetalFrame
     private let environmentFrame: EnvironmentRadianceFrame?
@@ -35,13 +32,10 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     init(
         handle: ScreenPhysicalFrameJobRef,
         timedInputs: ScreenPhysicalTimedInputSetV2Ref,
-        cameraPoseTrack: ScreenPhysicalCameraPoseTrackV2Ref,
-        screenPoseTrack: ScreenPhysicalScreenPoseTrackV2Ref,
+        sceneResolver: RustSceneFrameResolver,
         sourceTexture: ScreenPhysicalTextureRef,
         deviceSignalTexture: ScreenPhysicalTextureRef,
         environmentTexture: ScreenPhysicalTextureRef?,
-        deviceProfile: ScreenDeviceProfileRef,
-        pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef,
         sourceFrame: StudioColorMetalFrame,
         deviceSignalFrame: StudioColorMetalFrame,
         environmentFrame: EnvironmentRadianceFrame?,
@@ -49,13 +43,10 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     ) {
         self.handle = handle
         self.timedInputs = timedInputs
-        self.cameraPoseTrack = cameraPoseTrack
-        self.screenPoseTrack = screenPoseTrack
+        self.sceneResolver = sceneResolver
         self.sourceTexture = sourceTexture
         self.deviceSignalTexture = deviceSignalTexture
         self.environmentTexture = environmentTexture
-        self.deviceProfile = deviceProfile
-        self.pipelineSnapshot = pipelineSnapshot
         self.sourceFrame = sourceFrame
         self.deviceSignalFrame = deviceSignalFrame
         self.environmentFrame = environmentFrame
@@ -65,12 +56,8 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     deinit {
         screen_physical_frame_job_release(handle)
         screen_physical_timed_input_set_v2_release(timedInputs)
-        screen_physical_camera_pose_track_v2_release(cameraPoseTrack)
-        screen_physical_screen_pose_track_v2_release(screenPoseTrack)
         screen_physical_texture_release(deviceSignalTexture)
         screen_physical_texture_release(sourceTexture)
-        screen_device_profile_release(deviceProfile)
-        screen_physical_pipeline_snapshot_release(pipelineSnapshot)
     }
 
     func cancel() -> Bool {
@@ -183,8 +170,7 @@ final class PhysicalMetalFrameEngine {
         deviceSignal: StudioColorMetalFrame,
         environmentACEScg: EnvironmentRadianceFrame?,
         orchestration: PhysicalFrameOrchestration,
-        resolvedDevice: ResolvedDevice,
-        resolvedPipeline: PhysicalPipelineResolvedState,
+        sceneResolver: RustSceneFrameResolver,
         quality: PhysicalQuality,
         deviceVfxAlphaMode: String,
         screenAmount: Double,
@@ -208,30 +194,16 @@ final class PhysicalMetalFrameEngine {
         var deviceSignalTexture: ScreenPhysicalTextureRef?
         var environmentTexture: ScreenPhysicalTextureRef?
         var timedInputs: ScreenPhysicalTimedInputSetV2Ref?
-        var cameraPoseTrack: ScreenPhysicalCameraPoseTrackV2Ref?
-        var screenPoseTrack: ScreenPhysicalScreenPoseTrackV2Ref?
-        var deviceProfile: ScreenDeviceProfileRef?
-        var pipelineSnapshot: ScreenPhysicalPipelineSnapshotRef?
         var job: ScreenPhysicalFrameJobRef?
         defer {
             if job == nil {
                 if let timedInputs {
                     screen_physical_timed_input_set_v2_release(timedInputs)
                 }
-                if let cameraPoseTrack {
-                    screen_physical_camera_pose_track_v2_release(cameraPoseTrack)
-                }
-                if let screenPoseTrack {
-                    screen_physical_screen_pose_track_v2_release(screenPoseTrack)
-                }
                 if let deviceSignalTexture {
                     screen_physical_texture_release(deviceSignalTexture)
                 }
                 screen_physical_texture_release(sourceTexture)
-                if let deviceProfile { screen_device_profile_release(deviceProfile) }
-                if let pipelineSnapshot {
-                    screen_physical_pipeline_snapshot_release(pipelineSnapshot)
-                }
             }
         }
         let signalPointer = Unmanaged.passUnretained(deviceSignal.texture as AnyObject).toOpaque()
@@ -261,58 +233,18 @@ final class PhysicalMetalFrameEngine {
         guard let timedInputs else {
             throw bridgeError(error, fallback: "No se ha creado el input temporal físico.")
         }
-        var cameraKnot = staticPoseKnot(
-            frame: orchestration.frame,
-            pose: orchestration.cameraPose
-        )
-        cameraPoseTrack = screen_physical_camera_pose_track_v2_create(
-            &cameraKnot,
-            1,
-            &error
-        )
-        guard let cameraPoseTrack else {
-            throw bridgeError(error, fallback: "No se ha creado el track constante de cámara.")
-        }
-        var screenKnot = staticPoseKnot(
-            frame: orchestration.frame,
-            pose: orchestration.screenPose
-        )
-        screenPoseTrack = screen_physical_screen_pose_track_v2_create(
-            &screenKnot,
-            1,
-            &error
-        )
-        guard let screenPoseTrack else {
-            throw bridgeError(error, fallback: "No se ha creado el track constante de pantalla.")
-        }
-        var deviceParameters = resolvedDevice.parameters
-        deviceProfile = screen_device_profile_create(&deviceParameters, &error)
-        guard let deviceProfile else {
-            throw bridgeError(error, fallback: "No se ha resuelto el Device físico.")
-        }
-        var pipelineParameters = resolvedPipeline.parameters
-        pipelineSnapshot = screen_physical_pipeline_snapshot_create(
-            &pipelineParameters,
-            &error
-        )
-        guard let pipelineSnapshot else {
-            throw bridgeError(error, fallback: "No se ha resuelto el pipeline físico.")
-        }
         let rawContributions = contributions.map(rawContribution)
         var raw = ScreenPhysicalFrameRequestV2()
         raw.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
         raw.frame_index = orchestration.frame.frameIndex
         raw.timed_inputs = timedInputs
         raw.environment_acescg = environmentTexture
-        raw.camera_pose_track = cameraPoseTrack
-        raw.screen_pose_track = screenPoseTrack
+        raw.scene_resolver = sceneResolver.reference
         let shutter = orchestration.shutter
         raw.shutter_open_numerator = shutter.open.numerator
         raw.shutter_open_denominator = shutter.open.denominator
         raw.shutter_close_numerator = shutter.close.numerator
         raw.shutter_close_denominator = shutter.close.denominator
-        raw.resolved_device = deviceProfile
-        raw.resolved_pipeline = pipelineSnapshot
         raw.quality = quality.rawValue
         switch deviceVfxAlphaMode {
         case "ignore":
@@ -373,37 +305,15 @@ final class PhysicalMetalFrameEngine {
         return PhysicalMetalFrameJob(
             handle: job,
             timedInputs: timedInputs,
-            cameraPoseTrack: cameraPoseTrack,
-            screenPoseTrack: screenPoseTrack,
+            sceneResolver: sceneResolver,
             sourceTexture: sourceTexture,
             deviceSignalTexture: deviceSignalTexture,
             environmentTexture: environmentTexture,
-            deviceProfile: deviceProfile,
-            pipelineSnapshot: pipelineSnapshot,
             sourceFrame: sourceACEScg,
             deviceSignalFrame: deviceSignal,
             environmentFrame: environmentACEScg,
             cancellationIdentity: cancellationIdentity
         )
-    }
-
-    private func staticPoseKnot(
-        frame: PhysicalFrameSelection,
-        pose: PhysicalPoseSnapshot
-    ) -> ScreenPhysicalPoseKnotV2 {
-        var knot = ScreenPhysicalPoseKnotV2()
-        knot.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
-        knot.time_numerator = frame.timeNumerator
-        knot.time_denominator = frame.timeDenominator
-        knot.position = (pose.position.x, pose.position.y, pose.position.z)
-        knot.rotation_xyzw = (
-            pose.rotation.x,
-            pose.rotation.y,
-            pose.rotation.z,
-            pose.rotation.w
-        )
-        knot.interpolation = UInt32(SCREEN_PHYSICAL_POSE_HOLD.rawValue)
-        return knot
     }
 
     private func rawContribution(

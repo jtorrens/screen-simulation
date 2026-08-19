@@ -3,7 +3,6 @@
 //! The structs in this module are Rust's semantic authority. The coarse C ABI
 //! materializes these values once per job; Metal never defines stage ordering.
 
-use crate::{RollingDirection, SensorReadout};
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_contracts::{Meters, Millimeters, RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, IncidentEnvironment};
@@ -447,29 +446,8 @@ impl ResolvedSceneGeometryLensSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedShutterMotionSnapshot {
     pub temporal_samples: u16,
-    pub readout: SensorReadout,
     pub neutral_density_stops: f32,
     pub noise_seed: u64,
-}
-
-impl ResolvedShutterMotionSnapshot {
-    pub fn rolling(
-        temporal_samples: u16,
-        readout_duration: RationalTime,
-        direction: RollingDirection,
-        neutral_density_stops: f32,
-        noise_seed: u64,
-    ) -> Self {
-        Self {
-            temporal_samples,
-            readout: SensorReadout::Rolling {
-                duration: readout_duration,
-                direction,
-            },
-            neutral_density_stops,
-            noise_seed,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

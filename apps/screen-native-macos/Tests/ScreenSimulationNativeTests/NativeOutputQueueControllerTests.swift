@@ -72,6 +72,87 @@ import Testing
     #expect(controller.jobs.first?.configuration.motionSamples == 8)
 }
 
+@Test @MainActor func outputQueueAttemptResolvesCurrentDefaultsForItsFrozenProfileIDs() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-queue-profile-attempt-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let libraryStore = try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("library.json")
+    )
+    var devices = try RustDeviceCatalog.builtIns()
+    let covers = try RustCoverGlassCatalog.builtIns()
+    let deviceIndex = try #require(devices.firstIndex {
+        $0.maximumWhiteLuminance > $0.minimumWhiteLuminance
+    })
+    let selectedDevice = devices[deviceIndex]
+    let expected = selectedDevice.minimumWhiteLuminance
+        + (selectedDevice.maximumWhiteLuminance - selectedDevice.minimumWhiteLuminance) * 0.75
+
+    let initial = outputQueueTestScene(name: "Autoría congelada")
+    let oldAuthoring = initial.snapshot.authoring
+    let authoring = SceneAuthoringDocument(
+        profiles: .init(
+            deviceID: selectedDevice.id,
+            coverGlassID: selectedDevice.defaultCoverGlassPresetID,
+            captureID: oldAuthoring.profiles.captureID,
+            lensID: oldAuthoring.profiles.lensID,
+            environmentID: oldAuthoring.profiles.environmentID,
+            deliveryID: oldAuthoring.profiles.deliveryID,
+            recordingID: oldAuthoring.profiles.recordingID
+        ),
+        overrides: [], modelOverrides: oldAuthoring.modelOverrides,
+        context: oldAuthoring.context, environmentCalibration: nil
+    )
+    let snapshot = SavedSceneSnapshot(
+        source: initial.snapshot.source,
+        currentFrame: initial.snapshot.currentFrame,
+        viewerZoom: initial.snapshot.viewerZoom,
+        viewerPanX: initial.snapshot.viewerPanX,
+        viewerPanY: initial.snapshot.viewerPanY,
+        viewerIsFitted: initial.snapshot.viewerIsFitted,
+        authoring: authoring,
+        generatedEnvironment: initial.snapshot.generatedEnvironment,
+        tracking: initial.snapshot.tracking
+    )
+    let frozenScene = SavedScene(
+        id: initial.id, name: initial.name,
+        thumbnailFileName: initial.thumbnailFileName, snapshot: snapshot
+    )
+    let controller = try NativeOutputQueueController(
+        store: RenderQueueStore(directoryURL: root.appendingPathComponent("queue"))
+    )
+    controller.enqueue(
+        scene: frozenScene, generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan(root.appendingPathComponent("attempt.mov").path),
+        configuration: outputQueueTestConfiguration()
+    )
+
+    // Defaults change after enqueue. The job must retain its ids/overrides while the attempt
+    // resolves the new definition of that exact id.
+    devices[deviceIndex].whiteLevelNits = expected
+    try libraryStore.save(.init(devices: devices, coverGlasses: covers))
+    var resolvedWhite: Double?
+    controller.run(operation: { job, _ in
+        let workspace = WorkspaceModel(globalLibraryStore: libraryStore)
+        await workspace.openSavedScene(job.scene, undoManager: nil)
+        let controls = (workspace.testPresentation?.previewControls ?? [])
+            + (workspace.testPresentation?.phases ?? []).flatMap {
+                $0.sections.flatMap(\.controls)
+            }
+        if let descriptor = controls.first(where: { $0.id == "white-luminance" }),
+           case let .scalar(control) = descriptor {
+            resolvedWhite = control.value
+        }
+        return job.destination
+    }, onFailure: { _ in })
+    while controller.isRendering { await Task.yield() }
+
+    #expect(controller.jobs.first?.scene.snapshot.authoring.profiles.deviceID
+        == selectedDevice.id)
+    #expect(controller.jobs.first?.scene.snapshot.authoring.overrides.isEmpty == true)
+    #expect(resolvedWhite == expected)
+}
+
 @Test @MainActor func completedJobCanBeRequeuedWithoutChangingItsSnapshot() async throws {
     let controller = try queueTestController()
     controller.enqueue(
@@ -117,7 +198,7 @@ import Testing
     #expect(restored.jobs[0].state == .pending)
 }
 
-@Test @MainActor func pendingJobCanBeRemovedWithoutTouchingAnyOutput() throws {
+@Test @MainActor func inactiveJobCanBeRemovedWithoutTouchingAnyOutput() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("render-queue-remove-\(UUID().uuidString)")
     let outputURL = root.appendingPathComponent("existing.mov")
@@ -131,10 +212,40 @@ import Testing
         outputPlan: queueTestPlan(outputURL.path), configuration: outputQueueTestConfiguration()
     )
     let job = try #require(controller.jobs.first)
-    #expect(controller.removePendingJob(id: job.id))
+    #expect(controller.removeInactiveJob(id: job.id))
     #expect(controller.jobs.isEmpty)
     #expect(FileManager.default.fileExists(atPath: outputURL.path))
-    #expect(!controller.removePendingJob(id: job.id))
+    #expect(!controller.removeInactiveJob(id: job.id))
+}
+
+@Test @MainActor func terminalCleanupRemovesCompletedAndFailedButKeepsOtherStates() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-queue-terminal-cleanup-\(UUID().uuidString)")
+    let store = try RenderQueueStore(directoryURL: root)
+    let scene = outputQueueTestScene(name: "Estados")
+    let configuration = outputQueueTestConfiguration()
+    let states: [NativeOutputQueueController.RenderJob.State] = [
+        .pending, .rendering, .completed, .failed, .cancelled,
+    ]
+    let jobs = states.enumerated().map { index, state in
+        NativeOutputQueueController.RenderJob(
+            scene: scene,
+            generatedEnvironmentEXR: nil,
+            outputPlan: queueTestPlan("/tmp/state-\(index).mov"),
+            configuration: configuration,
+            state: state,
+            progress: state == .completed ? 1 : 0,
+            detail: state.rawValue
+        )
+    }
+    try store.save(.init(jobs: jobs))
+    let controller = try NativeOutputQueueController(store: store)
+
+    // A persisted rendering record is restored as pending before cleanup.
+    controller.clearCompletedAndFailed()
+    #expect(controller.jobs.map(\.state) == [.pending, .pending, .cancelled])
+    #expect(!controller.removeInactiveJob(id: jobs[4].id))
+    #expect(controller.removeInactiveJob(id: jobs[0].id))
 }
 
 @Test @MainActor func renderingJobRestoresAsPendingWithoutAutoRun() async throws {
@@ -178,8 +289,8 @@ import Testing
     await executor.openSavedScene(scene, undoManager: nil)
 
     #expect(executor.errorMessage == nil)
-    #expect(try executor.captureSavedScene().snapshot.authoring
-        == capture.snapshot.authoring)
+    let reopened = try executor.captureSavedScene().snapshot.authoring
+    #expect(reopened == capture.snapshot.authoring)
 }
 
 private func outputQueueTestScene(name: String) -> SavedScene {
@@ -189,11 +300,19 @@ private func outputQueueTestScene(name: String) -> SavedScene {
     let selection = try! RustTestAuthoringCoordinator.defaultSelection(
         inputTransformID: input.id, deviceID: device.id, frameRate: .fps24
     )
+    let coverGlass = try! RustCoverGlassCatalog.builtIns().first!
     let authoring = SceneAuthoringDocument(
-        deviceProfileID: device.id,
-        coverGlassProfileID: try! RustCoverGlassCatalog.builtIns().first!.id,
+        profiles: .init(
+            deviceID: device.id, coverGlassID: coverGlass.id,
+            captureID: selection.capturePresetID, lensID: selection.lensPresetID,
+            environmentID: selection.environmentSourceID,
+            deliveryID: selection.deliveryPresetID,
+            recordingID: selection.recordingProfileID
+        ),
+        overrides: [],
+        modelOverrides: .init(screen: nil, stages: []),
         context: .init(
-            selection: selection, sourceInputTransformID: input.id,
+            sourceInputTransformID: input.id,
             sourceAlphaMode: StudioAlphaMode.ignore.rawValue,
             sourceColorModel: StudioSignalColorModel.rgb.rawValue,
             sourceYUVMatrix: StudioSignalMatrix.bt709.rawValue,
@@ -202,7 +321,7 @@ private func outputQueueTestScene(name: String) -> SavedScene {
             previewPhaseID: "recording-codec",
             environmentResource: .init(kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil),
             referenceResource: .init(kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil, alphaMode: nil, signalColorModel: nil, signalMatrix: nil, signalRange: nil, placementID: nil, corners: [])
-        ), model: .init(screen: .init(storedAmount: 1, isBypassed: false), stages: []), environmentCalibration: nil
+        ), environmentCalibration: nil
     )
     let id = UUID()
     return SavedScene(

@@ -142,16 +142,17 @@ final class NativeOutputQueueController: ObservableObject {
         persist()
     }
 
-    func clearCompleted() {
-        jobs.removeAll { $0.state == .completed }
+    func clearCompletedAndFailed() {
+        jobs.removeAll { $0.state == .completed || $0.state == .failed }
         persist()
     }
 
-    /// Removes only an idle queued record. It never deletes scene data or generated output.
+    /// Removes one inactive queue record. It never deletes scene data or generated output.
     @discardableResult
-    func removePendingJob(id: RenderJob.ID) -> Bool {
+    func removeInactiveJob(id: RenderJob.ID) -> Bool {
         guard let index = jobs.firstIndex(where: { $0.id == id }),
-              jobs[index].state == .pending else { return false }
+              [.pending, .failed, .completed].contains(jobs[index].state)
+        else { return false }
         jobs.remove(at: index)
         persist()
         return true

@@ -90,6 +90,46 @@ import Testing
     #expect(controller.selectedDevice?.name == "Seed desbloqueado")
 }
 
+@Test @MainActor func everySimulationProfileFamilyUsesTheSameSeedAndUserCRUDContract() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-profile-family-crud-\(UUID().uuidString)")
+    let store = try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("library.json")
+    )
+    let controller = GlobalLibraryController(store: store)
+
+    let cameraCount = controller.document.cameras.count
+    let lensCount = controller.document.lenses.count
+    let environmentCount = controller.document.environments.count
+    #expect(cameraCount > 0 && lensCount > 0 && environmentCount > 0)
+    #expect(controller.selectedCameraItem?.isLocked == true)
+    #expect(controller.selectedLensItem?.isLocked == true)
+    #expect(controller.selectedEnvironmentItem?.isLocked == true)
+
+    controller.addCamera()
+    #expect(controller.document.cameras.count == cameraCount + 1)
+    #expect(controller.selectedCameraItem?.isLocked == false)
+    controller.updateSelectedCamera { $0.name = "Cámara usuario" }
+    #expect(controller.selectedCameraItem?.name == "Cámara usuario")
+
+    controller.addLens()
+    #expect(controller.document.lenses.count == lensCount + 1)
+    #expect(controller.selectedLensItem?.isLocked == false)
+    controller.updateSelectedLens { $0.name = "Lente usuario" }
+    #expect(controller.selectedLensItem?.name == "Lente usuario")
+
+    controller.addEnvironment()
+    #expect(controller.document.environments.count == environmentCount + 1)
+    #expect(controller.selectedEnvironmentItem?.isLocked == false)
+    controller.updateSelectedEnvironment { $0.name = "Entorno usuario" }
+    #expect(controller.selectedEnvironmentItem?.name == "Entorno usuario")
+
+    let persisted = try store.load()
+    #expect(persisted.cameras.contains { $0.name == "Cámara usuario" })
+    #expect(persisted.lenses.contains { $0.name == "Lente usuario" })
+    #expect(persisted.environments.contains { $0.name == "Entorno usuario" })
+}
+
 @Test @MainActor func renderSeedCanAlwaysDuplicateAndUnlockIntoANormalItem() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-render-preset-crud-\(UUID().uuidString)")
@@ -118,7 +158,7 @@ import Testing
     #expect(try store.load().renderPresets.count == 8)
 }
 
-@Test @MainActor func currentRenderCatalogSupersedesStoredBuiltInCopies() throws {
+@Test @MainActor func storedRenderProfilesRemainTheOnlyRuntimeAuthority() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-render-catalog-\(UUID().uuidString)")
     let store = try GlobalLibraryStore(
@@ -129,7 +169,7 @@ import Testing
     try store.save(stored)
     let controller = GlobalLibraryController(store: store)
     #expect(controller.document.renderPresets.count == 7)
-    #expect(controller.allRenderPresets == StudioRenderPreset.builtIns)
+    #expect(controller.allRenderPresets == stored.renderPresets.map(\.value))
 }
 
 @Test @MainActor func coverGlassSeedsUseTheRustAuthorityAndGenericLockContract() throws {

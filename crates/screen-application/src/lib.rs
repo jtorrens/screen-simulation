@@ -5,7 +5,11 @@
 mod physical_pipeline;
 mod recording;
 mod reflection_environment;
+mod render_preparation;
+mod scene_resolution;
+mod temporal_cache;
 mod test_authoring;
+mod tracking_overlay;
 
 pub use physical_pipeline::{
     PHYSICAL_STAGE_DESCRIPTORS, PHYSICAL_STAGE_ORDER, PhysicalDomain, PhysicalIntermediate,
@@ -16,9 +20,9 @@ pub use physical_pipeline::{
 };
 pub use recording::{
     ConditionalRecordingControl, PreparedRecordingRequest, RecordingAdapterAvailability,
-    RecordingAdapterKind, RecordingAdapterUnavailableReason, RecordingCharacterInterpretation,
-    RecordingControlAvailability, RecordingPreparationError, RecordingSelection,
-    ResolvedRateControl, prepare_recording_execution_request, prepare_recording_request,
+    RecordingAdapterKind, RecordingCharacterInterpretation, RecordingControlAvailability,
+    RecordingPreparationError, RecordingSelection, ResolvedRateControl,
+    prepare_recording_execution_request, prepare_recording_request,
 };
 pub use reflection_environment::{
     REFLECTION_ENVIRONMENT_RIG_ID, ReflectionEmitter, ReflectionEnvironmentError,
@@ -26,14 +30,37 @@ pub use reflection_environment::{
     ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight,
     compile_reflection_environment,
 };
+pub use render_preparation::{
+    ActiveSensorWindow, FullSensorRaster, HostRenderContext, PhaseSpatialRequirement,
+    PreparedRender, PreparedRenderError, PreparedRenderRequirements, PreparedSceneSample,
+    RasterExtent, RenderScale, RenderWindow, SceneRevision, TemporalSampleUse,
+    prepare_capture_render,
+};
+pub use scene_resolution::{
+    ResolvedSceneFrame, SceneFocusAuthoring, SceneFrameAuthoring, SceneFrameResolutionError,
+    SceneFrameResolver,
+};
+pub use temporal_cache::{
+    CacheArtifact, TemporalArtifactCache, TemporalCacheConfiguration, TemporalCacheStats,
+};
 pub use test_authoring::{
     COLOR_MODE_CONTROL_ID, DEVICE_CONTROL_ID, DEVICE_INTERPRETATION_PHASE_ID,
     FEEDER_SIGNAL_PHASE_ID, ORIGIN_PHASE_ID, OUTPUT_SIGNAL_CONTROL_ID, PLACEMENT_CONTROL_ID,
     PREVIEW_QUALITY_CONTROL_ID, ResolvedTestAuthoringSelection, TestAuthoringError,
-    TestAuthoringSelection, TestChoiceOption, TestControlRequirement, TestPageDescriptor,
-    TestPhaseDescriptor, TestPreviewResult, WHITE_LUMINANCE_CONTROL_ID, apply_test_choice,
-    apply_test_scalar, apply_test_toggle, default_test_authoring_selection,
-    recording_output_transform_for_profile, resolve_test_authoring_selection, test_page_descriptor,
+    TestAuthoringProfileSource, TestAuthoringSelection, TestCaptureAuthoringProfile,
+    TestCaptureRasterMode, TestChoiceOption, TestControlRequirement, TestCoverAuthoringProfile,
+    TestDeviceAuthoringProfile, TestEnvironmentAuthoringProfile, TestLensAuthoringProfile,
+    TestOwnedChoiceOption, TestPageDescriptor, TestPhaseDescriptor, TestPreviewResult,
+    WHITE_LUMINANCE_CONTROL_ID, apply_test_choice, apply_test_choice_with_profiles,
+    apply_test_scalar, apply_test_scalar_with_profiles, apply_test_toggle,
+    apply_test_toggle_with_profiles, default_test_authoring_selection,
+    default_test_authoring_selection_with_profiles, recording_output_transform_for_profile,
+    resolve_test_authoring_selection, resolve_test_authoring_selection_with_profiles,
+    test_page_descriptor, test_page_descriptor_with_profiles,
+};
+pub use tracking_overlay::{
+    ProjectedTrackingPoint, TrackingOverlayError, TrackingOverlayFrame, TrackingOverlayIdentity,
+    device_focus_target_at_preview_pixel, evaluate_tracking_overlay, project_device_focus_target,
 };
 
 use core::fmt;
@@ -41,7 +68,7 @@ use rayon::prelude::*;
 use screen_camera::{
     CameraDevelopment, CameraDevelopmentError, CameraRenderingIntent, CpuRawDevelopment,
     DevelopedCameraRaster, DevelopedCameraRegion, RawDevelopmentBackend,
-    apply_camera_rendering_intent, develop_raw_to_acescg,
+    apply_camera_rendering_intent, develop_raw_region_to_acescg, develop_raw_to_acescg,
 };
 use screen_color::{ColorError, DiagnosticDisplayTransform, PreviewRgb, SourceToDeviceProcessor};
 use screen_contracts::{
@@ -67,13 +94,13 @@ use screen_panel::{
     PanelLightSpreadProfile, PanelUniformityProfile, ValidatedPanelEvaluator,
 };
 #[cfg(test)]
-use screen_sensor::expose_raw_with_noise_amount;
+use screen_sensor::expose_raw_region_with_noise_amount;
 use screen_sensor::{
     BayerPattern, CaptureIdentity, CollectedSensorChargeRegion, ComputationalCaptureExposure,
     ComputationalCaptureProfile, CoupledSensorChargeRegion, IntegratedOpticalExposure,
     RawSensorRaster, RawSensorRegion, SensorBloomProfile, SensorError, SensorProfile, SensorRegion,
     collect_sensor_charge_region_with_noise_amount, couple_sensor_charge_region, expose_raw,
-    expose_raw_region, materialize_computational_capture, quantize_sensor_charge_region,
+    expose_raw_region, materialize_computational_capture_region, quantize_sensor_charge_region,
 };
 use std::time::{Duration, Instant};
 
@@ -350,7 +377,6 @@ pub struct CaptureDevicePreset {
     pub radiometric_calibration: CameraRadiometricCalibration,
     pub default_shutter_angle_degrees: f32,
     pub default_temporal_samples: u16,
-    pub default_readout_duration_milliseconds: f32,
 }
 
 impl CaptureDevicePreset {
@@ -428,7 +454,6 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         },
         default_shutter_angle_degrees: 180.0,
         default_temporal_samples: 1,
-        default_readout_duration_milliseconds: 7.8,
     },
     CaptureDevicePreset {
         id: "iphone-16e-main-48mp",
@@ -496,7 +521,6 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         },
         default_shutter_angle_degrees: 30.0,
         default_temporal_samples: 1,
-        default_readout_duration_milliseconds: 12.0,
     },
     CaptureDevicePreset {
         id: "canon-powershot-a470-reference",
@@ -546,7 +570,6 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         },
         default_shutter_angle_degrees: 144.0,
         default_temporal_samples: 1,
-        default_readout_duration_milliseconds: 20.0,
     },
     CaptureDevicePreset {
         id: "iphone-14-pro-main-reference",
@@ -610,7 +633,6 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         },
         default_shutter_angle_degrees: 144.0,
         default_temporal_samples: 1,
-        default_readout_duration_milliseconds: 12.0,
     },
     CaptureDevicePreset {
         id: "iphone-14-pro-ultrawide-reference",
@@ -674,7 +696,6 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         },
         default_shutter_angle_degrees: 144.0,
         default_temporal_samples: 1,
-        default_readout_duration_milliseconds: 14.0,
     },
 ];
 
@@ -760,6 +781,7 @@ pub struct PlacedFeederSignal {
     glow_emission_integral: DeviceSignalIntegral,
     device_raster: [u32; 2],
     placement: RasterPlacement,
+    corner_radius_uv: [f32; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -969,6 +991,9 @@ pub struct PhysicalPipelineExecutionPlan {
     pub computational_capture: ComputationalCaptureProfile,
     pub computational_character_strength: f32,
     pub sensor: SensorProfile,
+    /// Global photosite rectangle evaluated by this request. Keeping the
+    /// origin explicit preserves CFA phase and sensor-coordinate effects.
+    pub sensor_region: SensorRegion,
     pub radiometric_calibration: CameraRadiometricCalibration,
     pub sensor_enabled: bool,
     pub sensor_noise_amount: f32,
@@ -1089,7 +1114,7 @@ pub enum PhysicalPipelineCpuArtifact {
         diagnostic: PhysicalRgbaRaster,
     },
     SensorReadoutRaw {
-        raw: RawSensorRaster,
+        raw: RawSensorRegion,
         diagnostic: PhysicalRgbaRaster,
     },
     DevelopedAcesCg(PhysicalRgbaRaster),
@@ -1120,7 +1145,7 @@ impl PhysicalPipelineCpuArtifact {
         }
     }
 
-    pub fn raw_sensor(&self) -> Option<&RawSensorRaster> {
+    pub fn raw_sensor(&self) -> Option<&RawSensorRegion> {
         match self {
             Self::SensorReadoutRaw { raw, .. } => Some(raw),
             _ => None,
@@ -1160,7 +1185,9 @@ impl PhysicalPipelineCpuResult {
             PhysicalPipelineCpuArtifact::SensorBloom { charge, .. } => {
                 u32::from(charge.region.width)
             }
-            PhysicalPipelineCpuArtifact::SensorReadoutRaw { raw, .. } => raw.width,
+            PhysicalPipelineCpuArtifact::SensorReadoutRaw { raw, .. } => {
+                u32::from(raw.region.width)
+            }
         }
     }
 
@@ -1189,7 +1216,9 @@ impl PhysicalPipelineCpuResult {
             PhysicalPipelineCpuArtifact::SensorBloom { charge, .. } => {
                 u32::from(charge.region.height)
             }
-            PhysicalPipelineCpuArtifact::SensorReadoutRaw { raw, .. } => raw.height,
+            PhysicalPipelineCpuArtifact::SensorReadoutRaw { raw, .. } => {
+                u32::from(raw.region.height)
+            }
         }
     }
 
@@ -1197,7 +1226,7 @@ impl PhysicalPipelineCpuResult {
         self.artifact.presentation_rgba()
     }
 
-    pub fn raw_sensor(&self) -> Option<&RawSensorRaster> {
+    pub fn raw_sensor(&self) -> Option<&RawSensorRegion> {
         self.artifact.raw_sensor()
     }
 }
@@ -1449,7 +1478,7 @@ pub fn expose_physical_pipeline_raw(
     shuttered_width: u32,
     shuttered_height: u32,
     plan: PhysicalPipelineExecutionPlan,
-) -> Result<RawSensorRaster, ApplicationError> {
+) -> Result<RawSensorRegion, ApplicationError> {
     let capture = physical_pipeline_computational_capture(
         shuttered,
         shuttered_width,
@@ -1459,8 +1488,7 @@ pub fn expose_physical_pipeline_raw(
     let collected = collect_physical_pipeline_capture(capture, plan)?;
     let coupled = couple_physical_pipeline_capture(collected)?;
     let region = coupled.region;
-    let raw = quantize_sensor_charge_region(coupled, region).map_err(ApplicationError::Sensor)?;
-    Ok(complete_raw_raster(raw))
+    quantize_sensor_charge_region(coupled, region).map_err(ApplicationError::Sensor)
 }
 
 fn physical_pipeline_computational_capture(
@@ -1505,12 +1533,17 @@ fn physical_pipeline_computational_capture(
     // conversion; reevaluating the pupil here would apply the aperture twice.
     let exposure_scale =
         parameters.white_level_nits * plan.radiometric_calibration.effective_sensor_exposure_scale;
-    let sensor_width = u32::from(sensor.native_width);
-    let sensor_height = u32::from(sensor.native_height);
-    materialize_computational_capture(
+    let sensor_region = plan
+        .sensor_region
+        .validate(sensor)
+        .map_err(ApplicationError::Sensor)?;
+    let sensor_width = u32::from(sensor_region.width);
+    let sensor_height = u32::from(sensor_region.height);
+    materialize_computational_capture_region(
         sensor,
         plan.computational_capture,
         plan.computational_character_strength,
+        sensor_region,
         IntegratedOpticalExposure {
             width: sensor_width,
             height: sensor_height,
@@ -1540,7 +1573,7 @@ fn collect_physical_pipeline_capture(
             noise_seed: plan.shutter_motion.noise_seed,
             frame_index: plan.frame_index,
         },
-        SensorRegion::full(sensor),
+        capture.region,
         plan.sensor_noise_amount,
     )
     .map_err(ApplicationError::Sensor)
@@ -1552,24 +1585,11 @@ fn couple_physical_pipeline_capture(
     couple_sensor_charge_region(collected).map_err(ApplicationError::Sensor)
 }
 
-fn complete_raw_raster(raw: RawSensorRegion) -> RawSensorRaster {
-    RawSensorRaster {
-        width: u32::from(raw.region.width),
-        height: u32::from(raw.region.height),
-        bayer_pattern: raw.bayer_pattern,
-        adc_bits: raw.adc_bits,
-        sensor_profile: raw.sensor_profile,
-        codes: raw.codes,
-        full_well_clipped: raw.full_well_clipped,
-        adc_clipped: raw.adc_clipped,
-    }
-}
-
-fn raw_diagnostic(raw: &RawSensorRaster) -> PhysicalRgbaRaster {
+fn raw_diagnostic(raw: &RawSensorRegion) -> PhysicalRgbaRaster {
     let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
     PhysicalRgbaRaster {
-        width: raw.width,
-        height: raw.height,
+        width: u32::from(raw.region.width),
+        height: u32::from(raw.region.height),
         rgba: raw
             .codes
             .iter()
@@ -1656,6 +1676,7 @@ impl PlacedFeederSignal {
         glow_emission_integral: DeviceSignalIntegral,
         device_raster: [u32; 2],
         placement: RasterPlacement,
+        corner_radius_uv: [f32; 2],
     ) -> Self {
         Self {
             prepared,
@@ -1663,6 +1684,7 @@ impl PlacedFeederSignal {
             glow_emission_integral,
             device_raster,
             placement,
+            corner_radius_uv,
         }
     }
 
@@ -2338,6 +2360,7 @@ fn panel_rectangle_coverage(
     position_meters: [f32; 2],
     footprint_half_extent_meters: [f32; 2],
     panel_size_meters: [f32; 2],
+    corner_radius_meters: f32,
 ) -> f32 {
     let axis_coverage = |position: f32, footprint_half_extent: f32, size: f32| {
         let panel_half_extent = 0.5 * size;
@@ -2355,7 +2378,7 @@ fn panel_rectangle_coverage(
         .max(0.0);
         (overlap / (2.0 * footprint_half_extent)).clamp(0.0, 1.0)
     };
-    axis_coverage(
+    let rectangular = axis_coverage(
         position_meters[0],
         footprint_half_extent_meters[0],
         panel_size_meters[0],
@@ -2363,7 +2386,43 @@ fn panel_rectangle_coverage(
         position_meters[1],
         footprint_half_extent_meters[1],
         panel_size_meters[1],
-    )
+    );
+    if corner_radius_meters <= 0.0 || rectangular == 0.0 {
+        return rectangular;
+    }
+
+    let inside = |position: [f32; 2]| {
+        let half = [0.5 * panel_size_meters[0], 0.5 * panel_size_meters[1]];
+        let inner = [
+            half[0] - corner_radius_meters,
+            half[1] - corner_radius_meters,
+        ];
+        let q = [
+            (position[0].abs() - inner[0]).max(0.0),
+            (position[1].abs() - inner[1]).max(0.0),
+        ];
+        q[0] * q[0] + q[1] * q[1] <= corner_radius_meters * corner_radius_meters
+            && position[0].abs() <= half[0]
+            && position[1].abs() <= half[1]
+    };
+    if footprint_half_extent_meters[0] <= 1.0e-9 && footprint_half_extent_meters[1] <= 1.0e-9 {
+        return if inside(position_meters) { 1.0 } else { 0.0 };
+    }
+    let mut covered = 0_u32;
+    const GRID: u32 = 4;
+    for y in 0..GRID {
+        for x in 0..GRID {
+            let offset = [
+                ((x as f32 + 0.5) / GRID as f32 * 2.0 - 1.0) * footprint_half_extent_meters[0],
+                ((y as f32 + 0.5) / GRID as f32 * 2.0 - 1.0) * footprint_half_extent_meters[1],
+            ];
+            covered += inside([
+                position_meters[0] + offset[0],
+                position_meters[1] + offset[1],
+            ]) as u32;
+        }
+    }
+    covered as f32 / (GRID * GRID) as f32
 }
 
 /// Deterministic scalar oracle for the flat, orthographic physical panel surface.
@@ -2513,6 +2572,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         glow_emission_integral,
         [plan.panel.native_width, plan.panel.native_height],
         plan.placement,
+        [
+            plan.panel.corner_radius.0 / plan.panel.active_width.0,
+            plan.panel.corner_radius.0 / plan.panel.active_height.0,
+        ],
     );
     let prepared_emission_glow = PreparedEmissionGlow::new_with_radius(
         &placed_feeder,
@@ -2924,6 +2987,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                             let coverage = device_rectangle_coverage(
                                                 shifted_minimum,
                                                 shifted_maximum,
+                                                placed_feeder.corner_radius_uv,
                                             );
                                             if coverage == 0.0 {
                                                 return 0.0;
@@ -3255,10 +3319,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         + plan.subpixel_geometry_amount
                             * (moire_free_glow[2] - continuous_base[2])),
             ];
-            let resolved_temporal_gain =
-                physical_row_temporal_gain(plan, y as usize, sampling.effective_height as usize)?;
             let temporal_gain =
-                1.0 + plan.temporal_emission_amount * (resolved_temporal_gain - 1.0);
+                1.0 + plan.temporal_emission_amount * (plan.temporal_emission_gain - 1.0);
             let temporally_integrated = sampled_panel.map(|value| value * temporal_gain);
             let moire_free_temporally_integrated =
                 moire_free_base.map(|value| value * temporal_gain);
@@ -3293,6 +3355,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 cover_position_meters,
                 footprint_half_extent_meters,
                 [plan.panel.active_width.0, plan.panel.active_height.0],
+                plan.panel.corner_radius.0,
             );
             let resolved_panel_coverage = 1.0 + plan.scene_geometry_amount * (panel_coverage - 1.0);
             let reflection_visibility = microtexture
@@ -3540,10 +3603,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 // Presentation remains an explicitly diagnostic normalized RAW
                 // view. The canonical checkpoint itself remains typed charge.
                 let region = coupled.region;
-                let diagnostic_raw = complete_raw_raster(
-                    quantize_sensor_charge_region(coupled.clone(), region)
-                        .map_err(ApplicationError::Sensor)?,
-                );
+                let diagnostic_raw = quantize_sensor_charge_region(coupled.clone(), region)
+                    .map_err(ApplicationError::Sensor)?;
                 let diagnostic = raw_diagnostic(&diagnostic_raw);
                 let artifact = match plan.requested_intermediate {
                     PhysicalIntermediate::SensorCollection => {
@@ -3586,18 +3647,15 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             &output,
             sampling.effective_width,
             sampling.effective_height,
-            raw.width,
-            raw.height,
+            u32::from(raw.region.width),
+            u32::from(raw.region.height),
         )?;
         if !plan.development_enabled {
             return Err(ApplicationError::UnsupportedPhysicalIntermediate);
         }
-        let developed = develop_raw_to_acescg(&raw, raw.sensor_profile, plan.development)
+        let developed = develop_raw_region_to_acescg(&raw, raw.sensor_profile, plan.development)
             .map_err(ApplicationError::CameraDevelopment)?;
-        if developed.width != raw.width
-            || developed.height != raw.height
-            || developed.acescg.len() != sensor_device_matte.len()
-        {
+        if developed.region != raw.region || developed.acescg.len() != sensor_device_matte.len() {
             return Err(ApplicationError::OpticalSampleRasterMismatch);
         }
         if plan.requested_intermediate == PhysicalIntermediate::CameraRenderedAcesCg {
@@ -3612,8 +3670,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 .map_err(ApplicationError::CameraDevelopment)?;
             return Ok(PhysicalPipelineCpuResult {
                 artifact: PhysicalPipelineCpuArtifact::CameraRenderedAcesCg(PhysicalRgbaRaster {
-                    width: developed.width,
-                    height: developed.height,
+                    width: u32::from(developed.region.width),
+                    height: u32::from(developed.region.height),
                     rgba: acescg
                         .into_iter()
                         .zip(sensor_device_matte.iter())
@@ -3625,8 +3683,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         }
         return Ok(PhysicalPipelineCpuResult {
             artifact: PhysicalPipelineCpuArtifact::DevelopedAcesCg(PhysicalRgbaRaster {
-                width: developed.width,
-                height: developed.height,
+                width: u32::from(developed.region.width),
+                height: u32::from(developed.region.height),
                 rgba: developed
                     .acescg
                     .into_iter()
@@ -3648,67 +3706,26 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     })
 }
 
-/// Reuses the historical exact rolling-row timing and analytic panel temporal
-/// integral. Residual flicker remains frame-uniform unless explicit analytic
-/// banding is enabled, matching the prior capture scheduler.
-pub fn physical_row_temporal_gain(
-    plan: PhysicalPipelineExecutionPlan,
-    row: usize,
-    height: usize,
-) -> Result<f32, ApplicationError> {
-    if matches!(plan.shutter_motion.readout, SensorReadout::Global)
-        || plan.panel.temporal_emission.analytic_banding.amount == 0.0
-    {
-        return Ok(plan.temporal_emission_gain);
-    }
-    let center = match plan.shutter_motion.readout {
-        SensorReadout::Rolling {
-            duration,
-            direction,
-        } => rolling_row_center_time(plan.frame_time, duration, row, height, direction)?,
-        SensorReadout::Global => unreachable!("global shutter returned above"),
-    };
-    let exposure_duration = plan
-        .shutter_close
-        .checked_sub(plan.shutter_open)
-        .map_err(ApplicationError::Time)?;
-    let half = exposure_duration
-        .checked_mul_ratio(1, 2)
-        .map_err(ApplicationError::Time)?;
-    let start = center.checked_sub(half).map_err(ApplicationError::Time)?;
-    let end = center.checked_add(half).map_err(ApplicationError::Time)?;
-    plan.panel
-        .temporal_emission
-        .average_gain(start, end)
-        .map_err(ApplicationError::Panel)
-}
-
-/// One exact quadrature interval scheduled by Rust for a global frame or one
-/// rolling-shutter row. `row` is `None` for global shutter and otherwise names
-/// the only output row to which the sample applies.
+/// One exact quadrature interval scheduled by Rust for a complete global frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalShutterSample {
-    pub row: Option<usize>,
     pub start: RationalTime,
     pub time: RationalTime,
     pub end: RationalTime,
     pub weight_seconds: f64,
 }
 
-/// Reuses the historical shutter quadrature and rolling-row center semantics.
 /// The caller supplies exact open/close bounds; no frame rate or velocity is
-/// inferred. Motion sample count is bounded by the historical `[1, 64]` range.
+/// inferred. Every sample covers the complete frame.
 pub fn physical_shutter_schedule(
     shutter_open: RationalTime,
     shutter_close: RationalTime,
     temporal_samples: u16,
-    readout: SensorReadout,
-    output_height: usize,
 ) -> Result<Vec<PhysicalShutterSample>, ApplicationError> {
     let duration = shutter_close
         .checked_sub(shutter_open)
         .map_err(ApplicationError::Time)?;
-    if duration.numerator() <= 0 || output_height == 0 {
+    if duration.numerator() <= 0 {
         return Err(ApplicationError::InvalidShutter);
     }
     let center = shutter_open
@@ -3718,39 +3735,17 @@ pub fn physical_shutter_schedule(
                 .map_err(ApplicationError::Time)?,
         )
         .map_err(ApplicationError::Time)?;
-    let append = |row, center, output: &mut Vec<PhysicalShutterSample>| {
-        for sample in shutter_quadrature(center, duration, temporal_samples)? {
-            output.push(PhysicalShutterSample {
-                row,
+    shutter_quadrature(center, duration, temporal_samples).map(|samples| {
+        samples
+            .into_iter()
+            .map(|sample| PhysicalShutterSample {
                 start: sample.start,
                 time: sample.time,
                 end: sample.end,
                 weight_seconds: sample.weight_seconds,
-            });
-        }
-        Ok::<(), ApplicationError>(())
-    };
-    let mut scheduled = Vec::new();
-    match readout {
-        SensorReadout::Global => append(None, center, &mut scheduled)?,
-        SensorReadout::Rolling {
-            duration: readout_duration,
-            direction,
-        } => {
-            scheduled.reserve(output_height * usize::from(temporal_samples));
-            for row in 0..output_height {
-                let row_center = rolling_row_center_time(
-                    center,
-                    readout_duration,
-                    row,
-                    output_height,
-                    direction,
-                )?;
-                append(Some(row), row_center, &mut scheduled)?;
-            }
-        }
-    }
-    Ok(scheduled)
+            })
+            .collect()
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -4030,7 +4025,7 @@ fn source_uv_unbounded(
     })
 }
 
-fn device_rectangle_coverage(minimum: Vec2, maximum: Vec2) -> f32 {
+fn device_rectangle_coverage(minimum: Vec2, maximum: Vec2, corner_radius_uv: [f32; 2]) -> f32 {
     let ordered_minimum = Vec2 {
         x: minimum.x.min(maximum.x),
         y: minimum.y.min(maximum.y),
@@ -4039,11 +4034,42 @@ fn device_rectangle_coverage(minimum: Vec2, maximum: Vec2) -> f32 {
         x: minimum.x.max(maximum.x),
         y: minimum.y.max(maximum.y),
     };
-    let area = ((ordered_maximum.x - ordered_minimum.x) * (ordered_maximum.y - ordered_minimum.y))
-        .max(1.0e-12);
+    let raw_area =
+        (ordered_maximum.x - ordered_minimum.x) * (ordered_maximum.y - ordered_minimum.y);
+    let area = raw_area.max(1.0e-12);
     let overlap_width = (ordered_maximum.x.min(1.0) - ordered_minimum.x.max(0.0)).max(0.0);
     let overlap_height = (ordered_maximum.y.min(1.0) - ordered_minimum.y.max(0.0)).max(0.0);
-    ((overlap_width * overlap_height) / area).clamp(0.0, 1.0)
+    let rectangular = ((overlap_width * overlap_height) / area).clamp(0.0, 1.0);
+    if corner_radius_uv[0] <= 0.0 || corner_radius_uv[1] <= 0.0 || rectangular == 0.0 {
+        return rectangular;
+    }
+    let inside = |point: Vec2| {
+        if point.x < 0.0 || point.x > 1.0 || point.y < 0.0 || point.y > 1.0 {
+            return false;
+        }
+        let qx = (point.x - 0.5).abs() - (0.5 - corner_radius_uv[0]);
+        let qy = (point.y - 0.5).abs() - (0.5 - corner_radius_uv[1]);
+        let nx = qx.max(0.0) / corner_radius_uv[0];
+        let ny = qy.max(0.0) / corner_radius_uv[1];
+        nx * nx + ny * ny <= 1.0
+    };
+    if raw_area <= 1.0e-12 {
+        return if inside(minimum) { 1.0 } else { 0.0 };
+    }
+    let mut covered = 0_u32;
+    const GRID: u32 = 4;
+    for y in 0..GRID {
+        for x in 0..GRID {
+            let point = Vec2 {
+                x: ordered_minimum.x
+                    + (x as f32 + 0.5) / GRID as f32 * (ordered_maximum.x - ordered_minimum.x),
+                y: ordered_minimum.y
+                    + (y as f32 + 0.5) / GRID as f32 * (ordered_maximum.y - ordered_minimum.y),
+            };
+            covered += inside(point) as u32;
+        }
+    }
+    covered as f32 / (GRID * GRID) as f32
 }
 
 fn glow_bright_pass_scale(rgb: [f32; 3], threshold: f32) -> f32 {
@@ -4102,7 +4128,7 @@ fn sample_placed_feeder_area(
         device_code,
         linear_native_emission: LinearRgb::new(emission.r, emission.g, emission.b),
         alpha,
-        panel_coverage: device_rectangle_coverage(minimum, maximum),
+        panel_coverage: device_rectangle_coverage(minimum, maximum, signal.corner_radius_uv),
     }
 }
 
@@ -4113,6 +4139,7 @@ fn sample_placed_area(
     source_raster: [u32; 2],
     device_raster: [u32; 2],
     placement: RasterPlacement,
+    corner_radius_uv: [f32; 2],
     minimum: Vec2,
     maximum: Vec2,
 ) -> AreaSignalSample {
@@ -4139,7 +4166,7 @@ fn sample_placed_area(
         device_code,
         linear_native_emission: LinearRgb::new(emission.r, emission.g, emission.b),
         alpha,
-        panel_coverage: device_rectangle_coverage(minimum, maximum),
+        panel_coverage: device_rectangle_coverage(minimum, maximum, corner_radius_uv),
     }
 }
 
@@ -4193,7 +4220,6 @@ pub struct ShutterRequest {
     pub optics: OpticalRequest,
     pub duration: RationalTime,
     pub temporal_samples: u16,
-    pub readout: SensorReadout,
     /// Optical neutral-density attenuation applied before sensor charge collection.
     pub neutral_density_stops: f32,
 }
@@ -4205,7 +4231,6 @@ pub struct FrameCaptureRequest {
     pub frame_index: i64,
     pub duration: RationalTime,
     pub temporal_samples: u16,
-    pub readout: SensorReadout,
     pub neutral_density_stops: f32,
     pub noise_seed: u64,
 }
@@ -4227,7 +4252,6 @@ impl FrameCaptureRequest {
                 optics,
                 duration: self.duration,
                 temporal_samples: self.temporal_samples,
-                readout: self.readout,
                 neutral_density_stops: self.neutral_density_stops,
             },
             CaptureIdentity {
@@ -4236,21 +4260,6 @@ impl FrameCaptureRequest {
             },
         ))
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SensorReadout {
-    Global,
-    Rolling {
-        duration: RationalTime,
-        direction: RollingDirection,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RollingDirection {
-    TopToBottom,
-    BottomToTop,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4433,20 +4442,6 @@ impl SpatialOpticalPlan {
         );
         plan.refresh_procedural_veiling_glare();
         Some(plan)
-    }
-
-    fn static_template_for_region(&self, time: RationalTime, region: SensorRegion) -> Self {
-        let mut plan = self.clone();
-        plan.frame.time = time;
-        plan.raster.origin_x = region.origin_x;
-        plan.raster.origin_y = region.origin_y;
-        plan.raster.width = region.width;
-        plan.raster.height = region.height;
-        if let SpatialSignalPlan::Procedural { time_seconds, .. } = &mut plan.signal {
-            *time_seconds = time.as_seconds() as f32;
-            plan.refresh_procedural_veiling_glare();
-        }
-        plan
     }
 
     fn refresh_procedural_veiling_glare(&mut self) {
@@ -4758,6 +4753,10 @@ fn prepare_spatial_plan(
                 Vec2 { x: 1.0, y: 1.0 },
                 request.time,
                 panel_evaluator,
+                [
+                    request.panel.corner_radius.0 / request.panel.active_width.0,
+                    request.panel.corner_radius.0 / request.panel.active_height.0,
+                ],
             )
             .linear_native_emission
         }
@@ -4965,6 +4964,10 @@ pub fn prepare_raster(
                 maximum,
                 request.optics.time,
                 panel_evaluator,
+                [
+                    request.optics.panel.corner_radius.0 / request.optics.panel.active_width.0,
+                    request.optics.panel.corner_radius.0 / request.optics.panel.active_height.0,
+                ],
             )
         },
     )
@@ -4989,6 +4992,10 @@ pub fn evaluate_linear_optics(
                 maximum,
                 request.time,
                 panel_evaluator,
+                [
+                    request.panel.corner_radius.0 / request.panel.active_width.0,
+                    request.panel.corner_radius.0 / request.panel.active_height.0,
+                ],
             )
         },
     )
@@ -5012,6 +5019,10 @@ fn evaluate_linear_optics_region(
                 maximum,
                 request.time,
                 panel_evaluator,
+                [
+                    request.panel.corner_radius.0 / request.panel.active_width.0,
+                    request.panel.corner_radius.0 / request.panel.active_height.0,
+                ],
             )
         },
     )
@@ -5030,59 +5041,14 @@ pub fn evaluate_procedural_spatial_cpu_oracle(
     evaluate_linear_optics_region(request, sensor, region).map(|raster| raster.pixels)
 }
 
-fn evaluate_procedural_optical_sensor_row(
-    request: OpticalRequest,
-    sensor: SensorProfile,
-    region: SensorRegion,
-    global_row: u16,
-) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
-    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
-    let raster = evaluate_optical_window_with_signal(
-        request.clone(),
-        RasterWindow {
-            full_width: sensor.native_width,
-            full_height: sensor.native_height,
-            origin_x: region.origin_x,
-            origin_y: global_row,
-            width: region.width,
-            height: 1,
-        },
-        DiagnosticView::Composite,
-        &|uv| diagnostic_signal(request.procedural_pattern, uv, request.time),
-        &|minimum, maximum| {
-            diagnostic_area_signal(
-                request.procedural_pattern,
-                minimum,
-                maximum,
-                request.time,
-                panel_evaluator,
-            )
-        },
-    )?;
-    Ok(raster.pixels)
-}
-
 pub fn integrate_procedural_shutter(
     request: ShutterRequest,
     width: u16,
     height: u16,
 ) -> Result<IntegratedOpticalExposure, ApplicationError> {
-    match request.readout {
-        SensorReadout::Global => integrate_global_shutter(request, width, height, |optics| {
-            evaluate_linear_optics(optics, width, height)
-        }),
-        SensorReadout::Rolling {
-            duration,
-            direction,
-        } => integrate_rolling_shutter(
-            request,
-            width,
-            height,
-            duration,
-            direction,
-            |optics, row| evaluate_procedural_optical_row(optics, width, height, row),
-        ),
-    }
+    integrate_global_shutter(request, width, height, |optics| {
+        evaluate_linear_optics(optics, width, height)
+    })
 }
 
 pub fn capture_procedural_frame(
@@ -5347,8 +5313,8 @@ where
     })
 }
 
-/// Region-authoritative capture for animated device content. Every temporal and rolling-shutter
-/// sample resolves the source at its exact rational time; tiled capture therefore cannot freeze
+/// Region-authoritative capture for animated device content. Every complete-frame temporal sample
+/// resolves the source at its exact rational time; tiled capture therefore cannot freeze
 /// the source at the nominal frame time.
 pub fn capture_and_develop_device_signal_region_sequence<F>(
     request: FrameCaptureRequest,
@@ -5393,41 +5359,16 @@ where
     let evaluation_region = requested_region.expanded_for_demosaic(sensor);
     let sensor_support_region = evaluation_region.expanded_for_sensor_bloom(sensor);
     let (shutter, identity) = request.resolve()?;
-    let exposure = match shutter.readout {
-        SensorReadout::Global => {
-            integrate_global_region(shutter, sensor_support_region, |optics| {
-                let signal = signal_at_time(optics.time)?;
-                evaluate_linear_optics_region_from_prepared_device_signal(
-                    optics,
-                    sensor,
-                    sensor_support_region,
-                    &signal,
-                    placement,
-                )
-            })
-        }
-        SensorReadout::Rolling {
-            duration,
-            direction,
-        } => integrate_rolling_region(
-            shutter,
+    let exposure = integrate_global_region(shutter, sensor_support_region, |optics| {
+        let signal = signal_at_time(optics.time)?;
+        evaluate_linear_optics_region_from_prepared_device_signal(
+            optics,
             sensor,
             sensor_support_region,
-            duration,
-            direction,
-            |optics, row| {
-                let signal = signal_at_time(optics.time)?;
-                evaluate_device_signal_optical_sensor_row(
-                    optics,
-                    sensor,
-                    sensor_support_region,
-                    row,
-                    &signal,
-                    placement,
-                )
-            },
-        ),
-    }?;
+            &signal,
+            placement,
+        )
+    })?;
     let raw = expose_raw_region(
         sensor,
         &exposure,
@@ -5517,30 +5458,12 @@ pub fn integrate_shutter_from_device_signal_sequence<F>(
 where
     F: FnMut(RationalTime) -> Result<Arc<PreparedDeviceSignalRaster>, ApplicationError>,
 {
-    match request.readout {
-        SensorReadout::Global => integrate_global_shutter(request, width, height, |optics| {
-            let signal = signal_at_time(optics.time)?;
-            evaluate_linear_optics_from_prepared_device_signal(
-                optics, width, height, &signal, placement,
-            )
-        }),
-        SensorReadout::Rolling {
-            duration,
-            direction,
-        } => integrate_rolling_shutter(
-            request,
-            width,
-            height,
-            duration,
-            direction,
-            |optics, row| {
-                let signal = signal_at_time(optics.time)?;
-                evaluate_optical_row_from_prepared_device_signal(
-                    optics, width, height, row, &signal, placement,
-                )
-            },
-        ),
-    }
+    integrate_global_shutter(request, width, height, |optics| {
+        let signal = signal_at_time(optics.time)?;
+        evaluate_linear_optics_from_prepared_device_signal(
+            optics, width, height, &signal, placement,
+        )
+    })
 }
 
 pub fn capture_frame_from_device_signal_sequence<F>(
@@ -5590,9 +5513,6 @@ fn integrate_global_shutter<F>(
 where
     F: FnMut(OpticalRequest) -> Result<LinearOpticalRaster, ApplicationError>,
 {
-    if request.readout != SensorReadout::Global {
-        return Err(ApplicationError::InvalidSensorReadout);
-    }
     let samples = shutter_quadrature(
         request.optics.time,
         request.duration,
@@ -5637,22 +5557,9 @@ fn integrate_procedural_region(
     sensor: SensorProfile,
     region: SensorRegion,
 ) -> Result<IntegratedOpticalExposure, ApplicationError> {
-    match request.readout {
-        SensorReadout::Global => integrate_global_region(request, region, |optics| {
-            evaluate_linear_optics_region(optics, sensor, region)
-        }),
-        SensorReadout::Rolling {
-            duration,
-            direction,
-        } => integrate_rolling_region(
-            request,
-            sensor,
-            region,
-            duration,
-            direction,
-            |optics, row| evaluate_procedural_optical_sensor_row(optics, sensor, region, row),
-        ),
-    }
+    integrate_global_region(request, region, |optics| {
+        evaluate_linear_optics_region(optics, sensor, region)
+    })
 }
 
 fn integrate_device_signal_region(
@@ -5662,28 +5569,11 @@ fn integrate_device_signal_region(
     signal: &PreparedDeviceSignalRaster,
     placement: RasterPlacement,
 ) -> Result<IntegratedOpticalExposure, ApplicationError> {
-    match request.readout {
-        SensorReadout::Global => integrate_global_region(request, region, |optics| {
-            evaluate_linear_optics_region_from_prepared_device_signal(
-                optics, sensor, region, signal, placement,
-            )
-        }),
-        SensorReadout::Rolling {
-            duration,
-            direction,
-        } => integrate_rolling_region(
-            request,
-            sensor,
-            region,
-            duration,
-            direction,
-            |optics, row| {
-                evaluate_device_signal_optical_sensor_row(
-                    optics, sensor, region, row, signal, placement,
-                )
-            },
-        ),
-    }
+    integrate_global_region(request, region, |optics| {
+        evaluate_linear_optics_region_from_prepared_device_signal(
+            optics, sensor, region, signal, placement,
+        )
+    })
 }
 
 fn integrate_spatial_region_with_backend<B, F>(
@@ -5711,7 +5601,7 @@ where
 
 fn integrate_spatial_region_with_backend_timed<B, F>(
     request: ShutterRequest,
-    sensor: SensorProfile,
+    _sensor: SensorProfile,
     region: SensorRegion,
     source_is_static: bool,
     backend: &B,
@@ -5748,145 +5638,56 @@ where
                 plans.len() - 1
             }
         };
-    match request.readout {
-        SensorReadout::Global => {
-            let mut reused_plan_index = None;
-            let mut procedural_template: Option<SpatialOpticalPlan> = None;
-            for sample in shutter_quadrature(
-                request.optics.time,
-                request.duration,
-                request.temporal_samples,
-            )? {
-                let temporal_gain = request
-                    .optics
-                    .panel
-                    .temporal_emission
-                    .average_gain(sample.start, sample.end)
-                    .map_err(ApplicationError::Panel)?;
-                let mut optics = request.optics.clone();
-                optics.time = sample.time;
-                optics.panel_temporal_evaluation =
-                    PanelTemporalEvaluation::ExposureAverage(temporal_gain);
-                let plan_index = if can_reuse_spatial_samples {
-                    if let Some(index) = reused_plan_index {
-                        index
+    {
+        let mut reused_plan_index = None;
+        let mut procedural_template: Option<SpatialOpticalPlan> = None;
+        for sample in shutter_quadrature(
+            request.optics.time,
+            request.duration,
+            request.temporal_samples,
+        )? {
+            let temporal_gain = request
+                .optics
+                .panel
+                .temporal_emission
+                .average_gain(sample.start, sample.end)
+                .map_err(ApplicationError::Panel)?;
+            let mut optics = request.optics.clone();
+            optics.time = sample.time;
+            optics.panel_temporal_evaluation =
+                PanelTemporalEvaluation::ExposureAverage(temporal_gain);
+            let plan_index = if can_reuse_spatial_samples {
+                if let Some(index) = reused_plan_index {
+                    index
+                } else {
+                    let index = intern_plan(&mut plans, 0, plan_at(optics, region)?);
+                    reused_plan_index = Some(index);
+                    index
+                }
+            } else {
+                let plan = if spatial_tracks_are_static {
+                    if let Some(plan) = procedural_template.as_ref().and_then(|template| {
+                        template.time_varying_procedural_template_for_region(sample.time, region)
+                    }) {
+                        plan
                     } else {
-                        let index = intern_plan(&mut plans, 0, plan_at(optics, region)?);
-                        reused_plan_index = Some(index);
-                        index
+                        let plan = plan_at(optics, region)?;
+                        if matches!(plan.signal, SpatialSignalPlan::Procedural { .. }) {
+                            procedural_template = Some(plan.clone());
+                        }
+                        plan
                     }
                 } else {
-                    let plan = if spatial_tracks_are_static {
-                        if let Some(plan) = procedural_template.as_ref().and_then(|template| {
-                            template
-                                .time_varying_procedural_template_for_region(sample.time, region)
-                        }) {
-                            plan
-                        } else {
-                            let plan = plan_at(optics, region)?;
-                            if matches!(plan.signal, SpatialSignalPlan::Procedural { .. }) {
-                                procedural_template = Some(plan.clone());
-                            }
-                            plan
-                        }
-                    } else {
-                        plan_at(optics, region)?
-                    };
-                    intern_plan(&mut plans, 0, plan)
+                    plan_at(optics, region)?
                 };
-                batch_samples.push(BatchSample {
-                    plan_index,
-                    expected_pixels: usize::from(region.width) * usize::from(region.height),
-                    weight_seconds: sample.weight_seconds,
-                    temporal_gain,
-                });
-            }
-        }
-        SensorReadout::Rolling {
-            duration,
-            direction,
-        } => {
-            if duration.numerator() <= 0 {
-                return Err(ApplicationError::InvalidSensorReadout);
-            }
-            let frame_uniform_gains = frame_uniform_residual_gains(&request)?;
-            let mut row_template: Option<SpatialOpticalPlan> = None;
-            for local_row in 0..usize::from(region.height) {
-                let row_plan_start = plans.len();
-                let mut reused_plan_index = None;
-                let global_row = usize::from(region.origin_y) + local_row;
-                let row_center = rolling_row_center_time(
-                    request.optics.time,
-                    duration,
-                    global_row,
-                    usize::from(sensor.native_height),
-                    direction,
-                )?;
-                for (sample_index, sample) in
-                    shutter_quadrature(row_center, request.duration, request.temporal_samples)?
-                        .into_iter()
-                        .enumerate()
-                {
-                    let temporal_gain = rolling_temporal_gain(
-                        &request,
-                        frame_uniform_gains.as_deref(),
-                        sample_index,
-                        sample,
-                    )?;
-                    let mut optics = request.optics.clone();
-                    optics.time = sample.time;
-                    optics.panel_temporal_evaluation =
-                        PanelTemporalEvaluation::ExposureAverage(temporal_gain);
-                    let row_region = SensorRegion {
-                        origin_x: region.origin_x,
-                        origin_y: global_row as u16,
-                        width: region.width,
-                        height: 1,
-                    };
-                    let plan_index = if can_reuse_spatial_samples {
-                        if let Some(index) = reused_plan_index {
-                            index
-                        } else {
-                            let plan = if let Some(template) = &row_template {
-                                template.static_template_for_region(sample.time, row_region)
-                            } else {
-                                let plan = plan_at(optics, row_region)?;
-                                row_template = Some(plan.clone());
-                                plan
-                            };
-                            let index = intern_plan(&mut plans, row_plan_start, plan);
-                            reused_plan_index = Some(index);
-                            index
-                        }
-                    } else {
-                        let plan = if spatial_tracks_are_static {
-                            if let Some(plan) = row_template.as_ref().and_then(|template| {
-                                template.time_varying_procedural_template_for_region(
-                                    sample.time,
-                                    row_region,
-                                )
-                            }) {
-                                plan
-                            } else {
-                                let plan = plan_at(optics, row_region)?;
-                                if matches!(plan.signal, SpatialSignalPlan::Procedural { .. }) {
-                                    row_template = Some(plan.clone());
-                                }
-                                plan
-                            }
-                        } else {
-                            plan_at(optics, row_region)?
-                        };
-                        intern_plan(&mut plans, row_plan_start, plan)
-                    };
-                    batch_samples.push(BatchSample {
-                        plan_index,
-                        expected_pixels: usize::from(region.width),
-                        weight_seconds: sample.weight_seconds,
-                        temporal_gain,
-                    });
-                }
-            }
+                intern_plan(&mut plans, 0, plan)
+            };
+            batch_samples.push(BatchSample {
+                plan_index,
+                expected_pixels: usize::from(region.width) * usize::from(region.height),
+                weight_seconds: sample.weight_seconds,
+                temporal_gain,
+            });
         }
     }
     timings.preparation_cpu += preparation_started.elapsed();
@@ -5906,38 +5707,18 @@ where
     let integration_started = Instant::now();
     let mut accumulated =
         vec![[0.0_f64; 3]; usize::from(region.width) * usize::from(region.height)];
-    match request.readout {
-        SensorReadout::Global => accumulated
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(index, sum)| {
-                for sample in &batch_samples {
-                    let pixel = batches[sample.plan_index][index];
-                    let scale = f64::from(sample.temporal_gain) * sample.weight_seconds;
-                    sum[0] += f64::from(pixel.acescg_irradiance.r) * scale;
-                    sum[1] += f64::from(pixel.acescg_irradiance.g) * scale;
-                    sum[2] += f64::from(pixel.acescg_irradiance.b) * scale;
-                }
-            }),
-        SensorReadout::Rolling { .. } => {
-            let row_width = usize::from(region.width);
-            let samples_per_row = usize::from(request.temporal_samples);
-            accumulated
-                .par_chunks_mut(row_width)
-                .zip(batch_samples.par_chunks(samples_per_row))
-                .for_each(|(row, samples)| {
-                    for sample in samples {
-                        let pixels = &batches[sample.plan_index];
-                        let scale = f64::from(sample.temporal_gain) * sample.weight_seconds;
-                        for (sum, pixel) in row.iter_mut().zip(pixels) {
-                            sum[0] += f64::from(pixel.acescg_irradiance.r) * scale;
-                            sum[1] += f64::from(pixel.acescg_irradiance.g) * scale;
-                            sum[2] += f64::from(pixel.acescg_irradiance.b) * scale;
-                        }
-                    }
-                });
-        }
-    }
+    accumulated
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, sum)| {
+            for sample in &batch_samples {
+                let pixel = batches[sample.plan_index][index];
+                let scale = f64::from(sample.temporal_gain) * sample.weight_seconds;
+                sum[0] += f64::from(pixel.acescg_irradiance.r) * scale;
+                sum[1] += f64::from(pixel.acescg_irradiance.g) * scale;
+                sum[2] += f64::from(pixel.acescg_irradiance.b) * scale;
+            }
+        });
     let exposure = finish_integrated_exposure(
         region.width,
         region.height,
@@ -5976,65 +5757,6 @@ fn integrate_global_region(
             sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
             sum[1] += f64::from(pixel.acescg_irradiance.g) * sample.weight_seconds;
             sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
-        }
-    }
-    finish_integrated_exposure(
-        region.width,
-        region.height,
-        request.duration,
-        request.neutral_density_stops,
-        accumulated,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn integrate_rolling_region(
-    request: ShutterRequest,
-    sensor: SensorProfile,
-    region: SensorRegion,
-    readout_duration: RationalTime,
-    direction: RollingDirection,
-    mut optical_row_at_time: impl FnMut(
-        OpticalRequest,
-        u16,
-    ) -> Result<Vec<LinearOpticalPixel>, ApplicationError>,
-) -> Result<IntegratedOpticalExposure, ApplicationError> {
-    if readout_duration.numerator() <= 0 {
-        return Err(ApplicationError::InvalidSensorReadout);
-    }
-    let mut accumulated =
-        vec![[0.0_f64; 3]; usize::from(region.width) * usize::from(region.height)];
-    let frame_uniform_gains = frame_uniform_residual_gains(&request)?;
-    for local_row in 0..usize::from(region.height) {
-        let global_row = usize::from(region.origin_y) + local_row;
-        let row_center = rolling_row_center_time(
-            request.optics.time,
-            readout_duration,
-            global_row,
-            usize::from(sensor.native_height),
-            direction,
-        )?;
-        let samples = shutter_quadrature(row_center, request.duration, request.temporal_samples)?;
-        for (sample_index, sample) in samples.into_iter().enumerate() {
-            let mut optics = request.optics.clone();
-            optics.time = sample.time;
-            optics.panel_temporal_evaluation =
-                PanelTemporalEvaluation::ExposureAverage(rolling_temporal_gain(
-                    &request,
-                    frame_uniform_gains.as_deref(),
-                    sample_index,
-                    sample,
-                )?);
-            let row = optical_row_at_time(optics, global_row as u16)?;
-            if row.len() != usize::from(region.width) {
-                return Err(ApplicationError::OpticalSampleRasterMismatch);
-            }
-            for (column, pixel) in row.into_iter().enumerate() {
-                let sum = &mut accumulated[local_row * usize::from(region.width) + column];
-                sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
-                sum[1] += f64::from(pixel.acescg_irradiance.g) * sample.weight_seconds;
-                sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
-            }
         }
     }
     finish_integrated_exposure(
@@ -6099,157 +5821,12 @@ fn finish_integrated_exposure(
     Ok(exposure)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn integrate_rolling_shutter<F>(
-    request: ShutterRequest,
-    width: u16,
-    height: u16,
-    readout_duration: RationalTime,
-    direction: RollingDirection,
-    mut optical_row_at_time: F,
-) -> Result<IntegratedOpticalExposure, ApplicationError>
-where
-    F: FnMut(OpticalRequest, usize) -> Result<Vec<LinearOpticalPixel>, ApplicationError>,
-{
-    if width == 0 || height == 0 || readout_duration.numerator() <= 0 {
-        return Err(ApplicationError::InvalidSensorReadout);
-    }
-    let frame_uniform_gains = frame_uniform_residual_gains(&request)?;
-    let row_schedules = (0..usize::from(height))
-        .map(|row| {
-            let row_center = rolling_row_center_time(
-                request.optics.time,
-                readout_duration,
-                row,
-                usize::from(height),
-                direction,
-            )?;
-            Ok((
-                row,
-                shutter_quadrature(row_center, request.duration, request.temporal_samples)?,
-            ))
-        })
-        .collect::<Result<Vec<_>, ApplicationError>>()?;
-    let pixel_count = usize::from(width) * usize::from(height);
-    let mut accumulated = vec![[0.0_f64; 3]; pixel_count];
-    for (row, samples) in row_schedules {
-        for (sample_index, sample) in samples.into_iter().enumerate() {
-            let mut optics = request.optics.clone();
-            optics.time = sample.time;
-            optics.panel_temporal_evaluation =
-                PanelTemporalEvaluation::ExposureAverage(rolling_temporal_gain(
-                    &request,
-                    frame_uniform_gains.as_deref(),
-                    sample_index,
-                    sample,
-                )?);
-            let optical_row = optical_row_at_time(optics, row)?;
-            if optical_row.len() != usize::from(width) {
-                return Err(ApplicationError::OpticalSampleRasterMismatch);
-            }
-            for (column, pixel) in optical_row.into_iter().enumerate() {
-                let sum = &mut accumulated[row * usize::from(width) + column];
-                sum[0] += f64::from(pixel.acescg_irradiance.r) * sample.weight_seconds;
-                sum[1] += f64::from(pixel.acescg_irradiance.g) * sample.weight_seconds;
-                sum[2] += f64::from(pixel.acescg_irradiance.b) * sample.weight_seconds;
-            }
-        }
-    }
-    finish_integrated_exposure(
-        width,
-        height,
-        request.duration,
-        request.neutral_density_stops,
-        accumulated,
-    )
-}
-
-fn rolling_row_center_time(
-    frame_center: RationalTime,
-    readout_duration: RationalTime,
-    row: usize,
-    height: usize,
-    direction: RollingDirection,
-) -> Result<RationalTime, ApplicationError> {
-    if height == 0 || row >= height || readout_duration.numerator() <= 0 {
-        return Err(ApplicationError::InvalidSensorReadout);
-    }
-    let ordered_row = match direction {
-        RollingDirection::TopToBottom => row,
-        RollingDirection::BottomToTop => height - 1 - row,
-    };
-    let numerator = i64::try_from(ordered_row * 2 + 1)
-        .map_err(|_| ApplicationError::InvalidSensorReadout)?
-        - i64::try_from(height).map_err(|_| ApplicationError::InvalidSensorReadout)?;
-    let denominator =
-        u32::try_from(height * 2).map_err(|_| ApplicationError::InvalidSensorReadout)?;
-    let offset = readout_duration
-        .checked_mul_ratio(numerator, denominator)
-        .map_err(ApplicationError::Time)?;
-    frame_center
-        .checked_add(offset)
-        .map_err(ApplicationError::Time)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TemporalSample {
     start: RationalTime,
     time: RationalTime,
     end: RationalTime,
     weight_seconds: f64,
-}
-
-/// Residual LCD flicker is a frame-global emission modulation. It must not become a spatial
-/// rolling-shutter band unless the explicit analytic-banding layer is enabled.
-fn frame_uniform_residual_gains(
-    request: &ShutterRequest,
-) -> Result<Option<Vec<f32>>, ApplicationError> {
-    if request
-        .optics
-        .panel
-        .temporal_emission
-        .analytic_banding
-        .amount
-        != 0.0
-    {
-        return Ok(None);
-    }
-    shutter_quadrature(
-        request.optics.time,
-        request.duration,
-        request.temporal_samples,
-    )?
-    .into_iter()
-    .map(|sample| {
-        request
-            .optics
-            .panel
-            .temporal_emission
-            .average_gain(sample.start, sample.end)
-            .map_err(ApplicationError::Panel)
-    })
-    .collect::<Result<Vec<_>, _>>()
-    .map(Some)
-}
-
-fn rolling_temporal_gain(
-    request: &ShutterRequest,
-    frame_uniform_gains: Option<&[f32]>,
-    sample_index: usize,
-    sample: TemporalSample,
-) -> Result<f32, ApplicationError> {
-    if let Some(gains) = frame_uniform_gains {
-        return gains
-            .get(sample_index)
-            .copied()
-            .ok_or(ApplicationError::InvalidShutter);
-    }
-    request
-        .optics
-        .panel
-        .temporal_emission
-        .average_gain(sample.start, sample.end)
-        .map_err(ApplicationError::Panel)
 }
 
 fn shutter_quadrature(
@@ -6323,6 +5900,10 @@ pub fn prepare_raster_from_device_signal(
         request.optics.panel.native_width,
         request.optics.panel.native_height,
     ];
+    let corner_radius_uv = [
+        request.optics.panel.corner_radius.0 / request.optics.panel.active_width.0,
+        request.optics.panel.corner_radius.0 / request.optics.panel.active_height.0,
+    ];
     prepare_raster_with_signal(
         request,
         width,
@@ -6341,6 +5922,7 @@ pub fn prepare_raster_from_device_signal(
                 source_raster,
                 device_raster,
                 placement,
+                corner_radius_uv,
                 minimum,
                 maximum,
             )
@@ -6366,6 +5948,10 @@ pub fn prepare_raster_from_prepared_device_signal(
         request.optics.panel.native_width,
         request.optics.panel.native_height,
     ];
+    let corner_radius_uv = [
+        request.optics.panel.corner_radius.0 / request.optics.panel.active_width.0,
+        request.optics.panel.corner_radius.0 / request.optics.panel.active_height.0,
+    ];
     prepare_raster_with_signal(
         request,
         width,
@@ -6384,6 +5970,7 @@ pub fn prepare_raster_from_prepared_device_signal(
                 source_raster,
                 device_raster,
                 placement,
+                corner_radius_uv,
                 minimum,
                 maximum,
             )
@@ -6405,6 +5992,10 @@ pub fn evaluate_linear_optics_from_device_signal(
     let alpha_integral = alpha_integral(source);
     let source_raster = [source.width, source.height];
     let device_raster = [request.panel.native_width, request.panel.native_height];
+    let corner_radius_uv = [
+        request.panel.corner_radius.0 / request.panel.active_width.0,
+        request.panel.corner_radius.0 / request.panel.active_height.0,
+    ];
     evaluate_optical_raster_with_signal(
         request,
         width,
@@ -6424,6 +6015,7 @@ pub fn evaluate_linear_optics_from_device_signal(
                 source_raster,
                 device_raster,
                 placement,
+                corner_radius_uv,
                 minimum,
                 maximum,
             )
@@ -6442,6 +6034,10 @@ pub fn evaluate_linear_optics_from_prepared_device_signal(
     let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
     let emission_integral = linear_emission_integral(&source.source, panel_evaluator);
     let device_raster = [request.panel.native_width, request.panel.native_height];
+    let corner_radius_uv = [
+        request.panel.corner_radius.0 / request.panel.active_width.0,
+        request.panel.corner_radius.0 / request.panel.active_height.0,
+    ];
     evaluate_optical_raster_with_signal(
         request,
         width,
@@ -6461,6 +6057,7 @@ pub fn evaluate_linear_optics_from_prepared_device_signal(
                 source_raster,
                 device_raster,
                 placement,
+                corner_radius_uv,
                 minimum,
                 maximum,
             )
@@ -6479,6 +6076,10 @@ fn evaluate_linear_optics_region_from_prepared_device_signal(
     let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
     let emission_integral = linear_emission_integral(&source.source, panel_evaluator);
     let device_raster = [request.panel.native_width, request.panel.native_height];
+    let corner_radius_uv = [
+        request.panel.corner_radius.0 / request.panel.active_width.0,
+        request.panel.corner_radius.0 / request.panel.active_height.0,
+    ];
     evaluate_optical_window_with_signal(
         request,
         RasterWindow::from_sensor_region(sensor, region),
@@ -6497,6 +6098,7 @@ fn evaluate_linear_optics_region_from_prepared_device_signal(
                 source_raster,
                 device_raster,
                 placement,
+                corner_radius_uv,
                 minimum,
                 maximum,
             )
@@ -6519,195 +6121,6 @@ pub fn evaluate_device_signal_spatial_cpu_oracle(
         request, sensor, region, source, placement,
     )
     .map(|raster| raster.pixels)
-}
-
-fn evaluate_device_signal_optical_sensor_row(
-    request: OpticalRequest,
-    sensor: SensorProfile,
-    region: SensorRegion,
-    global_row: u16,
-    source: &PreparedDeviceSignalRaster,
-    placement: RasterPlacement,
-) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
-    let source_raster = source.raster_size();
-    let device_raster = [request.panel.native_width, request.panel.native_height];
-    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
-    let emission_integral = linear_emission_integral(&source.source, panel_evaluator);
-    let raster = evaluate_optical_window_with_signal(
-        request,
-        RasterWindow {
-            full_width: sensor.native_width,
-            full_height: sensor.native_height,
-            origin_x: region.origin_x,
-            origin_y: global_row,
-            width: region.width,
-            height: 1,
-        },
-        DiagnosticView::Composite,
-        &|device_uv| {
-            source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
-                .map_or(DeviceRgb::BLACK, |source_uv| {
-                    source.source.sample_native_pixel(source_uv)
-                })
-        },
-        &|minimum, maximum| {
-            sample_placed_area(
-                &source.integral,
-                &emission_integral,
-                &source.alpha_integral,
-                source_raster,
-                device_raster,
-                placement,
-                minimum,
-                maximum,
-            )
-        },
-    )?;
-    Ok(raster.pixels)
-}
-
-fn evaluate_procedural_optical_row(
-    request: OpticalRequest,
-    width: u16,
-    height: u16,
-    row: usize,
-) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
-    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
-    evaluate_optical_row_with_signal(
-        request.clone(),
-        width,
-        height,
-        row,
-        &|uv| diagnostic_signal(request.procedural_pattern, uv, request.time),
-        &|minimum, maximum| {
-            diagnostic_area_signal(
-                request.procedural_pattern,
-                minimum,
-                maximum,
-                request.time,
-                panel_evaluator,
-            )
-        },
-    )
-}
-
-fn evaluate_optical_row_from_prepared_device_signal(
-    request: OpticalRequest,
-    width: u16,
-    height: u16,
-    row: usize,
-    source: &PreparedDeviceSignalRaster,
-    placement: RasterPlacement,
-) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
-    let source_raster = source.raster_size();
-    let panel_evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
-    let emission_integral = linear_emission_integral(&source.source, panel_evaluator);
-    let device_raster = [request.panel.native_width, request.panel.native_height];
-    evaluate_optical_row_with_signal(
-        request,
-        width,
-        height,
-        row,
-        &|device_uv| {
-            source_uv_for_device_uv(source_raster, device_raster, placement, device_uv)
-                .map_or(DeviceRgb::BLACK, |source_uv| {
-                    source.source.sample_native_pixel(source_uv)
-                })
-        },
-        &|minimum, maximum| {
-            sample_placed_area(
-                &source.integral,
-                &emission_integral,
-                &source.alpha_integral,
-                source_raster,
-                device_raster,
-                placement,
-                minimum,
-                maximum,
-            )
-        },
-    )
-}
-
-fn evaluate_optical_row_with_signal(
-    request: OpticalRequest,
-    width: u16,
-    height: u16,
-    row: usize,
-    signal_at: &(dyn Fn(Vec2) -> DeviceRgb + Sync),
-    signal_area: &(dyn Fn(Vec2, Vec2) -> AreaSignalSample + Sync),
-) -> Result<Vec<LinearOpticalPixel>, ApplicationError> {
-    if width == 0 || height == 0 || row >= usize::from(height) {
-        return Err(ApplicationError::EmptyPreviewRaster);
-    }
-    let frame = prepare_frame(request.clone())?;
-    let raster_aspect = f32::from(width) / f32::from(height);
-    if !raster_represents_viewport(width, height, frame.viewport_aspect) {
-        return Err(ApplicationError::RasterViewportAspectMismatch {
-            raster_aspect,
-            viewport_aspect: frame.viewport_aspect,
-        });
-    }
-    let evaluator = request.panel.evaluator().map_err(ApplicationError::Panel)?;
-    let cover_evaluator = request
-        .cover
-        .evaluator(request.environment)
-        .map_err(ApplicationError::Cover)?;
-    let temporal_gain = panel_temporal_gain(&request, evaluator)?;
-    let full_signal = signal_area(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 1.0, y: 1.0 });
-    let veiling_glare_gate_average = lens_veiling_gate_average(
-        &request,
-        frame,
-        full_signal.linear_native_emission,
-        raster_aspect,
-        temporal_gain,
-    )?;
-    macro_rules! evaluate_row {
-        ($sample_count:literal) => {
-            (0..usize::from(width))
-                .map(|column| {
-                    evaluate_optical_pixel::<$sample_count>(
-                        &frame,
-                        &request,
-                        width,
-                        height,
-                        row,
-                        column,
-                        DiagnosticView::Composite,
-                        evaluator,
-                        temporal_gain,
-                        cover_evaluator,
-                        signal_at,
-                        signal_area,
-                    )
-                })
-                .collect()
-        };
-    }
-    let mut pixels: Vec<LinearOpticalPixel> =
-        match aperture_sample_count(frame.camera, frame.screen, request.panel, width) {
-            16 => evaluate_row!(16),
-            32 => evaluate_row!(32),
-            64 => evaluate_row!(64),
-            128 => evaluate_row!(128),
-            256 => evaluate_row!(256),
-            512 => evaluate_row!(512),
-            _ => unreachable!("aperture sample policy only emits supported quality levels"),
-        };
-    let fraction = frame.camera.lens.veiling_glare_fraction;
-    if fraction != 0.0 {
-        for pixel in &mut pixels {
-            pixel.acescg_irradiance = LinearRgb::new(
-                pixel.acescg_irradiance.r
-                    + fraction * (veiling_glare_gate_average.r - pixel.acescg_irradiance.r),
-                pixel.acescg_irradiance.g
-                    + fraction * (veiling_glare_gate_average.g - pixel.acescg_irradiance.g),
-                pixel.acescg_irradiance.b
-                    + fraction * (veiling_glare_gate_average.b - pixel.acescg_irradiance.b),
-            );
-        }
-    }
-    Ok(pixels)
 }
 
 fn prepare_raster_with_signal(
@@ -7777,6 +7190,7 @@ fn diagnostic_area_signal(
     maximum: Vec2,
     time: RationalTime,
     evaluator: ValidatedPanelEvaluator,
+    corner_radius_uv: [f32; 2],
 ) -> AreaSignalSample {
     const OFFSETS: [f32; 4] = [0.125, 0.375, 0.625, 0.875];
     let mut sum = DeviceRgb::BLACK;
@@ -7804,7 +7218,7 @@ fn diagnostic_area_signal(
             linear_sum.b / 16.0,
         ),
         alpha: 1.0,
-        panel_coverage: device_rectangle_coverage(minimum, maximum),
+        panel_coverage: device_rectangle_coverage(minimum, maximum, corner_radius_uv),
     }
 }
 
@@ -7818,7 +7232,6 @@ pub enum ApplicationError {
     UnsupportedPhysicalIntermediate,
     InvalidPreviewExposure,
     InvalidShutter,
-    InvalidSensorReadout,
     InvalidOpticalAttenuation,
     InvalidRadiometricCalibration(&'static str),
     InvalidEnvironmentEnclosure {
@@ -7954,9 +7367,6 @@ impl fmt::Display for ApplicationError {
             Self::InvalidShutter => formatter.write_str(
                 "shutter duration must be positive and motion samples must be in [1, 64]",
             ),
-            Self::InvalidSensorReadout => formatter.write_str(
-                "sensor readout duration and row coordinates must define a valid shutter interval",
-            ),
             Self::InvalidOpticalAttenuation => formatter
                 .write_str("neutral-density attenuation must be finite and in [0, 16] stops"),
             Self::InvalidRadiometricCalibration(reason) => {
@@ -8079,28 +7489,57 @@ mod tests {
     #[test]
     fn panel_rectangle_coverage_is_exact_inside_outside_and_across_an_edge() {
         let size = [0.10, 0.20];
-        assert_eq!(panel_rectangle_coverage([0.0, 0.0], [0.0, 0.0], size), 1.0);
         assert_eq!(
-            panel_rectangle_coverage([0.051, 0.0], [0.0, 0.0], size),
+            panel_rectangle_coverage([0.0, 0.0], [0.0, 0.0], size, 0.0),
+            1.0
+        );
+        assert_eq!(
+            panel_rectangle_coverage([0.051, 0.0], [0.0, 0.0], size, 0.0),
             0.0
         );
-        assert!((panel_rectangle_coverage([0.05, 0.0], [0.01, 0.01], size) - 0.5).abs() < 1.0e-6);
+        assert!(
+            (panel_rectangle_coverage([0.05, 0.0], [0.01, 0.01], size, 0.0) - 0.5).abs() < 1.0e-6
+        );
+        assert_eq!(
+            panel_rectangle_coverage([0.049, 0.099], [0.0, 0.0], size, 0.01),
+            0.0
+        );
+        assert_eq!(
+            panel_rectangle_coverage([0.0, 0.0], [0.0, 0.0], size, 0.01),
+            1.0
+        );
     }
 
     #[test]
     fn device_rectangle_coverage_is_independent_of_source_placement() {
         assert_eq!(
-            device_rectangle_coverage(Vec2 { x: 0.25, y: 0.25 }, Vec2 { x: 0.75, y: 0.75 }),
+            device_rectangle_coverage(
+                Vec2 { x: 0.25, y: 0.25 },
+                Vec2 { x: 0.75, y: 0.75 },
+                [0.0, 0.0]
+            ),
             1.0
         );
         assert_eq!(
-            device_rectangle_coverage(Vec2 { x: 1.01, y: 0.25 }, Vec2 { x: 1.25, y: 0.75 }),
+            device_rectangle_coverage(
+                Vec2 { x: 1.01, y: 0.25 },
+                Vec2 { x: 1.25, y: 0.75 },
+                [0.0, 0.0]
+            ),
             0.0
         );
         assert!(
-            (device_rectangle_coverage(Vec2 { x: 0.75, y: 0.25 }, Vec2 { x: 1.25, y: 0.75 }) - 0.5)
+            (device_rectangle_coverage(
+                Vec2 { x: 0.75, y: 0.25 },
+                Vec2 { x: 1.25, y: 0.75 },
+                [0.0, 0.0]
+            ) - 0.5)
                 .abs()
                 < 1.0e-6
+        );
+        assert_eq!(
+            device_rectangle_coverage(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 0.0, y: 0.0 }, [0.1, 0.1]),
+            0.0
         );
     }
 
@@ -8380,6 +7819,7 @@ mod tests {
                     native_height: 1080,
                     active_width: Meters(0.531),
                     active_height: Meters(0.299),
+                    corner_radius: Meters(0.0),
                     stripe_layout: StripeLayout::Rgb,
                     black_matrix_fraction: 0.1,
                     eotf_gamma: 2.2,
@@ -8514,7 +7954,6 @@ mod tests {
             optics,
             duration,
             temporal_samples: 8,
-            readout: SensorReadout::Global,
             neutral_density_stops: 0.0,
         };
         let sensor = SensorProfile {
@@ -8580,7 +8019,6 @@ mod tests {
                     optics,
                     duration: RationalTime::new(1, 96).unwrap(),
                     temporal_samples: 8,
-                    readout: SensorReadout::Global,
                     neutral_density_stops: 0.0,
                 },
                 sensor,
@@ -8592,90 +8030,6 @@ mod tests {
             .unwrap()
         };
         assert_eq!(integrate(zero_amount), integrate(clean));
-    }
-
-    #[test]
-    fn static_rolling_reuses_one_plan_per_row_but_integrates_all_eight_gains() {
-        let mut optics = request().optics;
-        optics.procedural_pattern = ProceduralTestPattern::EyeChart;
-        optics.panel.temporal_emission = PanelTemporalEmission::continuous();
-        optics.panel.temporal_emission.analytic_banding = AnalyticBanding {
-            period: RationalTime::new(1, 100).unwrap(),
-            on_duration: RationalTime::new(1, 250).unwrap(),
-            phase: RationalTime::new(1, 1_000).unwrap(),
-            amount: 0.8,
-        };
-        let duration = RationalTime::new(1, 800).unwrap();
-        let readout_duration = RationalTime::new(1, 100).unwrap();
-        let sensor = SensorProfile {
-            native_width: 16,
-            native_height: 9,
-            ..SensorProfile::REFERENCE
-        };
-        let region = SensorRegion {
-            origin_x: 2,
-            origin_y: 2,
-            width: 3,
-            height: 2,
-        };
-        let backend = UnitSpatialBackend {
-            last_batch_size: AtomicUsize::new(0),
-        };
-        let plan_preparations = AtomicUsize::new(0);
-        let exposure = integrate_spatial_region_with_backend(
-            ShutterRequest {
-                optics: optics.clone(),
-                duration,
-                temporal_samples: 8,
-                readout: SensorReadout::Rolling {
-                    duration: readout_duration,
-                    direction: RollingDirection::TopToBottom,
-                },
-                neutral_density_stops: 0.0,
-            },
-            sensor,
-            region,
-            true,
-            &backend,
-            |optics, region| {
-                plan_preparations.fetch_add(1, Ordering::Relaxed);
-                prepare_procedural_spatial_plan(optics, sensor, region)
-            },
-        )
-        .unwrap();
-        assert_eq!(backend.last_batch_size.load(Ordering::Relaxed), 2);
-        assert_eq!(plan_preparations.load(Ordering::Relaxed), 1);
-        for local_row in 0..usize::from(region.height) {
-            let global_row = usize::from(region.origin_y) + local_row;
-            let center = rolling_row_center_time(
-                optics.time,
-                readout_duration,
-                global_row,
-                usize::from(sensor.native_height),
-                RollingDirection::TopToBottom,
-            )
-            .unwrap();
-            let expected = shutter_quadrature(center, duration, 8)
-                .unwrap()
-                .into_iter()
-                .map(|sample| {
-                    f64::from(
-                        optics
-                            .panel
-                            .temporal_emission
-                            .average_gain(sample.start, sample.end)
-                            .unwrap(),
-                    ) * sample.weight_seconds
-                })
-                .sum::<f64>() as f32;
-            for column in 0..usize::from(region.width) {
-                let pixel = exposure.acescg_illuminance_seconds
-                    [local_row * usize::from(region.width) + column];
-                assert!((pixel.r - expected).abs() <= 2.0e-7);
-                assert!((pixel.g - expected).abs() <= 2.0e-7);
-                assert!((pixel.b - expected).abs() <= 2.0e-7);
-            }
-        }
     }
 
     #[test]
@@ -8704,10 +8058,6 @@ mod tests {
                 optics: optics.clone(),
                 duration,
                 temporal_samples: 1,
-                readout: SensorReadout::Rolling {
-                    duration: RationalTime::new(1, 80).unwrap(),
-                    direction: RollingDirection::TopToBottom,
-                },
                 neutral_density_stops: 0.0,
             },
             sensor,
@@ -8729,38 +8079,6 @@ mod tests {
             assert!((pixel.g - expected).abs() <= 2.0e-7);
             assert!((pixel.b - expected).abs() <= 2.0e-7);
         }
-    }
-
-    #[test]
-    fn static_row_template_is_exactly_the_fresh_prepared_plan() {
-        let mut first = request().optics;
-        first.procedural_pattern = ProceduralTestPattern::EyeChart;
-        first.time = RationalTime::new(1, 24).unwrap();
-        let sensor = SensorProfile {
-            native_width: 16,
-            native_height: 9,
-            ..SensorProfile::REFERENCE
-        };
-        let first_region = SensorRegion {
-            origin_x: 2,
-            origin_y: 2,
-            width: 3,
-            height: 1,
-        };
-        let template =
-            prepare_procedural_spatial_plan(first.clone(), sensor, first_region).unwrap();
-        let second_time = RationalTime::new(7, 120).unwrap();
-        let second_region = SensorRegion {
-            origin_y: 3,
-            ..first_region
-        };
-        let mut second = first;
-        second.time = second_time;
-        let fresh = prepare_procedural_spatial_plan(second, sensor, second_region).unwrap();
-        assert_eq!(
-            template.static_template_for_region(second_time, second_region),
-            fresh
-        );
     }
 
     #[test]
@@ -8796,7 +8114,7 @@ mod tests {
     }
 
     #[test]
-    fn animated_procedural_rolling_prepares_once_without_reusing_spatial_results() {
+    fn animated_procedural_global_prepares_once_without_reusing_spatial_results() {
         let mut optics = request().optics;
         optics.procedural_pattern = ProceduralTestPattern::AnimatedCheckerboard;
         let sensor = SensorProfile {
@@ -8819,10 +8137,6 @@ mod tests {
                 optics,
                 duration: RationalTime::new(1, 48).unwrap(),
                 temporal_samples: 2,
-                readout: SensorReadout::Rolling {
-                    duration: RationalTime::new(1, 100).unwrap(),
-                    direction: RollingDirection::TopToBottom,
-                },
                 neutral_density_stops: 0.0,
             },
             sensor,
@@ -8836,7 +8150,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan_preparations.load(Ordering::Relaxed), 1);
-        assert_eq!(backend.last_batch_size.load(Ordering::Relaxed), 4);
+        assert_eq!(backend.last_batch_size.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -8858,10 +8172,6 @@ mod tests {
             optics,
             duration: RationalTime::new(1, 48).unwrap(),
             temporal_samples: 8,
-            readout: SensorReadout::Rolling {
-                duration: RationalTime::new(1, 120).unwrap(),
-                direction: RollingDirection::TopToBottom,
-            },
             neutral_density_stops: 0.7,
         };
         let integrate_with_threads = |threads| {
@@ -8915,7 +8225,6 @@ mod tests {
                 optics,
                 duration: RationalTime::new(1, 48).unwrap(),
                 temporal_samples: 8,
-                readout: SensorReadout::Global,
                 neutral_density_stops: 0.0,
             },
             sensor,
@@ -9084,7 +8393,7 @@ mod tests {
     }
 
     #[test]
-    fn rolling_sensor_region_is_an_exact_crop_of_the_complete_exposure() {
+    fn global_sensor_region_is_an_exact_crop_of_the_complete_exposure() {
         let mut optics = request().optical_request();
         optics.viewport_aspect = 1.0;
         optics.camera.intrinsics.keyframes[0].sensor_height = Millimeters(36.0);
@@ -9092,10 +8401,6 @@ mod tests {
             optics,
             duration: RationalTime::new(1, 48).unwrap(),
             temporal_samples: 3,
-            readout: SensorReadout::Rolling {
-                duration: RationalTime::new(1, 120).unwrap(),
-                direction: RollingDirection::TopToBottom,
-            },
             neutral_density_stops: 0.0,
         };
         let sensor = SensorProfile {
@@ -9127,7 +8432,7 @@ mod tests {
     }
 
     #[test]
-    fn animated_region_capture_resolves_source_at_each_rolling_sample_time() {
+    fn animated_region_capture_resolves_source_at_each_global_sample_time() {
         let mut optics = request().optics;
         optics.viewport_aspect = 1.0;
         optics.camera.intrinsics.keyframes[0].sensor_height = Millimeters(36.0);
@@ -9137,10 +8442,6 @@ mod tests {
             frame_index: 0,
             duration: RationalTime::new(1, 48).unwrap(),
             temporal_samples: 2,
-            readout: SensorReadout::Rolling {
-                duration: RationalTime::new(1, 120).unwrap(),
-                direction: RollingDirection::TopToBottom,
-            },
             neutral_density_stops: 0.0,
             noise_seed: 4,
         };
@@ -9173,12 +8474,12 @@ mod tests {
                 )?))
             },
         )
-        .expect("animated rolling region");
+        .expect("animated global region");
         sampled.sort();
         sampled.dedup();
         assert!(
-            sampled.len() > 2,
-            "rolling rows must not freeze one frame sample"
+            sampled.len() == 2,
+            "global capture must resolve every authored temporal sample"
         );
     }
 
@@ -9283,7 +8584,6 @@ mod tests {
             frame_index: 24,
             duration: RationalTime::new(1, 48).expect("valid shutter"),
             temporal_samples: 4,
-            readout: SensorReadout::Global,
             neutral_density_stops: 0.0,
             noise_seed: 42,
         };
@@ -9342,7 +8642,6 @@ mod tests {
             frame_index: 0,
             duration: RationalTime::new(1, 48).expect("valid shutter"),
             temporal_samples: 1,
-            readout: SensorReadout::Global,
             neutral_density_stops: 0.0,
             noise_seed: 7,
         };
@@ -9424,7 +8723,6 @@ mod tests {
                 frame_index: 0,
                 duration: shutter,
                 temporal_samples: 1,
-                readout: SensorReadout::Global,
                 neutral_density_stops: 0.0,
                 noise_seed: 1,
             },
@@ -9469,7 +8767,6 @@ mod tests {
                 optics: base_optics.clone(),
                 duration: RationalTime::new(1, 100).unwrap(),
                 temporal_samples: 1,
-                readout: SensorReadout::Global,
                 neutral_density_stops: 0.0,
             },
             32,
@@ -9492,7 +8789,6 @@ mod tests {
                 optics: pulsed_optics,
                 duration: RationalTime::new(1, 100).unwrap(),
                 temporal_samples: 1,
-                readout: SensorReadout::Global,
                 neutral_density_stops: 0.0,
             },
             32,
@@ -9520,84 +8816,6 @@ mod tests {
         let measured = open.acescg_illuminance_seconds[0].g;
         assert!((measured - expected).abs() < 1.0e-6);
         assert!((nd_three.acescg_illuminance_seconds[0].g / measured - 0.125).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn rolling_shutter_offsets_each_row_in_exact_readout_order() {
-        let center = RationalTime::new(0, 1).unwrap();
-        let readout = RationalTime::new(1, 100).unwrap();
-        assert_eq!(
-            rolling_row_center_time(center, readout, 0, 4, RollingDirection::TopToBottom).unwrap(),
-            RationalTime::new(-3, 800).unwrap()
-        );
-        assert_eq!(
-            rolling_row_center_time(center, readout, 0, 4, RollingDirection::BottomToTop).unwrap(),
-            RationalTime::new(3, 800).unwrap()
-        );
-    }
-
-    #[test]
-    fn optional_analytic_banding_uses_rolling_row_phase_without_extra_optical_samples() {
-        let mut optics = request().optics;
-        optics.time = RationalTime::new(0, 1).unwrap();
-        let mut temporal = PanelTemporalEmission::continuous();
-        temporal.analytic_banding = AnalyticBanding {
-            period: RationalTime::new(1, 100).unwrap(),
-            on_duration: RationalTime::new(1, 200).unwrap(),
-            phase: RationalTime::new(0, 1).unwrap(),
-            amount: 1.0,
-        };
-        optics.panel.temporal_emission = temporal;
-        let prepared = Arc::new(
-            PreparedDeviceSignalRaster::new(DeviceSignalRaster {
-                width: 1,
-                height: 1,
-                pixels: vec![DeviceRgb::WHITE],
-                alpha: vec![1.0],
-            })
-            .unwrap(),
-        );
-        let shutter_request = ShutterRequest {
-            optics,
-            duration: RationalTime::new(1, 100_000).unwrap(),
-            temporal_samples: 1,
-            readout: SensorReadout::Rolling {
-                duration: RationalTime::new(1, 100).unwrap(),
-                direction: RollingDirection::TopToBottom,
-            },
-            neutral_density_stops: 0.0,
-        };
-        let exposure = integrate_shutter_from_device_signal_sequence(
-            shutter_request.clone(),
-            32,
-            18,
-            RasterPlacement::Stretch,
-            |_| Ok(Arc::clone(&prepared)),
-        )
-        .expect("rolling exposure");
-        let black = Arc::new(
-            PreparedDeviceSignalRaster::new(DeviceSignalRaster {
-                width: 1,
-                height: 1,
-                pixels: vec![DeviceRgb::BLACK],
-                alpha: vec![1.0],
-            })
-            .unwrap(),
-        );
-        let black_exposure = integrate_shutter_from_device_signal_sequence(
-            shutter_request,
-            32,
-            18,
-            RasterPlacement::Stretch,
-            |_| Ok(Arc::clone(&black)),
-        )
-        .expect("black rolling exposure");
-        let top = exposure.acescg_illuminance_seconds[2 * 32 + 16].g;
-        let bottom = exposure.acescg_illuminance_seconds[15 * 32 + 16].g;
-        let black_top = black_exposure.acescg_illuminance_seconds[2 * 32 + 16].g;
-        let black_bottom = black_exposure.acescg_illuminance_seconds[15 * 32 + 16].g;
-        assert_eq!(top, black_top);
-        assert!(bottom > black_bottom);
     }
 
     #[test]
@@ -9852,7 +9070,6 @@ mod tests {
                 shutter_close: RationalTime::new(1, 96).expect("valid shutter close"),
                 shutter_motion: ResolvedShutterMotionSnapshot {
                     temporal_samples: 1,
-                    readout: SensorReadout::Global,
                     neutral_density_stops: 0.0,
                     noise_seed: 0,
                 },
@@ -9860,6 +9077,7 @@ mod tests {
                 computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
                 computational_character_strength: 0.0,
                 sensor: SensorProfile::REFERENCE,
+                sensor_region: SensorRegion::full(SensorProfile::REFERENCE),
                 radiometric_calibration: CameraRadiometricCalibration::REFERENCE,
                 sensor_enabled: false,
                 sensor_noise_amount: 0.0,
@@ -9914,6 +9132,7 @@ mod tests {
             adc_bits: 16,
             bloom: SensorBloomProfile::NEUTRAL,
         };
+        request.plan.sensor_region = SensorRegion::full(request.plan.sensor);
         request.plan.radiometric_calibration = CameraRadiometricCalibration::REFERENCE;
         request.plan.shutter_open = shutter_open;
         request.plan.shutter_close = shutter_close;
@@ -10033,6 +9252,7 @@ mod tests {
             read_noise_electrons_rms: 0.0,
             ..capture.sensor
         };
+        request.plan.sensor_region = SensorRegion::full(request.plan.sensor);
         request.plan.radiometric_calibration = capture.radiometric_calibration;
         request.plan.sensor_enabled = true;
         request.plan.sensor_noise_amount = 0.0;
@@ -10250,6 +9470,7 @@ mod tests {
             adc_bits: 12,
             ..request.plan.sensor
         };
+        request.plan.sensor_region = SensorRegion::full(request.plan.sensor);
         let expected = evaluate_physical_pipeline_cpu_oracle(request.clone())
             .expect("complete CPU RAW boundary");
         let mut shutter_request = request.clone();
@@ -10265,7 +9486,7 @@ mod tests {
         .expect("canonical sensor transition");
         let expected_raw = expected.raw_sensor().expect("typed CPU RAW artifact");
         assert_eq!(
-            (raw.width, raw.height),
+            (u32::from(raw.region.width), u32::from(raw.region.height)),
             (expected.width(), expected.height())
         );
         assert_eq!(&raw, expected_raw);
@@ -10328,13 +9549,15 @@ mod tests {
                     })
                     .collect(),
             };
-            let expected = expose_raw_with_noise_amount(
+            let expected = expose_raw_region_with_noise_amount(
                 sensor,
                 &reference_exposure,
                 CaptureIdentity {
                     noise_seed: plan.shutter_motion.noise_seed,
                     frame_index: plan.frame_index,
                 },
+                SensorRegion::full(sensor),
+                SensorRegion::full(sensor),
                 plan.sensor_noise_amount,
             )
             .expect("general resampling RAW");
@@ -10342,6 +9565,45 @@ mod tests {
                 .expect("identity specialization RAW");
             assert_eq!(actual, expected, "CFA {bayer_pattern:?}");
         }
+    }
+
+    #[test]
+    fn active_sensor_transition_preserves_global_region_and_cfa_phase() {
+        let shuttered = [
+            [0.0001, 0.0002, 0.0003, 1.0],
+            [0.0010, 0.0004, 0.0002, 1.0],
+            [0.0003, 0.0012, 0.0005, 1.0],
+            [0.0020, 0.0010, 0.0030, 1.0],
+        ];
+        let mut request = radiometric_request(
+            350.0,
+            RationalTime::new(-1, 96).expect("open"),
+            RationalTime::new(1, 96).expect("close"),
+            0.0,
+            1.0,
+            PhysicalIntermediate::SensorReadoutRaw,
+        );
+        request.plan.sensor = SensorProfile {
+            native_width: 4,
+            native_height: 4,
+            bayer_pattern: BayerPattern::Rggb,
+            ..request.plan.sensor
+        };
+        request.plan.sensor_region = SensorRegion {
+            origin_x: 1,
+            origin_y: 1,
+            width: 2,
+            height: 2,
+        };
+        request.plan.sensor_noise_amount = 0.0;
+        let plan = request.plan.stopped_at_requested_intermediate();
+        let actual =
+            expose_physical_pipeline_raw(&shuttered, 2, 2, plan).expect("active sensor RAW");
+
+        assert_eq!(actual.region, plan.sensor_region);
+        assert_eq!((actual.sensor_width, actual.sensor_height), (4, 4));
+        let first_global_channel = actual.bayer_pattern.channel_at(1, 1);
+        assert_eq!(first_global_channel, 2, "odd/odd RGGB photosite is blue");
     }
 
     #[test]

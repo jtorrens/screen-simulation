@@ -13,7 +13,7 @@ import StudioMedia
     #expect(detection.colorModel == .ycbcr)
     #expect(detection.matrix == .bt709)
     #expect(detection.range == .video)
-    #expect(detection.proposedInputTransformID == "display-rec709-gamma24-dcm")
+    #expect(detection.proposedInputTransformID == "input-rec709")
     #expect(detection.alpha == .ignore)
     let info = try NativeFFmpegMedia.probe(url: url)
     #expect(info.width > 0)

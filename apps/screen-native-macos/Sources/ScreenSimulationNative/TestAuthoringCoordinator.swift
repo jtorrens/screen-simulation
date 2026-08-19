@@ -153,8 +153,315 @@ enum TestAuthoringCoordinatorError: Error, LocalizedError {
     }
 }
 
+final class RustTestAuthoringProfileContext: @unchecked Sendable {
+    let handle: ScreenTestAuthoringProfileContextRef
+
+    init(library: GlobalLibraryDocument) throws {
+        try library.validate()
+        var allocated: [UnsafeMutablePointer<CChar>] = []
+        func owned(_ value: String) throws -> UnsafeMutablePointer<CChar> {
+            guard let pointer = strdup(value) else {
+                throw TestAuthoringCoordinatorError.bridge(
+                    "No se pudo materializar el contexto de perfiles."
+                )
+            }
+            allocated.append(pointer)
+            return pointer
+        }
+        func view(_ pointer: UnsafeMutablePointer<CChar>) -> ScreenUTF8View {
+            ScreenUTF8View(
+                bytes: UnsafePointer<UInt8>(OpaquePointer(pointer)),
+                count: Int(strlen(pointer))
+            )
+        }
+        defer { allocated.forEach { free(UnsafeMutableRawPointer($0)) } }
+
+        struct DeviceStorage {
+            let id: UnsafeMutablePointer<CChar>
+            let label: UnsafeMutablePointer<CChar>
+            let defaultColorMode: UnsafeMutablePointer<CChar>
+            let defaultCover: UnsafeMutablePointer<CChar>
+            let colorOffset: Int
+            let colorCount: Int
+            let parameters: ScreenDeviceParametersV3
+            let minimumWhite: Float
+            let maximumWhite: Float
+            let whiteStep: Float
+        }
+        var colorViews: [ScreenUTF8View] = []
+        var deviceStorage: [DeviceStorage] = []
+        for item in library.devices {
+            let device = item.value
+            let offset = colorViews.count
+            for colorModeID in device.colorModeIDs {
+                colorViews.append(view(try owned(colorModeID)))
+            }
+            deviceStorage.append(DeviceStorage(
+                id: try owned(device.id), label: try owned(device.name),
+                defaultColorMode: try owned(device.colorModeID),
+                defaultCover: try owned(device.defaultCoverGlassPresetID),
+                colorOffset: offset, colorCount: device.colorModeIDs.count,
+                parameters: try device.bridgeParameters(),
+                minimumWhite: Float(device.minimumWhiteLuminance),
+                maximumWhite: Float(device.maximumWhiteLuminance),
+                whiteStep: Float(device.whiteLuminanceStep)
+            ))
+        }
+        let coverStorage = try library.coverGlasses.map { item in
+            (
+                id: try owned(item.value.id),
+                label: try owned(item.value.name),
+                parameters: try item.value.bridgeParameters()
+            )
+        }
+        struct CaptureStorage {
+            let id: UnsafeMutablePointer<CChar>
+            let label: UnsafeMutablePointer<CChar>
+            let parameters: ScreenCapturePresetParametersV4
+            let defaultRecording: UnsafeMutablePointer<CChar>
+            let recordingOffset: Int
+            let recordingCount: Int
+            let defaultLens: UnsafeMutablePointer<CChar>
+            let lensOffset: Int
+            let lensCount: Int
+        }
+        var recordingViews: [ScreenUTF8View] = []
+        var lensAssociationViews: [ScreenUTF8View] = []
+        var captureStorage: [CaptureStorage] = []
+        for item in library.cameras {
+            let camera = item.value
+            let recordingOffset = recordingViews.count
+            for id in camera.recommendedRecordingProfileIDs {
+                recordingViews.append(view(try owned(id)))
+            }
+            let lensOffset = lensAssociationViews.count
+            for id in camera.compatibleLensIDs {
+                lensAssociationViews.append(view(try owned(id)))
+            }
+            let modes = try camera.rasterModes.map { mode -> ScreenCaptureRasterModeV1 in
+                ScreenCaptureRasterModeV1(
+                    id: view(try owned(mode.id)),
+                    label: view(try owned(mode.name)),
+                    width: mode.width,
+                    height: mode.height
+                )
+            }
+            guard modes.count == 3 else {
+                throw TestAuthoringCoordinatorError.bridge(
+                    "Cada cámara debe declarar exactamente tres rasters."
+                )
+            }
+            var parameters = ScreenCapturePresetParametersV4()
+            parameters.abi_version = UInt32(SCREEN_AUTHORING_CATALOG_ABI_VERSION)
+            parameters.sensor.abi_version = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
+            parameters.sensor.native_width = camera.sensor.nativeWidth
+            parameters.sensor.native_height = camera.sensor.nativeHeight
+            parameters.sensor.bayer_pattern = camera.sensor.bayerPattern
+            parameters.sensor.acescg_to_sensor = (
+                Float(camera.sensor.acescgToSensor[0]), Float(camera.sensor.acescgToSensor[1]),
+                Float(camera.sensor.acescgToSensor[2]), Float(camera.sensor.acescgToSensor[3]),
+                Float(camera.sensor.acescgToSensor[4]), Float(camera.sensor.acescgToSensor[5]),
+                Float(camera.sensor.acescgToSensor[6]), Float(camera.sensor.acescgToSensor[7]),
+                Float(camera.sensor.acescgToSensor[8])
+            )
+            parameters.sensor.saturation_illuminance_seconds = (
+                Float(camera.sensor.saturationIlluminanceSeconds[0]),
+                Float(camera.sensor.saturationIlluminanceSeconds[1]),
+                Float(camera.sensor.saturationIlluminanceSeconds[2])
+            )
+            parameters.sensor.full_well_electrons = Float(camera.sensor.fullWellElectrons)
+            parameters.sensor.dark_current_electrons_per_second = Float(camera.sensor.darkCurrentElectronsPerSecond)
+            parameters.sensor.read_noise_electrons_rms = Float(camera.sensor.readNoiseElectronsRMS)
+            parameters.sensor.analog_gain = Float(camera.sensor.analogGain)
+            parameters.sensor.adc_bits = camera.sensor.adcBits
+            parameters.sensor.bloom_character_strength = Float(camera.sensor.bloomCharacterStrength)
+            parameters.sensor.bloom_crosstalk_fraction = Float(camera.sensor.bloomCrosstalkFraction)
+            parameters.sensor.bloom_overflow_transfer_fraction = Float(camera.sensor.bloomOverflowTransferFraction)
+            parameters.computational_capture.abi_version = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
+            parameters.computational_capture.exposure_count = camera.computationalCapture.exposureCount
+            parameters.computational_capture.bracket_spacing_stops = Float(camera.computationalCapture.bracketSpacingStops)
+            parameters.camera_rendering_intent.abi_version = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
+            parameters.camera_rendering_intent.exposure_ev = Float(camera.renderingIntent.exposureEV)
+            parameters.camera_rendering_intent.contrast = Float(camera.renderingIntent.contrast)
+            parameters.camera_rendering_intent.saturation = Float(camera.renderingIntent.saturation)
+            parameters.camera_rendering_intent.temperature_kelvin = Float(camera.renderingIntent.temperatureKelvin)
+            parameters.camera_rendering_intent.tint = Float(camera.renderingIntent.tint)
+            parameters.gate_width_millimeters = Float(camera.gateWidthMillimeters)
+            parameters.gate_height_millimeters = Float(camera.gateHeightMillimeters)
+            parameters.default_f_stop = Float(camera.defaultFStop)
+            parameters.reference_exposure_index = Float(camera.referenceExposureIndex)
+            parameters.middle_gray_illuminance_seconds = Float(camera.middleGrayIlluminanceSeconds)
+            parameters.default_shutter_angle_degrees = Float(camera.defaultShutterAngleDegrees)
+            parameters.default_temporal_samples = camera.defaultTemporalSamples
+            parameters.lens_association_policy = camera.lensAssociationPolicy
+            parameters.radiometric_calibration.abi_version = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
+            parameters.radiometric_calibration.base_exposure_index = Float(camera.radiometricCalibration.baseExposureIndex)
+            parameters.radiometric_calibration.reference_lambertian_reflectance = Float(camera.radiometricCalibration.referenceLambertianReflectance)
+            parameters.radiometric_calibration.reference_illuminance_lux = Float(camera.radiometricCalibration.referenceIlluminanceLux)
+            parameters.radiometric_calibration.reference_t_stop = Float(camera.radiometricCalibration.referenceTStop)
+            parameters.radiometric_calibration.reference_shutter_seconds = Float(camera.radiometricCalibration.referenceShutterSeconds)
+            parameters.radiometric_calibration.effective_sensor_exposure_scale = Float(camera.radiometricCalibration.effectiveSensorExposureScale)
+            parameters.raster_modes = (modes[0], modes[1], modes[2])
+            parameters.default_raster_mode_id = view(try owned(camera.defaultRasterModeID))
+            parameters.default_lens_evaluation_model = camera.defaultLensEvaluationModelID == "thin-lens" ? 0 : 1
+            parameters.native_vfx_encoding_id = view(try owned(camera.nativeVFXEncodingID ?? ""))
+            captureStorage.append(CaptureStorage(
+                id: try owned(camera.id), label: try owned(camera.name), parameters: parameters,
+                defaultRecording: try owned(camera.defaultRecordingProfileID),
+                recordingOffset: recordingOffset,
+                recordingCount: camera.recommendedRecordingProfileIDs.count,
+                defaultLens: try owned(camera.defaultLensID),
+                lensOffset: lensOffset,
+                lensCount: camera.compatibleLensIDs.count
+            ))
+        }
+        let lensStorage = try library.lenses.map { item -> (
+            id: UnsafeMutablePointer<CChar>, label: UnsafeMutablePointer<CChar>,
+            parameters: ScreenLensPresetParametersV1
+        ) in
+            let lens = item.value
+            var parameters = ScreenLensPresetParametersV1()
+            parameters.abi_version = UInt32(SCREEN_AUTHORING_CATALOG_ABI_VERSION)
+            parameters.nominal_focal_length_millimeters = Float(lens.nominalFocalLengthMillimeters)
+            parameters.radial_distortion = (Float(lens.radialDistortion[0]), Float(lens.radialDistortion[1]), Float(lens.radialDistortion[2]))
+            parameters.tangential_distortion = (Float(lens.tangentialDistortion[0]), Float(lens.tangentialDistortion[1]))
+            parameters.longitudinal_chromatic_meters = (Float(lens.longitudinalChromaticMeters[0]), Float(lens.longitudinalChromaticMeters[1]), Float(lens.longitudinalChromaticMeters[2]))
+            parameters.lateral_chromatic_scale = (Float(lens.lateralChromaticScale[0]), Float(lens.lateralChromaticScale[1]), Float(lens.lateralChromaticScale[2]))
+            parameters.vignetting_strength = Float(lens.vignettingStrength)
+            parameters.transmission_rgb = (Float(lens.transmissionRGB[0]), Float(lens.transmissionRGB[1]), Float(lens.transmissionRGB[2]))
+            parameters.center_softness_micrometers = Float(lens.centerSoftnessMicrometers)
+            parameters.edge_softness_micrometers = Float(lens.edgeSoftnessMicrometers)
+            parameters.veiling_glare_fraction = Float(lens.veilingGlareFraction)
+            return (try owned(lens.id), try owned(lens.name), parameters)
+        }
+        let environmentStorage = try library.environments.map { item -> (
+            id: UnsafeMutablePointer<CChar>, label: UnsafeMutablePointer<CChar>,
+            parameters: ScreenEnvironmentParametersV2
+        ) in
+            let profile = item.value
+            let environment = profile.environment
+            var parameters = ScreenEnvironmentParametersV2()
+            parameters.abi_version = UInt32(SCREEN_PHYSICAL_FRAME_ABI_VERSION)
+            parameters.source_kind = environment.sourceKind
+            parameters.character_strength = 1
+            parameters.source_unit_radiance_candelas_per_square_meter = Float(environment.sourceUnitRadianceCandelasPerSquareMeter)
+            parameters.exposure_stops = Float(environment.exposureStops)
+            parameters.ambient_radiance_acescg = (Float(environment.ambientRadianceACEScg[0]), Float(environment.ambientRadianceACEScg[1]), Float(environment.ambientRadianceACEScg[2]))
+            parameters.key_radiance_acescg = (Float(environment.keyRadianceACEScg[0]), Float(environment.keyRadianceACEScg[1]), Float(environment.keyRadianceACEScg[2]))
+            parameters.key_direction_local = (Float(environment.keyDirectionLocal[0]), Float(environment.keyDirectionLocal[1]), Float(environment.keyDirectionLocal[2]))
+            parameters.key_angular_radius_degrees = Float(environment.keyAngularRadiusDegrees)
+            parameters.rotation_x_degrees = Float(environment.rotationXDegrees)
+            parameters.rotation_y_degrees = Float(environment.rotationYDegrees)
+            parameters.pattern = environment.pattern
+            return (try owned(profile.id), try owned(profile.name), parameters)
+        }
+        var error: UnsafePointer<CChar>?
+        let created = colorViews.withUnsafeBufferPointer { colors in
+            let rawDevices = deviceStorage.map { stored in
+                ScreenTestDeviceProfileV1(
+                    abi_version: UInt32(SCREEN_TEST_AUTHORING_ABI_VERSION),
+                    id: view(stored.id), label: view(stored.label),
+                    parameters: stored.parameters,
+                    color_mode_ids: colors.baseAddress?.advanced(by: stored.colorOffset),
+                    color_mode_count: stored.colorCount,
+                    default_color_mode_id: view(stored.defaultColorMode),
+                    minimum_white_nits: stored.minimumWhite,
+                    maximum_white_nits: stored.maximumWhite,
+                    white_step_nits: stored.whiteStep,
+                    default_cover_glass_profile_id: view(stored.defaultCover)
+                )
+            }
+            let rawCovers = coverStorage.map { stored in
+                ScreenTestCoverProfileV1(
+                    abi_version: UInt32(SCREEN_TEST_AUTHORING_ABI_VERSION),
+                    id: view(stored.id), label: view(stored.label),
+                    parameters: stored.parameters
+                )
+            }
+            let rawLenses = lensStorage.map { stored in
+                ScreenTestLensProfileV1(
+                    abi_version: UInt32(SCREEN_TEST_AUTHORING_ABI_VERSION),
+                    id: view(stored.id), label: view(stored.label),
+                    parameters: stored.parameters
+                )
+            }
+            let rawEnvironments = environmentStorage.map { stored in
+                ScreenTestEnvironmentProfileV1(
+                    abi_version: UInt32(SCREEN_TEST_AUTHORING_ABI_VERSION),
+                    id: view(stored.id), label: view(stored.label),
+                    parameters: stored.parameters
+                )
+            }
+            return recordingViews.withUnsafeBufferPointer { recordings in
+                lensAssociationViews.withUnsafeBufferPointer { lensAssociations in
+                    let rawCaptures = captureStorage.map { stored in
+                        ScreenTestCaptureProfileV1(
+                            abi_version: UInt32(SCREEN_TEST_AUTHORING_ABI_VERSION),
+                            id: view(stored.id), label: view(stored.label),
+                            parameters: stored.parameters,
+                            default_recording_profile_id: view(stored.defaultRecording),
+                            recommended_recording_profile_ids: recordings.baseAddress?.advanced(by: stored.recordingOffset),
+                            recommended_recording_profile_count: stored.recordingCount,
+                            default_lens_profile_id: view(stored.defaultLens),
+                            compatible_lens_profile_ids: lensAssociations.baseAddress?.advanced(by: stored.lensOffset),
+                            compatible_lens_profile_count: stored.lensCount
+                        )
+                    }
+                    return rawDevices.withUnsafeBufferPointer { devices in
+                        rawCovers.withUnsafeBufferPointer { covers in
+                            rawCaptures.withUnsafeBufferPointer { captures in
+                                rawLenses.withUnsafeBufferPointer { lenses in
+                                    rawEnvironments.withUnsafeBufferPointer { environments in
+                                        screen_test_authoring_profile_context_create(
+                                            devices.baseAddress, devices.count,
+                                            covers.baseAddress, covers.count,
+                                            captures.baseAddress, captures.count,
+                                            lenses.baseAddress, lenses.count,
+                                            environments.baseAddress, environments.count,
+                                            &error
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        guard let created else {
+            throw TestAuthoringCoordinatorError.bridge(
+                error.map(String.init(cString:))
+                    ?? "Application rechazó la Biblioteca Global de perfiles."
+            )
+        }
+        handle = created
+    }
+
+    deinit {
+        screen_test_authoring_profile_context_release(handle)
+    }
+}
+
 enum RustTestAuthoringCoordinator {
+    private static func bundledSeedProfileContext() throws -> RustTestAuthoringProfileContext {
+        try RustTestAuthoringProfileContext(library: GlobalLibraryDocument())
+    }
+
     static func defaultSelection(
+        inputTransformID: String,
+        deviceID: String,
+        frameRate: ExactFrameRate
+    ) throws -> TestAuthoringResolvedSelection {
+        try defaultSelection(
+            profileContext: bundledSeedProfileContext(),
+            inputTransformID: inputTransformID,
+            deviceID: deviceID,
+            frameRate: frameRate
+        )
+    }
+
+    static func defaultSelection(
+        profileContext: RustTestAuthoringProfileContext,
         inputTransformID: String,
         deviceID: String,
         frameRate: ExactFrameRate
@@ -163,8 +470,8 @@ enum RustTestAuthoringCoordinator {
             try withUTF8View(deviceID) { deviceView in
                 var output = ScreenTestAuthoringSelectionV23()
                 var error: UnsafePointer<CChar>?
-                guard screen_test_authoring_default_selection(
-                    inputView, deviceView,
+                guard screen_test_authoring_default_selection_with_profiles(
+                    profileContext.handle, inputView, deviceView,
                     frameRate.numerator, frameRate.denominator,
                     &output, &error
                 ) else {
@@ -179,12 +486,15 @@ enum RustTestAuthoringCoordinator {
     }
 
     static func snapshot(
+        profileContext: RustTestAuthoringProfileContext,
         selection: TestAuthoringResolvedSelection,
         selectedPreviewPhaseID: String?
     ) throws -> TestAuthoringSnapshot {
         try withRawSelection(selection) { rawSelection in
             var error: UnsafePointer<CChar>?
-            guard let descriptor = screen_test_page_descriptor_create(rawSelection, &error) else {
+            guard let descriptor = screen_test_page_descriptor_create_with_profiles(
+                profileContext.handle, rawSelection, &error
+            ) else {
                 throw TestAuthoringCoordinatorError.bridge(
                     error.map(String.init(cString:)) ?? "Rust rechazó el descriptor de Test."
                 )
@@ -289,6 +599,17 @@ enum RustTestAuthoringCoordinator {
         }
     }
 
+    static func snapshot(
+        selection: TestAuthoringResolvedSelection,
+        selectedPreviewPhaseID: String?
+    ) throws -> TestAuthoringSnapshot {
+        try snapshot(
+            profileContext: bundledSeedProfileContext(),
+            selection: selection,
+            selectedPreviewPhaseID: selectedPreviewPhaseID
+        )
+    }
+
     private static func optionalString(_ view: ScreenUTF8View) -> String? {
         let value = string(view)
         return value.isEmpty ? nil : value
@@ -296,7 +617,8 @@ enum RustTestAuthoringCoordinator {
 
     static func apply(
         _ intent: TestControlIntent,
-        to selection: TestAuthoringResolvedSelection
+        to selection: TestAuthoringResolvedSelection,
+        profileContext: RustTestAuthoringProfileContext
     ) throws -> TestAuthoringResolvedSelection {
         switch intent {
         case let .setChoice(controlID, optionID):
@@ -305,8 +627,9 @@ enum RustTestAuthoringCoordinator {
                     try withUTF8View(optionID) { optionView in
                         var output = ScreenTestAuthoringSelectionV23()
                         var error: UnsafePointer<CChar>?
-                        guard screen_test_authoring_apply_choice(
-                            rawSelection, controlView, optionView, &output, &error
+                        guard screen_test_authoring_apply_choice_with_profiles(
+                            profileContext.handle, rawSelection,
+                            controlView, optionView, &output, &error
                         ) else {
                             throw TestAuthoringCoordinatorError.bridge(
                                 error.map(String.init(cString:))
@@ -322,8 +645,9 @@ enum RustTestAuthoringCoordinator {
                 try withUTF8View(controlID) { controlView in
                     var output = ScreenTestAuthoringSelectionV23()
                     var error: UnsafePointer<CChar>?
-                    guard screen_test_authoring_apply_scalar(
-                        rawSelection, controlView, Float(value), &output, &error
+                    guard screen_test_authoring_apply_scalar_with_profiles(
+                        profileContext.handle, rawSelection,
+                        controlView, Float(value), &output, &error
                     ) else {
                         throw TestAuthoringCoordinatorError.bridge(
                             error.map(String.init(cString:))
@@ -338,8 +662,9 @@ enum RustTestAuthoringCoordinator {
                 try withUTF8View(controlID) { controlView in
                     var output = ScreenTestAuthoringSelectionV23()
                     var error: UnsafePointer<CChar>?
-                    guard screen_test_authoring_apply_toggle(
-                        rawSelection, controlView, value, &output, &error
+                    guard screen_test_authoring_apply_toggle_with_profiles(
+                        profileContext.handle, rawSelection,
+                        controlView, value, &output, &error
                     ) else {
                         throw TestAuthoringCoordinatorError.bridge(
                             error.map(String.init(cString:))
@@ -349,9 +674,20 @@ enum RustTestAuthoringCoordinator {
                     return try resolved(output)
                 }
             }
-        case .selectPhase, .performAction:
+        case .selectPhase, .reset, .performAction:
             throw TestAuthoringCoordinatorError.unsupportedIntent
         }
+    }
+
+
+    static func apply(
+        _ intent: TestControlIntent,
+        to selection: TestAuthoringResolvedSelection
+    ) throws -> TestAuthoringResolvedSelection {
+        try apply(
+            intent, to: selection,
+            profileContext: bundledSeedProfileContext()
+        )
     }
 
     private static func controlDescriptor(

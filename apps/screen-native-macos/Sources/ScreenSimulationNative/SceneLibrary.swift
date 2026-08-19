@@ -3,6 +3,7 @@ import CoreGraphics
 import CryptoKit
 import Foundation
 import ImageIO
+import ScreenSimulationPresentation
 import StudioColor
 import UniformTypeIdentifiers
 
@@ -100,7 +101,7 @@ struct SavedTrackingCalibration: Codable, Equatable, Sendable {
 }
 
 struct SavedTrackingScene: Codable, Equatable, Sendable {
-    let absolutePath: String
+    let scene: TrackingScene
     let cameraID: String
     let pointGroupID: String
     let visibleMeshIDs: [String]
@@ -110,7 +111,7 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
     let calibration: SavedTrackingCalibration
 
     func validate() throws {
-        try SavedExternalAsset(absolutePath: absolutePath).validate()
+        try scene.validate()
         guard !cameraID.isEmpty, !pointGroupID.isEmpty,
               Set(visibleMeshIDs).count == visibleMeshIDs.count else {
             throw SceneLibraryError.invalidDocument("La selección de tracking guardada no es válida.")
@@ -119,33 +120,129 @@ struct SavedTrackingScene: Codable, Equatable, Sendable {
     }
 }
 
-/// Scene persistence intentionally records authoring, not a resolved physical-profile snapshot.
-/// The selected catalog IDs are resolved again when the scene opens, so a current device, camera
-/// or lens definition remains the authority for its defaults and capabilities.
+/// Scene persistence records selected profile identities plus authored overrides and tracks.
+/// Current internal profile definitions remain authoritative for values without an override.
+struct SceneProfileSelection: Codable, Equatable, Sendable {
+    let deviceID: String
+    let coverGlassID: String
+    let captureID: String
+    let lensID: String
+    let environmentID: String
+    let deliveryID: String
+    let recordingID: String
+
+    func validate() throws {
+        guard [deviceID, coverGlassID, captureID, lensID, environmentID, deliveryID, recordingID]
+            .allSatisfy({ !$0.isEmpty })
+        else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena contiene una identidad de perfil vacía."
+            )
+        }
+    }
+}
+
+struct SceneControlOverride: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable { case choice, scalar, toggle }
+
+    let controlID: String
+    let kind: Kind
+    let choice: String?
+    let scalar: Double?
+    let toggle: Bool?
+
+    static func choice(_ controlID: String, _ value: String) -> Self {
+        .init(controlID: controlID, kind: .choice, choice: value, scalar: nil, toggle: nil)
+    }
+
+    static func scalar(_ controlID: String, _ value: Double) -> Self {
+        .init(controlID: controlID, kind: .scalar, choice: nil, scalar: value, toggle: nil)
+    }
+
+    static func toggle(_ controlID: String, _ value: Bool) -> Self {
+        .init(controlID: controlID, kind: .toggle, choice: nil, scalar: nil, toggle: value)
+    }
+
+    var intent: TestControlIntent {
+        switch kind {
+        case .choice: .setChoice(controlID: controlID, optionID: choice!)
+        case .scalar: .setScalar(controlID: controlID, value: scalar!)
+        case .toggle: .setToggle(controlID: controlID, value: toggle!)
+        }
+    }
+
+    func validate() throws {
+        guard !controlID.isEmpty else {
+            throw SceneLibraryError.invalidDocument("Un override no tiene identidad de control.")
+        }
+        switch kind {
+        case .choice:
+            guard let choice, !choice.isEmpty, scalar == nil, toggle == nil else {
+                throw SceneLibraryError.invalidDocument("Un override Choice no es válido.")
+            }
+        case .scalar:
+            guard let scalar, scalar.isFinite, choice == nil, toggle == nil else {
+                throw SceneLibraryError.invalidDocument("Un override Scalar no es válido.")
+            }
+        case .toggle:
+            guard toggle != nil, choice == nil, scalar == nil else {
+                throw SceneLibraryError.invalidDocument("Un override Toggle no es válido.")
+            }
+        }
+    }
+}
+
+struct SceneModelOverrides: Codable, Equatable, Sendable {
+    let screen: PhysicalModelAuthoringState.ContinuousValue?
+    let stages: [PhysicalModelAuthoringState.Stage]
+
+    func validate() throws {
+        guard Set(stages.map(\.stableID)).count == stages.count else {
+            throw SceneLibraryError.invalidDocument("Hay overrides de etapa duplicados.")
+        }
+        if let screen {
+            guard screen.storedAmount.isFinite else {
+                throw SceneLibraryError.invalidDocument("El override general de pantalla no es válido.")
+            }
+        }
+    }
+}
+
+struct SceneAuthoringContext: Codable, Equatable, Sendable {
+    let sourceInputTransformID: String
+    let sourceAlphaMode: String
+    let sourceColorModel: String
+    let sourceYUVMatrix: String
+    let sourceSignalRange: String
+    let sourcePlacementID: String
+    let previewOutputTransformID: String
+    let previewPhaseID: String
+    let environmentResource: PhysicalSettingsExchange.EnvironmentResource
+    let referenceResource: PhysicalSettingsExchange.ReferenceResource
+}
+
 struct SceneAuthoringDocument: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SceneAuthoring.v2"
+    static let schema = "ScreenSimulation.SceneAuthoring.v3"
 
     let schema: String
-    /// Catalog identities, not embedded profile snapshots. The live Global Library remains
-    /// authoritative when the scene is reopened.
-    let deviceProfileID: String
-    let coverGlassProfileID: String
-    let context: PhysicalSettingsExchange.FrameContext
-    let model: PhysicalModelAuthoringState
+    let profiles: SceneProfileSelection
+    let overrides: [SceneControlOverride]
+    let modelOverrides: SceneModelOverrides
+    let context: SceneAuthoringContext
     let environmentCalibration: EnvironmentAssetCalibration?
 
     init(
-        deviceProfileID: String,
-        coverGlassProfileID: String,
-        context: PhysicalSettingsExchange.FrameContext,
-        model: PhysicalModelAuthoringState,
+        profiles: SceneProfileSelection,
+        overrides: [SceneControlOverride],
+        modelOverrides: SceneModelOverrides,
+        context: SceneAuthoringContext,
         environmentCalibration: EnvironmentAssetCalibration?
     ) {
         schema = Self.schema
-        self.deviceProfileID = deviceProfileID
-        self.coverGlassProfileID = coverGlassProfileID
+        self.profiles = profiles
+        self.overrides = overrides
+        self.modelOverrides = modelOverrides
         self.context = context
-        self.model = model
         self.environmentCalibration = environmentCalibration
     }
 
@@ -153,14 +250,19 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
         guard schema == Self.schema else {
             throw SceneLibraryError.invalidDocument("El documento de autoría de escena no es válido.")
         }
-        guard !deviceProfileID.isEmpty, !coverGlassProfileID.isEmpty else {
-            throw SceneLibraryError.invalidDocument("La escena no contiene las identidades de Device y Cover Glass.")
+        try profiles.validate()
+        guard Set(overrides.map(\.controlID)).count == overrides.count else {
+            throw SceneLibraryError.invalidDocument("Hay overrides de control duplicados.")
         }
+        try overrides.forEach { try $0.validate() }
+        try modelOverrides.validate()
+        try context.environmentResource.validate()
+        try context.referenceResource.validate()
     }
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v19"
+    static let schema = "ScreenSimulation.SavedScene.v21"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -266,8 +368,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             throw SceneLibraryError.invalidDocument("Falta la ruta del entorno generado.")
         }
         let previous = authoring.context
-        let context = PhysicalSettingsExchange.FrameContext(
-            selection: previous.selection,
+        let context = SceneAuthoringContext(
             sourceInputTransformID: previous.sourceInputTransformID,
             sourceAlphaMode: previous.sourceAlphaMode,
             sourceColorModel: previous.sourceColorModel,
@@ -287,9 +388,10 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
             viewerIsFitted: viewerIsFitted,
             authoring: .init(
-                deviceProfileID: authoring.deviceProfileID,
-                coverGlassProfileID: authoring.coverGlassProfileID,
-                context: context, model: authoring.model,
+                profiles: authoring.profiles,
+                overrides: authoring.overrides,
+                modelOverrides: authoring.modelOverrides,
+                context: context,
                 environmentCalibration: authoring.environmentCalibration
             ),
             generatedEnvironment: asset, tracking: tracking
@@ -321,8 +423,9 @@ struct SavedSceneCapture: Sendable {
     let generatedEnvironmentEXR: Data?
 }
 
-/// A self-contained recovery point. External resources intentionally remain external paths;
-/// only app-generated HDRI bytes are retained because their scene-owned file may be replaced.
+/// A self-contained recovery point. Only source, reference and authored external HDRI media
+/// remain external paths; imported 3D authoring is embedded. App-generated HDRI bytes are
+/// retained because their scene-owned file may be replaced.
 struct SceneAutosaveRevision: Codable, Equatable, Identifiable, Sendable {
     static let schema = "ScreenSimulation.SceneAutosave.v1"
     let schema: String
@@ -370,7 +473,7 @@ struct SceneAutosaveHistoryTarget: Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 19
+    static let currentSchemaVersion = 21
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -408,12 +511,10 @@ struct SceneLibraryStore: Sendable {
     let directoryURL: URL
     let documentURL: URL
     let environmentLibraryRoot: URL?
-    let trackingLibraryRoot: URL?
 
     init(
         directoryURL: URL? = nil,
-        environmentLibraryRoot: URL? = nil,
-        trackingLibraryRoot: URL? = nil
+        environmentLibraryRoot: URL? = nil
     ) throws {
         let directory: URL
         if let directoryURL {
@@ -433,8 +534,7 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        self.trackingLibraryRoot = trackingLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v19.json")
+        documentURL = directory.appendingPathComponent("Scenes.v21.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -464,13 +564,6 @@ struct SceneLibraryStore: Sendable {
                     )
                 }
             }
-            if let tracking = scene.snapshot.tracking {
-                guard FileManager.default.fileExists(atPath: tracking.absolutePath) else {
-                    throw SceneLibraryError.invalidDocument(
-                        "Falta la composición Fusion de tracking de “\(scene.name)”."
-                    )
-                }
-            }
         }
         return document
     }
@@ -495,7 +588,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v19", isDirectory: true)
+            .appendingPathComponent("Autosave.v21", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -603,6 +696,56 @@ struct SceneLibraryStore: Sendable {
                     || Set(source.keys) == ["kind", "patternRawValue", "assets"],
                   let assets = source["assets"] as? [[String: Any]],
                   assets.allSatisfy({ Set($0.keys) == ["absolutePath"] }),
+                  let authoring = snapshot["authoring"] as? [String: Any],
+                  (Set(authoring.keys) == [
+                      "schema", "profiles", "overrides", "modelOverrides", "context",
+                  ] || Set(authoring.keys) == [
+                      "schema", "profiles", "overrides", "modelOverrides", "context",
+                      "environmentCalibration",
+                  ]),
+                  let profiles = authoring["profiles"] as? [String: Any],
+                  Set(profiles.keys) == [
+                      "deviceID", "coverGlassID", "captureID", "lensID", "environmentID",
+                      "deliveryID", "recordingID",
+                  ],
+                  let overrides = authoring["overrides"] as? [[String: Any]],
+                  overrides.allSatisfy({ override in
+                      guard let kind = override["kind"] as? String else { return false }
+                      return Set(override.keys) == ["controlID", "kind", kind]
+                  }),
+                  let modelOverrides = authoring["modelOverrides"] as? [String: Any],
+                  (Set(modelOverrides.keys) == ["stages"]
+                    || Set(modelOverrides.keys) == ["screen", "stages"]),
+                  let context = authoring["context"] as? [String: Any],
+                  Set(context.keys) == [
+                      "sourceInputTransformID", "sourceAlphaMode", "sourceColorModel",
+                      "sourceYUVMatrix", "sourceSignalRange", "sourcePlacementID",
+                      "previewOutputTransformID", "previewPhaseID", "environmentResource",
+                      "referenceResource",
+                  ],
+                  let environmentResource = context["environmentResource"] as? [String: Any],
+                  (Set(environmentResource.keys) == ["kind"]
+                    || Set(environmentResource.keys) == [
+                        "kind", "fileName", "absolutePath", "inputTransformID",
+                    ]),
+                  let referenceResource = context["referenceResource"] as? [String: Any],
+                  (Set(referenceResource.keys) == ["kind", "corners"]
+                    || Set(referenceResource.keys) == [
+                        "kind", "fileName", "absolutePath", "inputTransformID", "alphaMode",
+                        "signalColorModel", "signalMatrix", "signalRange", "placementID", "corners",
+                    ]),
+                  (referenceResource["corners"] as? [[String: Any]])?.allSatisfy({
+                      Set($0.keys) == ["x", "y"]
+                  }) == true,
+                  (authoring["environmentCalibration"] == nil
+                    || authoring["environmentCalibration"] is NSNull || {
+                      guard let calibration = authoring["environmentCalibration"]
+                        as? [String: Any] else { return false }
+                      return Set(calibration.keys) == [
+                          "schema", "inputTransformID",
+                          "sourceUnitRadianceCandelasPerSquareMeter", "exposureEV",
+                      ]
+                  }()),
                   (source["missingMedia"] == nil || {
                       guard let missing = source["missingMedia"] as? [String: Any] else {
                           return false
@@ -616,9 +759,53 @@ struct SceneLibraryStore: Sendable {
                   (snapshot["tracking"] == nil || snapshot["tracking"] is NSNull || {
                       guard let tracking = snapshot["tracking"] as? [String: Any],
                             Set(tracking.keys) == [
-                                "absolutePath", "cameraID", "pointGroupID", "visibleMeshIDs",
+                                "scene", "cameraID", "pointGroupID", "visibleMeshIDs",
                                 "pointsVisible", "geometryVisible", "cameraEnabled", "calibration",
                             ],
+                            let authoredScene = tracking["scene"] as? [String: Any],
+                            Set(authoredScene.keys) == [
+                                "schema", "cameras", "pointGroups", "meshes",
+                            ],
+                            let cameras = authoredScene["cameras"] as? [[String: Any]],
+                            cameras.allSatisfy({ camera in
+                                Set(camera.keys) == [
+                                    "id", "label", "frameRateNumerator", "frameRateDenominator",
+                                    "focalLengthMillimeters", "gateWidthMillimeters",
+                                    "gateHeightMillimeters", "plateWidth", "plateHeight",
+                                    "distortion", "samples",
+                                ]
+                                && {
+                                    guard let distortion = camera["distortion"] as? [String: Any]
+                                    else { return false }
+                                    if Set(distortion.keys) == ["pinhole"],
+                                       let value = distortion["pinhole"] as? [String: Any] {
+                                        return value.isEmpty
+                                    }
+                                    if Set(distortion.keys) == ["de4RadialStandardDegree4"],
+                                       let value = distortion["de4RadialStandardDegree4"]
+                                        as? [String: Any] {
+                                        return Set(value.keys) == ["degree2", "degree4"]
+                                    }
+                                    return false
+                                }()
+                                && (camera["samples"] as? [[String: Any]])?.allSatisfy({ sample in
+                                    Set(sample.keys) == ["frame", "sourcePosition", "orientation"]
+                                }) == true
+                            }),
+                            let pointGroups = authoredScene["pointGroups"] as? [[String: Any]],
+                            pointGroups.allSatisfy({ group in
+                                Set(group.keys) == ["id", "label", "points"]
+                                && (group["points"] as? [[String: Any]])?.allSatisfy({ point in
+                                    Set(point.keys) == ["id", "label", "sourcePosition"]
+                                }) == true
+                            }),
+                            let meshes = authoredScene["meshes"] as? [[String: Any]],
+                            meshes.allSatisfy({ mesh in
+                                Set(mesh.keys) == [
+                                    "id", "label", "sourceVertices", "faceVertexCounts",
+                                    "faceVertexIndices",
+                                ]
+                            }),
                             let calibration = tracking["calibration"] as? [String: Any],
                             Set(calibration.keys) == [
                                 "unitValue", "unit", "metersPerSourceUnit",
@@ -749,7 +936,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v19", isDirectory: true)
+            .appendingPathComponent("Autosave.v21", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
@@ -919,16 +1106,29 @@ final class SceneLibraryController: ObservableObject {
     ) {
         guard let undoManager else { return }
         let manager = UndoManagerBox(undoManager)
-        undoManager.registerUndo(withTarget: self) { target in
-            MainActor.assumeIsolated {
-                target.restoreUpdate(
-                    sceneID: sceneID,
-                    state: state,
-                    undoManager: manager.value
-                )
+        let register = {
+            undoManager.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    target.restoreUpdate(
+                        sceneID: sceneID,
+                        state: state,
+                        undoManager: manager.value
+                    )
+                }
             }
         }
-        undoManager.setActionName("Actualizar escena")
+        if undoManager.isUndoing || undoManager.isRedoing {
+            register()
+            undoManager.setActionName("Actualizar escena")
+        } else {
+            let groupedByEvent = undoManager.groupsByEvent
+            undoManager.groupsByEvent = false
+            undoManager.beginUndoGrouping()
+            register()
+            undoManager.setActionName("Actualizar escena")
+            undoManager.endUndoGrouping()
+            undoManager.groupsByEvent = groupedByEvent
+        }
     }
 
     private func restoreUpdate(

@@ -72,6 +72,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
     var nativeHeight: Int
     var activeWidthMeters: Double
     var activeHeightMeters: Double
+    var cornerRadiusMeters: Double
     var panelTechnology: DevicePanelTechnology
     var emissionModel: DeviceEmissionModel
     var colorModeIDs: [String]
@@ -153,6 +154,14 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
         guard !defaultCoverGlassPresetID.isEmpty else {
             throw DeviceDomainError.invalidCoverAssociation
         }
+        guard cornerRadiusMeters.isFinite,
+              cornerRadiusMeters >= 0,
+              cornerRadiusMeters <= 0.5 * min(activeWidthMeters, activeHeightMeters)
+        else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "El Corner Radius debe estar entre 0 y la mitad de la dimensión activa menor."
+            )
+        }
         guard minimumWhiteLuminance.isFinite,
               maximumWhiteLuminance.isFinite,
               whiteLuminanceStep.isFinite,
@@ -175,7 +184,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
-    fileprivate func bridgeParameters() throws -> ScreenDeviceParametersV3 {
+    func bridgeParameters() throws -> ScreenDeviceParametersV3 {
         guard nativeWidth <= Int(UInt32.max), nativeHeight <= Int(UInt32.max) else {
             throw DeviceDomainError.invalidPhysicalProfile("La resolución nativa excede el ABI.")
         }
@@ -190,6 +199,7 @@ struct DeviceDefinition: Codable, Equatable, Identifiable, Sendable {
         value.stripe_layout = stripeLayout == .rgb ? 0 : 1
         value.active_width_meters = Float(activeWidthMeters)
         value.active_height_meters = Float(activeHeightMeters)
+        value.corner_radius_meters = Float(cornerRadiusMeters)
         value.black_matrix_fraction = Float(blackMatrixFraction)
         value.eotf_gamma = Float(eotfGamma)
         value.black_level_nits = Float(blackLevelNits)
@@ -286,6 +296,7 @@ enum RustDeviceCatalog {
                 nativeHeight: Int(parameters.native_height),
                 activeWidthMeters: Double(parameters.active_width_meters),
                 activeHeightMeters: Double(parameters.active_height_meters),
+                cornerRadiusMeters: Double(parameters.corner_radius_meters),
                 panelTechnology: .ipsLCD,
                 emissionModel: .powerEOTF,
                 colorModeIDs: (0..<screen_device_preset_color_mode_count(index)).map {

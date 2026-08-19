@@ -240,6 +240,7 @@ public enum TestControlIntent: Equatable, Sendable {
     case setChoice(controlID: String, optionID: String)
     case setScalar(controlID: String, value: Double)
     case setToggle(controlID: String, value: Bool)
+    case reset(controlID: String)
     case performAction(controlID: String)
 }
 
@@ -249,6 +250,18 @@ public enum TestPresentationError: Error, Equatable {
     case invalidControls(String)
     case invalidChoice(String)
     case invalidScalar(String)
+}
+
+extension TestPresentationError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .invalidPhases: "La presentación no contiene fases válidas."
+        case let .invalidSections(id): "La fase ‘\(id)’ contiene secciones no válidas."
+        case let .invalidControls(id): "El control ‘\(id)’ no es válido."
+        case let .invalidChoice(id): "La selección del control ‘\(id)’ no es válida."
+        case let .invalidScalar(id): "El valor del control ‘\(id)’ no es válido."
+        }
+    }
 }
 
 private extension TestControlDescriptor {

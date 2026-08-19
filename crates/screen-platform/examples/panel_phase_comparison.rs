@@ -12,10 +12,10 @@ use metal::{
 use screen_application::{
     CameraRadiometricCalibration, DeviceSignalRaster, PhysicalIntermediate,
     PhysicalPipelineExecutionPlan, PhysicalPipelineInput, PhysicalPipelineRequest, RasterPlacement,
-    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, SensorReadout,
-    capture_device_preset, evaluate_physical_pipeline_cpu_oracle, expose_physical_pipeline_raw,
+    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, capture_device_preset,
+    evaluate_physical_pipeline_cpu_oracle, expose_physical_pipeline_raw,
 };
-use screen_camera::{CameraDevelopment, CameraRenderingIntent, develop_raw_to_acescg};
+use screen_camera::{CameraDevelopment, CameraRenderingIntent, develop_raw_region_to_acescg};
 use screen_color::CameraOutputTransform;
 use screen_contracts::{DeviceRgb, LinearRgb, RationalTime, Vec2, Vec3};
 use screen_cover::{CoverGlassProfile, ProceduralEnvironment, cover_glass_preset};
@@ -205,7 +205,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             stopped,
         )?;
         let pixels = if arguments.intermediate == PhysicalIntermediate::DevelopedAcesCg {
-            develop_raw_to_acescg(&raw, anterior_plan.sensor, anterior_plan.development)?.acescg
+            develop_raw_region_to_acescg(&raw, anterior_plan.sensor, anterior_plan.development)?
+                .acescg
         } else {
             let maximum_code = ((1_u32 << raw.adc_bits) - 1) as f32;
             raw.codes
@@ -217,7 +218,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 })
                 .collect()
         };
-        (raw.width, raw.height, pixels)
+        (
+            u32::from(raw.region.width),
+            u32::from(raw.region.height),
+            pixels,
+        )
     } else {
         let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
             input: input.clone(),
@@ -376,7 +381,6 @@ fn plan(
         shutter_close,
         shutter_motion: ResolvedShutterMotionSnapshot {
             temporal_samples: 1,
-            readout: SensorReadout::Global,
             neutral_density_stops: 0.0,
             noise_seed: 7,
         },
@@ -384,6 +388,7 @@ fn plan(
         computational_capture: screen_sensor::ComputationalCaptureProfile::SINGLE_EXPOSURE,
         computational_character_strength: 0.0,
         sensor,
+        sensor_region: screen_sensor::SensorRegion::full(sensor),
         radiometric_calibration,
         sensor_enabled: true,
         sensor_noise_amount: 1.0,

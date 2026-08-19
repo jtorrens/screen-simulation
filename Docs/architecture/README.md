@@ -13,3 +13,5 @@ This directory contains only the documents required to implement and validate th
 - `validation.md`: executable architecture and contract enforcement.
 
 Documents that stop describing the current version are removed from this index and placed in the sealed historical archive without remaining as active context.
+
+`architecture/decision-authority.json` indexes cross-boundary product decisions by stable id. It records only bounded scope, canonical owner section and focused enforcement; decision meaning remains exclusively in the named active owner. `scripts/check_decision_authority.py` rejects duplicate or missing owners, unknown references, inactive owners and missing enforcement.

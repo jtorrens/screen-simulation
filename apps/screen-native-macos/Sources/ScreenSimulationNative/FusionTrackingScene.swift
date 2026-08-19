@@ -144,26 +144,90 @@ struct TrackingCamera: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+private extension TrackingCamera.Distortion {
+    var hasFiniteCoefficients: Bool {
+        switch self {
+        case .pinhole: true
+        case let .de4RadialStandardDegree4(degree2, degree4):
+            degree2.isFinite && degree4.isFinite
+        }
+    }
+}
+
 struct TrackingPointGroup: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let label: String
     let points: [TrackingPoint]
 }
 
-struct ImportedTrackingScene: Codable, Equatable, Sendable {
+/// Host-neutral 3D authoring owned by the scene. Importers create this value, but its
+/// identity and lifetime are independent of the file or application it came from.
+struct TrackingScene: Codable, Equatable, Sendable {
     static let schema = "ScreenSimulation.TrackingScene.v1"
     let schema: String
-    let sourceFileName: String
     let cameras: [TrackingCamera]
     let pointGroups: [TrackingPointGroup]
     let meshes: [TrackingMesh]
 
-    init(sourceFileName: String, cameras: [TrackingCamera], pointGroups: [TrackingPointGroup], meshes: [TrackingMesh]) {
+    init(cameras: [TrackingCamera], pointGroups: [TrackingPointGroup], meshes: [TrackingMesh]) {
         schema = Self.schema
-        self.sourceFileName = sourceFileName
         self.cameras = cameras
         self.pointGroups = pointGroups
         self.meshes = meshes
+    }
+
+    func validate() throws {
+        guard schema == Self.schema,
+              !cameras.isEmpty,
+              !pointGroups.isEmpty,
+              Set(cameras.map(\.id)).count == cameras.count,
+              Set(pointGroups.map(\.id)).count == pointGroups.count,
+              Set(meshes.map(\.id)).count == meshes.count,
+              cameras.allSatisfy({ camera in
+                  !camera.id.isEmpty && !camera.label.isEmpty
+                    && camera.frameRateNumerator > 0 && camera.frameRateDenominator > 0
+                    && camera.focalLengthMillimeters.isFinite
+                    && camera.focalLengthMillimeters > 0
+                    && camera.gateWidthMillimeters.isFinite && camera.gateWidthMillimeters > 0
+                    && camera.gateHeightMillimeters.isFinite && camera.gateHeightMillimeters > 0
+                    && camera.plateWidth > 0 && camera.plateHeight > 0
+                    && camera.distortion.hasFiniteCoefficients
+                    && !camera.samples.isEmpty
+                    && Set(camera.samples.map(\.frame)).count == camera.samples.count
+                    && camera.samples.map(\.frame) == camera.samples.map(\.frame).sorted()
+                    && camera.samples.allSatisfy({ sample in
+                        sample.sourcePosition.x.isFinite
+                            && sample.sourcePosition.y.isFinite
+                            && sample.sourcePosition.z.isFinite
+                            && sample.orientation.x.isFinite
+                            && sample.orientation.y.isFinite
+                            && sample.orientation.z.isFinite
+                            && sample.orientation.w.isFinite
+                            && abs(simd_length_squared(sample.orientation) - 1) < 1e-8
+                    })
+              }),
+              pointGroups.allSatisfy({ group in
+                  !group.id.isEmpty && !group.label.isEmpty && !group.points.isEmpty
+                    && Set(group.points.map(\.id)).count == group.points.count
+                    && group.points.allSatisfy({ point in
+                        !point.id.isEmpty && !point.label.isEmpty
+                            && point.sourcePosition.x.isFinite
+                            && point.sourcePosition.y.isFinite
+                            && point.sourcePosition.z.isFinite
+                    })
+              }),
+              meshes.allSatisfy({ mesh in
+                  !mesh.id.isEmpty && !mesh.label.isEmpty && !mesh.sourceVertices.isEmpty
+                    && mesh.sourceVertices.allSatisfy({ vertex in
+                        vertex.x.isFinite && vertex.y.isFinite && vertex.z.isFinite
+                    })
+                    && mesh.faceVertexCounts.allSatisfy({ $0 >= 3 })
+                    && mesh.faceVertexCounts.reduce(0, +) == mesh.faceVertexIndices.count
+                    && mesh.faceVertexIndices.allSatisfy(mesh.sourceVertices.indices.contains)
+              })
+        else {
+            throw SceneLibraryError.invalidDocument("La autoría 3D guardada no es válida.")
+        }
     }
 }
 
@@ -179,15 +243,15 @@ enum FusionTrackingError: LocalizedError {
 }
 
 struct FusionTrackingImporter {
-    func load(_ url: URL) throws -> ImportedTrackingScene {
+    func load(_ url: URL) throws -> TrackingScene {
         guard url.pathExtension.lowercased() == "comp" else {
             throw FusionTrackingError.invalid("La solución de tracking debe ser una composición Fusion .comp.")
         }
         let text = try String(contentsOf: url, encoding: .utf8)
-        return try parse(text, sourceFileName: url.lastPathComponent)
+        return try parse(text)
     }
 
-    func parse(_ text: String, sourceFileName: String) throws -> ImportedTrackingScene {
+    func parse(_ text: String) throws -> TrackingScene {
         guard text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("-- Fusion Exporter:"),
               text.contains("Composition {") else {
             throw FusionTrackingError.invalid("El archivo no es una composición ASCII exportada por SynthEyes para Fusion.")
@@ -261,7 +325,7 @@ struct FusionTrackingImporter {
         }
         guard !cameras.isEmpty else { throw FusionTrackingError.invalid("La composición no contiene una cámara Fusion utilizable.") }
         guard !pointGroups.isEmpty else { throw FusionTrackingError.invalid("La composición no contiene ninguna nube de puntos.") }
-        return .init(sourceFileName: sourceFileName, cameras: cameras, pointGroups: pointGroups, meshes: meshes)
+        return .init(cameras: cameras, pointGroups: pointGroups, meshes: meshes)
     }
 
     private struct ToolEntry { let name: String; let body: String }
@@ -404,7 +468,7 @@ private struct TrackingScenePanel: View {
             Section("SynthEyes / Fusion") {
                 Button("Importar .comp…", action: model.importFusionTrackingScene)
                 if let scene = model.trackingScene {
-                    LabeledContent("Archivo", value: scene.sourceFileName)
+                    LabeledContent("Origen", value: "Autoría 3D de la escena")
                     Picker("Cámara", selection: $model.selectedTrackingCameraID) {
                         Text("Seleccionar…").tag(String?.none)
                         ForEach(scene.cameras) { Text($0.label).tag(Optional($0.id)) }
@@ -501,7 +565,7 @@ private struct TrackingScenePanel: View {
         .frame(width: 440, height: 650)
     }
 
-    private func selectedPointGroup(in scene: ImportedTrackingScene) -> TrackingPointGroup? {
+    private func selectedPointGroup(in scene: TrackingScene) -> TrackingPointGroup? {
         guard let selectedID = model.selectedTrackingPointGroupID else { return nil }
         return scene.pointGroups.first { $0.id == selectedID }
     }

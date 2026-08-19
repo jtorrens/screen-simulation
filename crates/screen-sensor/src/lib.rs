@@ -68,6 +68,8 @@ pub struct IntegratedOpticalExposure {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComputationalCaptureExposure {
     pub sensor_profile: SensorProfile,
+    /// Exact global photosite rectangle represented by `exposure`.
+    pub region: SensorRegion,
     pub exposure: IntegratedOpticalExposure,
 }
 
@@ -217,15 +219,32 @@ pub fn materialize_computational_capture(
     character_strength: f32,
     exposure: IntegratedOpticalExposure,
 ) -> Result<ComputationalCaptureExposure, SensorError> {
+    let region = SensorRegion::full(sensor_profile);
+    materialize_computational_capture_region(
+        sensor_profile,
+        capture_profile,
+        character_strength,
+        region,
+        exposure,
+    )
+}
+
+pub fn materialize_computational_capture_region(
+    sensor_profile: SensorProfile,
+    capture_profile: ComputationalCaptureProfile,
+    character_strength: f32,
+    region: SensorRegion,
+    exposure: IntegratedOpticalExposure,
+) -> Result<ComputationalCaptureExposure, SensorError> {
     exposure.validate()?;
     let sensor_profile = capture_profile.effective_sensor(sensor_profile, character_strength)?;
-    if exposure.width != u32::from(sensor_profile.native_width)
-        || exposure.height != u32::from(sensor_profile.native_height)
-    {
+    let region = region.validate(sensor_profile)?;
+    if exposure.width != u32::from(region.width) || exposure.height != u32::from(region.height) {
         return Err(SensorError::RasterProfileMismatch);
     }
     Ok(ComputationalCaptureExposure {
         sensor_profile,
+        region,
         exposure,
     })
 }

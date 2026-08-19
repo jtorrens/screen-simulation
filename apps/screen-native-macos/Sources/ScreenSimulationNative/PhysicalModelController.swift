@@ -135,8 +135,8 @@ final class PhysicalModelController: ObservableObject {
         invalidateParameters(returnToSetup: false)
     }
 
-    func invalidateExternalParameters() {
-        invalidateParameters()
+    func invalidateExternalParameters(preservingQuality: Bool = false) {
+        invalidateParameters(returnToSetup: !preservingQuality)
     }
 
     func setDomainAmount(_ amount: Double, domain: PhysicalDomainID) throws {
@@ -225,6 +225,42 @@ final class PhysicalModelController: ObservableObject {
         screenIsBypassed = state.screen.isBypassed
         stages = restored
         invalidateParameters()
+    }
+
+    /// Materializes the current model defaults and overlays only values explicitly authored
+    /// by a workstation Saved Scene. Absence therefore continues to mean "use current default".
+    func restoreSceneOverrides(_ overrides: SceneModelOverrides) throws {
+        try overrides.validate()
+        let overrideByID = Dictionary(uniqueKeysWithValues: overrides.stages.map {
+            ($0.stableID, $0.control)
+        })
+        let stages = try PhysicalStageID.ordered.map { stage -> PhysicalModelAuthoringState.Stage in
+            let descriptor = PhysicalStageCatalog.descriptor(for: stage)
+            let control: PhysicalModelAuthoringState.StageControl
+            if let authored = overrideByID[stage.id] {
+                switch authored {
+                case let .continuous(value):
+                    guard descriptor.continuous else {
+                        throw PhysicalModelStateError.invalidAuthoringState
+                    }
+                    control = .continuous(value)
+                case let .discrete(enabled):
+                    guard !descriptor.continuous else {
+                        throw PhysicalModelStateError.invalidAuthoringState
+                    }
+                    control = .discrete(enabled: enabled)
+                }
+            } else {
+                control = descriptor.continuous
+                    ? .continuous(.init(storedAmount: 1, isBypassed: false))
+                    : .discrete(enabled: true)
+            }
+            return .init(stableID: stage.id, control: control)
+        }
+        try restoreAuthoringState(.init(
+            screen: overrides.screen ?? .init(storedAmount: 1, isBypassed: false),
+            stages: stages
+        ))
     }
 
     func setDiscreteEnabled(_ enabled: Bool, stage: PhysicalStageID) throws {

@@ -27,7 +27,7 @@ import Testing
     let explicit = StudioMediaMetadataDetector.inputTransformProposal(
         primaries: "ITU_R_709_2", transfer: "ITU_R_709_2", matrix: "ITU_R_709_2"
     )
-    #expect(explicit?.id == "display-rec709-gamma24-dcm")
+    #expect(explicit?.id == "input-rec709")
     #expect(explicit?.provenance == .detected)
     #expect(StudioMediaMetadataDetector.proposedMatrix("ITU_R_2020") == .bt2020)
 }
@@ -36,7 +36,7 @@ import Testing
     let incomplete = StudioMediaMetadataDetector.inputTransformProposal(
         primaries: "ITU_R_709_2", transfer: nil, matrix: "ITU_R_709_2"
     )
-    #expect(incomplete?.id == "display-rec709-gamma24-dcm")
+    #expect(incomplete?.id == "input-rec709")
     #expect(incomplete?.provenance == .proposed)
 }
 
@@ -49,6 +49,52 @@ import Testing
     #expect(StudioMediaMetadataDetector.inputTransformProposal(
         primaries: "ITU_R_2020", transfer: nil, matrix: "ITU_R_2020"
     ) == nil)
+}
+
+@Test func unlabeledVideoImportUsesVisibleEditableDefaults() {
+    let resolution = StudioMediaImportResolution(
+        detection: StudioMediaDetection(hasAlpha: true),
+        isVideo: true
+    )
+    #expect(resolution.detection.proposedInputTransformID == "srgb-encoded-rec709")
+    #expect(resolution.detection.inputTransformProvenance == .proposed)
+    #expect(resolution.detection.colorModel == .ycbcr)
+    #expect(resolution.detection.matrix == .bt709)
+    #expect(resolution.detection.range == .video)
+    #expect(resolution.detection.alpha == .premultiplied)
+    #expect(resolution.nonMetadataFields == StudioImportInterpretationField.allCases)
+}
+
+@Test func importResolutionPreservesDetectedFieldsAndFillsOnlyMissingOnes() {
+    let resolution = StudioMediaImportResolution(
+        detection: StudioMediaDetection(
+            proposedInputTransformID: "input-rec709",
+            inputTransformProvenance: .detected,
+            matrix: .bt2020,
+            matrixProvenance: .detected,
+            range: .full,
+            rangeProvenance: .detected,
+            colorModel: .ycbcr,
+            colorModelProvenance: .detected,
+            hasAlpha: true
+        ),
+        isVideo: true
+    )
+    #expect(resolution.detection.proposedInputTransformID == "input-rec709")
+    #expect(resolution.detection.matrix == .bt2020)
+    #expect(resolution.detection.range == .full)
+    #expect(resolution.detection.alpha == .premultiplied)
+    #expect(resolution.nonMetadataFields == [.alpha])
+}
+
+@Test func unlabeledStillUsesRgbFullRangeAndOpaqueWhenNoAlphaExists() {
+    let resolution = StudioMediaImportResolution(
+        detection: StudioMediaDetection(hasAlpha: false),
+        isVideo: false
+    )
+    #expect(resolution.detection.colorModel == .rgb)
+    #expect(resolution.detection.range == .full)
+    #expect(resolution.detection.alpha == .ignore)
 }
 
 @Test func renderJobConfigurationIsAnEffectiveImmutableSnapshot() throws {

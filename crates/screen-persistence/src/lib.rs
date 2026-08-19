@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_NAME: &str = "project.json";
-pub const CURRENT_VERSION: u32 = 22;
+pub const CURRENT_VERSION: u32 = 23;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -285,23 +285,6 @@ pub enum BayerSelection {
     Gbrg,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RollingDirectionSelection {
-    TopToBottom,
-    BottomToTop,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SensorReadoutDocument {
-    Global,
-    Rolling {
-        duration: ExactTime,
-        direction: RollingDirectionSelection,
-    },
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SensorDocument {
@@ -321,7 +304,6 @@ pub struct SensorDocument {
     pub bloom: SensorBloomDocument,
     pub shutter_duration: ExactTime,
     pub temporal_samples: u16,
-    pub readout: SensorReadoutDocument,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -1086,12 +1068,6 @@ fn validate_sensor(sensor: &SensorDocument) -> Result<(), PersistenceError> {
     if !finite {
         return Err(PersistenceError::NonFiniteNumber);
     }
-    if let SensorReadoutDocument::Rolling { duration, .. } = sensor.readout {
-        validate_time(duration)?;
-        if duration.numerator <= 0 {
-            return Err(PersistenceError::InvalidSensorProfile);
-        }
-    }
     if sensor.native_width == 0
         || sensor.native_height == 0
         || sensor.shutter_duration.numerator <= 0
@@ -1441,7 +1417,6 @@ mod tests {
                     denominator: 48,
                 },
                 temporal_samples: 8,
-                readout: SensorReadoutDocument::Global,
             },
             screen: ScreenDocument {
                 schema: "screen_simulation_screen".into(),

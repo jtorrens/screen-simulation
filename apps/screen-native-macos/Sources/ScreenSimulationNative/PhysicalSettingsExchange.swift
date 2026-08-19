@@ -254,7 +254,7 @@ enum PhysicalSettingsExchange {
         • Panel: luminancia, EOTF, colorimetría, geometría subpíxel, uniformidad, temporal y light spread
         • Cristal y entorno
         • Pose cámara/pantalla y modelo de lente
-        • Obturación, rolling shutter y muestreo temporal
+        • Obturación global y muestreo temporal
         • Sensor, CFA, ruido, RAW y revelado
         • Cámara, raster de captura y objetivo
         • Raster de entrega, transform de grabación y codec

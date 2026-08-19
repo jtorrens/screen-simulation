@@ -260,13 +260,25 @@ struct PhysicalFrameSelection: Equatable, Sendable {
     let frameIndex: Int64
     let timeNumerator: Int64
     let timeDenominator: UInt32
+    let frameRateNumerator: UInt32
+    let frameRateDenominator: UInt32
 
-    init(frameIndex: Int64, timeNumerator: Int64, timeDenominator: UInt32) throws {
+    init(
+        frameIndex: Int64,
+        timeNumerator: Int64,
+        timeDenominator: UInt32,
+        frameRateNumerator: UInt32,
+        frameRateDenominator: UInt32
+    ) throws {
         guard frameIndex >= 0 else { throw PhysicalContractError.invalidFrameIndex }
-        guard timeDenominator != 0 else { throw PhysicalContractError.invalidFrameTime }
+        guard timeDenominator != 0, frameRateNumerator != 0, frameRateDenominator != 0 else {
+            throw PhysicalContractError.invalidFrameTime
+        }
         self.frameIndex = frameIndex
         self.timeNumerator = timeNumerator
         self.timeDenominator = timeDenominator
+        self.frameRateNumerator = frameRateNumerator
+        self.frameRateDenominator = frameRateDenominator
     }
 }
 
@@ -290,6 +302,24 @@ struct PhysicalActiveSensorWindow: Equatable, Sendable {
     let originY: Int
     let width: Int
     let height: Int
+
+    init(
+        fullWidth: Int,
+        fullHeight: Int,
+        originX: Int,
+        originY: Int,
+        width: Int,
+        height: Int
+    ) throws {
+        guard fullWidth > 0, fullHeight > 0,
+              originX >= 0, originY >= 0, width > 0, height > 0,
+              originX + width <= fullWidth, originY + height <= fullHeight
+        else { throw PhysicalContractError.invalidDimensions }
+        self.originX = originX
+        self.originY = originY
+        self.width = width
+        self.height = height
+    }
 
     init(
         fullWidth: Int,
@@ -498,8 +528,16 @@ struct PhysicalCameraPoseTrack: @unchecked Sendable {
     let reference: ScreenPhysicalCameraPoseTrackV2Ref
 }
 
+struct PhysicalCameraIntrinsicsTrack: @unchecked Sendable {
+    let reference: ScreenPhysicalCameraIntrinsicsTrackV1Ref
+}
+
 struct PhysicalScreenPoseTrack: @unchecked Sendable {
     let reference: ScreenPhysicalScreenPoseTrackV2Ref
+}
+
+struct PhysicalSceneFrameResolver: @unchecked Sendable {
+    let reference: ScreenSceneFrameResolverV1Ref
 }
 
 struct PhysicalRationalTime: Equatable, Sendable {
@@ -533,11 +571,8 @@ struct PhysicalFrameRequest: @unchecked Sendable {
 
     let frame: PhysicalFrameSelection
     let timedInputs: PhysicalTimedInputSet
-    let cameraPoseTrack: PhysicalCameraPoseTrack
-    let screenPoseTrack: PhysicalScreenPoseTrack
+    let sceneResolver: PhysicalSceneFrameResolver
     let shutterInterval: PhysicalShutterInterval
-    let resolvedDevice: ResolvedDevice
-    let resolvedPipeline: ResolvedPhysicalPipelineSnapshot
     let quality: PhysicalQuality
     let screenAmount: Double
     let stageContributions: [PhysicalStageContribution]
@@ -552,11 +587,8 @@ struct PhysicalFrameRequest: @unchecked Sendable {
     init(
         frame: PhysicalFrameSelection,
         timedInputs: PhysicalTimedInputSet,
-        cameraPoseTrack: PhysicalCameraPoseTrack,
-        screenPoseTrack: PhysicalScreenPoseTrack,
+        sceneResolver: PhysicalSceneFrameResolver,
         shutterInterval: PhysicalShutterInterval,
-        resolvedDevice: ResolvedDevice,
-        resolvedPipeline: ResolvedPhysicalPipelineSnapshot,
         quality: PhysicalQuality,
         screenAmount: Double,
         stageContributions: [PhysicalStageContribution],
@@ -574,11 +606,8 @@ struct PhysicalFrameRequest: @unchecked Sendable {
         }
         self.frame = frame
         self.timedInputs = timedInputs
-        self.cameraPoseTrack = cameraPoseTrack
-        self.screenPoseTrack = screenPoseTrack
+        self.sceneResolver = sceneResolver
         self.shutterInterval = shutterInterval
-        self.resolvedDevice = resolvedDevice
-        self.resolvedPipeline = resolvedPipeline
         self.quality = quality
         self.screenAmount = screenAmount
         self.stageContributions = stageContributions

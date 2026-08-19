@@ -168,7 +168,8 @@ import Testing
         source: base.source,
         deviceSignal: base.deviceSignal,
         device: base.device,
-        pipeline: try restored.resolvedPipeline()
+        pipeline: try restored.resolvedPipeline(),
+        authoring: restored
     )
     let result = try await terminalSnapshot(submit(
         fixture: fixture,
@@ -178,7 +179,9 @@ import Testing
         identity: 32
     ))
     #expect(result.state == .complete)
-    #expect(result.frame?.width == 32)
+    // The 36×24 mm gate selects the largest centered 3:2 window inside the
+    // authored 32×18 full sensor. It is a 27×18 crop, never a stretch.
+    #expect(result.frame?.width == 27)
     #expect(result.frame?.height == 18)
 }
 
@@ -327,6 +330,7 @@ private struct PhysicalFixture {
     let deviceSignal: StudioColorMetalFrame
     let device: ResolvedDevice
     let pipeline: PhysicalPipelineResolvedState
+    let authoring: PhysicalPipelineAuthoringState
 }
 
 @MainActor
@@ -378,21 +382,19 @@ private func makePhysicalFixture(
             $0.id == device.defaultCoverGlassPresetID
         }
     )
-    let defaultPipeline = try PhysicalPipelineResolvedState.resolvedDefaults(
+    var authoring = try PhysicalPipelineAuthoringState.seeded(
+        device: device,
         coverGlass: cover
     )
-    var pipelineParameters = defaultPipeline.parameters
-    pipelineParameters.sensor_noise.native_width = UInt32(width)
-    pipelineParameters.sensor_noise.native_height = UInt32(height)
-    let pipeline = PhysicalPipelineResolvedState(
-        parameters: pipelineParameters,
-        coverGlassID: defaultPipeline.coverGlassID
-    )
+    authoring.sensor.nativeWidth = UInt32(width)
+    authoring.sensor.nativeHeight = UInt32(height)
+    let pipeline = try authoring.resolvedPipeline()
     return PhysicalFixture(
         source: source,
         deviceSignal: signal,
         device: try device.resolved(),
-        pipeline: pipeline
+        pipeline: pipeline,
+        authoring: authoring
     )
 }
 
@@ -460,7 +462,9 @@ private func submit(
     let frame = try PhysicalFrameSelection(
         frameIndex: 0,
         timeNumerator: 0,
-        timeDenominator: 24
+        timeDenominator: 24,
+        frameRateNumerator: 24,
+        frameRateDenominator: 1
     )
     let framing = try PhysicalStaticFraming(
         device: effectiveDefinition,
@@ -494,16 +498,38 @@ private func submit(
     }
     let requestedDimensions = try dimensions
         ?? PhysicalDimensions(width: 4, height: 4)
+    var resolverAuthoring = fixture.authoring
+    resolverAuthoring.cameraPose.position = [
+        Double(orchestration.cameraPose.position.x),
+        Double(orchestration.cameraPose.position.y),
+        Double(orchestration.cameraPose.position.z),
+    ]
+    resolverAuthoring.cameraPose.quaternion = [
+        Double(orchestration.cameraPose.rotation.x),
+        Double(orchestration.cameraPose.rotation.y),
+        Double(orchestration.cameraPose.rotation.z),
+        Double(orchestration.cameraPose.rotation.w),
+    ]
+    let resolvedDevice = try effectiveDefinition.resolved()
+    let resolvedPipeline = try fixture.pipeline.resolving(
+        contributions: contributions,
+        focusDistanceMeters: framing.cameraDistanceMeters
+    )
+    let resolver = try RustSceneFrameResolver(
+        revision: identity,
+        frameRate: try ExactFrameRate(numerator: 24, denominator: 1),
+        base: resolverAuthoring,
+        resolvedDevice: resolvedDevice,
+        resolvedPipeline: resolvedPipeline,
+        trackingCamera: nil,
+        trackingMetersPerSourceUnit: nil
+    )
     return try PhysicalMetalFrameEngine().submit(
         sourceACEScg: fixture.source,
         deviceSignal: fixture.deviceSignal,
         environmentACEScg: nil,
         orchestration: orchestration,
-        resolvedDevice: try effectiveDefinition.resolved(),
-        resolvedPipeline: try fixture.pipeline.resolving(
-            contributions: contributions,
-            focusDistanceMeters: framing.cameraDistanceMeters
-        ),
+        sceneResolver: resolver,
         quality: quality,
         deviceVfxAlphaMode: "device-transparency",
         screenAmount: screenAmount,

@@ -171,7 +171,7 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
 @Test @MainActor func proRes4444RoundtripPreservesFramesMetadataAndAlpha() async throws {
     for alpha in [StudioColorAlphaAssociation.straight, .premultiplied] {
         let result = try await movieRoundtrip(format: .proRes4444, alpha: alpha)
-        #expect(result.detection.proposedInputTransformID == "display-rec709-gamma24-dcm")
+        #expect(result.detection.proposedInputTransformID == "input-rec709")
         #expect(result.detection.hasAlpha)
         #expect(result.detection.alpha == (alpha == .straight ? .straight : .premultiplied))
         #expect(result.exactFrameRate == .fps24)
@@ -220,7 +220,7 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
         let result = try await movieRoundtrip(
             format: .h264High, alpha: .ignore, signalRange: range
         )
-        #expect(result.detection.proposedInputTransformID == "display-rec709-gamma24-dcm")
+        #expect(result.detection.proposedInputTransformID == "input-rec709")
         #expect(!result.detection.hasAlpha)
         #expect(result.detection.matrix == .bt709)
         #expect(result.detection.range == range)
@@ -549,7 +549,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     print("GOLDEN source=\(sourceURL.lastPathComponent) frames=\(sourceInfo.frameCount) fps=\(sourceInfo.frameRate) source_model=\(sourceModel) source_range=\(sourceRange) source_matrix=\(sourceMatrix) input_provenance=\(inputProvenance) output_model=\(outputModel) output_range=\(outputRange) linear_max=\(maximum) linear_rmse=\(rmse) display_max_code=\(displayMaximum) display_rmse_code=\(displayRMSE) sequential_decode_aces_preview_p95_ms=\(playbackP95) output=\(renderedURL.path)")
     #expect(outputInfo.frameCount == sourceInfo.frameCount)
     #expect(abs(outputInfo.frameRate - sourceInfo.frameRate) < 0.01)
-    #expect(outputDetection.proposedInputTransformID == "display-rec709-gamma24-dcm")
+    #expect(outputDetection.proposedInputTransformID == "input-rec709")
     #expect(displayMaximum <= 5)
     #expect(displayRMSE <= 1)
 }

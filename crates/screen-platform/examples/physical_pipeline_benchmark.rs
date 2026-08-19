@@ -120,7 +120,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .expect("valid benchmark close"),
                 shutter_motion: screen_application::ResolvedShutterMotionSnapshot {
                     temporal_samples: 1,
-                    readout: screen_application::SensorReadout::Global,
                     neutral_density_stops: 0.0,
                     noise_seed: 0,
                 },
@@ -128,6 +127,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 computational_capture: screen_sensor::ComputationalCaptureProfile::SINGLE_EXPOSURE,
                 computational_character_strength: 0.0,
                 sensor: screen_sensor::SensorProfile::REFERENCE,
+                sensor_region: screen_sensor::SensorRegion::full(
+                    screen_sensor::SensorProfile::REFERENCE,
+                ),
                 radiometric_calibration:
                     screen_application::CameraRadiometricCalibration::REFERENCE,
                 sensor_enabled: false,

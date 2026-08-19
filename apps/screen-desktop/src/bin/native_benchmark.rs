@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use screen_application::{
     CAPTURE_DEVICE_PRESETS, FrameCaptureRequest, OpticalRequest, PanelTemporalEvaluation,
-    ProceduralTestPattern, RollingDirection, SensorReadout, SpatialOpticalBackend,
+    ProceduralTestPattern, SpatialOpticalBackend,
     capture_and_develop_procedural_region_with_compute_backends,
     capture_and_develop_procedural_region_with_compute_backends_timed,
     evaluate_procedural_spatial_cpu_oracle, prepare_procedural_spatial_plan,
@@ -154,6 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             native_height: DEVICE_PRESETS[0].native_height,
             active_width: DEVICE_PRESETS[0].active_width,
             active_height: DEVICE_PRESETS[0].active_height,
+            corner_radius: DEVICE_PRESETS[0].corner_radius,
             stripe_layout: StripeLayout::Rgb,
             black_matrix_fraction: 0.1,
             eotf_gamma: 2.2,
@@ -186,10 +187,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frame_index: 0,
         duration: RationalTime::new(1, 288)?,
         temporal_samples: 1,
-        readout: SensorReadout::Rolling {
-            duration: RationalTime::new(3, 250)?,
-            direction: RollingDirection::TopToBottom,
-        },
         neutral_density_stops: 0.0,
         noise_seed: 0x5EED,
     };
@@ -236,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iphone_pixels =
         f64::from(iphone.sensor.native_width) * f64::from(iphone.sensor.native_height);
     println!("backend: Metal · {}", metal.device_name());
-    println!("scene: iPhone 16e model · rolling shutter · clean LCD timing");
+    println!("scene: iPhone 16e model · global shutter · clean LCD timing");
     println!("benchmark tile: {TILE_EDGE}x{TILE_EDGE} ({pixels:.0} pixels)");
     println!("cold backend setup: {:.3} s", setup.as_secs_f64());
     println!(
@@ -248,13 +245,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         default_elapsed.as_secs_f64(),
         default_throughput
     );
-    let rolling_rows = usize::from(tile_region.expanded_for_demosaic(sensor).height);
     println!(
-        "static 8 motion samples: {:.3} s · {:.0} pixels/s · {} authored row-samples reused as {} spatial plans",
+        "static 8 motion samples: {:.3} s · {:.0} pixels/s · 8 authored complete-frame samples",
         static_eight_elapsed.as_secs_f64(),
         static_eight_throughput,
-        rolling_rows * usize::from(MOTION_SAMPLES),
-        rolling_rows
     );
     println!(
         "CPU spatial oracle: {:.3} s · {:.0} pixels/s",
@@ -274,7 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         iphone_pixels / metal_spatial_throughput
     );
     println!(
-        "48 MP default end-to-end extrapolation: {:.1} min ({}x{}; rolling, 1 motion sample)",
+        "48 MP default end-to-end extrapolation: {:.1} min ({}x{}; global shutter, 1 motion sample)",
         iphone_pixels / default_throughput / 60.0,
         iphone.sensor.native_width,
         iphone.sensor.native_height

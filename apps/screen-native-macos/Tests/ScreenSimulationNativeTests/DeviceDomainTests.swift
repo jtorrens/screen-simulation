@@ -60,3 +60,12 @@ import StudioColor
     definition.name = "Editado después"
     #expect(resolved.definition.name != definition.name)
 }
+
+@Test func deviceCornerRadiusIsPhysicalAndStrictlyBounded() throws {
+    var device = try #require(try RustDeviceCatalog.builtIns().first)
+    #expect(device.cornerRadiusMeters == 0)
+    device.cornerRadiusMeters = 0.25 * min(device.activeWidthMeters, device.activeHeightMeters)
+    #expect(try device.resolved().definition.cornerRadiusMeters == device.cornerRadiusMeters)
+    device.cornerRadiusMeters = 0.5 * min(device.activeWidthMeters, device.activeHeightMeters) + 0.001
+    #expect(throws: DeviceDomainError.self) { try device.resolved() }
+}

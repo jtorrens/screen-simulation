@@ -166,19 +166,23 @@ pub const RECORDING_OUTPUT_SIGNAL_ARTIFACT_ID: &str = "recording-output-signal-v
 pub const IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID: &str = "iphone-heic-display-p3-srgb-full-v2";
 pub const GENERIC_SRGB_RECORDING_OUTPUT_TRANSFORM_ID: &str = "generic-srgb-recording-full-v1";
 pub const GENERIC_REC709_RECORDING_OUTPUT_TRANSFORM_ID: &str = "generic-rec709-recording-full-v1";
+pub const GENERIC_REC2100_PQ_RECORDING_OUTPUT_TRANSFORM_ID: &str =
+    "generic-rec2100-pq-recording-full-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordingOutputTransform {
     IphoneHeicDisplayP3SrgbFull,
     GenericSrgbFull,
     GenericRec709Full,
+    GenericRec2100PqFull,
 }
 
 impl RecordingOutputTransform {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::IphoneHeicDisplayP3SrgbFull,
         Self::GenericSrgbFull,
         Self::GenericRec709Full,
+        Self::GenericRec2100PqFull,
     ];
 
     pub const fn stable_id(self) -> &'static str {
@@ -186,6 +190,7 @@ impl RecordingOutputTransform {
             Self::IphoneHeicDisplayP3SrgbFull => IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
             Self::GenericSrgbFull => GENERIC_SRGB_RECORDING_OUTPUT_TRANSFORM_ID,
             Self::GenericRec709Full => GENERIC_REC709_RECORDING_OUTPUT_TRANSFORM_ID,
+            Self::GenericRec2100PqFull => GENERIC_REC2100_PQ_RECORDING_OUTPUT_TRANSFORM_ID,
         }
     }
 
@@ -212,6 +217,12 @@ impl RecordingOutputTransform {
             Self::GenericRec709Full => EncodedColorMetadata {
                 primaries: Some(ColorPrimaries::Bt709),
                 transfer: Some(TransferCharacteristic::Bt709),
+                matrix: Some(MatrixCoefficients::Rgb),
+                range: Some(SignalRange::Full),
+            },
+            Self::GenericRec2100PqFull => EncodedColorMetadata {
+                primaries: Some(ColorPrimaries::Bt2020),
+                transfer: Some(TransferCharacteristic::Pq),
                 matrix: Some(MatrixCoefficients::Rgb),
                 range: Some(SignalRange::Full),
             },
@@ -702,6 +713,12 @@ impl ColorEngine {
                 "ACES 2.0 - SDR 100 nits (Rec.709)",
                 TransformDirection::Forward,
             ),
+            RecordingOutputTransform::GenericRec2100PqFull => self.config.processor_display(
+                ACESCG_COLOR_SPACE,
+                "Rec.2100-PQ - Display",
+                "ACES 2.0 - HDR 1000 nits (Rec.2020)",
+                TransformDirection::Forward,
+            ),
         }
         .and_then(|processor| processor.default_cpu_processor())
         .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
@@ -732,6 +749,12 @@ impl ColorEngine {
                 ACESCG_COLOR_SPACE,
                 "Rec.1886 Rec.709 - Display",
                 "ACES 2.0 - SDR 100 nits (Rec.709)",
+                TransformDirection::Inverse,
+            ),
+            RecordingOutputTransform::GenericRec2100PqFull => self.config.processor_display(
+                ACESCG_COLOR_SPACE,
+                "Rec.2100-PQ - Display",
+                "ACES 2.0 - HDR 1000 nits (Rec.2020)",
                 TransformDirection::Inverse,
             ),
         }

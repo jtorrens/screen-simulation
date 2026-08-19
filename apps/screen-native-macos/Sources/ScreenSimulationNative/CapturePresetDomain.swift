@@ -150,10 +150,6 @@ struct CapturePresetDefinition: Identifiable {
         state.shutterMotion.openOffsetDenominator = 1_000_000_000
         state.shutterMotion.closeOffsetNumerator = halfNanoseconds
         state.shutterMotion.closeOffsetDenominator = 1_000_000_000
-        state.shutterMotion.readoutDurationNumerator = Int64(
-            (Double(parameters.default_readout_duration_milliseconds) * 1_000_000).rounded()
-        )
-        state.shutterMotion.readoutDurationDenominator = 1_000_000_000
     }
 
     private static func text(_ view: ScreenUTF8View) -> String {

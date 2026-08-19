@@ -279,9 +279,7 @@ private func temporaryDirectory() throws -> URL {
     )
     #expect(package.destination.deletingLastPathComponent().path == root.path)
     #expect(package.destination.lastPathComponent == "Shot010_FusionScene")
-    #expect(package.generatedRelativePaths.contains(
-        "metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio"
-    ))
+    #expect(!package.generatedRelativePaths.contains(where: { $0.hasSuffix(".ocio") }))
     #expect(package.generatedRelativePaths.contains("fusion/Shot010.comp"))
     #expect(package.generatedRelativePaths.allSatisfy { !$0.hasPrefix("/") })
     #expect(package.generatedRelativePaths.allSatisfy { !$0.contains("STMap") })
@@ -332,6 +330,9 @@ private func temporaryDirectory() throws -> URL {
             )
         )
         #expect(comp.contains("Comp:/../media/Shot010.00000001.exr"))
+        #expect(comp.contains("FormatID = \"OpenEXRFormat\""))
+        #expect(comp.contains("LengthSetManually = true"))
+        #expect(!comp.contains("FormatID = \"OpenEXRFormat\",\n                StartFrame = 1,\n                Multiframe = true"))
         #expect(comp.hasPrefix("Composition {"))
         #expect(comp.contains("FrameFormat = {"))
         #expect(comp.contains("Width = 1920"))
@@ -356,6 +357,12 @@ private func temporaryDirectory() throws -> URL {
         #expect(comp.contains("CenterBias = Input { Value = -1.0 }"))
         #expect(comp.contains("RendererType = Input { Value = FuID { \"RendererOpenGL\" } }"))
         #expect(comp.contains("[\"RendererOpenGL.EnableAccumDepthOfField\"] = Input { Value = \(dof == .fusion ? 1 : 0) }"))
+        let rgbRenderer = try! #require(comp.range(of: "RenderDeviceRGB = Renderer3D"))
+        let matteRenderer = try! #require(comp.range(of: "RenderDeviceMatte = Renderer3D"))
+        let rgbBlock = String(comp[rgbRenderer.lowerBound ..< matteRenderer.lowerBound])
+        let matteBlock = String(comp[matteRenderer.lowerBound...])
+        #expect(rgbBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
+        #expect(!matteBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"]"))
         #expect(comp.contains("CameraApertureRadius = BezierSpline"))
         #expect(comp.contains("DeviceRGBOpaque = Custom"))
         #expect(comp.contains("DeviceMatteOpaque = Custom"))
@@ -378,7 +385,7 @@ private func temporaryDirectory() throws -> URL {
     }
 }
 
-@Test @MainActor func referencePlateUsesNativeOCIOAndCenteredDeliveryPlacement() throws {
+@Test @MainActor func referencePlateUsesFusionColorSpaceTransformAndCenteredDeliveryPlacement() throws {
     let configuration = fusionConfiguration()
     let root = try temporaryDirectory()
     let request = FusionScenePackageRequest(
@@ -391,7 +398,7 @@ private func temporaryDirectory() throws -> URL {
         motionBlur: .init(bakedInEXR: false, enabledInFusion: true, shutterAngleDegrees: 180, shutterPhaseDegrees: 0),
         referencePlate: .init(
             sourceURL: URL(fileURLWithPath: "/reference.mov"),
-            inputTransformID: "arri-logc4", ocioSourceColorSpace: "ARRI LogC4",
+            inputTransformID: "input-rec709", colorTransform: .rec709GammaToACESAP1,
             placementID: "fill-crop", width: 2048, height: 858
         )
     )
@@ -399,34 +406,30 @@ private func temporaryDirectory() throws -> URL {
         request: request,
         prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, rgba: [])
     )
-    #expect(comp.contains("ReferenceToACEScg = OCIOColorSpace"))
+    #expect(comp.contains("ReferenceToACEScg = ColorSpaceTransform"))
     #expect(comp.contains("Filename = \"/reference.mov\""))
+    #expect(comp.contains("FormatID = \"QuickTimeMovies\""))
+    #expect(comp.contains("Length = 2"))
+    #expect(comp.contains("Multiframe = true"))
+    #expect(comp.contains("TrimOut = 1"))
     #expect(!comp.contains("Comp:/../reference/"))
-    #expect(comp.contains("studio-fusion-ocio-v2.4.ocio"))
-    #expect(!comp.contains(StudioColorEngine.configurationFileName))
-    #expect(comp.contains("SourceSpace = Input { Value = FuID { \"ARRI LogC4\" } }"))
-    #expect(comp.contains("OutputSpace = Input { Value = FuID { \"ACEScg\" } }"))
+    #expect(!comp.contains("OCIO"))
+    #expect(comp.contains("InputGamma = Input { Value = FuID { \"REC709_GAMMA\" } }"))
+    #expect(comp.contains("OutputColorSpace = Input { Value = FuID { \"ACES_AP1_COLORSPACE\" } }"))
+    #expect(comp.contains("ToneMappingMethod = Input { Value = FuID { \"TM_NONE\" } }"))
+    #expect(comp.contains("UseHDRStandardConversions = Input { Value = 1 }"))
+    #expect(comp.contains("IsRec2390ScalingEnabled = Input { Value = 1 }"))
+    #expect(!comp.contains("PassThrough = true"))
+    #expect(comp.contains("Enabled = true"))
     #expect(comp.contains("ReferenceResize = BetterResize"))
     #expect(comp.contains("PlateInput = Merge"))
     #expect(comp.contains("Placement = \"fill-crop\""))
 }
 
-@Test func fusionOCIOConfigurationIsExplicitOCIO24Subset() throws {
-    let configuration = try String(
-        contentsOf: StudioColorEngine.bundledFusionConfigurationURL(), encoding: .utf8
-    )
-    #expect(configuration.contains("ocio_profile_version: 2"))
-    #expect(configuration.contains("name: Gamma 2.4 Encoded Rec.709"))
-    #expect(configuration.contains("name: ARRI LogC4"))
-    #expect(configuration.contains("name: ACEScg"))
-    #expect(!configuration.contains("ACES-OUTPUT"))
-    #expect(!configuration.contains("interop_id:"))
-    #expect(!configuration.contains("amf_transform_ids:"))
-}
-
-@Test func fusionPackageRejectsAnUnrepresentedReferenceIDT() throws {
+@Test @MainActor func unrepresentedReferenceTransformDisablesTheFusionNodeWithoutBlocking() throws {
     let configuration = fusionConfiguration()
     let root = try temporaryDirectory()
+    let inputTransformID = "display-rec709-aces2-sdr"
     let request = FusionScenePackageRequest(
         configuration: configuration,
         outputPlan: try RenderOutputPlan.prepare(configuration: configuration, selectedDestination: root),
@@ -437,13 +440,20 @@ private func temporaryDirectory() throws -> URL {
         motionBlur: .init(bakedInEXR: false, enabledInFusion: true, shutterAngleDegrees: 180, shutterPhaseDegrees: 0),
         referencePlate: .init(
             sourceURL: URL(fileURLWithPath: "/reference.mov"),
-            inputTransformID: "canon-log3", ocioSourceColorSpace: "CanonLog3 CinemaGamut D55",
-            placementID: "fit", width: 1920, height: 1080
+            inputTransformID: inputTransformID,
+            colorTransform: .resolve(inputTransformID: inputTransformID),
+            placementID: "fill-crop", width: 2048, height: 858
         )
     )
-    #expect(throws: FusionScenePackageError.unsupportedReferenceInputTransform) {
-        try request.validate()
-    }
+    let comp = FusionScenePackageWriter.fusionComp(
+        request: request,
+        prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, rgba: [])
+    )
+    #expect(comp.contains("ReferenceToACEScg = ColorSpaceTransform"))
+    #expect(comp.contains("PassThrough = true"))
+    #expect(comp.contains("Enabled = false"))
+    #expect(comp.contains("InputTransformID = \"\(inputTransformID)\""))
+    #expect(!comp.contains("OCIO"))
 }
 
 @Test @MainActor func fusionOutputCannotFallThroughTheStandardSourceFrameRenderer() async throws {
@@ -530,11 +540,10 @@ private func temporaryDirectory() throws -> URL {
     #expect(!FileManager.default.fileExists(
         atPath: plan.destination.appendingPathComponent("media/Shot010_STMap.00000002.exr").path
     ))
-    #expect(FileManager.default.fileExists(
-        atPath: plan.destination.appendingPathComponent(
-            "metadata/\(StudioColorEngine.fusionConfigurationFileName).ocio"
-        ).path
-    ))
+    #expect(try FileManager.default.contentsOfDirectory(
+        at: plan.destination.appendingPathComponent("metadata"),
+        includingPropertiesForKeys: nil
+    ).contains(where: { $0.pathExtension == "ocio" }) == false)
     let metadataURL = plan.destination.appendingPathComponent(
         "metadata/Shot010_FusionScene.json"
     )

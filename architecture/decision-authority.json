@@ -1,0 +1,169 @@
+{
+  "schema": "screen_simulation_decision_authority",
+  "version": 1,
+  "decisions": [
+    {
+      "id": "architecture.decision-coherence",
+      "scope": "repository decision process",
+      "owner": {
+        "path": "AGENTS.md",
+        "anchor": "Decision coherence gate"
+      },
+      "enforcement": [
+        "scripts/check_decision_authority.py",
+        "scripts/test_decision_authority.py"
+      ]
+    },
+    {
+      "id": "scene.profile-resolution",
+      "scope": "workstation Saved Scene profile defaults, overrides and Render Queue attempt materialization",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "crates/screen-application/src/test_authoring.rs",
+        "crates/screen-native-bridge/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/GlobalLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/GlobalSimulationProfiles.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/GlobalLibraryTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalPipelineAuthoringTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift"
+      ]
+    },
+    {
+      "id": "scene.external-resources",
+      "scope": "workstation Saved Scene external file dependencies",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift"
+      ]
+    },
+    {
+      "id": "scene.imported-3d-ownership",
+      "scope": "imported camera, point-cloud and mesh authoring",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionTrackingScene.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionTrackingSceneTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "scene.resolved-frame-owner",
+      "scope": "exact-time scene materialization for every render consumer",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "crates/screen-application/src/scene_resolution.rs",
+        "crates/screen-application/src/render_preparation.rs",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "time.terminal-extrapolation",
+      "scope": "continuous and discrete tracks outside authored range",
+      "owner": {
+        "path": "Docs/architecture/camera_time_and_space.md",
+        "anchor": "Time"
+      },
+      "enforcement": [
+        "crates/screen-geometry/src/lib.rs"
+      ]
+    },
+    {
+      "id": "sensor.global-shutter",
+      "scope": "sensor temporal exposure and motion sampling",
+      "owner": {
+        "path": "Docs/architecture/sensor_capture.md",
+        "anchor": "Current implementation boundary"
+      },
+      "enforcement": [
+        "crates/screen-application/src/render_preparation.rs",
+        "crates/screen-sensor/src/lib.rs"
+      ]
+    },
+    {
+      "id": "native.compute-boundary",
+      "scope": "replaceable native compute and CPU reference ownership",
+      "owner": {
+        "path": "Docs/architecture/native_compute.md",
+        "anchor": "Current boundary"
+      },
+      "enforcement": [
+        "crates/screen-platform/src/physical_pipeline_metal.rs",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "media.unlabeled-import-defaults",
+      "scope": "initial Source and Reference interpretation when decodable media metadata is incomplete",
+      "owner": {
+        "path": "Docs/architecture/color_and_panel.md",
+        "anchor": "Initial import defaults"
+      },
+      "enforcement": [
+        "Packages/StudioMedia/Sources/StudioMedia/InputInterpretation.swift",
+        "Packages/StudioMedia/Tests/StudioMediaTests/ContractParityTests.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+      ]
+    },
+    {
+      "id": "output.fusion-scene-package",
+      "scope": "Fusion Scene Package generation and composition contract",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionScenePackageTests.swift"
+      ]
+    },
+    {
+      "id": "recording.independent-frame-codecs",
+      "scope": "camera Recording profile catalog and real per-frame encode/decode",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "crates/screen-recording/src/lib.rs",
+        "crates/screen-application/src/recording.rs",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/AVFoundationRecordingAdapter.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RecordingPhaseExecutor.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/AVFoundationRecordingAdapterTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/ImageIOHeicRecordingAdapterTests.swift"
+      ]
+    },
+    {
+      "id": "device.physical-corner-radius",
+      "scope": "uniform physical Device outline across evaluation and Setup",
+      "owner": {
+        "path": "Docs/architecture/color_and_panel.md",
+        "anchor": "Physical Device outline"
+      },
+      "enforcement": [
+        "crates/screen-panel/src/lib.rs",
+        "crates/screen-application/src/lib.rs",
+        "crates/screen-platform/shaders/physical_pipeline.metal",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift"
+      ]
+    }
+  ]
+}

@@ -20,7 +20,7 @@ use screen_application::{
     ApplicationError, CAPTURE_DEVICE_PRESETS, DeviceSignalRaster, DiagnosticView,
     FrameCaptureRequest, LensAssociationPolicy, OpticalRequest, PHOTOMETRIC_DEVICE_CODES,
     PanelTemporalEvaluation, PreparedDeviceSignalRaster, PreparedRaster, PreviewPixel,
-    ProceduralTestPattern, RasterPlacement, SensorReadout, SimulationRequest,
+    ProceduralTestPattern, RasterPlacement, SimulationRequest,
     capture_and_develop_device_signal_region_sequence_with_compute_backends,
     capture_and_develop_device_signal_region_with_compute_backends,
     capture_and_develop_procedural_region_with_compute_backends, capture_device_preset,
@@ -90,8 +90,6 @@ struct RenderControls {
     capture_exposure_index: f32,
     shutter_angle_degrees: f32,
     temporal_samples: f32,
-    sensor_readout_index: i32,
-    readout_duration_ms: f32,
     sensor_noise_seed: f32,
     neutral_density_stops: f32,
     output_transform_index: i32,
@@ -151,8 +149,6 @@ fn render_controls(window: &MainWindow) -> RenderControls {
         capture_exposure_index: window.get_capture_exposure_index(),
         shutter_angle_degrees: window.get_shutter_angle_degrees(),
         temporal_samples: window.get_temporal_samples(),
-        sensor_readout_index: window.get_sensor_readout_index(),
-        readout_duration_ms: window.get_readout_duration_ms(),
         sensor_noise_seed: window.get_sensor_noise_seed(),
         neutral_density_stops: window.get_neutral_density_stops(),
         output_transform_index: window.get_output_transform_index(),
@@ -778,6 +774,7 @@ fn simulation_request(
                 native_height,
                 active_width,
                 active_height,
+                corner_radius: Meters(0.0),
                 stripe_layout: if window.get_stripe_index() == 1 {
                     StripeLayout::Bgr
                 } else {
@@ -1004,8 +1001,6 @@ fn apply_capture_preset(
     window.set_capture_exposure_index(preset.reference_exposure_index);
     window.set_shutter_angle_degrees(preset.default_shutter_angle_degrees);
     window.set_temporal_samples(f32::from(preset.default_temporal_samples));
-    window.set_sensor_readout_index(1);
-    window.set_readout_duration_ms(preset.default_readout_duration_milliseconds);
     window.set_neutral_density_stops(0.0);
     window.set_capture_fixed_optics(preset.lens_association_policy == LensAssociationPolicy::Fixed);
     apply_lens_preset(window, state, preset.default_lens_preset_id)?;
@@ -1798,7 +1793,6 @@ fn render_camera_result(
         frame_index: i64::from(window.get_frame_number()),
         duration: settings.shutter_duration,
         temporal_samples: settings.temporal_samples,
-        readout: settings.readout,
         neutral_density_stops: settings.neutral_density_stops,
         noise_seed: settings.noise_seed,
     };
@@ -1928,7 +1922,6 @@ struct CapturePipelineSettings {
     frame_rate: FrameRate,
     shutter_duration: RationalTime,
     temporal_samples: u16,
-    readout: SensorReadout,
     noise_seed: u64,
     neutral_density_stops: f32,
     development: CameraDevelopment,
@@ -1955,26 +1948,6 @@ fn capture_pipeline_settings(
         return Err("motion samples must be finite and in [1, 64]".into());
     }
     let temporal_samples = temporal_samples_value.round() as u16;
-    let readout = match window.get_sensor_readout_index() {
-        0 => SensorReadout::Global,
-        direction @ (1 | 2) => {
-            let milliseconds = window.get_readout_duration_ms();
-            if !milliseconds.is_finite() || !(0.1..=100.0).contains(&milliseconds) {
-                return Err("sensor readout must be finite and in [0.1, 100] ms".into());
-            }
-            let duration = RationalTime::new((milliseconds * 1_000.0).round() as i64, 1_000_000)
-                .map_err(|error| error.to_string())?;
-            SensorReadout::Rolling {
-                duration,
-                direction: if direction == 1 {
-                    screen_application::RollingDirection::TopToBottom
-                } else {
-                    screen_application::RollingDirection::BottomToTop
-                },
-            }
-        }
-        _ => return Err("select an explicit sensor readout mode".into()),
-    };
     let noise_seed_value = window.get_sensor_noise_seed();
     if !noise_seed_value.is_finite() || !(0.0..=16_777_215.0).contains(&noise_seed_value) {
         return Err("sensor noise seed must be finite and in [0, 16777215]".into());
@@ -2012,7 +1985,6 @@ fn capture_pipeline_settings(
         frame_rate,
         shutter_duration,
         temporal_samples,
-        readout,
         noise_seed,
         neutral_density_stops,
         development,
@@ -3458,7 +3430,6 @@ mod interaction_tests {
             frame_rate: FrameRate::new(24, 1).unwrap(),
             shutter_duration: RationalTime::new(1, 48).unwrap(),
             temporal_samples: 8,
-            readout: SensorReadout::Global,
             noise_seed: 42,
             neutral_density_stops: 0.0,
             development: CameraDevelopment {

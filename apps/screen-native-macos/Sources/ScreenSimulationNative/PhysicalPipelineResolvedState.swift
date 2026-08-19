@@ -47,10 +47,6 @@ struct PhysicalPipelineResolvedState {
         var shutter = ScreenShutterMotionParametersV2()
         shutter.abi_version = version
         shutter.temporal_samples = 1
-        shutter.readout_kind = 0
-        shutter.readout_duration_numerator = 1
-        shutter.readout_duration_denominator = 48
-        shutter.readout_direction = 0
         shutter.neutral_density_stops = 0
         shutter.noise_seed = 7
 

@@ -17,8 +17,8 @@ use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
 use screen_recording::{
     EncoderExecutionPolicy, GENERIC_H264_HIGH_VIDEO_PROFILE_ID, GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID,
     GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, GENERIC_JPEG_PHOTO_PROFILE_ID,
-    GENERIC_PRORES_422_HQ_PROFILE_ID, IPHONE_HEIC_PHOTO_PROFILE_ID, RecordingMedium,
-    bundled_profiles,
+    GENERIC_PRORES_422_HQ_PROFILE_ID, GENERIC_PRORES_4444_PROFILE_ID, IPHONE_HEIC_PHOTO_PROFILE_ID,
+    RecordingMedium, bundled_profiles,
 };
 
 pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 34;
@@ -161,7 +161,7 @@ pub const DEVICE_VFX_ALPHA_MODES: [TestChoiceOption; 2] = [
     },
 ];
 
-fn focal_length_bounds(_lens: screen_geometry::LensPreset) -> (f32, f32) {
+fn focal_length_bounds() -> (f32, f32) {
     (
         // A selected lens preset supplies optical character, not a hard
         // capture-camera focal restriction. Imported tracking focal length is
@@ -171,7 +171,7 @@ fn focal_length_bounds(_lens: screen_geometry::LensPreset) -> (f32, f32) {
     )
 }
 
-fn recording_profile_options(capture: CaptureDevicePreset) -> Vec<TestChoiceOption> {
+fn recording_profile_options(capture: &TestCaptureAuthoringProfile<'_>) -> Vec<TestChoiceOption> {
     bundled_profiles()
         .into_iter()
         .map(|profile| {
@@ -185,6 +185,7 @@ fn recording_profile_options(capture: CaptureDevicePreset) -> Vec<TestChoiceOpti
                 (GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID, true) => "Habitual · HEVC Main 10 · vídeo",
                 (GENERIC_H264_HIGH_VIDEO_PROFILE_ID, true) => "Habitual · H.264 High · vídeo",
                 (GENERIC_PRORES_422_HQ_PROFILE_ID, true) => "Habitual · ProRes 422 HQ · vídeo",
+                (GENERIC_PRORES_4444_PROFILE_ID, true) => "Habitual · ProRes 4444 · vídeo",
                 (IPHONE_HEIC_PHOTO_PROFILE_ID, false) => "Disponible · HEIC · foto",
                 (GENERIC_JPEG_PHOTO_PROFILE_ID, false) => "Disponible · JPEG · foto",
                 (GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID, false) => "Disponible · HEVC Main · vídeo",
@@ -193,6 +194,7 @@ fn recording_profile_options(capture: CaptureDevicePreset) -> Vec<TestChoiceOpti
                 }
                 (GENERIC_H264_HIGH_VIDEO_PROFILE_ID, false) => "Disponible · H.264 High · vídeo",
                 (GENERIC_PRORES_422_HQ_PROFILE_ID, false) => "Disponible · ProRes 422 HQ · vídeo",
+                (GENERIC_PRORES_4444_PROFILE_ID, false) => "Disponible · ProRes 4444 · vídeo",
                 _ => "Disponible · formato de grabación",
             };
             TestChoiceOption {
@@ -209,10 +211,10 @@ pub fn recording_output_transform_for_profile(
     match profile_id {
         IPHONE_HEIC_PHOTO_PROFILE_ID => Ok(RecordingOutputTransform::IphoneHeicDisplayP3SrgbFull),
         GENERIC_JPEG_PHOTO_PROFILE_ID => Ok(RecordingOutputTransform::GenericSrgbFull),
-        GENERIC_HEVC_MAIN_VIDEO_PROFILE_ID
-        | GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID
-        | GENERIC_H264_HIGH_VIDEO_PROFILE_ID
-        | GENERIC_PRORES_422_HQ_PROFILE_ID => Ok(RecordingOutputTransform::GenericRec709Full),
+        GENERIC_H264_HIGH_VIDEO_PROFILE_ID => Ok(RecordingOutputTransform::GenericRec709Full),
+        GENERIC_HEVC_MAIN10_VIDEO_PROFILE_ID
+        | GENERIC_PRORES_422_HQ_PROFILE_ID
+        | GENERIC_PRORES_4444_PROFILE_ID => Ok(RecordingOutputTransform::GenericRec2100PqFull),
         _ => Err(TestAuthoringError::InvalidRecording),
     }
 }
@@ -286,7 +288,8 @@ const DELIVERY_PRESETS: [TestChoiceOption; 8] = [
     },
 ];
 
-fn materialize_delivery_preset(
+fn materialize_delivery_preset<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
     selection: &mut TestAuthoringSelection<'_>,
     preset_id: &str,
 ) -> Result<(), TestAuthoringError> {
@@ -303,7 +306,7 @@ fn materialize_delivery_preset(
         "vertical-uhd" => (2_160.0, 3_840.0, "fit"),
         "square-2160" => (2_160.0, 2_160.0, "fit"),
         "camera-native" => {
-            let capture = capture(selection.capture_preset_id)?;
+            let capture = capture(profiles, selection.capture_preset_id)?;
             let raster = capture
                 .raster_modes
                 .iter()
@@ -485,15 +488,15 @@ pub struct TestAuthoringSelection<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ResolvedTestAuthoringSelection {
-    pub input_transform_id: &'static str,
-    pub output_signal_id: &'static str,
-    pub device_id: &'static str,
-    pub color_mode_id: &'static str,
+pub struct ResolvedTestAuthoringSelection<'a> {
+    pub input_transform_id: &'a str,
+    pub output_signal_id: &'a str,
+    pub device_id: &'a str,
+    pub color_mode_id: &'a str,
     pub device_eotf_gamma: f32,
     pub white_luminance_nits: f32,
-    pub placement_id: &'static str,
-    pub preview_quality_id: &'static str,
+    pub placement_id: &'a str,
+    pub preview_quality_id: &'a str,
     pub frame_rate: FrameRate,
     pub source_adjustment: SceneLinearAdjustment,
     pub subpixel_geometry_amount: f32,
@@ -502,9 +505,9 @@ pub struct ResolvedTestAuthoringSelection {
     pub moire_filter_strength: f32,
     pub panel_uniformity_amount: f32,
     pub panel_light_spread_amount: f32,
-    pub capture_preset_id: &'static str,
-    pub capture_raster_mode_id: &'static str,
-    pub geometry_mode_id: &'static str,
+    pub capture_preset_id: &'a str,
+    pub capture_raster_mode_id: &'a str,
+    pub geometry_mode_id: &'a str,
     pub camera_distance_meters: f32,
     pub camera_orbit_x_degrees: f32,
     pub camera_orbit_y_degrees: f32,
@@ -520,7 +523,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub screen_yaw_degrees: f32,
     pub screen_rotation_x_degrees: f32,
     pub screen_rotation_z_degrees: f32,
-    pub cover_glass_preset_id: &'static str,
+    pub cover_glass_preset_id: &'a str,
     pub cover_glass_amount: f32,
     pub cover_ag_microtexture_amount: f32,
     pub cover_thickness_millimeters: f32,
@@ -532,7 +535,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub cover_ag_rms_slope: f32,
     pub cover_ag_correlation_micrometers: f32,
     pub cover_ag_anisotropy: f32,
-    pub environment_source_id: &'static str,
+    pub environment_source_id: &'a str,
     pub environment_amount: f32,
     pub environment_rotation_x_degrees: f32,
     pub environment_rotation_y_degrees: f32,
@@ -541,7 +544,7 @@ pub struct ResolvedTestAuthoringSelection {
     pub environment_saturation: f32,
     pub environment_temperature_kelvin: f32,
     pub environment_tint: f32,
-    pub environment_projection_id: &'static str,
+    pub environment_projection_id: &'a str,
     pub environment_sphere_center_x_meters: f32,
     pub environment_sphere_center_y_meters: f32,
     pub environment_sphere_center_z_meters: f32,
@@ -551,9 +554,9 @@ pub struct ResolvedTestAuthoringSelection {
     pub cover_glow_radius_millimeters: f32,
     pub cover_glow_threshold_relative_white: f32,
     pub cover_glow_exterior_intensity: f32,
-    pub lens_preset_id: &'static str,
+    pub lens_preset_id: &'a str,
     pub focal_length_millimeters: f32,
-    pub lens_evaluation_model_id: &'static str,
+    pub lens_evaluation_model_id: &'a str,
     pub lens_amount: f32,
     pub autofocus_enabled: bool,
     pub autofocus_target_u: f32,
@@ -570,14 +573,14 @@ pub struct ResolvedTestAuthoringSelection {
     pub sensor_bloom_overflow_transfer_fraction: f32,
     pub sensor_noise_amount: f32,
     pub camera_rendering_intent: CameraRenderingIntent,
-    pub device_vfx_alpha_mode_id: &'static str,
-    pub delivery_preset_id: &'static str,
+    pub device_vfx_alpha_mode_id: &'a str,
+    pub delivery_preset_id: &'a str,
     pub delivery_width: u32,
     pub delivery_height: u32,
-    pub delivery_placement_id: &'static str,
-    pub delivery_background_id: &'static str,
-    pub recording_output_transform_id: &'static str,
-    pub recording_profile_id: &'static str,
+    pub delivery_placement_id: &'a str,
+    pub delivery_background_id: &'a str,
+    pub recording_output_transform_id: &'a str,
+    pub recording_profile_id: &'a str,
     pub recording_character: f32,
 }
 
@@ -585,6 +588,12 @@ pub struct ResolvedTestAuthoringSelection {
 pub struct TestChoiceOption {
     pub id: &'static str,
     pub label: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestOwnedChoiceOption {
+    pub id: String,
+    pub label: String,
 }
 
 fn lens_evaluation_model_id(model: crate::LensEvaluationModel) -> &'static str {
@@ -599,9 +608,9 @@ pub enum TestControlRequirement {
     Choice {
         id: &'static str,
         label: &'static str,
-        options: Vec<TestChoiceOption>,
-        selected_id: &'static str,
-        reset_id: &'static str,
+        options: Vec<TestOwnedChoiceOption>,
+        selected_id: String,
+        reset_id: String,
     },
     Scalar {
         id: &'static str,
@@ -630,15 +639,37 @@ fn choice_control(
     id: &'static str,
     label: &'static str,
     options: Vec<TestChoiceOption>,
-    selected_id: &'static str,
-    reset_id: &'static str,
+    selected_id: &str,
+    reset_id: &str,
+) -> TestControlRequirement {
+    TestControlRequirement::Choice {
+        id,
+        label,
+        options: options
+            .into_iter()
+            .map(|option| TestOwnedChoiceOption {
+                id: option.id.to_owned(),
+                label: option.label.to_owned(),
+            })
+            .collect(),
+        selected_id: selected_id.to_owned(),
+        reset_id: reset_id.to_owned(),
+    }
+}
+
+fn owned_choice_control(
+    id: &'static str,
+    label: &'static str,
+    options: Vec<TestOwnedChoiceOption>,
+    selected_id: &str,
+    reset_id: &str,
 ) -> TestControlRequirement {
     TestControlRequirement::Choice {
         id,
         label,
         options,
-        selected_id,
-        reset_id,
+        selected_id: selected_id.to_owned(),
+        reset_id: reset_id.to_owned(),
     }
 }
 
@@ -881,7 +912,6 @@ pub struct TestPageDescriptor {
     /// control definitions or UI-authored physical semantics.
     pub quick_control_ids: Vec<&'static str>,
     pub featured_phase_id: &'static str,
-    pub selection: ResolvedTestAuthoringSelection,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -987,20 +1017,287 @@ impl core::fmt::Display for TestAuthoringError {
     }
 }
 
-fn preset(id: &str) -> Result<DevicePreset, TestAuthoringError> {
-    DEVICE_PRESETS
-        .iter()
-        .copied()
-        .find(|candidate| candidate.id == id)
-        .ok_or(TestAuthoringError::UnknownDevice)
+#[derive(Clone, Debug, PartialEq)]
+pub struct TestDeviceAuthoringProfile<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub color_mode_ids: Vec<&'a str>,
+    pub default_color_mode_id: &'a str,
+    pub reference_white_nits: f32,
+    pub minimum_white_nits: f32,
+    pub maximum_white_nits: f32,
+    pub white_step_nits: f32,
+    pub uniformity_character_strength: f32,
+    pub light_spread_character_strength: f32,
+    pub default_cover_glass_profile_id: &'a str,
 }
 
-fn capture(id: &str) -> Result<CaptureDevicePreset, TestAuthoringError> {
-    capture_device_preset(id).ok_or(TestAuthoringError::UnknownCapturePreset)
+#[derive(Clone, Debug, PartialEq)]
+pub struct TestCoverAuthoringProfile<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub profile: screen_cover::CoverGlassProfile,
+    pub character_strength: f32,
+    pub anti_glare_character_strength: f32,
+    pub thickness_millimeters: f32,
+    pub refractive_index: f32,
+    pub anti_reflective_efficiency: f32,
+    pub absorption_rgb: [f32; 3],
+    pub roughness: f32,
+    pub haze: f32,
+    pub anti_glare_rms_slope: f32,
+    pub anti_glare_correlation_micrometers: f32,
+    pub anti_glare_anisotropy: f32,
+    pub glow_character_strength: f32,
+    pub glow_intensity: f32,
+    pub glow_radius_millimeters: f32,
+    pub glow_threshold_relative_white: f32,
 }
 
-fn lens(id: &str) -> Result<LensPreset, TestAuthoringError> {
-    lens_preset(id).ok_or(TestAuthoringError::UnknownLensPreset)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TestCaptureRasterMode<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TestCaptureAuthoringProfile<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub raster_modes: Vec<TestCaptureRasterMode<'a>>,
+    pub default_raster_mode_id: &'a str,
+    pub default_recording_profile_id: &'a str,
+    pub recommended_recording_profile_ids: Vec<&'a str>,
+    pub default_lens_evaluation_model: crate::LensEvaluationModel,
+    pub computational_capture: crate::ComputationalCaptureProfile,
+    pub rendering_intent: CameraRenderingIntent,
+    pub sensor_bloom: screen_sensor::SensorBloomProfile,
+    pub default_lens_preset_id: &'a str,
+    pub compatible_lens_preset_ids: Vec<&'a str>,
+    pub f_stop: f32,
+    pub default_shutter_angle_degrees: f32,
+}
+
+impl TestCaptureAuthoringProfile<'_> {
+    fn raster_mode(&self, id: &str) -> Option<TestCaptureRasterMode<'_>> {
+        self.raster_modes.iter().copied().find(|mode| mode.id == id)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TestLensAuthoringProfile<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub nominal_focal_length_millimeters: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TestEnvironmentAuthoringProfile<'a> {
+    pub id: &'a str,
+    pub label: &'a str,
+    pub environment: screen_cover::ProceduralEnvironment,
+}
+
+pub trait TestAuthoringProfileSource {
+    fn device<'a>(&'a self, id: &str) -> Option<TestDeviceAuthoringProfile<'a>>;
+    fn cover<'a>(&'a self, id: &str) -> Option<TestCoverAuthoringProfile<'a>>;
+    fn capture<'a>(&'a self, id: &str) -> Option<TestCaptureAuthoringProfile<'a>>;
+    fn lens<'a>(&'a self, id: &str) -> Option<TestLensAuthoringProfile<'a>>;
+    fn environment<'a>(&'a self, id: &str) -> Option<TestEnvironmentAuthoringProfile<'a>>;
+    fn device_options(&self) -> Vec<TestOwnedChoiceOption>;
+    fn cover_options(&self) -> Vec<TestOwnedChoiceOption>;
+    fn capture_options(&self) -> Vec<TestOwnedChoiceOption>;
+    fn environment_options(&self) -> Vec<TestOwnedChoiceOption>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuiltInTestAuthoringProfiles;
+
+pub static BUILT_IN_TEST_AUTHORING_PROFILES: BuiltInTestAuthoringProfiles =
+    BuiltInTestAuthoringProfiles;
+
+impl TestAuthoringProfileSource for BuiltInTestAuthoringProfiles {
+    fn device<'a>(&'a self, id: &str) -> Option<TestDeviceAuthoringProfile<'a>> {
+        DEVICE_PRESETS
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .map(|device| device_profile(*device))
+    }
+
+    fn cover<'a>(&'a self, id: &str) -> Option<TestCoverAuthoringProfile<'a>> {
+        cover_glass_preset(id).map(cover_profile)
+    }
+
+    fn capture<'a>(&'a self, id: &str) -> Option<TestCaptureAuthoringProfile<'a>> {
+        capture_device_preset(id).map(capture_profile)
+    }
+
+    fn lens<'a>(&'a self, id: &str) -> Option<TestLensAuthoringProfile<'a>> {
+        lens_preset(id).map(lens_profile)
+    }
+
+    fn environment<'a>(&'a self, id: &str) -> Option<TestEnvironmentAuthoringProfile<'a>> {
+        environment_preset(id).map(environment_profile)
+    }
+
+    fn device_options(&self) -> Vec<TestOwnedChoiceOption> {
+        DEVICE_PRESETS
+            .iter()
+            .map(|profile| TestOwnedChoiceOption {
+                id: profile.id.to_owned(),
+                label: profile.label.to_owned(),
+            })
+            .collect()
+    }
+
+    fn cover_options(&self) -> Vec<TestOwnedChoiceOption> {
+        COVER_GLASS_PRESETS
+            .iter()
+            .map(|profile| TestOwnedChoiceOption {
+                id: profile.id.to_owned(),
+                label: profile.label.to_owned(),
+            })
+            .collect()
+    }
+
+    fn capture_options(&self) -> Vec<TestOwnedChoiceOption> {
+        CAPTURE_DEVICE_PRESETS
+            .iter()
+            .map(|profile| TestOwnedChoiceOption {
+                id: profile.id.to_owned(),
+                label: profile.label.to_owned(),
+            })
+            .collect()
+    }
+
+    fn environment_options(&self) -> Vec<TestOwnedChoiceOption> {
+        ENVIRONMENT_PRESETS
+            .iter()
+            .map(|profile| TestOwnedChoiceOption {
+                id: profile.id.to_owned(),
+                label: profile.label.to_owned(),
+            })
+            .collect()
+    }
+}
+
+fn capture_profile(capture: CaptureDevicePreset) -> TestCaptureAuthoringProfile<'static> {
+    TestCaptureAuthoringProfile {
+        id: capture.id,
+        label: capture.label,
+        raster_modes: capture
+            .raster_modes
+            .into_iter()
+            .map(|mode| TestCaptureRasterMode {
+                id: mode.id,
+                label: mode.label,
+                width: u32::from(mode.width),
+                height: u32::from(mode.height),
+            })
+            .collect(),
+        default_raster_mode_id: capture.default_raster_mode_id,
+        default_recording_profile_id: capture.default_recording_profile_id,
+        recommended_recording_profile_ids: capture.recommended_recording_profile_ids.to_vec(),
+        default_lens_evaluation_model: capture.default_lens_evaluation_model,
+        computational_capture: capture.computational_capture,
+        rendering_intent: capture.rendering_intent,
+        sensor_bloom: capture.sensor.bloom,
+        default_lens_preset_id: capture.default_lens_preset_id,
+        compatible_lens_preset_ids: capture.compatible_lens_preset_ids.to_vec(),
+        f_stop: capture.f_stop,
+        default_shutter_angle_degrees: capture.default_shutter_angle_degrees,
+    }
+}
+
+fn lens_profile(lens: LensPreset) -> TestLensAuthoringProfile<'static> {
+    TestLensAuthoringProfile {
+        id: lens.id,
+        label: lens.label,
+        nominal_focal_length_millimeters: lens.nominal_focal_length.0,
+    }
+}
+
+fn environment_profile(
+    environment: screen_cover::EnvironmentPreset,
+) -> TestEnvironmentAuthoringProfile<'static> {
+    TestEnvironmentAuthoringProfile {
+        id: environment.id,
+        label: environment.label,
+        environment: environment.environment,
+    }
+}
+
+fn device_profile(device: DevicePreset) -> TestDeviceAuthoringProfile<'static> {
+    TestDeviceAuthoringProfile {
+        id: device.id,
+        label: device.label,
+        color_mode_ids: device.color_mode_ids.to_vec(),
+        default_color_mode_id: device.default_color_mode_id,
+        reference_white_nits: device.reference_white_nits,
+        minimum_white_nits: device.minimum_white_nits,
+        maximum_white_nits: device.maximum_white_nits,
+        white_step_nits: device.white_step_nits,
+        uniformity_character_strength: device.uniformity.character_strength,
+        light_spread_character_strength: device.light_spread.character_strength,
+        default_cover_glass_profile_id: device.default_cover_glass_preset_id,
+    }
+}
+
+fn cover_profile(cover: screen_cover::CoverGlassPreset) -> TestCoverAuthoringProfile<'static> {
+    TestCoverAuthoringProfile {
+        id: cover.id,
+        label: cover.label,
+        profile: cover.profile,
+        character_strength: cover.profile.character_strength,
+        anti_glare_character_strength: cover.profile.anti_glare_microtexture.character_strength,
+        thickness_millimeters: cover.profile.thickness_millimeters,
+        refractive_index: cover.profile.refractive_index,
+        anti_reflective_efficiency: cover.profile.anti_reflective_efficiency,
+        absorption_rgb: [
+            cover.profile.absorption_per_millimeter.r,
+            cover.profile.absorption_per_millimeter.g,
+            cover.profile.absorption_per_millimeter.b,
+        ],
+        roughness: cover.profile.roughness,
+        haze: cover.profile.haze,
+        anti_glare_rms_slope: cover.profile.anti_glare_microtexture.rms_slope,
+        anti_glare_correlation_micrometers: cover
+            .profile
+            .anti_glare_microtexture
+            .correlation_length_micrometers,
+        anti_glare_anisotropy: cover.profile.anti_glare_microtexture.anisotropy,
+        glow_character_strength: cover.profile.glow.character_strength,
+        glow_intensity: cover.profile.glow.intensity,
+        glow_radius_millimeters: cover.profile.glow.radius_millimeters,
+        glow_threshold_relative_white: cover.profile.glow.threshold_relative_to_panel_white,
+    }
+}
+
+fn preset<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    id: &str,
+) -> Result<TestDeviceAuthoringProfile<'a>, TestAuthoringError> {
+    profiles.device(id).ok_or(TestAuthoringError::UnknownDevice)
+}
+
+fn capture<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    id: &str,
+) -> Result<TestCaptureAuthoringProfile<'a>, TestAuthoringError> {
+    profiles
+        .capture(id)
+        .ok_or(TestAuthoringError::UnknownCapturePreset)
+}
+
+fn lens<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    id: &str,
+) -> Result<TestLensAuthoringProfile<'a>, TestAuthoringError> {
+    profiles
+        .lens(id)
+        .ok_or(TestAuthoringError::UnknownLensPreset)
 }
 
 fn color_target(
@@ -1034,129 +1331,156 @@ pub fn default_test_authoring_selection(
     input_transform_id: &str,
     device_id: &str,
     frame_rate: FrameRate,
-) -> Result<ResolvedTestAuthoringSelection, TestAuthoringError> {
+) -> Result<ResolvedTestAuthoringSelection<'static>, TestAuthoringError> {
+    default_test_authoring_selection_with_profiles(
+        &BUILT_IN_TEST_AUTHORING_PROFILES,
+        input_transform_id,
+        device_id,
+        frame_rate,
+    )
+}
+
+pub fn default_test_authoring_selection_with_profiles<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    input_transform_id: &str,
+    device_id: &str,
+    frame_rate: FrameRate,
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
     let input = OcioInputTransform::from_stable_id(input_transform_id)
         .ok_or(TestAuthoringError::UnknownInputTransform)?;
     let output = default_output_for_input(input);
-    let device = preset(device_id)?;
-    let capture = capture("iphone-16e-main-48mp")?;
+    let device = preset(profiles, device_id)?;
+    let capture = capture(profiles, "iphone-16e-main-48mp")?;
     let seed_distance = 0.15_f32;
     let seed_orbit_y = -5.0_f32;
-    let cover = cover_glass_preset(device.default_cover_glass_preset_id)
+    let cover = profiles
+        .cover(device.default_cover_glass_profile_id)
         .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
-    resolve_test_authoring_selection(TestAuthoringSelection {
-        input_transform_id: input.stable_id(),
-        output_signal_id: output.stable_id(),
-        device_id: device.id,
-        color_mode_id: device.default_color_mode_id,
-        white_luminance_nits: device.reference_white_nits,
-        placement_id: "fit",
-        preview_quality_id: "setup",
-        frame_rate,
-        source_adjustment: SceneLinearAdjustment::NEUTRAL,
-        subpixel_geometry_amount: 1.0,
-        moire_intensity: 1.0,
-        moire_saturation: 1.0,
-        moire_filter_strength: 0.0,
-        panel_uniformity_amount: device.uniformity.character_strength,
-        panel_light_spread_amount: device.light_spread.character_strength,
-        capture_preset_id: capture.id,
-        capture_raster_mode_id: capture.default_raster_mode_id,
-        geometry_mode_id: "look-at",
-        camera_distance_meters: seed_distance,
-        camera_orbit_x_degrees: 0.0,
-        camera_orbit_y_degrees: seed_orbit_y,
-        camera_position_x_meters: seed_distance * seed_orbit_y.to_radians().sin(),
-        camera_position_y_meters: 0.0,
-        camera_position_z_meters: seed_distance * seed_orbit_y.to_radians().cos(),
-        camera_rotation_x_degrees: 0.0,
-        camera_rotation_y_degrees: seed_orbit_y,
-        camera_rotation_z_degrees: 0.0,
-        screen_position_x_meters: 0.0,
-        screen_position_y_meters: 0.0,
-        screen_position_z_meters: 0.0,
-        screen_yaw_degrees: 0.0,
-        screen_rotation_x_degrees: 0.0,
-        screen_rotation_z_degrees: 0.0,
-        cover_glass_preset_id: device.default_cover_glass_preset_id,
-        cover_glass_amount: 1.0,
-        cover_ag_microtexture_amount: cover.profile.anti_glare_microtexture.character_strength,
-        cover_thickness_millimeters: cover.profile.thickness_millimeters,
-        cover_refractive_index: cover.profile.refractive_index,
-        cover_ar_efficiency: cover.profile.anti_reflective_efficiency,
-        cover_absorption_rgb: [
-            cover.profile.absorption_per_millimeter.r,
-            cover.profile.absorption_per_millimeter.g,
-            cover.profile.absorption_per_millimeter.b,
-        ],
-        cover_roughness: cover.profile.roughness,
-        cover_haze: cover.profile.haze,
-        cover_ag_rms_slope: cover.profile.anti_glare_microtexture.rms_slope,
-        cover_ag_correlation_micrometers: cover
-            .profile
-            .anti_glare_microtexture
-            .correlation_length_micrometers,
-        cover_ag_anisotropy: cover.profile.anti_glare_microtexture.anisotropy,
-        environment_source_id: "environment-none",
-        environment_amount: 0.0,
-        environment_rotation_x_degrees: 0.0,
-        environment_rotation_y_degrees: 0.0,
-        environment_exposure_ev: 0.0,
-        environment_contrast: 1.0,
-        environment_saturation: 1.0,
-        environment_temperature_kelvin: 6500.0,
-        environment_tint: 0.0,
-        environment_projection_id: "distant",
-        environment_sphere_center_x_meters: 0.0,
-        environment_sphere_center_y_meters: 0.0,
-        environment_sphere_center_z_meters: 0.0,
-        environment_sphere_radius_meters: 5.0,
-        cover_glow_amount: cover.profile.glow.character_strength,
-        cover_glow_intensity: cover.profile.glow.intensity,
-        cover_glow_radius_millimeters: cover.profile.glow.radius_millimeters,
-        cover_glow_threshold_relative_white: cover.profile.glow.threshold_relative_to_panel_white,
-        cover_glow_exterior_intensity: 1.0,
-        lens_preset_id: capture.default_lens_preset_id,
-        focal_length_millimeters: lens(capture.default_lens_preset_id)?.nominal_focal_length.0,
-        lens_evaluation_model_id: lens_evaluation_model_id(capture.default_lens_evaluation_model),
-        lens_amount: 1.0,
-        autofocus_enabled: true,
-        autofocus_target_u: 0.5,
-        autofocus_target_v: 0.5,
-        focus_distance_meters: 0.15,
-        f_stop: capture.f_stop,
-        exposure_time_seconds: capture.default_shutter_angle_degrees / 360.0 / frame_rate.as_f32(),
-        shutter_motion_amount: 1.0,
-        computational_character_strength: 1.0,
-        computational_exposure_count: f32::from(capture.computational_capture.exposure_count),
-        computational_bracket_spacing_stops: capture.computational_capture.bracket_spacing_stops,
-        sensor_bloom_amount: 1.0,
-        sensor_bloom_crosstalk_fraction: capture.sensor.bloom.crosstalk_fraction,
-        sensor_bloom_overflow_transfer_fraction: capture.sensor.bloom.overflow_transfer_fraction,
-        sensor_noise_amount: 1.0,
-        camera_rendering_intent: capture.rendering_intent,
-        device_vfx_alpha_mode_id: "device-transparency",
-        delivery_preset_id: "uhd",
-        delivery_width: 3_840.0,
-        delivery_height: 2_160.0,
-        delivery_placement_id: "fit",
-        delivery_background_id: "black",
-        recording_output_transform_id: screen_color::IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
-        recording_profile_id: IPHONE_HEIC_PHOTO_PROFILE_ID,
-        recording_character: 1.0,
-    })
+    resolve_test_authoring_selection_with_profiles(
+        profiles,
+        TestAuthoringSelection {
+            input_transform_id: input.stable_id(),
+            output_signal_id: output.stable_id(),
+            device_id: device.id,
+            color_mode_id: device.default_color_mode_id,
+            white_luminance_nits: device.reference_white_nits,
+            placement_id: "fit",
+            preview_quality_id: "setup",
+            frame_rate,
+            source_adjustment: SceneLinearAdjustment::NEUTRAL,
+            subpixel_geometry_amount: 1.0,
+            moire_intensity: 1.0,
+            moire_saturation: 1.0,
+            moire_filter_strength: 0.0,
+            panel_uniformity_amount: device.uniformity_character_strength,
+            panel_light_spread_amount: device.light_spread_character_strength,
+            capture_preset_id: capture.id,
+            capture_raster_mode_id: capture.default_raster_mode_id,
+            geometry_mode_id: "look-at",
+            camera_distance_meters: seed_distance,
+            camera_orbit_x_degrees: 0.0,
+            camera_orbit_y_degrees: seed_orbit_y,
+            camera_position_x_meters: seed_distance * seed_orbit_y.to_radians().sin(),
+            camera_position_y_meters: 0.0,
+            camera_position_z_meters: seed_distance * seed_orbit_y.to_radians().cos(),
+            camera_rotation_x_degrees: 0.0,
+            camera_rotation_y_degrees: seed_orbit_y,
+            camera_rotation_z_degrees: 0.0,
+            screen_position_x_meters: 0.0,
+            screen_position_y_meters: 0.0,
+            screen_position_z_meters: 0.0,
+            screen_yaw_degrees: 0.0,
+            screen_rotation_x_degrees: 0.0,
+            screen_rotation_z_degrees: 0.0,
+            cover_glass_preset_id: device.default_cover_glass_profile_id,
+            cover_glass_amount: 1.0,
+            cover_ag_microtexture_amount: cover.anti_glare_character_strength,
+            cover_thickness_millimeters: cover.thickness_millimeters,
+            cover_refractive_index: cover.refractive_index,
+            cover_ar_efficiency: cover.anti_reflective_efficiency,
+            cover_absorption_rgb: cover.absorption_rgb,
+            cover_roughness: cover.roughness,
+            cover_haze: cover.haze,
+            cover_ag_rms_slope: cover.anti_glare_rms_slope,
+            cover_ag_correlation_micrometers: cover.anti_glare_correlation_micrometers,
+            cover_ag_anisotropy: cover.anti_glare_anisotropy,
+            environment_source_id: "environment-none",
+            environment_amount: 0.0,
+            environment_rotation_x_degrees: 0.0,
+            environment_rotation_y_degrees: 0.0,
+            environment_exposure_ev: 0.0,
+            environment_contrast: 1.0,
+            environment_saturation: 1.0,
+            environment_temperature_kelvin: 6500.0,
+            environment_tint: 0.0,
+            environment_projection_id: "distant",
+            environment_sphere_center_x_meters: 0.0,
+            environment_sphere_center_y_meters: 0.0,
+            environment_sphere_center_z_meters: 0.0,
+            environment_sphere_radius_meters: 5.0,
+            cover_glow_amount: cover.glow_character_strength,
+            cover_glow_intensity: cover.glow_intensity,
+            cover_glow_radius_millimeters: cover.glow_radius_millimeters,
+            cover_glow_threshold_relative_white: cover.glow_threshold_relative_white,
+            cover_glow_exterior_intensity: 1.0,
+            lens_preset_id: capture.default_lens_preset_id,
+            focal_length_millimeters: lens(profiles, capture.default_lens_preset_id)?
+                .nominal_focal_length_millimeters,
+            lens_evaluation_model_id: lens_evaluation_model_id(
+                capture.default_lens_evaluation_model,
+            ),
+            lens_amount: 1.0,
+            autofocus_enabled: true,
+            autofocus_target_u: 0.5,
+            autofocus_target_v: 0.5,
+            focus_distance_meters: 0.15,
+            f_stop: capture.f_stop,
+            exposure_time_seconds: capture.default_shutter_angle_degrees
+                / 360.0
+                / frame_rate.as_f32(),
+            shutter_motion_amount: 1.0,
+            computational_character_strength: 1.0,
+            computational_exposure_count: f32::from(capture.computational_capture.exposure_count),
+            computational_bracket_spacing_stops: capture
+                .computational_capture
+                .bracket_spacing_stops,
+            sensor_bloom_amount: 1.0,
+            sensor_bloom_crosstalk_fraction: capture.sensor_bloom.crosstalk_fraction,
+            sensor_bloom_overflow_transfer_fraction: capture
+                .sensor_bloom
+                .overflow_transfer_fraction,
+            sensor_noise_amount: 1.0,
+            camera_rendering_intent: capture.rendering_intent,
+            device_vfx_alpha_mode_id: "device-transparency",
+            delivery_preset_id: "uhd",
+            delivery_width: 3_840.0,
+            delivery_height: 2_160.0,
+            delivery_placement_id: "fit",
+            delivery_background_id: "black",
+            recording_output_transform_id: screen_color::IPHONE_HEIC_RECORDING_OUTPUT_TRANSFORM_ID,
+            recording_profile_id: IPHONE_HEIC_PHOTO_PROFILE_ID,
+            recording_character: 1.0,
+        },
+    )
 }
 
-pub fn resolve_test_authoring_selection(
-    selection: TestAuthoringSelection<'_>,
-) -> Result<ResolvedTestAuthoringSelection, TestAuthoringError> {
+pub fn resolve_test_authoring_selection<'a>(
+    selection: TestAuthoringSelection<'a>,
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
+    resolve_test_authoring_selection_with_profiles(&BUILT_IN_TEST_AUTHORING_PROFILES, selection)
+}
+
+pub fn resolve_test_authoring_selection_with_profiles<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    selection: TestAuthoringSelection<'a>,
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
     let input = OcioInputTransform::from_stable_id(selection.input_transform_id)
         .ok_or(TestAuthoringError::UnknownInputTransform)?;
     let output = color_target(
         selection.output_signal_id,
         TestAuthoringError::UnknownOutputSignal,
     )?;
-    let device = preset(selection.device_id)?;
+    let device = preset(profiles, selection.device_id)?;
     let mode = PanelColorMode::from_stable_id(selection.color_mode_id)
         .ok_or(TestAuthoringError::UnknownColorMode)?;
     if !device.color_mode_ids.contains(&mode.stable_id()) {
@@ -1214,12 +1538,12 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidPanelLightSpreadAmount);
     }
-    let capture = capture(selection.capture_preset_id)?;
-    let capture_raster_mode = capture
+    let capture = capture(profiles, selection.capture_preset_id)?;
+    let _capture_raster_mode = capture
         .raster_mode(selection.capture_raster_mode_id)
         .ok_or(TestAuthoringError::InvalidCaptureRasterMode)?;
-    let lens = lens(selection.lens_preset_id)?;
-    let (minimum_focal_length, maximum_focal_length) = focal_length_bounds(lens);
+    let lens = lens(profiles, selection.lens_preset_id)?;
+    let (minimum_focal_length, maximum_focal_length) = focal_length_bounds();
     if !selection.focal_length_millimeters.is_finite()
         || !(minimum_focal_length..=maximum_focal_length)
             .contains(&selection.focal_length_millimeters)
@@ -1278,7 +1602,8 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidGeometry);
     }
-    let cover = cover_glass_preset(selection.cover_glass_preset_id)
+    let cover = profiles
+        .cover(selection.cover_glass_preset_id)
         .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
     if !selection.cover_glass_amount.is_finite()
         || !(0.0..=2.0).contains(&selection.cover_glass_amount)
@@ -1317,7 +1642,7 @@ pub fn resolve_test_authoring_selection(
     authored_cover
         .validate()
         .map_err(|_| TestAuthoringError::InvalidCoverGlassProfile)?;
-    let environment = environment_preset(selection.environment_source_id);
+    let environment = profiles.environment(selection.environment_source_id);
     if environment.is_none() && selection.environment_source_id != IMAGE_ENVIRONMENT_SOURCE_ID {
         return Err(TestAuthoringError::UnknownEnvironmentPreset);
     }
@@ -1358,7 +1683,6 @@ pub fn resolve_test_authoring_selection(
         "finite-sphere" => "finite-sphere",
         _ => return Err(TestAuthoringError::InvalidEnvironmentAmount),
     };
-    let minimum_environment_radius = minimum_authored_environment_radius(selection, device);
     if [
         selection.environment_sphere_center_x_meters,
         selection.environment_sphere_center_y_meters,
@@ -1369,8 +1693,6 @@ pub fn resolve_test_authoring_selection(
         || !selection.environment_sphere_radius_meters.is_finite()
         || selection.environment_sphere_radius_meters <= 0.0
         || selection.environment_sphere_radius_meters > 1_000.0
-        || (environment_projection_id == "finite-sphere"
-            && selection.environment_sphere_radius_meters < minimum_environment_radius)
         || (selection.environment_source_id != IMAGE_ENVIRONMENT_SOURCE_ID
             && selection.environment_projection_id != "distant")
     {
@@ -1403,11 +1725,9 @@ pub fn resolve_test_authoring_selection(
     {
         return Err(TestAuthoringError::InvalidExposureTime);
     }
-    let resolved_focus_distance_meters = if selection.autofocus_enabled {
-        autofocus_target_distance(&selection, &device)?
-    } else {
-        selection.focus_distance_meters
-    };
+    // Autofocus is an unresolved scene intent. The scene resolver owns its distance after
+    // sampling the exact camera and Device pose for the requested time.
+    let resolved_focus_distance_meters = selection.focus_distance_meters;
     if !selection.shutter_motion_amount.is_finite()
         || !(0.0..=4.0).contains(&selection.shutter_motion_amount)
     {
@@ -1518,7 +1838,7 @@ pub fn resolve_test_authoring_selection(
         panel_uniformity_amount: selection.panel_uniformity_amount,
         panel_light_spread_amount: selection.panel_light_spread_amount,
         capture_preset_id: capture.id,
-        capture_raster_mode_id: capture_raster_mode.id,
+        capture_raster_mode_id: selection.capture_raster_mode_id,
         delivery_width: selection.delivery_width as u32,
         delivery_height: selection.delivery_height as u32,
         delivery_placement_id,
@@ -1599,123 +1919,18 @@ pub fn resolve_test_authoring_selection(
     })
 }
 
-fn autofocus_target_distance(
-    selection: &TestAuthoringSelection<'_>,
-    device: &screen_panel::DevicePreset,
-) -> Result<f32, TestAuthoringError> {
-    let screen_q = euler_quaternion([
-        selection.screen_rotation_x_degrees,
-        selection.screen_yaw_degrees,
-        selection.screen_rotation_z_degrees,
-    ]);
-    let screen_right = rotate3([1.0, 0.0, 0.0], screen_q);
-    let screen_up = rotate3([0.0, 1.0, 0.0], screen_q);
-    let screen = [
-        selection.screen_position_x_meters,
-        selection.screen_position_y_meters,
-        selection.screen_position_z_meters,
-    ];
-    let camera_position = if selection.geometry_mode_id == "look-at" {
-        let pitch = selection.camera_orbit_x_degrees.to_radians();
-        let yaw = selection.camera_orbit_y_degrees.to_radians();
-        let cos_pitch = pitch.cos();
-        [
-            screen[0] + yaw.sin() * cos_pitch * selection.camera_distance_meters,
-            screen[1] - pitch.sin() * selection.camera_distance_meters,
-            screen[2] + yaw.cos() * cos_pitch * selection.camera_distance_meters,
-        ]
-    } else {
-        [
-            selection.camera_position_x_meters,
-            selection.camera_position_y_meters,
-            selection.camera_position_z_meters,
-        ]
-    };
-    let forward = if selection.geometry_mode_id == "look-at" {
-        let vector = [
-            screen[0] - camera_position[0],
-            screen[1] - camera_position[1],
-            screen[2] - camera_position[2],
-        ];
-        let length = dot3(vector, vector).sqrt();
-        if !length.is_finite() || length <= 1.0e-6 {
-            return Err(TestAuthoringError::InvalidGeometry);
-        }
-        [vector[0] / length, vector[1] / length, vector[2] / length]
-    } else {
-        rotate3(
-            [0.0, 0.0, -1.0],
-            euler_quaternion([
-                selection.camera_rotation_x_degrees,
-                selection.camera_rotation_y_degrees,
-                selection.camera_rotation_z_degrees,
-            ]),
-        )
-    };
-    let target = [
-        screen[0]
-            + screen_right[0] * (selection.autofocus_target_u - 0.5) * device.active_width.0
-            + screen_up[0] * (0.5 - selection.autofocus_target_v) * device.active_height.0,
-        screen[1]
-            + screen_right[1] * (selection.autofocus_target_u - 0.5) * device.active_width.0
-            + screen_up[1] * (0.5 - selection.autofocus_target_v) * device.active_height.0,
-        screen[2]
-            + screen_right[2] * (selection.autofocus_target_u - 0.5) * device.active_width.0
-            + screen_up[2] * (0.5 - selection.autofocus_target_v) * device.active_height.0,
-    ];
-    let distance = dot3(
-        [
-            target[0] - camera_position[0],
-            target[1] - camera_position[1],
-            target[2] - camera_position[2],
-        ],
-        forward,
-    );
-    if !distance.is_finite() || !(0.01..=100.0).contains(&distance) {
-        return Err(TestAuthoringError::InvalidGeometry);
-    }
-    Ok(distance)
-}
-
-fn rotate3(vector: [f32; 3], q: [f32; 4]) -> [f32; 3] {
-    let qv = [q[0], q[1], q[2]];
-    let t = [
-        2.0 * (qv[1] * vector[2] - qv[2] * vector[1]),
-        2.0 * (qv[2] * vector[0] - qv[0] * vector[2]),
-        2.0 * (qv[0] * vector[1] - qv[1] * vector[0]),
-    ];
-    [
-        vector[0] + q[3] * t[0] + qv[1] * t[2] - qv[2] * t[1],
-        vector[1] + q[3] * t[1] + qv[2] * t[0] - qv[0] * t[2],
-        vector[2] + q[3] * t[2] + qv[0] * t[1] - qv[1] * t[0],
-    ]
-}
-
-fn euler_quaternion(degrees: [f32; 3]) -> [f32; 4] {
-    let half_x = degrees[0].to_radians() * 0.5;
-    let half_y = degrees[1].to_radians() * 0.5;
-    let half_z = degrees[2].to_radians() * 0.5;
-    let (sx, cx) = half_x.sin_cos();
-    let (sy, cy) = half_y.sin_cos();
-    let (sz, cz) = half_z.sin_cos();
-    [
-        sx * cy * cz - cx * sy * sz,
-        cx * sy * cz + sx * cy * sz,
-        cx * cy * sz - sx * sy * cz,
-        cx * cy * cz + sx * sy * sz,
-    ]
-}
-
-fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
-    lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
-}
-
 pub fn test_page_descriptor(
     selection: TestAuthoringSelection<'_>,
 ) -> Result<TestPageDescriptor, TestAuthoringError> {
-    let selection = resolve_test_authoring_selection(selection)?;
-    let device = preset(selection.device_id)?;
-    let minimum_environment_radius = minimum_resolved_environment_radius(&selection, device);
+    test_page_descriptor_with_profiles(&BUILT_IN_TEST_AUTHORING_PROFILES, selection)
+}
+
+pub fn test_page_descriptor_with_profiles<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    selection: TestAuthoringSelection<'a>,
+) -> Result<TestPageDescriptor, TestAuthoringError> {
+    let selection = resolve_test_authoring_selection_with_profiles(profiles, selection)?;
+    let device = preset(profiles, selection.device_id)?;
     let output_options = DeviceColorTarget::ALL
         .into_iter()
         .map(|target| TestChoiceOption {
@@ -1723,13 +1938,7 @@ pub fn test_page_descriptor(
             label: target.label(),
         })
         .collect();
-    let device_options = DEVICE_PRESETS
-        .iter()
-        .map(|preset| TestChoiceOption {
-            id: preset.id,
-            label: preset.label,
-        })
-        .collect();
+    let device_options = profiles.device_options();
     let color_options = device
         .color_mode_ids
         .iter()
@@ -1742,53 +1951,38 @@ pub fn test_page_descriptor(
             }
         })
         .collect();
-    let capture = capture(selection.capture_preset_id)?;
-    let capture_options = CAPTURE_DEVICE_PRESETS
-        .iter()
-        .map(|preset| TestChoiceOption {
-            id: preset.id,
-            label: preset.label,
-        })
-        .collect();
-    let lens_options = capture
+    let capture = capture(profiles, selection.capture_preset_id)?;
+    let capture_options = profiles.capture_options();
+    let lens_options: Vec<TestOwnedChoiceOption> = capture
         .compatible_lens_preset_ids
         .iter()
         .map(|id| {
-            let preset = lens(id).expect("validated Camera presets reference current Lenses");
-            TestChoiceOption {
-                id: preset.id,
-                label: preset.label,
+            let preset =
+                lens(profiles, id).expect("validated Camera profiles reference current Lenses");
+            TestOwnedChoiceOption {
+                id: preset.id.to_owned(),
+                label: preset.label.to_owned(),
             }
         })
         .collect();
-    let cover_options = COVER_GLASS_PRESETS
-        .iter()
-        .map(|preset| TestChoiceOption {
-            id: preset.id,
-            label: preset.label,
-        })
-        .collect();
-    let mut environment_options: Vec<_> = ENVIRONMENT_PRESETS
-        .iter()
-        .map(|preset| TestChoiceOption {
-            id: preset.id,
-            label: preset.label,
-        })
-        .collect();
-    environment_options.push(TestChoiceOption {
-        id: IMAGE_ENVIRONMENT_SOURCE_ID,
-        label: "HDRI / EXR seleccionado",
+    let cover_options = profiles.cover_options();
+    let mut environment_options = profiles.environment_options();
+    environment_options.push(TestOwnedChoiceOption {
+        id: IMAGE_ENVIRONMENT_SOURCE_ID.to_owned(),
+        label: "HDRI / EXR seleccionado".to_owned(),
     });
-    let recording_profile_options = recording_profile_options(capture);
+    let recording_profile_options = recording_profile_options(&capture);
     let input = OcioInputTransform::from_stable_id(selection.input_transform_id)
         .ok_or(TestAuthoringError::UnknownInputTransform)?;
     let reset_output_signal_id = default_output_for_input(input).stable_id();
-    let reset_device = preset("lcd-asus-proart-pa329cv")?;
-    let reset_capture = capture_device_preset("iphone-16e-main-48mp")
+    let reset_device = preset(profiles, "lcd-asus-proart-pa329cv")?;
+    let reset_capture = profiles
+        .capture("iphone-16e-main-48mp")
         .ok_or(TestAuthoringError::UnknownCapturePreset)?;
-    let selected_cover = cover_glass_preset(selection.cover_glass_preset_id)
+    let selected_cover = profiles
+        .cover(selection.cover_glass_preset_id)
         .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
-    let selected_environment = environment_preset(selection.environment_source_id);
+    let selected_environment = profiles.environment(selection.environment_source_id);
     let environment_reset_amount = selected_environment
         .map(|environment| environment.environment.character_strength)
         .unwrap_or(1.0);
@@ -1797,22 +1991,22 @@ pub fn test_page_descriptor(
     let seed_camera_x = seed_distance * seed_orbit_y.to_radians().sin();
     let seed_camera_z = seed_distance * seed_orbit_y.to_radians().cos();
     let mut geometry_controls = vec![
-        choice_control(
+        owned_choice_control(
             CAPTURE_PRESET_CONTROL_ID,
             "Cámara",
             capture_options,
             selection.capture_preset_id,
             reset_capture.id,
         ),
-        choice_control(
+        owned_choice_control(
             CAPTURE_RASTER_MODE_CONTROL_ID,
             "Resolución de captura",
             capture
                 .raster_modes
-                .into_iter()
-                .map(|mode| TestChoiceOption {
-                    id: mode.id,
-                    label: mode.label,
+                .iter()
+                .map(|mode| TestOwnedChoiceOption {
+                    id: mode.id.to_owned(),
+                    label: mode.label.to_owned(),
                 })
                 .collect(),
             selection.capture_raster_mode_id,
@@ -2021,7 +2215,7 @@ pub fn test_page_descriptor(
             selection.lens_evaluation_model_id,
             lens_evaluation_model_id(capture.default_lens_evaluation_model),
         ),
-        choice_control(
+        owned_choice_control(
             LENS_PRESET_CONTROL_ID,
             "Objetivo",
             lens_options,
@@ -2032,9 +2226,9 @@ pub fn test_page_descriptor(
             FOCAL_LENGTH_CONTROL_ID,
             "Distancia focal",
             selection.focal_length_millimeters,
-            focal_length_bounds(lens(selection.lens_preset_id)?).0,
-            focal_length_bounds(lens(selection.lens_preset_id)?).1,
-            lens(selection.lens_preset_id)?.nominal_focal_length.0,
+            focal_length_bounds().0,
+            focal_length_bounds().1,
+            lens(profiles, selection.lens_preset_id)?.nominal_focal_length_millimeters,
             "mm",
         ),
         scalar_control(
@@ -2123,7 +2317,6 @@ pub fn test_page_descriptor(
     Ok(TestPageDescriptor {
         schema_version: TEST_AUTHORING_SCHEMA_VERSION,
         default_preview_phase_id: RECORDING_CODEC_PHASE_ID,
-        selection,
         phases: vec![
             TestPhaseDescriptor {
                 id: ORIGIN_PHASE_ID,
@@ -2225,7 +2418,7 @@ pub fn test_page_descriptor(
                 output_artifact: PhysicalArtifactId::PanelEmissionRadianceV1,
                 preview_result: TestPreviewResult::DeviceInterpretation,
                 controls: vec![
-                    choice_control(
+                    owned_choice_control(
                         DEVICE_CONTROL_ID,
                         "Device",
                         device_options,
@@ -2282,7 +2475,7 @@ pub fn test_page_descriptor(
                     selection.panel_uniformity_amount,
                     0.0,
                     4.0,
-                    device.uniformity.character_strength,
+                    device.uniformity_character_strength,
                     "×",
                 )],
             },
@@ -2300,7 +2493,7 @@ pub fn test_page_descriptor(
                     selection.panel_light_spread_amount,
                     0.0,
                     4.0,
-                    device.light_spread.character_strength,
+                    device.light_spread_character_strength,
                     "×",
                 )],
             },
@@ -2334,12 +2527,12 @@ pub fn test_page_descriptor(
                 preview_result: TestPreviewResult::CoverEnvironment,
                 controls: {
                     let mut controls = vec![
-                        choice_control(
+                        owned_choice_control(
                             COVER_GLASS_CONTROL_ID,
                             "Cristal",
                             cover_options,
                             selection.cover_glass_preset_id,
-                            device.default_cover_glass_preset_id,
+                            device.default_cover_glass_profile_id,
                         ),
                         scalar_control(
                             COVER_GLASS_AMOUNT_CONTROL_ID,
@@ -2464,7 +2657,7 @@ pub fn test_page_descriptor(
                             selected_cover.profile.anti_glare_microtexture.anisotropy,
                             "×",
                         ),
-                        choice_control(
+                        owned_choice_control(
                             ENVIRONMENT_CONTROL_ID,
                             "Entorno",
                             environment_options,
@@ -2601,7 +2794,7 @@ pub fn test_page_descriptor(
                                     ENVIRONMENT_RADIUS_CONTROL_ID,
                                     "Radio del entorno",
                                     selection.environment_sphere_radius_meters,
-                                    minimum_environment_radius,
+                                    0.001,
                                     1_000.0,
                                     5.0,
                                     "m",
@@ -2791,7 +2984,7 @@ pub fn test_page_descriptor(
                         selection.sensor_bloom_amount,
                         0.0,
                         4.0,
-                        capture.sensor.bloom.character_strength,
+                        capture.sensor_bloom.character_strength,
                         "×",
                     ),
                     scalar_control(
@@ -2800,7 +2993,7 @@ pub fn test_page_descriptor(
                         selection.sensor_bloom_crosstalk_fraction,
                         0.0,
                         0.20,
-                        capture.sensor.bloom.crosstalk_fraction,
+                        capture.sensor_bloom.crosstalk_fraction,
                         "fracción",
                     ),
                     scalar_control(
@@ -2809,7 +3002,7 @@ pub fn test_page_descriptor(
                         selection.sensor_bloom_overflow_transfer_fraction,
                         0.0,
                         1.0,
-                        capture.sensor.bloom.overflow_transfer_fraction,
+                        capture.sensor_bloom.overflow_transfer_fraction,
                         "fracción",
                     ),
                 ],
@@ -3019,98 +3212,49 @@ pub fn test_page_descriptor(
     })
 }
 
-fn minimum_authored_environment_radius(
-    selection: TestAuthoringSelection<'_>,
-    device: DevicePreset,
-) -> f32 {
-    let center = [
-        selection.environment_sphere_center_x_meters,
-        selection.environment_sphere_center_y_meters,
-        selection.environment_sphere_center_z_meters,
-    ];
-    let camera_distance = ((selection.camera_position_x_meters - center[0]).powi(2)
-        + (selection.camera_position_y_meters - center[1]).powi(2)
-        + (selection.camera_position_z_meters - center[2]).powi(2))
-    .sqrt()
-        + selection.focal_length_millimeters * 0.001 / (2.0 * selection.f_stop);
-    let screen_center_distance = ((selection.screen_position_x_meters - center[0]).powi(2)
-        + (selection.screen_position_y_meters - center[1]).powi(2)
-        + (selection.screen_position_z_meters - center[2]).powi(2))
-    .sqrt();
-    let screen_bound =
-        screen_center_distance + 0.5 * device.active_width.0.hypot(device.active_height.0);
-    let enclosure = camera_distance.max(screen_bound).max(0.1);
-    enclosure + (enclosure * 1.0e-4).max(1.0e-4)
-}
-
-fn minimum_resolved_environment_radius(
-    selection: &ResolvedTestAuthoringSelection,
-    device: DevicePreset,
-) -> f32 {
-    let center = [
-        selection.environment_sphere_center_x_meters,
-        selection.environment_sphere_center_y_meters,
-        selection.environment_sphere_center_z_meters,
-    ];
-    let camera_distance = ((selection.camera_position_x_meters - center[0]).powi(2)
-        + (selection.camera_position_y_meters - center[1]).powi(2)
-        + (selection.camera_position_z_meters - center[2]).powi(2))
-    .sqrt()
-        + selection.focal_length_millimeters * 0.001 / (2.0 * selection.f_stop);
-    let screen_center_distance = ((selection.screen_position_x_meters - center[0]).powi(2)
-        + (selection.screen_position_y_meters - center[1]).powi(2)
-        + (selection.screen_position_z_meters - center[2]).powi(2))
-    .sqrt();
-    let screen_bound =
-        screen_center_distance + 0.5 * device.active_width.0.hypot(device.active_height.0);
-    let enclosure = camera_distance.max(screen_bound).max(0.1);
-    enclosure + (enclosure * 1.0e-4).max(1.0e-4)
-}
-
-pub fn apply_test_choice(
-    selection: TestAuthoringSelection<'_>,
+pub fn apply_test_choice<'a>(
+    selection: TestAuthoringSelection<'a>,
     control_id: &str,
-    option_id: &str,
-) -> Result<ResolvedTestAuthoringSelection, TestAuthoringError> {
-    let current = resolve_test_authoring_selection(selection)?;
+    option_id: &'a str,
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
+    apply_test_choice_with_profiles(
+        &BUILT_IN_TEST_AUTHORING_PROFILES,
+        selection,
+        control_id,
+        option_id,
+    )
+}
+
+pub fn apply_test_choice_with_profiles<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    selection: TestAuthoringSelection<'a>,
+    control_id: &str,
+    option_id: &'a str,
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
+    let current = resolve_test_authoring_selection_with_profiles(profiles, selection)?;
     let mut next = unresolved_test_selection(current);
     match control_id {
         OUTPUT_SIGNAL_CONTROL_ID => next.output_signal_id = option_id,
         DEVICE_CONTROL_ID => {
-            let device = preset(option_id)?;
+            let device = preset(profiles, option_id)?;
             next.device_id = device.id;
             next.color_mode_id = device.default_color_mode_id;
             next.white_luminance_nits = device.reference_white_nits;
-            next.panel_uniformity_amount = device.uniformity.character_strength;
-            next.panel_light_spread_amount = device.light_spread.character_strength;
-            next.cover_glass_preset_id = device.default_cover_glass_preset_id;
-            next.cover_glass_amount = cover_glass_preset(device.default_cover_glass_preset_id)
-                .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?
-                .profile
-                .character_strength;
-            next.cover_ag_microtexture_amount =
-                cover_glass_preset(device.default_cover_glass_preset_id)
-                    .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?
-                    .profile
-                    .anti_glare_microtexture
-                    .character_strength;
-            next.cover_glow_amount = cover_glass_preset(device.default_cover_glass_preset_id)
-                .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?
-                .profile
-                .glow
-                .character_strength;
-            materialize_cover_profile(&mut next, device.default_cover_glass_preset_id)?;
+            next.panel_uniformity_amount = device.uniformity_character_strength;
+            next.panel_light_spread_amount = device.light_spread_character_strength;
+            next.cover_glass_preset_id = device.default_cover_glass_profile_id;
+            materialize_cover_profile(profiles, &mut next, device.default_cover_glass_profile_id)?;
         }
         COLOR_MODE_CONTROL_ID => next.color_mode_id = option_id,
         PLACEMENT_CONTROL_ID => next.placement_id = option_id,
         PREVIEW_QUALITY_CONTROL_ID => next.preview_quality_id = option_id,
         CAPTURE_PRESET_CONTROL_ID => {
-            let capture = capture(option_id)?;
+            let capture = capture(profiles, option_id)?;
             next.capture_preset_id = capture.id;
             next.capture_raster_mode_id = capture.default_raster_mode_id;
             next.lens_preset_id = capture.default_lens_preset_id;
             next.focal_length_millimeters =
-                lens(capture.default_lens_preset_id)?.nominal_focal_length.0;
+                lens(profiles, capture.default_lens_preset_id)?.nominal_focal_length_millimeters;
             next.lens_evaluation_model_id =
                 lens_evaluation_model_id(capture.default_lens_evaluation_model);
             next.f_stop = capture.f_stop;
@@ -3121,10 +3265,10 @@ pub fn apply_test_choice(
                 f32::from(capture.computational_capture.exposure_count);
             next.computational_bracket_spacing_stops =
                 capture.computational_capture.bracket_spacing_stops;
-            next.sensor_bloom_amount = capture.sensor.bloom.character_strength;
-            next.sensor_bloom_crosstalk_fraction = capture.sensor.bloom.crosstalk_fraction;
+            next.sensor_bloom_amount = capture.sensor_bloom.character_strength;
+            next.sensor_bloom_crosstalk_fraction = capture.sensor_bloom.crosstalk_fraction;
             next.sensor_bloom_overflow_transfer_fraction =
-                capture.sensor.bloom.overflow_transfer_fraction;
+                capture.sensor_bloom.overflow_transfer_fraction;
             next.camera_rendering_intent = capture.rendering_intent;
             next.recording_profile_id = capture.default_recording_profile_id;
             next.recording_output_transform_id =
@@ -3132,7 +3276,7 @@ pub fn apply_test_choice(
                     .stable_id();
         }
         CAPTURE_RASTER_MODE_CONTROL_ID => next.capture_raster_mode_id = option_id,
-        DELIVERY_PRESET_CONTROL_ID => materialize_delivery_preset(&mut next, option_id)?,
+        DELIVERY_PRESET_CONTROL_ID => materialize_delivery_preset(profiles, &mut next, option_id)?,
         DELIVERY_PLACEMENT_CONTROL_ID => {
             next.delivery_placement_id = option_id;
             next.delivery_preset_id = "custom";
@@ -3143,14 +3287,11 @@ pub fn apply_test_choice(
         }
         GEOMETRY_MODE_CONTROL_ID => apply_geometry_mode(&mut next, option_id)?,
         COVER_GLASS_CONTROL_ID => {
-            let cover =
-                cover_glass_preset(option_id).ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
+            let cover = profiles
+                .cover(option_id)
+                .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
             next.cover_glass_preset_id = cover.id;
-            next.cover_glass_amount = cover.profile.character_strength;
-            next.cover_ag_microtexture_amount =
-                cover.profile.anti_glare_microtexture.character_strength;
-            next.cover_glow_amount = cover.profile.glow.character_strength;
-            materialize_cover_profile(&mut next, cover.id)?;
+            materialize_cover_profile(profiles, &mut next, cover.id)?;
         }
         ENVIRONMENT_CONTROL_ID => {
             if option_id == IMAGE_ENVIRONMENT_SOURCE_ID {
@@ -3169,7 +3310,8 @@ pub fn apply_test_choice(
                 next.environment_sphere_center_z_meters = 0.0;
                 next.environment_sphere_radius_meters = 5.0;
             } else {
-                let environment = environment_preset(option_id)
+                let environment = profiles
+                    .environment(option_id)
                     .ok_or(TestAuthoringError::UnknownEnvironmentPreset)?;
                 next.environment_source_id = environment.id;
                 next.environment_amount = environment.environment.character_strength;
@@ -3189,7 +3331,8 @@ pub fn apply_test_choice(
         }
         LENS_PRESET_CONTROL_ID => {
             next.lens_preset_id = option_id;
-            next.focal_length_millimeters = lens(option_id)?.nominal_focal_length.0;
+            next.focal_length_millimeters =
+                lens(profiles, option_id)?.nominal_focal_length_millimeters;
         }
         LENS_EVALUATION_MODEL_CONTROL_ID => match option_id {
             "thin-lens" | "vfx-2d-dof" => next.lens_evaluation_model_id = option_id,
@@ -3281,46 +3424,40 @@ pub fn apply_test_choice(
     if control_id != PREVIEW_QUALITY_CONTROL_ID {
         next.preview_quality_id = "setup";
     }
-    resolve_test_authoring_selection(next)
+    resolve_test_authoring_selection_with_profiles(profiles, next)
 }
 
-fn materialize_cover_profile(
-    selection: &mut TestAuthoringSelection<'_>,
+fn materialize_cover_profile<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    selection: &mut TestAuthoringSelection<'a>,
     preset_id: &str,
 ) -> Result<(), TestAuthoringError> {
-    let cover = cover_glass_preset(preset_id).ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
+    let cover = profiles
+        .cover(preset_id)
+        .ok_or(TestAuthoringError::UnknownCoverGlassPreset)?;
     selection.cover_glass_preset_id = cover.id;
-    selection.cover_glass_amount = cover.profile.character_strength;
-    selection.cover_ag_microtexture_amount =
-        cover.profile.anti_glare_microtexture.character_strength;
-    selection.cover_thickness_millimeters = cover.profile.thickness_millimeters;
-    selection.cover_refractive_index = cover.profile.refractive_index;
-    selection.cover_ar_efficiency = cover.profile.anti_reflective_efficiency;
-    selection.cover_absorption_rgb = [
-        cover.profile.absorption_per_millimeter.r,
-        cover.profile.absorption_per_millimeter.g,
-        cover.profile.absorption_per_millimeter.b,
-    ];
-    selection.cover_roughness = cover.profile.roughness;
-    selection.cover_haze = cover.profile.haze;
-    selection.cover_ag_rms_slope = cover.profile.anti_glare_microtexture.rms_slope;
-    selection.cover_ag_correlation_micrometers = cover
-        .profile
-        .anti_glare_microtexture
-        .correlation_length_micrometers;
-    selection.cover_ag_anisotropy = cover.profile.anti_glare_microtexture.anisotropy;
-    selection.cover_glow_amount = cover.profile.glow.character_strength;
-    selection.cover_glow_intensity = cover.profile.glow.intensity;
-    selection.cover_glow_radius_millimeters = cover.profile.glow.radius_millimeters;
-    selection.cover_glow_threshold_relative_white =
-        cover.profile.glow.threshold_relative_to_panel_white;
+    selection.cover_glass_amount = cover.character_strength;
+    selection.cover_ag_microtexture_amount = cover.anti_glare_character_strength;
+    selection.cover_thickness_millimeters = cover.thickness_millimeters;
+    selection.cover_refractive_index = cover.refractive_index;
+    selection.cover_ar_efficiency = cover.anti_reflective_efficiency;
+    selection.cover_absorption_rgb = cover.absorption_rgb;
+    selection.cover_roughness = cover.roughness;
+    selection.cover_haze = cover.haze;
+    selection.cover_ag_rms_slope = cover.anti_glare_rms_slope;
+    selection.cover_ag_correlation_micrometers = cover.anti_glare_correlation_micrometers;
+    selection.cover_ag_anisotropy = cover.anti_glare_anisotropy;
+    selection.cover_glow_amount = cover.glow_character_strength;
+    selection.cover_glow_intensity = cover.glow_intensity;
+    selection.cover_glow_radius_millimeters = cover.glow_radius_millimeters;
+    selection.cover_glow_threshold_relative_white = cover.glow_threshold_relative_white;
     selection.cover_glow_exterior_intensity = 1.0;
     Ok(())
 }
 
-fn unresolved_test_selection(
-    current: ResolvedTestAuthoringSelection,
-) -> TestAuthoringSelection<'static> {
+fn unresolved_test_selection<'a>(
+    current: ResolvedTestAuthoringSelection<'a>,
+) -> TestAuthoringSelection<'a> {
     TestAuthoringSelection {
         input_transform_id: current.input_transform_id,
         output_signal_id: current.output_signal_id,
@@ -3506,12 +3643,26 @@ fn look_at_euler_degrees(position: [f32; 3], target: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-pub fn apply_test_scalar(
-    selection: TestAuthoringSelection<'_>,
+pub fn apply_test_scalar<'a>(
+    selection: TestAuthoringSelection<'a>,
     control_id: &str,
     value: f32,
-) -> Result<ResolvedTestAuthoringSelection, TestAuthoringError> {
-    let current = resolve_test_authoring_selection(selection)?;
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
+    apply_test_scalar_with_profiles(
+        &BUILT_IN_TEST_AUTHORING_PROFILES,
+        selection,
+        control_id,
+        value,
+    )
+}
+
+pub fn apply_test_scalar_with_profiles<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    selection: TestAuthoringSelection<'a>,
+    control_id: &str,
+    value: f32,
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
+    let current = resolve_test_authoring_selection_with_profiles(profiles, selection)?;
     let mut next = unresolved_test_selection(current);
     match control_id {
         WHITE_LUMINANCE_CONTROL_ID => next.white_luminance_nits = value,
@@ -3628,22 +3779,36 @@ pub fn apply_test_scalar(
         _ => return Err(TestAuthoringError::UnknownControl),
     }
     next.preview_quality_id = "setup";
-    resolve_test_authoring_selection(next)
+    resolve_test_authoring_selection_with_profiles(profiles, next)
 }
 
-pub fn apply_test_toggle(
-    selection: TestAuthoringSelection<'_>,
+pub fn apply_test_toggle<'a>(
+    selection: TestAuthoringSelection<'a>,
     control_id: &str,
     value: bool,
-) -> Result<ResolvedTestAuthoringSelection, TestAuthoringError> {
-    let current = resolve_test_authoring_selection(selection)?;
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
+    apply_test_toggle_with_profiles(
+        &BUILT_IN_TEST_AUTHORING_PROFILES,
+        selection,
+        control_id,
+        value,
+    )
+}
+
+pub fn apply_test_toggle_with_profiles<'a>(
+    profiles: &'a impl TestAuthoringProfileSource,
+    selection: TestAuthoringSelection<'a>,
+    control_id: &str,
+    value: bool,
+) -> Result<ResolvedTestAuthoringSelection<'a>, TestAuthoringError> {
+    let current = resolve_test_authoring_selection_with_profiles(profiles, selection)?;
     let mut next = unresolved_test_selection(current);
     match control_id {
         AUTOFOCUS_CONTROL_ID => next.autofocus_enabled = value,
         _ => return Err(TestAuthoringError::WrongControlType),
     }
     next.preview_quality_id = "setup";
-    resolve_test_authoring_selection(next)
+    resolve_test_authoring_selection_with_profiles(profiles, next)
 }
 
 #[cfg(test)]
@@ -3734,7 +3899,12 @@ mod tests {
             sensor_bloom_crosstalk_fraction: 0.020,
             sensor_bloom_overflow_transfer_fraction: 0.30,
             sensor_noise_amount: 1.0,
-            camera_rendering_intent: capture("iphone-16e-main-48mp").unwrap().rendering_intent,
+            camera_rendering_intent: capture(
+                &BUILT_IN_TEST_AUTHORING_PROFILES,
+                "iphone-16e-main-48mp",
+            )
+            .unwrap()
+            .rendering_intent,
             device_vfx_alpha_mode_id: "device-transparency",
             delivery_preset_id: "uhd",
             delivery_width: 3_840.0,
@@ -3846,26 +4016,26 @@ mod tests {
             &page.phases[8].controls[0],
             TestControlRequirement::Choice {
                 id: CAPTURE_PRESET_CONTROL_ID,
-                selected_id: "iphone-16e-main-48mp",
+                selected_id,
                 ..
-            }
+            } if selected_id == "iphone-16e-main-48mp"
         ));
         assert!(matches!(
             &page.phases[11].controls[0],
             TestControlRequirement::Choice {
                 id: LENS_EVALUATION_MODEL_CONTROL_ID,
-                selected_id: "vfx-2d-dof",
+                selected_id,
                 ..
-            }
+            } if selected_id == "vfx-2d-dof"
         ));
         assert!(matches!(
             &page.phases[11].controls[1],
             TestControlRequirement::Choice {
                 id: LENS_PRESET_CONTROL_ID,
                 options,
-                selected_id: "iphone-16e-main-integrated",
+                selected_id,
                 ..
-            } if options.len() == 1
+            } if options.len() == 1 && selected_id == "iphone-16e-main-integrated"
         ));
         assert!(page.phases[2].controls.iter().any(|control| matches!(
             control,
@@ -3971,7 +4141,7 @@ mod tests {
         assert_eq!(arri.recording_profile_id, GENERIC_PRORES_422_HQ_PROFILE_ID);
         assert_eq!(
             arri.recording_output_transform_id,
-            screen_color::GENERIC_REC709_RECORDING_OUTPUT_TRANSFORM_ID
+            screen_color::GENERIC_REC2100_PQ_RECORDING_OUTPUT_TRANSFORM_ID
         );
         let arri_page = test_page_descriptor(unresolved_test_selection(arri)).unwrap();
         let arri_codec = arri_page
@@ -4064,14 +4234,13 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert!(radius > finite.camera_position_z_meters.abs());
-        assert!(radius > 4.0);
-        let mut invalid = unresolved_test_selection(finite);
-        invalid.environment_sphere_radius_meters = radius - 0.001;
-        assert_eq!(
-            resolve_test_authoring_selection(invalid),
-            Err(TestAuthoringError::InvalidEnvironmentAmount)
-        );
+        assert_eq!(radius, 0.001);
+        // Presentation exposes the authored positive domain only. The exact resolved
+        // scene/timeline evaluator owns enclosure, so a static base camera cannot
+        // invalidate a radius derived from animated camera samples.
+        let mut small_but_authored = unresolved_test_selection(finite);
+        small_but_authored.environment_sphere_radius_meters = 0.1;
+        assert!(resolve_test_authoring_selection(small_but_authored).is_ok());
     }
 
     #[test]
@@ -4151,11 +4320,13 @@ mod tests {
     }
 
     #[test]
-    fn autofocus_tracks_look_at_distance_and_manual_focus_remains_authored() {
+    fn autofocus_remains_a_scene_intent_and_manual_focus_remains_authored() {
         let mut selection = asus();
+        let authored_manual_distance = selection.focus_distance_meters;
         selection.camera_distance_meters = 0.5;
         let automatic = resolve_test_authoring_selection(selection).unwrap();
-        assert!((automatic.focus_distance_meters - 0.5).abs() < 1.0e-6);
+        assert!(automatic.autofocus_enabled);
+        assert_eq!(automatic.focus_distance_meters, authored_manual_distance);
 
         selection.autofocus_enabled = false;
         selection.focus_distance_meters = 0.22;
@@ -4164,7 +4335,7 @@ mod tests {
     }
 
     #[test]
-    fn autofocus_target_is_device_local_and_changes_depth_on_a_tilted_screen() {
+    fn autofocus_target_does_not_bake_a_distance_before_scene_resolution() {
         let mut selection = asus();
         selection.geometry_mode_id = "free";
         selection.camera_position_x_meters = 0.0;
@@ -4178,7 +4349,8 @@ mod tests {
         let left = resolve_test_authoring_selection(selection).unwrap();
         selection.autofocus_target_u = 1.0;
         let right = resolve_test_authoring_selection(selection).unwrap();
-        assert!(left.focus_distance_meters < right.focus_distance_meters);
+        assert_eq!(left.focus_distance_meters, right.focus_distance_meters);
+        assert_ne!(left.autofocus_target_u, right.autofocus_target_u);
 
         selection.autofocus_enabled = false;
         selection.focus_distance_meters = 0.31;
@@ -4222,8 +4394,8 @@ mod tests {
                     maximum,
                     unit: "mm",
                     ..
-                } if (*minimum - 2.1).abs() < 1.0e-6
-                    && (*maximum - 8.4).abs() < 1.0e-6
+                } if (*minimum - 0.1).abs() < 1.0e-6
+                    && (*maximum - 500.0).abs() < 1.0e-6
             )),
             Some(_)
         ));
@@ -4312,18 +4484,16 @@ mod tests {
         .unwrap();
         assert_eq!(
             changed_camera.sensor_bloom_crosstalk_fraction,
-            capture("arri-alexa-35-open-gate")
+            capture(&BUILT_IN_TEST_AUTHORING_PROFILES, "arri-alexa-35-open-gate")
                 .unwrap()
-                .sensor
-                .bloom
+                .sensor_bloom
                 .crosstalk_fraction
         );
         assert_eq!(
             changed_camera.sensor_bloom_overflow_transfer_fraction,
-            capture("arri-alexa-35-open-gate")
+            capture(&BUILT_IN_TEST_AUTHORING_PROFILES, "arri-alexa-35-open-gate")
                 .unwrap()
-                .sensor
-                .bloom
+                .sensor_bloom
                 .overflow_transfer_fraction
         );
         assert_eq!(changed_camera.lens_evaluation_model_id, "thin-lens");
@@ -4379,8 +4549,10 @@ mod tests {
         assert_eq!(selection.device_id, "lcd-tv-hd-32");
         assert_eq!(selection.color_mode_id, "rec709-gamma24");
         assert_eq!(selection.white_luminance_nits, 250.0);
-        let device = preset(selection.device_id).unwrap();
-        let cover = cover_glass_preset(device.default_cover_glass_preset_id).unwrap();
+        let device = preset(&BUILT_IN_TEST_AUTHORING_PROFILES, selection.device_id).unwrap();
+        let cover = BUILT_IN_TEST_AUTHORING_PROFILES
+            .cover(device.default_cover_glass_profile_id)
+            .unwrap();
         assert_eq!(
             selection.cover_ag_microtexture_amount,
             cover.profile.anti_glare_microtexture.character_strength
@@ -4652,9 +4824,9 @@ mod tests {
             control,
             TestControlRequirement::Choice {
                 id: DEVICE_VFX_ALPHA_MODE_CONTROL_ID,
-                selected_id: "device-transparency",
+                selected_id,
                 ..
-            }
+            } if selected_id == "device-transparency"
         )));
 
         let ignored =

@@ -29,7 +29,7 @@ import Testing
     let source = try String(contentsOfFile: path, encoding: .utf8)
     let unknown = source.replacingOccurrences(of: "DE4RadialStandardDegree4", with: "UnknownLensModel")
     #expect(throws: FusionTrackingError.self) {
-        try FusionTrackingImporter().parse(unknown, sourceFileName: "unknown.comp")
+        try FusionTrackingImporter().parse(unknown)
     }
     let quartic = "QuarticDistortionDegree4\"] = Input { Value = 0, }"
     let secondNode = try #require(source.range(of: "Cam1ReDis"))
@@ -40,7 +40,7 @@ import Testing
         with: "QuarticDistortionDegree4\"] = Input { Value = 0.01, }"
     )
     #expect(throws: FusionTrackingError.self) {
-        try FusionTrackingImporter().parse(contradictory, sourceFileName: "contradictory.comp")
+        try FusionTrackingImporter().parse(contradictory)
     }
 }
 

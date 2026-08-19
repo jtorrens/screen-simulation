@@ -152,6 +152,8 @@ pub struct LcdProfile {
     pub native_height: u32,
     pub active_width: Meters,
     pub active_height: Meters,
+    /// Uniform physical radius of the active panel outline. Zero is a rectangle.
+    pub corner_radius: Meters,
     pub stripe_layout: StripeLayout,
     pub black_matrix_fraction: f32,
     pub eotf_gamma: f32,
@@ -520,6 +522,7 @@ pub struct DevicePreset {
     pub native_height: u32,
     pub active_width: Meters,
     pub active_height: Meters,
+    pub corner_radius: Meters,
     pub reference_white_nits: f32,
     pub minimum_white_nits: f32,
     pub maximum_white_nits: f32,
@@ -537,6 +540,7 @@ impl DevicePreset {
             native_height: self.native_height,
             active_width: self.active_width,
             active_height: self.active_height,
+            corner_radius: self.corner_radius,
             stripe_layout: StripeLayout::Rgb,
             black_matrix_fraction: 0.12,
             eotf_gamma: 2.2,
@@ -583,6 +587,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 1_334,
         active_width: Meters(0.058_436),
         active_height: Meters(0.103_941),
+        corner_radius: Meters(0.0),
         reference_white_nits: 625.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 625.0,
@@ -603,6 +608,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 1_792,
         active_width: Meters(0.064_517),
         active_height: Meters(0.139_607),
+        corner_radius: Meters(0.0),
         reference_white_nits: 625.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 625.0,
@@ -623,6 +629,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 2_400,
         active_width: Meters(0.067_733),
         active_height: Meters(0.150_519),
+        corner_radius: Meters(0.0),
         reference_white_nits: 500.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 500.0,
@@ -643,6 +650,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 1_964,
         active_width: Meters(0.302_4),
         active_height: Meters(0.196_4),
+        corner_radius: Meters(0.0),
         reference_white_nits: 500.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 500.0,
@@ -663,6 +671,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 1_080,
         active_width: Meters(0.345_353),
         active_height: Meters(0.194_261),
+        corner_radius: Meters(0.0),
         reference_white_nits: 300.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 300.0,
@@ -683,6 +692,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 768,
         active_width: Meters(0.708_500),
         active_height: Meters(0.398_337),
+        corner_radius: Meters(0.0),
         reference_white_nits: 250.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 250.0,
@@ -703,6 +713,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 1_080,
         active_width: Meters(0.951_935),
         active_height: Meters(0.535_463),
+        corner_radius: Meters(0.0),
         reference_white_nits: 300.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 300.0,
@@ -723,6 +734,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 2_160,
         active_width: Meters(1.217_591),
         active_height: Meters(0.684_895),
+        corner_radius: Meters(0.0),
         reference_white_nits: 350.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 350.0,
@@ -743,6 +755,7 @@ pub const DEVICE_PRESETS: [DevicePreset; 9] = [
         native_height: 2_160,
         active_width: Meters(0.708_480),
         active_height: Meters(0.398_520),
+        corner_radius: Meters(0.0),
         reference_white_nits: 350.0,
         minimum_white_nits: 100.0,
         maximum_white_nits: 350.0,
@@ -804,8 +817,11 @@ impl LcdProfile {
         }
         if !self.active_width.0.is_finite()
             || !self.active_height.0.is_finite()
+            || !self.corner_radius.0.is_finite()
             || self.active_width.0 <= 0.0
             || self.active_height.0 <= 0.0
+            || self.corner_radius.0 < 0.0
+            || self.corner_radius.0 > 0.5 * self.active_width.0.min(self.active_height.0)
         {
             return Err(PanelError::NonPositiveActiveArea);
         }
@@ -1579,6 +1595,7 @@ mod tests {
             native_height: 2160,
             active_width: Meters(0.596_736),
             active_height: Meters(0.335_664),
+            corner_radius: Meters(0.0),
             stripe_layout: StripeLayout::Rgb,
             black_matrix_fraction: 0.12,
             eotf_gamma: 2.2,

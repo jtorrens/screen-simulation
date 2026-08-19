@@ -44,6 +44,7 @@ RETIRED_TOKENS = (
     "SCREEN_AUTHORING_CATALOG_ABI_VERSION 2",
     "SCREEN_PHYSICAL_FRAME_ABI_VERSION 17",
     "SCREEN_TEST_AUTHORING_ABI_VERSION 29",
+    "ScreenRecordingExecutionPlanV1",
 )
 
 RETIRED_SOURCE_PATTERNS = (
@@ -84,7 +85,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 26u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 30u",
         "#define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
@@ -97,12 +98,21 @@ def validate_sources() -> None:
         "screen_physical_timed_input_set_v2_create",
         "ScreenPhysicalCameraPoseTrackV2Ref",
         "ScreenPhysicalScreenPoseTrackV2Ref",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 37u",
+        "ScreenTrackingOverlayRequestV1",
+        "screen_tracking_overlay_v1_resolve",
+        "ScreenSceneFocusTargetRequestV1",
+        "screen_scene_focus_target_v1_project",
+        "screen_scene_focus_target_v1_unproject",
+        "ScreenSceneEnvironmentRadiusRequestV1",
+        "screen_scene_environment_minimum_radius_v1",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 38u",
         "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
         "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 9u",
         "ScreenCapturePresetParametersV4",
+        "#define SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION 2u",
+        "ScreenRecordingExecutionPlanV2",
     )
     missing = [token for token in required if token not in header]
     if missing:
@@ -111,15 +121,24 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 26",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 30",
         "SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1",
         "ScreenPhysicalStageDescriptorV1",
         "screen_physical_stage_descriptor",
         "ScreenPhysicalStageContributionV3",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 37",
+        "ScreenTrackingOverlayRequestV1",
+        "screen_tracking_overlay_v1_resolve",
+        "ScreenSceneFocusTargetRequestV1",
+        "screen_scene_focus_target_v1_project",
+        "screen_scene_focus_target_v1_unproject",
+        "ScreenSceneEnvironmentRadiusRequestV1",
+        "screen_scene_environment_minimum_radius_v1",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 38",
         "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
+        "SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION: u32 = 2",
+        "ScreenRecordingExecutionPlanV2",
         "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9",
         "ScreenCapturePresetParametersV4",
     ):
@@ -138,6 +157,14 @@ def validate_binary(binary: Path) -> None:
         raise RuntimeError(f"native binary contains retired physical ABI: {matches}")
     if "_screen_physical_frame_submit" not in symbols:
         raise RuntimeError("native binary does not contain the unified physical submit boundary")
+    if "_screen_tracking_overlay_v1_resolve" not in symbols:
+        raise RuntimeError("native binary does not contain the tracking overlay evaluator")
+    if "_screen_scene_focus_target_v1_project" not in symbols:
+        raise RuntimeError("native binary does not contain the focus target projector")
+    if "_screen_scene_focus_target_v1_unproject" not in symbols:
+        raise RuntimeError("native binary does not contain the focus target inverse projector")
+    if "_screen_scene_environment_minimum_radius_v1" not in symbols:
+        raise RuntimeError("native binary does not contain the environment radius evaluator")
 
 
 def main() -> int:
@@ -146,7 +173,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v26 source/header/symbol gate passed")
+    print("native macOS physical ABI v30 source/header/symbol gate passed")
     return 0
 
 

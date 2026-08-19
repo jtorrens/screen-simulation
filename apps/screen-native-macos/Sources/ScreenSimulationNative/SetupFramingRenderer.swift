@@ -146,7 +146,8 @@ final class SetupFramingRenderer {
                 Float(authored.screenPose.quaternion[2]), Float(authored.screenPose.quaternion[3])
             ),
             screenHeightShiftY: SIMD4(
-                Float(device.activeHeightMeters), Float(authored.sceneLens.lensShift[1]), 0, 0
+                Float(device.activeHeightMeters), Float(authored.sceneLens.lensShift[1]),
+                Float(device.cornerRadiusMeters), 0
             ),
             raster: SIMD4(
                 UInt32(deliveryWidth), UInt32(deliveryHeight),
@@ -218,7 +219,8 @@ final class SetupFramingRenderer {
             deliveryPlacement: deliveryPlacement,
             outputWidth: outputWidth, outputHeight: outputHeight,
             applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
-            sampleDistortedEdges: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4
+            sampleDistortedEdges: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
+            roundedOutline: true
         )
         let corners = Self.projectedBoundary(
             authored: authored, device: device,
@@ -226,7 +228,8 @@ final class SetupFramingRenderer {
             deliveryPlacement: deliveryPlacement,
             outputWidth: outputWidth, outputHeight: outputHeight,
             applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
-            sampleDistortedEdges: false
+            sampleDistortedEdges: false,
+            roundedOutline: false
         )
         let sensorGateBoundary = Self.sensorGateBoundary(
             cameraWidth: Int(cameraRaster.nativeWidth),
@@ -452,24 +455,47 @@ final class SetupFramingRenderer {
         outputWidth: Int,
         outputHeight: Int,
         applyLensDistortion: Bool,
-        sampleDistortedEdges: Bool
+        sampleDistortedEdges: Bool,
+        roundedOutline: Bool
     ) -> [CGPoint] {
-        let edgeSamples = sampleDistortedEdges ? 64 : 1
-        let corners: [(Float, Float)] = [(-1, 1), (1, 1), (1, -1), (-1, -1)]
-        let perimeter = corners.indices.flatMap { edge -> [(Float, Float)] in
-            let start = corners[edge]
-            let end = corners[(edge + 1) % corners.count]
-            return (0..<edgeSamples).map { sample in
-                let t = Float(sample) / Float(edgeSamples)
-                return (
-                    start.0 + (end.0 - start.0) * t,
-                    start.1 + (end.1 - start.1) * t
-                )
+        let perimeter: [(Float, Float)]
+        if roundedOutline, device.cornerRadiusMeters > 0 {
+            let radiusX = Float(device.cornerRadiusMeters / device.activeWidthMeters)
+            let radiusY = Float(device.cornerRadiusMeters / device.activeHeightMeters)
+            let samplesPerCorner = sampleDistortedEdges ? 32 : 8
+            let arcs: [(center: SIMD2<Float>, start: Float)] = [
+                (SIMD2(1 - radiusX, radiusY), -.pi / 2),
+                (SIMD2(1 - radiusX, 1 - radiusY), 0),
+                (SIMD2(radiusX, 1 - radiusY), .pi / 2),
+                (SIMD2(radiusX, radiusY), .pi),
+            ]
+            perimeter = arcs.flatMap { arc in
+                (0..<samplesPerCorner).map { sample in
+                    let angle = arc.start + Float(sample) / Float(samplesPerCorner) * (.pi / 2)
+                    return (
+                        arc.center.x + cos(angle) * radiusX,
+                        arc.center.y + sin(angle) * radiusY
+                    )
+                }
+            }
+        } else {
+            let edgeSamples = sampleDistortedEdges ? 64 : 1
+            let corners: [(Float, Float)] = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            perimeter = corners.indices.flatMap { edge -> [(Float, Float)] in
+                let start = corners[edge]
+                let end = corners[(edge + 1) % corners.count]
+                return (0..<edgeSamples).map { sample in
+                    let t = Float(sample) / Float(edgeSamples)
+                    return (
+                        start.0 + (end.0 - start.0) * t,
+                        start.1 + (end.1 - start.1) * t
+                    )
+                }
             }
         }
-        return perimeter.compactMap { sx, sy in
+        return perimeter.compactMap { u, v in
             projectedDevicePoint(
-                u: (sx + 1) * 0.5, v: (1 - sy) * 0.5,
+                u: u, v: v,
                 authored: authored, device: device,
                 deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
                 deliveryPlacement: deliveryPlacement,
@@ -618,8 +644,22 @@ final class SetupFramingRenderer {
             Double(simd_dot(local, screenRight) / Float(device.activeWidthMeters) + 0.5),
             Double(0.5 - simd_dot(local, screenUp) / Float(device.activeHeightMeters))
         )
-        guard uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 else { return nil }
+        guard Self.roundedDeviceContains(uv, device: device) else { return nil }
         return uv
+    }
+
+    private static func roundedDeviceContains(
+        _ uv: SIMD2<Double>, device: DeviceDefinition
+    ) -> Bool {
+        guard uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 else { return false }
+        guard device.cornerRadiusMeters > 0 else { return true }
+        let radius = SIMD2(
+            device.cornerRadiusMeters / device.activeWidthMeters,
+            device.cornerRadiusMeters / device.activeHeightMeters
+        )
+        let q = simd_max(abs(uv - 0.5) - (SIMD2(repeating: 0.5) - radius), .zero)
+        let normalized = q / radius
+        return simd_dot(normalized, normalized) <= 1
     }
 
     private static func inverseDistortion(
@@ -943,6 +983,17 @@ final class SetupFramingRenderer {
         return all(uv >= 0.0f) && all(uv <= 1.0f);
     }
 
+    inline bool rounded_device_contains(float2 panel, constant SetupParameters& s) {
+        if (any(panel < 0.0f) || any(panel > 1.0f)) return false;
+        const float radius_meters = s.screen_height_shift_y.z;
+        if (radius_meters <= 0.0f) return true;
+        const float2 radius = radius_meters
+            / float2(s.screen_position_width.w, s.screen_height_shift_y.x);
+        const float2 q = abs(panel - 0.5f) - (0.5f - radius);
+        const float2 normalized = max(q, 0.0f) / radius;
+        return dot(normalized, normalized) <= 1.0f;
+    }
+
     inline float device_coverage(
         uint2 p, bool apply_lens_distortion, constant SetupParameters& s
     ) {
@@ -962,7 +1013,7 @@ final class SetupFramingRenderer {
                 } else {
                     valid = screen_uv(camera, s, panel);
                 }
-                if (valid && all(panel >= 0.0f) && all(panel <= 1.0f)) covered += 1.0f;
+                if (valid && rounded_device_contains(panel, s)) covered += 1.0f;
             }
         }
         return covered * (1.0f / 16.0f);
@@ -1035,7 +1086,7 @@ final class SetupFramingRenderer {
                 backgroundEnvironment.a = 1.0f;
             }
             float2 panel;
-            if (!screen_uv(camera, s, panel) || any(panel < 0.0f) || any(panel > 1.0f)) {
+            if (!screen_uv(camera, s, panel) || !rounded_device_contains(panel, s)) {
                 output.write(backgroundEnvironment, p); return;
             }
             float4 value = source.sample(linear_sampler, framed_environment_uv(panel, s));
@@ -1047,7 +1098,7 @@ final class SetupFramingRenderer {
             float2 panel;
             float depth;
             if (!focus_screen_sample(camera, s, panel, depth)
-                || any(panel < 0.0f) || any(panel > 1.0f)) {
+                || !rounded_device_contains(panel, s)) {
                 output.write(background, p); return;
             }
             const float focal_m = s.camera_position_focal.w * 0.001f;
@@ -1074,7 +1125,7 @@ final class SetupFramingRenderer {
         } else if (!screen_uv(camera, s, panel)) {
             output.write(background, p); return;
         }
-        const bool inside = all(panel >= 0.0f) && all(panel <= 1.0f);
+        const bool inside = rounded_device_contains(panel, s);
         const float coverage = (s.modes.w == 3u)
             ? device_coverage(p, true, s)
             : (s.modes.w == 0u ? device_coverage(p, false, s) : (inside ? 1.0f : 0.0f));

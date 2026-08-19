@@ -1,6 +1,5 @@
 use screen_application::{
-    PreparedRecordingRequest, RasterPlacement, RecordingSelection, RollingDirection, SensorReadout,
-    prepare_recording_request,
+    PreparedRecordingRequest, RasterPlacement, RecordingSelection, prepare_recording_request,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{
@@ -27,8 +26,7 @@ use screen_persistence::{
     AlphaSelection, BayerSelection, CameraIntrinsicsKeyframe as StoredIntrinsics,
     CameraRenderingIntentDocument, CoverGlowDocument, ExactTime, InterpolationSelection,
     MatrixSelection, PlacementSelection, ProjectPackage, RangeSelection,
-    RecordingSelectionDocument, RollingDirectionSelection, SensorBloomDocument,
-    SensorReadoutDocument, SourceColorSelection, StripeSelection,
+    RecordingSelectionDocument, SensorBloomDocument, SourceColorSelection, StripeSelection,
     TransformKeyframe as StoredTransform,
 };
 use screen_recording::EncoderExecutionPolicy;
@@ -53,7 +51,6 @@ pub struct ProjectScene {
     pub sensor: SensorProfile,
     pub shutter_duration: RationalTime,
     pub temporal_samples: u16,
-    pub sensor_readout: SensorReadout,
     pub sensor_noise_seed: u64,
     pub neutral_density_stops: f32,
     pub camera_development: CameraDevelopment,
@@ -126,6 +123,7 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
             native_height: device.native_height,
             active_width: Meters(device.active_width_meters),
             active_height: Meters(device.active_height_meters),
+            corner_radius: Meters(0.0),
             stripe_layout: match device.stripe {
                 StripeSelection::Rgb => StripeLayout::Rgb,
                 StripeSelection::Bgr => StripeLayout::Bgr,
@@ -318,19 +316,6 @@ pub fn map_project_scene(package: &ProjectPackage) -> Result<ProjectScene, Strin
         .map_err(|error| error.to_string())?,
         shutter_duration: map_time(package.sensor.shutter_duration)?,
         temporal_samples: package.sensor.temporal_samples,
-        sensor_readout: match package.sensor.readout {
-            SensorReadoutDocument::Global => SensorReadout::Global,
-            SensorReadoutDocument::Rolling {
-                duration,
-                direction,
-            } => SensorReadout::Rolling {
-                duration: map_time(duration)?,
-                direction: match direction {
-                    RollingDirectionSelection::TopToBottom => RollingDirection::TopToBottom,
-                    RollingDirectionSelection::BottomToTop => RollingDirection::BottomToTop,
-                },
-            },
-        },
         sensor_noise_seed: package.shot.sensor_noise_seed,
         neutral_density_stops: package.shot.neutral_density_stops,
         camera_development: CameraDevelopment {
@@ -620,13 +605,6 @@ mod tests {
                     denominator: 48,
                 },
                 temporal_samples: 8,
-                readout: SensorReadoutDocument::Rolling {
-                    duration: ExactTime {
-                        numerator: 1,
-                        denominator: 60,
-                    },
-                    direction: RollingDirectionSelection::TopToBottom,
-                },
             },
             screen: ScreenDocument {
                 schema: "screen_simulation_screen".into(),
@@ -715,13 +693,6 @@ mod tests {
         assert_eq!(scene.sensor.native_height, 2_160);
         assert_eq!(scene.shutter_duration, RationalTime::new(1, 48).unwrap());
         assert_eq!(scene.temporal_samples, 8);
-        assert_eq!(
-            scene.sensor_readout,
-            SensorReadout::Rolling {
-                duration: RationalTime::new(1, 60).unwrap(),
-                direction: RollingDirection::TopToBottom,
-            }
-        );
         assert_eq!(scene.sensor_noise_seed, 42);
         assert_eq!(scene.cover.thickness_millimeters, 0.8);
         assert_eq!(scene.cover.anti_reflective_efficiency, 0.62);

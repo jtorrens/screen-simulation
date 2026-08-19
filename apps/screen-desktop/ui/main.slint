@@ -122,8 +122,6 @@ export component MainWindow inherits Window {
     in-out property <float> capture-exposure-index: 800;
     in-out property <float> shutter-angle-degrees: 180;
     in-out property <float> temporal-samples: 1;
-    in-out property <int> sensor-readout-index: 1;
-    in-out property <float> readout-duration-ms: 7.8;
     in-out property <float> sensor-noise-seed: 42;
     in-out property <float> neutral-density-stops: 0;
     in-out property <int> output-transform-index: 0;
@@ -1240,23 +1238,6 @@ export component MainWindow inherits Window {
                             numeric-value: round(root.shutter-angle-degrees * 10) / 10;
                             suffix: "°";
                             visible: root.view-index == 4;
-                        }
-
-                        ComboBox {
-                            visible: root.view-index == 4;
-                            model: ["Global", "Rolling top → bottom", "Rolling bottom → top"];
-                            current-index <=> root.sensor-readout-index;
-                        }
-
-                        ValueRow {
-                            label: "Readout";
-                            minimum: 0.1;
-                            maximum: 100;
-                            step: 0.1;
-                            value <=> root.readout-duration-ms;
-                            numeric-value: round(root.readout-duration-ms * 10) / 10;
-                            suffix: "ms";
-                            visible: root.view-index == 4 && root.sensor-readout-index != 0;
                         }
 
                         ValueRow {

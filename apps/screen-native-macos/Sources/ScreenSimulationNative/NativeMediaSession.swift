@@ -282,14 +282,21 @@ final class NativeMediaSession {
     }
 
     func exactSample(at requested: CMTime) async throws -> NativeMediaSample? {
-        if case .images = source { return try currentSample(at: requested) }
+        if case .images = source {
+            guard let sample = try currentSample(at: retainedDecodeTime(requested)) else {
+                return nil
+            }
+            return NativeMediaSample(pixelBuffer: sample.pixelBuffer, time: requested)
+        }
         if case let .ffmpeg(source) = source {
-            let bounded = bounded(requested)
+            let bounded = retainedDecodeTime(requested)
             let decoded = try NativeFFmpegMedia.decode(
                 url: source.url, time: bounded, colorModel: source.colorModel,
                 matrix: source.matrix, range: source.range
             )
-            return NativeMediaSample(pixelBuffer: try Self.decodedPixelBuffer(decoded), time: bounded)
+            return NativeMediaSample(
+                pixelBuffer: try Self.decodedPixelBuffer(decoded), time: requested
+            )
         }
         guard let asset = videoAsset, let track = videoTrack else { return nil }
         let reader = try AVAssetReader(asset: asset)
@@ -306,14 +313,16 @@ final class NativeMediaSession {
             value: CMTimeValue(rate.denominator),
             timescale: CMTimeScale(rate.numerator)
         )
-        reader.timeRange = CMTimeRange(start: bounded(requested), duration: duration)
+        reader.timeRange = CMTimeRange(start: retainedDecodeTime(requested), duration: duration)
         guard reader.startReading(),
               let sample = output.copyNextSampleBuffer(),
               let buffer = CMSampleBufferGetImageBuffer(sample)
         else { throw NativeMediaError.unreadable("frame \(requested.seconds)") }
         return NativeMediaSample(
             pixelBuffer: buffer,
-            time: CMSampleBufferGetPresentationTimeStamp(sample)
+            // The decoded image is retained at the media boundary, but this sample
+            // still represents the exact scene time requested by Application.
+            time: requested
         )
     }
 
@@ -328,6 +337,28 @@ final class NativeMediaSession {
     private func bounded(_ time: CMTime) -> CMTime {
         guard let duration = info?.duration, duration.isNumeric else { return max(.zero, time) }
         return min(max(.zero, time), duration)
+    }
+
+    private func retainedDecodeTime(_ requested: CMTime) -> CMTime {
+        guard let info else { return max(.zero, requested) }
+        return Self.retainedDecodeTime(
+            requested,
+            frameCount: info.frameCount,
+            exactFrameRate: info.exactFrameRate
+        )
+    }
+
+    static func retainedDecodeTime(
+        _ requested: CMTime,
+        frameCount: Int,
+        exactFrameRate: ExactFrameRate
+    ) -> CMTime {
+        let lastFrame = CMTime(
+            value: CMTimeValue(max(0, frameCount - 1))
+                * CMTimeValue(exactFrameRate.denominator),
+            timescale: CMTimeScale(exactFrameRate.numerator)
+        )
+        return min(max(.zero, requested), lastFrame)
     }
 
     private static func imagePixelBuffer(_ url: URL) throws -> CVPixelBuffer {

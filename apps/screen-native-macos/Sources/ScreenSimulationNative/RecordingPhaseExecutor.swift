@@ -1,10 +1,15 @@
 import Foundation
+import Metal
 import ScreenPhysicalBridge
 import StudioColor
 
 struct RecordingOutputExecution: Sendable {
     let frame: StudioColorMetalFrame
+    let encodedRGBA: [Float]
     let rgba8: [UInt8]
+    /// The physical occlusion matte is not a recording-codec channel. It remains an
+    /// independent composition artifact while only RGB performs the real encode/decode.
+    let physicalMatte: [Float]
 }
 
 struct RecordingCodecExecution: Sendable {
@@ -19,14 +24,12 @@ enum RecordingPhaseExecutionError: Error, LocalizedError {
     case bridge(String)
     case unsupportedProfile(String)
     case missingACEScgInput
-    case sequenceRequired
 
     var errorDescription: String? {
         switch self {
         case let .bridge(message): message
         case let .unsupportedProfile(profile): "Perfil de grabación no ejecutable en macOS: \(profile)"
         case .missingACEScgInput: "Falta el Input Transform ACEScg requerido."
-        case .sequenceRequired: "El perfil de vídeo requiere la secuencia cronológica completa; no puede evaluarse a partir de un único frame."
         }
     }
 }
@@ -89,6 +92,7 @@ enum RecordingPhaseExecutor {
         display: StudioColorMetalDisplay
     ) throws -> RecordingOutputExecution {
         let input = try display.readLinearRGBA(cameraRendered)
+        let physicalMatte = stride(from: 3, to: input.count, by: 4).map { input[$0] }
         var encoded = [Float](repeating: 0, count: input.count)
         var bridgeError: UnsafePointer<CChar>?
         let succeeded = transformID.utf8CString.withUnsafeBufferPointer { id in
@@ -114,17 +118,25 @@ enum RecordingPhaseExecutor {
                 bridgeError.map(String.init(cString:)) ?? "Recording Output ha fallado."
             )
         }
+        // Camera recording formats own RGB only. Keep their encoded input explicitly opaque;
+        // the physical matte travels beside the codec and is restored after decoding.
+        for alpha in stride(from: 3, to: encoded.count, by: 4) { encoded[alpha] = 1 }
         let rgba8 = encoded.map { UInt8((min(max($0, 0), 1) * 255).rounded()) }
         var preview = encoded
         try inverse(&preview, transformID: transformID, width: cameraRendered.width, height: cameraRendered.height)
-        let frame = try display.makeACEScgFrame(
+        try restorePhysicalMatte(physicalMatte, to: &preview)
+        let frame = try makeIndependentLinearFrame(
             width: cameraRendered.width,
             height: cameraRendered.height,
-            encodedRGBA: preview,
-            input: try acescgInput(),
-            alpha: .ignore
+            rgba: preview,
+            device: cameraRendered.texture.device
         )
-        return RecordingOutputExecution(frame: frame, rgba8: rgba8)
+        return RecordingOutputExecution(
+            frame: frame,
+            encodedRGBA: encoded,
+            rgba8: rgba8,
+            physicalMatte: physicalMatte
+        )
     }
 
     static func codec(
@@ -137,9 +149,11 @@ enum RecordingPhaseExecutor {
         display: StudioColorMetalDisplay
     ) throws -> RecordingCodecExecution {
         if character == 0 {
+            var diagnostic = output.rgba8
+            restorePhysicalMatte8(output.physicalMatte, to: &diagnostic)
             return RecordingCodecExecution(
                 frame: output.frame,
-                decodedRGBA8: output.rgba8,
+                decodedRGBA8: diagnostic,
                 encodedData: Data(),
                 encodedBytes: 0,
                 encodedSHA256Hex: ""
@@ -153,14 +167,7 @@ enum RecordingPhaseExecutor {
             firstFrameIndex: 0,
             frameCount: 1
         )
-        guard plan.adapter_kind != UInt32.max else {
-            let precision = plan.unavailable_reason == 1 ? "10-bit 4:2:0" : "10-bit 4:2:2"
-            throw RecordingPhaseExecutionError.unsupportedProfile(
-                "\(profileID) · falta entrada nativa \(precision); RGBA8 no se usa como sustituto"
-            )
-        }
-        guard plan.medium == 0 else { throw RecordingPhaseExecutionError.sequenceRequired }
-        let decoded: [UInt8]
+        let decoded: [Float]
         let data: Data
         let hash: [UInt8]
         let width: Int
@@ -177,27 +184,58 @@ enum RecordingPhaseExecutor {
                 colorSpace: plan.adapter_kind == 0 ? .displayP3D65 : .rec709,
                 rgba8: output.rgba8
             ))
-            decoded = result.rgba8
+            decoded = result.rgba8.map { Float($0) / 255 }
             data = result.encodedData
             hash = result.encodedSHA256
             width = result.width
             height = result.height
             transformID = outputTransformID
-        default:
-            throw RecordingPhaseExecutionError.unsupportedProfile(profileID)
+        case 2 ... 5:
+            let codec: AVFoundationRecordingRequest.Codec = switch plan.adapter_kind {
+            case 2: .h264High8
+            case 3: .hevcMain10
+            case 4: .proRes422HQ
+            case 5: .proRes4444
+            default: throw RecordingPhaseExecutionError.unsupportedProfile(profileID)
+            }
+            let color: AVFoundationRecordingRequest.Color = outputTransformID
+                == "generic-rec2100-pq-recording-full-v1" ? .rec2100PQ : .rec709
+            let result = try AVFoundationRecordingAdapter.roundTrip(.init(
+                codec: codec,
+                color: color,
+                width: output.frame.width,
+                height: output.frame.height,
+                frameRateNumerator: frameRateNumerator,
+                frameRateDenominator: frameRateDenominator,
+                firstFrameIndex: 0,
+                bitsPerSecond: Int(plan.bits_per_second),
+                frames: [.init(frameIndex: 0, rgba: output.encodedRGBA)]
+            ))
+            guard let frame = result.frames.first else {
+                throw RecordingPhaseExecutionError.unsupportedProfile(profileID)
+            }
+            decoded = frame.rgba
+            data = result.encodedData
+            hash = result.encodedSHA256
+            width = result.width
+            height = result.height
+            transformID = outputTransformID
+        default: throw RecordingPhaseExecutionError.unsupportedProfile(profileID)
         }
-        var encoded = decoded.map { Float($0) / 255 }
+        var encoded = decoded
         try inverse(&encoded, transformID: transformID, width: width, height: height)
-        let frame = try display.makeACEScgFrame(
+        try restorePhysicalMatte(output.physicalMatte, to: &encoded)
+        let frame = try makeIndependentLinearFrame(
             width: width,
             height: height,
-            encodedRGBA: encoded,
-            input: try acescgInput(),
-            alpha: .ignore
+            rgba: encoded,
+            device: output.frame.texture.device
         )
+        var decodedDiagnostic = decoded.map { UInt8((min(1, max(0, $0)) * 255).rounded()) }
+        restorePhysicalMatte8(output.physicalMatte, to: &decodedDiagnostic)
         return RecordingCodecExecution(
             frame: frame,
-            decodedRGBA8: decoded,
+            decodedRGBA8: decodedDiagnostic,
             encodedData: data,
             encodedBytes: data.count,
             encodedSHA256Hex: hash.map { String(format: "%02x", $0) }.joined()
@@ -211,13 +249,13 @@ enum RecordingPhaseExecutor {
         frameRateDenominator: UInt32,
         firstFrameIndex: Int64,
         frameCount: UInt64
-    ) throws -> ScreenRecordingExecutionPlanV1 {
+    ) throws -> ScreenRecordingExecutionPlanV2 {
         try profileID.utf8CString.withUnsafeBufferPointer { id in
             let view = ScreenUTF8View(
                 bytes: UnsafeRawPointer(id.baseAddress!).assumingMemoryBound(to: UInt8.self),
                 count: max(0, id.count - 1)
             )
-            var plan = ScreenRecordingExecutionPlanV1()
+            var plan = ScreenRecordingExecutionPlanV2()
             var bridgeError: UnsafePointer<CChar>?
             guard screen_recording_prepare_execution_plan(
                 view,
@@ -264,5 +302,60 @@ enum RecordingPhaseExecutor {
                 bridgeError.map(String.init(cString:)) ?? "Preview Recording Output ha fallado."
             )
         }
+    }
+
+    private static func restorePhysicalMatte(
+        _ matte: [Float], to rgba: inout [Float]
+    ) throws {
+        guard rgba.count == matte.count * 4 else {
+            throw RecordingPhaseExecutionError.bridge(
+                "El matte físico no coincide con el raster Recording."
+            )
+        }
+        for (pixel, alpha) in matte.enumerated() { rgba[pixel * 4 + 3] = alpha }
+    }
+
+    private static func restorePhysicalMatte8(
+        _ matte: [Float], to rgba: inout [UInt8]
+    ) {
+        guard rgba.count == matte.count * 4 else { return }
+        for (pixel, alpha) in matte.enumerated() {
+            rgba[pixel * 4 + 3] = UInt8((min(1, max(0, alpha)) * 255).rounded())
+        }
+    }
+
+    /// Uploads an already-linear ACEScg artifact without applying alpha association.
+    /// RGB may legitimately remain non-zero where the independent physical matte is zero.
+    private static func makeIndependentLinearFrame(
+        width: Int,
+        height: Int,
+        rgba: [Float],
+        device: MTLDevice
+    ) throws -> StudioColorMetalFrame {
+        guard width > 0, height > 0, rgba.count == width * height * 4 else {
+            throw RecordingPhaseExecutionError.bridge("El raster Recording ACEScg no es válido.")
+        }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba32Float,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        descriptor.storageMode = .shared
+        descriptor.usage = [.shaderRead]
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw RecordingPhaseExecutionError.bridge(
+                "No se pudo publicar el raster Recording ACEScg."
+            )
+        }
+        rgba.withUnsafeBytes { bytes in
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: width * 4 * MemoryLayout<Float>.size
+            )
+        }
+        return StudioColorMetalFrame(texture: texture)
     }
 }

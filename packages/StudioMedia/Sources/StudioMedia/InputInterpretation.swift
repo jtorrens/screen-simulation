@@ -185,6 +185,64 @@ public struct StudioMediaDetection: Equatable, Sendable {
     }
 }
 
+public enum StudioImportInterpretationField: String, CaseIterable, Hashable, Sendable {
+    case inputTransform
+    case colorModel
+    case matrix
+    case range
+    case alpha
+
+    public var label: String {
+        switch self {
+        case .inputTransform: "Input Transform"
+        case .colorModel: "Modelo de señal"
+        case .matrix: "Matriz YUV"
+        case .range: "Rango de señal"
+        case .alpha: "Asociación de alpha"
+        }
+    }
+}
+
+public struct StudioMediaImportResolution: Equatable, Sendable {
+    public let detection: StudioMediaDetection
+    /// Fields whose selected value is a product default or proposal rather
+    /// than an unambiguous value read from the media metadata.
+    public let nonMetadataFields: [StudioImportInterpretationField]
+
+    public init(detection: StudioMediaDetection, isVideo: Bool) {
+        var resolved = detection
+        if resolved.proposedInputTransformID == nil {
+            resolved.proposedInputTransformID = "srgb-encoded-rec709"
+            resolved.inputTransformProvenance = .proposed
+        }
+        if resolved.colorModel == nil {
+            resolved.colorModel = isVideo ? .ycbcr : .rgb
+            resolved.colorModelProvenance = .proposed
+        }
+        if resolved.matrix == nil {
+            resolved.matrix = .bt709
+            resolved.matrixProvenance = .proposed
+        }
+        if resolved.range == nil {
+            resolved.range = isVideo ? .video : .full
+            resolved.rangeProvenance = .proposed
+        }
+        if resolved.alpha == nil {
+            resolved.alpha = resolved.hasAlpha ? .premultiplied : .ignore
+            resolved.alphaProvenance = .proposed
+        }
+
+        var fields: [StudioImportInterpretationField] = []
+        if resolved.inputTransformProvenance != .detected { fields.append(.inputTransform) }
+        if resolved.colorModelProvenance != .detected { fields.append(.colorModel) }
+        if resolved.matrixProvenance != .detected { fields.append(.matrix) }
+        if resolved.rangeProvenance != .detected { fields.append(.range) }
+        if resolved.alphaProvenance != .detected { fields.append(.alpha) }
+        self.detection = resolved
+        self.nonMetadataFields = fields
+    }
+}
+
 /// Metadata detection publishes only evidence and proposals. It never authors an
 /// interpretation or replaces the explicit selection owned by the caller.
 public enum StudioMediaMetadataDetector {
@@ -225,7 +283,7 @@ public enum StudioMediaMetadataDetector {
             || transfer.contains("1886") || transfer.contains("gamma 2.4")
         if has709Primaries, has709Matrix {
             return .init(
-                id: "display-rec709-gamma24-dcm",
+                id: "input-rec709",
                 provenance: has709Transfer ? .detected : .proposed
             )
         }

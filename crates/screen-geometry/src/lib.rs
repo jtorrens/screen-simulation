@@ -743,12 +743,31 @@ impl TransformTrack {
 
     pub fn sample(&self, time: RationalTime) -> Result<TransformSample, GeometryError> {
         self.validate()?;
-        let right = self.keyframes.partition_point(|key| key.time <= time);
-        if right == 0 {
+        if self.keyframes.len() == 1 {
             return Ok(transform_sample(&self.keyframes[0]));
         }
+        let right = self.keyframes.partition_point(|key| key.time <= time);
+        if right == 0 {
+            if self.keyframes[0].interpolation == KeyframeInterpolation::Hold {
+                return Ok(transform_sample(&self.keyframes[0]));
+            }
+            return Ok(interpolate_transform(
+                &self.keyframes[0],
+                &self.keyframes[1],
+                linear_amount(&self.keyframes[0], &self.keyframes[1], time),
+            ));
+        }
         if right == self.keyframes.len() {
-            return Ok(transform_sample(&self.keyframes[right - 1]));
+            let left = &self.keyframes[right - 2];
+            let next = &self.keyframes[right - 1];
+            if next.interpolation == KeyframeInterpolation::Hold {
+                return Ok(transform_sample(next));
+            }
+            return Ok(interpolate_transform(
+                left,
+                next,
+                linear_amount(left, next, time),
+            ));
         }
         let left = &self.keyframes[right - 1];
         if left.interpolation == KeyframeInterpolation::Hold {
@@ -760,16 +779,7 @@ impl TransformTrack {
         if left.interpolation == KeyframeInterpolation::Smooth {
             amount = amount * amount * (3.0 - 2.0 * amount);
         }
-        let lerp = |a: f32, b: f32| a + (b - a) * amount;
-        let rotation = left.rotation.slerp(next.rotation, amount);
-        Ok(TransformSample {
-            translation: Vec3 {
-                x: lerp(left.translation.x, next.translation.x),
-                y: lerp(left.translation.y, next.translation.y),
-                z: lerp(left.translation.z, next.translation.z),
-            },
-            rotation,
-        })
+        Ok(interpolate_transform(left, next, amount))
     }
 }
 
@@ -826,12 +836,27 @@ impl CameraIntrinsicsTrack {
 
     fn sample(&self, time: RationalTime) -> Result<ResolvedOptics, GeometryError> {
         self.validate()?;
-        let right = self.keyframes.partition_point(|key| key.time <= time);
-        if right == 0 {
+        if self.keyframes.len() == 1 {
             return Ok(resolved_optics(&self.keyframes[0]));
         }
+        let right = self.keyframes.partition_point(|key| key.time <= time);
+        if right == 0 {
+            if self.keyframes[0].interpolation == KeyframeInterpolation::Hold {
+                return Ok(resolved_optics(&self.keyframes[0]));
+            }
+            return interpolate_optics(
+                &self.keyframes[0],
+                &self.keyframes[1],
+                linear_intrinsics_amount(&self.keyframes[0], &self.keyframes[1], time),
+            );
+        }
         if right == self.keyframes.len() {
-            return Ok(resolved_optics(&self.keyframes[right - 1]));
+            let left = &self.keyframes[right - 2];
+            let next = &self.keyframes[right - 1];
+            if next.interpolation == KeyframeInterpolation::Hold {
+                return Ok(resolved_optics(next));
+            }
+            return interpolate_optics(left, next, linear_intrinsics_amount(left, next, time));
         }
         let left = &self.keyframes[right - 1];
         if left.interpolation == KeyframeInterpolation::Hold {
@@ -843,26 +868,87 @@ impl CameraIntrinsicsTrack {
         if left.interpolation == KeyframeInterpolation::Smooth {
             amount = amount * amount * (3.0 - 2.0 * amount);
         }
-        let lerp = |a: f32, b: f32| a + (b - a) * amount;
-        let optics = ResolvedOptics {
-            focal_length: Millimeters(lerp(left.focal_length.0, next.focal_length.0)),
-            sensor_width: Millimeters(lerp(left.sensor_width.0, next.sensor_width.0)),
-            sensor_height: Millimeters(lerp(left.sensor_height.0, next.sensor_height.0)),
-            lens_shift: Vec2 {
-                x: lerp(left.lens_shift.x, next.lens_shift.x),
-                y: lerp(left.lens_shift.y, next.lens_shift.y),
-            },
-            focus_distance: Meters(lerp(left.focus_distance.0, next.focus_distance.0)),
-            f_stop: lerp(left.f_stop, next.f_stop),
-            near_clip: Meters(lerp(left.near_clip.0, next.near_clip.0)),
-            far_clip: Meters(lerp(left.far_clip.0, next.far_clip.0)),
-            lens: interpolate_lens(left.lens, next.lens, &lerp),
-        };
-        if !lens_is_valid_for_gate(optics.lens, optics.lens_shift) {
-            return Err(GeometryError::InvalidResolvedLens);
-        }
-        Ok(optics)
+        interpolate_optics(left, next, amount)
     }
+}
+
+fn linear_amount(left: &TransformKeyframe, right: &TransformKeyframe, time: RationalTime) -> f32 {
+    ((time.as_seconds() - left.time.as_seconds())
+        / (right.time.as_seconds() - left.time.as_seconds())) as f32
+}
+
+fn linear_intrinsics_amount(
+    left: &CameraIntrinsicsKeyframe,
+    right: &CameraIntrinsicsKeyframe,
+    time: RationalTime,
+) -> f32 {
+    ((time.as_seconds() - left.time.as_seconds())
+        / (right.time.as_seconds() - left.time.as_seconds())) as f32
+}
+
+fn interpolate_transform(
+    left: &TransformKeyframe,
+    right: &TransformKeyframe,
+    amount: f32,
+) -> TransformSample {
+    let lerp = |a: f32, b: f32| a + (b - a) * amount;
+    TransformSample {
+        translation: Vec3 {
+            x: lerp(left.translation.x, right.translation.x),
+            y: lerp(left.translation.y, right.translation.y),
+            z: lerp(left.translation.z, right.translation.z),
+        },
+        // SLERP outside [0, 1] continues the shortest terminal angular arc at
+        // constant angular velocity instead of linearly blending quaternion components.
+        rotation: left.rotation.slerp(right.rotation, amount),
+    }
+}
+
+fn interpolate_optics(
+    left: &CameraIntrinsicsKeyframe,
+    right: &CameraIntrinsicsKeyframe,
+    amount: f32,
+) -> Result<ResolvedOptics, GeometryError> {
+    let lerp = |a: f32, b: f32| a + (b - a) * amount;
+    let optics = ResolvedOptics {
+        focal_length: Millimeters(lerp(left.focal_length.0, right.focal_length.0)),
+        sensor_width: Millimeters(lerp(left.sensor_width.0, right.sensor_width.0)),
+        sensor_height: Millimeters(lerp(left.sensor_height.0, right.sensor_height.0)),
+        lens_shift: Vec2 {
+            x: lerp(left.lens_shift.x, right.lens_shift.x),
+            y: lerp(left.lens_shift.y, right.lens_shift.y),
+        },
+        focus_distance: Meters(lerp(left.focus_distance.0, right.focus_distance.0)),
+        f_stop: lerp(left.f_stop, right.f_stop),
+        near_clip: Meters(lerp(left.near_clip.0, right.near_clip.0)),
+        far_clip: Meters(lerp(left.far_clip.0, right.far_clip.0)),
+        lens: interpolate_lens(left.lens, right.lens, &lerp),
+    };
+    if !optics.focal_length.0.is_finite()
+        || optics.focal_length.0 <= 0.0
+        || !optics.sensor_width.0.is_finite()
+        || optics.sensor_width.0 <= 0.0
+        || !optics.sensor_height.0.is_finite()
+        || optics.sensor_height.0 <= 0.0
+        || !optics.focus_distance.0.is_finite()
+        || optics.focus_distance.0 <= 0.0
+        || !optics.f_stop.is_finite()
+        || optics.f_stop <= 0.0
+        || !optics.near_clip.0.is_finite()
+        || optics.near_clip.0 <= 0.0
+        || !optics.far_clip.0.is_finite()
+        || optics.far_clip.0 <= optics.near_clip.0
+        || !optics.lens_shift.x.is_finite()
+        || optics.lens_shift.x.abs() > 0.5
+        || !optics.lens_shift.y.is_finite()
+        || optics.lens_shift.y.abs() > 0.5
+    {
+        return Err(GeometryError::NonPositiveIntrinsics);
+    }
+    if !lens_is_valid_for_gate(optics.lens, optics.lens_shift) {
+        return Err(GeometryError::InvalidResolvedLens);
+    }
+    Ok(optics)
 }
 
 impl CameraRig {
@@ -1325,6 +1411,15 @@ pub fn project_scene_point(
     Some(Vec2 {
         x: observed.x - 2.0 * camera.lens_shift.x,
         y: -observed.y - 2.0 * camera.lens_shift.y,
+    })
+}
+
+/// Canonical world-space optical axis for an already resolved camera sample.
+pub fn camera_forward(camera: CameraSample) -> Vec3 {
+    camera.rotation.rotate(Vec3 {
+        x: 0.0,
+        y: 0.0,
+        z: -1.0,
     })
 }
 
@@ -1923,11 +2018,7 @@ fn distortion_is_invertible(lens: LensModel, lens_shift: Vec2) -> bool {
 }
 
 fn camera_basis(camera: CameraSample) -> (Vec3, Vec3, Vec3) {
-    let forward = camera.rotation.rotate(Vec3 {
-        x: 0.0,
-        y: 0.0,
-        z: -1.0,
-    });
+    let forward = camera_forward(camera);
     let up = camera.rotation.rotate(Vec3 {
         x: 0.0,
         y: 1.0,
@@ -2326,6 +2417,76 @@ mod tests {
             .expect("sample");
         assert!((start.yaw_degrees + 18.0).abs() < 0.001);
         assert!((middle.yaw_degrees - 18.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn terminal_transform_curves_extrapolate_translation_and_angular_velocity() {
+        let rig = rig();
+        let before = rig
+            .sample(RationalTime::new(-24, 24).expect("valid time"))
+            .expect("sample before track");
+        let after = rig
+            .sample(RationalTime::new(72, 24).expect("valid time"))
+            .expect("sample after track");
+        assert!((before.position.x + after.position.x).abs() < 1.0e-5);
+        assert!((before.yaw_degrees + 36.0).abs() < 0.001);
+        assert!((after.yaw_degrees - 36.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn terminal_intrinsics_curves_extrapolate_linearly() {
+        let mut rig = rig();
+        rig.intrinsics.keyframes[0].focal_length = Millimeters(40.0);
+        rig.intrinsics.keyframes[1].focal_length = Millimeters(60.0);
+        let before = rig
+            .sample(RationalTime::new(-48, 24).expect("valid time"))
+            .expect("sample before track");
+        let after = rig
+            .sample(RationalTime::new(96, 24).expect("valid time"))
+            .expect("sample after track");
+        assert!((before.focal_length.0 - 20.0).abs() < 1.0e-5);
+        assert!((after.focal_length.0 - 80.0).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn one_key_tracks_remain_static_outside_the_authored_time() {
+        let mut rig = rig();
+        rig.transform.keyframes.truncate(1);
+        rig.intrinsics.keyframes.truncate(1);
+        let before = rig
+            .sample(RationalTime::new(-10_000, 24).expect("valid time"))
+            .expect("static sample before key");
+        let after = rig
+            .sample(RationalTime::new(10_000, 24).expect("valid time"))
+            .expect("static sample after key");
+        assert_eq!(before.position, after.position);
+        assert_eq!(before.focal_length, after.focal_length);
+        assert_eq!(before.world_to_view, after.world_to_view);
+    }
+
+    #[test]
+    fn terminal_hold_keys_remain_static_outside_the_authored_range() {
+        let mut rig = rig();
+        rig.transform.keyframes[0].interpolation = KeyframeInterpolation::Hold;
+        rig.transform.keyframes[1].interpolation = KeyframeInterpolation::Hold;
+        rig.intrinsics.keyframes[0].interpolation = KeyframeInterpolation::Hold;
+        rig.intrinsics.keyframes[1].interpolation = KeyframeInterpolation::Hold;
+        let before = rig
+            .sample(RationalTime::new(-24, 24).expect("valid time"))
+            .expect("held sample before track");
+        let after = rig
+            .sample(RationalTime::new(72, 24).expect("valid time"))
+            .expect("held sample after track");
+        let first = rig
+            .sample(RationalTime::new(0, 24).expect("valid time"))
+            .expect("first key");
+        let last = rig
+            .sample(RationalTime::new(48, 24).expect("valid time"))
+            .expect("last key");
+        assert_eq!(before.position, first.position);
+        assert_eq!(before.focal_length, first.focal_length);
+        assert_eq!(after.position, last.position);
+        assert_eq!(after.focal_length, last.focal_length);
     }
 
     #[test]

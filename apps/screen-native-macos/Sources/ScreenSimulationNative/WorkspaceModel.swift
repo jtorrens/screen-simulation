@@ -168,10 +168,129 @@ enum ReferenceTimelineAuthority {
 
 @MainActor
 final class WorkspaceModel: ObservableObject {
+    private struct SceneAuthoringEditSnapshot {
+        let selection: TestAuthoringResolvedSelection
+        let explicitOverrideControlIDs: Set<String>
+    }
+
     private final class UndoManagerBox: @unchecked Sendable {
         weak var value: UndoManager?
         init(_ value: UndoManager?) { self.value = value }
     }
+
+    private func registerUndo(
+        with undoManager: UndoManager?,
+        actionName: String,
+        _ operation: @escaping @MainActor (WorkspaceModel, UndoManager?) -> Void
+    ) {
+        guard let undoManager else { return }
+        let manager = UndoManagerBox(undoManager)
+        let register = {
+            undoManager.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    operation(target, manager.value)
+                }
+            }
+        }
+        if undoManager.isUndoing || undoManager.isRedoing {
+            register()
+            undoManager.setActionName(actionName)
+        } else {
+            let groupedByEvent = undoManager.groupsByEvent
+            undoManager.groupsByEvent = false
+            undoManager.beginUndoGrouping()
+            register()
+            undoManager.setActionName(actionName)
+            undoManager.endUndoGrouping()
+            undoManager.groupsByEvent = groupedByEvent
+        }
+    }
+
+    private var sceneAuthoringEditSnapshot: SceneAuthoringEditSnapshot? {
+        testAuthoringSelection.map {
+            SceneAuthoringEditSnapshot(
+                selection: $0,
+                explicitOverrideControlIDs: explicitSceneOverrideControlIDs
+            )
+        }
+    }
+
+    /// The sole commit boundary shared by descriptor cards and interactive modes.
+    /// Callers identify only the stable controls they changed; they never mutate
+    /// persisted override ownership themselves.
+    private func commitSceneAuthoringEdit(
+        selection: TestAuthoringResolvedSelection,
+        setting controlIDs: Set<String>,
+        resetting resetControlIDs: Set<String> = [],
+        prior: SceneAuthoringEditSnapshot? = nil,
+        profileDevice: DeviceDefinition? = nil,
+        profileCoverGlass: CoverGlassDefinition? = nil,
+        undoManager: UndoManager?,
+        actionName: String
+    ) throws {
+        let prior = prior ?? sceneAuthoringEditSnapshot
+        try applyTestAuthoringSelection(
+            selection,
+            profileDevice: profileDevice,
+            profileCoverGlass: profileCoverGlass
+        )
+        explicitSceneOverrideControlIDs.formUnion(controlIDs)
+        explicitSceneOverrideControlIDs.subtract(resetControlIDs)
+        guard let prior else { return }
+        registerUndo(with: undoManager, actionName: actionName) { target, manager in
+            try? target.restoreSceneAuthoringEdit(
+                prior,
+                undoManager: manager,
+                actionName: actionName
+            )
+        }
+    }
+
+    private func restoreSceneAuthoringEdit(
+        _ snapshot: SceneAuthoringEditSnapshot,
+        undoManager: UndoManager?,
+        actionName: String
+    ) throws {
+        let inverse = sceneAuthoringEditSnapshot
+        try applyTestAuthoringSelection(snapshot.selection)
+        explicitSceneOverrideControlIDs = snapshot.explicitOverrideControlIDs
+        guard let inverse else { return }
+        registerUndo(with: undoManager, actionName: actionName) { target, manager in
+            try? target.restoreSceneAuthoringEdit(
+                inverse,
+                undoManager: manager,
+                actionName: actionName
+            )
+        }
+    }
+
+    func beginSceneControlEdit(_ controlID: String) {
+        guard activeSceneControlEditID == nil,
+              let snapshot = sceneAuthoringEditSnapshot
+        else { return }
+        activeSceneControlEditID = controlID
+        activeSceneControlEditStart = snapshot
+    }
+
+    func endSceneControlEdit(_ controlID: String, undoManager: UndoManager?) {
+        guard activeSceneControlEditID == controlID,
+              let prior = activeSceneControlEditStart
+        else { return }
+        activeSceneControlEditID = nil
+        activeSceneControlEditStart = nil
+        guard let current = sceneAuthoringEditSnapshot,
+              current.selection != prior.selection
+                || current.explicitOverrideControlIDs != prior.explicitOverrideControlIDs
+        else { return }
+        registerUndo(with: undoManager, actionName: "Editar parámetro") { target, manager in
+            try? target.restoreSceneAuthoringEdit(
+                prior,
+                undoManager: manager,
+                actionName: "Editar parámetro"
+            )
+        }
+    }
+
     enum SourcePlacement: String, CaseIterable, Identifiable {
         case fit = "Fit"
         case fillCrop = "Fill / Crop"
@@ -222,6 +341,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var sourceDetail = "Patrón SCREEN canónico · 960 × 540"
     @Published var status = "Preparado"
     @Published var metalFrame: StudioColorMetalFrame?
+    private var publishedSceneIdentity: PublishedSceneIdentity?
     @Published private(set) var setupDeviceBoundary: [CGPoint] = []
     @Published private(set) var setupSensorGateBoundary: [CGPoint] = []
     @Published private(set) var focusSetupTarget: CGPoint?
@@ -284,7 +404,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var loopPlayback = false
     @Published var outputFormat = StudioOutputFormat.proRes4444
     @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
-    @Published var renderPreset = StudioRenderPreset.builtIns[0]
+    @Published var renderPreset: StudioRenderPreset
     @Published var vfxInterchangeEncodingID = "arri-logc4-awg4"
     @Published var peakNits = 100.0
     @Published var includeAudio = true
@@ -303,11 +423,11 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var selectedCapturePresetID: String?
     @Published private(set) var selectedCaptureRasterModeID: String?
     @Published private(set) var selectedLensPresetID: String?
-    let capturePresets = try! CapturePresetDefinition.catalog()
-    let lensPresets = try! LensPresetDefinition.catalog()
-    let environmentPresets = try! EnvironmentPresetDefinition.catalog()
+    private(set) var capturePresets: [CameraProfileDefinition]
+    private(set) var lensPresets: [LensProfileDefinition]
+    private(set) var environmentPresets: [EnvironmentProfileDefinition]
     @Published private(set) var physicalPublicationSummary = "Sin publicación física"
-    @Published private(set) var trackingScene: ImportedTrackingScene?
+    @Published private(set) var trackingScene: TrackingScene?
     @Published var selectedTrackingCameraID: String?
     @Published var selectedTrackingPointGroupID: String?
     @Published var trackingCameraEnabled = true
@@ -325,6 +445,13 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var recordingEncodedBytes: Int?
     @Published private(set) var recordingEncodedSHA256: String?
     private var testAuthoringSelection: TestAuthoringResolvedSelection?
+    private var explicitSceneOverrideControlIDs: Set<String> = []
+    private var activeSceneControlEditID: String?
+    private var activeSceneControlEditStart: SceneAuthoringEditSnapshot?
+    private var sceneProfileBaselineByControlID: [String: SceneControlOverride] = [:]
+    private let globalLibraryStore: GlobalLibraryStore
+    private var globalLibraryDocument: GlobalLibraryDocument
+    private var testAuthoringProfileContext: RustTestAuthoringProfileContext
     private var recordingCameraCheckpoint: StudioColorMetalFrame?
     private var deliveryRasterCheckpoint: StudioColorMetalFrame?
     private var recordingOutputExecution: RecordingOutputExecution?
@@ -339,7 +466,6 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceURL: URL?
     private var environmentSourceCalibration: EnvironmentAssetCalibration?
     private var generatedReflectionEnvironmentData: Data?
-    private var trackingAsset: ManagedTrackingAsset?
     private var activeSceneID: UUID?
     private var persistGeneratedEnvironment: ((UUID, Data) throws -> ManagedEnvironmentAsset)?
     private var referenceACEScgFrame: StudioColorMetalFrame?
@@ -361,7 +487,9 @@ final class WorkspaceModel: ObservableObject {
     private let referenceSession = NativeMediaSession()
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
+    private var cameraNavigationStartOverrideControlIDs: Set<String>?
     private var focusTargetDragStartSelection: TestAuthoringResolvedSelection?
+    private var focusTargetDragStartOverrideControlIDs: Set<String>?
     private var cameraNavigationLatestPose: CameraNavigationPose?
     private var cameraNavigationStartDevicePose: CameraNavigationPose?
     private var cameraNavigationLatestDevicePose: CameraNavigationPose?
@@ -370,6 +498,8 @@ final class WorkspaceModel: ObservableObject {
     private var cameraNavigationMovesDevice = false
     private var cameraNavigationPreviewQuality = PhysicalQuality.setup
     private var environmentNavigationStartSelection: TestAuthoringResolvedSelection?
+    private var environmentNavigationPriorSelection: TestAuthoringResolvedSelection?
+    private var environmentNavigationStartOverrideControlIDs: Set<String>?
     private var environmentNavigationOperation: CameraNavigationOperation?
     private var environmentNavigationViewportSize = CGSize(width: 1, height: 1)
     private var environmentNavigationCameraRight = SIMD3<Double>(1, 0, 0)
@@ -436,6 +566,10 @@ final class WorkspaceModel: ObservableObject {
     private var resolvedPhysicalPipeline: PhysicalPipelineResolvedState?
     private var baseModelDeviceDefinition: DeviceDefinition?
     private var basePhysicalAuthoringState: PhysicalPipelineAuthoringState?
+    /// Scene Open is a transaction: external resources may decode into their canonical
+    /// inputs, but no preview/setup/physical evaluation is published until every strict
+    /// setting and the embedded scene authoring have been restored successfully.
+    private var isMaterializingSavedScene = false
     private let physicalPublicationLog = Logger(
         subsystem: "com.jtorrens.ScreenSimulationNative",
         category: "PhysicalPublication"
@@ -498,7 +632,18 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    init() {
+    init(globalLibraryStore: GlobalLibraryStore? = nil) {
+        let resolvedLibraryStore = globalLibraryStore ?? (try! GlobalLibraryStore())
+        let library = try! resolvedLibraryStore.load()
+        self.globalLibraryStore = resolvedLibraryStore
+        globalLibraryDocument = library
+        renderPreset = library.renderPresets[0].value
+        capturePresets = library.cameras.map(\.value)
+        lensPresets = library.lenses.map(\.value)
+        environmentPresets = library.environments.map(\.value)
+        testAuthoringProfileContext = try! RustTestAuthoringProfileContext(
+            library: library
+        )
         metalDisplay = try! StudioColorMetalDisplay()
         outputQueue = try! NativeOutputQueueController(store: RenderQueueStore())
         physicalModel.interactiveInvalidation = { [weak self] in
@@ -519,6 +664,127 @@ final class WorkspaceModel: ObservableObject {
         renderPattern()
         tickSubscription = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common)
             .autoconnect().sink { [weak self] _ in self?.tickPlayback() }
+    }
+
+    private func reloadTestAuthoringProfileContext() throws {
+        let library = try globalLibraryStore.load()
+        globalLibraryDocument = library
+        capturePresets = library.cameras.map(\.value)
+        lensPresets = library.lenses.map(\.value)
+        environmentPresets = library.environments.map(\.value)
+        testAuthoringProfileContext = try RustTestAuthoringProfileContext(
+            library: library
+        )
+    }
+
+    /// A committed Global Library edit invalidates the complete inherited
+    /// profile layer. Rematerialize every family together and then reapply the
+    /// active scene's explicit overrides; never patch one cached profile.
+    func refreshActiveSceneFromGlobalLibrary() {
+        guard !isMaterializingSavedScene,
+              let settingsContext = currentSettingsContext(),
+              let currentSelection = currentTestAuthoringSelection()
+        else { return }
+        do {
+            let authoring = try currentSceneAuthoringDocument(
+                settingsContext: settingsContext,
+                selection: currentSelection
+            )
+            let library = try globalLibraryStore.load()
+            guard let device = library.devices.first(where: {
+                $0.id == authoring.profiles.deviceID
+            })?.value else {
+                throw SceneLibraryError.invalidDocument(
+                    "La escena activa requiere el Device \(authoring.profiles.deviceID), que ya no existe."
+                )
+            }
+            guard let coverGlass = library.coverGlasses.first(where: {
+                $0.id == authoring.profiles.coverGlassID
+            })?.value else {
+                throw SceneLibraryError.invalidDocument(
+                    "La escena activa requiere el Cover Glass \(authoring.profiles.coverGlassID), que ya no existe."
+                )
+            }
+            let stagedProfileContext = try RustTestAuthoringProfileContext(library: library)
+            let stagedSelection = try materializeSceneSelection(
+                authoring,
+                profileContext: stagedProfileContext
+            )
+            _ = try RustTestAuthoringCoordinator.snapshot(
+                profileContext: stagedProfileContext,
+                selection: stagedSelection,
+                selectedPreviewPhaseID: testPresentation?.selectedPhaseID
+            )
+
+            let priorLibrary = globalLibraryDocument
+            let priorCapturePresets = capturePresets
+            let priorLensPresets = lensPresets
+            let priorEnvironmentPresets = environmentPresets
+            let priorProfileContext = testAuthoringProfileContext
+            let priorSelection = testAuthoringSelection
+            let priorDevice = modelDeviceDefinition
+            let priorResolvedDevice = resolvedDevice
+            let priorPhysicalAuthoring = physicalAuthoringState
+            let priorResolvedPipeline = resolvedPhysicalPipeline
+            let priorBaseDevice = baseModelDeviceDefinition
+            let priorBaseAuthoring = basePhysicalAuthoringState
+            let priorBaselines = sceneProfileBaselineByControlID
+            let priorCaptureID = selectedCapturePresetID
+            let priorRasterID = selectedCaptureRasterModeID
+            let priorLensID = selectedLensPresetID
+            let priorPresentation = testPresentation
+            let priorPreviewResults = testPreviewResultByPhaseID
+            let priorIntermediates = testPhysicalIntermediateByPhaseID
+            let priorModelState = physicalModel.authoringState
+            let priorQuality = physicalModel.quality
+
+            isMaterializingSavedScene = true
+            do {
+                globalLibraryDocument = library
+                capturePresets = library.cameras.map(\.value)
+                lensPresets = library.lenses.map(\.value)
+                environmentPresets = library.environments.map(\.value)
+                testAuthoringProfileContext = stagedProfileContext
+                try applyTestAuthoringSelection(
+                    stagedSelection,
+                    profileDevice: device,
+                    profileCoverGlass: coverGlass
+                )
+                try physicalModel.restoreSceneOverrides(authoring.modelOverrides)
+                explicitSceneOverrideControlIDs = Set(authoring.overrides.map(\.controlID))
+                physicalModel.invalidateExternalParameters()
+            } catch {
+                globalLibraryDocument = priorLibrary
+                capturePresets = priorCapturePresets
+                lensPresets = priorLensPresets
+                environmentPresets = priorEnvironmentPresets
+                testAuthoringProfileContext = priorProfileContext
+                testAuthoringSelection = priorSelection
+                modelDeviceDefinition = priorDevice
+                resolvedDevice = priorResolvedDevice
+                physicalAuthoringState = priorPhysicalAuthoring
+                resolvedPhysicalPipeline = priorResolvedPipeline
+                baseModelDeviceDefinition = priorBaseDevice
+                basePhysicalAuthoringState = priorBaseAuthoring
+                sceneProfileBaselineByControlID = priorBaselines
+                selectedCapturePresetID = priorCaptureID
+                selectedCaptureRasterModeID = priorRasterID
+                selectedLensPresetID = priorLensID
+                testPresentation = priorPresentation
+                testPreviewResultByPhaseID = priorPreviewResults
+                testPhysicalIntermediateByPhaseID = priorIntermediates
+                try? physicalModel.restoreAuthoringState(priorModelState)
+                physicalModel.setQuality(priorQuality)
+                isMaterializingSavedScene = false
+                throw error
+            }
+            isMaterializingSavedScene = false
+            status = "Escena activa actualizada desde la Biblioteca"
+            rebuildPhysicalSelectedFrame()
+        } catch {
+            isMaterializingSavedScene = false
+            errorMessage = error.localizedDescription
+        }
     }
 
     var pipelineSummary: String {
@@ -599,6 +865,9 @@ final class WorkspaceModel: ObservableObject {
             resolvedPhysicalPipeline = try authored.resolvedPipeline()
             baseModelDeviceDefinition = definition
             basePhysicalAuthoringState = authored
+            sceneProfileBaselineByControlID = sceneProfileBaselines(
+                device: definition, coverGlass: coverGlass
+            )
             try refreshTestAuthoringDescriptor()
             rebuildCurrent()
         } catch {
@@ -608,18 +877,26 @@ final class WorkspaceModel: ObservableObject {
 
     func selectModelDevice(
         _ definition: DeviceDefinition,
-        coverGlass: CoverGlassDefinition
+        coverGlass: CoverGlassDefinition,
+        undoManager: UndoManager? = nil
     ) {
         do {
-            let builtInDeviceIDs = Set(try RustDeviceCatalog.builtIns().map(\.id))
+            try reloadTestAuthoringProfileContext()
             if let selection = testAuthoringSelection,
-               selection.deviceID != definition.id,
-               builtInDeviceIDs.contains(definition.id) {
+               selection.deviceID != definition.id {
                 let resolved = try RustTestAuthoringCoordinator.apply(
                     .setChoice(controlID: "device", optionID: definition.id),
-                    to: selection
+                    to: selection,
+                    profileContext: testAuthoringProfileContext
                 )
-                try applyTestAuthoringSelection(resolved)
+                try commitSceneAuthoringEdit(
+                    selection: resolved,
+                    setting: [],
+                    profileDevice: definition,
+                    profileCoverGlass: coverGlass,
+                    undoManager: undoManager,
+                    actionName: "Cambiar Device"
+                )
                 rebuildPhysicalSelectedFrame()
                 return
             }
@@ -645,30 +922,9 @@ final class WorkspaceModel: ObservableObject {
             resolvedPhysicalPipeline = try authored.resolvedPipeline()
             baseModelDeviceDefinition = definition
             basePhysicalAuthoringState = authored
-            if !builtInDeviceIDs.contains(definition.id), var selection = testAuthoringSelection {
-                selection.colorModeID = definition.colorModeID
-                selection.deviceEOTFGamma = definition.eotfGamma
-                selection.whiteLuminanceNits = definition.whiteLevelNits
-                selection.panelUniformityAmount = definition.panelUniformity.characterStrength
-                selection.panelLightSpreadAmount = definition.panelLightSpread.characterStrength
-                selection.coverGlassPresetID = coverGlass.id
-                selection.coverGlassAmount = coverGlass.characterStrength
-                selection.coverAgMicrotextureAmount = coverGlass.agMicrotextureCharacterStrength
-                selection.coverThicknessMillimeters = coverGlass.thicknessMillimeters
-                selection.coverRefractiveIndex = coverGlass.refractiveIndex
-                selection.coverAREfficiency = coverGlass.antiReflectiveEfficiency
-                selection.coverAbsorptionRGB = coverGlass.absorptionPerMillimeter
-                selection.coverRoughness = coverGlass.roughness
-                selection.coverHaze = coverGlass.haze
-                selection.coverAgRMSSlope = coverGlass.agMicrotextureRMSSlope
-                selection.coverAgCorrelationMicrometers = coverGlass.agMicrotextureCorrelationLengthMicrometers
-                selection.coverAgAnisotropy = coverGlass.agMicrotextureAnisotropy
-                selection.coverGlowAmount = coverGlass.glowCharacterStrength
-                selection.coverGlowIntensity = coverGlass.glowIntensity
-                selection.coverGlowRadiusMillimeters = coverGlass.glowRadiusMillimeters
-                selection.coverGlowThresholdRelativeWhite = coverGlass.glowThresholdRelativeWhite
-                testAuthoringSelection = selection
-            }
+            sceneProfileBaselineByControlID = sceneProfileBaselines(
+                device: definition, coverGlass: coverGlass
+            )
             try refreshTestAuthoringDescriptor()
             rebuildPhysicalSelectedFrame()
         } catch {
@@ -676,8 +932,8 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    func selectCapturePreset(_ preset: CapturePresetDefinition, undoManager: UndoManager?) {
-        guard let prior = physicalAuthoringState else { return }
+    func selectCapturePreset(_ preset: CameraProfileDefinition, undoManager: UndoManager?) {
+        guard let prior = basePhysicalAuthoringState else { return }
         let priorID = selectedCapturePresetID
         let priorRasterModeID = selectedCaptureRasterModeID
         let priorLensID = selectedLensPresetID
@@ -694,23 +950,21 @@ final class WorkspaceModel: ObservableObject {
             basePhysicalAuthoringState = next
             selectedCapturePresetID = preset.id
             selectedCaptureRasterModeID = preset.defaultRasterModeID
-            undoManager?.registerUndo(withTarget: self) { target in
-                Task { @MainActor in
-                    target.restoreCapturePresetState(
+            registerUndo(with: undoManager, actionName: "Cambiar cámara") { target, manager in
+                target.restoreCapturePresetState(
                         prior,
                         selectedID: priorID,
                         selectedRasterModeID: priorRasterModeID,
-                        selectedLensID: priorLensID
+                        selectedLensID: priorLensID,
+                        undoManager: manager
                     )
-                }
             }
-            undoManager?.setActionName("Cambiar cámara")
             physicalModel.invalidateExternalParameters()
         } catch { errorMessage = error.localizedDescription }
     }
 
     private func apply(
-        capture: CapturePresetDefinition,
+        capture: CameraProfileDefinition,
         rasterModeID: String,
         lensID: String,
         to state: inout PhysicalPipelineAuthoringState
@@ -731,8 +985,13 @@ final class WorkspaceModel: ObservableObject {
         _ state: PhysicalPipelineAuthoringState,
         selectedID: String?,
         selectedRasterModeID: String?,
-        selectedLensID: String?
+        selectedLensID: String?,
+        undoManager: UndoManager?
     ) {
+        guard let prior = basePhysicalAuthoringState else { return }
+        let priorID = selectedCapturePresetID
+        let priorRasterModeID = selectedCaptureRasterModeID
+        let priorLensID = self.selectedLensPresetID
         do {
             resolvedPhysicalPipeline = try state.resolvedPipeline()
             physicalAuthoringState = state
@@ -740,6 +999,15 @@ final class WorkspaceModel: ObservableObject {
             selectedCapturePresetID = selectedID
             selectedCaptureRasterModeID = selectedRasterModeID
             selectedLensPresetID = selectedLensID
+            registerUndo(with: undoManager, actionName: "Cambiar cámara") { target, manager in
+                target.restoreCapturePresetState(
+                    prior,
+                    selectedID: priorID,
+                    selectedRasterModeID: priorRasterModeID,
+                    selectedLensID: priorLensID,
+                    undoManager: manager
+                )
+            }
             physicalModel.invalidateExternalParameters()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -766,12 +1034,13 @@ final class WorkspaceModel: ObservableObject {
         undoManager: UndoManager?,
         _ mutation: (inout PhysicalPipelineAuthoringState) -> Void
     ) {
-        guard let prior = physicalAuthoringState else { return }
+        guard let prior = basePhysicalAuthoringState else { return }
         var next = prior
         mutation(&next)
         do {
             resolvedPhysicalPipeline = try next.resolvedPipeline()
             physicalAuthoringState = next
+            basePhysicalAuthoringState = next
             registerPhysicalAuthoringUndo(prior, undoManager: undoManager)
             physicalModel.invalidateExternalParameters()
         } catch {
@@ -812,17 +1081,18 @@ final class WorkspaceModel: ObservableObject {
         _ prior: DeviceDefinition,
         undoManager: UndoManager?
     ) {
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in target.restoreModelDevice(prior) }
+        registerUndo(with: undoManager, actionName: "Editar parámetro físico") { target, manager in
+            target.restoreModelDevice(prior, undoManager: manager)
         }
-        undoManager?.setActionName("Editar parámetro físico")
     }
 
-    private func restoreModelDevice(_ value: DeviceDefinition) {
+    private func restoreModelDevice(_ value: DeviceDefinition, undoManager: UndoManager?) {
+        guard let prior = modelDeviceDefinition else { return }
         do {
             resolvedDevice = try value.resolved()
             modelDeviceDefinition = value
             try refreshTestAuthoringDescriptor()
+            registerModelDeviceUndo(prior, undoManager: undoManager)
             physicalModel.invalidateExternalParameters()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -831,16 +1101,21 @@ final class WorkspaceModel: ObservableObject {
         _ prior: PhysicalPipelineAuthoringState,
         undoManager: UndoManager?
     ) {
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in target.restorePhysicalAuthoring(prior) }
+        registerUndo(with: undoManager, actionName: "Editar parámetro físico") { target, manager in
+            target.restorePhysicalAuthoring(prior, undoManager: manager)
         }
-        undoManager?.setActionName("Editar parámetro físico")
     }
 
-    private func restorePhysicalAuthoring(_ value: PhysicalPipelineAuthoringState) {
+    private func restorePhysicalAuthoring(
+        _ value: PhysicalPipelineAuthoringState,
+        undoManager: UndoManager?
+    ) {
+        guard let prior = basePhysicalAuthoringState else { return }
         do {
             resolvedPhysicalPipeline = try value.resolvedPipeline()
             physicalAuthoringState = value
+            basePhysicalAuthoringState = value
+            registerPhysicalAuthoringUndo(prior, undoManager: undoManager)
             physicalModel.invalidateExternalParameters()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -868,7 +1143,16 @@ final class WorkspaceModel: ObservableObject {
 
     func setTestPageActive(_ active: Bool) {
         isTestPageActive = active
-        if active { pause() }
+        if active {
+            pause()
+            do {
+                try reloadTestAuthoringProfileContext()
+                try refreshTestAuthoringDescriptor()
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
         if active, let intermediate = selectedTestPhysicalIntermediate {
             updateRequestedPhysicalIntermediate(intermediate)
             rebuildPhysicalSelectedFrame()
@@ -877,7 +1161,10 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    func handleTestIntent(_ intent: TestControlIntent) {
+    func handleTestIntent(
+        _ intent: TestControlIntent,
+        undoManager: UndoManager? = nil
+    ) {
         do {
             switch intent {
             case let .selectPhase(phaseID):
@@ -887,6 +1174,7 @@ final class WorkspaceModel: ObservableObject {
                     )
                 }
                 let snapshot = try RustTestAuthoringCoordinator.snapshot(
+                    profileContext: testAuthoringProfileContext,
                     selection: selection,
                     selectedPreviewPhaseID: phaseID
                 )
@@ -905,13 +1193,30 @@ final class WorkspaceModel: ObservableObject {
                 } else {
                     publishSelectedTestPreview()
                 }
-            case .setChoice, .setScalar, .setToggle:
+            case .setChoice, .setScalar, .setToggle, .reset:
                 guard let selection = currentTestAuthoringSelection() else {
                     throw TestAuthoringCoordinatorError.malformedDescriptor(
                         "Test necesita un Device resuelto."
                     )
                 }
-                if case let .setChoice(controlID, optionID) = intent,
+                let effectiveIntent: TestControlIntent
+                let editedControlID: String
+                let removesOverride: Bool
+                switch intent {
+                case let .setChoice(controlID, _),
+                     let .setScalar(controlID, _),
+                     let .setToggle(controlID, _):
+                    effectiveIntent = intent
+                    editedControlID = controlID
+                    removesOverride = false
+                case let .reset(controlID):
+                    effectiveIntent = try resetIntent(for: controlID)
+                    editedControlID = controlID
+                    removesOverride = true
+                case .selectPhase, .performAction:
+                    throw TestAuthoringCoordinatorError.unsupportedIntent
+                }
+                if case let .setChoice(controlID, optionID) = effectiveIntent,
                    controlID == "environment-source", optionID != "environment-image" {
                     environmentRadianceFrame = nil
                     authoredImageEnvironment = nil
@@ -924,12 +1229,23 @@ final class WorkspaceModel: ObservableObject {
                     generatedReflectionEnvironmentData = nil
                     environmentReflectionFramingSourceFrame = nil
                 }
-                let phaseToReveal = testPhaseToReveal(for: intent)
-                let resolved = try RustTestAuthoringCoordinator.apply(intent, to: selection)
-                try applyTestAuthoringSelection(resolved)
+                let phaseToReveal = testPhaseToReveal(for: effectiveIntent)
+                let resolved = try RustTestAuthoringCoordinator.apply(
+                    effectiveIntent, to: selection,
+                    profileContext: testAuthoringProfileContext
+                )
+                try commitSceneAuthoringEdit(
+                    selection: resolved,
+                    setting: removesOverride ? [] : [editedControlID],
+                    resetting: removesOverride ? [editedControlID] : [],
+                    undoManager: activeSceneControlEditID == editedControlID
+                        ? nil : undoManager,
+                    actionName: removesOverride ? "Restablecer parámetro" : "Editar parámetro"
+                )
                 if let phaseToReveal,
                    let updatedSelection = currentTestAuthoringSelection() {
                     let snapshot = try RustTestAuthoringCoordinator.snapshot(
+                        profileContext: testAuthoringProfileContext,
                         selection: updatedSelection,
                         selectedPreviewPhaseID: phaseToReveal
                     )
@@ -969,7 +1285,7 @@ final class WorkspaceModel: ObservableObject {
             beginEnvironmentNavigation(operation, viewportSize: viewportSize)
             return
         }
-        guard let authored = physicalAuthoringState,
+        guard let authored = try? resolveSceneFrame(currentFrame).authored,
               let device = modelDeviceDefinition ?? resolvedDevice?.definition,
               let selection = testAuthoringSelection,
               viewportSize.width > 0, viewportSize.height > 0
@@ -1004,6 +1320,7 @@ final class WorkspaceModel: ObservableObject {
                 / (2 * authored.sceneLens.focalLengthMillimeters)
         )
         cameraNavigationStartSelection = selection
+        cameraNavigationStartOverrideControlIDs = explicitSceneOverrideControlIDs
         cameraNavigationLatestPose = nil
         cameraNavigationLatestDevicePose = nil
         cameraNavigationStartTrackingScale = operation == .trackingWorldScale
@@ -1046,6 +1363,8 @@ final class WorkspaceModel: ObservableObject {
     var physicalPlacementNavigationEnabled: Bool {
         !previewTransformationsLocked
             && physicalModel.quality != .native
+            && physicalModel.frameState != .rendering
+            && physicalModel.frameState != .complete
             && !referenceMatchEnabled
             && !reflectionEnvironmentEditorEnabled
     }
@@ -1084,10 +1403,9 @@ final class WorkspaceModel: ObservableObject {
             cameraNavigationLatestDevicePose = scaled.device
             cameraNavigationLatestPose = scaled.camera
             cameraNavigationLatestTrackingScale = scaled.metersPerSourceUnit
-            applyTransientTrackingWorldScale(
-                cameraPose: scaled.camera,
-                devicePose: scaled.device,
-                viewportSize: gesture.viewportSize
+            applyInteractiveTrackingWorldScale(
+                metersPerSourceUnit: scaled.metersPerSourceUnit,
+                devicePose: scaled.device
             )
             return
         }
@@ -1108,7 +1426,7 @@ final class WorkspaceModel: ObservableObject {
 
     func endCameraNavigation(undoManager: UndoManager?) {
         if environmentNavigationStartSelection != nil || environmentReflectionFramingStart != nil {
-            endEnvironmentNavigation()
+            endEnvironmentNavigation(undoManager: undoManager)
             return
         }
         guard cameraNavigationGesture != nil else { return }
@@ -1129,33 +1447,37 @@ final class WorkspaceModel: ObservableObject {
         cameraNavigationStartTrackingScale = nil
         cameraNavigationLatestTrackingScale = nil
         cameraNavigationStartDevicePose = nil
+        let priorOverrides = cameraNavigationStartOverrideControlIDs
+            ?? explicitSceneOverrideControlIDs
         if let prior = cameraNavigationStartSelection,
            prior != testAuthoringSelection {
-            let manager = UndoManagerBox(undoManager)
             if scaledTrackingWorld, let priorTrackingScale {
-                undoManager?.registerUndo(withTarget: self) { target in
-                    Task { @MainActor in
-                        try? target.restoreTrackingWorldScale(
-                            priorTrackingScale,
+                registerUndo(with: undoManager, actionName: "Escalar mundo tracking") { target, manager in
+                    try? target.restoreTrackingWorldScale(
+                        priorTrackingScale,
+                        snapshot: .init(
                             selection: prior,
-                            undoManager: manager.value
-                        )
-                    }
+                            explicitOverrideControlIDs: priorOverrides
+                        ),
+                        undoManager: manager
+                    )
                 }
             } else {
-                undoManager?.registerUndo(withTarget: self) { target in
-                    Task { @MainActor in
-                        try? target.restoreCameraNavigationSelection(
-                            prior, undoManager: manager.value
-                        )
-                    }
+                let name = cameraNavigationMovesDevice ? "Mover Device" : "Navegar cámara"
+                registerUndo(with: undoManager, actionName: name) { target, manager in
+                    try? target.restoreSceneAuthoringEdit(
+                        .init(
+                            selection: prior,
+                            explicitOverrideControlIDs: priorOverrides
+                        ),
+                        undoManager: manager,
+                        actionName: name
+                    )
                 }
             }
-            undoManager?.setActionName(scaledTrackingWorld
-                ? "Escalar mundo tracking"
-                : (cameraNavigationMovesDevice ? "Mover Device" : "Navegar cámara"))
         }
         cameraNavigationStartSelection = nil
+        cameraNavigationStartOverrideControlIDs = nil
         cameraNavigationMovesDevice = false
         cameraNavigationPreviewQuality = .setup
     }
@@ -1172,13 +1494,16 @@ final class WorkspaceModel: ObservableObject {
         }
         guard var selection = testAuthoringSelection,
               selection.environmentSourceID == "environment-image",
-              let authored = physicalAuthoringState,
+              let resolved = try? resolveSceneFrame(currentFrame),
               viewportSize.width > 0,
               viewportSize.height > 0
         else { return }
+        environmentNavigationPriorSelection = selection
+        environmentNavigationStartOverrideControlIDs = explicitSceneOverrideControlIDs
         if selection.environmentProjectionID == "distant" {
             selection.environmentProjectionID = "finite-sphere"
         }
+        let authored = resolved.authored
         let cameraOrientation = simd_quatd(
             ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
             iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
@@ -1265,32 +1590,64 @@ final class WorkspaceModel: ObservableObject {
     private func minimumEnvironmentSphereRadius(
         selection: TestAuthoringResolvedSelection
     ) -> Double {
-        guard let authored = physicalAuthoringState,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition
-        else { return 0.1 }
+        guard let resolved = try? resolveSceneFrame(currentFrame),
+              let radius = try? resolved.resolver.minimumEnvironmentRadius(
+                  frame: resolved.selection,
+                  center: SIMD3(
+                      selection.environmentSphereCenterXMeters,
+                      selection.environmentSphereCenterYMeters,
+                      selection.environmentSphereCenterZMeters
+                  ),
+                  expectedRevision: resolved.revision
+              ) else { return 0.1 }
+        return radius
+    }
+
+    private func ensureFiniteEnvironmentEnclosesTimeline() throws {
+        guard var selection = testAuthoringSelection,
+              selection.environmentSourceID == "environment-image",
+              selection.environmentProjectionID == "finite-sphere"
+        else { return }
+        let resolved = try resolveSceneFrame(currentFrame)
         let center = SIMD3(
             selection.environmentSphereCenterXMeters,
             selection.environmentSphereCenterYMeters,
             selection.environmentSphereCenterZMeters
         )
-        let camera = SIMD3(
-            authored.cameraPose.position[0], authored.cameraPose.position[1],
-            authored.cameraPose.position[2]
+        var required = 0.1
+        for frame in 0 ..< max(1, frameCount) {
+            let (numerator, overflow) = Int64(frame).multipliedReportingOverflow(
+                by: Int64(resolved.selection.frameRateDenominator)
+            )
+            guard !overflow else { throw PhysicalContractError.invalidFrameTime }
+            let frameSelection = try PhysicalFrameSelection(
+                frameIndex: Int64(frame),
+                timeNumerator: numerator,
+                timeDenominator: resolved.selection.frameRateNumerator,
+                frameRateNumerator: resolved.selection.frameRateNumerator,
+                frameRateDenominator: resolved.selection.frameRateDenominator
+            )
+            required = max(required, try resolved.resolver.minimumEnvironmentRadius(
+                frame: frameSelection, center: center, expectedRevision: resolved.revision
+            ))
+        }
+        guard selection.environmentSphereRadiusMeters < required else { return }
+        selection = try RustTestAuthoringCoordinator.apply(
+            .setScalar(controlID: "environment-sphere-radius-meters", value: required),
+            to: selection,
+            profileContext: testAuthoringProfileContext
         )
-        let screen = SIMD3(
-            authored.screenPose.position[0], authored.screenPose.position[1],
-            authored.screenPose.position[2]
+        selection.previewQualityID = "environment-setup"
+        try commitSceneAuthoringEdit(
+            selection: selection,
+            setting: ["environment-sphere-radius-meters"],
+            undoManager: nil,
+            actionName: "Ajustar radio del entorno"
         )
-        let halfDiagonal = hypot(device.activeWidthMeters, device.activeHeightMeters) * 0.5
-        let apertureRadius = authored.sceneLens.focalLengthMillimeters
-            / (2 * authored.sceneLens.fStop) / 1_000
-        return max(0.1, max(
-            simd_length(camera - center) + apertureRadius,
-            simd_length(screen - center) + halfDiagonal
-        ) + 0.001)
+        status = "Radio del entorno ampliado a \(required.formatted(.number.precision(.fractionLength(3)))) m para contener toda la animación."
     }
 
-    private func endEnvironmentNavigation() {
+    private func endEnvironmentNavigation(undoManager: UndoManager?) {
         if environmentReflectionFramingStart != nil {
             environmentReflectionFramingStart = nil
             environmentReflectionFramingOperation = nil
@@ -1298,12 +1655,51 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         let finalSelection = testAuthoringSelection
+        let priorSelection = environmentNavigationPriorSelection
+        let priorOverrides = environmentNavigationStartOverrideControlIDs
+            ?? explicitSceneOverrideControlIDs
+        let operation = environmentNavigationOperation
         environmentNavigationStartSelection = nil
+        environmentNavigationPriorSelection = nil
+        environmentNavigationStartOverrideControlIDs = nil
         environmentNavigationOperation = nil
         environmentNavigationLockedAxis = nil
-        if var selection = finalSelection {
+        if var selection = finalSelection, let priorSelection {
             selection.previewQualityID = "environment-setup"
-            try? applyTestAuthoringSelection(selection)
+            var controls: Set<String> = ["environment-projection"]
+            switch operation {
+            case .pan:
+                controls.formUnion([
+                    "environment-sphere-center-x-meters",
+                    "environment-sphere-center-y-meters",
+                    "environment-sphere-center-z-meters",
+                    "environment-sphere-radius-meters",
+                ])
+            case .orbit:
+                controls.formUnion([
+                    "environment-rotation-x-degrees",
+                    "environment-rotation-y-degrees",
+                    "environment-sphere-radius-meters",
+                ])
+            case .dolly:
+                controls.insert("environment-sphere-radius-meters")
+            case .trackingWorldScale, nil:
+                break
+            }
+            do {
+                try commitSceneAuthoringEdit(
+                    selection: selection,
+                    setting: controls,
+                    prior: .init(
+                        selection: priorSelection,
+                        explicitOverrideControlIDs: priorOverrides
+                    ),
+                    undoManager: undoManager,
+                    actionName: "Editar entorno"
+                )
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -1349,10 +1745,11 @@ final class WorkspaceModel: ObservableObject {
         guard !environmentReflectionFramingIsGenerating,
               let source = environmentReflectionFramingSourceFrame
                 ?? environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              let authored = physicalAuthoringState,
+              let resolved = try? resolveSceneFrame(currentFrame),
               let calibration = environmentSourceCalibration
         else { return }
+        let device = resolved.device.definition
+        let authored = resolved.authored
         environmentReflectionFramingIsGenerating = true
         defer { environmentReflectionFramingIsGenerating = false }
         do {
@@ -1403,7 +1800,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func applyTransientEnvironmentSelection(_ selection: TestAuthoringResolvedSelection) {
-        guard var authored = physicalAuthoringState else { return }
+        guard var authored = basePhysicalAuthoringState else { return }
         authored.environment.rotationXDegrees = selection.environmentRotationXDegrees
         authored.environment.rotationYDegrees = selection.environmentRotationYDegrees
         authored.environment.projectionMode = selection.environmentProjectionID == "finite-sphere" ? 1 : 0
@@ -1414,97 +1811,47 @@ final class WorkspaceModel: ObservableObject {
         ]
         authored.environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
         testAuthoringSelection = selection
-        publishEnvironmentSetup(authoredOverride: authored)
+        do {
+            physicalAuthoringState = authored
+            basePhysicalAuthoringState = authored
+            resolvedPhysicalPipeline = try authored.resolvedPipeline()
+            physicalModel.invalidateExternalParameters(preservingQuality: true)
+            publishEnvironmentSetup()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func applyTransientCameraNavigationPose(
         _ pose: CameraNavigationPose,
         viewportSize: CGSize
     ) {
-        guard var authored = physicalAuthoringState else { return }
-        authored.cameraPose.position = [pose.position.x, pose.position.y, pose.position.z]
-        authored.cameraPose.quaternion = [
-            pose.orientation.imag.x, pose.orientation.imag.y,
-            pose.orientation.imag.z, pose.orientation.real,
-        ]
-        authored.cameraLookAt = nil
-        if referenceACEScgFrame != nil {
-            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false, authoredOverride: authored)
-        } else if cameraNavigationPreviewQuality == .focusSetup {
-            publishFocusSetup(
-                interactiveViewportSize: viewportSize,
-                authoredOverride: authored
-            )
-        } else {
-            publishSetupFraming(
-                interactiveViewportSize: viewportSize,
-                authoredOverride: authored
-            )
-        }
+        _ = viewportSize
+        // Interactive navigation is still scene authoring. Materialize each candidate through
+        // the same transaction boundary as the cards so the image and the persistent tracking
+        // overlay always share one resolved scene identity. Gesture end owns the single Undo.
+        commitCameraNavigationPose(pose)
     }
 
     private func applyTransientDeviceNavigationPose(
         _ pose: CameraNavigationPose,
         viewportSize: CGSize
     ) {
-        guard var authored = physicalAuthoringState else { return }
-        authored.screenPose.position = [pose.position.x, pose.position.y, pose.position.z]
-        authored.screenPose.quaternion = [
-            pose.orientation.imag.x, pose.orientation.imag.y,
-            pose.orientation.imag.z, pose.orientation.real,
-        ]
-        if referenceACEScgFrame != nil {
-            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false, authoredOverride: authored)
-        } else if cameraNavigationPreviewQuality == .focusSetup {
-            publishFocusSetup(
-                interactiveViewportSize: viewportSize,
-                authoredOverride: authored
-            )
-        } else {
-            publishSetupFraming(
-                interactiveViewportSize: viewportSize,
-                authoredOverride: authored
-            )
-        }
+        _ = viewportSize
+        commitDeviceNavigationPose(pose)
     }
 
-    private func applyTransientTrackingWorldScale(
-        cameraPose: CameraNavigationPose,
-        devicePose: CameraNavigationPose,
-        viewportSize: CGSize
+    private func applyInteractiveTrackingWorldScale(
+        metersPerSourceUnit: Double,
+        devicePose: CameraNavigationPose
     ) {
-        guard var authored = physicalAuthoringState else { return }
-        authored.cameraPose.position = [
-            cameraPose.position.x, cameraPose.position.y, cameraPose.position.z,
-        ]
-        authored.cameraPose.quaternion = [
-            cameraPose.orientation.imag.x, cameraPose.orientation.imag.y,
-            cameraPose.orientation.imag.z, cameraPose.orientation.real,
-        ]
-        authored.cameraLookAt = nil
-        authored.screenPose.position = [
-            devicePose.position.x, devicePose.position.y, devicePose.position.z,
-        ]
-        authored.screenPose.quaternion = [
-            devicePose.orientation.imag.x, devicePose.orientation.imag.y,
-            devicePose.orientation.imag.z, devicePose.orientation.real,
-        ]
-        if referenceACEScgFrame != nil {
-            publishReferenceMatchSetup(
-                resetTargetsToVisibleFrame: false,
-                authoredOverride: authored
-            )
-        } else if cameraNavigationPreviewQuality == .focusSetup {
-            publishFocusSetup(
-                interactiveViewportSize: viewportSize,
-                authoredOverride: authored
-            )
-        } else {
-            publishSetupFraming(
-                interactiveViewportSize: viewportSize,
-                authoredOverride: authored
-            )
-        }
+        guard metersPerSourceUnit.isFinite, metersPerSourceUnit > 0 else { return }
+        // Cmd+MMB edits the canonical scene continuously. The imported camera is therefore
+        // re-sampled by Rust at this scale and the Device anchor is committed from the same
+        // gesture-start solution. Image and overlay can remain on one resolved identity.
+        publishedSceneIdentity = nil
+        trackingMetersPerSourceUnit = metersPerSourceUnit
+        commitDeviceNavigationPose(devicePose)
     }
 
     private func commitCameraNavigationPose(_ pose: CameraNavigationPose) {
@@ -1523,7 +1870,17 @@ final class WorkspaceModel: ObservableObject {
         selection.cameraRotationYDegrees = degrees[1]
         selection.cameraRotationZDegrees = degrees[2]
         do {
-            try applyTestAuthoringSelection(selection)
+            try commitSceneAuthoringEdit(
+                selection: selection,
+                setting: [
+                    "geometry-mode",
+                    "camera-position-x-meters", "camera-position-y-meters",
+                    "camera-position-z-meters", "camera-rotation-x-degrees",
+                    "camera-rotation-y-degrees", "camera-rotation-z-degrees",
+                ],
+                undoManager: nil,
+                actionName: "Navegar cámara"
+            )
         } catch {
             if let prior = cameraNavigationStartSelection {
                 try? applyTestAuthoringSelection(prior)
@@ -1547,7 +1904,16 @@ final class WorkspaceModel: ObservableObject {
         selection.screenYawDegrees = degrees[1]
         selection.screenRotationZDegrees = degrees[2]
         do {
-            try applyTestAuthoringSelection(selection)
+            try commitSceneAuthoringEdit(
+                selection: selection,
+                setting: [
+                    "screen-position-x-meters", "screen-position-y-meters",
+                    "screen-position-z-meters", "screen-rotation-x-degrees",
+                    "screen-yaw-degrees", "screen-rotation-z-degrees",
+                ],
+                undoManager: nil,
+                actionName: "Mover Device"
+            )
             applyTrackingCameraAtCurrentFrame()
         } catch {
             if let prior = cameraNavigationStartSelection {
@@ -1558,48 +1924,26 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func restoreCameraNavigationSelection(
-        _ selection: TestAuthoringResolvedSelection,
-        undoManager: UndoManager?
-    ) throws {
-        let prior = testAuthoringSelection
-        try applyTestAuthoringSelection(selection)
-        if let prior {
-            let manager = UndoManagerBox(undoManager)
-            undoManager?.registerUndo(withTarget: self) { target in
-                Task { @MainActor in
-                    try? target.restoreCameraNavigationSelection(
-                        prior, undoManager: manager.value
-                    )
-                }
-            }
-            undoManager?.setActionName("Navegar cámara")
-        }
-    }
-
     private func restoreTrackingWorldScale(
         _ scale: Double,
-        selection: TestAuthoringResolvedSelection,
+        snapshot: SceneAuthoringEditSnapshot,
         undoManager: UndoManager?
     ) throws {
         guard scale.isFinite, scale > 0 else { return }
         let currentScale = trackingMetersPerSourceUnit
-        let currentSelection = testAuthoringSelection
+        let currentSnapshot = sceneAuthoringEditSnapshot
         trackingMetersPerSourceUnit = scale
-        try applyTestAuthoringSelection(selection)
+        try applyTestAuthoringSelection(snapshot.selection)
+        explicitSceneOverrideControlIDs = snapshot.explicitOverrideControlIDs
         applyTrackingCameraAtCurrentFrame()
-        if let currentScale, let currentSelection {
-            let manager = UndoManagerBox(undoManager)
-            undoManager?.registerUndo(withTarget: self) { target in
-                Task { @MainActor in
-                    try? target.restoreTrackingWorldScale(
-                        currentScale,
-                        selection: currentSelection,
-                        undoManager: manager.value
-                    )
-                }
+        if let currentScale, let currentSnapshot {
+            registerUndo(with: undoManager, actionName: "Escalar mundo tracking") { target, manager in
+                try? target.restoreTrackingWorldScale(
+                    currentScale,
+                    snapshot: currentSnapshot,
+                    undoManager: manager
+                )
             }
-            undoManager?.setActionName("Escalar mundo tracking")
         }
     }
 
@@ -1971,15 +2315,97 @@ final class WorkspaceModel: ObservableObject {
             throw TestAuthoringCoordinatorError.malformedDescriptor("No existe autoría de entorno.")
         }
         selection = try RustTestAuthoringCoordinator.apply(
-            .setScalar(controlID: "environment-rotation-x-degrees", value: 0), to: selection
+            .setScalar(controlID: "environment-rotation-x-degrees", value: 0),
+            to: selection, profileContext: testAuthoringProfileContext
         )
         selection = try RustTestAuthoringCoordinator.apply(
-            .setScalar(controlID: "environment-rotation-y-degrees", value: 0), to: selection
+            .setScalar(controlID: "environment-rotation-y-degrees", value: 0),
+            to: selection, profileContext: testAuthoringProfileContext
         )
         selection = try RustTestAuthoringCoordinator.apply(
-            .setChoice(controlID: "environment-projection", optionID: "distant"), to: selection
+            .setChoice(controlID: "environment-projection", optionID: "distant"),
+            to: selection, profileContext: testAuthoringProfileContext
         )
-        try applyTestAuthoringSelection(selection)
+        try commitSceneAuthoringEdit(
+            selection: selection,
+            setting: [
+                "environment-rotation-x-degrees",
+                "environment-rotation-y-degrees",
+                "environment-projection",
+            ],
+            undoManager: nil,
+            actionName: "Fijar entorno generado"
+        )
+    }
+
+    private struct PreparedEnvironmentResource {
+        let managed: ManagedEnvironmentAsset
+        let calibration: EnvironmentAssetCalibration
+        let input: StudioColorInputTransform
+        let source: StudioColorMetalFrame
+        let adjustment: SceneAdjustmentFrame
+        let radiance: EnvironmentRadianceFrame
+        let resolution: CGSize
+    }
+
+    private func prepareEnvironmentResource(
+        _ url: URL,
+        inputTransformID: String,
+        unitRadiance: Double,
+        exposureStops: Double,
+        originalFileName: String?,
+        knownHash: String?,
+        adjustmentSelection: TestAuthoringResolvedSelection?
+    ) async throws -> PreparedEnvironmentResource {
+        let managed: ManagedEnvironmentAsset
+        if let originalFileName, let knownHash {
+            managed = .init(url: url, originalFileName: originalFileName, sha256: knownHash)
+        } else {
+            managed = try EnvironmentAssetLibrary.importAsset(from: url)
+        }
+        let calibration = try EnvironmentAssetCalibration(
+            inputTransformID: inputTransformID,
+            sourceUnitRadianceCandelasPerSquareMeter: unitRadiance,
+            exposureEV: exposureStops
+        )
+        if knownHash != nil {
+            try EnvironmentAssetLibrary.saveCalibration(calibration, for: managed)
+        }
+        let decoded = try await NativeMediaDecoder.decode(url: managed.url, time: .zero)
+        guard decoded.width == decoded.height * 2 else {
+            throw EnvironmentRadianceFrameError.invalidEquirectangularRaster
+        }
+        guard let input = StudioColorInputTransform.catalog.first(where: {
+            $0.id == inputTransformID && $0.referenceDomain == .sceneReferred
+        }) else {
+            throw NativeMediaError.unreadable(
+                "El Input Transform explícito del entorno no existe o no es scene-referred."
+            )
+        }
+        let source = try metalDisplay.makeACEScgFrame(
+            width: decoded.width, height: decoded.height,
+            encodedRGBA: decoded.rgba, input: input, alpha: .ignore
+        )
+        let adjustment = try SceneAdjustmentFrame(
+            source: source,
+            parameters: .init(
+                exposureEV: 0,
+                contrast: adjustmentSelection?.environmentContrast ?? 1,
+                saturation: adjustmentSelection?.environmentSaturation ?? 1,
+                temperatureKelvin: adjustmentSelection?.environmentTemperatureKelvin ?? 6500,
+                tint: adjustmentSelection?.environmentTint ?? 0
+            ),
+            incidentRadiance: true
+        )
+        return try .init(
+            managed: managed,
+            calibration: calibration,
+            input: input,
+            source: source,
+            adjustment: adjustment,
+            radiance: EnvironmentRadianceFrame.prefiltered(from: adjustment.frame),
+            resolution: .init(width: decoded.width, height: decoded.height)
+        )
     }
 
     @discardableResult
@@ -1993,53 +2419,17 @@ final class WorkspaceModel: ObservableObject {
     ) async -> Bool {
         do {
             status = "Decodificando entorno HDR…"
-            let managed: ManagedEnvironmentAsset
-            if let originalFileName, let knownHash {
-                managed = .init(url: url, originalFileName: originalFileName, sha256: knownHash)
-            } else {
-                managed = try EnvironmentAssetLibrary.importAsset(from: url)
-            }
-            let calibration = try EnvironmentAssetCalibration(
+            let prepared = try await prepareEnvironmentResource(
+                url,
                 inputTransformID: inputTransformID,
-                sourceUnitRadianceCandelasPerSquareMeter: unitRadiance,
-                exposureEV: exposureStops
+                unitRadiance: unitRadiance,
+                exposureStops: exposureStops,
+                originalFileName: originalFileName,
+                knownHash: knownHash,
+                adjustmentSelection: currentTestAuthoringSelection()
             )
-            // Generated HDRIs are app-owned and may retain their calibration sidecar.
-            // External assets stay entirely at their authored path; their calibration is
-            // persisted with the scene/settings contract instead of beside the source file.
-            if knownHash != nil {
-                try EnvironmentAssetLibrary.saveCalibration(calibration, for: managed)
-            }
-            let decoded = try await NativeMediaDecoder.decode(url: managed.url, time: .zero)
-            guard decoded.width == decoded.height * 2 else {
-                throw EnvironmentRadianceFrameError.invalidEquirectangularRaster
-            }
-            guard let input = StudioColorInputTransform.catalog.first(where: {
-                $0.id == inputTransformID && $0.referenceDomain == .sceneReferred
-            })
-            else {
-                throw NativeMediaError.unreadable(
-                    "El Input Transform explícito del entorno no existe o no es scene-referred."
-                )
-            }
-            let source = try metalDisplay.makeACEScgFrame(
-                width: decoded.width, height: decoded.height,
-                encodedRGBA: decoded.rgba, input: input, alpha: .ignore
-            )
-            environmentSourceACEScgFrame = source
-            let selection = currentTestAuthoringSelection()
-            let environmentAdjustment = SceneAdjustmentParameters(
-                exposureEV: 0,
-                contrast: selection?.environmentContrast ?? 1,
-                saturation: selection?.environmentSaturation ?? 1,
-                temperatureKelvin: selection?.environmentTemperatureKelvin ?? 6500,
-                tint: selection?.environmentTint ?? 0
-            )
-            let adjusted = try SceneAdjustmentFrame(
-                source: source, parameters: environmentAdjustment, incidentRadiance: true
-            )
-            environmentAdjustmentOwner = adjusted
-            let environment = try EnvironmentRadianceFrame.prefiltered(from: adjusted.frame)
+            environmentSourceACEScgFrame = prepared.source
+            environmentAdjustmentOwner = prepared.adjustment
             guard var authored = physicalAuthoringState else { return false }
             authored.environment.sourceKind = 1
             authored.environment.sourceUnitRadianceCandelasPerSquareMeter = unitRadiance
@@ -2049,14 +2439,15 @@ final class WorkspaceModel: ObservableObject {
             authored.environment.pattern = 0
             resolvedPhysicalPipeline = try authored.resolvedPipeline()
             physicalAuthoringState = authored
-            environmentRadianceFrame = environment
+            basePhysicalAuthoringState = authored
+            environmentRadianceFrame = prepared.radiance
             authoredImageEnvironment = authored.environment
-            environmentSourceName = managed.originalFileName
-            environmentSourceResolution = CGSize(width: decoded.width, height: decoded.height)
+            environmentSourceName = prepared.managed.originalFileName
+            environmentSourceResolution = prepared.resolution
             environmentSourceInputTransformID = inputTransformID
             environmentSourceHash = knownHash
-            environmentSourceURL = managed.url
-            environmentSourceCalibration = calibration
+            environmentSourceURL = prepared.managed.url
+            environmentSourceCalibration = prepared.calibration
             guard let current = currentTestAuthoringSelection() else {
                 throw TestAuthoringCoordinatorError.malformedDescriptor(
                     "Test no tiene una selección resuelta para el entorno externo."
@@ -2064,15 +2455,20 @@ final class WorkspaceModel: ObservableObject {
             }
             var selected = try RustTestAuthoringCoordinator.apply(
                 .setChoice(controlID: "environment-source", optionID: "environment-image"),
-                to: current
+                to: current, profileContext: testAuthoringProfileContext
             )
             selected = try RustTestAuthoringCoordinator.apply(
                 .setScalar(controlID: "environment-exposure-ev", value: exposureStops),
-                to: selected
+                to: selected, profileContext: testAuthoringProfileContext
             )
             physicalModel.invalidateExternalParameters()
-            try applyTestAuthoringSelection(selected)
-            status = "Entorno cargado · visible desde Draft · \(managed.originalFileName) · \(decoded.width)×\(decoded.height) · \(input.label)"
+            try commitSceneAuthoringEdit(
+                selection: selected,
+                setting: ["environment-source", "environment-exposure-ev"],
+                undoManager: nil,
+                actionName: "Seleccionar entorno"
+            )
+            status = "Entorno cargado · visible desde Draft · \(prepared.managed.originalFileName) · \(Int(prepared.resolution.width))×\(Int(prepared.resolution.height)) · \(prepared.input.label)"
             errorMessage = nil
             return true
         } catch {
@@ -2085,6 +2481,7 @@ final class WorkspaceModel: ObservableObject {
         let controlID: String
         switch intent {
         case let .setChoice(id, _), let .setScalar(id, _), let .setToggle(id, _): controlID = id
+        case let .reset(id): controlID = id
         case .selectPhase, .performAction: return nil
         }
         guard let presentation = testPresentation,
@@ -2099,7 +2496,44 @@ final class WorkspaceModel: ObservableObject {
         return presentation.phases[ownerIndex].id
     }
 
+    private func resetIntent(for controlID: String) throws -> TestControlIntent {
+        if let baseline = sceneProfileBaselineByControlID[controlID] {
+            return baseline.intent
+        }
+        guard let presentation = testPresentation else {
+            throw TestAuthoringCoordinatorError.malformedDescriptor(
+                "Test no ha publicado el control que se quiere restablecer."
+            )
+        }
+        let controls = presentation.previewControls + presentation.phases.flatMap {
+            $0.sections.flatMap(\.controls)
+        }
+        guard let descriptor = controls.first(where: { $0.id == controlID }) else {
+            throw TestAuthoringCoordinatorError.malformedDescriptor(
+                "Test no reconoce el control \(controlID)."
+            )
+        }
+        switch descriptor {
+        case let .choice(control):
+            return .setChoice(controlID: controlID, optionID: control.resetID)
+        case let .scalar(control):
+            return .setScalar(controlID: controlID, value: control.resetValue)
+        case let .toggle(control):
+            return .setToggle(controlID: controlID, value: control.resetValue)
+        case .action, .readOnly:
+            throw TestAuthoringCoordinatorError.unsupportedIntent
+        }
+    }
+
     func changePhysicalQuality(_ quality: PhysicalQuality) {
+        if quality == .environmentSetup {
+            do {
+                try ensureFiniteEnvironmentEnclosesTimeline()
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
         let qualityChanged = physicalModel.quality != quality
         physicalModel.setQuality(quality)
         if !qualityChanged {
@@ -2147,16 +2581,10 @@ final class WorkspaceModel: ObservableObject {
         guard prior != bypassed else { return }
         do {
             try physicalModel.setDomainBypassed(bypassed, domain: domain)
-            undoManager?.registerUndo(withTarget: self) { target in
-                Task { @MainActor in
-                    target.changePhysicalDomainBypass(
-                        prior,
-                        domain: domain,
-                        undoManager: nil
-                    )
-                }
+            let action = bypassed ? "Omitir Pantalla" : "Activar Pantalla"
+            registerUndo(with: undoManager, actionName: action) { [prior, domain] target, manager in
+                target.changePhysicalDomainBypass(prior, domain: domain, undoManager: manager)
             }
-            undoManager?.setActionName(bypassed ? "Omitir Pantalla" : "Activar Pantalla")
         } catch {
             errorMessage = "El dominio no admite bypass continuo."
         }
@@ -2179,16 +2607,10 @@ final class WorkspaceModel: ObservableObject {
         guard prior != bypassed else { return }
         do {
             try physicalModel.setContinuousBypassed(bypassed, stage: stage)
-            undoManager?.registerUndo(withTarget: self) { target in
-                Task { @MainActor in
-                    target.changePhysicalStageBypass(
-                        prior,
-                        stage: stage,
-                        undoManager: nil
-                    )
-                }
+            let action = bypassed ? "Omitir etapa" : "Activar etapa"
+            registerUndo(with: undoManager, actionName: action) { [prior, stage] target, manager in
+                target.changePhysicalStageBypass(prior, stage: stage, undoManager: manager)
             }
-            undoManager?.setActionName(bypassed ? "Omitir etapa" : "Activar etapa")
         } catch {
             errorMessage = "La etapa no admite bypass continuo."
         }
@@ -2216,19 +2638,24 @@ final class WorkspaceModel: ObservableObject {
         guard !nativeRenderTaskActive else { return }
         pause()
         nativeCancellationRequested = false
-        do { try physicalModel.beginNative() }
-        catch { return }
+        do {
+            try ensureFiniteEnvironmentEnclosesTimeline()
+            try physicalModel.beginNative()
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         nativeRenderTaskActive = true
         physicalNativeTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let job = try submitPhysicalJob(quality: .native)
-                physicalNativeJob = job
+                let submission = try submitPhysicalJob(quality: .native)
+                physicalNativeJob = submission.job
                 if nativeCancellationRequested {
-                    _ = job.cancel()
+                    _ = submission.job.cancel()
                 }
                 try await pollPhysicalJob(
-                    job,
+                    submission,
                     native: true
                 )
             } catch is CancellationError {
@@ -2368,10 +2795,10 @@ final class WorkspaceModel: ObservableObject {
         return nil
     }
 
-    /// An import proposal is materialized before either media adapter opens the
-    /// source. This makes AVFoundation and FFmpeg consume the same authored
-    /// interpretation rather than inheriting controls from the prior source.
-    private func adoptDetectedSourceInterpretation(_ proposal: StudioMediaDetection) throws {
+    /// Initial import materializes one complete editable interpretation before
+    /// either media adapter opens the source. Detected values are preserved;
+    /// absent values use declared product defaults and are disclosed to the user.
+    private func adoptSourceImportInterpretation(_ proposal: StudioMediaDetection) throws {
         guard let inputID = proposal.proposedInputTransformID,
               let input = StudioColorInputTransform.catalog.first(where: { $0.id == inputID }),
               let alpha = proposal.alpha,
@@ -2390,7 +2817,7 @@ final class WorkspaceModel: ObservableObject {
         signalColorModel = colorModel
     }
 
-    private func adoptDetectedReferenceInterpretation(_ proposal: StudioMediaDetection) throws {
+    private func adoptReferenceImportInterpretation(_ proposal: StudioMediaDetection) throws {
         guard let inputID = proposal.proposedInputTransformID,
               let input = StudioColorInputTransform.catalog.first(where: { $0.id == inputID }),
               let alpha = proposal.alpha,
@@ -2409,10 +2836,47 @@ final class WorkspaceModel: ObservableObject {
         referenceSignalColorModel = colorModel
     }
 
+    private func acknowledgeImportDefaults(
+        _ resolution: StudioMediaImportResolution,
+        role: String
+    ) {
+        guard !resolution.nonMetadataFields.isEmpty else { return }
+        guard let inputTransform = resolution.detection.proposedInputTransformID,
+              let colorModel = resolution.detection.colorModel,
+              let matrix = resolution.detection.matrix,
+              let range = resolution.detection.range,
+              let alpha = resolution.detection.alpha
+        else {
+            preconditionFailure("La resolución de importación debe ser completa.")
+        }
+        let values: [StudioImportInterpretationField: String] = [
+            .inputTransform: inputTransform,
+            .colorModel: colorModel.label,
+            .matrix: matrix.label,
+            .range: range.label,
+            .alpha: alpha.label,
+        ]
+        let assumptions = resolution.nonMetadataFields.map { field in
+            "• \(field.label): \(values[field] ?? "")"
+        }.joined(separator: "\n")
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Metadata incompleta en \(role)"
+        alert.informativeText = """
+        El archivo se importará con estos valores por defecto, no detectados en su metadata:
+
+        \(assumptions)
+
+        Puedes cambiarlos después en Interpretación de entrada.
+        """
+        alert.addButton(withTitle: "Usar valores por defecto")
+        _ = alert.runModal()
+    }
+
     func choosePattern(_ pattern: SyntheticPattern, undoManager: UndoManager?) {
         let prior = selectedPattern
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in target.choosePattern(prior, undoManager: nil) }
+        registerUndo(with: undoManager, actionName: "Cambiar patrón") { target, manager in
+            target.choosePattern(prior, undoManager: manager)
         }
         pause()
         selectedPattern = pattern
@@ -2449,7 +2913,7 @@ final class WorkspaceModel: ObservableObject {
                         controlID: "placement",
                         optionID: pattern.authoredPlacementID
                     ),
-                    to: selection
+                    to: selection, profileContext: testAuthoringProfileContext
                 )
                 guard let placement = SourcePlacement(stableID: resolved.placementID) else {
                     throw TestAuthoringCoordinatorError.malformedDescriptor(
@@ -2539,7 +3003,12 @@ final class WorkspaceModel: ObservableObject {
             referenceDetection = await StudioMediaMetadataDetector.detect(
                 url: managed.url, isVideo: isVideo
             )
-            if isVideo { try adoptDetectedReferenceInterpretation(referenceDetection) }
+            let resolution = StudioMediaImportResolution(
+                detection: referenceDetection, isVideo: isVideo
+            )
+            referenceDetection = resolution.detection
+            try adoptReferenceImportInterpretation(referenceDetection)
+            acknowledgeImportDefaults(resolution, role: "la referencia")
             referencePlacement = .fit
             let info = isVideo
                 ? try await referenceSession.openVideo(
@@ -2579,8 +3048,8 @@ final class WorkspaceModel: ObservableObject {
         _ value: StudioColorInputTransform, undoManager: UndoManager?
     ) {
         let prior = referenceInputTransform
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in target.changeReferenceInput(prior, undoManager: nil) }
+        registerUndo(with: undoManager, actionName: "Cambiar interpretación de referencia") { target, manager in
+            target.changeReferenceInput(prior, undoManager: manager)
         }
         referenceInputTransform = value
         referenceInputTransformID = value.id
@@ -2683,41 +3152,43 @@ final class WorkspaceModel: ObservableObject {
               testAuthoringSelection?.autofocusEnabled == true
         else { return }
         focusTargetDragStartSelection = testAuthoringSelection
+        focusTargetDragStartOverrideControlIDs = explicitSceneOverrideControlIDs
     }
 
     func updateFocusTarget(to rasterPoint: CGPoint) {
         guard !previewTransformationsLocked,
               physicalModel.quality == .focusSetup,
-              var authored = physicalAuthoringState,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
               let selection = testAuthoringSelection,
               selection.autofocusEnabled,
               let frame = metalFrame,
-              let placement = Self.deliveryPlacementCode(selection.deliveryPlacementID),
-              let uv = SetupFramingRenderer.deviceUV(
-                at: rasterPoint, authored: authored, device: device,
-                deliveryWidth: Int(selection.deliveryWidth),
-                deliveryHeight: Int(selection.deliveryHeight),
-                deliveryPlacement: placement,
-                outputWidth: frame.width, outputHeight: frame.height
-              )
+              let placement = Self.deliveryPlacementCode(selection.deliveryPlacementID)
         else { return }
         do {
+            let scene = try resolveSceneFrame(currentFrame)
+            guard let uv = try scene.resolver.unprojectFocusTarget(
+                frame: scene.selection,
+                pixel: rasterPoint,
+                deliveryWidth: Int(selection.deliveryWidth),
+                deliveryHeight: Int(selection.deliveryHeight),
+                previewWidth: frame.width,
+                previewHeight: frame.height,
+                deliveryPlacement: placement,
+                expectedRevision: scene.revision
+            ) else { return }
             let withU = try RustTestAuthoringCoordinator.apply(
-                .setScalar(controlID: "autofocus-target-u", value: uv.x), to: selection
+                .setScalar(controlID: "autofocus-target-u", value: uv.x),
+                to: selection, profileContext: testAuthoringProfileContext
             )
             let resolved = try RustTestAuthoringCoordinator.apply(
-                .setScalar(controlID: "autofocus-target-v", value: uv.y), to: withU
+                .setScalar(controlID: "autofocus-target-v", value: uv.y),
+                to: withU, profileContext: testAuthoringProfileContext
             )
             let focusSetup = try RustTestAuthoringCoordinator.apply(
                 .setChoice(controlID: "preview-quality", optionID: "focus-setup"),
-                to: resolved
+                to: resolved, profileContext: testAuthoringProfileContext
             )
             testAuthoringSelection = focusSetup
-            authored.sceneLens.focusPolicy = "autofocus-screen"
-            authored.sceneLens.focusDistanceMeters = focusSetup.focusDistanceMeters
-            physicalAuthoringState = authored
-            resolvedPhysicalPipeline = try authored.resolvedPipeline()
+            physicalModel.invalidateExternalParameters(preservingQuality: true)
             publishFocusSetup()
         } catch {
             errorMessage = error.localizedDescription
@@ -2727,23 +3198,27 @@ final class WorkspaceModel: ObservableObject {
     func endFocusTargetDrag(undoManager: UndoManager?) {
         guard let prior = focusTargetDragStartSelection else { return }
         focusTargetDragStartSelection = nil
+        let priorOverrides = focusTargetDragStartOverrideControlIDs
+            ?? explicitSceneOverrideControlIDs
+        focusTargetDragStartOverrideControlIDs = nil
         guard prior != testAuthoringSelection else { return }
         if let current = testAuthoringSelection {
             do {
-                try applyTestAuthoringSelection(current)
+                try commitSceneAuthoringEdit(
+                    selection: current,
+                    setting: ["autofocus-target-u", "autofocus-target-v"],
+                    prior: .init(
+                        selection: prior,
+                        explicitOverrideControlIDs: priorOverrides
+                    ),
+                    undoManager: undoManager,
+                    actionName: "Cambiar punto de autofocus"
+                )
             } catch {
                 errorMessage = error.localizedDescription
                 return
             }
         }
-        let manager = UndoManagerBox(undoManager)
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in
-                try? target.restoreCameraNavigationSelection(prior, undoManager: manager.value)
-                target.publishFocusSetup()
-            }
-        }
-        undoManager?.setActionName("Cambiar punto de autofocus")
     }
 
     func solveReferenceMatchTargets(undoManager: UndoManager?) {
@@ -2834,7 +3309,10 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    func load(_ urls: [URL]) async {
+    func load(
+        _ urls: [URL],
+        materializeImportInterpretation: Bool = true
+    ) async {
         pause()
         status = "Leyendo medio y metadata…"
         let expanded: [URL]
@@ -2852,7 +3330,14 @@ final class WorkspaceModel: ObservableObject {
         let isVideo = Self.isVideo(first) && expanded.count == 1
         detection = await StudioMediaMetadataDetector.detect(url: first, isVideo: isVideo)
         do {
-            if isVideo { try adoptDetectedSourceInterpretation(detection) }
+            if materializeImportInterpretation {
+                let resolution = StudioMediaImportResolution(
+                    detection: detection, isVideo: isVideo
+                )
+                detection = resolution.detection
+                try adoptSourceImportInterpretation(detection)
+                acknowledgeImportDefaults(resolution, role: "la fuente")
+            }
             let info = isVideo
                 ? try await session.openVideo(
                     first,
@@ -2888,8 +3373,8 @@ final class WorkspaceModel: ObservableObject {
 
     func changeInput(_ value: StudioColorInputTransform, undoManager: UndoManager?) {
         let prior = inputTransform
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in target.changeInput(prior, undoManager: nil) }
+        registerUndo(with: undoManager, actionName: "Cambiar interpretación de fuente") { target, manager in
+            target.changeInput(prior, undoManager: manager)
         }
         inputTransform = value
         rebuildCurrent()
@@ -2897,8 +3382,8 @@ final class WorkspaceModel: ObservableObject {
 
     func changeAlpha(_ value: StudioAlphaMode, undoManager: UndoManager?) {
         let prior = alphaMode
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in target.changeAlpha(prior, undoManager: nil) }
+        registerUndo(with: undoManager, actionName: "Cambiar alpha") { target, manager in
+            target.changeAlpha(prior, undoManager: manager)
         }
         alphaMode = value
         rebuildCurrent()
@@ -2961,8 +3446,8 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         let prior = previewTransform
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in target.changePreview(prior, undoManager: nil) }
+        registerUndo(with: undoManager, actionName: "Cambiar vista") { target, manager in
+            target.changePreview(prior, undoManager: manager)
         }
         previewTransform = value
         objectWillChange.send()
@@ -3020,45 +3505,57 @@ final class WorkspaceModel: ObservableObject {
 
     var trackingOverlayPoints: [CGPoint] {
         guard trackingPointsVisible, let group = selectedTrackingPointGroup else { return [] }
-        return group.points.compactMap { projectTrackingPoint($0.sourcePosition) }
+        return resolveTrackingOverlay(group.points.map(\.sourcePosition)).compactMap(\.self)
     }
 
     var trackingOverlayPointIDs: [String] {
         guard trackingPointsVisible, let group = selectedTrackingPointGroup else { return [] }
-        return group.points.compactMap { point in
-            projectTrackingPoint(point.sourcePosition) == nil ? nil : point.id
+        let projected = resolveTrackingOverlay(group.points.map(\.sourcePosition))
+        return zip(group.points, projected).compactMap { point, projection in
+            projection == nil ? nil : point.id
         }
     }
 
     var trackingOverlaySegments: [CGPoint] {
         guard trackingGeometryVisible, let scene = trackingScene else { return [] }
-        return scene.meshes.filter { visibleTrackingMeshIDs.contains($0.id) }.flatMap { mesh in
+        let sources = scene.meshes.filter { visibleTrackingMeshIDs.contains($0.id) }.flatMap { mesh in
             var cursor = 0
-            return mesh.faceVertexCounts.flatMap { count -> [CGPoint] in
+            return mesh.faceVertexCounts.flatMap { count -> [SIMD3<Double>] in
                 defer { cursor += count }
                 guard count >= 2, cursor + count <= mesh.faceVertexIndices.count else { return [] }
                 let ids = Array(mesh.faceVertexIndices[cursor..<(cursor + count)])
                 guard ids.allSatisfy({ mesh.sourceVertices.indices.contains($0) }) else { return [] }
-                let projected = ids.compactMap { projectTrackingPoint(mesh.sourceVertices[$0]) }
-                guard projected.count == count else { return [] }
-                return projected.indices.flatMap { [projected[$0], projected[($0 + 1) % projected.count]] }
+                return ids.indices.flatMap {
+                    [mesh.sourceVertices[ids[$0]], mesh.sourceVertices[ids[($0 + 1) % ids.count]]]
+                }
             }
+        }
+        let projected = resolveTrackingOverlay(sources)
+        return stride(from: 0, to: projected.count, by: 2).flatMap { index -> [CGPoint] in
+            guard index + 1 < projected.count,
+                  let first = projected[index], let second = projected[index + 1]
+            else { return [] }
+            return [first, second]
         }
     }
 
     var trackingOverlayMeshCenters: [CGPoint] {
-        visibleTrackingPlanePlacements.compactMap { projectTrackingPoint($0.placement.center) }
+        resolveTrackingOverlay(visibleTrackingPlanePlacements.map(\.placement.center)).compactMap(\.self)
     }
 
     var trackingOverlayMeshCenterIDs: [String] {
-        visibleTrackingPlanePlacements.compactMap { item in
-            projectTrackingPoint(item.placement.center) == nil ? nil : item.mesh.id
+        let placements = visibleTrackingPlanePlacements
+        let projected = resolveTrackingOverlay(placements.map(\.placement.center))
+        return zip(placements, projected).compactMap { item, projection in
+            projection == nil ? nil : item.mesh.id
         }
     }
 
     var trackingOverlayMeshCenterLabels: [String] {
-        visibleTrackingPlanePlacements.compactMap { item in
-            projectTrackingPoint(item.placement.center) == nil ? nil : item.mesh.label
+        let placements = visibleTrackingPlanePlacements
+        let projected = resolveTrackingOverlay(placements.map(\.placement.center))
+        return zip(placements, projected).compactMap { item, projection in
+            projection == nil ? nil : item.mesh.label
         }
     }
 
@@ -3075,7 +3572,7 @@ final class WorkspaceModel: ObservableObject {
 
     private var trackingSourceCameraPosition: SIMD3<Double> {
         guard let scale = trackingMetersPerSourceUnit, scale > 0,
-              let authored = physicalAuthoringState else { return .zero }
+              let authored = try? resolveSceneFrame(currentFrame).authored else { return .zero }
         return SIMD3(
             authored.cameraPose.position[0] / scale,
             authored.cameraPose.position[1] / scale,
@@ -3123,7 +3620,10 @@ final class WorkspaceModel: ObservableObject {
         actionName: String
     ) {
         guard var selection = testAuthoringSelection else { return }
-        let prior = selection
+        let prior = SceneAuthoringEditSnapshot(
+            selection: selection,
+            explicitOverrideControlIDs: explicitSceneOverrideControlIDs
+        )
         selection.geometryModeID = "free"
         selection.previewQualityID = "setup"
         selection.screenPositionXMeters = position.x
@@ -3139,16 +3639,25 @@ final class WorkspaceModel: ObservableObject {
             selection.screenRotationZDegrees = degrees[2]
         }
         do {
-            try applyTestAuthoringSelection(selection)
-            applyTrackingCameraAtCurrentFrame()
-            let manager = UndoManagerBox(undoManager)
-            undoManager?.registerUndo(withTarget: self) { target in
-                Task { @MainActor in
-                    try? target.restoreCameraNavigationSelection(prior, undoManager: manager.value)
-                    target.applyTrackingCameraAtCurrentFrame()
-                }
+            var controls: Set<String> = [
+                "geometry-mode",
+                "screen-position-x-meters", "screen-position-y-meters",
+                "screen-position-z-meters",
+            ]
+            if orientation != nil {
+                controls.formUnion([
+                    "screen-rotation-x-degrees", "screen-yaw-degrees",
+                    "screen-rotation-z-degrees",
+                ])
             }
-            undoManager?.setActionName(actionName)
+            try commitSceneAuthoringEdit(
+                selection: selection,
+                setting: controls,
+                prior: prior,
+                undoManager: undoManager,
+                actionName: actionName
+            )
+            applyTrackingCameraAtCurrentFrame()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -3163,9 +3672,7 @@ final class WorkspaceModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         FileDialogDirectory.trackingComposition.remember(url)
         do {
-            let managed = try TrackingAssetLibrary.importAsset(from: url)
-            let imported = try FusionTrackingImporter().load(managed.url)
-            trackingAsset = managed
+            let imported = try FusionTrackingImporter().load(url)
             trackingScene = imported
             selectedTrackingCameraID = nil
             selectedTrackingPointGroupID = nil
@@ -3216,9 +3723,49 @@ final class WorkspaceModel: ObservableObject {
             errorMessage = "La escala de SynthEyes debe ser positiva."
             return
         }
-        trackingMetersPerSourceUnit = trackingSynthEyesUnit == "cm"
+        let scale = trackingSynthEyesUnit == "cm"
             ? trackingSynthEyesUnitValue / 100 : trackingSynthEyesUnitValue
-        applyTrackingCameraAtCurrentFrame()
+        do {
+            try applyTrackingMetersPerSourceUnit(scale)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Changes the unit conversion for the complete imported world. Camera, point cloud,
+    /// geometry and an already placed Device keep the same source-space coordinates; the
+    /// physical Device dimensions remain metres and therefore change only in apparent size.
+    private func applyTrackingMetersPerSourceUnit(_ scale: Double) throws {
+        guard scale.isFinite, scale > 0 else { throw PhysicalContractError.invalidFrameTime }
+        let priorScale = trackingMetersPerSourceUnit
+        let priorSelection = testAuthoringSelection
+        var scaledSelection = priorSelection
+        if let priorScale, priorScale > 0, var selection = scaledSelection {
+            let factor = scale / priorScale
+            selection.screenPositionXMeters *= factor
+            selection.screenPositionYMeters *= factor
+            selection.screenPositionZMeters *= factor
+            scaledSelection = selection
+        }
+        trackingMetersPerSourceUnit = scale
+        do {
+            if let scaledSelection {
+                try commitSceneAuthoringEdit(
+                    selection: scaledSelection,
+                    setting: [
+                        "screen-position-x-meters", "screen-position-y-meters",
+                        "screen-position-z-meters",
+                    ],
+                    undoManager: nil,
+                    actionName: "Escalar mundo tracking"
+                )
+            } else {
+                applyTrackingCameraAtCurrentFrame()
+            }
+        } catch {
+            trackingMetersPerSourceUnit = priorScale
+            throw error
+        }
     }
 
     func trackingMeshDimensions(_ mesh: TrackingMesh) -> SIMD3<Double>? {
@@ -3249,8 +3796,12 @@ final class WorkspaceModel: ObservableObject {
                 ?? "La escala no es válida: los puntos deben ser distintos y la distancia real positiva."
             return
         }
-        trackingMetersPerSourceUnit = Double(resolved)
-        applyTrackingCameraAtCurrentFrame()
+        do {
+            try applyTrackingMetersPerSourceUnit(Double(resolved))
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         status = "Escala resuelta · 1 unidad Fusion = \(Double(resolved).formatted(.number.precision(.fractionLength(6)))) m"
     }
 
@@ -3279,115 +3830,80 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func applyTrackingCameraAtCurrentFrame() {
-        guard let resolved = try? resolveSceneFrame(currentFrame),
-              trackingCameraEnabled,
-              let camera = selectedTrackingCamera
-        else { return }
-        var authored = resolved.authored
-        if var selection = testAuthoringSelection {
-            let degrees = PoseRotationProjection.degrees(from: authored.cameraPose.quaternion)
-            selection.geometryModeID = "free"
-            selection.cameraPositionXMeters = authored.cameraPose.position[0]
-            selection.cameraPositionYMeters = authored.cameraPose.position[1]
-            selection.cameraPositionZMeters = authored.cameraPose.position[2]
-            selection.cameraRotationXDegrees = degrees[0]
-            selection.cameraRotationYDegrees = degrees[1]
-            selection.cameraRotationZDegrees = degrees[2]
-            selection.focalLengthMillimeters = camera.focalLengthMillimeters
-            if selection.autofocusEnabled,
-               let focused = try? RustTestAuthoringCoordinator.apply(
-                .setScalar(
-                    controlID: "autofocus-target-u",
-                    value: selection.autofocusTargetU
-                ),
-                to: selection
-               ),
-               let focusResolved = try? RustTestAuthoringCoordinator.apply(
-                .setChoice(
-                    controlID: "preview-quality",
-                    optionID: selection.previewQualityID
-                ),
-                to: focused
-               ) {
-                selection = focusResolved
-                authored.sceneLens.focusDistanceMeters = focusResolved.focusDistanceMeters
-            }
-            testAuthoringSelection = selection
-            try? refreshTestAuthoringDescriptor()
-        }
-        physicalAuthoringState = authored
-        resolvedPhysicalPipeline = try? authored.resolvedPipeline()
+        guard trackingCameraEnabled, selectedTrackingCamera != nil else { return }
+        // Tracking is an Application-owned track. Timeline changes invalidate presentation but
+        // never write a sampled pose, focal length or gate into base scene authoring.
         physicalModel.invalidateExternalParameters()
     }
 
     private struct ResolvedSceneFrame {
+        let revision: UInt64
         let selection: PhysicalFrameSelection
         let authored: PhysicalPipelineAuthoringState
         let activeSensorWindow: PhysicalActiveSensorWindow
         let orchestration: PhysicalFrameOrchestration
         let device: ResolvedDevice
+        let pipeline: PhysicalPipelineResolvedState
+        let resolver: RustSceneFrameResolver
     }
 
-    private struct ResolvedPhysicalAuthoring {
-        let state: PhysicalPipelineAuthoringState
-        let activeSensorWindow: PhysicalActiveSensorWindow
+    private struct PublishedSceneIdentity: Equatable {
+        let revision: UInt64
+        let selection: PhysicalFrameSelection
+
+        init(_ scene: ResolvedSceneFrame) {
+            revision = scene.revision
+            selection = scene.selection
+        }
+    }
+
+    private func publishSceneFrame(
+        _ frame: StudioColorMetalFrame,
+        scene: ResolvedSceneFrame
+    ) {
+        // Identity is committed before the texture. `metalFrame` is the Viewer commit marker,
+        // so SwiftUI can never observe a new image with the prior scene overlay.
+        publishedSceneIdentity = PublishedSceneIdentity(scene)
+        metalFrame = frame
+    }
+
+    private func publishUnresolvedFrame(_ frame: StudioColorMetalFrame?) {
+        publishedSceneIdentity = nil
+        metalFrame = frame
+    }
+
+    private func publishCurrentSceneFrame(_ frame: StudioColorMetalFrame) {
+        guard let scene = try? resolveSceneFrame(currentFrame) else {
+            publishUnresolvedFrame(frame)
+            return
+        }
+        publishSceneFrame(frame, scene: scene)
+    }
+
+    private struct SubmittedPhysicalJob {
+        let job: PhysicalMetalFrameJob
+        let scene: ResolvedSceneFrame
     }
 
     /// The sole per-frame materialization point for the physical request. The scene authoring
     /// remains the base; an active external track replaces only the parameters it owns.
     /// Every renderer must consume this result rather than applying tracking independently.
-    private func resolvedPhysicalAuthoringState(
-        forFrame frame: Int,
-        exactFrameRate: ExactFrameRate
-    ) throws -> ResolvedPhysicalAuthoring {
-        guard var authored = basePhysicalAuthoringState else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "La escena no tiene autoría física que resolver."
-            )
+    private func resolveSceneFrame(
+        _ frame: Int,
+        temporalSamplesOverride: UInt16? = nil
+    ) throws -> ResolvedSceneFrame {
+        guard let selectedDevice = resolvedDevice,
+              let authoringSelection = testAuthoringSelection,
+              var authored = basePhysicalAuthoringState else {
+            throw DeviceDomainError.invalidPhysicalProfile("La escena no tiene un Device resuelto.")
         }
-        if trackingCameraEnabled, let scale = trackingMetersPerSourceUnit,
-           let camera = selectedTrackingCamera, !camera.samples.isEmpty {
-            guard let sample = camera.sample(
-                atTimelineFrame: frame,
-                timelineFrameRate: exactFrameRate.framesPerSecond
-            ) else {
-                throw SceneLibraryError.invalidDocument(
-                    "El tracking no contiene una muestra para el frame solicitado."
+        if let temporalSamplesOverride {
+            guard (1...64).contains(temporalSamplesOverride) else {
+                throw DeviceDomainError.invalidPhysicalProfile(
+                    "Las muestras temporales deben estar entre 1 y 64."
                 )
             }
-            Self.applyImportedTrackingCamera(
-                camera,
-                sample: sample,
-                metersPerSourceUnit: scale,
-                to: &authored
-            )
-        }
-        let activeSensorWindow = try Self.applyActiveSensorWindow(
-            fullSensorRaster: try selectedCaptureFullRaster(),
-            to: &authored
-        )
-        return .init(state: authored, activeSensorWindow: activeSensorWindow)
-    }
-
-    private func selectedCaptureFullRaster() throws -> CapturePresetDefinition.RasterMode {
-        guard let selection = testAuthoringSelection,
-              let capture = capturePresets.first(where: {
-                  $0.id == selection.capturePresetID
-              }),
-              let raster = capture.rasterModes.first(where: {
-                  $0.id == selection.captureRasterModeID
-              })
-        else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "La escena no tiene un raster completo de cámara resuelto."
-            )
-        }
-        return raster
-    }
-
-    private func resolveSceneFrame(_ frame: Int) throws -> ResolvedSceneFrame {
-        guard let device = resolvedDevice else {
-            throw DeviceDomainError.invalidPhysicalProfile("La escena no tiene un Device resuelto.")
+            authored.shutterMotion.temporalSamples = temporalSamplesOverride
         }
         let exactFrameRate = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
@@ -3401,196 +3917,153 @@ final class WorkspaceModel: ObservableObject {
         guard !overflow else { throw PhysicalContractError.invalidFrameTime }
         let selection = try PhysicalFrameSelection(
             frameIndex: Int64(frame), timeNumerator: timeNumerator,
-            timeDenominator: exactFrameRate.numerator
+            timeDenominator: exactFrameRate.numerator,
+            frameRateNumerator: exactFrameRate.numerator,
+            frameRateDenominator: exactFrameRate.denominator
         )
-        let resolvedAuthoring = try resolvedPhysicalAuthoringState(
-            forFrame: frame,
-            exactFrameRate: exactFrameRate
+        let contributions = physicalModel.orderedContributions
+        guard let uniformityAmount = contributions.first(where: {
+            $0.stage == .screen(.panelUniformity)
+        })?.amount,
+        let spreadAmount = contributions.first(where: {
+            $0.stage == .screen(.panelLightSpread)
+        })?.amount else {
+            throw DeviceDomainError.invalidPhysicalProfile(
+                "La escena no contiene las contribuciones físicas resueltas."
+            )
+        }
+        var deviceDefinition = selectedDevice.definition
+        deviceDefinition.panelUniformity.characterStrength = uniformityAmount
+        deviceDefinition.panelLightSpread.characterStrength = spreadAmount
+        let device = try deviceDefinition.resolved()
+        let pipeline = try authored.resolvedPipeline().resolving(contributions: contributions)
+        let resolver = try RustSceneFrameResolver(
+            revision: physicalModel.parameterRevision,
+            frameRate: exactFrameRate,
+            base: authored,
+            resolvedDevice: device,
+            resolvedPipeline: pipeline,
+            trackingCamera: trackingCameraEnabled ? selectedTrackingCamera : nil,
+            trackingMetersPerSourceUnit: trackingCameraEnabled
+                ? trackingMetersPerSourceUnit : nil,
+            autofocusEnabled: authoringSelection.autofocusEnabled,
+            autofocusTargetU: authoringSelection.autofocusTargetU,
+            autofocusTargetV: authoringSelection.autofocusTargetV
+        )
+        let raw = try resolver.resolve(selection)
+        Self.applyResolvedScene(raw, to: &authored)
+        let activeSensorWindow = try PhysicalActiveSensorWindow(
+            fullWidth: Int(raw.full_sensor_width),
+            fullHeight: Int(raw.full_sensor_height),
+            originX: Int(raw.active_sensor_origin_x),
+            originY: Int(raw.active_sensor_origin_y),
+            width: Int(raw.active_sensor_width),
+            height: Int(raw.active_sensor_height)
         )
         return .init(
+            revision: raw.revision,
             selection: selection,
-            authored: resolvedAuthoring.state,
-            activeSensorWindow: resolvedAuthoring.activeSensorWindow,
-            orchestration: try resolvedAuthoring.state.orchestration(for: selection),
-            device: device
+            authored: authored,
+            activeSensorWindow: activeSensorWindow,
+            orchestration: try authored.orchestration(for: selection),
+            device: device,
+            pipeline: pipeline,
+            resolver: resolver
         )
     }
 
-    private static func applyImportedTrackingCamera(
-        _ camera: TrackingCamera,
-        sample: TrackingCameraSample,
-        metersPerSourceUnit scale: Double,
+    private static func applyResolvedScene(
+        _ raw: ScreenResolvedSceneFrameV1,
         to authored: inout PhysicalPipelineAuthoringState
     ) {
         authored.cameraPose.position = [
-            sample.sourcePosition.x * scale,
-            sample.sourcePosition.y * scale,
-            sample.sourcePosition.z * scale,
+            Double(raw.camera_position.0), Double(raw.camera_position.1),
+            Double(raw.camera_position.2),
         ]
         authored.cameraPose.quaternion = [
-            sample.orientation.x, sample.orientation.y,
-            sample.orientation.z, sample.orientation.w,
+            Double(raw.camera_rotation_xyzw.0), Double(raw.camera_rotation_xyzw.1),
+            Double(raw.camera_rotation_xyzw.2), Double(raw.camera_rotation_xyzw.3),
         ]
         authored.cameraLookAt = nil
-        authored.sceneLens.focalLengthMillimeters = camera.focalLengthMillimeters
-        authored.sceneLens.sensorWidthMillimeters = camera.gateWidthMillimeters
-        authored.sceneLens.sensorHeightMillimeters = camera.gateHeightMillimeters
-        authored.sceneLens.lensShift = [0, 0]
-        switch camera.distortion {
-        case .pinhole:
-            authored.sceneLens.radialDistortion = [0, 0, 0]
-        case let .de4RadialStandardDegree4(degree2, degree4):
-            // 3DE normalizes radius to the image diagonal (corner radius = 1),
-            // while the canonical evaluator uses an axis-normalized gate
-            // (corner radius² = 2). Convert the even polynomial at that shared
-            // boundary; never inherit coefficients from the selected lens.
-            authored.sceneLens.radialDistortion = [degree2 * 0.5, degree4 * 0.25, 0]
+        authored.screenPose.position = [
+            Double(raw.screen_position.0), Double(raw.screen_position.1),
+            Double(raw.screen_position.2),
+        ]
+        authored.screenPose.quaternion = [
+            Double(raw.screen_rotation_xyzw.0), Double(raw.screen_rotation_xyzw.1),
+            Double(raw.screen_rotation_xyzw.2), Double(raw.screen_rotation_xyzw.3),
+        ]
+        authored.sceneLens.focalLengthMillimeters = Double(raw.focal_length_millimeters)
+        authored.sceneLens.sensorWidthMillimeters = Double(raw.sensor_width_millimeters)
+        authored.sceneLens.sensorHeightMillimeters = Double(raw.sensor_height_millimeters)
+        authored.sceneLens.lensShift = [Double(raw.lens_shift.0), Double(raw.lens_shift.1)]
+        authored.sceneLens.focusDistanceMeters = Double(raw.focus_distance_meters)
+        authored.sceneLens.fStop = Double(raw.f_stop)
+        authored.sceneLens.nearClipMeters = Double(raw.near_clip_meters)
+        authored.sceneLens.farClipMeters = Double(raw.far_clip_meters)
+        authored.sceneLens.radialDistortion = [
+            Double(raw.lens_radial_distortion.0), Double(raw.lens_radial_distortion.1),
+            Double(raw.lens_radial_distortion.2),
+        ]
+        authored.sceneLens.tangentialDistortion = [
+            Double(raw.lens_tangential_distortion.0),
+            Double(raw.lens_tangential_distortion.1),
+        ]
+        authored.sceneLens.longitudinalChromaticMeters = [
+            Double(raw.lens_longitudinal_chromatic_meters.0),
+            Double(raw.lens_longitudinal_chromatic_meters.1),
+            Double(raw.lens_longitudinal_chromatic_meters.2),
+        ]
+        authored.sceneLens.lateralChromaticScale = [
+            Double(raw.lens_lateral_chromatic_scale.0),
+            Double(raw.lens_lateral_chromatic_scale.1),
+            Double(raw.lens_lateral_chromatic_scale.2),
+        ]
+        authored.sceneLens.vignettingStrength = Double(raw.lens_vignetting_strength)
+        authored.sceneLens.transmissionRGB = [
+            Double(raw.lens_transmission_rgb.0), Double(raw.lens_transmission_rgb.1),
+            Double(raw.lens_transmission_rgb.2),
+        ]
+        authored.sceneLens.centerSoftnessMicrometers = Double(
+            raw.lens_center_softness_micrometers
+        )
+        authored.sceneLens.edgeSoftnessMicrometers = Double(
+            raw.lens_edge_softness_micrometers
+        )
+        authored.sceneLens.veilingGlareFraction = Double(raw.lens_veiling_glare_fraction)
+        // This value is a frame-local presentation adapter. The immutable Rust scene retains
+        // the complete sensor plus the active origin; Setup receives only the exposed raster.
+        authored.sensor.nativeWidth = raw.active_sensor_width
+        authored.sensor.nativeHeight = raw.active_sensor_height
+    }
+
+    private func resolveTrackingOverlay(_ sources: [SIMD3<Double>]) -> [CGPoint?] {
+        guard !sources.isEmpty,
+              let frame = metalFrame,
+              let scale = trackingMetersPerSourceUnit,
+              let resolved = try? resolveSceneFrame(currentFrame),
+              publishedSceneIdentity == PublishedSceneIdentity(resolved)
+        else { return [] }
+        let deliveryWidth = Int(testAuthoringSelection?.deliveryWidth ?? UInt32(frame.width))
+        let deliveryHeight = Int(testAuthoringSelection?.deliveryHeight ?? UInt32(frame.height))
+        let placement: UInt32
+        switch testAuthoringSelection?.deliveryPlacementID ?? "fit" {
+        case "fit": placement = 0
+        case "fill-crop": placement = 1
+        case "one-to-one": placement = 2
+        default: return []
         }
-        authored.sceneLens.tangentialDistortion = [0, 0]
-    }
-
-    @discardableResult
-    private static func applyActiveSensorWindow(
-        fullSensorRaster: CapturePresetDefinition.RasterMode,
-        to authored: inout PhysicalPipelineAuthoringState
-    ) throws -> PhysicalActiveSensorWindow {
-        let window = try PhysicalActiveSensorWindow(
-            fullWidth: Int(fullSensorRaster.width),
-            fullHeight: Int(fullSensorRaster.height),
-            gateWidth: authored.sceneLens.sensorWidthMillimeters,
-            gateHeight: authored.sceneLens.sensorHeightMillimeters
-        )
-        authored.sensor.nativeWidth = UInt32(window.width)
-        authored.sensor.nativeHeight = UInt32(window.height)
-        return window
-    }
-
-    private func projectTrackingPoint(_ source: SIMD3<Double>) -> CGPoint? {
-        guard let frame = metalFrame else { return nil }
-        let camera: SIMD3<Double>
-        let q: simd_quatd
-        let focal: Double
-        let gateWidth: Double
-        let gateHeight: Double
-        let world: SIMD3<Double>
-        let near: Double
-        let cameraWidth: UInt32
-        let cameraHeight: UInt32
-        let projectionPlacementID: String
-        let lensShift: SIMD2<Double>
-        let radialDistortion: SIMD3<Double>
-        let tangentialDistortion: SIMD2<Double>
-        if let scale = trackingMetersPerSourceUnit, let authored = physicalAuthoringState,
-           authored.cameraPose.position.count == 3, authored.cameraPose.quaternion.count == 4 {
-            camera = .init(authored.cameraPose.position[0], authored.cameraPose.position[1], authored.cameraPose.position[2])
-            q = simd_normalize(simd_quatd(
-                ix: authored.cameraPose.quaternion[0], iy: authored.cameraPose.quaternion[1],
-                iz: authored.cameraPose.quaternion[2], r: authored.cameraPose.quaternion[3]
-            ))
-            focal = authored.sceneLens.focalLengthMillimeters
-            gateWidth = authored.sceneLens.sensorWidthMillimeters
-            gateHeight = authored.sceneLens.sensorHeightMillimeters
-            world = source * scale
-            near = authored.sceneLens.nearClipMeters
-            if trackingCameraEnabled, let reference = referenceACEScgFrame {
-                cameraWidth = UInt32(reference.width)
-                cameraHeight = UInt32(reference.height)
-                projectionPlacementID = referencePlacement.stableID
-                lensShift = .zero
-                if let imported = selectedTrackingCamera {
-                    radialDistortion = switch imported.distortion {
-                    case .pinhole: .zero
-                    case let .de4RadialStandardDegree4(degree2, degree4):
-                        SIMD3(degree2 * 0.5, degree4 * 0.25, 0)
-                    }
-                } else {
-                    radialDistortion = .zero
-                }
-                tangentialDistortion = .zero
-            } else {
-                cameraWidth = authored.sensor.nativeWidth
-                cameraHeight = authored.sensor.nativeHeight
-                projectionPlacementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
-                lensShift = SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1])
-                let usesDistortedProjection = switch physicalModel.quality {
-                case .setup: referenceACEScgFrame != nil
-                case .environmentSetup: false
-                case .focusSetup, .draft, .medium, .high, .native: true
-                }
-                radialDistortion = usesDistortedProjection
-                    ? SIMD3(
-                        authored.sceneLens.radialDistortion[0],
-                        authored.sceneLens.radialDistortion[1],
-                        authored.sceneLens.radialDistortion[2]
-                    )
-                    : .zero
-                tangentialDistortion = usesDistortedProjection
-                    ? SIMD2(
-                        authored.sceneLens.tangentialDistortion[0],
-                        authored.sceneLens.tangentialDistortion[1]
-                    )
-                    : .zero
-            }
-        } else if let imported = selectedTrackingCamera, !imported.samples.isEmpty {
-            guard let sample = imported.sample(
-                atTimelineFrame: currentFrame,
-                timelineFrameRate: frameRate
-            ) else { return nil }
-            camera = sample.sourcePosition
-            q = simd_normalize(simd_quatd(
-                ix: sample.orientation.x, iy: sample.orientation.y,
-                iz: sample.orientation.z, r: sample.orientation.w
-            ))
-            focal = imported.focalLengthMillimeters
-            gateWidth = imported.gateWidthMillimeters
-            gateHeight = imported.gateHeightMillimeters
-            world = source
-            near = 1e-8
-            cameraWidth = referenceACEScgFrame.map { UInt32($0.width) }
-                ?? physicalAuthoringState?.sensor.nativeWidth
-                ?? UInt32(max(1, frame.width))
-            cameraHeight = referenceACEScgFrame.map { UInt32($0.height) }
-                ?? physicalAuthoringState?.sensor.nativeHeight
-                ?? UInt32(max(1, frame.height))
-            lensShift = .zero
-            radialDistortion = switch imported.distortion {
-            case .pinhole: .zero
-            case let .de4RadialStandardDegree4(degree2, degree4):
-                SIMD3(degree2 * 0.5, degree4 * 0.25, 0)
-            }
-            tangentialDistortion = .zero
-            projectionPlacementID = referenceACEScgFrame == nil
-                ? (testAuthoringSelection?.deliveryPlacementID ?? "fit")
-                : referencePlacement.stableID
-        } else { return nil }
-        let pose = CameraNavigationPose(position: camera, orientation: q)
-        let depth = simd_dot(
-            world - camera,
-            q.act(SIMD3<Double>(0, 0, -1))
-        )
-        guard depth > near else { return nil }
-        guard let cameraGatePoint = ReferenceAnchorCameraMath.project(
-            pose: pose,
-            point: world,
-            imageSize: CGSize(width: Int(cameraWidth), height: Int(cameraHeight)),
-            focalLengthMillimeters: focal,
-            sensorSizeMillimeters: CGSize(width: gateWidth, height: gateHeight),
-            lensShift: lensShift,
-            radialDistortion: radialDistortion,
-            tangentialDistortion: tangentialDistortion
-        ) else { return nil }
-        let deliveryWidth = Int(testAuthoringSelection?.deliveryWidth ?? cameraWidth)
-        let deliveryHeight = Int(testAuthoringSelection?.deliveryHeight ?? cameraHeight)
-        return try? ReferenceMatchRasterMapping.previewPoints(
-            [cameraGatePoint],
+        return (try? resolved.resolver.resolveTrackingOverlay(
+            frame: resolved.selection,
+            sourcePoints: sources,
+            metersPerSourceUnit: scale,
             deliveryWidth: deliveryWidth,
             deliveryHeight: deliveryHeight,
             previewWidth: frame.width,
             previewHeight: frame.height,
-            cameraWidth: cameraWidth,
-            cameraHeight: cameraHeight,
-            deliveryPlacementID: projectionPlacementID
-        ).first
+            deliveryPlacement: placement,
+            expectedRevision: resolved.revision
+        )) ?? []
     }
 
     func step(_ delta: Int) { seek(toFrame: currentFrame + delta) }
@@ -3673,7 +4146,7 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    var selectedCapturePreset: CapturePresetDefinition? {
+    var selectedCapturePreset: CameraProfileDefinition? {
         capturePresets.first { $0.id == selectedCapturePresetID }
     }
 
@@ -3955,14 +4428,15 @@ final class WorkspaceModel: ObservableObject {
         let source = try await renderFrame(index)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
-        let job = try submitPhysicalJob(
+        let submission = try submitPhysicalJob(
             quality: .native,
             temporalSamplesOverride: configuration.motionBlurEnabled
-                ? configuration.motionSamples : 1
+                ? configuration.motionSamples : 1,
+            resolvedSceneFrameOverride: resolvedSceneFrame
         )
         while true {
             try Task.checkCancellation()
-            let snapshot = try job.snapshot()
+            let snapshot = try submission.job.snapshot()
             switch snapshot.state {
             case .idle, .stale, .rendering:
                 try await Task.sleep(for: .milliseconds(8))
@@ -4154,14 +4628,12 @@ final class WorkspaceModel: ObservableObject {
         let referencePlate: FusionReferencePlate?
         let outputPlan: RenderOutputPlan
         if let referenceURL = referenceSourceURL {
-            guard let input = StudioColorInputTransform.catalog.first(where: {
-                $0.id == referenceInputTransformID
-            }), case let .colorSpace(sourceColorSpace) = input.processor else {
+            guard let inputTransformID = referenceInputTransformID else {
                 throw FusionScenePackageError.invalidRaster
             }
-            guard StudioColorEngine.fusionSupportedSourceColorSpaces.contains(sourceColorSpace) else {
-                throw FusionScenePackageError.unsupportedReferenceInputTransform
-            }
+            let colorTransform = FusionReferenceColorTransform.resolve(
+                inputTransformID: inputTransformID
+            )
             guard !referenceURL.path.isEmpty else { throw FusionScenePackageError.invalidRaster }
             guard let referenceRaster = referenceACEScgFrame else {
                 throw FusionScenePackageError.invalidRaster
@@ -4169,8 +4641,8 @@ final class WorkspaceModel: ObservableObject {
             outputPlan = job.outputPlan
             referencePlate = .init(
                 sourceURL: referenceURL,
-                inputTransformID: input.id,
-                ocioSourceColorSpace: sourceColorSpace,
+                inputTransformID: inputTransformID,
+                colorTransform: colorTransform,
                 placementID: referencePlacement.stableID,
                 width: referenceRaster.width,
                 height: referenceRaster.height
@@ -4216,7 +4688,7 @@ final class WorkspaceModel: ObservableObject {
         let width = active.activeWidth + sourceOverscan * 2
         let height = active.activeHeight + sourceOverscan * 2
         let dimensions = try PhysicalDimensions(width: width, height: height)
-        let job = try submitPhysicalJob(
+        let submission = try submitPhysicalJob(
             quality: .high,
             temporalSamplesOverride: 1,
             sourceFrameOverride: source,
@@ -4232,8 +4704,8 @@ final class WorkspaceModel: ObservableObject {
         )
         while true {
             do { try Task.checkCancellation() }
-            catch { _ = job.cancel(); throw error }
-            let snapshot = try job.snapshot()
+            catch { _ = submission.job.cancel(); throw error }
+            let snapshot = try submission.job.snapshot()
             switch snapshot.state {
             case .idle, .stale, .rendering:
                 try await Task.sleep(for: .milliseconds(8))
@@ -4270,14 +4742,14 @@ final class WorkspaceModel: ObservableObject {
         status = "Render Queue en pausa"
     }
 
-    func clearCompletedRenders() {
-        outputQueue.clearCompleted()
-        status = "Renders completados eliminados de la cola"
+    func clearCompletedAndFailedRenders() {
+        outputQueue.clearCompletedAndFailed()
+        status = "Renders completados y fallidos eliminados de la cola"
     }
 
-    func removePendingRender(_ job: NativeOutputQueueController.RenderJob) {
-        guard outputQueue.removePendingJob(id: job.id) else { return }
-        status = "Trabajo pendiente eliminado · \(job.scene.name)"
+    func removeInactiveRender(_ job: NativeOutputQueueController.RenderJob) {
+        guard outputQueue.removeInactiveJob(id: job.id) else { return }
+        status = "Trabajo eliminado de la cola · \(job.scene.name)"
     }
 
     func showRenderDestinationInFinder(_ job: NativeOutputQueueController.RenderJob) {
@@ -4355,7 +4827,8 @@ final class WorkspaceModel: ObservableObject {
 
     func captureSavedScene() throws -> SavedSceneCapture {
         guard let frame = metalFrame,
-              let context = currentSettingsContext()
+              let settingsContext = currentSettingsContext(),
+              let selection = currentTestAuthoringSelection()
         else { throw SceneLibraryError.invalidDocument("La escena todavía no tiene un estado completo.") }
         let source: SavedSceneSource
         if sourceIsPattern {
@@ -4392,9 +4865,8 @@ final class WorkspaceModel: ObservableObject {
             )
         }
         let savedTracking: SavedTrackingScene?
-        if trackingScene != nil {
-            guard let asset = trackingAsset,
-                  let cameraID = selectedTrackingCameraID,
+        if let authoredTrackingScene = trackingScene {
+            guard let cameraID = selectedTrackingCameraID,
                   let pointGroupID = selectedTrackingPointGroupID,
                   let scale = trackingMetersPerSourceUnit else {
                 throw SceneLibraryError.invalidDocument(
@@ -4402,7 +4874,7 @@ final class WorkspaceModel: ObservableObject {
                 )
             }
             savedTracking = .init(
-                absolutePath: asset.url.path,
+                scene: authoredTrackingScene,
                 cameraID: cameraID, pointGroupID: pointGroupID,
                 visibleMeshIDs: visibleTrackingMeshIDs.sorted(),
                 pointsVisible: trackingPointsVisible,
@@ -4421,11 +4893,9 @@ final class WorkspaceModel: ObservableObject {
             viewerPanX: pan.width,
             viewerPanY: pan.height,
             viewerIsFitted: previewIsFitted,
-            authoring: .init(
-                deviceProfileID: try requiredSceneDeviceProfileID(),
-                coverGlassProfileID: try requiredSceneCoverGlassProfileID(),
-                context: context, model: physicalModel.authoringState,
-                environmentCalibration: environmentSourceCalibration
+            authoring: try currentSceneAuthoringDocument(
+                settingsContext: settingsContext,
+                selection: selection
             ),
             tracking: savedTracking
         )
@@ -4442,10 +4912,97 @@ final class WorkspaceModel: ObservableObject {
         )
     }
 
+    private static let sceneProfileControlIDs: Set<String> = [
+        "device", "cover-glass-preset", "capture-preset", "lens-preset",
+        "environment-source", "delivery-preset", "recording-profile", "placement",
+    ]
+
+    private func currentSceneAuthoringDocument(
+        settingsContext: PhysicalSettingsExchange.FrameContext,
+        selection: TestAuthoringResolvedSelection
+    ) throws -> SceneAuthoringDocument {
+        let document = SceneAuthoringDocument(
+            profiles: .init(
+                deviceID: try requiredSceneDeviceProfileID(),
+                coverGlassID: try requiredSceneCoverGlassProfileID(),
+                captureID: selectedCapturePresetID ?? selection.capturePresetID,
+                lensID: selectedLensPresetID ?? selection.lensPresetID,
+                environmentID: selection.environmentSourceID,
+                deliveryID: selection.deliveryPresetID,
+                recordingID: selection.recordingProfileID
+            ),
+            overrides: try currentSceneControlOverrides(),
+            modelOverrides: currentSceneModelOverrides(),
+            context: .init(
+                sourceInputTransformID: settingsContext.sourceInputTransformID,
+                sourceAlphaMode: settingsContext.sourceAlphaMode,
+                sourceColorModel: settingsContext.sourceColorModel,
+                sourceYUVMatrix: settingsContext.sourceYUVMatrix,
+                sourceSignalRange: settingsContext.sourceSignalRange,
+                sourcePlacementID: settingsContext.sourcePlacementID,
+                previewOutputTransformID: settingsContext.previewOutputTransformID,
+                previewPhaseID: settingsContext.previewPhaseID,
+                environmentResource: settingsContext.environmentResource,
+                referenceResource: settingsContext.referenceResource
+            ),
+            environmentCalibration: environmentSourceCalibration
+        )
+        try document.validate()
+        return document
+    }
+
+    private func currentSceneControlOverrides() throws -> [SceneControlOverride] {
+        guard let presentation = testPresentation else {
+            throw SceneLibraryError.invalidDocument(
+                "Application no ha publicado los controles necesarios para guardar overrides."
+            )
+        }
+        let controls = presentation.previewControls + presentation.phases.flatMap {
+            $0.sections.flatMap(\.controls)
+        }
+        let duplicateIDs = Dictionary(grouping: controls, by: \.id).filter { $0.value.count != 1 }
+        guard duplicateIDs.isEmpty else {
+            throw SceneLibraryError.invalidDocument(
+                "Application publicó identidades de control duplicadas."
+            )
+        }
+        return controls.compactMap { descriptor in
+            guard !Self.sceneProfileControlIDs.contains(descriptor.id) else { return nil }
+            guard explicitSceneOverrideControlIDs.contains(descriptor.id) else { return nil }
+            switch descriptor {
+            case let .choice(control):
+                return .choice(control.id, control.selectedID)
+            case let .scalar(control):
+                return .scalar(control.id, control.value)
+            case let .toggle(control):
+                return .toggle(control.id, control.value)
+            case .action, .readOnly:
+                return nil
+            }
+        }.sorted { $0.controlID < $1.controlID }
+    }
+
+    private func currentSceneModelOverrides() -> SceneModelOverrides {
+        let state = physicalModel.authoringState
+        let screen = state.screen.storedAmount != 1 || state.screen.isBypassed
+            ? state.screen : nil
+        let stages = state.stages.filter { stage in
+            switch stage.control {
+            case let .continuous(value):
+                value.storedAmount != 1 || value.isBypassed
+            case let .discrete(enabled):
+                !enabled
+            }
+        }
+        return .init(screen: screen, stages: stages)
+    }
+
     func openSavedScene(
         _ scene: SavedScene,
         undoManager: UndoManager?
     ) async {
+        isMaterializingSavedScene = true
+        defer { isMaterializingSavedScene = false }
         do {
             try scene.validate()
             let authoring = scene.snapshot.authoring
@@ -4465,7 +5022,7 @@ final class WorkspaceModel: ObservableObject {
                     throw SceneLibraryError.invalidDocument("Falta una fuente externa guardada.")
                 }
                 errorMessage = nil
-                await load(urls)
+                await load(urls, materializeImportInterpretation: false)
                 guard errorMessage == nil, !sourceIsPattern,
                       session.sourceURLs.count == urls.count else {
                     throw SceneLibraryError.invalidDocument(
@@ -4473,14 +5030,19 @@ final class WorkspaceModel: ObservableObject {
                     )
                 }
             }
-            if missingMediaSource == nil { try applySceneAuthoring(authoring, undoManager: undoManager) }
+            if missingMediaSource == nil {
+                try await applySceneAuthoring(authoring, undoManager: undoManager)
+            }
             currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
             try restoreTrackingScene(scene.snapshot.tracking)
+            try ensureFiniteEnvironmentEnclosesTimeline()
             viewerNavigation.restore(
                 zoom: scene.snapshot.viewerZoom,
                 pan: .init(width: scene.snapshot.viewerPanX, height: scene.snapshot.viewerPanY),
                 isFitted: scene.snapshot.viewerIsFitted
             )
+            // Commit the transaction before the one authoritative publication.
+            isMaterializingSavedScene = false
             rebuildPhysicalSelectedFrame()
             activeSceneID = scene.id
             if let generated = scene.snapshot.generatedEnvironment,
@@ -4508,7 +5070,6 @@ final class WorkspaceModel: ObservableObject {
     private func restoreTrackingScene(_ saved: SavedTrackingScene?) throws {
         guard let saved else {
             trackingScene = nil
-            trackingAsset = nil
             selectedTrackingCameraID = nil
             selectedTrackingPointGroupID = nil
             visibleTrackingMeshIDs = []
@@ -4516,18 +5077,12 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         try saved.validate()
-        let url = URL(fileURLWithPath: saved.absolutePath)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw SceneLibraryError.invalidDocument("Falta la composición Fusion de tracking guardada.")
-        }
-        let imported = try FusionTrackingImporter().load(url)
-        guard imported.cameras.contains(where: { $0.id == saved.cameraID }),
-              imported.pointGroups.contains(where: { $0.id == saved.pointGroupID }),
-              Set(saved.visibleMeshIDs).isSubset(of: Set(imported.meshes.map(\.id))) else {
+        guard saved.scene.cameras.contains(where: { $0.id == saved.cameraID }),
+              saved.scene.pointGroups.contains(where: { $0.id == saved.pointGroupID }),
+              Set(saved.visibleMeshIDs).isSubset(of: Set(saved.scene.meshes.map(\.id))) else {
             throw SceneLibraryError.invalidDocument("La selección guardada no existe en la composición Fusion.")
         }
-        trackingAsset = .init(url: url, originalFileName: url.lastPathComponent)
-        trackingScene = imported
+        trackingScene = saved.scene
         selectedTrackingCameraID = saved.cameraID
         selectedTrackingPointGroupID = saved.pointGroupID
         visibleTrackingMeshIDs = Set(saved.visibleMeshIDs)
@@ -4573,7 +5128,7 @@ final class WorkspaceModel: ObservableObject {
         sourceACEScgFrame = try adjustedSourceFrame(base)
         physicalModel.invalidateExternalParameters()
         if !physicalPreviewOwnsViewerPublication {
-            metalFrame = base
+            publishCurrentSceneFrame(base)
         }
         rebuildPhysicalSelectedFrame()
         publishSelectedTestPreview()
@@ -4754,20 +5309,6 @@ final class WorkspaceModel: ObservableObject {
         )
     }
 
-    private func requiredSceneDeviceProfileID() throws -> String {
-        guard let id = modelDeviceDefinition?.id, !id.isEmpty else {
-            throw SceneLibraryError.invalidDocument("La escena no tiene un Device seleccionado.")
-        }
-        return id
-    }
-
-    private func requiredSceneCoverGlassProfileID() throws -> String {
-        guard let id = physicalAuthoringState?.coverGlass.id, !id.isEmpty else {
-            throw SceneLibraryError.invalidDocument("La escena no tiene un Cover Glass seleccionado.")
-        }
-        return id
-    }
-
     private func applyPhysicalSettings(
         _ imported: PhysicalSettingsExchange.Imported,
         undoManager: UndoManager?
@@ -4793,12 +5334,46 @@ final class WorkspaceModel: ObservableObject {
             model: imported.model,
             context: imported.context
         ))
-        if let undoManager, let prior {
-            undoManager.registerUndo(withTarget: self) { target in
-                Task { @MainActor in try? target.restoreImportedPhysicalState(prior) }
+        if let prior {
+            registerUndo(with: undoManager, actionName: "Importar ajustes físicos") { target, manager in
+                try? target.exchangeImportedPhysicalState(prior, undoManager: manager)
             }
-            undoManager.setActionName("Importar ajustes físicos")
         }
+    }
+
+    private func exchangeImportedPhysicalState(
+        _ state: ImportedPhysicalState,
+        undoManager: UndoManager?
+    ) throws {
+        guard let device = modelDeviceDefinition ?? resolvedDevice?.definition,
+              let pipeline = basePhysicalAuthoringState
+        else { throw PhysicalSettingsExchange.ImportError.invalidModel }
+        let inverse = ImportedPhysicalState(
+            device: device,
+            pipeline: pipeline,
+            model: physicalModel.authoringState,
+            context: currentSettingsContext()
+        )
+        try restoreImportedPhysicalState(state)
+        registerUndo(with: undoManager, actionName: "Importar ajustes físicos") { target, manager in
+            try? target.exchangeImportedPhysicalState(inverse, undoManager: manager)
+        }
+    }
+
+    private func requiredSceneDeviceProfileID() throws -> String {
+        guard let id = modelDeviceDefinition?.id, !id.isEmpty else {
+            throw SceneLibraryError.invalidDocument("La escena no tiene un Device seleccionado.")
+        }
+        return id
+    }
+
+    private func requiredSceneCoverGlassProfileID() throws -> String {
+        guard let id = physicalAuthoringState?.coverGlass.id, !id.isEmpty else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena no tiene un Cover Glass seleccionado."
+            )
+        }
+        return id
     }
 
     private func validatePhysicalSettingsResources(
@@ -4826,19 +5401,35 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    /// Scene documents resolve against the live catalogs. They deliberately do not restore the
-    /// resolved DeviceDefinition or PhysicalPipelineAuthoringState carried by PNG exchanges.
     private func validateSceneAuthoringResources(_ authoring: SceneAuthoringDocument) throws {
-        let library = try GlobalLibraryStore().load()
-        guard library.devices.contains(where: { $0.id == authoring.deviceProfileID }) else {
+        let library = try globalLibraryStore.load()
+        guard library.devices.contains(where: { $0.id == authoring.profiles.deviceID }) else {
             throw SceneLibraryError.invalidDocument(
-                "La escena requiere el Device \(authoring.deviceProfileID), que no existe en la biblioteca global."
+                "La escena requiere el Device \(authoring.profiles.deviceID), que no existe en la biblioteca global."
             )
         }
-        guard library.coverGlasses.contains(where: { $0.id == authoring.coverGlassProfileID }) else {
+        guard library.coverGlasses.contains(where: {
+            $0.id == authoring.profiles.coverGlassID
+        }) else {
             throw SceneLibraryError.invalidDocument(
-                "La escena requiere el Cover Glass \(authoring.coverGlassProfileID), que no existe en la biblioteca global."
+                "La escena requiere el Cover Glass \(authoring.profiles.coverGlassID), que no existe en la biblioteca global."
             )
+        }
+        guard library.cameras.contains(where: { $0.id == authoring.profiles.captureID }),
+              library.lenses.contains(where: { $0.id == authoring.profiles.lensID })
+        else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena requiere una cámara o lente que ya no existe en la biblioteca global."
+            )
+        }
+        if authoring.context.environmentResource.kind == .procedural {
+            guard library.environments.contains(where: {
+                $0.id == authoring.profiles.environmentID
+            }) else {
+                throw SceneLibraryError.invalidDocument(
+                    "La escena requiere un entorno que ya no existe en la biblioteca global."
+                )
+            }
         }
         try authoring.context.environmentResource.validate()
         try authoring.context.referenceResource.validate()
@@ -4857,7 +5448,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func prepareSceneSourceInterpretation(
-        _ context: PhysicalSettingsExchange.FrameContext
+        _ context: SceneAuthoringContext
     ) throws {
         guard let input = StudioColorInputTransform.catalog.first(where: {
             $0.id == context.sourceInputTransformID
@@ -4880,14 +5471,14 @@ final class WorkspaceModel: ObservableObject {
     private func applySceneAuthoring(
         _ authoring: SceneAuthoringDocument,
         undoManager: UndoManager?
-    ) throws {
+    ) async throws {
         let context = authoring.context
-        let library = try GlobalLibraryStore().load()
+        let library = try globalLibraryStore.load()
         guard let sceneDevice = library.devices.first(where: {
-            $0.id == authoring.deviceProfileID
+            $0.id == authoring.profiles.deviceID
         })?.value,
         let sceneCoverGlass = library.coverGlasses.first(where: {
-            $0.id == authoring.coverGlassProfileID
+            $0.id == authoring.profiles.coverGlassID
         })?.value else {
             throw SceneLibraryError.invalidDocument(
                 "La escena requiere un Device o Cover Glass que ya no existe en la biblioteca global."
@@ -4896,8 +5487,8 @@ final class WorkspaceModel: ObservableObject {
         guard let output = StudioColorOutputTransform.catalog.first(where: {
             $0.id == context.previewOutputTransformID
         }), let placement = SourcePlacement(stableID: context.sourcePlacementID),
-              capturePresets.contains(where: { $0.id == context.selection.capturePresetID }),
-              lensPresets.contains(where: { $0.id == context.selection.lensPresetID })
+              capturePresets.contains(where: { $0.id == authoring.profiles.captureID }),
+              lensPresets.contains(where: { $0.id == authoring.profiles.lensID })
         else {
             throw SceneLibraryError.invalidDocument(
                 "La escena requiere un perfil o una opción de catálogo que ya no existe."
@@ -4906,20 +5497,21 @@ final class WorkspaceModel: ObservableObject {
         try prepareSceneSourceInterpretation(context)
         previewTransform = output
         sourcePlacement = placement
-        try applyTestAuthoringSelection(
-            context.selection,
-            profileDevice: sceneDevice,
-            profileCoverGlass: sceneCoverGlass
+        try reloadTestAuthoringProfileContext()
+        let selection = try materializeSceneSelection(
+            authoring,
+            profileContext: testAuthoringProfileContext
         )
-        try physicalModel.restoreAuthoringState(authoring.model)
-        if let quality = PhysicalQuality(stableID: context.selection.previewQualityID) {
-            physicalModel.setQuality(quality)
-        }
-        physicalModel.invalidateExternalParameters()
         switch context.environmentResource.kind {
         case .procedural:
             environmentRadianceFrame = nil
             environmentSourceACEScgFrame = nil
+            environmentAdjustmentOwner = nil
+            authoredImageEnvironment = nil
+            environmentSourceName = nil
+            environmentSourceResolution = nil
+            environmentSourceHash = nil
+            environmentSourceInputTransformID = nil
             environmentSourceURL = nil
             environmentSourceCalibration = nil
         case .image:
@@ -4930,15 +5522,52 @@ final class WorkspaceModel: ObservableObject {
                     "El HDRI externo no tiene su calibración de radiancia explícita."
                 )
             }
-            Task { [weak self] in
-                _ = await self?.loadEnvironment(
-                    URL(fileURLWithPath: path), inputTransformID: transform,
-                    unitRadiance: calibration.sourceUnitRadianceCandelasPerSquareMeter,
-                    exposureStops: calibration.exposureEV,
-                    originalFileName: context.environmentResource.fileName
-                )
-            }
+            let prepared = try await prepareEnvironmentResource(
+                URL(fileURLWithPath: path),
+                inputTransformID: transform,
+                unitRadiance: calibration.sourceUnitRadianceCandelasPerSquareMeter,
+                exposureStops: calibration.exposureEV,
+                originalFileName: context.environmentResource.fileName,
+                knownHash: nil,
+                adjustmentSelection: selection
+            )
+            environmentSourceACEScgFrame = prepared.source
+            environmentAdjustmentOwner = prepared.adjustment
+            environmentRadianceFrame = prepared.radiance
+            environmentSourceName = prepared.managed.originalFileName
+            environmentSourceResolution = prepared.resolution
+            environmentSourceHash = nil
+            environmentSourceInputTransformID = transform
+            environmentSourceURL = prepared.managed.url
+            environmentSourceCalibration = prepared.calibration
+            var environment = PhysicalPipelineAuthoringState.Environment()
+            environment.sourceKind = 1
+            environment.sourceUnitRadianceCandelasPerSquareMeter =
+                calibration.sourceUnitRadianceCandelasPerSquareMeter
+            environment.exposureStops = selection.environmentExposureEV
+            environment.rotationXDegrees = selection.environmentRotationXDegrees
+            environment.rotationYDegrees = selection.environmentRotationYDegrees
+            environment.projectionMode = selection.environmentProjectionID == "finite-sphere"
+                ? 1 : 0
+            environment.sphereCenterMeters = [
+                selection.environmentSphereCenterXMeters,
+                selection.environmentSphereCenterYMeters,
+                selection.environmentSphereCenterZMeters,
+            ]
+            environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
+            authoredImageEnvironment = environment
         }
+        try applyTestAuthoringSelection(
+            selection,
+            profileDevice: sceneDevice,
+            profileCoverGlass: sceneCoverGlass
+        )
+        try physicalModel.restoreSceneOverrides(authoring.modelOverrides)
+        if let quality = PhysicalQuality(stableID: selection.previewQualityID) {
+            physicalModel.setQuality(quality)
+        }
+        explicitSceneOverrideControlIDs = Set(authoring.overrides.map(\.controlID))
+        physicalModel.invalidateExternalParameters()
         // Resource pixels are intentionally external and are restored only through their exact
         // authored path and interpretation, never through a library copy or hash lookup.
         switch context.referenceResource.kind {
@@ -4974,9 +5603,78 @@ final class WorkspaceModel: ObservableObject {
             self.referencePlacement = referencePlacement
             referenceFrameName = name
             referenceMatchCorners = context.referenceResource.corners.map { CGPoint(x: $0.x, y: $0.y) }
-            Task { [weak self] in await self?.loadManagedReferenceFrame(asset, keepAuthoredCorners: true) }
+            try await loadManagedReferenceFrame(asset, keepAuthoredCorners: true)
         }
         _ = undoManager // Opening a scene deliberately starts a new authoring baseline.
+    }
+
+    private func materializeSceneSelection(
+        _ authoring: SceneAuthoringDocument,
+        profileContext: RustTestAuthoringProfileContext
+    ) throws -> TestAuthoringResolvedSelection {
+        var selection = try RustTestAuthoringCoordinator.defaultSelection(
+            profileContext: profileContext,
+            inputTransformID: inputTransform.id,
+            deviceID: authoring.profiles.deviceID,
+            frameRate: ReferenceTimelineAuthority.resolve(
+                source: sourceTimelineInfo,
+                reference: referenceTimelineInfo,
+                referenceVisible: referenceControlsTimeline,
+                tracking: trackingTimelineInfo
+            ).exactFrameRate
+        )
+        let profileIntents: [TestControlIntent] = [
+            .setChoice(controlID: "capture-preset", optionID: authoring.profiles.captureID),
+            .setChoice(controlID: "lens-preset", optionID: authoring.profiles.lensID),
+            .setChoice(controlID: "cover-glass-preset", optionID: authoring.profiles.coverGlassID),
+            .setChoice(controlID: "environment-source", optionID: authoring.profiles.environmentID),
+            .setChoice(controlID: "delivery-preset", optionID: authoring.profiles.deliveryID),
+            .setChoice(controlID: "recording-profile", optionID: authoring.profiles.recordingID),
+            .setChoice(controlID: "placement", optionID: authoring.context.sourcePlacementID),
+        ]
+        for intent in profileIntents {
+            selection = try RustTestAuthoringCoordinator.apply(
+                intent, to: selection, profileContext: profileContext
+            )
+        }
+
+        for override in authoring.overrides {
+            selection = try RustTestAuthoringCoordinator.apply(
+                override.intent, to: selection,
+                profileContext: profileContext
+            )
+        }
+        return selection
+    }
+
+    private func sceneProfileBaselines(
+        device: DeviceDefinition,
+        coverGlass: CoverGlassDefinition
+    ) -> [String: SceneControlOverride] {
+        let values: [SceneControlOverride] = [
+            .choice("color-mode", device.colorModeID),
+            .scalar("white-luminance", device.whiteLevelNits),
+            .scalar("panel-uniformity-amount", device.panelUniformity.characterStrength),
+            .scalar("panel-light-spread-amount", device.panelLightSpread.characterStrength),
+            .scalar("cover-glass-amount", coverGlass.characterStrength),
+            .scalar("cover-ag-microtexture-amount", coverGlass.agMicrotextureCharacterStrength),
+            .scalar("cover-thickness-millimeters", coverGlass.thicknessMillimeters),
+            .scalar("cover-refractive-index", coverGlass.refractiveIndex),
+            .scalar("cover-ar-efficiency", coverGlass.antiReflectiveEfficiency),
+            .scalar("cover-absorption-r", coverGlass.absorptionPerMillimeter[0]),
+            .scalar("cover-absorption-g", coverGlass.absorptionPerMillimeter[1]),
+            .scalar("cover-absorption-b", coverGlass.absorptionPerMillimeter[2]),
+            .scalar("cover-roughness", coverGlass.roughness),
+            .scalar("cover-haze", coverGlass.haze),
+            .scalar("cover-ag-rms-slope", coverGlass.agMicrotextureRMSSlope),
+            .scalar("cover-ag-correlation-micrometers", coverGlass.agMicrotextureCorrelationLengthMicrometers),
+            .scalar("cover-ag-anisotropy", coverGlass.agMicrotextureAnisotropy),
+            .scalar("cover-glow-amount", coverGlass.glowCharacterStrength),
+            .scalar("cover-glow-intensity", coverGlass.glowIntensity),
+            .scalar("cover-glow-radius-millimeters", coverGlass.glowRadiusMillimeters),
+            .scalar("cover-glow-threshold-relative-white", coverGlass.glowThresholdRelativeWhite),
+        ]
+        return Dictionary(uniqueKeysWithValues: values.map { ($0.controlID, $0) })
     }
 
     private func restoreImportedPhysicalState(_ state: ImportedPhysicalState) throws {
@@ -4985,6 +5683,8 @@ final class WorkspaceModel: ObservableObject {
         try physicalModel.restoreAuthoringState(state.model)
         modelDeviceDefinition = state.device
         physicalAuthoringState = state.pipeline
+        baseModelDeviceDefinition = state.device
+        basePhysicalAuthoringState = state.pipeline
         if let context = state.context {
             guard let input = StudioColorInputTransform.catalog.first(where: {
                 $0.id == context.sourceInputTransformID
@@ -5000,6 +5700,7 @@ final class WorkspaceModel: ObservableObject {
                 lensPresets.contains(where: { $0.id == context.selection.lensPresetID })
             else { throw PhysicalSettingsExchange.ImportError.invalidModel }
             let snapshot = try RustTestAuthoringCoordinator.snapshot(
+                profileContext: testAuthoringProfileContext,
                 selection: context.selection,
                 selectedPreviewPhaseID: context.previewPhaseID
             )
@@ -5101,9 +5802,13 @@ final class WorkspaceModel: ObservableObject {
                 referenceMatchEnabled = false
                 referenceMatchProjectedCorners = []
                 Task { [weak self] in
-                    await self?.loadManagedReferenceFrame(
-                        asset, keepAuthoredCorners: true
-                    )
+                    do {
+                        try await self?.loadManagedReferenceFrame(
+                            asset, keepAuthoredCorners: true
+                        )
+                    } catch {
+                        self?.errorMessage = error.localizedDescription
+                    }
                 }
             }
             testAuthoringSelection = context.selection
@@ -5123,44 +5828,48 @@ final class WorkspaceModel: ObservableObject {
         try physicalModel.restoreAuthoringState(state.model)
         modelDeviceDefinition = state.device
         physicalAuthoringState = state.pipeline
+        baseModelDeviceDefinition = state.device
+        basePhysicalAuthoringState = state.pipeline
         physicalModel.invalidateExternalParameters()
     }
 
     private func loadManagedReferenceFrame(
         _ managed: ManagedReferenceAsset,
         keepAuthoredCorners: Bool
-    ) async {
-        do {
-            let isVideo = Self.isVideo(managed.url)
-            referenceDetection = await StudioMediaMetadataDetector.detect(
-                url: managed.url, isVideo: isVideo
+    ) async throws {
+        let isVideo = Self.isVideo(managed.url)
+        referenceDetection = await StudioMediaMetadataDetector.detect(
+            url: managed.url, isVideo: isVideo
+        )
+        let info = isVideo
+            ? try await referenceSession.openVideo(
+                managed.url,
+                hasAlpha: referenceDetection.hasAlpha,
+                colorModel: referenceSignalColorModel,
+                matrix: referenceSignalMatrix,
+                decodedRange: referenceSignalRange
             )
-            if isVideo { try adoptDetectedReferenceInterpretation(referenceDetection) }
-            let info = isVideo
-                ? try await referenceSession.openVideo(
-                    managed.url,
-                    hasAlpha: referenceDetection.hasAlpha,
-                    colorModel: referenceSignalColorModel,
-                    matrix: referenceSignalMatrix,
-                    decodedRange: referenceSignalRange
-                )
-                : try referenceSession.openImages([managed.url], frameRate: .fps24)
-            try await rebuildReferenceFrame()
-            referenceForegroundFrame = nil
-            referenceForegroundIsDeliveryAligned = false
-            referenceFrameDetail = info.detail
-            referenceTimelineInfo = isVideo
-                ? NativeVideoTimelineInfo(
-                    exactFrameRate: info.exactFrameRate,
-                    frameCount: info.frameCount
-                )
-                : nil
-            applyTimelineAuthority(resetRange: true)
+            : try referenceSession.openImages([managed.url], frameRate: .fps24)
+        try await rebuildReferenceFrame()
+        guard referenceACEScgFrame != nil else {
+            throw SceneLibraryError.invalidDocument(
+                "La referencia externa no produjo un frame ACEScg válido."
+            )
+        }
+        referenceForegroundFrame = nil
+        referenceForegroundIsDeliveryAligned = false
+        referenceFrameDetail = info.detail
+        referenceTimelineInfo = isVideo
+            ? NativeVideoTimelineInfo(
+                exactFrameRate: info.exactFrameRate,
+                frameCount: info.frameCount
+            )
+            : nil
+        applyTimelineAuthority(resetRange: true)
+        if !isMaterializingSavedScene {
             publishReferenceMatchSetup(
                 resetTargetsToVisibleFrame: !keepAuthoredCorners || referenceMatchCorners.count != 4
             )
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -5378,17 +6087,18 @@ final class WorkspaceModel: ObservableObject {
             originACEScgFrame = base
             sourceACEScgFrame = try adjustedSourceFrame(base)
             physicalModel.invalidateExternalParameters()
+            sourceDetail = "Patrón SCREEN canónico · \(decoded.width) × \(decoded.height)"
+            guard !isMaterializingSavedScene else { return }
             if !physicalPreviewOwnsViewerPublication {
-                metalFrame = base
+                publishCurrentSceneFrame(base)
                 monitorOutput.update(frame: base, display: metalDisplay)
             }
-            sourceDetail = "Patrón SCREEN canónico · \(decoded.width) × \(decoded.height)"
             decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
             status = "Textura ACEScg Metal · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
             rebuildPhysicalSelectedFrame()
             publishSelectedTestPreview()
         } catch {
-            metalFrame = nil
+            publishUnresolvedFrame(nil)
             errorMessage = error.localizedDescription
         }
     }
@@ -5412,11 +6122,12 @@ final class WorkspaceModel: ObservableObject {
         originACEScgFrame = base
         sourceACEScgFrame = try adjustedSourceFrame(base)
         physicalModel.invalidateExternalParameters()
+        currentFrame = min(frameCount - 1, max(0, Int((sample.time.seconds * frameRate).rounded())))
+        guard !isMaterializingSavedScene else { return }
         if !physicalPreviewOwnsViewerPublication {
-            metalFrame = base
+            publishCurrentSceneFrame(base)
             monitorOutput.update(frame: base, display: metalDisplay)
         }
-        currentFrame = min(frameCount - 1, max(0, Int((sample.time.seconds * frameRate).rounded())))
         decodeToPreviewMilliseconds = (CACurrentMediaTime() - started) * 1_000
         status = "CVPixelBuffer → ACEScg → Preview · \(decodeToPreviewMilliseconds.formatted(.number.precision(.fractionLength(1)))) ms"
         rebuildPhysicalSelectedFrame()
@@ -5466,6 +6177,15 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func rebuildPhysicalSelectedFrame() {
+        guard !isMaterializingSavedScene else { return }
+        // An empty workspace has no physical scene to evaluate. This is an explicit editor
+        // state, not a malformed scene request; the request boundary is reached only after
+        // Device and base authoring have both been selected.
+        guard resolvedDevice != nil, basePhysicalAuthoringState != nil else {
+            _ = physicalInteractiveJob?.cancel()
+            physicalInteractiveTask?.cancel()
+            return
+        }
         let testNeedsPhysicalResult = isTestPageActive
             && selectedTestPhysicalIntermediate != nil
         guard isModelPageActive || testNeedsPhysicalResult || setupOwnsViewerPublication else {
@@ -5524,11 +6244,11 @@ final class WorkspaceModel: ObservableObject {
             guard let self else { return }
             var submittedJob: PhysicalMetalFrameJob?
             do {
-                let job = try submitPhysicalJob(quality: quality)
-                submittedJob = job
-                physicalInteractiveJob = job
+                let submission = try submitPhysicalJob(quality: quality)
+                submittedJob = submission.job
+                physicalInteractiveJob = submission.job
                 try await pollPhysicalJob(
-                    job,
+                    submission,
                     native: false
                 )
             } catch is CancellationError {
@@ -5548,11 +6268,11 @@ final class WorkspaceModel: ObservableObject {
         interactiveViewportSize: CGSize? = nil,
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
-        guard let sourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition
-        else { return }
+        guard let sourceACEScgFrame else { return }
         do {
-            let authored = try authoredOverride ?? resolveSceneFrame(currentFrame).authored
+            let resolved = try resolveSceneFrame(currentFrame)
+            let authored = authoredOverride ?? resolved.authored
+            let device = resolved.device.definition
             let started = CACurrentMediaTime()
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: sourceACEScgFrame.texture.device)
@@ -5588,20 +6308,29 @@ final class WorkspaceModel: ObservableObject {
                 previewWidth: previewSize.width,
                 previewHeight: previewSize.height
             )
-            metalFrame = result.frame
+            if authoredOverride == nil {
+                publishSceneFrame(result.frame, scene: resolved)
+            } else {
+                // A transient navigation preview is not a materialized scene frame. Never
+                // certify it with the stable scene identity or draw a stable overlay on it.
+                publishUnresolvedFrame(result.frame)
+            }
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
             if let selection,
                selection.autofocusEnabled,
                let placement = Self.deliveryPlacementCode(selection.deliveryPlacementID) {
-                focusSetupTarget = SetupFramingRenderer.projectedDevicePoint(
-                    u: Float(selection.autofocusTargetU),
-                    v: Float(selection.autofocusTargetV),
-                    authored: authored, device: device,
+                focusSetupTarget = try resolved.resolver.projectFocusTarget(
+                    frame: resolved.selection,
+                    uv: CGPoint(
+                        x: selection.autofocusTargetU,
+                        y: selection.autofocusTargetV
+                    ),
                     deliveryWidth: width, deliveryHeight: height,
+                    previewWidth: result.frame.width,
+                    previewHeight: result.frame.height,
                     deliveryPlacement: placement,
-                    outputWidth: result.frame.width, outputHeight: result.frame.height,
-                    applyLensDistortion: true
+                    expectedRevision: resolved.revision
                 )
                 focusSetupTargetEnabled = focusSetupTarget != nil
             } else {
@@ -5637,26 +6366,17 @@ final class WorkspaceModel: ObservableObject {
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
         guard let reference = referenceACEScgFrame,
-              let source = sourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition
+              let source = sourceACEScgFrame
         else { return }
         do {
-            var authored = try authoredOverride ?? resolveSceneFrame(currentFrame).authored
+            let resolved = try resolveSceneFrame(currentFrame)
+            let authored = authoredOverride ?? resolved.authored
+            let device = resolved.device.definition
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: source.texture.device)
             }
             let delivery = referenceDeliveryRasterSize
-            let projectionPlacementID: String
-            if trackingCameraEnabled {
-                authored.sensor.nativeWidth = UInt32(reference.width)
-                authored.sensor.nativeHeight = UInt32(reference.height)
-                authored.sceneLens.lensShift = [0, 0]
-                authored.sceneLens.radialDistortion = [0, 0, 0]
-                authored.sceneLens.tangentialDistortion = [0, 0]
-                projectionPlacementID = referencePlacement.stableID
-            } else {
-                projectionPlacementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
-            }
+            let projectionPlacementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
             let result = try setupFramingRenderer!.renderReferenceMatch(
                 source: source,
                 reference: reference,
@@ -5679,7 +6399,11 @@ final class WorkspaceModel: ObservableObject {
             // Publish the texture last. SwiftUI may render immediately on any
             // @Published mutation; by making the frame the commit marker the
             // Viewer can never observe a new texture with prior/empty handles.
-            metalFrame = result.frame
+            if authoredOverride == nil {
+                publishSceneFrame(result.frame, scene: resolved)
+            } else {
+                publishUnresolvedFrame(result.frame)
+            }
             physicalPublicationSummary = referenceMatchEnabled
                 ? "Match referencia · referencia + Device rígido + cámara"
                 : "Referencia visible · cámara libre"
@@ -5688,10 +6412,15 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func publishReferenceComposite(_ foreground: StudioColorMetalFrame) {
+    private func publishReferenceComposite(
+        _ foreground: StudioColorMetalFrame,
+        resolvedScene: ResolvedSceneFrame? = nil
+    ) {
         guard let reference = referenceACEScgFrame else { return }
         do {
-            let resolved = try resolveSceneFrame(currentFrame)
+            let resolved: ResolvedSceneFrame
+            if let resolvedScene { resolved = resolvedScene }
+            else { resolved = try resolveSceneFrame(currentFrame) }
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: foreground.texture.device)
             }
@@ -5707,7 +6436,7 @@ final class WorkspaceModel: ObservableObject {
                 deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit",
                 deliveryAligned: referenceForegroundIsDeliveryAligned
             )
-            metalFrame = result.frame
+            publishSceneFrame(result.frame, scene: resolved)
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
         } catch {
@@ -5811,20 +6540,23 @@ final class WorkspaceModel: ObservableObject {
         selection.cameraRotationXDegrees = degrees[0]
         selection.cameraRotationYDegrees = degrees[1]
         selection.cameraRotationZDegrees = degrees[2]
-        try applyTestAuthoringSelection(selection)
+        try commitSceneAuthoringEdit(
+            selection: selection,
+            setting: [
+                "geometry-mode", "focal-length-millimeters",
+                "camera-position-x-meters", "camera-position-y-meters",
+                "camera-position-z-meters", "camera-rotation-x-degrees",
+                "camera-rotation-y-degrees", "camera-rotation-z-degrees",
+            ],
+            prior: .init(
+                selection: priorSelection,
+                explicitOverrideControlIDs: explicitSceneOverrideControlIDs
+            ),
+            undoManager: undoManager,
+            actionName: actionName
+        )
         referenceMatchErrorPixels = solved.maximumErrorPixels
         publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
-        guard priorSelection != testAuthoringSelection else { return }
-        let manager = UndoManagerBox(undoManager)
-        undoManager?.registerUndo(withTarget: self) { target in
-            Task { @MainActor in
-                try? target.restoreCameraNavigationSelection(
-                    priorSelection, undoManager: manager.value
-                )
-                target.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
-            }
-        }
-        undoManager?.setActionName(actionName)
     }
 
     private func resolvedFourPointReferencePose(
@@ -5952,14 +6684,14 @@ final class WorkspaceModel: ObservableObject {
     private func publishEnvironmentSetup(
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
-        guard let environmentSourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition
-        else {
+        guard let environmentSourceACEScgFrame else {
             errorMessage = "Setup entorno necesita un HDRI / EXR seleccionado."
             return
         }
         do {
-            let authored = try authoredOverride ?? resolveSceneFrame(currentFrame).authored
+            let resolved = try resolveSceneFrame(currentFrame)
+            let authored = authoredOverride ?? resolved.authored
+            let device = resolved.device.definition
             let setupSource = environmentReflectionFramingEnabled
                 ? environmentReflectionFramingSourceFrame ?? environmentSourceACEScgFrame
                 : environmentSourceACEScgFrame
@@ -5980,7 +6712,11 @@ final class WorkspaceModel: ObservableObject {
                 planarFraming: environmentReflectionFramingEnabled
                     ? environmentReflectionFraming.shaderValue : nil
             )
-            metalFrame = result.frame
+            if authoredOverride == nil {
+                publishSceneFrame(result.frame, scene: resolved)
+            } else {
+                publishUnresolvedFrame(result.frame)
+            }
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
             status = environmentReflectionFramingEnabled
@@ -6000,11 +6736,11 @@ final class WorkspaceModel: ObservableObject {
         interactiveViewportSize: CGSize? = nil,
         authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) {
-        guard let sourceACEScgFrame,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition
-        else { return }
+        guard let sourceACEScgFrame else { return }
         do {
-            let authored = try authoredOverride ?? resolveSceneFrame(currentFrame).authored
+            let resolved = try resolveSceneFrame(currentFrame)
+            let authored = authoredOverride ?? resolved.authored
+            let device = resolved.device.definition
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: sourceACEScgFrame.texture.device)
             }
@@ -6026,20 +6762,27 @@ final class WorkspaceModel: ObservableObject {
                 deliveryBackgroundID: "black",
                 previewWidth: previewSize.width, previewHeight: previewSize.height
             )
-            metalFrame = result.frame
+            if authoredOverride == nil {
+                publishSceneFrame(result.frame, scene: resolved)
+            } else {
+                publishUnresolvedFrame(result.frame)
+            }
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
             if let selection,
                selection.autofocusEnabled,
                let placement = Self.deliveryPlacementCode(selection.deliveryPlacementID) {
-                focusSetupTarget = SetupFramingRenderer.projectedDevicePoint(
-                    u: Float(selection.autofocusTargetU),
-                    v: Float(selection.autofocusTargetV),
-                    authored: authored, device: device,
+                focusSetupTarget = try resolved.resolver.projectFocusTarget(
+                    frame: resolved.selection,
+                    uv: CGPoint(
+                        x: selection.autofocusTargetU,
+                        y: selection.autofocusTargetV
+                    ),
                     deliveryWidth: width, deliveryHeight: height,
+                    previewWidth: result.frame.width,
+                    previewHeight: result.frame.height,
                     deliveryPlacement: placement,
-                    outputWidth: result.frame.width, outputHeight: result.frame.height,
-                    applyLensDistortion: true
+                    expectedRevision: resolved.revision
                 )
                 focusSetupTargetEnabled = focusSetupTarget != nil
             } else {
@@ -6065,22 +6808,17 @@ final class WorkspaceModel: ObservableObject {
         requestedDimensionsOverride: PhysicalDimensions? = nil,
         requestedIntermediateOverride: PhysicalIntermediate? = nil,
         vfxTransparency: PhysicalVfxTransparencyRequest? = nil,
-        publishesPreviewState: Bool = true
-    ) throws -> PhysicalMetalFrameJob {
+        publishesPreviewState: Bool = true,
+        resolvedSceneFrameOverride: ResolvedSceneFrame? = nil
+    ) throws -> SubmittedPhysicalJob {
         guard let sourceACEScgFrame = sourceFrameOverride ?? sourceACEScgFrame else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
         }
-        let resolvedFrame = try resolveSceneFrame(frameIndexOverride ?? currentFrame)
-        var effectiveAuthoringState = resolvedFrame.authored
-        if let temporalSamplesOverride {
-            guard (1...64).contains(temporalSamplesOverride) else {
-                throw DeviceDomainError.invalidPhysicalProfile(
-                    "Las muestras de desenfoque deben estar entre 1 y 64."
-                )
-            }
-            effectiveAuthoringState.shutterMotion.temporalSamples = temporalSamplesOverride
-            try effectiveAuthoringState.validate()
-        }
+        let resolvedFrame = try resolvedSceneFrameOverride ?? resolveSceneFrame(
+            frameIndexOverride ?? currentFrame,
+            temporalSamplesOverride: temporalSamplesOverride
+        )
+        let effectiveAuthoringState = resolvedFrame.authored
         let outputSignal = try resolvedOutputSignal()
         let authoringSelection = currentTestAuthoringSelection()
         let checkpoint = try DeviceSignalCheckpoint.prepare(
@@ -6100,27 +6838,6 @@ final class WorkspaceModel: ObservableObject {
         if publishesPreviewState { deviceSignalCheckpoint = checkpoint }
         let deviceSignal = checkpoint.deviceSignal
         let contributions = physicalModel.orderedContributions
-        guard let uniformityAmount = contributions.first(where: {
-            $0.stage == .screen(.panelUniformity)
-        })?.amount else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "Falta la contribución resuelta de Panel Uniformity."
-            )
-        }
-        guard let spreadAmount = contributions.first(where: {
-            $0.stage == .screen(.panelLightSpread)
-        })?.amount else {
-            throw DeviceDomainError.invalidPhysicalProfile(
-                "Falta la contribución resuelta de Panel Light Spread."
-            )
-        }
-        var effectiveDeviceDefinition = resolvedFrame.device.definition
-        effectiveDeviceDefinition.panelUniformity.characterStrength = uniformityAmount
-        effectiveDeviceDefinition.panelLightSpread.characterStrength = spreadAmount
-        let effectiveDevice = try effectiveDeviceDefinition.resolved()
-        let effectivePipeline = try effectiveAuthoringState.resolvedPipeline().resolving(
-            contributions: contributions
-        )
         physicalIdentityCounter &+= 1
         let identity = PhysicalFrameIdentity(
             high: physicalModel.parameterRevision,
@@ -6138,16 +6855,15 @@ final class WorkspaceModel: ObservableObject {
                 quality: quality,
                 intermediate: effectiveIntermediate,
                 device: resolvedFrame.device.definition,
-                captureWidth: Int(effectiveAuthoringState.sensor.nativeWidth),
-                captureHeight: Int(effectiveAuthoringState.sensor.nativeHeight)
+                captureWidth: resolvedFrame.activeSensorWindow.width,
+                captureHeight: resolvedFrame.activeSensorWindow.height
             )
-        return try physicalEngine.submit(
+        let job = try physicalEngine.submit(
             sourceACEScg: sourceACEScgFrame,
             deviceSignal: deviceSignal,
             environmentACEScg: environmentRadianceFrame,
             orchestration: try effectiveAuthoringState.orchestration(for: resolvedFrame.selection),
-            resolvedDevice: effectiveDevice,
-            resolvedPipeline: effectivePipeline,
+            sceneResolver: resolvedFrame.resolver,
             quality: quality,
             deviceVfxAlphaMode: effectiveAuthoringState.deviceVfxAlphaMode,
             screenAmount: physicalModel.effectiveScreenAmount,
@@ -6165,6 +6881,7 @@ final class WorkspaceModel: ObservableObject {
             requestedIntermediate: effectiveIntermediate,
             vfxTransparency: vfxTransparency
         )
+        return SubmittedPhysicalJob(job: job, scene: resolvedFrame)
     }
 
     private func resolvedOutputSignal() throws -> StudioColorMode {
@@ -6193,6 +6910,7 @@ final class WorkspaceModel: ObservableObject {
         ).exactFrameRate
         if testAuthoringSelection == nil {
             let initial = try RustTestAuthoringCoordinator.defaultSelection(
+                profileContext: testAuthoringProfileContext,
                 inputTransformID: inputTransform.id,
                 deviceID: device.id,
                 frameRate: exactFrameRate
@@ -6203,7 +6921,7 @@ final class WorkspaceModel: ObservableObject {
                         controlID: "placement",
                         optionID: selectedPattern.authoredPlacementID
                     ),
-                    to: initial
+                    to: initial, profileContext: testAuthoringProfileContext
                 )
                 : initial
         }
@@ -6211,6 +6929,7 @@ final class WorkspaceModel: ObservableObject {
         selection.frameRate = exactFrameRate
         testAuthoringSelection = selection
         let snapshot = try RustTestAuthoringCoordinator.snapshot(
+            profileContext: testAuthoringProfileContext,
             selection: selection,
             selectedPreviewPhaseID: testPresentation?.selectedPhaseID
         )
@@ -6275,15 +6994,16 @@ final class WorkspaceModel: ObservableObject {
             device = profileDevice
         } else if !devicePresetChanged, let current = modelDeviceDefinition {
             device = current
-        } else if let builtIn = try RustDeviceCatalog.builtIns().first(where: {
+        } else if let libraryDevice = globalLibraryDocument.devices.first(where: {
             $0.id == selection.deviceID
-        }) {
-            device = builtIn
+        })?.value {
+            device = libraryDevice
         } else {
             throw TestAuthoringCoordinatorError.malformedDescriptor(
                 "Rust devolvió un Device que no existe en su catálogo."
             )
         }
+        let currentProfileDevice = device
         device.colorModeID = selection.colorModeID
         device.eotfGamma = selection.deviceEOTFGamma
         device.whiteLevelNits = selection.whiteLuminanceNits
@@ -6330,12 +7050,18 @@ final class WorkspaceModel: ObservableObject {
             selection.panelLightSpreadAmount,
             stage: .screen(.panelLightSpread)
         )
-        let catalogCover = try RustCoverGlassCatalog.builtIns().first(where: {
+        let catalogCover = globalLibraryDocument.coverGlasses.first(where: {
             $0.id == selection.coverGlassPresetID
-        })
+        })?.value
         guard let cover = profileCoverGlass ?? catalogCover else {
             throw TestAuthoringCoordinatorError.malformedDescriptor(
                 "El Device seleccionado no resuelve su Cover Glass."
+            )
+        }
+        if profileDevice != nil || profileCoverGlass != nil || devicePresetChanged
+            || previous?.coverGlassPresetID != selection.coverGlassPresetID {
+            sceneProfileBaselineByControlID = sceneProfileBaselines(
+                device: currentProfileDevice, coverGlass: cover
             )
         }
         resolvedDevice = try device.resolved()
@@ -6502,46 +7228,10 @@ final class WorkspaceModel: ObservableObject {
         selectedCapturePresetID = capture.id
         selectedCaptureRasterModeID = selection.captureRasterModeID
         selectedLensPresetID = selection.lensPresetID
-        let baseAuthored = authored
-        if trackingCameraEnabled,
-           let scale = trackingMetersPerSourceUnit,
-           let camera = selectedTrackingCamera {
-            let exactFrameRate = ReferenceTimelineAuthority.resolve(
-                source: sourceTimelineInfo,
-                reference: referenceTimelineInfo,
-                referenceVisible: referenceControlsTimeline,
-                tracking: trackingTimelineInfo
-            ).exactFrameRate
-            guard let sample = camera.sample(
-                atTimelineFrame: currentFrame,
-                timelineFrameRate: exactFrameRate.framesPerSecond
-            ) else {
-                throw SceneLibraryError.invalidDocument(
-                    "El tracking no contiene una muestra para el frame solicitado."
-                )
-            }
-            guard let fullSensorRaster = capture.rasterModes.first(where: {
-                $0.id == selection.captureRasterModeID
-            }) else {
-                throw DeviceDomainError.invalidPhysicalProfile(
-                    "La cámara seleccionada no contiene el raster solicitado."
-                )
-            }
-            Self.applyImportedTrackingCamera(
-                camera,
-                sample: sample,
-                metersPerSourceUnit: scale,
-                to: &authored
-            )
-            try Self.applyActiveSensorWindow(
-                fullSensorRaster: fullSensorRaster,
-                to: &authored
-            )
-        }
         physicalAuthoringState = authored
         resolvedPhysicalPipeline = try authored.resolvedPipeline()
         baseModelDeviceDefinition = device
-        basePhysicalAuthoringState = baseAuthored
+        basePhysicalAuthoringState = authored
         try refreshTestAuthoringDescriptor()
         // The source artifact is replaced above only when its own adjustment
         // changes. Keep the last complete composition visible while a new
@@ -6581,6 +7271,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func publishSelectedTestPreview() {
+        guard !isMaterializingSavedScene else { return }
         guard let sourceACEScgFrame else { return }
         guard isTestPageActive,
               let presentation = testPresentation,
@@ -6625,7 +7316,7 @@ final class WorkspaceModel: ObservableObject {
             publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
             return
         }
-        metalFrame = presentationFrame
+        publishCurrentSceneFrame(presentationFrame)
         monitorOutput.update(frame: presentationFrame, display: metalDisplay)
         let phase = presentation.phases.first(where: {
             $0.id == presentation.selectedPhaseID
@@ -6656,7 +7347,7 @@ final class WorkspaceModel: ObservableObject {
                 referenceForegroundFrame = delivery
                 referenceForegroundIsDeliveryAligned = true
                 if referenceACEScgFrame != nil { publishReferenceComposite(delivery) }
-                else { metalFrame = delivery }
+                else { publishCurrentSceneFrame(delivery) }
                 monitorOutput.update(frame: delivery, display: metalDisplay)
                 return
             }
@@ -6693,7 +7384,7 @@ final class WorkspaceModel: ObservableObject {
             referenceForegroundFrame = frame
             referenceForegroundIsDeliveryAligned = true
             if referenceACEScgFrame != nil { publishReferenceComposite(frame) }
-            else { metalFrame = frame }
+            else { publishCurrentSceneFrame(frame) }
             monitorOutput.update(frame: frame, display: metalDisplay)
         } catch {
             errorMessage = error.localizedDescription
@@ -6701,9 +7392,10 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func pollPhysicalJob(
-        _ job: PhysicalMetalFrameJob,
+        _ submission: SubmittedPhysicalJob,
         native: Bool
     ) async throws {
+        let job = submission.job
         let started = ContinuousClock.now
         var lastNativePublication: ContinuousClock.Instant?
         while true {
@@ -6727,12 +7419,13 @@ final class WorkspaceModel: ObservableObject {
                 }
                 throw CancellationError()
             case .failed:
+                let failure = snapshot.diagnostics
+                    .first(where: { !$0.message.isEmpty })?.message
+                    ?? "La evaluación física ha fallado."
                 physicalPublicationLog.error(
-                    "job state=failed quality=\(snapshot.computedQuality.uiLabel, privacy: .public) intermediate=\(snapshot.returnedIntermediate.uiLabel, privacy: .public)"
+                    "job state=failed quality=\(snapshot.computedQuality.uiLabel, privacy: .public) intermediate=\(snapshot.returnedIntermediate.uiLabel, privacy: .public) cause=\(failure, privacy: .public)"
                 )
-                throw PhysicalMetalFrameEngineError.bridge(
-                    snapshot.diagnostics.last?.message ?? "La evaluación física ha fallado."
-                )
+                throw PhysicalMetalFrameEngineError.bridge(failure)
             case .complete:
                 guard !setupOwnsViewerPublication,
                       snapshot.parameterRevision == physicalModel.parameterRevision,
@@ -6777,9 +7470,12 @@ final class WorkspaceModel: ObservableObject {
                     }
                 }
                 if referenceACEScgFrame != nil {
-                    publishReferenceComposite(presentationFrame)
+                    publishReferenceComposite(
+                        presentationFrame,
+                        resolvedScene: submission.scene
+                    )
                 } else {
-                    metalFrame = presentationFrame
+                    publishSceneFrame(presentationFrame, scene: submission.scene)
                 }
                 monitorOutput.update(frame: presentationFrame, display: metalDisplay)
                 let diagnostic = snapshot.diagnostics

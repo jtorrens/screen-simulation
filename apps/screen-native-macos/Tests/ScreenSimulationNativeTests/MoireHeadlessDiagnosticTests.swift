@@ -364,13 +364,6 @@ import Testing
         ].flatMap(Double.init) {
             pipeline.sensor.bloomOverflowTransferFraction = overflow
         }
-        switch ProcessInfo.processInfo.environment["SCREEN_MOIRE_GLOBAL_SHUTTER"] {
-        case "0": break
-        case "1": pipeline.shutterMotion.readoutKind = 0
-        default:
-            Issue.record("SCREEN_MOIRE_GLOBAL_SHUTTER debe ser 0 o 1")
-            return
-        }
         let frameContext = try moireFrameContext(
             deviceID: device.id,
             environmentSourcePath: environmentSourcePath
@@ -1205,7 +1198,9 @@ private func renderMoireVariant(
     let frame = try PhysicalFrameSelection(
         frameIndex: 0,
         timeNumerator: 0,
-        timeDenominator: 24
+        timeDenominator: 24,
+        frameRateNumerator: 24,
+        frameRateDenominator: 1
     )
     let frameIdentity = PhysicalFrameIdentity(high: 0x4D4F4952, low: identity)
     let metalStarted = DispatchTime.now().uptimeNanoseconds
@@ -1213,15 +1208,25 @@ private func renderMoireVariant(
         width: context.imported.device.nativeWidth,
         height: context.imported.device.nativeHeight
     )
+    let resolvedDevice = try effectiveDevice.resolved()
+    let resolvedPipeline = try pipeline.resolvedPipeline().resolving(
+        contributions: contributions
+    )
+    let resolver = try RustSceneFrameResolver(
+        revision: identity,
+        frameRate: try ExactFrameRate(numerator: 24, denominator: 1),
+        base: pipeline,
+        resolvedDevice: resolvedDevice,
+        resolvedPipeline: resolvedPipeline,
+        trackingCamera: nil,
+        trackingMetersPerSourceUnit: nil
+    )
     let job = try PhysicalMetalFrameEngine().submit(
         sourceACEScg: context.source,
         deviceSignal: context.deviceSignal,
         environmentACEScg: context.environment,
         orchestration: try pipeline.orchestration(for: frame),
-        resolvedDevice: try effectiveDevice.resolved(),
-        resolvedPipeline: try pipeline.resolvedPipeline().resolving(
-            contributions: contributions
-        ),
+        sceneResolver: resolver,
         quality: .native,
         deviceVfxAlphaMode: "device-transparency",
         screenAmount: controller.effectiveScreenAmount,

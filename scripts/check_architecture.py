@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from check_decision_authority import DecisionAuthorityError, validate as validate_decision_authority
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTIVE_TEXT_SUFFIXES = {
@@ -544,6 +546,26 @@ def validate_native_model_authority() -> None:
         raise ValidationError(
             f"Native media import silently authors metadata or defaults: {present}"
         )
+    for required in (
+        "StudioMediaImportResolution",
+        'resolved.proposedInputTransformID = "srgb-encoded-rec709"',
+        "resolved.alpha = resolved.hasAlpha ? .premultiplied : .ignore",
+        "nonMetadataFields",
+    ):
+        if required not in media_interpretation:
+            raise ValidationError(
+                f"Media import omits the disclosed incomplete-metadata contract: {required}"
+            )
+    for required in (
+        "adoptSourceImportInterpretation",
+        "adoptReferenceImportInterpretation",
+        "acknowledgeImportDefaults",
+        "materializeImportInterpretation: false",
+    ):
+        if required not in workspace:
+            raise ValidationError(
+                f"Native Source/Reference import omits disclosed defaults or persisted-authoring isolation: {required}"
+            )
 
     output_contracts = (
         ROOT / "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift"
@@ -569,9 +591,261 @@ def validate_phase_gated_workflow() -> None:
         raise ValidationError(f"Phase-gated workflow rule is incomplete: {absent}")
 
 
+def validate_scene_self_containment() -> None:
+    tracking_asset_library = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/TrackingAssetLibrary.swift"
+    )
+    if tracking_asset_library.exists():
+        raise ValidationError("Imported 3D authoring still has a managed importer-file library")
+
+    scene_library = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"struct SavedTrackingScene:.*?\n}\n\n/// Scene persistence",
+        scene_library,
+        flags=re.DOTALL,
+    )
+    if not match:
+        raise ValidationError("SavedTrackingScene contract is missing")
+    saved_tracking = match.group(0)
+    if "let scene: TrackingScene" not in saved_tracking:
+        raise ValidationError("Saved tracking does not embed complete scene-owned 3D authoring")
+    forbidden = [value for value in ("absolutePath", ".comp", "URL", "fileName") if value in saved_tracking]
+    if forbidden:
+        raise ValidationError(f"Saved tracking retains importer-file identity: {forbidden}")
+
+    workspace = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+    ).read_text(encoding="utf-8")
+    restore = re.search(
+        r"private func restoreTrackingScene\(.*?\n    }\n\n    private func publishMissingMedia",
+        workspace,
+        flags=re.DOTALL,
+    )
+    if not restore or "trackingScene = saved.scene" not in restore.group(0):
+        raise ValidationError("Scene Open does not restore embedded 3D authoring directly")
+    if any(value in restore.group(0) for value in ("FusionTrackingImporter", "FileManager", ".comp")):
+        raise ValidationError("Scene Open re-enters the 3D importer boundary")
+
+
+def validate_fusion_scene_color_contract() -> None:
+    fusion = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift"
+    ).read_text(encoding="utf-8")
+    for forbidden in (
+        "OCIOColorSpace",
+        "OCIOConfig",
+        "studio-fusion-ocio",
+        "fusionConfigurationFileName",
+        "ocioSourceColorSpace",
+    ):
+        if forbidden in fusion:
+            raise ValidationError(
+                f"Fusion Scene Package retains an OCIO composition route: {forbidden}"
+            )
+    for required in (
+        "ReferenceToACEScg = ColorSpaceTransform",
+        'InputGamma = Input { Value = FuID { \"REC709_GAMMA\" } }',
+        'OutputColorSpace = Input { Value = FuID { \"ACES_AP1_COLORSPACE\" } }',
+        "UseHDRStandardConversions = Input { Value = 1 }",
+        "IsRec2390ScalingEnabled = Input { Value = 1 }",
+        '"  PassThrough = true,\\n"',
+    ):
+        if required not in fusion:
+            raise ValidationError(
+                f"Fusion reference transform omits its standard-node contract: {required}"
+            )
+    fusion_config = (
+        ROOT
+        / "packages/StudioColor/Sources/StudioColor/Resources/studio-fusion-ocio-v2.4.ocio"
+    )
+    if fusion_config.exists():
+        raise ValidationError("Fusion package still ships a private OCIO configuration")
+
+
+def validate_scene_profile_authority() -> None:
+    scene_library = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"struct SceneAuthoringDocument:.*?\n}\n\nstruct SavedSceneSnapshot",
+        scene_library,
+        flags=re.DOTALL,
+    )
+    if not match:
+        raise ValidationError("SceneAuthoringDocument contract is missing")
+    authoring = match.group(0)
+    for required in (
+        "let profiles: SceneProfileSelection",
+        "let overrides: [SceneControlOverride]",
+        "let modelOverrides: SceneModelOverrides",
+    ):
+        if required not in authoring:
+            raise ValidationError(f"Saved Scene omits selected profile identity: {required}")
+    for forbidden in (
+        "let device: DeviceDefinition",
+        "let coverGlass: CoverGlassDefinition",
+        "TestAuthoringResolvedSelection",
+        "PhysicalSettingsExchange.FrameContext",
+        "let model: PhysicalModelAuthoringState",
+    ):
+        if forbidden in authoring:
+            raise ValidationError(
+                f"Saved Scene embeds a complete current profile snapshot: {forbidden}"
+            )
+
+    workspace = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+    ).read_text(encoding="utf-8")
+    for forbidden in (
+        "RustDeviceCatalog.builtIns",
+        "RustCoverGlassCatalog.builtIns",
+        "CapturePresetDefinition.catalog",
+        "LensPresetDefinition.catalog",
+        "EnvironmentPresetDefinition.catalog",
+        "StudioRenderPreset.builtIns",
+    ):
+        if forbidden in workspace:
+            raise ValidationError(
+                "Workspace resolves a Global Library family through a compiled seed catalog: "
+                + forbidden
+            )
+
+    global_library = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/GlobalLibrary.swift"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "var devices: [LibraryItem<DeviceDefinition>]",
+        "var coverGlasses: [LibraryItem<CoverGlassDefinition>]",
+        "var cameras: [LibraryItem<CameraProfileDefinition>]",
+        "var lenses: [LibraryItem<LensProfileDefinition>]",
+        "var environments: [LibraryItem<EnvironmentProfileDefinition>]",
+        "document.renderPresets.map(\\.value)",
+    ):
+        if required not in global_library:
+            raise ValidationError(
+                f"Global Library omits a current typed family or overlays a seed catalog: {required}"
+            )
+
+    profile_source = (
+        ROOT / "crates/screen-application/src/test_authoring.rs"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "fn device<'a>",
+        "fn cover<'a>",
+        "fn capture<'a>",
+        "fn lens<'a>",
+        "fn environment<'a>",
+    ):
+        if required not in profile_source:
+            raise ValidationError(
+                f"Application profile source omits one Global Library family: {required}"
+            )
+    apply = re.search(
+        r"private func applySceneAuthoring\(.*?\n    }\n\n    private func restoreImportedPhysicalState",
+        workspace,
+        flags=re.DOTALL,
+    )
+    if not apply:
+        raise ValidationError("Saved Scene application boundary is missing")
+    for required in (
+        "globalLibraryStore.load()",
+        "authoring.profiles.deviceID",
+        "authoring.profiles.coverGlassID",
+        "materializeSceneSelection(",
+        "authoring.overrides",
+        "profileDevice: sceneDevice",
+        "profileCoverGlass: sceneCoverGlass",
+    ):
+        if required not in apply.group(0):
+            raise ValidationError(
+                f"Saved Scene does not resolve current profiles before overrides: {required}"
+            )
+    materialize = re.search(
+        r"private func materializeSceneSelection\(.*?\n    }\n\n    private func sceneProfileBaselines",
+        workspace,
+        flags=re.DOTALL,
+    )
+    if not materialize:
+        raise ValidationError("Saved Scene profile materializer is missing")
+    for forbidden in ("?? builtInDevices.first", "?? RustDeviceCatalog.builtIns().first"):
+        if forbidden in materialize.group(0):
+            raise ValidationError(
+                "Saved Scene substitutes another Device identity during profile materialization"
+            )
+
+    refresh = re.search(
+        r"func refreshActiveSceneFromGlobalLibrary\(\).*?\n    }\n\n    var pipelineSummary",
+        workspace,
+        flags=re.DOTALL,
+    )
+    if not refresh:
+        raise ValidationError("Global Library edits do not rematerialize the active scene")
+    for required in (
+        "currentSceneAuthoringDocument(",
+        "globalLibraryStore.load()",
+        "RustTestAuthoringProfileContext(library: library)",
+        "materializeSceneSelection(",
+        "profileDevice: device",
+        "profileCoverGlass: coverGlass",
+        "restoreSceneOverrides(authoring.modelOverrides)",
+        "explicitSceneOverrideControlIDs",
+        "rebuildPhysicalSelectedFrame()",
+    ):
+        if required not in refresh.group(0):
+            raise ValidationError(
+                "Active scene library refresh omits complete rematerialization: " + required
+            )
+    content = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift"
+    ).read_text(encoding="utf-8")
+    if ".onChange(of: library.document)" not in content or (
+        "model.refreshActiveSceneFromGlobalLibrary()" not in content
+    ):
+        raise ValidationError("Global Library publication is not connected to active-scene refresh")
+
+    commit = re.search(
+        r"private func commitSceneAuthoringEdit\(.*?\n    }\n\n    private func restoreSceneAuthoringEdit",
+        workspace,
+        flags=re.DOTALL,
+    )
+    if not commit or "explicitSceneOverrideControlIDs.formUnion(controlIDs)" not in commit.group(0):
+        raise ValidationError(
+            "Cards and gizmos do not share one scene-authoring override transaction"
+        )
+    capture = re.search(
+        r"private func currentSceneControlOverrides\(\).*?\n    }\n\n    private func currentSceneModelOverrides",
+        workspace,
+        flags=re.DOTALL,
+    )
+    if not capture or "guard explicitSceneOverrideControlIDs.contains(descriptor.id)" not in capture.group(0):
+        raise ValidationError("Saved Scene infers overrides instead of storing explicit edits")
+    for function_name in (
+        "endFocusTargetDrag",
+        "endEnvironmentNavigation",
+        "commitCameraNavigationPose",
+        "commitDeviceNavigationPose",
+        "placeDevice",
+        "commitReferenceMatch",
+    ):
+        block = re.search(
+            rf"(?:private )?func {function_name}\(.*?\n    }}",
+            workspace,
+            flags=re.DOTALL,
+        )
+        if not block or "commitSceneAuthoringEdit(" not in block.group(0):
+            raise ValidationError(
+                f"Interactive editor bypasses scene-authoring transaction: {function_name}"
+            )
+
+
 def main() -> int:
     try:
         paths = repository_paths()
+        validate_decision_authority(ROOT)
         validate_domains()
         validate_swift_domains()
         validate_path_owners(paths)
@@ -580,8 +854,11 @@ def main() -> int:
         validate_native_backend_composition(paths)
         validate_presentation_boundaries()
         validate_native_model_authority()
+        validate_scene_self_containment()
+        validate_fusion_scene_color_contract()
+        validate_scene_profile_authority()
         validate_phase_gated_workflow()
-    except (ValidationError, json.JSONDecodeError) as error:
+    except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)
         return 1
     print("architecture validation passed")

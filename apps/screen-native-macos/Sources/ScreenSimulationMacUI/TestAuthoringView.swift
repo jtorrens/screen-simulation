@@ -4,15 +4,18 @@ import SwiftUI
 public struct TestAuthoringView: View {
     private let state: TestPagePresentation
     private let onIntent: (TestControlIntent) -> Void
+    private let onScalarEditingChanged: (String, Bool) -> Void
     private let excludedControlIDs: Set<String>
 
     public init(
         state: TestPagePresentation,
         excludedControlIDs: Set<String> = [],
+        onScalarEditingChanged: @escaping (String, Bool) -> Void = { _, _ in },
         onIntent: @escaping (TestControlIntent) -> Void
     ) {
         self.state = state
         self.excludedControlIDs = excludedControlIDs
+        self.onScalarEditingChanged = onScalarEditingChanged
         self.onIntent = onIntent
     }
 
@@ -97,7 +100,10 @@ public struct TestAuthoringView: View {
                             ))
                         }
                     ),
-                    in: control.minimum...control.maximum
+                    in: control.minimum...control.maximum,
+                    onEditingChanged: {
+                        onScalarEditingChanged(control.id, $0)
+                    }
                 )
                 .frame(width: 92)
                 DebouncedTestScalarField(control: control) { value in
@@ -105,7 +111,7 @@ public struct TestAuthoringView: View {
                 }
                 .frame(width: 58)
                 resetButton(disabled: control.value == control.resetValue) {
-                    onIntent(.setScalar(controlID: control.id, value: control.resetValue))
+                    onIntent(.reset(controlID: control.id))
                 }
             }
         }
@@ -132,7 +138,7 @@ public struct TestAuthoringView: View {
                 .frame(width: 108)
                 Text("").frame(width: 52)
                 resetButton(disabled: control.selectedID == control.resetID) {
-                    onIntent(.setChoice(controlID: control.id, optionID: control.resetID))
+                    onIntent(.reset(controlID: control.id))
                 }
             }
         case let .scalar(control):
@@ -147,7 +153,10 @@ public struct TestAuthoringView: View {
                                 value: snapped($0, for: control)
                             )) }
                         ),
-                        in: control.minimum...control.maximum
+                        in: control.minimum...control.maximum,
+                        onEditingChanged: {
+                            onScalarEditingChanged(control.id, $0)
+                        }
                     )
                     .frame(width: 150)
                 } else {
@@ -161,7 +170,7 @@ public struct TestAuthoringView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 52, alignment: .leading)
                 resetButton(disabled: control.value == control.resetValue) {
-                    onIntent(.setScalar(controlID: control.id, value: control.resetValue))
+                    onIntent(.reset(controlID: control.id))
                 }
             }
         case let .toggle(control):
@@ -176,7 +185,7 @@ public struct TestAuthoringView: View {
                 .frame(width: 108, alignment: .leading)
                 Text("").frame(width: 52)
                 resetButton(disabled: control.value == control.resetValue) {
-                    onIntent(.setToggle(controlID: control.id, value: control.resetValue))
+                    onIntent(.reset(controlID: control.id))
                 }
             }
         case let .action(control):

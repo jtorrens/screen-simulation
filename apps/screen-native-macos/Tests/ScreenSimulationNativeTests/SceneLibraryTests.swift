@@ -1,4 +1,5 @@
 import Foundation
+import ScreenSimulationPresentation
 import StudioColor
 import StudioMedia
 import Testing
@@ -15,11 +16,20 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
     let selection = try RustTestAuthoringCoordinator.defaultSelection(
         inputTransformID: input.id, deviceID: device.id, frameRate: .fps24
     )
+    let coverGlass = try #require(try RustCoverGlassCatalog.builtIns().first)
     return .init(
-        deviceProfileID: device.id,
-        coverGlassProfileID: try #require(try RustCoverGlassCatalog.builtIns().first).id,
+        profiles: .init(
+            deviceID: device.id,
+            coverGlassID: coverGlass.id,
+            captureID: selection.capturePresetID,
+            lensID: selection.lensPresetID,
+            environmentID: selection.environmentSourceID,
+            deliveryID: selection.deliveryPresetID,
+            recordingID: selection.recordingProfileID
+        ),
+        overrides: [],
+        modelOverrides: .init(screen: nil, stages: []),
         context: .init(
-            selection: selection,
             sourceInputTransformID: input.id,
             sourceAlphaMode: StudioAlphaMode.ignore.rawValue,
             sourceColorModel: StudioSignalColorModel.rgb.rawValue,
@@ -31,18 +41,29 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
             environmentResource: .init(kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil),
             referenceResource: .init(kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil, alphaMode: nil, signalColorModel: nil, signalMatrix: nil, signalRange: nil, placementID: nil, corners: [])
         ),
-        model: .init(screen: .init(storedAmount: 1, isBypassed: false), stages: []),
         environmentCalibration: nil
     )
 }
 
+private func scalarControl(
+    _ id: String,
+    in presentation: TestPagePresentation?
+) -> Double? {
+    let controls = (presentation?.previewControls ?? []) + (presentation?.phases ?? []).flatMap {
+        $0.sections.flatMap(\.controls)
+    }
+    guard let descriptor = controls.first(where: { $0.id == id }),
+          case let .scalar(control) = descriptor else { return nil }
+    return control.value
+}
+
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 19)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 21)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v19.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v21.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(
@@ -72,6 +93,133 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
 }
 
 @MainActor
+@Test func savedSceneResolvesCurrentProfileDefaultsButKeepsItsExplicitOverrides() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-profile-resolution-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try GlobalLibraryStore(documentURL: root.appendingPathComponent("library.json"))
+    var devices = try RustDeviceCatalog.builtIns()
+    let covers = try RustCoverGlassCatalog.builtIns()
+    let deviceIndex = try #require(devices.firstIndex {
+        $0.maximumWhiteLuminance > $0.minimumWhiteLuminance
+    })
+    let selectedDevice = devices[deviceIndex]
+    let original = try sceneAuthoring()
+    let base = SceneAuthoringDocument(
+        profiles: .init(
+            deviceID: selectedDevice.id,
+            coverGlassID: selectedDevice.defaultCoverGlassPresetID,
+            captureID: original.profiles.captureID,
+            lensID: original.profiles.lensID,
+            environmentID: original.profiles.environmentID,
+            deliveryID: original.profiles.deliveryID,
+            recordingID: original.profiles.recordingID
+        ),
+        overrides: [], modelOverrides: original.modelOverrides,
+        context: original.context, environmentCalibration: nil
+    )
+    let range = selectedDevice.maximumWhiteLuminance - selectedDevice.minimumWhiteLuminance
+    let firstDefault = selectedDevice.minimumWhiteLuminance + range * 0.25
+    devices[deviceIndex].whiteLevelNits = firstDefault
+    var cameras = try CameraProfileDefinition.builtIns()
+    var lenses = try LensProfileDefinition.builtIns()
+    var environments = try EnvironmentProfileDefinition.builtIns()
+    let cameraIndex = try #require(cameras.firstIndex { $0.id == base.profiles.captureID })
+    let lensIndex = try #require(lenses.firstIndex { $0.id == base.profiles.lensID })
+    let environmentIndex = try #require(environments.firstIndex {
+        $0.id == base.profiles.environmentID
+    })
+    cameras[cameraIndex].gateWidthMillimeters = 31.2
+    lenses[lensIndex].nominalFocalLengthMillimeters = 73
+    environments[environmentIndex].environment.ambientRadianceACEScg = [12, 13, 14]
+    try store.save(.init(
+        devices: devices, coverGlasses: covers,
+        cameras: cameras, lenses: lenses, environments: environments
+    ))
+
+    func scene(_ authoring: SceneAuthoringDocument) -> SavedScene {
+        let id = UUID()
+        return .init(
+            id: id,
+            name: "Perfil actual",
+            thumbnailFileName: "\(id.uuidString.lowercased()).png",
+            snapshot: .init(
+                source: .init(
+                    kind: .syntheticPattern,
+                    patternRawValue: SyntheticPattern.eyeChart.rawValue,
+                    assets: [], missingMedia: nil
+                ),
+                currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+                viewerIsFitted: true, authoring: authoring
+            )
+        )
+    }
+
+    let inheritedWorkspace = WorkspaceModel(globalLibraryStore: store)
+    await inheritedWorkspace.openSavedScene(scene(base), undoManager: nil)
+    #expect(scalarControl("white-luminance", in: inheritedWorkspace.testPresentation)
+        == firstDefault)
+    #expect(inheritedWorkspace.selectedCapturePresetID == base.profiles.captureID)
+    #expect(inheritedWorkspace.selectedLensPresetID == base.profiles.lensID)
+    #expect(inheritedWorkspace.physicalAuthoringState?.sceneLens.sensorWidthMillimeters == 31.2)
+    #expect(inheritedWorkspace.physicalAuthoringState?.sceneLens.focalLengthMillimeters == 73)
+    #expect(inheritedWorkspace.physicalAuthoringState?.environment.ambientRadianceACEScg
+        == [12, 13, 14])
+    #expect(try inheritedWorkspace.captureSavedScene().snapshot.authoring.overrides
+        .contains(where: { $0.controlID == "white-luminance" }) == false)
+    let undoManager = UndoManager()
+    inheritedWorkspace.handleTestIntent(
+        .setScalar(controlID: "white-luminance", value: firstDefault),
+        undoManager: undoManager
+    )
+    #expect(try inheritedWorkspace.captureSavedScene().snapshot.authoring.overrides
+        .contains(.scalar("white-luminance", firstDefault)))
+    undoManager.undo()
+    #expect(try inheritedWorkspace.captureSavedScene().snapshot.authoring.overrides
+        .contains(where: { $0.controlID == "white-luminance" }) == false)
+    undoManager.redo()
+    #expect(try inheritedWorkspace.captureSavedScene().snapshot.authoring.overrides
+        .contains(.scalar("white-luminance", firstDefault)))
+    inheritedWorkspace.handleTestIntent(
+        .reset(controlID: "white-luminance"), undoManager: nil
+    )
+    #expect(try inheritedWorkspace.captureSavedScene().snapshot.authoring.overrides
+        .contains(where: { $0.controlID == "white-luminance" }) == false)
+
+    let authoredValue = selectedDevice.minimumWhiteLuminance + range * 0.5
+    let overridden = SceneAuthoringDocument(
+        profiles: base.profiles,
+        overrides: [.scalar("white-luminance", authoredValue)],
+        modelOverrides: base.modelOverrides,
+        context: base.context,
+        environmentCalibration: base.environmentCalibration
+    )
+    devices[deviceIndex].whiteLevelNits = selectedDevice.minimumWhiteLuminance + range * 0.75
+    cameras[cameraIndex].gateWidthMillimeters = 30.4
+    lenses[lensIndex].nominalFocalLengthMillimeters = 81
+    environments[environmentIndex].environment.ambientRadianceACEScg = [20, 21, 22]
+    try store.save(.init(
+        devices: devices, coverGlasses: covers,
+        cameras: cameras, lenses: lenses, environments: environments
+    ))
+    let overriddenWorkspace = WorkspaceModel(globalLibraryStore: store)
+    await overriddenWorkspace.openSavedScene(scene(overridden), undoManager: nil)
+    #expect(scalarControl("white-luminance", in: overriddenWorkspace.testPresentation)
+        == authoredValue)
+    #expect(overriddenWorkspace.physicalAuthoringState?.sceneLens.sensorWidthMillimeters == 30.4)
+    #expect(overriddenWorkspace.physicalAuthoringState?.sceneLens.focalLengthMillimeters == 81)
+    #expect(overriddenWorkspace.physicalAuthoringState?.environment.ambientRadianceACEScg
+        == [20, 21, 22])
+    #expect(try overriddenWorkspace.captureSavedScene().snapshot.authoring.overrides
+        .contains(.scalar("white-luminance", authoredValue)))
+    overriddenWorkspace.handleTestIntent(.reset(controlID: "white-luminance"))
+    #expect(scalarControl("white-luminance", in: overriddenWorkspace.testPresentation)
+        == devices[deviceIndex].whiteLevelNits)
+    #expect(try overriddenWorkspace.captureSavedScene().snapshot.authoring.overrides
+        .contains(where: { $0.controlID == "white-luminance" }) == false)
+}
+
+@MainActor
 @Test func autosaveSurvivesSceneDeletionAndRestoresAsANewScene() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-autosave-\(UUID().uuidString)")
@@ -93,7 +241,9 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
     #expect(try controller.autosaves(for: controller.autosaveHistoryTarget(for: scene)).count == 1)
 
     try controller.delete(scene)
-    let target = try #require(controller.deletedAutosaveHistoryTargets().first)
+    let target = try #require(controller.deletedAutosaveHistoryTargets().first {
+        $0.sceneID == scene.id
+    })
     let revision = try #require(try controller.autosaves(for: target).first)
     let restored = try controller.restoreAutosave(revision)
 
@@ -165,20 +315,89 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
     #expect(try Data(contentsOf: store.documentURL) == unknown)
 }
 
-@Test func sceneLibraryPersistsFusionIdentityVisibilityAndMetricCalibration() throws {
+@Test func sceneLibraryRejectsUnknownNestedAuthoringInsteadOfIgnoringIt() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scenes-nested-reject-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SceneLibraryStore(directoryURL: root)
+    let id = UUID()
+    let scene = SavedScene(
+        id: id, name: "Estricto", thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: .init(
+            source: .init(
+                kind: .syntheticPattern,
+                patternRawValue: SyntheticPattern.eyeChart.rawValue,
+                assets: [], missingMedia: nil
+            ),
+            currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+            viewerIsFitted: true, authoring: try sceneAuthoring()
+        )
+    )
+    var rootObject = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            SceneLibraryDocument(scenes: [scene])
+        )) as? [String: Any]
+    )
+    var scenes = try #require(rootObject["scenes"] as? [[String: Any]])
+    var snapshot = try #require(scenes[0]["snapshot"] as? [String: Any])
+    var authoring = try #require(snapshot["authoring"] as? [String: Any])
+    authoring["selection"] = ["legacyDenseSnapshot": true]
+    snapshot["authoring"] = authoring
+    scenes[0]["snapshot"] = snapshot
+    rootObject["scenes"] = scenes
+    let bytes = try JSONSerialization.data(withJSONObject: rootObject)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try bytes.write(to: store.documentURL)
+
+    #expect(throws: SceneLibraryError.self) { try store.load() }
+    #expect(try Data(contentsOf: store.documentURL) == bytes)
+}
+
+@Test func sceneLibraryOwnsImported3DAuthoringAfterTheImporterFileDisappears() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-tracking-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let source = root.appendingPathComponent("solve.comp")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    try Data("fusion fixture".utf8).write(to: source)
-    let managed = try TrackingAssetLibrary.importAsset(from: source)
+    try Data("temporary importer input".utf8).write(to: source)
     let store = try SceneLibraryStore(
         directoryURL: root.appendingPathComponent("scenes")
     )
     let id = UUID()
+    let authoredScene = TrackingScene(
+        cameras: [.init(
+            id: "/Camera01", label: "Camera01",
+            frameRateNumerator: 24, frameRateDenominator: 1,
+            focalLengthMillimeters: 35,
+            gateWidthMillimeters: 36, gateHeightMillimeters: 20.25,
+            plateWidth: 1920, plateHeight: 1080,
+            distortion: .pinhole,
+            samples: [
+                .init(
+                    frame: 0, sourcePosition: .init(0, 0, 1),
+                    orientation: .init(0, 0, 0, 1)
+                ),
+                .init(
+                    frame: 1, sourcePosition: .init(0.1, 0, 1),
+                    orientation: .init(0, 0, 0, 1)
+                ),
+            ]
+        )],
+        pointGroups: [.init(
+            id: "/Camera01Trackers", label: "Camera01Trackers",
+            points: [.init(id: "point-1", label: "Point 1", sourcePosition: .zero)]
+        )],
+        meshes: [.init(
+            id: "/Plane01", label: "Plane01",
+            sourceVertices: [
+                .init(-1, -1, 0), .init(1, -1, 0),
+                .init(1, 1, 0), .init(-1, 1, 0),
+            ],
+            faceVertexCounts: [4], faceVertexIndices: [0, 1, 2, 3]
+        )]
+    )
     let tracking = SavedTrackingScene(
-        absolutePath: managed.url.path,
+        scene: authoredScene,
         cameraID: "/Camera01", pointGroupID: "/Camera01Trackers",
         visibleMeshIDs: ["/Plane01"], pointsVisible: true,
         geometryVisible: false, cameraEnabled: true,
@@ -206,9 +425,11 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
     )
     try store.writeThumbnail(Data([1]), for: scene)
     try store.save(.init(scenes: [scene]))
+    try FileManager.default.removeItem(at: source)
 
     let restored = try #require(try store.load().scenes.first)
     #expect(restored.snapshot.tracking == tracking)
+    #expect(restored.snapshot.tracking?.scene.cameras.first?.samples.count == 2)
 }
 
 @Test func sourceAssetsPreserveTheirAuthoredAbsolutePath() throws {

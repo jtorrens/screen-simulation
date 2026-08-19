@@ -62,20 +62,26 @@ struct GlobalPatternDefinition: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 10
+    static let currentSchemaVersion = 12
     let schemaVersion: Int
     var patterns: [LibraryItem<GlobalPatternDefinition>]
     var testImages: [LibraryItem<GlobalTestImage>]
     var renderPresets: [LibraryItem<StudioRenderPreset>]
     var devices: [LibraryItem<DeviceDefinition>]
     var coverGlasses: [LibraryItem<CoverGlassDefinition>]
+    var cameras: [LibraryItem<CameraProfileDefinition>]
+    var lenses: [LibraryItem<LensProfileDefinition>]
+    var environments: [LibraryItem<EnvironmentProfileDefinition>]
 
     init(
         patterns: [GlobalPatternDefinition] = GlobalPatternDefinition.builtIns,
         testImages: [GlobalTestImage] = [],
         renderPresets: [StudioRenderPreset] = StudioRenderPreset.builtIns,
-        devices: [DeviceDefinition] = [],
-        coverGlasses: [CoverGlassDefinition] = []
+        devices: [DeviceDefinition]? = nil,
+        coverGlasses: [CoverGlassDefinition]? = nil,
+        cameras: [CameraProfileDefinition]? = nil,
+        lenses: [LensProfileDefinition]? = nil,
+        environments: [EnvironmentProfileDefinition]? = nil
     ) {
         schemaVersion = Self.currentSchemaVersion
         let patternSeedIDs = Set(GlobalPatternDefinition.builtIns.map(\.id))
@@ -87,13 +93,35 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         self.renderPresets = renderPresets.map {
             .init(value: $0, isLocked: renderSeedIDs.contains($0.id))
         }
-        let deviceSeedIDs = Set((try? RustDeviceCatalog.builtIns().map(\.id)) ?? [])
-        self.devices = devices.map {
+        let deviceSeeds = (try? RustDeviceCatalog.builtIns()) ?? []
+        let deviceValues = devices ?? deviceSeeds
+        let deviceSeedIDs = Set(deviceSeeds.map(\.id))
+        self.devices = deviceValues.map {
             .init(value: $0, isLocked: deviceSeedIDs.contains($0.id))
         }
-        let coverSeedIDs = Set((try? RustCoverGlassCatalog.builtIns().map(\.id)) ?? [])
-        self.coverGlasses = coverGlasses.map {
+        let coverSeeds = (try? RustCoverGlassCatalog.builtIns()) ?? []
+        let coverValues = coverGlasses ?? coverSeeds
+        let coverSeedIDs = Set(coverSeeds.map(\.id))
+        self.coverGlasses = coverValues.map {
             .init(value: $0, isLocked: coverSeedIDs.contains($0.id))
+        }
+        let cameraSeeds = (try? CameraProfileDefinition.builtIns()) ?? []
+        let cameraValues = cameras ?? cameraSeeds
+        let cameraSeedIDs = Set(cameraSeeds.map(\.id))
+        self.cameras = cameraValues.map {
+            .init(value: $0, isLocked: cameraSeedIDs.contains($0.id))
+        }
+        let lensSeeds = (try? LensProfileDefinition.builtIns()) ?? []
+        let lensValues = lenses ?? lensSeeds
+        let lensSeedIDs = Set(lensSeeds.map(\.id))
+        self.lenses = lensValues.map {
+            .init(value: $0, isLocked: lensSeedIDs.contains($0.id))
+        }
+        let environmentSeeds = (try? EnvironmentProfileDefinition.builtIns()) ?? []
+        let environmentValues = environments ?? environmentSeeds
+        let environmentSeedIDs = Set(environmentSeeds.map(\.id))
+        self.environments = environmentValues.map {
+            .init(value: $0, isLocked: environmentSeedIDs.contains($0.id))
         }
     }
 
@@ -102,7 +130,10 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         testImageItems: [LibraryItem<GlobalTestImage>],
         renderPresetItems: [LibraryItem<StudioRenderPreset>],
         deviceItems: [LibraryItem<DeviceDefinition>],
-        coverGlassItems: [LibraryItem<CoverGlassDefinition>]
+        coverGlassItems: [LibraryItem<CoverGlassDefinition>],
+        cameraItems: [LibraryItem<CameraProfileDefinition>],
+        lensItems: [LibraryItem<LensProfileDefinition>],
+        environmentItems: [LibraryItem<EnvironmentProfileDefinition>]
     ) {
         schemaVersion = Self.currentSchemaVersion
         patterns = patternItems
@@ -110,6 +141,9 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         renderPresets = renderPresetItems
         devices = deviceItems
         coverGlasses = coverGlassItems
+        cameras = cameraItems
+        lenses = lensItems
+        environments = environmentItems
     }
 
     func validate() throws {
@@ -120,18 +154,41 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
               Set(testImages.map(\.id)).count == testImages.count,
               Set(renderPresets.map(\.id)).count == renderPresets.count,
               Set(devices.map(\.id)).count == devices.count,
-              Set(coverGlasses.map(\.id)).count == coverGlasses.count
+              Set(coverGlasses.map(\.id)).count == coverGlasses.count,
+              Set(cameras.map(\.id)).count == cameras.count,
+              Set(lenses.map(\.id)).count == lenses.count,
+              Set(environments.map(\.id)).count == environments.count
         else { throw GlobalLibraryError.invalidEntity("Hay identificadores globales duplicados.") }
+        guard !patterns.isEmpty, !renderPresets.isEmpty, !devices.isEmpty,
+              !coverGlasses.isEmpty, !cameras.isEmpty, !lenses.isEmpty,
+              !environments.isEmpty
+        else {
+            throw GlobalLibraryError.invalidEntity(
+                "La Biblioteca Global necesita al menos un registro en cada familia interna."
+            )
+        }
         try patterns.forEach { try $0.value.validate() }
         try testImages.forEach { try $0.value.validate() }
         try devices.forEach { _ = try $0.value.resolved() }
         try coverGlasses.forEach { try $0.value.validate() }
+        try cameras.forEach { try $0.value.validate() }
+        try lenses.forEach { try $0.value.validate() }
+        try environments.forEach { try $0.value.validate() }
         let coverGlassIDs = Set(coverGlasses.map(\.id))
         guard devices.allSatisfy({
             coverGlassIDs.contains($0.defaultCoverGlassPresetID)
         }) else {
             throw GlobalLibraryError.invalidEntity(
                 "Un Device referencia un Cover Glass que no existe en la biblioteca."
+            )
+        }
+        let lensIDs = Set(lenses.map(\.id))
+        guard cameras.allSatisfy({ camera in
+            lensIDs.contains(camera.defaultLensID)
+                && camera.compatibleLensIDs.allSatisfy(lensIDs.contains)
+        }) else {
+            throw GlobalLibraryError.invalidEntity(
+                "Una cámara referencia una lente que no existe en la biblioteca."
             )
         }
         guard renderPresets.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
@@ -191,16 +248,12 @@ struct GlobalLibraryStore: Sendable {
             create: true
         ).appendingPathComponent("SCREEN-SIMULATION", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        self.documentURL = root.appendingPathComponent("GlobalLibrary.v1.json")
+        self.documentURL = root.appendingPathComponent("GlobalLibrary.v12.json")
     }
 
     func load() throws -> GlobalLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let document = GlobalLibraryDocument(
-                renderPresets: StudioRenderPreset.builtIns,
-                devices: try RustDeviceCatalog.builtIns(),
-                coverGlasses: try RustCoverGlassCatalog.builtIns()
-            )
+            let document = GlobalLibraryDocument()
             try document.validate()
             return document
         }
@@ -241,6 +294,9 @@ final class GlobalLibraryController: ObservableObject {
     @Published var selectedPresetID: UUID?
     @Published var selectedDeviceID: String?
     @Published var selectedCoverGlassID: String?
+    @Published var selectedCameraID: String?
+    @Published var selectedLensID: String?
+    @Published var selectedEnvironmentID: String?
     @Published private(set) var deviceValidationMessage: String?
     @Published private(set) var coverGlassValidationMessage: String?
     @Published private(set) var blockedError: String?
@@ -260,17 +316,16 @@ final class GlobalLibraryController: ObservableObject {
             selectedPresetID = allRenderPresets.first?.id
             selectedDeviceID = document.devices.first?.id
             selectedCoverGlassID = document.coverGlasses.first?.id
+            selectedCameraID = document.cameras.first?.id
+            selectedLensID = document.lenses.first?.id
+            selectedEnvironmentID = document.environments.first?.id
         } catch {
             blockedError = error.localizedDescription
         }
     }
 
     var allRenderPresets: [StudioRenderPreset] {
-        let builtInIDs = Set(StudioRenderPreset.builtIns.map(\.id))
-        let custom = document.renderPresets
-            .map(\.value)
-            .filter { !builtInIDs.contains($0.id) }
-        return StudioRenderPreset.builtIns + custom
+        document.renderPresets.map(\.value)
     }
 
     var authorableColorModes: [LibraryColorModeOption] {
@@ -289,6 +344,18 @@ final class GlobalLibraryController: ObservableObject {
 
     var selectedCoverGlass: CoverGlassDefinition? {
         selectedCoverGlassItem?.value
+    }
+
+    var selectedCameraItem: LibraryItem<CameraProfileDefinition>? {
+        document.cameras.first { $0.id == selectedCameraID }
+    }
+
+    var selectedLensItem: LibraryItem<LensProfileDefinition>? {
+        document.lenses.first { $0.id == selectedLensID }
+    }
+
+    var selectedEnvironmentItem: LibraryItem<EnvironmentProfileDefinition>? {
+        document.environments.first { $0.id == selectedEnvironmentID }
     }
 
     var selectedPatternItem: LibraryItem<GlobalPatternDefinition>? {
@@ -474,9 +541,7 @@ final class GlobalLibraryController: ObservableObject {
     }
 
     func addDevice() {
-        guard let catalog = try? RustDeviceCatalog.builtIns(),
-              var device = catalog.first
-        else { return }
+        guard var device = selectedDevice ?? document.devices.first?.value else { return }
         device.id = UUID().uuidString.lowercased()
         device.name = "Device personalizado"
         document.devices.append(.init(value: device, isLocked: false))
@@ -530,7 +595,7 @@ final class GlobalLibraryController: ObservableObject {
     }
 
     func addCoverGlass() {
-        guard var cover = (try? RustCoverGlassCatalog.builtIns())?.first else { return }
+        guard var cover = selectedCoverGlass ?? document.coverGlasses.first?.value else { return }
         cover.id = UUID().uuidString.lowercased()
         cover.name = "Cover Glass personalizado"
         document.coverGlasses.append(.init(value: cover, isLocked: false))
@@ -588,6 +653,140 @@ final class GlobalLibraryController: ObservableObject {
             where: { $0.id == selectedCoverGlassID }
         ) else { return }
         document.coverGlasses[index].isLocked = false
+        persistOrBlock()
+    }
+
+    func duplicateSelectedCamera() {
+        guard var value = selectedCameraItem?.value else { return }
+        value.id = UUID().uuidString.lowercased()
+        value.name += " copia"
+        document.cameras.append(.init(value: value, isLocked: false))
+        selectedCameraID = value.id
+        persistOrBlock()
+    }
+
+    func addCamera() {
+        guard var value = selectedCameraItem?.value ?? document.cameras.first?.value else { return }
+        value.id = UUID().uuidString.lowercased()
+        value.name = "Cámara personalizada"
+        document.cameras.append(.init(value: value, isLocked: false))
+        selectedCameraID = value.id
+        persistOrBlock()
+    }
+
+    func updateSelectedCamera(_ mutation: (inout CameraProfileDefinition) -> Void) {
+        updateUnlocked(\.cameras, selectedID: selectedCameraID, mutation: mutation)
+    }
+
+    func removeSelectedCamera() {
+        guard let selectedCameraID, selectedCameraItem?.isLocked == false else { return }
+        document.cameras.removeAll { $0.id == selectedCameraID }
+        self.selectedCameraID = document.cameras.first?.id
+        persistOrBlock()
+    }
+
+    func unlockSelectedCamera() {
+        unlock(\.cameras, selectedID: selectedCameraID)
+    }
+
+    func duplicateSelectedLens() {
+        guard var value = selectedLensItem?.value else { return }
+        value.id = UUID().uuidString.lowercased()
+        value.name += " copia"
+        document.lenses.append(.init(value: value, isLocked: false))
+        selectedLensID = value.id
+        persistOrBlock()
+    }
+
+    func addLens() {
+        guard var value = selectedLensItem?.value ?? document.lenses.first?.value else { return }
+        value.id = UUID().uuidString.lowercased()
+        value.name = "Lente personalizada"
+        document.lenses.append(.init(value: value, isLocked: false))
+        selectedLensID = value.id
+        persistOrBlock()
+    }
+
+    func updateSelectedLens(_ mutation: (inout LensProfileDefinition) -> Void) {
+        updateUnlocked(\.lenses, selectedID: selectedLensID, mutation: mutation)
+    }
+
+    func removeSelectedLens() {
+        guard let selectedLensID, selectedLensItem?.isLocked == false else { return }
+        var candidate = document
+        candidate.lenses.removeAll { $0.id == selectedLensID }
+        do {
+            try candidate.validate()
+            try persist(candidate)
+            document = candidate
+            self.selectedLensID = document.lenses.first?.id
+        } catch { blockedError = error.localizedDescription }
+    }
+
+    func unlockSelectedLens() {
+        unlock(\.lenses, selectedID: selectedLensID)
+    }
+
+    func duplicateSelectedEnvironment() {
+        guard var value = selectedEnvironmentItem?.value else { return }
+        value.id = UUID().uuidString.lowercased()
+        value.name += " copia"
+        document.environments.append(.init(value: value, isLocked: false))
+        selectedEnvironmentID = value.id
+        persistOrBlock()
+    }
+
+    func addEnvironment() {
+        guard var value = selectedEnvironmentItem?.value ?? document.environments.first?.value else { return }
+        value.id = UUID().uuidString.lowercased()
+        value.name = "Entorno personalizado"
+        document.environments.append(.init(value: value, isLocked: false))
+        selectedEnvironmentID = value.id
+        persistOrBlock()
+    }
+
+    func updateSelectedEnvironment(_ mutation: (inout EnvironmentProfileDefinition) -> Void) {
+        updateUnlocked(\.environments, selectedID: selectedEnvironmentID, mutation: mutation)
+    }
+
+    func removeSelectedEnvironment() {
+        guard let selectedEnvironmentID, selectedEnvironmentItem?.isLocked == false else { return }
+        document.environments.removeAll { $0.id == selectedEnvironmentID }
+        self.selectedEnvironmentID = document.environments.first?.id
+        persistOrBlock()
+    }
+
+    func unlockSelectedEnvironment() {
+        unlock(\.environments, selectedID: selectedEnvironmentID)
+    }
+
+    private func updateUnlocked<Value>(
+        _ keyPath: WritableKeyPath<GlobalLibraryDocument, [LibraryItem<Value>]>,
+        selectedID: Value.ID?,
+        mutation: (inout Value) -> Void
+    ) where Value: Codable & Equatable & Identifiable & Sendable,
+        Value.ID: Codable & Hashable & Sendable {
+        guard let selectedID,
+              let index = document[keyPath: keyPath].firstIndex(where: { $0.id == selectedID }),
+              !document[keyPath: keyPath][index].isLocked else { return }
+        var candidate = document
+        mutation(&candidate[keyPath: keyPath][index].value)
+        do {
+            try candidate.validate()
+            try persist(candidate)
+            document = candidate
+        } catch { blockedError = error.localizedDescription }
+    }
+
+    private func unlock<Value>(
+        _ keyPath: WritableKeyPath<GlobalLibraryDocument, [LibraryItem<Value>]>,
+        selectedID: Value.ID?
+    ) where Value: Codable & Equatable & Identifiable & Sendable,
+        Value.ID: Codable & Hashable & Sendable {
+        guard let selectedID,
+              let index = document[keyPath: keyPath].firstIndex(where: { $0.id == selectedID })
+        else { return }
+        document[keyPath: keyPath][index].isLocked = false
         persistOrBlock()
     }
 

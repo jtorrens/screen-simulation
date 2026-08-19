@@ -82,7 +82,6 @@ fn request(
             shutter_close: screen_contracts::RationalTime::new(1, 96).expect("valid close"),
             shutter_motion: screen_application::ResolvedShutterMotionSnapshot {
                 temporal_samples: 1,
-                readout: screen_application::SensorReadout::Global,
                 neutral_density_stops: 0.0,
                 noise_seed: 0,
             },
@@ -90,6 +89,9 @@ fn request(
             computational_capture: screen_sensor::ComputationalCaptureProfile::SINGLE_EXPOSURE,
             computational_character_strength: 0.0,
             sensor: screen_sensor::SensorProfile::REFERENCE,
+            sensor_region: screen_sensor::SensorRegion::full(
+                screen_sensor::SensorProfile::REFERENCE,
+            ),
             radiometric_calibration: screen_application::CameraRadiometricCalibration::REFERENCE,
             sensor_enabled: false,
             sensor_noise_amount: 0.0,
@@ -404,55 +406,13 @@ fn exact_shutter_schedule_preserves_bounds_for_one_and_many_samples() {
     let open = screen_contracts::RationalTime::new(1_001, 24_000).expect("open");
     let close = screen_contracts::RationalTime::new(2_002, 24_000).expect("close");
     for count in [1, 7] {
-        let schedule = screen_application::physical_shutter_schedule(
-            open,
-            close,
-            count,
-            screen_application::SensorReadout::Global,
-            4,
-        )
-        .expect("global schedule");
+        let schedule = screen_application::physical_shutter_schedule(open, close, count)
+            .expect("global schedule");
         assert_eq!(schedule.len(), usize::from(count));
         assert_eq!(schedule.first().expect("first").start, open);
         assert_eq!(schedule.last().expect("last").end, close);
         assert!(schedule.windows(2).all(|pair| pair[0].end == pair[1].start));
     }
-}
-
-#[test]
-fn rolling_schedule_is_row_ordered_and_direction_reversible() {
-    let open = screen_contracts::RationalTime::new(-1, 48).expect("open");
-    let close = screen_contracts::RationalTime::new(1, 48).expect("close");
-    let readout = screen_contracts::RationalTime::new(1, 24).expect("readout");
-    let top = screen_application::physical_shutter_schedule(
-        open,
-        close,
-        2,
-        screen_application::SensorReadout::Rolling {
-            duration: readout,
-            direction: screen_application::RollingDirection::TopToBottom,
-        },
-        3,
-    )
-    .expect("top-down schedule");
-    let bottom = screen_application::physical_shutter_schedule(
-        open,
-        close,
-        2,
-        screen_application::SensorReadout::Rolling {
-            duration: readout,
-            direction: screen_application::RollingDirection::BottomToTop,
-        },
-        3,
-    )
-    .expect("bottom-up schedule");
-    assert_eq!(top.len(), 6);
-    assert_eq!(
-        top.iter().map(|sample| sample.row).collect::<Vec<_>>(),
-        [Some(0), Some(0), Some(1), Some(1), Some(2), Some(2)]
-    );
-    assert_eq!(top[0].time, bottom[4].time);
-    assert_eq!(top[4].time, bottom[0].time);
 }
 
 #[test]
@@ -468,6 +428,7 @@ fn raw_and_developed_intermediates_have_separate_frozen_domain_goldens() {
             native_height: 3,
             ..screen_sensor::SensorProfile::REFERENCE
         };
+        value.plan.sensor_region = screen_sensor::SensorRegion::full(value.plan.sensor);
         value.plan.sensor_enabled = true;
         value.plan.sensor_noise_amount = 0.0;
         value.plan.development = screen_camera::CameraDevelopment {

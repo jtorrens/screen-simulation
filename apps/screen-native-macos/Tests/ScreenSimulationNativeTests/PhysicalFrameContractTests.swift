@@ -123,14 +123,23 @@ import Testing
 }
 
 @Test func frameAndHashRejectMalformedBoundaryValues() throws {
-    _ = try PhysicalFrameSelection(frameIndex: 0, timeNumerator: 0, timeDenominator: 24)
+    _ = try PhysicalFrameSelection(
+        frameIndex: 0, timeNumerator: 0, timeDenominator: 24,
+        frameRateNumerator: 24, frameRateDenominator: 1
+    )
     _ = try PhysicalDimensions(width: 1, height: 1)
     _ = try PhysicalParameterHash(bytes: Array(repeating: 0, count: 32))
     #expect(throws: PhysicalContractError.self) {
-        try PhysicalFrameSelection(frameIndex: -1, timeNumerator: 0, timeDenominator: 24)
+        try PhysicalFrameSelection(
+            frameIndex: -1, timeNumerator: 0, timeDenominator: 24,
+            frameRateNumerator: 24, frameRateDenominator: 1
+        )
     }
     #expect(throws: PhysicalContractError.self) {
-        try PhysicalFrameSelection(frameIndex: 0, timeNumerator: 0, timeDenominator: 0)
+        try PhysicalFrameSelection(
+            frameIndex: 0, timeNumerator: 0, timeDenominator: 0,
+            frameRateNumerator: 24, frameRateDenominator: 1
+        )
     }
     #expect(throws: PhysicalContractError.self) {
         try PhysicalDimensions(width: 0, height: 1)

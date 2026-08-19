@@ -10,7 +10,7 @@ use metal::{
 use screen_application::{
     DeviceVfxAlphaMode, LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
     RasterPlacement, expose_physical_pipeline_raw, physical_environment_reference_sample_count,
-    physical_row_temporal_gain, placed_signal_area_fraction, resample_physical_device_matte,
+    placed_signal_area_fraction, resample_physical_device_matte,
 };
 use screen_cover::{EnvironmentPattern, IncidentEnvironment};
 use screen_geometry::{project_screen, projected_screen_gate_coverage};
@@ -662,8 +662,8 @@ impl MetalPhysicalPipeline {
         }
         let pad = |row: [f32; 3]| [row[0], row[1], row[2], 0.0];
         let publication = RawPublicationParams {
-            width: raw.width,
-            height: raw.height,
+            width: u32::from(raw.region.width),
+            height: u32::from(raw.region.height),
             maximum_code: (1_u32 << raw.adc_bits) - 1,
             _padding: 0,
         };
@@ -695,10 +695,10 @@ impl MetalPhysicalPipeline {
                 )
             })?;
             Some(CameraDevelopmentParams {
-                width: u32::from(sensor.native_width),
-                height: u32::from(sensor.native_height),
-                origin_x: 0,
-                origin_y: 0,
+                width: u32::from(raw.region.width),
+                height: u32::from(raw.region.height),
+                origin_x: u32::from(raw.region.origin_x),
+                origin_y: u32::from(raw.region.origin_y),
                 pattern,
                 maximum_code: publication.maximum_code,
                 analog_gain: sensor.analog_gain,
@@ -767,8 +767,8 @@ impl MetalPhysicalPipeline {
                     &physical_values,
                     physical.texture.width() as u32,
                     physical.texture.height() as u32,
-                    raw.width,
-                    raw.height,
+                    u32::from(raw.region.width),
+                    u32::from(raw.region.height),
                 )
             })
             .transpose()
@@ -802,8 +802,8 @@ impl MetalPhysicalPipeline {
         let descriptor = TextureDescriptor::new();
         descriptor.set_texture_type(MTLTextureType::D2);
         descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
-        descriptor.set_width(u64::from(raw.width));
-        descriptor.set_height(u64::from(raw.height));
+        descriptor.set_width(u64::from(raw.region.width));
+        descriptor.set_height(u64::from(raw.region.height));
         descriptor.set_storage_mode(MTLStorageMode::Shared);
         descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
         let output = device.new_texture(&descriptor);
@@ -874,7 +874,7 @@ impl MetalPhysicalPipeline {
         let thread_height =
             (publication_pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
         encoder.dispatch_threads(
-            MTLSize::new(u64::from(raw.width), u64::from(raw.height), 1),
+            MTLSize::new(u64::from(raw.region.width), u64::from(raw.region.height), 1),
             MTLSize::new(thread_width, thread_height, 1),
         );
         encoder.end_encoding();
@@ -905,17 +905,11 @@ impl MetalPhysicalPipeline {
         })
     }
 
-    /// Evaluates a Rust-scheduled global or row-addressed rolling sequence on
-    /// Metal and accumulates normalized quadrature weights per output row.
+    /// Evaluates a Rust-scheduled global-shutter sequence on Metal and accumulates normalized
+    /// quadrature weights across the complete output frame.
     pub fn evaluate_temporal(
         &self,
-        samples: &[(
-            &TextureRef,
-            &TextureRef,
-            PhysicalPipelineExecutionPlan,
-            f32,
-            Option<u32>,
-        )],
+        samples: &[(&TextureRef, &TextureRef, PhysicalPipelineExecutionPlan, f32)],
         report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -924,13 +918,7 @@ impl MetalPhysicalPipeline {
 
     pub fn evaluate_temporal_with_environment(
         &self,
-        samples: &[(
-            &TextureRef,
-            &TextureRef,
-            PhysicalPipelineExecutionPlan,
-            f32,
-            Option<u32>,
-        )],
+        samples: &[(&TextureRef, &TextureRef, PhysicalPipelineExecutionPlan, f32)],
         environment_acescg: Option<&TextureRef>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
@@ -952,13 +940,12 @@ impl MetalPhysicalPipeline {
         let mut stage_elapsed_nanoseconds = [0_u64; 16];
         let mut prefix_cache: Vec<(*const TextureRef, *const TextureRef, Texture, Texture)> =
             Vec::new();
-        for (index, (source, signal, plan, weight, row)) in samples.iter().enumerate() {
+        for (index, (source, signal, plan, weight)) in samples.iter().enumerate() {
             if is_cancelled() {
                 return Err(MetalPhysicalPipelineError::Cancelled);
             }
             let base = index as f32 / samples.len() as f32;
             let span = 0.85 / samples.len() as f32;
-            let row_range = row.map(|row| (row, 1));
             let mut physical_plan = plan.stopped_at_requested_intermediate();
             let evaluate_sensor = physical_plan.sensor_enabled
                 && Self::requests_sensor_evaluation(physical_plan.requested_intermediate);
@@ -987,7 +974,7 @@ impl MetalPhysicalPipeline {
                 signal,
                 environment_acescg,
                 physical_plan,
-                row_range,
+                None,
                 Some((&prefix_cache[prefix_index].2, &prefix_cache[prefix_index].3)),
                 None,
                 |progress| report_progress(base + progress * span),
@@ -1010,23 +997,8 @@ impl MetalPhysicalPipeline {
                     "temporal samples changed output geometry".to_owned(),
                 ));
             }
-            let local_weight_sum = if let Some(row) = row {
-                samples
-                    .iter()
-                    .filter(|sample| sample.4 == Some(*row))
-                    .map(|sample| sample.3)
-                    .sum::<f32>()
-            } else {
-                weight_sum
-            };
-            let reset = !samples[..index].iter().any(|sample| sample.4 == *row);
-            let (row_origin, row_count) = row_range.unwrap_or((0, output.height() as u32));
-            let weight_reset = [
-                *weight / local_weight_sum,
-                if reset { 1.0 } else { 0.0 },
-                row_origin as f32,
-                row_count as f32,
-            ];
+            let reset = index == 0;
+            let weight_reset = [*weight / weight_sum, if reset { 1.0 } else { 0.0 }];
             let command = self.queue.new_command_buffer();
             let encoder = command.new_compute_command_encoder();
             encoder.set_compute_pipeline_state(&self.accumulator);
@@ -1034,14 +1006,14 @@ impl MetalPhysicalPipeline {
             encoder.set_texture(1, Some(output));
             encoder.set_bytes(
                 0,
-                size_of::<[f32; 4]>() as u64,
+                size_of::<[f32; 2]>() as u64,
                 weight_reset.as_ptr().cast(),
             );
             let thread_width = self.accumulator.thread_execution_width();
             let thread_height =
                 (self.accumulator.max_total_threads_per_threadgroup() / thread_width).max(1);
             encoder.dispatch_threads(
-                MTLSize::new(output.width(), u64::from(row_count), 1),
+                MTLSize::new(output.width(), output.height(), 1),
                 MTLSize::new(thread_width, thread_height, 1),
             );
             encoder.end_encoding();
@@ -1186,6 +1158,7 @@ impl MetalPhysicalPipeline {
         })?;
         plan.sensor.native_width = virtual_width;
         plan.sensor.native_height = virtual_height;
+        plan.sensor_region = screen_sensor::SensorRegion::full(plan.sensor);
         plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
         plan.sensor_enabled = true;
         plan.rendering_intent_enabled = true;
@@ -1452,7 +1425,7 @@ impl MetalPhysicalPipeline {
                 plan.panel.eotf_gamma,
                 plan.panel.black_level_nits,
                 plan.panel.white_level_nits,
-                0.0,
+                plan.temporal_emission_gain,
             ],
             geometry: [
                 plan.panel.black_matrix_fraction,
@@ -1475,7 +1448,7 @@ impl MetalPhysicalPipeline {
             panel_size_meters: [
                 plan.panel.active_width.0,
                 plan.panel.active_height.0,
-                0.0,
+                plan.panel.corner_radius.0,
                 0.0,
             ],
             uniformity_amplitudes: [
@@ -1747,17 +1720,6 @@ impl MetalPhysicalPipeline {
             ],
         };
         params.levels[3] = plan.temporal_emission_gain;
-        let row_temporal_gains = (0..sampling.effective_height)
-            .map(|row| {
-                physical_row_temporal_gain(plan, row as usize, sampling.effective_height as usize)
-                    .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let row_temporal_buffer = device.new_buffer_with_data(
-            row_temporal_gains.as_ptr().cast(),
-            (row_temporal_gains.len() * size_of::<f32>()) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
         let generated_row_prefixes;
         let (source_row_prefix, device_row_prefix) = if let Some(prefixes) = row_prefixes {
             prefixes
@@ -1874,8 +1836,7 @@ impl MetalPhysicalPipeline {
                 size_of::<PhysicalPipelineParams>() as u64,
                 (&raw const params).cast(),
             );
-            encoder.set_buffer(1, Some(&row_temporal_buffer), 0);
-            encoder.set_buffer(2, Some(&veiling_gate_average), 0);
+            encoder.set_buffer(1, Some(&veiling_gate_average), 0);
             let thread_width = physical_pipeline.thread_execution_width();
             let thread_height =
                 (physical_pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
@@ -2147,7 +2108,6 @@ mod tests {
                 shutter_close: screen_contracts::RationalTime::new(1, 96).expect("valid close"),
                 shutter_motion: screen_application::ResolvedShutterMotionSnapshot {
                     temporal_samples: 1,
-                    readout: screen_application::SensorReadout::Global,
                     neutral_density_stops: 0.0,
                     noise_seed: 0,
                 },
@@ -2155,6 +2115,9 @@ mod tests {
                 computational_capture: screen_sensor::ComputationalCaptureProfile::SINGLE_EXPOSURE,
                 computational_character_strength: 0.0,
                 sensor: screen_sensor::SensorProfile::REFERENCE,
+                sensor_region: screen_sensor::SensorRegion::full(
+                    screen_sensor::SensorProfile::REFERENCE,
+                ),
                 radiometric_calibration:
                     screen_application::CameraRadiometricCalibration::REFERENCE,
                 sensor_enabled: false,
@@ -2812,14 +2775,18 @@ mod tests {
                 let gpu = backend
                     .evaluate(&source, &signal, plan, |_| {}, || false)
                     .expect("Metal scene result");
-                let maximum = read(&gpu.texture)
+                let gpu_values = read(&gpu.texture);
+                let (maximum_index, maximum, maximum_gpu, maximum_cpu) = gpu_values
                     .iter()
                     .zip(cpu.presentation_rgba())
-                    .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
-                    .fold(0.0_f32, f32::max);
+                    .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu))
+                    .enumerate()
+                    .map(|(index, (gpu, cpu))| (index, (gpu - cpu).abs(), *gpu, *cpu))
+                    .max_by(|left, right| left.1.total_cmp(&right.1))
+                    .expect("non-empty scene/lens comparison");
                 assert!(
                     maximum <= 3.0e-3,
-                    "scene/lens CPU/Metal deviation {maximum}; model={lens_evaluation_model:?}; amount={lens_amount}"
+                    "scene/lens CPU/Metal deviation {maximum} at component {maximum_index} (GPU {maximum_gpu}, CPU {maximum_cpu}); model={lens_evaluation_model:?}; amount={lens_amount}"
                 );
             }
         }
@@ -2898,8 +2865,8 @@ mod tests {
         let second = texture(&device, input.width, input.height, &second_values);
         let signal = texture(&device, input.width, input.height, &first_values);
         let scheduled = [
-            (&*first, &*signal, plan, 1.0_f32, None),
-            (&*second, &*signal, plan, 3.0_f32, None),
+            (&*first, &*signal, plan, 1.0_f32),
+            (&*second, &*signal, plan, 3.0_f32),
         ];
         let one = backend
             .evaluate_temporal(&scheduled, |_| {}, || false)
@@ -2943,8 +2910,8 @@ mod tests {
         let repeated = backend
             .evaluate_temporal(
                 &[
-                    (&*source, &*signal, plan, 1.0_f32, None),
-                    (&*source, &*signal, plan, 1.0_f32, None),
+                    (&*source, &*signal, plan, 1.0_f32),
+                    (&*source, &*signal, plan, 1.0_f32),
                 ],
                 |_| {},
                 || false,
@@ -2968,44 +2935,6 @@ mod tests {
     }
 
     #[test]
-    fn metal_rolling_executor_integrates_only_the_addressed_rows() {
-        let device = metal::Device::system_default().expect("test Mac has Metal");
-        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
-        let (input, mut plan) = fixture(
-            RasterPlacement::Stretch,
-            FlatPanelQuality::Draft,
-            StripeLayout::Rgb,
-            0.0,
-            0.0,
-        );
-        plan.screen_amount = 0.0;
-        plan.requested_intermediate = PhysicalIntermediate::SourceAcesCg;
-        plan.requested_width = input.width;
-        plan.requested_height = input.height;
-        let dark_values = vec![[0.0, 0.0, 0.0, 0.25]; input.acescg.len()];
-        let bright_values = vec![[1.0, 2.0, 3.0, 0.75]; input.acescg.len()];
-        let dark = texture(&device, input.width, input.height, &dark_values);
-        let bright = texture(&device, input.width, input.height, &bright_values);
-        let signal = texture(&device, input.width, input.height, &dark_values);
-        let scheduled = [
-            (&*dark, &*signal, plan, 1.0, Some(0)),
-            (&*bright, &*signal, plan, 3.0, Some(0)),
-            (&*dark, &*signal, plan, 3.0, Some(1)),
-            (&*bright, &*signal, plan, 1.0, Some(1)),
-        ];
-        let result = backend
-            .evaluate_temporal(&scheduled, |_| {}, || false)
-            .expect("rolling sequence");
-        let pixels = read(&result.texture);
-        for pixel in &pixels[..input.width as usize] {
-            assert_eq!(*pixel, [0.75, 1.5, 2.25, 0.625]);
-        }
-        for pixel in &pixels[input.width as usize..] {
-            assert_eq!(*pixel, [0.25, 0.5, 0.75, 0.375]);
-        }
-    }
-
-    #[test]
     fn sensor_cfa_noise_and_clipping_match_cpu_for_zero_one_and_artistic_amounts() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
@@ -3022,6 +2951,7 @@ mod tests {
                 native_height: plan.requested_height as u16,
                 ..screen_sensor::SensorProfile::REFERENCE
             };
+            plan.sensor_region = screen_sensor::SensorRegion::full(plan.sensor);
             plan.sensor_enabled = true;
             plan.sensor_noise_amount = noise_amount;
             plan.shutter_motion_amount = 1.0;
@@ -3090,6 +3020,7 @@ mod tests {
                 adc_bits: 12,
                 ..screen_sensor::SensorProfile::REFERENCE
             };
+            plan.sensor_region = screen_sensor::SensorRegion::full(plan.sensor);
             plan.sensor_enabled = true;
             plan.sensor_noise_amount = noise_amount;
             plan.requested_intermediate = intermediate;
@@ -3157,6 +3088,7 @@ mod tests {
             read_noise_electrons_rms: 500.0,
             ..screen_sensor::SensorProfile::REFERENCE
         };
+        authored.sensor_region = screen_sensor::SensorRegion::full(authored.sensor);
         authored.sensor_enabled = true;
         authored.sensor_noise_amount = 1.0;
         authored.requested_intermediate = PhysicalIntermediate::SensorCollection;
@@ -3248,6 +3180,7 @@ mod tests {
                 bayer_pattern: pattern,
                 ..screen_sensor::SensorProfile::REFERENCE
             };
+            plan.sensor_region = screen_sensor::SensorRegion::full(plan.sensor);
             plan.sensor_enabled = true;
             plan.sensor_noise_amount = 0.0;
             plan.development = screen_camera::CameraDevelopment {
@@ -3307,6 +3240,7 @@ mod tests {
             native_height: plan.requested_height as u16,
             ..screen_sensor::SensorProfile::REFERENCE
         };
+        plan.sensor_region = screen_sensor::SensorRegion::full(plan.sensor);
         plan.sensor_enabled = true;
         plan.sensor_noise_amount = 0.0;
         plan.development_enabled = true;
