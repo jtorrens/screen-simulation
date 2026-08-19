@@ -1,8 +1,85 @@
 import CoreGraphics
+import ScreenPhysicalBridge
 import simd
 import StudioColor
 import Testing
 @testable import ScreenSimulationNative
+
+private func setupPlan(
+    authored: PhysicalPipelineAuthoringState,
+    device: DeviceDefinition,
+    deliveryWidth: Int,
+    deliveryHeight: Int,
+    placement: String,
+    background: String = "black",
+    previewWidth: Int? = nil,
+    previewHeight: Int? = nil
+) -> ScreenSetupDiagnosticPlanV1 {
+    var plan = ScreenSetupDiagnosticPlanV1()
+    plan.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+    plan.camera_rotation_xyzw = (
+        Float(authored.cameraPose.quaternion[0]), Float(authored.cameraPose.quaternion[1]),
+        Float(authored.cameraPose.quaternion[2]), Float(authored.cameraPose.quaternion[3])
+    )
+    plan.camera_position = (
+        Float(authored.cameraPose.position[0]), Float(authored.cameraPose.position[1]),
+        Float(authored.cameraPose.position[2])
+    )
+    plan.screen_rotation_xyzw = (
+        Float(authored.screenPose.quaternion[0]), Float(authored.screenPose.quaternion[1]),
+        Float(authored.screenPose.quaternion[2]), Float(authored.screenPose.quaternion[3])
+    )
+    plan.screen_position = (
+        Float(authored.screenPose.position[0]), Float(authored.screenPose.position[1]),
+        Float(authored.screenPose.position[2])
+    )
+    plan.active_sensor_width = authored.sensor.nativeWidth
+    plan.active_sensor_height = authored.sensor.nativeHeight
+    plan.device_native_width = UInt32(device.nativeWidth)
+    plan.device_native_height = UInt32(device.nativeHeight)
+    plan.device_active_width_meters = Float(device.activeWidthMeters)
+    plan.device_active_height_meters = Float(device.activeHeightMeters)
+    plan.device_corner_radius_meters = Float(device.cornerRadiusMeters)
+    plan.focal_length_millimeters = Float(authored.sceneLens.focalLengthMillimeters)
+    plan.sensor_width_millimeters = Float(authored.sceneLens.sensorWidthMillimeters)
+    plan.sensor_height_millimeters = Float(authored.sceneLens.sensorHeightMillimeters)
+    plan.lens_shift = (
+        Float(authored.sceneLens.lensShift[0]), Float(authored.sceneLens.lensShift[1])
+    )
+    plan.focus_distance_meters = Float(authored.sceneLens.focusDistanceMeters)
+    plan.f_stop = Float(authored.sceneLens.fStop)
+    plan.lens_radial_distortion = (
+        Float(authored.sceneLens.radialDistortion[0]),
+        Float(authored.sceneLens.radialDistortion[1]),
+        Float(authored.sceneLens.radialDistortion[2])
+    )
+    plan.lens_tangential_distortion = (
+        Float(authored.sceneLens.tangentialDistortion[0]),
+        Float(authored.sceneLens.tangentialDistortion[1])
+    )
+    plan.environment_rotation_radians = (
+        Float(authored.environment.rotationXDegrees * .pi / 180),
+        Float(authored.environment.rotationYDegrees * .pi / 180)
+    )
+    plan.environment_finite_sphere = authored.environment.projectionMode == 1
+    plan.environment_sphere_center_meters = (
+        Float(authored.environment.sphereCenterMeters[0]),
+        Float(authored.environment.sphereCenterMeters[1]),
+        Float(authored.environment.sphereCenterMeters[2])
+    )
+    plan.environment_sphere_radius_meters = Float(authored.environment.sphereRadiusMeters)
+    plan.delivery_width = UInt32(deliveryWidth)
+    plan.delivery_height = UInt32(deliveryHeight)
+    plan.preview_width = UInt32(previewWidth ?? deliveryWidth)
+    plan.preview_height = UInt32(previewHeight ?? deliveryHeight)
+    plan.delivery_placement = switch placement {
+    case "fit": 0
+    case "one-to-one": 1
+    default: 2
+    }
+    plan.delivery_background = background == "transparent" ? 0 : 1
+    return plan
+}
 
 @Test func referenceMatchInvertsEveryDeliveryRasterPlacement() throws {
     let cameraWidth: UInt32 = 4_032
@@ -158,12 +235,14 @@ import Testing
     authored.sceneLens.lensShift = [0, 0]
 
     let renderer = try SetupFramingRenderer(device: source.texture.device)
+    let plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
+    )
     let result = try renderer.render(
         source: source, sourcePlacement: WorkspaceModel.SourcePlacement.stretch,
         referencePlacement: .stretch,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+        plan: plan
     )
     let frame = result.frame
     let values = try display.readLinearRGBA(frame)
@@ -232,21 +311,20 @@ import Testing
     authored.sceneLens.lensShift = [0.03, -0.02]
     authored.sceneLens.radialDistortion = [-0.08, 0.015, -0.001]
     authored.sceneLens.tangentialDistortion = [0.002, -0.001]
+    let plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 3_840, deliveryHeight: 2_160,
+        placement: "fill-crop", previewWidth: 1_280, previewHeight: 720
+    )
 
     let expected = SIMD2<Double>(0.23, 0.71)
     let projected = try #require(SetupFramingRenderer.projectedDevicePoint(
         u: Float(expected.x), v: Float(expected.y),
-        authored: authored, device: device,
-        deliveryWidth: 3_840, deliveryHeight: 2_160,
-        deliveryPlacement: 2,
-        outputWidth: 1_280, outputHeight: 720,
+        plan: plan,
         applyLensDistortion: true
     ))
     let recovered = try #require(SetupFramingRenderer.deviceUV(
-        at: projected, authored: authored, device: device,
-        deliveryWidth: 3_840, deliveryHeight: 2_160,
-        deliveryPlacement: 2,
-        outputWidth: 1_280, outputHeight: 720
+        at: projected, plan: plan
     ))
     #expect(abs(recovered.x - expected.x) < 0.000_1)
     #expect(abs(recovered.y - expected.y) < 0.000_1)
@@ -303,11 +381,14 @@ import Testing
     authored.sceneLens.tangentialDistortion = [0.001, -0.0008]
 
     let renderer = try SetupFramingRenderer(device: source.texture.device)
+    var plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fit"
+    )
     let result = try renderer.renderReferenceMatch(
         source: source, reference: reference, sourcePlacement: .stretch,
         referencePlacement: .fit,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180, deliveryPlacementID: "fit"
+        plan: plan
     )
     #expect(result.frame.width == 320)
     #expect(result.frame.height == 180)
@@ -363,11 +444,14 @@ import Testing
     authored.cameraPose.position = [moved.position.x, moved.position.y, moved.position.z]
     authored.cameraPose.quaternion = [moved.orientation.imag.x, moved.orientation.imag.y,
                                       moved.orientation.imag.z, moved.orientation.real]
+    plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fit"
+    )
     let movedResult = try renderer.renderReferenceMatch(
         source: source, reference: reference, sourcePlacement: .stretch,
         referencePlacement: .fit,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180, deliveryPlacementID: "fit"
+        plan: plan
     )
     #expect(hypot(movedResult.corners[0].x - anchorTarget.x,
                   movedResult.corners[0].y - anchorTarget.y) < 0.01)
@@ -402,8 +486,7 @@ import Testing
     let composite = try renderer.renderReferenceComposite(
         cameraResult: cameraResult, reference: reference,
         referencePlacement: .fit,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180, deliveryPlacementID: "fit"
+        plan: plan
     )
     let compositeValues = try display.readLinearRGBA(composite.frame)
     let referenceValues = try display.readLinearRGBA(reference)
@@ -436,9 +519,7 @@ import Testing
     let deviceOnly = try renderer.renderCameraComposite(
         cameraResult: cameraResult, reference: nil,
         referencePlacement: .fit,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fit", deliveryBackgroundID: "black"
+        plan: plan
     )
     let deviceOnlyValues = try display.readLinearRGBA(deviceOnly.frame)
     let deviceOnlyPixels = stride(from: 0, to: deviceOnlyValues.count, by: 4).map {
@@ -465,8 +546,7 @@ import Testing
     let alignedComposite = try renderer.renderReferenceComposite(
         cameraResult: aligned, reference: reference,
         referencePlacement: .fit,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180, deliveryPlacementID: "fit",
+        plan: plan,
         deliveryAligned: true
     )
     let alignedSourceValues = try display.readLinearRGBA(aligned)
@@ -530,27 +610,33 @@ import Testing
     authored.sceneLens.lensShift = [0, 0]
 
     let renderer = try SetupFramingRenderer(device: source.texture.device)
+    let fitPlan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 240, placement: "fit"
+    )
+    let oneToOnePlan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 240, placement: "one-to-one"
+    )
+    let interactivePlan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 240, placement: "fit",
+        previewWidth: 160, previewHeight: 120
+    )
     let fit = try renderer.render(
         source: source, sourcePlacement: .stretch,
         referencePlacement: .stretch,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 240,
-        deliveryPlacementID: "fit", deliveryBackgroundID: "black"
+        plan: fitPlan
     )
     let oneToOne = try renderer.render(
         source: source, sourcePlacement: .stretch,
         referencePlacement: .stretch,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 240,
-        deliveryPlacementID: "one-to-one", deliveryBackgroundID: "black"
+        plan: oneToOnePlan
     )
     let interactive = try renderer.render(
         source: source, sourcePlacement: .stretch,
         referencePlacement: .stretch,
-        device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 240,
-        deliveryPlacementID: "fit", deliveryBackgroundID: "black",
-        previewWidth: 160, previewHeight: 120
+        plan: interactivePlan
     )
 
     #expect(fit.boundary.count == 4)
@@ -606,10 +692,12 @@ import Testing
     authored.environment.sphereRadiusMeters = 5
 
     let renderer = try SetupFramingRenderer(device: environment.texture.device)
+    var plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
+    )
     let base = try renderer.renderEnvironment(
-        environment: environment, device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+        environment: environment, plan: plan
     )
     let basePixels = try display.readLinearRGBA(base.frame)
     let corner = 0
@@ -619,10 +707,12 @@ import Testing
 
     authored.cameraPose.position[0] += 0.4
     authored.screenPose.position[0] += 0.4
+    plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
+    )
     let translated = try renderer.renderEnvironment(
-        environment: environment, device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+        environment: environment, plan: plan
     )
     let translatedPixels = try display.readLinearRGBA(translated.frame)
     #expect(basePixels.count == translatedPixels.count)
@@ -630,10 +720,12 @@ import Testing
     #expect(translatedPixels[corner + 2] > 0)
 
     authored.environment.sphereCenterMeters = [0.4, 0, 0]
+    plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
+    )
     let coTranslated = try renderer.renderEnvironment(
-        environment: environment, device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+        environment: environment, plan: plan
     )
     let coTranslatedPixels = try display.readLinearRGBA(coTranslated.frame)
     #expect(zip(basePixels, coTranslatedPixels).allSatisfy { abs($0 - $1) < 0.000_1 })
@@ -667,10 +759,12 @@ import Testing
     authored.environment.projectionMode = 0
 
     let renderer = try SetupFramingRenderer(device: environment.texture.device)
+    let plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
+    )
     let result = try renderer.renderEnvironment(
-        environment: environment, device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+        environment: environment, plan: plan
     )
     let values = try display.readLinearRGBA(result.frame)
     let outside = 0
@@ -712,10 +806,12 @@ import Testing
     authored.sceneLens.tangentialDistortion = [0.01, -0.005]
 
     let renderer = try SetupFramingRenderer(device: source.texture.device)
+    let plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
+    )
     let result = try renderer.renderFocus(
-        source: source, device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+        source: source, plan: plan
     )
     let values = try display.readLinearRGBA(result.frame)
     let luminance = stride(from: 0, to: values.count, by: 4).map { values[$0] }
@@ -762,10 +858,12 @@ import Testing
         centerX: 0.68, centerY: 0.31, zoom: 2.4, rollDegrees: 17
     )
     let setup = try SetupFramingRenderer(device: environment.texture.device)
+    var plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
+    )
     let planar = try setup.renderEnvironment(
-        environment: environment, device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black",
+        environment: environment, plan: plan,
         planarFraming: framing.shaderValue
     )
     let baked = try EnvironmentReflectionReprojector(device: environment.texture.device).render(
@@ -773,10 +871,12 @@ import Testing
     )
     authored.environment.rotationXDegrees = 0
     authored.environment.rotationYDegrees = 0
+    plan = setupPlan(
+        authored: authored, device: device,
+        deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
+    )
     let reflected = try setup.renderEnvironment(
-        environment: baked, device: device, pipeline: authored,
-        deliveryWidth: 320, deliveryHeight: 180,
-        deliveryPlacementID: "fill-crop", deliveryBackgroundID: "black"
+        environment: baked, plan: plan
     )
     let a = try display.readLinearRGBA(planar.frame)
     let b = try display.readLinearRGBA(reflected.frame)

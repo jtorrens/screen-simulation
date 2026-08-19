@@ -342,6 +342,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var status = "Preparado"
     @Published var metalFrame: StudioColorMetalFrame?
     private var publishedSceneIdentity: PublishedSceneIdentity?
+    private var publishedResolvedSceneFrame: ResolvedSceneFrame?
     @Published private(set) var setupDeviceBoundary: [CGPoint] = []
     @Published private(set) var setupSensorGateBoundary: [CGPoint] = []
     @Published private(set) var focusSetupTarget: CGPoint?
@@ -1857,6 +1858,7 @@ final class WorkspaceModel: ObservableObject {
         // re-sampled by Rust at this scale and the Device anchor is committed from the same
         // gesture-start solution. Image and overlay can remain on one resolved identity.
         publishedSceneIdentity = nil
+        publishedResolvedSceneFrame = nil
         trackingMetersPerSourceUnit = metersPerSourceUnit
         commitDeviceNavigationPose(devicePose)
     }
@@ -3575,11 +3577,13 @@ final class WorkspaceModel: ObservableObject {
 
     private var trackingSourceCameraPosition: SIMD3<Double> {
         guard let scale = trackingMetersPerSourceUnit, scale > 0,
-              let authored = try? resolveSceneFrame(currentFrame).authored else { return .zero }
+              let resolved = publishedResolvedSceneFrame,
+              publishedSceneIdentity == PublishedSceneIdentity(resolved)
+        else { return .zero }
         return SIMD3(
-            authored.cameraPose.position[0] / scale,
-            authored.cameraPose.position[1] / scale,
-            authored.cameraPose.position[2] / scale
+            resolved.authored.cameraPose.position[0] / scale,
+            resolved.authored.cameraPose.position[1] / scale,
+            resolved.authored.cameraPose.position[2] / scale
         )
     }
 
@@ -3867,11 +3871,13 @@ final class WorkspaceModel: ObservableObject {
         // Identity is committed before the texture. `metalFrame` is the Viewer commit marker,
         // so SwiftUI can never observe a new image with the prior scene overlay.
         publishedSceneIdentity = PublishedSceneIdentity(scene)
+        publishedResolvedSceneFrame = scene
         metalFrame = frame
     }
 
     private func publishUnresolvedFrame(_ frame: StudioColorMetalFrame?) {
         publishedSceneIdentity = nil
+        publishedResolvedSceneFrame = nil
         metalFrame = frame
     }
 
@@ -3893,13 +3899,15 @@ final class WorkspaceModel: ObservableObject {
     /// Every renderer must consume this result rather than applying tracking independently.
     private func resolveSceneFrame(
         _ frame: Int,
-        temporalSamplesOverride: UInt16? = nil
+        temporalSamplesOverride: UInt16? = nil,
+        authoredOverride: PhysicalPipelineAuthoringState? = nil
     ) throws -> ResolvedSceneFrame {
         guard let selectedDevice = resolvedDevice,
               let authoringSelection = testAuthoringSelection,
-              var authored = basePhysicalAuthoringState else {
+              let baseAuthoring = basePhysicalAuthoringState else {
             throw DeviceDomainError.invalidPhysicalProfile("La escena no tiene un Device resuelto.")
         }
+        var authored = authoredOverride ?? baseAuthoring
         if let temporalSamplesOverride {
             guard (1...64).contains(temporalSamplesOverride) else {
                 throw DeviceDomainError.invalidPhysicalProfile(
@@ -3942,7 +3950,8 @@ final class WorkspaceModel: ObservableObject {
         let pipeline = try authored.resolvedPipeline().resolving(contributions: contributions)
         let revision = physicalModel.parameterRevision
         let resolver: RustSceneFrameResolver
-        if let cachedSceneResolver,
+        if authoredOverride == nil,
+           let cachedSceneResolver,
            cachedSceneResolver.revision == revision,
            cachedSceneResolver.frameRate == exactFrameRate,
            cachedSceneResolver.temporalSamplesOverride == temporalSamplesOverride {
@@ -3961,12 +3970,14 @@ final class WorkspaceModel: ObservableObject {
                 autofocusTargetU: authoringSelection.autofocusTargetU,
                 autofocusTargetV: authoringSelection.autofocusTargetV
             )
-            cachedSceneResolver = .init(
-                revision: revision,
-                frameRate: exactFrameRate,
-                temporalSamplesOverride: temporalSamplesOverride,
-                resolver: resolver
-            )
+            if authoredOverride == nil {
+                cachedSceneResolver = .init(
+                    revision: revision,
+                    frameRate: exactFrameRate,
+                    temporalSamplesOverride: temporalSamplesOverride,
+                    resolver: resolver
+                )
+            }
         }
         let raw = try resolver.resolve(selection)
         Self.applyResolvedScene(raw, to: &authored)
@@ -4059,18 +4070,14 @@ final class WorkspaceModel: ObservableObject {
         guard !sources.isEmpty,
               let frame = metalFrame,
               let scale = trackingMetersPerSourceUnit,
-              let resolved = try? resolveSceneFrame(currentFrame),
+              let resolved = publishedResolvedSceneFrame,
               publishedSceneIdentity == PublishedSceneIdentity(resolved)
         else { return [] }
         let deliveryWidth = Int(testAuthoringSelection?.deliveryWidth ?? UInt32(frame.width))
         let deliveryHeight = Int(testAuthoringSelection?.deliveryHeight ?? UInt32(frame.height))
-        let placement: UInt32
-        switch testAuthoringSelection?.deliveryPlacementID ?? "fit" {
-        case "fit": placement = 0
-        case "fill-crop": placement = 1
-        case "one-to-one": placement = 2
-        default: return []
-        }
+        guard let placement = Self.deliveryPlacementCode(
+            testAuthoringSelection?.deliveryPlacementID ?? "fit"
+        ) else { return [] }
         return (try? resolved.resolver.resolveTrackingOverlay(
             frame: resolved.selection,
             sourcePoints: sources,
@@ -4496,16 +4503,20 @@ final class WorkspaceModel: ObservableObject {
                         device: camera.texture.device
                     )
                 }
+                let plan = try setupDiagnosticPlan(
+                    scene: resolvedSceneFrame,
+                    deliveryWidth: Int(selection.deliveryWidth),
+                    deliveryHeight: Int(selection.deliveryHeight),
+                    previewWidth: Int(selection.deliveryWidth),
+                    previewHeight: Int(selection.deliveryHeight),
+                    deliveryPlacementID: selection.deliveryPlacementID,
+                    deliveryBackgroundID: selection.deliveryBackgroundID
+                )
                 return try setupFramingRenderer!.renderCameraComposite(
                     cameraResult: camera,
                     reference: reference,
                     referencePlacement: referencePlacement,
-                    device: resolvedSceneFrame.device.definition,
-                    pipeline: resolvedSceneFrame.authored,
-                    deliveryWidth: Int(selection.deliveryWidth),
-                    deliveryHeight: Int(selection.deliveryHeight),
-                    deliveryPlacementID: selection.deliveryPlacementID,
-                    deliveryBackgroundID: selection.deliveryBackgroundID
+                    plan: plan
                 ).frame
             }
         }
@@ -5159,6 +5170,7 @@ final class WorkspaceModel: ObservableObject {
         recordingOutputExecution = nil
         setupFramingRenderer = nil
         publishedSceneIdentity = nil
+        publishedResolvedSceneFrame = nil
 
         environmentRadianceFrame = staged.environmentRadianceFrame
         environmentSourceACEScgFrame = staged.environmentSourceACEScgFrame
@@ -6394,9 +6406,9 @@ final class WorkspaceModel: ObservableObject {
     ) {
         guard let sourceACEScgFrame else { return }
         do {
-            let resolved = try resolveSceneFrame(currentFrame)
-            let authored = authoredOverride ?? resolved.authored
-            let device = resolved.device.definition
+            let resolved = try resolveSceneFrame(
+                currentFrame, authoredOverride: authoredOverride
+            )
             let started = CACurrentMediaTime()
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: sourceACEScgFrame.texture.device)
@@ -6419,26 +6431,22 @@ final class WorkspaceModel: ObservableObject {
             } else {
                 (nil, nil)
             }
+            let plan = try setupDiagnosticPlan(
+                scene: resolved,
+                deliveryWidth: width,
+                deliveryHeight: height,
+                previewWidth: previewSize.width ?? width,
+                previewHeight: previewSize.height ?? height,
+                deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
+                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black"
+            )
             let result = try setupFramingRenderer!.render(
                 source: sourceACEScgFrame,
                 sourcePlacement: sourcePlacement,
                 referencePlacement: .stretch,
-                device: device,
-                pipeline: authored,
-                deliveryWidth: width,
-                deliveryHeight: height,
-                deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
-                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black",
-                previewWidth: previewSize.width,
-                previewHeight: previewSize.height
+                plan: plan
             )
-            if authoredOverride == nil {
-                publishSceneFrame(result.frame, scene: resolved)
-            } else {
-                // A transient navigation preview is not a materialized scene frame. Never
-                // certify it with the stable scene identity or draw a stable overlay on it.
-                publishUnresolvedFrame(result.frame)
-            }
+            publishSceneFrame(result.frame, scene: resolved)
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
             if let selection,
@@ -6485,6 +6493,35 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    private func setupDiagnosticPlan(
+        scene: ResolvedSceneFrame,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        previewWidth: Int,
+        previewHeight: Int,
+        deliveryPlacementID: String,
+        deliveryBackgroundID: String
+    ) throws -> ScreenSetupDiagnosticPlanV1 {
+        guard let placement = Self.deliveryPlacementCode(deliveryPlacementID) else {
+            throw SetupFramingError.invalidContract
+        }
+        let background: UInt32 = switch deliveryBackgroundID {
+        case "transparent": 0
+        case "black": 1
+        default: throw SetupFramingError.invalidContract
+        }
+        return try scene.resolver.prepareSetupDiagnostic(
+            frame: scene.selection,
+            deliveryWidth: deliveryWidth,
+            deliveryHeight: deliveryHeight,
+            previewWidth: previewWidth,
+            previewHeight: previewHeight,
+            deliveryPlacement: placement,
+            deliveryBackground: background,
+            expectedRevision: scene.revision
+        )
+    }
+
     private func publishReferenceMatchSetup(
         resetTargetsToVisibleFrame: Bool,
         authoredOverride: PhysicalPipelineAuthoringState? = nil
@@ -6493,24 +6530,29 @@ final class WorkspaceModel: ObservableObject {
               let source = sourceACEScgFrame
         else { return }
         do {
-            let resolved = try resolveSceneFrame(currentFrame)
-            let authored = authoredOverride ?? resolved.authored
-            let device = resolved.device.definition
+            let resolved = try resolveSceneFrame(
+                currentFrame, authoredOverride: authoredOverride
+            )
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: source.texture.device)
             }
             let delivery = referenceDeliveryRasterSize
             let projectionPlacementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
+            let plan = try setupDiagnosticPlan(
+                scene: resolved,
+                deliveryWidth: delivery.width,
+                deliveryHeight: delivery.height,
+                previewWidth: delivery.width,
+                previewHeight: delivery.height,
+                deliveryPlacementID: projectionPlacementID,
+                deliveryBackgroundID: "black"
+            )
             let result = try setupFramingRenderer!.renderReferenceMatch(
                 source: source,
                 reference: reference,
                 sourcePlacement: sourcePlacement,
                 referencePlacement: referencePlacement,
-                device: device,
-                pipeline: authored,
-                deliveryWidth: delivery.width,
-                deliveryHeight: delivery.height,
-                deliveryPlacementID: projectionPlacementID
+                plan: plan
             )
             referenceMatchProjectedCorners = result.corners
             if resetTargetsToVisibleFrame {
@@ -6523,11 +6565,7 @@ final class WorkspaceModel: ObservableObject {
             // Publish the texture last. SwiftUI may render immediately on any
             // @Published mutation; by making the frame the commit marker the
             // Viewer can never observe a new texture with prior/empty handles.
-            if authoredOverride == nil {
-                publishSceneFrame(result.frame, scene: resolved)
-            } else {
-                publishUnresolvedFrame(result.frame)
-            }
+            publishSceneFrame(result.frame, scene: resolved)
             physicalPublicationSummary = referenceMatchEnabled
                 ? "Match referencia · referencia + Device rígido + cámara"
                 : "Referencia visible · cámara libre"
@@ -6549,15 +6587,20 @@ final class WorkspaceModel: ObservableObject {
                 setupFramingRenderer = try SetupFramingRenderer(device: foreground.texture.device)
             }
             let delivery = referenceDeliveryRasterSize
+            let plan = try setupDiagnosticPlan(
+                scene: resolved,
+                deliveryWidth: delivery.width,
+                deliveryHeight: delivery.height,
+                previewWidth: delivery.width,
+                previewHeight: delivery.height,
+                deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit",
+                deliveryBackgroundID: "black"
+            )
             let result = try setupFramingRenderer!.renderReferenceComposite(
                 cameraResult: foreground,
                 reference: reference,
                 referencePlacement: referencePlacement,
-                device: resolved.device.definition,
-                pipeline: resolved.authored,
-                deliveryWidth: delivery.width,
-                deliveryHeight: delivery.height,
-                deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit",
+                plan: plan,
                 deliveryAligned: referenceForegroundIsDeliveryAligned
             )
             publishSceneFrame(result.frame, scene: resolved)
@@ -6688,29 +6731,38 @@ final class WorkspaceModel: ObservableObject {
     ) throws -> (
         pose: CameraNavigationPose, maximumErrorPixels: Double, rmsErrorPixels: Double
     ) {
-        guard let authored = physicalAuthoringState,
-              let device = modelDeviceDefinition ?? resolvedDevice?.definition,
-              referenceACEScgFrame != nil,
+        guard referenceACEScgFrame != nil,
               referenceMatchCorners.count == 4
         else { throw NativeMediaError.invalidRaster }
+        let scene = try resolveSceneFrame(currentFrame)
         let delivery = referenceDeliveryRasterSize
         let placementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
+        let plan = try setupDiagnosticPlan(
+            scene: scene,
+            deliveryWidth: delivery.width,
+            deliveryHeight: delivery.height,
+            previewWidth: delivery.width,
+            previewHeight: delivery.height,
+            deliveryPlacementID: placementID,
+            deliveryBackgroundID: "black"
+        )
         let gateTargets = try ReferenceMatchRasterMapping.cameraGateCorners(
             referenceMatchCorners,
             referenceWidth: delivery.width, referenceHeight: delivery.height,
-            cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
+            cameraWidth: plan.active_sensor_width, cameraHeight: plan.active_sensor_height,
             deliveryPlacementID: placementID
         )
         let gateSize = CGSize(
-            width: Int(authored.sensor.nativeWidth), height: Int(authored.sensor.nativeHeight)
+            width: Int(plan.active_sensor_width), height: Int(plan.active_sensor_height)
         )
-        let shift = SIMD2(authored.sceneLens.lensShift[0], authored.sceneLens.lensShift[1])
+        let shift = SIMD2(Double(plan.lens_shift.0), Double(plan.lens_shift.1))
         let radial = SIMD3(
-            authored.sceneLens.radialDistortion[0], authored.sceneLens.radialDistortion[1],
-            authored.sceneLens.radialDistortion[2]
+            Double(plan.lens_radial_distortion.0), Double(plan.lens_radial_distortion.1),
+            Double(plan.lens_radial_distortion.2)
         )
         let tangential = SIMD2(
-            authored.sceneLens.tangentialDistortion[0], authored.sceneLens.tangentialDistortion[1]
+            Double(plan.lens_tangential_distortion.0),
+            Double(plan.lens_tangential_distortion.1)
         )
         let pinholeTargets = try gateTargets.map { target in
             guard let point = ReferenceAnchorCameraMath.undistortedPinholePixel(
@@ -6722,18 +6774,18 @@ final class WorkspaceModel: ObservableObject {
             return point
         }
         let screenQuaternion = simd_quatd(
-            ix: authored.screenPose.quaternion[0], iy: authored.screenPose.quaternion[1],
-            iz: authored.screenPose.quaternion[2], r: authored.screenPose.quaternion[3]
+            ix: Double(plan.screen_rotation_xyzw.0), iy: Double(plan.screen_rotation_xyzw.1),
+            iz: Double(plan.screen_rotation_xyzw.2), r: Double(plan.screen_rotation_xyzw.3)
         ).normalized
         let geometry = CameraNavigationGeometry(
             center: SIMD3(
-                authored.screenPose.position[0], authored.screenPose.position[1],
-                authored.screenPose.position[2]
+                Double(plan.screen_position.0), Double(plan.screen_position.1),
+                Double(plan.screen_position.2)
             ),
             right: screenQuaternion.act(SIMD3(1, 0, 0)),
             up: screenQuaternion.act(SIMD3(0, 1, 0)),
-            halfWidth: device.activeWidthMeters * 0.5,
-            halfHeight: device.activeHeightMeters * 0.5
+            halfWidth: Double(plan.device_active_width_meters) * 0.5,
+            halfHeight: Double(plan.device_active_height_meters) * 0.5
         )
         var request = ScreenPlanarReferenceMatchV1()
         request.abi_version = SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION
@@ -6752,11 +6804,11 @@ final class WorkspaceModel: ObservableObject {
                 values[index * 2 + 1] = Float(target.y)
             }
         }
-        request.image_width = authored.sensor.nativeWidth
-        request.image_height = authored.sensor.nativeHeight
+        request.image_width = plan.active_sensor_width
+        request.image_height = plan.active_sensor_height
         request.focal_length_millimeters = Float(focalLengthMillimeters)
-        request.sensor_width_millimeters = Float(authored.sceneLens.sensorWidthMillimeters)
-        request.sensor_height_millimeters = Float(authored.sceneLens.sensorHeightMillimeters)
+        request.sensor_width_millimeters = plan.sensor_width_millimeters
+        request.sensor_height_millimeters = plan.sensor_height_millimeters
         withUnsafeMutableBytes(of: &request.lens_shift_xy) { bytes in
             let values = bytes.bindMemory(to: Float.self)
             values[0] = Float(shift.x)
@@ -6784,8 +6836,8 @@ final class WorkspaceModel: ObservableObject {
                 pose: pose, point: corner, imageSize: gateSize,
                 focalLengthMillimeters: focalLengthMillimeters,
                 sensorSizeMillimeters: CGSize(
-                    width: authored.sceneLens.sensorWidthMillimeters,
-                    height: authored.sceneLens.sensorHeightMillimeters
+                    width: Double(plan.sensor_width_millimeters),
+                    height: Double(plan.sensor_height_millimeters)
                 ),
                 lensShift: shift, radialDistortion: radial, tangentialDistortion: tangential
             ) else { throw ReferenceMatchError.unsolved("la pose resuelta no proyecta el Device") }
@@ -6794,7 +6846,7 @@ final class WorkspaceModel: ObservableObject {
         let projectedReference = try ReferenceMatchRasterMapping.referenceCorners(
             projectedGate,
             referenceWidth: delivery.width, referenceHeight: delivery.height,
-            cameraWidth: authored.sensor.nativeWidth, cameraHeight: authored.sensor.nativeHeight,
+            cameraWidth: plan.active_sensor_width, cameraHeight: plan.active_sensor_height,
             deliveryPlacementID: placementID
         )
         let errors = zip(projectedReference, referenceMatchCorners).map {
@@ -6813,9 +6865,9 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         do {
-            let resolved = try resolveSceneFrame(currentFrame)
-            let authored = authoredOverride ?? resolved.authored
-            let device = resolved.device.definition
+            let resolved = try resolveSceneFrame(
+                currentFrame, authoredOverride: authoredOverride
+            )
             let setupSource = environmentReflectionFramingEnabled
                 ? environmentReflectionFramingSourceFrame ?? environmentSourceACEScgFrame
                 : environmentSourceACEScgFrame
@@ -6825,22 +6877,22 @@ final class WorkspaceModel: ObservableObject {
             let selection = testAuthoringSelection
             let width = Int(selection?.deliveryWidth ?? UInt32(environmentSourceACEScgFrame.width))
             let height = Int(selection?.deliveryHeight ?? UInt32(environmentSourceACEScgFrame.height))
-            let result = try setupFramingRenderer!.renderEnvironment(
-                environment: setupSource,
-                device: device,
-                pipeline: authored,
+            let plan = try setupDiagnosticPlan(
+                scene: resolved,
                 deliveryWidth: width,
                 deliveryHeight: height,
+                previewWidth: width,
+                previewHeight: height,
                 deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
-                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black",
+                deliveryBackgroundID: selection?.deliveryBackgroundID ?? "black"
+            )
+            let result = try setupFramingRenderer!.renderEnvironment(
+                environment: setupSource,
+                plan: plan,
                 planarFraming: environmentReflectionFramingEnabled
                     ? environmentReflectionFraming.shaderValue : nil
             )
-            if authoredOverride == nil {
-                publishSceneFrame(result.frame, scene: resolved)
-            } else {
-                publishUnresolvedFrame(result.frame)
-            }
+            publishSceneFrame(result.frame, scene: resolved)
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
             status = environmentReflectionFramingEnabled
@@ -6862,9 +6914,9 @@ final class WorkspaceModel: ObservableObject {
     ) {
         guard let sourceACEScgFrame else { return }
         do {
-            let resolved = try resolveSceneFrame(currentFrame)
-            let authored = authoredOverride ?? resolved.authored
-            let device = resolved.device.definition
+            let resolved = try resolveSceneFrame(
+                currentFrame, authoredOverride: authoredOverride
+            )
             if setupFramingRenderer == nil {
                 setupFramingRenderer = try SetupFramingRenderer(device: sourceACEScgFrame.texture.device)
             }
@@ -6879,18 +6931,19 @@ final class WorkspaceModel: ObservableObject {
                         max(1, Int((Double(height) * scale).rounded())))
                 }()
             } else { (nil, nil) }
-            let result = try setupFramingRenderer!.renderFocus(
-                source: sourceACEScgFrame, device: device, pipeline: authored,
-                deliveryWidth: width, deliveryHeight: height,
+            let plan = try setupDiagnosticPlan(
+                scene: resolved,
+                deliveryWidth: width,
+                deliveryHeight: height,
+                previewWidth: previewSize.width ?? width,
+                previewHeight: previewSize.height ?? height,
                 deliveryPlacementID: selection?.deliveryPlacementID ?? "fit",
-                deliveryBackgroundID: "black",
-                previewWidth: previewSize.width, previewHeight: previewSize.height
+                deliveryBackgroundID: "black"
             )
-            if authoredOverride == nil {
-                publishSceneFrame(result.frame, scene: resolved)
-            } else {
-                publishUnresolvedFrame(result.frame)
-            }
+            let result = try setupFramingRenderer!.renderFocus(
+                source: sourceACEScgFrame, plan: plan
+            )
+            publishSceneFrame(result.frame, scene: resolved)
             setupDeviceBoundary = result.boundary
             setupSensorGateBoundary = result.sensorGateBoundary
             if let selection,

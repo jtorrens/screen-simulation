@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import simd
+import ScreenPhysicalBridge
 import StudioColor
 
 enum SetupFramingError: Error, LocalizedError {
@@ -78,28 +79,26 @@ final class SetupFramingRenderer {
         reference: StudioColorMetalFrame? = nil,
         sourcePlacement: WorkspaceModel.SourcePlacement,
         referencePlacement: WorkspaceModel.SourcePlacement,
-        device: DeviceDefinition,
-        pipeline authored: PhysicalPipelineAuthoringState,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacementID: String,
-        deliveryBackgroundID: String,
-        previewWidth: Int? = nil,
-        previewHeight: Int? = nil,
+        plan: ScreenSetupDiagnosticPlanV1,
         diagnosticMode: UInt32 = 0,
         environmentFraming: SIMD4<Float> = SIMD4(0.5, 0.5, 1, 0)
     ) throws -> Result {
-        let outputWidth = previewWidth ?? deliveryWidth
-        let outputHeight = previewHeight ?? deliveryHeight
-        guard deliveryWidth > 0, deliveryHeight > 0,
+        let deliveryWidth = Int(plan.delivery_width)
+        let deliveryHeight = Int(plan.delivery_height)
+        let outputWidth = Int(plan.preview_width)
+        let outputHeight = Int(plan.preview_height)
+        guard plan.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+              deliveryWidth > 0, deliveryHeight > 0,
               outputWidth > 0, outputHeight > 0,
-              authored.cameraPose.position.count == 3,
-              authored.cameraPose.quaternion.count == 4,
-              authored.screenPose.position.count == 3,
-              authored.screenPose.quaternion.count == 4,
-              authored.sceneLens.sensorWidthMillimeters > 0,
-              authored.sceneLens.sensorHeightMillimeters > 0,
-              authored.sceneLens.focalLengthMillimeters > 0
+              plan.active_sensor_width > 0, plan.active_sensor_height > 0,
+              plan.device_native_width > 0, plan.device_native_height > 0,
+              plan.device_active_width_meters > 0,
+              plan.device_active_height_meters > 0,
+              plan.sensor_width_millimeters > 0,
+              plan.sensor_height_millimeters > 0,
+              plan.focal_length_millimeters > 0,
+              plan.delivery_placement <= 2,
+              plan.delivery_background <= 1
         else { throw SetupFramingError.invalidContract }
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -114,49 +113,46 @@ final class SetupFramingRenderer {
               let encoder = command.makeComputeCommandEncoder()
         else { throw SetupFramingError.unavailableMetal }
 
-        let cameraQ = authored.cameraPose.quaternion.map(Float.init)
+        let cameraQ = [
+            plan.camera_rotation_xyzw.0, plan.camera_rotation_xyzw.1,
+            plan.camera_rotation_xyzw.2, plan.camera_rotation_xyzw.3,
+        ]
         let right = Self.rotate([1, 0, 0], by: cameraQ)
         let up = Self.rotate([0, 1, 0], by: cameraQ)
         let forward = Self.rotate([0, 0, -1], by: cameraQ)
-        let cameraRaster = authored.sensor
-        let deliveryPlacement: UInt32 = switch deliveryPlacementID {
-        case "fit": 0
-        case "one-to-one": 1
-        case "fill-crop": 2
-        default: throw SetupFramingError.invalidContract
-        }
+        let deliveryPlacement = plan.delivery_placement
         var parameters = Parameters(
             cameraPositionFocal: SIMD4(
-                Float(authored.cameraPose.position[0]), Float(authored.cameraPose.position[1]),
-                Float(authored.cameraPose.position[2]), Float(authored.sceneLens.focalLengthMillimeters)
+                plan.camera_position.0, plan.camera_position.1,
+                plan.camera_position.2, plan.focal_length_millimeters
             ),
             cameraRightSensorWidth: SIMD4(
-                right.x, right.y, right.z, Float(authored.sceneLens.sensorWidthMillimeters)
+                right.x, right.y, right.z, plan.sensor_width_millimeters
             ),
             cameraUpSensorHeight: SIMD4(
-                up.x, up.y, up.z, Float(authored.sceneLens.sensorHeightMillimeters)
+                up.x, up.y, up.z, plan.sensor_height_millimeters
             ),
             cameraForward: SIMD4(forward.x, forward.y, forward.z, 0),
             screenPositionWidth: SIMD4(
-                Float(authored.screenPose.position[0]), Float(authored.screenPose.position[1]),
-                Float(authored.screenPose.position[2]), Float(device.activeWidthMeters)
+                plan.screen_position.0, plan.screen_position.1,
+                plan.screen_position.2, plan.device_active_width_meters
             ),
             screenQuaternion: SIMD4(
-                Float(authored.screenPose.quaternion[0]), Float(authored.screenPose.quaternion[1]),
-                Float(authored.screenPose.quaternion[2]), Float(authored.screenPose.quaternion[3])
+                plan.screen_rotation_xyzw.0, plan.screen_rotation_xyzw.1,
+                plan.screen_rotation_xyzw.2, plan.screen_rotation_xyzw.3
             ),
             screenHeightShiftY: SIMD4(
-                Float(device.activeHeightMeters), Float(authored.sceneLens.lensShift[1]),
-                Float(device.cornerRadiusMeters), 0
+                plan.device_active_height_meters, plan.lens_shift.1,
+                plan.device_corner_radius_meters, 0
             ),
             raster: SIMD4(
                 UInt32(deliveryWidth), UInt32(deliveryHeight),
-                cameraRaster.nativeWidth, cameraRaster.nativeHeight
+                plan.active_sensor_width, plan.active_sensor_height
             ),
             previewRaster: SIMD4(UInt32(outputWidth), UInt32(outputHeight), 0, 0),
             sourceDevice: SIMD4(
                 UInt32(source.width), UInt32(source.height),
-                UInt32(device.nativeWidth), UInt32(device.nativeHeight)
+                plan.device_native_width, plan.device_native_height
             ),
             referenceRaster: SIMD4(
                 UInt32(reference?.width ?? source.width),
@@ -167,34 +163,34 @@ final class SetupFramingRenderer {
             modes: SIMD4(
                 Self.sourcePlacement(sourcePlacement),
                 deliveryPlacement,
-                deliveryBackgroundID == "transparent" ? 0 : 1,
+                plan.delivery_background,
                 diagnosticMode
             ),
             environment: SIMD4(
-                Float(authored.environment.rotationXDegrees * .pi / 180),
-                Float(authored.environment.rotationYDegrees * .pi / 180),
-                Float(authored.environment.projectionMode),
-                Float(authored.environment.sphereRadiusMeters)
+                plan.environment_rotation_radians.0,
+                plan.environment_rotation_radians.1,
+                plan.environment_finite_sphere ? 1 : 0,
+                plan.environment_sphere_radius_meters
             ),
             environmentCenter: SIMD4(
-                Float(authored.environment.sphereCenterMeters[0]),
-                Float(authored.environment.sphereCenterMeters[1]),
-                Float(authored.environment.sphereCenterMeters[2]), 0
+                plan.environment_sphere_center_meters.0,
+                plan.environment_sphere_center_meters.1,
+                plan.environment_sphere_center_meters.2, 0
             ),
             environmentFraming: environmentFraming,
             lensRadialTangential: SIMD4(
-                Float(authored.sceneLens.radialDistortion[0]),
-                Float(authored.sceneLens.radialDistortion[1]),
-                Float(authored.sceneLens.radialDistortion[2]),
-                Float(authored.sceneLens.tangentialDistortion[0])
+                plan.lens_radial_distortion.0,
+                plan.lens_radial_distortion.1,
+                plan.lens_radial_distortion.2,
+                plan.lens_tangential_distortion.0
             ),
             lensTangentialFocus: SIMD4(
-                Float(authored.sceneLens.tangentialDistortion[1]),
-                Float(authored.sceneLens.focusDistanceMeters),
-                Float(authored.sceneLens.fStop), 0
+                plan.lens_tangential_distortion.1,
+                plan.focus_distance_meters,
+                plan.f_stop, 0
             )
         )
-        parameters.cameraForward.w = Float(authored.sceneLens.lensShift[0])
+        parameters.cameraForward.w = plan.lens_shift.0
 
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(source.texture, index: 0)
@@ -214,26 +210,20 @@ final class SetupFramingRenderer {
         guard command.status == .completed else { throw SetupFramingError.commandFailed }
         let frame = StudioColorMetalFrame(texture: output)
         let boundary = Self.projectedBoundary(
-            authored: authored, device: device,
-            deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
-            deliveryPlacement: deliveryPlacement,
-            outputWidth: outputWidth, outputHeight: outputHeight,
+            plan: plan,
             applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
             sampleDistortedEdges: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
             roundedOutline: true
         )
         let corners = Self.projectedBoundary(
-            authored: authored, device: device,
-            deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
-            deliveryPlacement: deliveryPlacement,
-            outputWidth: outputWidth, outputHeight: outputHeight,
+            plan: plan,
             applyLensDistortion: diagnosticMode == 2 || diagnosticMode == 3 || diagnosticMode == 4,
             sampleDistortedEdges: false,
             roundedOutline: false
         )
         let sensorGateBoundary = Self.sensorGateBoundary(
-            cameraWidth: Int(cameraRaster.nativeWidth),
-            cameraHeight: Int(cameraRaster.nativeHeight),
+            cameraWidth: Int(plan.active_sensor_width),
+            cameraHeight: Int(plan.active_sensor_height),
             deliveryWidth: deliveryWidth,
             deliveryHeight: deliveryHeight,
             deliveryPlacement: deliveryPlacement,
@@ -253,27 +243,14 @@ final class SetupFramingRenderer {
         reference: StudioColorMetalFrame,
         sourcePlacement: WorkspaceModel.SourcePlacement,
         referencePlacement: WorkspaceModel.SourcePlacement,
-        device: DeviceDefinition,
-        pipeline authored: PhysicalPipelineAuthoringState,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacementID: String,
-        previewWidth: Int? = nil,
-        previewHeight: Int? = nil
+        plan: ScreenSetupDiagnosticPlanV1
     ) throws -> Result {
         try render(
             source: source,
             reference: reference,
             sourcePlacement: sourcePlacement,
             referencePlacement: referencePlacement,
-            device: device,
-            pipeline: authored,
-            deliveryWidth: deliveryWidth,
-            deliveryHeight: deliveryHeight,
-            deliveryPlacementID: deliveryPlacementID,
-            deliveryBackgroundID: "black",
-            previewWidth: previewWidth,
-            previewHeight: previewHeight,
+            plan: plan,
             diagnosticMode: 3
         )
     }
@@ -282,23 +259,14 @@ final class SetupFramingRenderer {
         cameraResult: StudioColorMetalFrame,
         reference: StudioColorMetalFrame,
         referencePlacement: WorkspaceModel.SourcePlacement,
-        device: DeviceDefinition,
-        pipeline authored: PhysicalPipelineAuthoringState,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacementID: String,
+        plan: ScreenSetupDiagnosticPlanV1,
         deliveryAligned: Bool = false
     ) throws -> Result {
         try renderCameraComposite(
             cameraResult: cameraResult,
             reference: reference,
             referencePlacement: referencePlacement,
-            device: device,
-            pipeline: authored,
-            deliveryWidth: deliveryWidth,
-            deliveryHeight: deliveryHeight,
-            deliveryPlacementID: deliveryPlacementID,
-            deliveryBackgroundID: "black",
+            plan: plan,
             deliveryAligned: deliveryAligned
         )
     }
@@ -307,12 +275,7 @@ final class SetupFramingRenderer {
         cameraResult: StudioColorMetalFrame,
         reference: StudioColorMetalFrame?,
         referencePlacement: WorkspaceModel.SourcePlacement,
-        device: DeviceDefinition,
-        pipeline authored: PhysicalPipelineAuthoringState,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacementID: String,
-        deliveryBackgroundID: String,
+        plan: ScreenSetupDiagnosticPlanV1,
         deliveryAligned: Bool = false
     ) throws -> Result {
         try render(
@@ -320,40 +283,21 @@ final class SetupFramingRenderer {
             reference: reference,
             sourcePlacement: .stretch,
             referencePlacement: referencePlacement,
-            device: device,
-            pipeline: authored,
-            deliveryWidth: deliveryWidth,
-            deliveryHeight: deliveryHeight,
-            deliveryPlacementID: deliveryPlacementID,
-            deliveryBackgroundID: deliveryBackgroundID,
+            plan: plan,
             diagnosticMode: deliveryAligned ? 5 : 4
         )
     }
 
     func renderEnvironment(
         environment: StudioColorMetalFrame,
-        device: DeviceDefinition,
-        pipeline authored: PhysicalPipelineAuthoringState,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacementID: String,
-        deliveryBackgroundID: String,
-        previewWidth: Int? = nil,
-        previewHeight: Int? = nil,
+        plan: ScreenSetupDiagnosticPlanV1,
         planarFraming: SIMD4<Float>? = nil
     ) throws -> Result {
         try render(
             source: environment,
             sourcePlacement: .stretch,
             referencePlacement: .stretch,
-            device: device,
-            pipeline: authored,
-            deliveryWidth: deliveryWidth,
-            deliveryHeight: deliveryHeight,
-            deliveryPlacementID: deliveryPlacementID,
-            deliveryBackgroundID: deliveryBackgroundID,
-            previewWidth: previewWidth,
-            previewHeight: previewHeight,
+            plan: plan,
             diagnosticMode: planarFraming == nil ? 1 : 6,
             environmentFraming: planarFraming ?? SIMD4(0.5, 0.5, 1, 0)
         )
@@ -361,23 +305,11 @@ final class SetupFramingRenderer {
 
     func renderFocus(
         source: StudioColorMetalFrame,
-        device: DeviceDefinition,
-        pipeline authored: PhysicalPipelineAuthoringState,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacementID: String,
-        deliveryBackgroundID: String,
-        previewWidth: Int? = nil,
-        previewHeight: Int? = nil
+        plan: ScreenSetupDiagnosticPlanV1
     ) throws -> Result {
         try render(
             source: source, sourcePlacement: .stretch,
-            referencePlacement: .stretch,
-            device: device, pipeline: authored,
-            deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
-            deliveryPlacementID: deliveryPlacementID,
-            deliveryBackgroundID: deliveryBackgroundID,
-            previewWidth: previewWidth, previewHeight: previewHeight,
+            referencePlacement: .stretch, plan: plan,
             diagnosticMode: 2
         )
     }
@@ -447,21 +379,15 @@ final class SetupFramingRenderer {
     }
 
     private static func projectedBoundary(
-        authored: PhysicalPipelineAuthoringState,
-        device: DeviceDefinition,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacement: UInt32,
-        outputWidth: Int,
-        outputHeight: Int,
+        plan: ScreenSetupDiagnosticPlanV1,
         applyLensDistortion: Bool,
         sampleDistortedEdges: Bool,
         roundedOutline: Bool
     ) -> [CGPoint] {
         let perimeter: [(Float, Float)]
-        if roundedOutline, device.cornerRadiusMeters > 0 {
-            let radiusX = Float(device.cornerRadiusMeters / device.activeWidthMeters)
-            let radiusY = Float(device.cornerRadiusMeters / device.activeHeightMeters)
+        if roundedOutline, plan.device_corner_radius_meters > 0 {
+            let radiusX = plan.device_corner_radius_meters / plan.device_active_width_meters
+            let radiusY = plan.device_corner_radius_meters / plan.device_active_height_meters
             let samplesPerCorner = sampleDistortedEdges ? 32 : 8
             let arcs: [(center: SIMD2<Float>, start: Float)] = [
                 (SIMD2(1 - radiusX, radiusY), -.pi / 2),
@@ -496,10 +422,7 @@ final class SetupFramingRenderer {
         return perimeter.compactMap { u, v in
             projectedDevicePoint(
                 u: u, v: v,
-                authored: authored, device: device,
-                deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight,
-                deliveryPlacement: deliveryPlacement,
-                outputWidth: outputWidth, outputHeight: outputHeight,
+                plan: plan,
                 applyLensDistortion: applyLensDistortion
             )
         }
@@ -508,33 +431,38 @@ final class SetupFramingRenderer {
     static func projectedDevicePoint(
         u: Float,
         v: Float,
-        authored: PhysicalPipelineAuthoringState,
-        device: DeviceDefinition,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacement: UInt32,
-        outputWidth: Int,
-        outputHeight: Int,
+        plan: ScreenSetupDiagnosticPlanV1,
         applyLensDistortion: Bool
     ) -> CGPoint? {
+        let deliveryWidth = Int(plan.delivery_width)
+        let deliveryHeight = Int(plan.delivery_height)
+        let outputWidth = Int(plan.preview_width)
+        let outputHeight = Int(plan.preview_height)
+        let deliveryPlacement = plan.delivery_placement
         guard u.isFinite, v.isFinite, deliveryWidth > 0, deliveryHeight > 0,
               outputWidth > 0, outputHeight > 0 else { return nil }
-        let cameraQ = authored.cameraPose.quaternion.map(Float.init)
-        let screenQ = authored.screenPose.quaternion.map(Float.init)
+        let cameraQ = [
+            plan.camera_rotation_xyzw.0, plan.camera_rotation_xyzw.1,
+            plan.camera_rotation_xyzw.2, plan.camera_rotation_xyzw.3,
+        ]
+        let screenQ = [
+            plan.screen_rotation_xyzw.0, plan.screen_rotation_xyzw.1,
+            plan.screen_rotation_xyzw.2, plan.screen_rotation_xyzw.3,
+        ]
         let camera = SIMD3<Float>(
-            Float(authored.cameraPose.position[0]), Float(authored.cameraPose.position[1]),
-            Float(authored.cameraPose.position[2])
+            plan.camera_position.0, plan.camera_position.1, plan.camera_position.2
         )
         let screen = SIMD3<Float>(
-            Float(authored.screenPose.position[0]), Float(authored.screenPose.position[1]),
-            Float(authored.screenPose.position[2])
+            plan.screen_position.0, plan.screen_position.1, plan.screen_position.2
         )
         let cameraRight = rotate([1, 0, 0], by: cameraQ)
         let cameraUp = rotate([0, 1, 0], by: cameraQ)
         let cameraForward = rotate([0, 0, -1], by: cameraQ)
         let screenRight = rotate([1, 0, 0], by: screenQ)
         let screenUp = rotate([0, 1, 0], by: screenQ)
-        let cameraSize = SIMD2<Float>(Float(authored.sensor.nativeWidth), Float(authored.sensor.nativeHeight))
+        let cameraSize = SIMD2<Float>(
+            Float(plan.active_sensor_width), Float(plan.active_sensor_height)
+        )
         let outputSize = SIMD2<Float>(Float(deliveryWidth), Float(deliveryHeight))
         let scale: Float = switch deliveryPlacement {
         case 0: min(outputSize.x / cameraSize.x, outputSize.y / cameraSize.y)
@@ -542,14 +470,14 @@ final class SetupFramingRenderer {
         default: 1
         }
         let offset = (outputSize - cameraSize * scale) * 0.5
-        let focal = Float(authored.sceneLens.focalLengthMillimeters)
-        let sensorWidth = Float(authored.sceneLens.sensorWidthMillimeters)
-        let sensorHeight = Float(authored.sceneLens.sensorHeightMillimeters)
-        let shiftX = Float(authored.sceneLens.lensShift[0])
-        let shiftY = Float(authored.sceneLens.lensShift[1])
+        let focal = plan.focal_length_millimeters
+        let sensorWidth = plan.sensor_width_millimeters
+        let sensorHeight = plan.sensor_height_millimeters
+        let shiftX = plan.lens_shift.0
+        let shiftY = plan.lens_shift.1
         let world = screen
-            + screenRight * ((u - 0.5) * Float(device.activeWidthMeters))
-            + screenUp * ((0.5 - v) * Float(device.activeHeightMeters))
+            + screenRight * ((u - 0.5) * plan.device_active_width_meters)
+            + screenUp * ((0.5 - v) * plan.device_active_height_meters)
         let relative = world - camera
         let depth = simd_dot(relative, cameraForward)
         guard depth > 0 else { return nil }
@@ -558,8 +486,8 @@ final class SetupFramingRenderer {
         let distorted = applyLensDistortion
             ? Self.distort(
                 SIMD2(idealX, idealY),
-                radial: authored.sceneLens.radialDistortion,
-                tangential: authored.sceneLens.tangentialDistortion
+                radial: Self.radial(plan),
+                tangential: Self.tangential(plan)
             )
             : SIMD2(idealX, idealY)
         let observed = SIMD2<Float>(distorted.x - 2 * shiftX, -distorted.y - 2 * shiftY)
@@ -576,18 +504,19 @@ final class SetupFramingRenderer {
 
     static func deviceUV(
         at point: CGPoint,
-        authored: PhysicalPipelineAuthoringState,
-        device: DeviceDefinition,
-        deliveryWidth: Int,
-        deliveryHeight: Int,
-        deliveryPlacement: UInt32,
-        outputWidth: Int,
-        outputHeight: Int
+        plan: ScreenSetupDiagnosticPlanV1
     ) -> SIMD2<Double>? {
+        let deliveryWidth = Int(plan.delivery_width)
+        let deliveryHeight = Int(plan.delivery_height)
+        let outputWidth = Int(plan.preview_width)
+        let outputHeight = Int(plan.preview_height)
+        let deliveryPlacement = plan.delivery_placement
         guard deliveryWidth > 0, deliveryHeight > 0, outputWidth > 0, outputHeight > 0 else {
             return nil
         }
-        let cameraSize = SIMD2<Float>(Float(authored.sensor.nativeWidth), Float(authored.sensor.nativeHeight))
+        let cameraSize = SIMD2<Float>(
+            Float(plan.active_sensor_width), Float(plan.active_sensor_height)
+        )
         let outputSize = SIMD2<Float>(Float(deliveryWidth), Float(deliveryHeight))
         let previewScale = SIMD2<Float>(Float(outputWidth) / outputSize.x, Float(outputHeight) / outputSize.y)
         let outputPixel = (SIMD2(Float(point.x), Float(point.y)) + 0.5) / previewScale - 0.5
@@ -604,23 +533,27 @@ final class SetupFramingRenderer {
         guard cameraUV.x.isFinite, cameraUV.y.isFinite else { return nil }
         let observed = cameraUV * 2 - 1
         let shifted = SIMD2<Float>(
-            observed.x + 2 * Float(authored.sceneLens.lensShift[0]),
-            -observed.y - 2 * Float(authored.sceneLens.lensShift[1])
+            observed.x + 2 * plan.lens_shift.0,
+            -observed.y - 2 * plan.lens_shift.1
         )
         guard let ideal = inverseDistortion(
             shifted,
-            radial: authored.sceneLens.radialDistortion,
-            tangential: authored.sceneLens.tangentialDistortion
+            radial: Self.radial(plan),
+            tangential: Self.tangential(plan)
         ) else { return nil }
-        let cameraQ = authored.cameraPose.quaternion.map(Float.init)
-        let screenQ = authored.screenPose.quaternion.map(Float.init)
+        let cameraQ = [
+            plan.camera_rotation_xyzw.0, plan.camera_rotation_xyzw.1,
+            plan.camera_rotation_xyzw.2, plan.camera_rotation_xyzw.3,
+        ]
+        let screenQ = [
+            plan.screen_rotation_xyzw.0, plan.screen_rotation_xyzw.1,
+            plan.screen_rotation_xyzw.2, plan.screen_rotation_xyzw.3,
+        ]
         let camera = SIMD3<Float>(
-            Float(authored.cameraPose.position[0]), Float(authored.cameraPose.position[1]),
-            Float(authored.cameraPose.position[2])
+            plan.camera_position.0, plan.camera_position.1, plan.camera_position.2
         )
         let screen = SIMD3<Float>(
-            Float(authored.screenPose.position[0]), Float(authored.screenPose.position[1]),
-            Float(authored.screenPose.position[2])
+            plan.screen_position.0, plan.screen_position.1, plan.screen_position.2
         )
         let cameraRight = rotate([1, 0, 0], by: cameraQ)
         let cameraUp = rotate([0, 1, 0], by: cameraQ)
@@ -630,10 +563,10 @@ final class SetupFramingRenderer {
         let screenNormal = rotate([0, 0, 1], by: screenQ)
         let ray = simd_normalize(
             cameraForward
-                + cameraRight * (ideal.x * Float(authored.sceneLens.sensorWidthMillimeters)
-                    / (2 * Float(authored.sceneLens.focalLengthMillimeters)))
-                + cameraUp * (ideal.y * Float(authored.sceneLens.sensorHeightMillimeters)
-                    / (2 * Float(authored.sceneLens.focalLengthMillimeters)))
+                + cameraRight * (ideal.x * plan.sensor_width_millimeters
+                    / (2 * plan.focal_length_millimeters))
+                + cameraUp * (ideal.y * plan.sensor_height_millimeters
+                    / (2 * plan.focal_length_millimeters))
         )
         let denominator = simd_dot(ray, screenNormal)
         guard abs(denominator) >= 1e-8 else { return nil }
@@ -641,25 +574,40 @@ final class SetupFramingRenderer {
         guard distance > 0 else { return nil }
         let local = camera + ray * distance - screen
         let uv = SIMD2<Double>(
-            Double(simd_dot(local, screenRight) / Float(device.activeWidthMeters) + 0.5),
-            Double(0.5 - simd_dot(local, screenUp) / Float(device.activeHeightMeters))
+            Double(simd_dot(local, screenRight) / plan.device_active_width_meters + 0.5),
+            Double(0.5 - simd_dot(local, screenUp) / plan.device_active_height_meters)
         )
-        guard Self.roundedDeviceContains(uv, device: device) else { return nil }
+        guard Self.roundedDeviceContains(uv, plan: plan) else { return nil }
         return uv
     }
 
     private static func roundedDeviceContains(
-        _ uv: SIMD2<Double>, device: DeviceDefinition
+        _ uv: SIMD2<Double>, plan: ScreenSetupDiagnosticPlanV1
     ) -> Bool {
         guard uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 else { return false }
-        guard device.cornerRadiusMeters > 0 else { return true }
+        guard plan.device_corner_radius_meters > 0 else { return true }
         let radius = SIMD2(
-            device.cornerRadiusMeters / device.activeWidthMeters,
-            device.cornerRadiusMeters / device.activeHeightMeters
+            Double(plan.device_corner_radius_meters / plan.device_active_width_meters),
+            Double(plan.device_corner_radius_meters / plan.device_active_height_meters)
         )
         let q = simd_max(abs(uv - 0.5) - (SIMD2(repeating: 0.5) - radius), .zero)
         let normalized = q / radius
         return simd_dot(normalized, normalized) <= 1
+    }
+
+    private static func radial(_ plan: ScreenSetupDiagnosticPlanV1) -> [Double] {
+        [
+            Double(plan.lens_radial_distortion.0),
+            Double(plan.lens_radial_distortion.1),
+            Double(plan.lens_radial_distortion.2),
+        ]
+    }
+
+    private static func tangential(_ plan: ScreenSetupDiagnosticPlanV1) -> [Double] {
+        [
+            Double(plan.lens_tangential_distortion.0),
+            Double(plan.lens_tangential_distortion.1),
+        ]
     }
 
     private static func inverseDistortion(

@@ -73,13 +73,17 @@
       },
       "enforcement": [
         "crates/screen-application/src/scene_resolution.rs",
+        "crates/screen-application/src/setup_diagnostics.rs",
         "crates/screen-application/src/render_preparation.rs",
         "crates/screen-application/src/temporal_cache.rs",
         "crates/screen-native-bridge/src/lib.rs",
         "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalMetalFrameEngine.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RustSceneFrameResolver.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalPipelineAuthoringTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SetupFramingRendererTests.swift",
         "scripts/check_architecture.py"
       ]
     },
@@ -119,6 +123,8 @@
       },
       "enforcement": [
         "crates/screen-platform/src/physical_pipeline_metal.rs",
+        "crates/screen-application/src/setup_diagnostics.rs",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift",
         "scripts/check_architecture.py"
       ]
     },

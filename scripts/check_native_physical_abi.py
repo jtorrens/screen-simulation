@@ -85,7 +85,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 32u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 33u",
         "#define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
@@ -124,7 +124,7 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 32",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 33",
         "SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1",
         "ScreenPhysicalStageDescriptorV1",
         "screen_physical_stage_descriptor",
@@ -183,7 +183,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v32 source/header/symbol gate passed")
+    print("native macOS physical ABI v33 source/header/symbol gate passed")
     return 0
 
 

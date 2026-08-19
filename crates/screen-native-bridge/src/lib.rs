@@ -35,8 +35,9 @@ use screen_application::{
     compile_reflection_environment, default_test_authoring_selection,
     default_test_authoring_selection_with_profiles, device_focus_target_at_preview_pixel,
     diagnostic_signal, evaluate_delivery_raster_rgba32f, evaluate_tracking_overlay,
-    prepare_capture_render, prepare_recording_execution_request, project_device_focus_target,
-    resolve_physical_stage_contributions, test_page_descriptor, test_page_descriptor_with_profiles,
+    prepare_capture_render, prepare_recording_execution_request, prepare_setup_diagnostic,
+    project_device_focus_target, resolve_physical_stage_contributions, test_page_descriptor,
+    test_page_descriptor_with_profiles,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -680,7 +681,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 32;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 33;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9;
@@ -850,6 +851,60 @@ pub struct ScreenResolvedSceneFrameV1 {
     lens_center_softness_micrometers: f32,
     lens_edge_softness_micrometers: f32,
     lens_veiling_glare_fraction: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenSetupDiagnosticRequestV1 {
+    abi_version: u32,
+    frame_index: i64,
+    time_numerator: i64,
+    time_denominator: u32,
+    delivery_width: u32,
+    delivery_height: u32,
+    preview_width: u32,
+    preview_height: u32,
+    delivery_placement: u32,
+    delivery_background: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenSetupDiagnosticPlanV1 {
+    abi_version: u32,
+    revision: u64,
+    frame_index: i64,
+    time_numerator: i64,
+    time_denominator: u32,
+    camera_position: [f32; 3],
+    camera_rotation_xyzw: [f32; 4],
+    screen_position: [f32; 3],
+    screen_rotation_xyzw: [f32; 4],
+    active_sensor_width: u32,
+    active_sensor_height: u32,
+    device_native_width: u32,
+    device_native_height: u32,
+    device_active_width_meters: f32,
+    device_active_height_meters: f32,
+    device_corner_radius_meters: f32,
+    focal_length_millimeters: f32,
+    sensor_width_millimeters: f32,
+    sensor_height_millimeters: f32,
+    lens_shift: [f32; 2],
+    focus_distance_meters: f32,
+    f_stop: f32,
+    lens_radial_distortion: [f32; 3],
+    lens_tangential_distortion: [f32; 2],
+    environment_rotation_radians: [f32; 2],
+    environment_finite_sphere: bool,
+    environment_sphere_center_meters: [f32; 3],
+    environment_sphere_radius_meters: f32,
+    delivery_width: u32,
+    delivery_height: u32,
+    preview_width: u32,
+    preview_height: u32,
+    delivery_placement: u32,
+    delivery_background: u32,
 }
 
 #[repr(C)]
@@ -1706,6 +1761,152 @@ pub unsafe extern "C" fn screen_scene_frame_resolver_v1_resolve(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_scene_setup_diagnostic_v1_prepare(
+    resolver: *const ScreenSceneFrameResolverV1,
+    request: *const ScreenSetupDiagnosticRequestV1,
+    output: *mut ScreenSetupDiagnosticPlanV1,
+    error_message: *mut *const c_char,
+) -> bool {
+    let (Some(resolver), Some(request), Some(output)) = (
+        unsafe { resolver.as_ref() },
+        unsafe { request.as_ref() },
+        unsafe { output.as_mut() },
+    ) else {
+        unsafe { set_error(error_message, b"missing Setup diagnostic argument\0") };
+        return false;
+    };
+    if request.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION || request.time_denominator == 0 {
+        unsafe { set_error(error_message, b"invalid Setup diagnostic request\0") };
+        return false;
+    }
+    let Ok(time) = RationalTime::new(request.time_numerator, request.time_denominator) else {
+        unsafe { set_error(error_message, b"invalid Setup diagnostic time\0") };
+        return false;
+    };
+    let Ok(scene) = resolver.resolver.resolve_at(request.frame_index, time) else {
+        unsafe {
+            set_error(
+                error_message,
+                b"Setup diagnostic scene cannot be resolved\0",
+            )
+        };
+        return false;
+    };
+    let (Ok(delivery), Ok(preview)) = (
+        RasterExtent::new(request.delivery_width, request.delivery_height),
+        RasterExtent::new(request.preview_width, request.preview_height),
+    ) else {
+        unsafe { set_error(error_message, b"invalid Setup diagnostic raster\0") };
+        return false;
+    };
+    let placement = match request.delivery_placement {
+        0 => DeliveryRasterPlacement::Fit,
+        1 => DeliveryRasterPlacement::OneToOne,
+        2 => DeliveryRasterPlacement::FillCrop,
+        _ => {
+            unsafe { set_error(error_message, b"invalid Setup diagnostic placement\0") };
+            return false;
+        }
+    };
+    let background = match request.delivery_background {
+        0 => DeliveryRasterBackground::Transparent,
+        1 => DeliveryRasterBackground::Black,
+        _ => {
+            unsafe { set_error(error_message, b"invalid Setup diagnostic background\0") };
+            return false;
+        }
+    };
+    let Ok(plan) = prepare_setup_diagnostic(
+        scene,
+        resolver.device.profile,
+        delivery,
+        preview,
+        placement,
+        background,
+    ) else {
+        unsafe {
+            set_error(
+                error_message,
+                b"Application could not prepare Setup diagnostic\0",
+            )
+        };
+        return false;
+    };
+    let placement = match plan.delivery_placement {
+        DeliveryRasterPlacement::Fit => 0,
+        DeliveryRasterPlacement::OneToOne => 1,
+        DeliveryRasterPlacement::FillCrop => 2,
+    };
+    let background = match plan.delivery_background {
+        DeliveryRasterBackground::Transparent => 0,
+        DeliveryRasterBackground::Black => 1,
+    };
+    *output = ScreenSetupDiagnosticPlanV1 {
+        abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+        revision: plan.identity.revision,
+        frame_index: plan.identity.frame_index,
+        time_numerator: plan.identity.time_numerator,
+        time_denominator: plan.identity.time_denominator,
+        camera_position: [
+            plan.camera_position.x,
+            plan.camera_position.y,
+            plan.camera_position.z,
+        ],
+        camera_rotation_xyzw: [
+            plan.camera_rotation.x,
+            plan.camera_rotation.y,
+            plan.camera_rotation.z,
+            plan.camera_rotation.w,
+        ],
+        screen_position: [
+            plan.screen_position.x,
+            plan.screen_position.y,
+            plan.screen_position.z,
+        ],
+        screen_rotation_xyzw: [
+            plan.screen_rotation.x,
+            plan.screen_rotation.y,
+            plan.screen_rotation.z,
+            plan.screen_rotation.w,
+        ],
+        active_sensor_width: plan.active_sensor.width(),
+        active_sensor_height: plan.active_sensor.height(),
+        device_native_width: plan.device_native.width(),
+        device_native_height: plan.device_native.height(),
+        device_active_width_meters: plan.device_active_width.0,
+        device_active_height_meters: plan.device_active_height.0,
+        device_corner_radius_meters: plan.device_corner_radius.0,
+        focal_length_millimeters: plan.focal_length_millimeters,
+        sensor_width_millimeters: plan.sensor_width_millimeters,
+        sensor_height_millimeters: plan.sensor_height_millimeters,
+        lens_shift: [plan.lens_shift.x, plan.lens_shift.y],
+        focus_distance_meters: plan.focus_distance_meters,
+        f_stop: plan.f_stop,
+        lens_radial_distortion: plan.radial_distortion,
+        lens_tangential_distortion: plan.tangential_distortion,
+        environment_rotation_radians: [
+            plan.environment.rotation_x_radians,
+            plan.environment.rotation_y_radians,
+        ],
+        environment_finite_sphere: plan.environment.finite_sphere,
+        environment_sphere_center_meters: [
+            plan.environment.sphere_center_meters.x,
+            plan.environment.sphere_center_meters.y,
+            plan.environment.sphere_center_meters.z,
+        ],
+        environment_sphere_radius_meters: plan.environment.sphere_radius_meters,
+        delivery_width: plan.delivery.width(),
+        delivery_height: plan.delivery.height(),
+        preview_width: plan.preview.width(),
+        preview_height: plan.preview.height(),
+        delivery_placement: placement,
+        delivery_background: background,
+    };
+    unsafe { set_error(error_message, b"\0") };
+    true
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_tracking_overlay_v1_resolve(
     resolver: *const ScreenSceneFrameResolverV1,
     request: *const ScreenTrackingOverlayRequestV1,
@@ -1753,8 +1954,8 @@ pub unsafe extern "C" fn screen_tracking_overlay_v1_resolve(
     };
     let placement = match request.delivery_placement {
         0 => DeliveryRasterPlacement::Fit,
-        1 => DeliveryRasterPlacement::FillCrop,
-        2 => DeliveryRasterPlacement::OneToOne,
+        1 => DeliveryRasterPlacement::OneToOne,
+        2 => DeliveryRasterPlacement::FillCrop,
         _ => {
             unsafe { set_error(error_message, b"invalid tracking overlay placement\0") };
             return false;

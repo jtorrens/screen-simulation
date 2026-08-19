@@ -21,7 +21,7 @@ typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 typedef struct ScreenTestAuthoringProfileContext *ScreenTestAuthoringProfileContextRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 32u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 33u
 #define SCREEN_DEVICE_VFX_ALPHA_IGNORE 0u
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
@@ -574,11 +574,64 @@ typedef struct {
     int64_t frame_index;
     int64_t time_numerator;
     uint32_t time_denominator;
+    uint32_t delivery_width;
+    uint32_t delivery_height;
+    uint32_t preview_width;
+    uint32_t preview_height;
+    /* 0 Fit, 1 OneToOne, 2 FillCrop. */
+    uint32_t delivery_placement;
+    /* 0 transparent, 1 black. */
+    uint32_t delivery_background;
+} ScreenSetupDiagnosticRequestV1;
+
+typedef struct {
+    uint32_t abi_version;
+    uint64_t revision;
+    int64_t frame_index;
+    int64_t time_numerator;
+    uint32_t time_denominator;
+    float camera_position[3];
+    float camera_rotation_xyzw[4];
+    float screen_position[3];
+    float screen_rotation_xyzw[4];
+    uint32_t active_sensor_width;
+    uint32_t active_sensor_height;
+    uint32_t device_native_width;
+    uint32_t device_native_height;
+    float device_active_width_meters;
+    float device_active_height_meters;
+    float device_corner_radius_meters;
+    float focal_length_millimeters;
+    float sensor_width_millimeters;
+    float sensor_height_millimeters;
+    float lens_shift[2];
+    float focus_distance_meters;
+    float f_stop;
+    float lens_radial_distortion[3];
+    float lens_tangential_distortion[2];
+    float environment_rotation_radians[2];
+    bool environment_finite_sphere;
+    float environment_sphere_center_meters[3];
+    float environment_sphere_radius_meters;
+    uint32_t delivery_width;
+    uint32_t delivery_height;
+    uint32_t preview_width;
+    uint32_t preview_height;
+    uint32_t delivery_placement;
+    uint32_t delivery_background;
+} ScreenSetupDiagnosticPlanV1;
+
+typedef struct {
+    uint32_t abi_version;
+    int64_t frame_index;
+    int64_t time_numerator;
+    uint32_t time_denominator;
     float meters_per_source_unit;
     uint32_t delivery_width;
     uint32_t delivery_height;
     uint32_t preview_width;
     uint32_t preview_height;
+    /* 0 Fit, 1 OneToOne, 2 FillCrop. */
     uint32_t delivery_placement;
 } ScreenTrackingOverlayRequestV1;
 
@@ -1187,6 +1240,12 @@ bool screen_scene_frame_resolver_v1_resolve(
     int64_t time_numerator,
     uint32_t time_denominator,
     ScreenResolvedSceneFrameV1 *output,
+    const char **error_message
+);
+bool screen_scene_setup_diagnostic_v1_prepare(
+    ScreenSceneFrameResolverV1Ref resolver,
+    const ScreenSetupDiagnosticRequestV1 *request,
+    ScreenSetupDiagnosticPlanV1 *output,
     const char **error_message
 );
 bool screen_tracking_overlay_v1_resolve(

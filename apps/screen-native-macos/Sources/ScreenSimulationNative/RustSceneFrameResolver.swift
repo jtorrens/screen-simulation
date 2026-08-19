@@ -101,6 +101,44 @@ final class RustSceneFrameResolver: @unchecked Sendable {
         return output
     }
 
+    func prepareSetupDiagnostic(
+        frame: PhysicalFrameSelection,
+        deliveryWidth: Int,
+        deliveryHeight: Int,
+        previewWidth: Int,
+        previewHeight: Int,
+        deliveryPlacement: UInt32,
+        deliveryBackground: UInt32,
+        expectedRevision: UInt64
+    ) throws -> ScreenSetupDiagnosticPlanV1 {
+        guard deliveryWidth > 0, deliveryHeight > 0,
+              previewWidth > 0, previewHeight > 0
+        else { throw PhysicalContractError.invalidFrameTime }
+        var request = ScreenSetupDiagnosticRequestV1()
+        request.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+        request.frame_index = frame.frameIndex
+        request.time_numerator = frame.timeNumerator
+        request.time_denominator = frame.timeDenominator
+        request.delivery_width = UInt32(deliveryWidth)
+        request.delivery_height = UInt32(deliveryHeight)
+        request.preview_width = UInt32(previewWidth)
+        request.preview_height = UInt32(previewHeight)
+        request.delivery_placement = deliveryPlacement
+        request.delivery_background = deliveryBackground
+        var plan = ScreenSetupDiagnosticPlanV1()
+        var error: UnsafePointer<CChar>?
+        guard screen_scene_setup_diagnostic_v1_prepare(
+            reference, &request, &plan, &error
+        ), plan.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+        plan.revision == expectedRevision,
+        plan.frame_index == frame.frameIndex,
+        plan.time_numerator == frame.timeNumerator,
+        plan.time_denominator == frame.timeDenominator else {
+            throw Self.bridge(error, "Rust no ha preparado el diagnóstico Setup del mismo frame.")
+        }
+        return plan
+    }
+
     func resolveTrackingOverlay(
         frame: PhysicalFrameSelection,
         sourcePoints: [SIMD3<Double>],

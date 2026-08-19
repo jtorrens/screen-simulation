@@ -7,6 +7,7 @@ mod recording;
 mod reflection_environment;
 mod render_preparation;
 mod scene_resolution;
+mod setup_diagnostics;
 mod temporal_cache;
 mod test_authoring;
 mod tracking_overlay;
@@ -39,6 +40,10 @@ pub use render_preparation::{
 pub use scene_resolution::{
     ResolvedSceneFrame, SceneFocusAuthoring, SceneFrameAuthoring, SceneFrameResolutionError,
     SceneFrameResolver,
+};
+pub use setup_diagnostics::{
+    SetupDiagnosticError, SetupDiagnosticIdentity, SetupDiagnosticPlan, SetupEnvironmentGeometry,
+    prepare_setup_diagnostic,
 };
 pub use temporal_cache::{
     CacheArtifact, TemporalArtifactCache, TemporalArtifactIdentity, TemporalArtifactKey,

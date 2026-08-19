@@ -929,6 +929,55 @@ def validate_exact_temporal_inputs() -> None:
             raise ValidationError("workstation does not retain the exact scene resolver: " + required)
 
 
+def validate_setup_diagnostic_boundary() -> None:
+    application = (
+        ROOT / "crates/screen-application/src/setup_diagnostics.rs"
+    ).read_text(encoding="utf-8")
+    renderer = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift"
+    ).read_text(encoding="utf-8")
+    workspace = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+    ).read_text(encoding="utf-8")
+    resolver = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/RustSceneFrameResolver.swift"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "pub struct SetupDiagnosticIdentity",
+        "pub struct SetupDiagnosticPlan",
+        "pub fn prepare_setup_diagnostic",
+    ):
+        if required not in application:
+            raise ValidationError("Application Setup plan is incomplete: " + required)
+    for forbidden in (
+        "PhysicalPipelineAuthoringState",
+        "DeviceDefinition",
+        "authoredOverride",
+    ):
+        if forbidden in renderer:
+            raise ValidationError(
+                "Setup renderer can receive mutable host semantics: " + forbidden
+            )
+    for required in (
+        "plan: ScreenSetupDiagnosticPlanV1",
+        "screen_scene_setup_diagnostic_v1_prepare",
+    ):
+        if required not in renderer + resolver:
+            raise ValidationError("host omits the closed Setup plan boundary: " + required)
+    for required in (
+        "publishedResolvedSceneFrame = scene",
+        "let resolved = publishedResolvedSceneFrame",
+        "currentFrame, authoredOverride: authoredOverride",
+        "publishSceneFrame(result.frame, scene: resolved)",
+    ):
+        if required not in workspace:
+            raise ValidationError(
+                "Setup texture and overlay do not share one resolved identity: " + required
+            )
+
+
 def main() -> int:
     try:
         paths = repository_paths()
@@ -945,6 +994,7 @@ def main() -> int:
         validate_fusion_scene_color_contract()
         validate_scene_profile_authority()
         validate_exact_temporal_inputs()
+        validate_setup_diagnostic_boundary()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)
