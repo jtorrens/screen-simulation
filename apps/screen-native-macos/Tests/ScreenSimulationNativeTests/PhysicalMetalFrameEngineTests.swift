@@ -525,8 +525,14 @@ private func submit(
         trackingMetersPerSourceUnit: nil
     )
     return try PhysicalMetalFrameEngine().submit(
-        sourceACEScg: fixture.source,
-        deviceSignal: fixture.deviceSignal,
+        temporalInputs: [.init(
+            time: try .init(
+                numerator: orchestration.frame.timeNumerator,
+                denominator: orchestration.frame.timeDenominator
+            ),
+            sourceACEScg: fixture.source,
+            deviceSignal: fixture.deviceSignal
+        )],
         environmentACEScg: nil,
         orchestration: orchestration,
         sceneResolver: resolver,

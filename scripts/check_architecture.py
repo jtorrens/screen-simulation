@@ -848,6 +848,39 @@ def validate_scene_profile_authority() -> None:
             )
 
 
+def validate_exact_temporal_inputs() -> None:
+    engine = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalMetalFrameEngine.swift"
+    ).read_text(encoding="utf-8")
+    workspace = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+    ).read_text(encoding="utf-8")
+    bridge = (ROOT / "crates/screen-native-bridge/src/lib.rs").read_text(encoding="utf-8")
+    for required in (
+        "func temporalRequirements(",
+        "temporalInputs: [PhysicalTemporalInput]",
+        "ScreenPhysicalTimedInputSampleV2",
+        "SCREEN_PHYSICAL_SOURCE_SAMPLE_EXACT",
+    ):
+        if required not in engine:
+            raise ValidationError("macOS host omits exact temporal input contract: " + required)
+    for required in (
+        "physicalEngine.temporalRequirements(",
+        "renderFrame(at: requirement.time)",
+        "temporalInputs: temporalInputs",
+    ):
+        if required not in workspace:
+            raise ValidationError("physical submit freezes nominal media during shutter: " + required)
+    for required in (
+        "screen_physical_temporal_sample_requirements_v1",
+        "prepare_capture_render(",
+        "source sampling policy cannot resolve an exact prepared sample time",
+    ):
+        if required not in bridge:
+            raise ValidationError("Application temporal preparation is incomplete: " + required)
+
+
 def main() -> int:
     try:
         paths = repository_paths()
@@ -863,6 +896,7 @@ def main() -> int:
         validate_scene_self_containment()
         validate_fusion_scene_color_contract()
         validate_scene_profile_authority()
+        validate_exact_temporal_inputs()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)

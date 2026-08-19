@@ -680,7 +680,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 30;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 31;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9;
@@ -716,6 +716,19 @@ pub struct ScreenPhysicalTimedInputSampleV2 {
     time_denominator: u32,
     source_acescg: *const ScreenPhysicalTexture,
     device_signal: *const ScreenPhysicalTexture,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenPhysicalTemporalSampleRequirementV1 {
+    abi_version: u32,
+    start_numerator: i64,
+    start_denominator: u32,
+    time_numerator: i64,
+    time_denominator: u32,
+    end_numerator: i64,
+    end_denominator: u32,
+    weight_seconds: f64,
 }
 
 #[cfg(target_os = "macos")]
@@ -2063,6 +2076,60 @@ fn sample_index_for_times(
             (None, None) => None,
         },
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_physical_temporal_sample_requirements_v1(
+    shutter_open_numerator: i64,
+    shutter_open_denominator: u32,
+    shutter_close_numerator: i64,
+    shutter_close_denominator: u32,
+    temporal_sample_count: u16,
+    requirements: *mut ScreenPhysicalTemporalSampleRequirementV1,
+    requirement_capacity: usize,
+    requirement_count: *mut usize,
+    error_message: *mut *const c_char,
+) -> bool {
+    let (Ok(open), Ok(close)) = (
+        RationalTime::new(shutter_open_numerator, shutter_open_denominator),
+        RationalTime::new(shutter_close_numerator, shutter_close_denominator),
+    ) else {
+        unsafe { set_error(error_message, b"invalid temporal requirement interval\0") };
+        return false;
+    };
+    let Ok(samples) = screen_application::physical_shutter_schedule(
+        open,
+        close,
+        temporal_sample_count,
+    ) else {
+        unsafe { set_error(error_message, b"invalid temporal sample requirements\0") };
+        return false;
+    };
+    if requirement_count.is_null()
+        || requirements.is_null()
+        || requirement_capacity < samples.len()
+    {
+        unsafe { set_error(error_message, b"insufficient temporal requirement storage\0") };
+        return false;
+    }
+    let output = unsafe { std::slice::from_raw_parts_mut(requirements, samples.len()) };
+    for (destination, sample) in output.iter_mut().zip(samples) {
+        *destination = ScreenPhysicalTemporalSampleRequirementV1 {
+            abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+            start_numerator: sample.start.numerator(),
+            start_denominator: sample.start.denominator(),
+            time_numerator: sample.time.numerator(),
+            time_denominator: sample.time.denominator(),
+            end_numerator: sample.end.numerator(),
+            end_denominator: sample.end.denominator(),
+            weight_seconds: sample.weight_seconds,
+        };
+    }
+    unsafe {
+        *requirement_count = output.len();
+        set_error(error_message, b"\0");
+    }
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

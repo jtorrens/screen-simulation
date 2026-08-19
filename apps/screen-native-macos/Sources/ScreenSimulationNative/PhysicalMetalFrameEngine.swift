@@ -16,39 +16,52 @@ struct PhysicalMetalFrameSnapshot: @unchecked Sendable {
     let parameterHash: PhysicalParameterHash
 }
 
+struct PhysicalTemporalInput: @unchecked Sendable {
+    let time: PhysicalRationalTime
+    let sourceACEScg: StudioColorMetalFrame
+    let deviceSignal: StudioColorMetalFrame
+}
+
+struct PhysicalTemporalSampleRequirement: Equatable, Sendable {
+    let start: PhysicalRationalTime
+    let time: PhysicalRationalTime
+    let end: PhysicalRationalTime
+    let weightSeconds: Double
+}
+
 final class PhysicalMetalFrameJob: @unchecked Sendable {
     let cancellationIdentity: PhysicalFrameIdentity
 
     private let handle: ScreenPhysicalFrameJobRef
     private let timedInputs: ScreenPhysicalTimedInputSetV2Ref
     private let sceneResolver: RustSceneFrameResolver
-    private let sourceTexture: ScreenPhysicalTextureRef
-    private let deviceSignalTexture: ScreenPhysicalTextureRef
+    private let sourceTextures: [ScreenPhysicalTextureRef]
+    private let deviceSignalTextures: [ScreenPhysicalTextureRef]
     private let environmentTexture: ScreenPhysicalTextureRef?
-    private let sourceFrame: StudioColorMetalFrame
-    private let deviceSignalFrame: StudioColorMetalFrame
+    private let sourceFrames: [StudioColorMetalFrame]
+    private let deviceSignalFrames: [StudioColorMetalFrame]
     private let environmentFrame: EnvironmentRadianceFrame?
 
     init(
         handle: ScreenPhysicalFrameJobRef,
         timedInputs: ScreenPhysicalTimedInputSetV2Ref,
         sceneResolver: RustSceneFrameResolver,
-        sourceTexture: ScreenPhysicalTextureRef,
-        deviceSignalTexture: ScreenPhysicalTextureRef,
+        sourceTextures: [ScreenPhysicalTextureRef],
+        deviceSignalTextures: [ScreenPhysicalTextureRef],
         environmentTexture: ScreenPhysicalTextureRef?,
-        sourceFrame: StudioColorMetalFrame,
-        deviceSignalFrame: StudioColorMetalFrame,
+        sourceFrames: [StudioColorMetalFrame],
+        deviceSignalFrames: [StudioColorMetalFrame],
         environmentFrame: EnvironmentRadianceFrame?,
         cancellationIdentity: PhysicalFrameIdentity
     ) {
         self.handle = handle
         self.timedInputs = timedInputs
         self.sceneResolver = sceneResolver
-        self.sourceTexture = sourceTexture
-        self.deviceSignalTexture = deviceSignalTexture
+        self.sourceTextures = sourceTextures
+        self.deviceSignalTextures = deviceSignalTextures
         self.environmentTexture = environmentTexture
-        self.sourceFrame = sourceFrame
-        self.deviceSignalFrame = deviceSignalFrame
+        self.sourceFrames = sourceFrames
+        self.deviceSignalFrames = deviceSignalFrames
         self.environmentFrame = environmentFrame
         self.cancellationIdentity = cancellationIdentity
     }
@@ -56,8 +69,8 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
     deinit {
         screen_physical_frame_job_release(handle)
         screen_physical_timed_input_set_v2_release(timedInputs)
-        screen_physical_texture_release(deviceSignalTexture)
-        screen_physical_texture_release(sourceTexture)
+        deviceSignalTextures.forEach(screen_physical_texture_release)
+        sourceTextures.forEach(screen_physical_texture_release)
     }
 
     func cancel() -> Bool {
@@ -165,9 +178,58 @@ final class PhysicalMetalFrameJob: @unchecked Sendable {
 
 @MainActor
 final class PhysicalMetalFrameEngine {
+    func temporalRequirements(
+        shutter: PhysicalShutterInterval,
+        sampleCount: UInt16
+    ) throws -> [PhysicalTemporalSampleRequirement] {
+        var raw = [ScreenPhysicalTemporalSampleRequirementV1](
+            repeating: .init(), count: Int(sampleCount)
+        )
+        var count = 0
+        var error: UnsafePointer<CChar>?
+        let accepted = raw.withUnsafeMutableBufferPointer { values in
+            screen_physical_temporal_sample_requirements_v1(
+                shutter.open.numerator,
+                shutter.open.denominator,
+                shutter.close.numerator,
+                shutter.close.denominator,
+                sampleCount,
+                values.baseAddress,
+                values.count,
+                &count,
+                &error
+            )
+        }
+        guard accepted, count == raw.count else {
+            throw bridgeError(
+                error,
+                fallback: "Application no pudo preparar las muestras temporales exactas."
+            )
+        }
+        return try raw.map { value in
+            guard value.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION else {
+                throw PhysicalMetalFrameEngineError.invalidSnapshot
+            }
+            return PhysicalTemporalSampleRequirement(
+                start: try .init(
+                    numerator: value.start_numerator,
+                    denominator: value.start_denominator
+                ),
+                time: try .init(
+                    numerator: value.time_numerator,
+                    denominator: value.time_denominator
+                ),
+                end: try .init(
+                    numerator: value.end_numerator,
+                    denominator: value.end_denominator
+                ),
+                weightSeconds: value.weight_seconds
+            )
+        }
+    }
+
     func submit(
-        sourceACEScg: StudioColorMetalFrame,
-        deviceSignal: StudioColorMetalFrame,
+        temporalInputs: [PhysicalTemporalInput],
         environmentACEScg: EnvironmentRadianceFrame?,
         orchestration: PhysicalFrameOrchestration,
         sceneResolver: RustSceneFrameResolver,
@@ -185,13 +247,12 @@ final class PhysicalMetalFrameEngine {
         requestedIntermediate: PhysicalIntermediate,
         vfxTransparency: PhysicalVfxTransparencyRequest? = nil
     ) throws -> PhysicalMetalFrameJob {
+        guard !temporalInputs.isEmpty else {
+            throw PhysicalMetalFrameEngineError.invalidSnapshot
+        }
         var error: UnsafePointer<CChar>?
-        let sourcePointer = Unmanaged.passUnretained(sourceACEScg.texture as AnyObject).toOpaque()
-        guard let sourceTexture = screen_physical_texture_create_borrowed_metal(
-            sourcePointer,
-            &error
-        ) else { throw bridgeError(error, fallback: "No se ha creado la vista ACEScg.") }
-        var deviceSignalTexture: ScreenPhysicalTextureRef?
+        var sourceTextures: [ScreenPhysicalTextureRef] = []
+        var deviceSignalTextures: [ScreenPhysicalTextureRef] = []
         var environmentTexture: ScreenPhysicalTextureRef?
         var timedInputs: ScreenPhysicalTimedInputSetV2Ref?
         var job: ScreenPhysicalFrameJobRef?
@@ -200,36 +261,49 @@ final class PhysicalMetalFrameEngine {
                 if let timedInputs {
                     screen_physical_timed_input_set_v2_release(timedInputs)
                 }
-                if let deviceSignalTexture {
-                    screen_physical_texture_release(deviceSignalTexture)
-                }
-                screen_physical_texture_release(sourceTexture)
+                deviceSignalTextures.forEach(screen_physical_texture_release)
+                sourceTextures.forEach(screen_physical_texture_release)
             }
         }
-        let signalPointer = Unmanaged.passUnretained(deviceSignal.texture as AnyObject).toOpaque()
-        deviceSignalTexture = screen_physical_texture_create_borrowed_metal(
-            signalPointer,
-            &error
-        )
-        guard let deviceSignalTexture else {
-            throw bridgeError(error, fallback: "No se ha creado la vista Device RGB.")
+        for input in temporalInputs {
+            let sourcePointer = Unmanaged.passUnretained(
+                input.sourceACEScg.texture as AnyObject
+            ).toOpaque()
+            guard let sourceTexture = screen_physical_texture_create_borrowed_metal(
+                sourcePointer, &error
+            ) else { throw bridgeError(error, fallback: "No se ha creado la vista ACEScg.") }
+            sourceTextures.append(sourceTexture)
+            let signalPointer = Unmanaged.passUnretained(
+                input.deviceSignal.texture as AnyObject
+            ).toOpaque()
+            guard let signalTexture = screen_physical_texture_create_borrowed_metal(
+                signalPointer, &error
+            ) else {
+                throw bridgeError(error, fallback: "No se ha creado la vista Device RGB.")
+            }
+            deviceSignalTextures.append(signalTexture)
         }
         if let environmentACEScg {
             environmentTexture = environmentACEScg.physicalTexture
         }
-        var timedSample = ScreenPhysicalTimedInputSampleV2()
-        timedSample.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
-        timedSample.time_numerator = orchestration.frame.timeNumerator
-        timedSample.time_denominator = orchestration.frame.timeDenominator
-        timedSample.source_acescg = sourceTexture
-        timedSample.device_signal = deviceSignalTexture
-        timedInputs = screen_physical_timed_input_set_v2_create(
-            &timedSample,
-            1,
-            rasterPlacement.rawValue,
-            UInt32(SCREEN_PHYSICAL_SOURCE_SAMPLE_EXACT.rawValue),
-            &error
-        )
+        let timedSamples = temporalInputs.enumerated().map { index, input in
+            var sample = ScreenPhysicalTimedInputSampleV2()
+            sample.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+            sample.time_numerator = input.time.numerator
+            sample.time_denominator = input.time.denominator
+            sample.source_acescg = sourceTextures[index]
+            sample.device_signal = deviceSignalTextures[index]
+            return sample
+        }
+        timedInputs = timedSamples.withUnsafeBufferPointer { samples in
+            screen_physical_timed_input_set_v2_create(
+                samples.baseAddress,
+                samples.count,
+                rasterPlacement.rawValue,
+                UInt32(SCREEN_PHYSICAL_SOURCE_SAMPLE_EXACT.rawValue),
+                &error
+            )
+        }
         guard let timedInputs else {
             throw bridgeError(error, fallback: "No se ha creado el input temporal físico.")
         }
@@ -306,11 +380,11 @@ final class PhysicalMetalFrameEngine {
             handle: job,
             timedInputs: timedInputs,
             sceneResolver: sceneResolver,
-            sourceTexture: sourceTexture,
-            deviceSignalTexture: deviceSignalTexture,
+            sourceTextures: sourceTextures,
+            deviceSignalTextures: deviceSignalTextures,
             environmentTexture: environmentTexture,
-            sourceFrame: sourceACEScg,
-            deviceSignalFrame: deviceSignal,
+            sourceFrames: temporalInputs.map(\.sourceACEScg),
+            deviceSignalFrames: temporalInputs.map(\.deviceSignal),
             environmentFrame: environmentACEScg,
             cancellationIdentity: cancellationIdentity
         )

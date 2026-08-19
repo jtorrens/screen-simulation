@@ -1221,11 +1221,18 @@ private func renderMoireVariant(
         trackingCamera: nil,
         trackingMetersPerSourceUnit: nil
     )
+    let orchestration = try pipeline.orchestration(for: frame)
     let job = try PhysicalMetalFrameEngine().submit(
-        sourceACEScg: context.source,
-        deviceSignal: context.deviceSignal,
+        temporalInputs: [.init(
+            time: try .init(
+                numerator: orchestration.frame.timeNumerator,
+                denominator: orchestration.frame.timeDenominator
+            ),
+            sourceACEScg: context.source,
+            deviceSignal: context.deviceSignal
+        )],
         environmentACEScg: context.environment,
-        orchestration: try pipeline.orchestration(for: frame),
+        orchestration: orchestration,
         sceneResolver: resolver,
         quality: .native,
         deviceVfxAlphaMode: "device-transparency",

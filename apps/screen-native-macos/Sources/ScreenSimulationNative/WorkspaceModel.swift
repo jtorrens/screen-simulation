@@ -2649,7 +2649,7 @@ final class WorkspaceModel: ObservableObject {
         physicalNativeTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let submission = try submitPhysicalJob(quality: .native)
+                let submission = try await submitPhysicalJob(quality: .native)
                 physicalNativeJob = submission.job
                 if nativeCancellationRequested {
                     _ = submission.job.cancel()
@@ -4424,7 +4424,7 @@ final class WorkspaceModel: ObservableObject {
         let source = try await renderFrame(index)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
-        let submission = try submitPhysicalJob(
+        let submission = try await submitPhysicalJob(
             quality: .native,
             temporalSamplesOverride: configuration.motionBlurEnabled
                 ? configuration.motionSamples : 1,
@@ -4684,7 +4684,7 @@ final class WorkspaceModel: ObservableObject {
         let width = active.activeWidth + sourceOverscan * 2
         let height = active.activeHeight + sourceOverscan * 2
         let dimensions = try PhysicalDimensions(width: width, height: height)
-        let submission = try submitPhysicalJob(
+        let submission = try await submitPhysicalJob(
             quality: .high,
             temporalSamplesOverride: 1,
             sourceFrameOverride: source,
@@ -6236,8 +6236,27 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private func renderFrame(_ index: Int) async throws -> StudioColorMetalFrame {
+        let rate = ReferenceTimelineAuthority.resolve(
+            source: sourceTimelineInfo,
+            reference: referenceTimelineInfo,
+            referenceVisible: referenceControlsTimeline,
+            tracking: trackingTimelineInfo
+        ).exactFrameRate
+        let numerator = Int64(index) * Int64(rate.denominator)
+        return try await renderFrame(
+            at: PhysicalRationalTime(
+                numerator: numerator,
+                denominator: rate.numerator
+            )
+        )
+    }
+
+    private func renderFrame(
+        at time: PhysicalRationalTime
+    ) async throws -> StudioColorMetalFrame {
+        let seconds = Double(time.numerator) / Double(time.denominator)
         if sourceIsPattern {
-            let decoded = try selectedPattern.frame(time: Double(index) / frameRate)
+            let decoded = try selectedPattern.frame(time: seconds)
             let base = try metalDisplay.makeACEScgFrame(
                 width: decoded.width, height: decoded.height,
                 encodedRGBA: decoded.rgba, input: inputTransform, alpha: effectiveAlpha
@@ -6245,11 +6264,12 @@ final class WorkspaceModel: ObservableObject {
             return try adjustedSourceFrame(base)
         }
         let time = CMTime(
-            seconds: Double(index) / frameRate, preferredTimescale: 60_000
+            value: CMTimeValue(time.numerator),
+            timescale: CMTimeScale(time.denominator)
         )
         try Task.checkCancellation()
         guard let sample = try await session.exactSample(at: time) else {
-            throw NativeMediaError.unreadable("frame \(index)")
+            throw NativeMediaError.unreadable("time \(seconds)")
         }
         let base = try metalDisplay.makeACEScgFrame(
             pixelBuffer: sample.pixelBuffer, input: inputTransform,
@@ -6326,7 +6346,7 @@ final class WorkspaceModel: ObservableObject {
             guard let self else { return }
             var submittedJob: PhysicalMetalFrameJob?
             do {
-                let submission = try submitPhysicalJob(quality: quality)
+                let submission = try await submitPhysicalJob(quality: quality)
                 submittedJob = submission.job
                 physicalInteractiveJob = submission.job
                 try await pollPhysicalJob(
@@ -6892,8 +6912,8 @@ final class WorkspaceModel: ObservableObject {
         vfxTransparency: PhysicalVfxTransparencyRequest? = nil,
         publishesPreviewState: Bool = true,
         resolvedSceneFrameOverride: ResolvedSceneFrame? = nil
-    ) throws -> SubmittedPhysicalJob {
-        guard let sourceACEScgFrame = sourceFrameOverride ?? sourceACEScgFrame else {
+    ) async throws -> SubmittedPhysicalJob {
+        guard let nominalSourceFrame = sourceFrameOverride ?? sourceACEScgFrame else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
         }
         let resolvedFrame = try resolvedSceneFrameOverride ?? resolveSceneFrame(
@@ -6903,23 +6923,84 @@ final class WorkspaceModel: ObservableObject {
         let effectiveAuthoringState = resolvedFrame.authored
         let outputSignal = try resolvedOutputSignal()
         let authoringSelection = currentTestAuthoringSelection()
-        let checkpoint = try DeviceSignalCheckpoint.prepare(
-            sourceACEScg: sourceACEScgFrame,
-            inputTransform: inputTransform,
-            outputSignal: outputSignal,
-            alphaInterpretation: String(describing: effectiveAlpha),
-            sourceAdjustment: .init(
-                exposureEV: authoringSelection?.sourceExposureEV ?? 0,
-                contrast: authoringSelection?.sourceContrast ?? 1,
-                saturation: authoringSelection?.sourceSaturation ?? 1,
-                temperatureKelvin: authoringSelection?.sourceTemperatureKelvin ?? 6500,
-                tint: authoringSelection?.sourceTint ?? 0
-            ),
-            display: metalDisplay
-        )
-        if publishesPreviewState { deviceSignalCheckpoint = checkpoint }
-        let deviceSignal = checkpoint.deviceSignal
         let contributions = physicalModel.orderedContributions
+        let orchestration = try effectiveAuthoringState.orchestration(
+            for: resolvedFrame.selection
+        )
+        let shutterMotionAmount = contributions.first(where: {
+            $0.stage == .capture(.exposureShutter)
+        })?.amount ?? 0
+        let temporalCount: UInt16 = shutterMotionAmount == 0
+            ? 1 : effectiveAuthoringState.shutterMotion.temporalSamples
+        let requirements = try physicalEngine.temporalRequirements(
+            shutter: orchestration.shutter,
+            sampleCount: temporalCount
+        )
+        let nominalTime = CMTime(
+            value: CMTimeValue(resolvedFrame.selection.timeNumerator),
+            timescale: CMTimeScale(resolvedFrame.selection.timeDenominator)
+        )
+        var temporalInputs: [PhysicalTemporalInput] = []
+        temporalInputs.reserveCapacity(requirements.count)
+        var publishedExactCheckpoint = false
+        for requirement in requirements {
+            try Task.checkCancellation()
+            let requestedTime = CMTime(
+                value: CMTimeValue(requirement.time.numerator),
+                timescale: CMTimeScale(requirement.time.denominator)
+            )
+            let source = CMTimeCompare(requestedTime, nominalTime) == 0
+                ? nominalSourceFrame
+                : try await renderFrame(at: requirement.time)
+            let checkpoint = try DeviceSignalCheckpoint.prepare(
+                sourceACEScg: source,
+                inputTransform: inputTransform,
+                outputSignal: outputSignal,
+                alphaInterpretation: String(describing: effectiveAlpha),
+                sourceAdjustment: .init(
+                    exposureEV: authoringSelection?.sourceExposureEV ?? 0,
+                    contrast: authoringSelection?.sourceContrast ?? 1,
+                    saturation: authoringSelection?.sourceSaturation ?? 1,
+                    temperatureKelvin: authoringSelection?.sourceTemperatureKelvin ?? 6500,
+                    tint: authoringSelection?.sourceTint ?? 0
+                ),
+                display: metalDisplay
+            )
+            temporalInputs.append(.init(
+                time: requirement.time,
+                sourceACEScg: source,
+                deviceSignal: checkpoint.deviceSignal
+            ))
+            if publishesPreviewState,
+               CMTimeCompare(requestedTime, nominalTime) == 0 {
+                deviceSignalCheckpoint = checkpoint
+                publishedExactCheckpoint = true
+            }
+        }
+        guard let publicationInput = temporalInputs.min(by: {
+            abs(Double($0.time.numerator) / Double($0.time.denominator)
+                - nominalTime.seconds)
+                < abs(Double($1.time.numerator) / Double($1.time.denominator)
+                    - nominalTime.seconds)
+        }) else {
+            throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
+        }
+        if publishesPreviewState, !publishedExactCheckpoint {
+            deviceSignalCheckpoint = try DeviceSignalCheckpoint.prepare(
+                sourceACEScg: publicationInput.sourceACEScg,
+                inputTransform: inputTransform,
+                outputSignal: outputSignal,
+                alphaInterpretation: String(describing: effectiveAlpha),
+                sourceAdjustment: .init(
+                    exposureEV: authoringSelection?.sourceExposureEV ?? 0,
+                    contrast: authoringSelection?.sourceContrast ?? 1,
+                    saturation: authoringSelection?.sourceSaturation ?? 1,
+                    temperatureKelvin: authoringSelection?.sourceTemperatureKelvin ?? 6500,
+                    tint: authoringSelection?.sourceTint ?? 0
+                ),
+                display: metalDisplay
+            )
+        }
         physicalIdentityCounter &+= 1
         let identity = PhysicalFrameIdentity(
             high: physicalModel.parameterRevision,
@@ -6927,9 +7008,9 @@ final class WorkspaceModel: ObservableObject {
         )
         let effectiveIntermediate = requestedIntermediateOverride ?? requestedPhysicalIntermediate
         if publishesPreviewState {
-            physicalPublicationSummary = "Source \(sourceACEScgFrame.width)×\(sourceACEScgFrame.height) · Device \(deviceSignal.width)×\(deviceSignal.height) · \(quality.uiLabel)/\(effectiveIntermediate.uiLabel) · enviado"
+            physicalPublicationSummary = "Source \(publicationInput.sourceACEScg.width)×\(publicationInput.sourceACEScg.height) · Device \(publicationInput.deviceSignal.width)×\(publicationInput.deviceSignal.height) · \(quality.uiLabel)/\(effectiveIntermediate.uiLabel) · \(temporalInputs.count) muestras exactas · enviado"
             physicalPublicationLog.notice(
-                "submit source=\(sourceACEScgFrame.width)x\(sourceACEScgFrame.height) device=\(deviceSignal.width)x\(deviceSignal.height) quality=\(quality.uiLabel, privacy: .public) intermediate=\(effectiveIntermediate.uiLabel, privacy: .public) cameraZ=\(effectiveAuthoringState.cameraPose.position[2])"
+                "submit source=\(publicationInput.sourceACEScg.width)x\(publicationInput.sourceACEScg.height) device=\(publicationInput.deviceSignal.width)x\(publicationInput.deviceSignal.height) samples=\(temporalInputs.count) quality=\(quality.uiLabel, privacy: .public) intermediate=\(effectiveIntermediate.uiLabel, privacy: .public) cameraZ=\(effectiveAuthoringState.cameraPose.position[2])"
             )
         }
         let requestedDimensions = try requestedDimensionsOverride
@@ -6941,10 +7022,9 @@ final class WorkspaceModel: ObservableObject {
                 captureHeight: resolvedFrame.activeSensorWindow.height
             )
         let job = try physicalEngine.submit(
-            sourceACEScg: sourceACEScgFrame,
-            deviceSignal: deviceSignal,
+            temporalInputs: temporalInputs,
             environmentACEScg: environmentRadianceFrame,
-            orchestration: try effectiveAuthoringState.orchestration(for: resolvedFrame.selection),
+            orchestration: orchestration,
             sceneResolver: resolvedFrame.resolver,
             quality: quality,
             deviceVfxAlphaMode: effectiveAuthoringState.deviceVfxAlphaMode,

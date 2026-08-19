@@ -85,7 +85,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 30u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 31u",
         "#define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
@@ -105,6 +105,7 @@ def validate_sources() -> None:
         "screen_scene_focus_target_v1_unproject",
         "ScreenSceneEnvironmentRadiusRequestV1",
         "screen_scene_environment_minimum_radius_v1",
+        "screen_physical_temporal_sample_requirements_v1",
         "#define SCREEN_TEST_AUTHORING_ABI_VERSION 38u",
         "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
@@ -121,7 +122,7 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 30",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 31",
         "SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1",
         "ScreenPhysicalStageDescriptorV1",
         "screen_physical_stage_descriptor",
@@ -133,6 +134,7 @@ def validate_sources() -> None:
         "screen_scene_focus_target_v1_unproject",
         "ScreenSceneEnvironmentRadiusRequestV1",
         "screen_scene_environment_minimum_radius_v1",
+        "screen_physical_temporal_sample_requirements_v1",
         "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 38",
         "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
@@ -165,6 +167,8 @@ def validate_binary(binary: Path) -> None:
         raise RuntimeError("native binary does not contain the focus target inverse projector")
     if "_screen_scene_environment_minimum_radius_v1" not in symbols:
         raise RuntimeError("native binary does not contain the environment radius evaluator")
+    if "_screen_physical_temporal_sample_requirements_v1" not in symbols:
+        raise RuntimeError("native binary does not contain exact temporal requirements")
 
 
 def main() -> int:
@@ -173,7 +177,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v30 source/header/symbol gate passed")
+    print("native macOS physical ABI v31 source/header/symbol gate passed")
     return 0
 
 
