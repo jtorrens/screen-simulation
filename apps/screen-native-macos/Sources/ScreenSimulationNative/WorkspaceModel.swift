@@ -484,7 +484,7 @@ final class WorkspaceModel: ObservableObject {
     private var referencePlaybackStartFrame = 0
     private var referenceMatchStartSelection: TestAuthoringResolvedSelection?
     private var referenceRefreshTask: Task<Void, Never>?
-    private let referenceSession = NativeMediaSession()
+    private var referenceSession = NativeMediaSession()
     private var cameraNavigationGesture: CameraNavigationGesture?
     private var cameraNavigationStartSelection: TestAuthoringResolvedSelection?
     private var cameraNavigationStartOverrideControlIDs: Set<String>?
@@ -545,7 +545,7 @@ final class WorkspaceModel: ObservableObject {
             "Evaluación: reflejos visibles desde Draft; Setup muestra solo encuadre",
         ]
     }
-    private let session = NativeMediaSession()
+    private var session = NativeMediaSession()
     private var sourceIsPattern = true
     private var missingMediaSource: SavedSceneSource?
     private var tickSubscription: AnyCancellable?
@@ -566,6 +566,7 @@ final class WorkspaceModel: ObservableObject {
     private var resolvedPhysicalPipeline: PhysicalPipelineResolvedState?
     private var baseModelDeviceDefinition: DeviceDefinition?
     private var basePhysicalAuthoringState: PhysicalPipelineAuthoringState?
+    private var savedSceneOpenWarnings: [String] = []
     /// Scene Open is a transaction: external resources may decode into their canonical
     /// inputs, but no preview/setup/physical evaluation is published until every strict
     /// setting and the embedded scene authoring have been restored successfully.
@@ -5001,70 +5002,214 @@ final class WorkspaceModel: ObservableObject {
         _ scene: SavedScene,
         undoManager: UndoManager?
     ) async {
-        isMaterializingSavedScene = true
-        defer { isMaterializingSavedScene = false }
         do {
-            try scene.validate()
-            let authoring = scene.snapshot.authoring
-            try authoring.validate()
-            try validateSceneAuthoringResources(authoring)
-            try prepareSceneSourceInterpretation(authoring.context)
-            let source = scene.snapshot.source
-            switch source.kind {
-            case .syntheticPattern:
-                guard let rawValue = source.patternRawValue,
-                      let pattern = SyntheticPattern(rawValue: rawValue)
-                else { throw SceneLibraryError.invalidDocument("El patrón de la escena no existe.") }
-                choosePattern(pattern, undoManager: nil)
-            case .externalMedia:
-                let urls = source.assets.map(\.url)
-                guard urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
-                    throw SceneLibraryError.invalidDocument("Falta una fuente externa guardada.")
-                }
-                errorMessage = nil
-                await load(urls, materializeImportInterpretation: false)
-                guard errorMessage == nil, !sourceIsPattern,
-                      session.sourceURLs.count == urls.count else {
-                    throw SceneLibraryError.invalidDocument(
-                        "No se pudo abrir la fuente externa guardada."
-                    )
-                }
-            }
-            if missingMediaSource == nil {
-                try await applySceneAuthoring(authoring, undoManager: undoManager)
-            }
-            currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
-            try restoreTrackingScene(scene.snapshot.tracking)
-            try ensureFiniteEnvironmentEnclosesTimeline()
-            viewerNavigation.restore(
-                zoom: scene.snapshot.viewerZoom,
-                pan: .init(width: scene.snapshot.viewerPanX, height: scene.snapshot.viewerPanY),
-                isFitted: scene.snapshot.viewerIsFitted
-            )
-            // Commit the transaction before the one authoritative publication.
-            isMaterializingSavedScene = false
-            rebuildPhysicalSelectedFrame()
-            activeSceneID = scene.id
-            if let generated = scene.snapshot.generatedEnvironment,
-               let asset = try EnvironmentAssetLibrary.asset(
-                   sha256: generated.sha256, originalFileName: generated.fileName
-               ) {
-                generatedReflectionEnvironmentData = try Data(
-                    contentsOf: asset.url, options: .mappedIfSafe
-                )
-            } else {
-                generatedReflectionEnvironmentData = nil
-            }
-            // Opening a scene is one atomic materialization. Intermediate preview
-            // invalidations emitted while its source is being selected do not own
-            // the final error state once the complete strict scene has resolved.
-            errorMessage = nil
-            status = missingMediaSource == nil
-                ? "Escena abierta · \(scene.name)"
-                : "Escena abierta · \(scene.name) · MEDIA MISSING"
+            // Materialize every strict contract and external resource in an isolated
+            // Workspace. The live Workspace remains byte-for-byte untouched until the
+            // complete scene is known to be usable.
+            let staged = WorkspaceModel(globalLibraryStore: globalLibraryStore)
+            try await staged.materializeSavedScene(scene)
+            try adoptMaterializedSavedScene(from: staged)
+            _ = undoManager // Scene Open deliberately starts a new authoring baseline.
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func materializeSavedScene(_ scene: SavedScene) async throws {
+        isMaterializingSavedScene = true
+        defer { isMaterializingSavedScene = false }
+        savedSceneOpenWarnings = []
+        try scene.validate()
+        let authoring = scene.snapshot.authoring
+        try authoring.validate()
+        try validateSceneAuthoringResources(authoring)
+        try prepareSceneSourceInterpretation(authoring.context)
+        let source = scene.snapshot.source
+        switch source.kind {
+        case .syntheticPattern:
+            guard let rawValue = source.patternRawValue,
+                  let pattern = SyntheticPattern(rawValue: rawValue)
+            else { throw SceneLibraryError.invalidDocument("El patrón de la escena no existe.") }
+            choosePattern(pattern, undoManager: nil)
+        case .externalMedia:
+            let urls = source.assets.map(\.url)
+            if urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) {
+                errorMessage = nil
+                await load(urls, materializeImportInterpretation: false)
+            }
+            if errorMessage != nil || sourceIsPattern || session.sourceURLs.count != urls.count {
+                savedSceneOpenWarnings.append(
+                    "Fuente descartada: \(urls.map(\.path).joined(separator: ", "))"
+                )
+                errorMessage = nil
+                choosePattern(.animatedCheckerboard, undoManager: nil)
+            }
+        }
+        if missingMediaSource == nil {
+            try await applySceneAuthoring(authoring, undoManager: nil)
+        }
+        currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
+        try restoreTrackingScene(scene.snapshot.tracking)
+        try ensureFiniteEnvironmentEnclosesTimeline()
+        viewerNavigation.restore(
+            zoom: scene.snapshot.viewerZoom,
+            pan: .init(width: scene.snapshot.viewerPanX, height: scene.snapshot.viewerPanY),
+            isFitted: scene.snapshot.viewerIsFitted
+        )
+        // The isolated Workspace suppresses Viewer publication, but the committed
+        // scene still needs one canonical source checkpoint immediately available.
+        if metalFrame == nil { metalFrame = originACEScgFrame }
+        activeSceneID = scene.id
+        if let generated = scene.snapshot.generatedEnvironment,
+           let asset = try EnvironmentAssetLibrary.asset(
+               sha256: generated.sha256, originalFileName: generated.fileName
+           ) {
+            generatedReflectionEnvironmentData = try Data(
+                contentsOf: asset.url, options: .mappedIfSafe
+            )
+        } else {
+            generatedReflectionEnvironmentData = nil
+        }
+        errorMessage = savedSceneOpenWarnings.isEmpty
+            ? nil
+            : "La escena se abrió, pero se descartaron recursos externos no disponibles:\n\n"
+                + savedSceneOpenWarnings.map { "• \($0)" }.joined(separator: "\n")
+        status = missingMediaSource == nil
+            ? "Escena abierta · \(scene.name)"
+            : "Escena abierta · \(scene.name) · MEDIA MISSING"
+    }
+
+    /// Publishes a fully materialized scene in one synchronous MainActor commit.
+    /// No operation in this method decodes media, reads the filesystem or resolves
+    /// authored contracts; every fallible operation completed in the staged Workspace.
+    private func adoptMaterializedSavedScene(from staged: WorkspaceModel) throws {
+        isMaterializingSavedScene = true
+        defer { isMaterializingSavedScene = false }
+
+        // Restore the validated model first. All remaining assignments are in-memory
+        // transfers and cannot leave a partially decoded external resource behind.
+        try physicalModel.restoreAuthoringState(staged.physicalModel.authoringState)
+        physicalModel.setQuality(staged.physicalModel.quality)
+
+        pause()
+        referenceRefreshTask?.cancel()
+        referenceRefreshTask = nil
+        session = staged.session
+        referenceSession = staged.referenceSession
+
+        inputTransform = staged.inputTransform
+        previewTransform = staged.previewTransform
+        alphaMode = staged.alphaMode
+        signalColorModel = staged.signalColorModel
+        signalMatrix = staged.signalMatrix
+        signalRange = staged.signalRange
+        detection = staged.detection
+        selectedPattern = staged.selectedPattern
+        sourceName = staged.sourceName
+        sourceDetail = staged.sourceDetail
+        sourceIsPattern = staged.sourceIsPattern
+        missingMediaSource = staged.missingMediaSource
+        sourceTimelineInfo = staged.sourceTimelineInfo
+        includeAudio = staged.includeAudio
+        frameCount = staged.frameCount
+        frameRate = staged.frameRate
+        inFrame = staged.inFrame
+        outFrame = staged.outFrame
+
+        globalLibraryDocument = staged.globalLibraryDocument
+        capturePresets = staged.capturePresets
+        lensPresets = staged.lensPresets
+        environmentPresets = staged.environmentPresets
+        testAuthoringProfileContext = staged.testAuthoringProfileContext
+        testAuthoringSelection = staged.testAuthoringSelection
+        explicitSceneOverrideControlIDs = staged.explicitSceneOverrideControlIDs
+        sceneProfileBaselineByControlID = staged.sceneProfileBaselineByControlID
+        testPresentation = staged.testPresentation
+        testPreviewResultByPhaseID = staged.testPreviewResultByPhaseID
+        testPhysicalIntermediateByPhaseID = staged.testPhysicalIntermediateByPhaseID
+        selectedCapturePresetID = staged.selectedCapturePresetID
+        selectedCaptureRasterModeID = staged.selectedCaptureRasterModeID
+        selectedLensPresetID = staged.selectedLensPresetID
+        requestedPhysicalIntermediate = staged.requestedPhysicalIntermediate
+        resolvedDevice = staged.resolvedDevice
+        modelDeviceDefinition = staged.modelDeviceDefinition
+        physicalAuthoringState = staged.physicalAuthoringState
+        resolvedPhysicalPipeline = staged.resolvedPhysicalPipeline
+        baseModelDeviceDefinition = staged.baseModelDeviceDefinition
+        basePhysicalAuthoringState = staged.basePhysicalAuthoringState
+
+        originACEScgFrame = staged.originACEScgFrame
+        sourceACEScgFrame = staged.sourceACEScgFrame
+        metalFrame = staged.metalFrame
+        sourceAdjustmentOwner = staged.sourceAdjustmentOwner
+        sourcePlacement = staged.sourcePlacement
+        deviceSignalCheckpoint = staged.deviceSignalCheckpoint
+        recordingCameraCheckpoint = nil
+        deliveryRasterCheckpoint = nil
+        recordingOutputExecution = nil
+        setupFramingRenderer = nil
+        publishedSceneIdentity = nil
+
+        environmentRadianceFrame = staged.environmentRadianceFrame
+        environmentSourceACEScgFrame = staged.environmentSourceACEScgFrame
+        environmentAdjustmentOwner = staged.environmentAdjustmentOwner
+        authoredImageEnvironment = staged.authoredImageEnvironment
+        environmentSourceName = staged.environmentSourceName
+        environmentSourceResolution = staged.environmentSourceResolution
+        environmentSourceHash = staged.environmentSourceHash
+        environmentSourceInputTransformID = staged.environmentSourceInputTransformID
+        environmentSourceURL = staged.environmentSourceURL
+        environmentSourceCalibration = staged.environmentSourceCalibration
+        generatedReflectionEnvironmentData = staged.generatedReflectionEnvironmentData
+        savedSceneOpenWarnings = staged.savedSceneOpenWarnings
+
+        referenceACEScgFrame = staged.referenceACEScgFrame
+        referenceForegroundFrame = staged.referenceForegroundFrame
+        referenceForegroundIsDeliveryAligned = staged.referenceForegroundIsDeliveryAligned
+        referenceSourceURL = staged.referenceSourceURL
+        referenceInputTransformID = staged.referenceInputTransformID
+        referenceSourceHash = staged.referenceSourceHash
+        referenceDetection = staged.referenceDetection
+        referenceTimelineInfo = staged.referenceTimelineInfo
+        referenceFrameName = staged.referenceFrameName
+        referenceFrameDetail = staged.referenceFrameDetail
+        referenceInputTransform = staged.referenceInputTransform
+        referenceAlphaMode = staged.referenceAlphaMode
+        referenceSignalColorModel = staged.referenceSignalColorModel
+        referenceSignalMatrix = staged.referenceSignalMatrix
+        referenceSignalRange = staged.referenceSignalRange
+        referencePlacement = staged.referencePlacement
+        referenceMatchCorners = staged.referenceMatchCorners
+        referenceMatchProjectedCorners = staged.referenceMatchProjectedCorners
+        referenceMatchErrorPixels = staged.referenceMatchErrorPixels
+        referenceMatchEnabled = staged.referenceMatchEnabled
+
+        trackingScene = staged.trackingScene
+        selectedTrackingCameraID = staged.selectedTrackingCameraID
+        selectedTrackingPointGroupID = staged.selectedTrackingPointGroupID
+        trackingCameraEnabled = staged.trackingCameraEnabled
+        trackingPointsVisible = staged.trackingPointsVisible
+        trackingGeometryVisible = staged.trackingGeometryVisible
+        visibleTrackingMeshIDs = staged.visibleTrackingMeshIDs
+        trackingSynthEyesUnitValue = staged.trackingSynthEyesUnitValue
+        trackingSynthEyesUnit = staged.trackingSynthEyesUnit
+        trackingMetersPerSourceUnit = staged.trackingMetersPerSourceUnit
+        trackingScaleSelectionSlot = staged.trackingScaleSelectionSlot
+        trackingScalePointAID = staged.trackingScalePointAID
+        trackingScalePointBID = staged.trackingScalePointBID
+        trackingMeasuredDistanceMeters = staged.trackingMeasuredDistanceMeters
+
+        currentFrame = staged.currentFrame
+        viewerNavigation.restore(
+            zoom: staged.zoom,
+            pan: staged.pan,
+            isFitted: staged.previewIsFitted
+        )
+        activeSceneID = staged.activeSceneID
+        physicalModel.invalidateExternalParameters()
+        rebuildPhysicalSelectedFrame()
+        errorMessage = staged.errorMessage
+        status = staged.status
     }
 
     private func restoreTrackingScene(_ saved: SavedTrackingScene?) throws {
@@ -5433,18 +5578,6 @@ final class WorkspaceModel: ObservableObject {
         }
         try authoring.context.environmentResource.validate()
         try authoring.context.referenceResource.validate()
-        if authoring.context.environmentResource.kind == .image {
-            guard let path = authoring.context.environmentResource.absolutePath,
-                  FileManager.default.fileExists(atPath: path) else {
-                throw SceneLibraryError.invalidDocument("Falta el HDRI externo guardado.")
-            }
-        }
-        if authoring.context.referenceResource.kind == .imageOrVideo {
-            guard let path = authoring.context.referenceResource.absolutePath,
-                  FileManager.default.fileExists(atPath: path) else {
-                throw SceneLibraryError.invalidDocument("Falta la referencia externa guardada.")
-            }
-        }
     }
 
     private func prepareSceneSourceInterpretation(
@@ -5498,10 +5631,11 @@ final class WorkspaceModel: ObservableObject {
         previewTransform = output
         sourcePlacement = placement
         try reloadTestAuthoringProfileContext()
-        let selection = try materializeSceneSelection(
+        var selection = try materializeSceneSelection(
             authoring,
             profileContext: testAuthoringProfileContext
         )
+        var discardedOverrideControlIDs: Set<String> = []
         switch context.environmentResource.kind {
         case .procedural:
             environmentRadianceFrame = nil
@@ -5522,40 +5656,66 @@ final class WorkspaceModel: ObservableObject {
                     "El HDRI externo no tiene su calibración de radiancia explícita."
                 )
             }
-            let prepared = try await prepareEnvironmentResource(
-                URL(fileURLWithPath: path),
-                inputTransformID: transform,
-                unitRadiance: calibration.sourceUnitRadianceCandelasPerSquareMeter,
-                exposureStops: calibration.exposureEV,
-                originalFileName: context.environmentResource.fileName,
-                knownHash: nil,
-                adjustmentSelection: selection
-            )
-            environmentSourceACEScgFrame = prepared.source
-            environmentAdjustmentOwner = prepared.adjustment
-            environmentRadianceFrame = prepared.radiance
-            environmentSourceName = prepared.managed.originalFileName
-            environmentSourceResolution = prepared.resolution
-            environmentSourceHash = nil
-            environmentSourceInputTransformID = transform
-            environmentSourceURL = prepared.managed.url
-            environmentSourceCalibration = prepared.calibration
-            var environment = PhysicalPipelineAuthoringState.Environment()
-            environment.sourceKind = 1
-            environment.sourceUnitRadianceCandelasPerSquareMeter =
-                calibration.sourceUnitRadianceCandelasPerSquareMeter
-            environment.exposureStops = selection.environmentExposureEV
-            environment.rotationXDegrees = selection.environmentRotationXDegrees
-            environment.rotationYDegrees = selection.environmentRotationYDegrees
-            environment.projectionMode = selection.environmentProjectionID == "finite-sphere"
-                ? 1 : 0
-            environment.sphereCenterMeters = [
-                selection.environmentSphereCenterXMeters,
-                selection.environmentSphereCenterYMeters,
-                selection.environmentSphereCenterZMeters,
-            ]
-            environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
-            authoredImageEnvironment = environment
+            do {
+                guard FileManager.default.fileExists(atPath: path) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                let prepared = try await prepareEnvironmentResource(
+                    URL(fileURLWithPath: path),
+                    inputTransformID: transform,
+                    unitRadiance: calibration.sourceUnitRadianceCandelasPerSquareMeter,
+                    exposureStops: calibration.exposureEV,
+                    originalFileName: context.environmentResource.fileName,
+                    knownHash: nil,
+                    adjustmentSelection: selection
+                )
+                environmentSourceACEScgFrame = prepared.source
+                environmentAdjustmentOwner = prepared.adjustment
+                environmentRadianceFrame = prepared.radiance
+                environmentSourceName = prepared.managed.originalFileName
+                environmentSourceResolution = prepared.resolution
+                environmentSourceHash = nil
+                environmentSourceInputTransformID = transform
+                environmentSourceURL = prepared.managed.url
+                environmentSourceCalibration = prepared.calibration
+                var environment = PhysicalPipelineAuthoringState.Environment()
+                environment.sourceKind = 1
+                environment.sourceUnitRadianceCandelasPerSquareMeter =
+                    calibration.sourceUnitRadianceCandelasPerSquareMeter
+                environment.exposureStops = selection.environmentExposureEV
+                environment.rotationXDegrees = selection.environmentRotationXDegrees
+                environment.rotationYDegrees = selection.environmentRotationYDegrees
+                environment.projectionMode = selection.environmentProjectionID == "finite-sphere"
+                    ? 1 : 0
+                environment.sphereCenterMeters = [
+                    selection.environmentSphereCenterXMeters,
+                    selection.environmentSphereCenterYMeters,
+                    selection.environmentSphereCenterZMeters,
+                ]
+                environment.sphereRadiusMeters = selection.environmentSphereRadiusMeters
+                authoredImageEnvironment = environment
+            } catch {
+                savedSceneOpenWarnings.append("HDRI descartado: \(path)")
+                environmentRadianceFrame = nil
+                environmentSourceACEScgFrame = nil
+                environmentAdjustmentOwner = nil
+                authoredImageEnvironment = nil
+                environmentSourceName = nil
+                environmentSourceResolution = nil
+                environmentSourceHash = nil
+                environmentSourceInputTransformID = nil
+                environmentSourceURL = nil
+                environmentSourceCalibration = nil
+                selection = try RustTestAuthoringCoordinator.apply(
+                    .setChoice(
+                        controlID: "environment-source",
+                        optionID: authoring.profiles.environmentID
+                    ),
+                    to: selection,
+                    profileContext: testAuthoringProfileContext
+                )
+                discardedOverrideControlIDs.insert("environment-source")
+            }
         }
         try applyTestAuthoringSelection(
             selection,
@@ -5567,6 +5727,7 @@ final class WorkspaceModel: ObservableObject {
             physicalModel.setQuality(quality)
         }
         explicitSceneOverrideControlIDs = Set(authoring.overrides.map(\.controlID))
+            .subtracting(discardedOverrideControlIDs)
         physicalModel.invalidateExternalParameters()
         // Resource pixels are intentionally external and are restored only through their exact
         // authored path and interpretation, never through a library copy or hash lookup.
@@ -5592,18 +5753,44 @@ final class WorkspaceModel: ObservableObject {
                   let placementRaw = context.referenceResource.placementID,
                   let referencePlacement = SourcePlacement(stableID: placementRaw)
             else { throw SceneLibraryError.invalidDocument("La referencia guardada no es compatible.") }
-            let asset = ManagedReferenceAsset(url: URL(fileURLWithPath: path), originalFileName: name)
-            referenceSourceURL = asset.url
-            referenceInputTransformID = transform
-            referenceInputTransform = input
-            referenceAlphaMode = alpha
-            referenceSignalColorModel = color
-            referenceSignalMatrix = matrix
-            referenceSignalRange = range
-            self.referencePlacement = referencePlacement
-            referenceFrameName = name
-            referenceMatchCorners = context.referenceResource.corners.map { CGPoint(x: $0.x, y: $0.y) }
-            try await loadManagedReferenceFrame(asset, keepAuthoredCorners: true)
+            do {
+                guard FileManager.default.fileExists(atPath: path) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                let asset = ManagedReferenceAsset(
+                    url: URL(fileURLWithPath: path), originalFileName: name
+                )
+                referenceSourceURL = asset.url
+                referenceInputTransformID = transform
+                referenceInputTransform = input
+                referenceAlphaMode = alpha
+                referenceSignalColorModel = color
+                referenceSignalMatrix = matrix
+                referenceSignalRange = range
+                self.referencePlacement = referencePlacement
+                referenceFrameName = name
+                referenceMatchCorners = context.referenceResource.corners.map {
+                    CGPoint(x: $0.x, y: $0.y)
+                }
+                try await loadManagedReferenceFrame(asset, keepAuthoredCorners: true)
+            } catch {
+                savedSceneOpenWarnings.append("Referencia descartada: \(path)")
+                referenceSession.reset()
+                referenceACEScgFrame = nil
+                referenceForegroundFrame = nil
+                referenceForegroundIsDeliveryAligned = false
+                referenceSourceURL = nil
+                referenceInputTransformID = nil
+                referenceSourceHash = nil
+                referenceTimelineInfo = nil
+                referenceFrameName = nil
+                referenceFrameDetail = nil
+                self.referencePlacement = .fit
+                referenceMatchCorners = []
+                referenceMatchProjectedCorners = []
+                referenceMatchErrorPixels = nil
+                referenceMatchEnabled = false
+            }
         }
         _ = undoManager // Opening a scene deliberately starts a new authoring baseline.
     }

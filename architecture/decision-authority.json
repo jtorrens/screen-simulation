@@ -46,6 +46,7 @@
       },
       "enforcement": [
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift"
       ]
     },

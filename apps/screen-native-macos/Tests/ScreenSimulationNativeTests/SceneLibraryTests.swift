@@ -220,6 +220,221 @@ private func scalarControl(
 }
 
 @MainActor
+@Test func unavailableReferenceOpensSceneWithoutTheReferenceAndWarns() async throws {
+    let workspace = WorkspaceModel()
+    let baseAuthoring = try sceneAuthoring()
+
+    let invalidReference = FileManager.default.temporaryDirectory
+        .appendingPathComponent("unreadable-reference-\(UUID().uuidString).mov")
+    try Data("not a movie".utf8).write(to: invalidReference)
+    defer { try? FileManager.default.removeItem(at: invalidReference) }
+
+    let context = baseAuthoring.context
+    let invalidAuthoring = SceneAuthoringDocument(
+        profiles: baseAuthoring.profiles,
+        overrides: baseAuthoring.overrides,
+        modelOverrides: baseAuthoring.modelOverrides,
+        context: .init(
+            sourceInputTransformID: context.sourceInputTransformID,
+            sourceAlphaMode: context.sourceAlphaMode,
+            sourceColorModel: context.sourceColorModel,
+            sourceYUVMatrix: context.sourceYUVMatrix,
+            sourceSignalRange: context.sourceSignalRange,
+            sourcePlacementID: context.sourcePlacementID,
+            previewOutputTransformID: context.previewOutputTransformID,
+            previewPhaseID: context.previewPhaseID,
+            environmentResource: context.environmentResource,
+            referenceResource: .init(
+                kind: .imageOrVideo,
+                fileName: invalidReference.lastPathComponent,
+                absolutePath: invalidReference.path,
+                inputTransformID: "srgb-encoded-rec709",
+                alphaMode: StudioAlphaMode.ignore.rawValue,
+                signalColorModel: StudioSignalColorModel.rgb.rawValue,
+                signalMatrix: StudioSignalMatrix.bt709.rawValue,
+                signalRange: StudioSignalRange.full.rawValue,
+                placementID: "fit",
+                corners: [
+                    .init(x: 0, y: 0), .init(x: 1, y: 0),
+                    .init(x: 1, y: 1), .init(x: 0, y: 1),
+                ]
+            )
+        ),
+        environmentCalibration: baseAuthoring.environmentCalibration
+    )
+    let incomingID = UUID()
+    let incoming = SavedScene(
+        id: incomingID,
+        name: "No debe publicarse",
+        thumbnailFileName: "\(incomingID.uuidString.lowercased()).png",
+        snapshot: .init(
+            source: .init(
+                kind: .syntheticPattern,
+                patternRawValue: SyntheticPattern.animatedCheckerboard.rawValue,
+                assets: [], missingMedia: nil
+            ),
+            currentFrame: 7,
+            viewerZoom: 2,
+            viewerPanX: 40,
+            viewerPanY: -30,
+            viewerIsFitted: false,
+            authoring: invalidAuthoring
+        )
+    )
+
+    await workspace.openSavedScene(incoming, undoManager: nil)
+
+    let opened = try workspace.captureSavedScene().snapshot
+    #expect(workspace.errorMessage?.contains("Referencia descartada") == true)
+    #expect(opened.source.patternRawValue == SyntheticPattern.animatedCheckerboard.rawValue)
+    #expect(opened.authoring.context.referenceResource.kind == .none)
+    #expect(opened.authoring.context.referenceResource.absolutePath == nil)
+    #expect(opened.authoring.profiles == incoming.snapshot.authoring.profiles)
+}
+
+@MainActor
+@Test func missingExternalResourcesOpenAsCleanNewSceneInputs() async throws {
+    let base = try sceneAuthoring()
+    let missingRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("missing-scene-resources-\(UUID().uuidString)")
+    let sourcePath = missingRoot.appendingPathComponent("source.mov").path
+    let referencePath = missingRoot.appendingPathComponent("reference.mov").path
+    let environmentPath = missingRoot.appendingPathComponent("environment.exr").path
+    let authoring = SceneAuthoringDocument(
+        profiles: base.profiles,
+        overrides: [.choice("environment-source", "environment-image")],
+        modelOverrides: base.modelOverrides,
+        context: .init(
+            sourceInputTransformID: base.context.sourceInputTransformID,
+            sourceAlphaMode: base.context.sourceAlphaMode,
+            sourceColorModel: base.context.sourceColorModel,
+            sourceYUVMatrix: base.context.sourceYUVMatrix,
+            sourceSignalRange: base.context.sourceSignalRange,
+            sourcePlacementID: base.context.sourcePlacementID,
+            previewOutputTransformID: base.context.previewOutputTransformID,
+            previewPhaseID: base.context.previewPhaseID,
+            environmentResource: .init(
+                kind: .image,
+                fileName: "environment.exr",
+                absolutePath: environmentPath,
+                inputTransformID: "acescg-linear"
+            ),
+            referenceResource: .init(
+                kind: .imageOrVideo,
+                fileName: "reference.mov",
+                absolutePath: referencePath,
+                inputTransformID: "srgb-encoded-rec709",
+                alphaMode: StudioAlphaMode.ignore.rawValue,
+                signalColorModel: StudioSignalColorModel.rgb.rawValue,
+                signalMatrix: StudioSignalMatrix.bt709.rawValue,
+                signalRange: StudioSignalRange.full.rawValue,
+                placementID: "fit",
+                corners: [
+                    .init(x: 0, y: 0), .init(x: 1, y: 0),
+                    .init(x: 1, y: 1), .init(x: 0, y: 1),
+                ]
+            )
+        ),
+        environmentCalibration: try .init(
+            inputTransformID: "acescg-linear",
+            sourceUnitRadianceCandelasPerSquareMeter: 1,
+            exposureEV: 0
+        )
+    )
+    let id = UUID()
+    let scene = SavedScene(
+        id: id,
+        name: "Recursos ausentes",
+        thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: .init(
+            source: .init(
+                kind: .externalMedia,
+                patternRawValue: nil,
+                assets: [.init(absolutePath: sourcePath)],
+                missingMedia: .init(
+                    originalName: "source.mov", width: 1920, height: 1080,
+                    frameRateNumerator: 24, frameRateDenominator: 1,
+                    frameCount: 100, durationNumerator: 100, durationDenominator: 24
+                )
+            ),
+            currentFrame: 12,
+            viewerZoom: 1,
+            viewerPanX: 0,
+            viewerPanY: 0,
+            viewerIsFitted: true,
+            authoring: authoring
+        )
+    )
+    let workspace = WorkspaceModel()
+
+    await workspace.openSavedScene(scene, undoManager: nil)
+
+    let opened = try workspace.captureSavedScene().snapshot
+    #expect(workspace.errorMessage?.contains("Fuente descartada") == true)
+    #expect(workspace.errorMessage?.contains("Referencia descartada") == true)
+    #expect(workspace.errorMessage?.contains("HDRI descartado") == true)
+    #expect(opened.source.kind == .syntheticPattern)
+    #expect(opened.source.patternRawValue == SyntheticPattern.animatedCheckerboard.rawValue)
+    #expect(opened.source.assets.isEmpty)
+    #expect(opened.authoring.context.referenceResource.kind == .none)
+    #expect(opened.authoring.context.environmentResource.kind == .procedural)
+    #expect(opened.authoring.overrides.contains(where: {
+        $0.controlID == "environment-source"
+    }) == false)
+}
+
+@MainActor
+@Test func structurallyInvalidSceneOpenLeavesActiveSceneUnchanged() async throws {
+    let workspace = WorkspaceModel()
+    let base = try sceneAuthoring()
+    func scene(_ authoring: SceneAuthoringDocument, pattern: SyntheticPattern) -> SavedScene {
+        let id = UUID()
+        return .init(
+            id: id,
+            name: "Escena \(id)",
+            thumbnailFileName: "\(id.uuidString.lowercased()).png",
+            snapshot: .init(
+                source: .init(
+                    kind: .syntheticPattern,
+                    patternRawValue: pattern.rawValue,
+                    assets: [], missingMedia: nil
+                ),
+                currentFrame: 0,
+                viewerZoom: 1,
+                viewerPanX: 0,
+                viewerPanY: 0,
+                viewerIsFitted: true,
+                authoring: authoring
+            )
+        )
+    }
+    await workspace.openSavedScene(scene(base, pattern: .eyeChart), undoManager: nil)
+    let before = try workspace.captureSavedScene().snapshot
+    let invalid = SceneAuthoringDocument(
+        profiles: .init(
+            deviceID: "missing-device",
+            coverGlassID: base.profiles.coverGlassID,
+            captureID: base.profiles.captureID,
+            lensID: base.profiles.lensID,
+            environmentID: base.profiles.environmentID,
+            deliveryID: base.profiles.deliveryID,
+            recordingID: base.profiles.recordingID
+        ),
+        overrides: base.overrides,
+        modelOverrides: base.modelOverrides,
+        context: base.context,
+        environmentCalibration: base.environmentCalibration
+    )
+
+    await workspace.openSavedScene(
+        scene(invalid, pattern: .animatedCheckerboard), undoManager: nil
+    )
+
+    #expect(workspace.errorMessage?.contains("missing-device") == true)
+    #expect(try workspace.captureSavedScene().snapshot == before)
+}
+
+@MainActor
 @Test func autosaveSurvivesSceneDeletionAndRestoresAsANewScene() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-autosave-\(UUID().uuidString)")
