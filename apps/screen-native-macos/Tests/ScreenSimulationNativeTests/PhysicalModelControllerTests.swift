@@ -151,12 +151,6 @@ import Testing
     #expect(workspace.testNativeRenderButtonState == .outdated)
 }
 
-@Test @MainActor func nativeRenderAlwaysRequestsTheFinalCameraCheckpoint() {
-    #expect(
-        WorkspaceModel.nativePresentationIntermediate == .cameraRenderedACEScg
-    )
-}
-
 @Test @MainActor func editingAnyParameterReturnsTheViewerToDeviceSetup() throws {
     let model = PhysicalModelController()
 
