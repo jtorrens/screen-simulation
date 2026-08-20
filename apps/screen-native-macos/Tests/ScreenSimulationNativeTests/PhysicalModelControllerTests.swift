@@ -132,6 +132,22 @@ import Testing
     #expect(workspace.testNativeRenderButtonState == .outdated)
 }
 
+@Test @MainActor func changingTheReferencePlateInvalidatesTheNativeResult() throws {
+    let workspace = WorkspaceModel()
+    let dimensions = try PhysicalDimensions(width: 8064, height: 6048)
+    try workspace.physicalModel.beginNative()
+    workspace.physicalModel.completeNative(
+        nativeDimensions: dimensions,
+        effectiveDimensions: dimensions
+    )
+    #expect(workspace.testNativeRenderButtonState == .complete)
+
+    workspace.changeReferencePlate(.middleGray)
+
+    #expect(workspace.physicalModel.frameState == .stale)
+    #expect(workspace.testNativeRenderButtonState == .outdated)
+}
+
 @Test @MainActor func editingAnyParameterReturnsTheViewerToDeviceSetup() throws {
     let model = PhysicalModelController()
 

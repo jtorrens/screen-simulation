@@ -3191,10 +3191,14 @@ final class WorkspaceModel: ObservableObject {
 
     func changeReferencePlate(_ value: ReferencePlate) {
         guard value != .videoReference || referenceACEScgFrame != nil else { return }
+        guard referencePlate != value else { return }
         referencePlate = value
         syntheticReferencePlateCache = nil
         if value != .videoReference { referenceMatchEnabled = false }
         applyTimelineAuthority(resetRange: true)
+        // Reference plate selection changes the final post-physical composition. It is
+        // authored scene state, so a completed Native frame can never remain current.
+        physicalModel.invalidateExternalParameters()
         rebuildPhysicalSelectedFrame()
     }
 
