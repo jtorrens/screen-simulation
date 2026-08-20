@@ -1098,6 +1098,13 @@ def validate_interactive_device_background() -> None:
         raise ValidationError(
             "interactive background changes must invalidate Native and return to Setup"
         )
+    native_start = workspace.index("func renderSelectedPhysicalFrameNative()")
+    native_end = workspace.index("func cancelSelectedPhysicalFrameNative()", native_start)
+    native_body = workspace[native_start:native_end]
+    if "requestedIntermediateOverride: Self.nativePresentationIntermediate" not in native_body:
+        raise ValidationError(
+            "Native Render must request the final camera checkpoint for plate composition"
+        )
     if "InteractivePreviewBackground.allCases" not in content:
         raise ValidationError("Preview toolbar omits the background combo")
     queue_start = workspace.index("private func renderQueuedSceneFrame(")

@@ -416,6 +416,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var modelDeviceDefinition: DeviceDefinition?
     @Published private(set) var physicalAuthoringState: PhysicalPipelineAuthoringState?
     @Published private(set) var requestedPhysicalIntermediate = PhysicalIntermediate.developedACEScg
+    /// Native Render is the final camera result, not a selected Test checkpoint.
+    /// Test-phase selection remains an interactive diagnostic concern.
+    static let nativePresentationIntermediate = PhysicalIntermediate.cameraRenderedACEScg
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
     @Published private(set) var originACEScgFrame: StudioColorMetalFrame?
     @Published private(set) var deviceSignalCheckpoint: DeviceSignalCheckpoint?
@@ -2727,7 +2730,10 @@ final class WorkspaceModel: ObservableObject {
         physicalNativeTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let submission = try await submitPhysicalJob(quality: .native)
+                let submission = try await submitPhysicalJob(
+                    quality: .native,
+                    requestedIntermediateOverride: Self.nativePresentationIntermediate
+                )
                 physicalNativeJob = submission.job
                 if nativeCancellationRequested {
                     _ = submission.job.cancel()
@@ -3985,6 +3991,10 @@ final class WorkspaceModel: ObservableObject {
     private struct SubmittedPhysicalJob {
         let job: PhysicalMetalFrameJob
         let scene: ResolvedSceneFrame
+        /// The immutable checkpoint requested by this individual submission.
+        /// Native presentation deliberately differs from the Test diagnostic
+        /// selection, so polling must never re-read mutable UI state here.
+        let requestedIntermediate: PhysicalIntermediate
     }
 
     /// The sole per-frame materialization point for the physical request. The scene authoring
@@ -7230,7 +7240,11 @@ final class WorkspaceModel: ObservableObject {
             requestedIntermediate: effectiveIntermediate,
             vfxTransparency: vfxTransparency
         )
-        return SubmittedPhysicalJob(job: job, scene: resolvedFrame)
+        return SubmittedPhysicalJob(
+            job: job,
+            scene: resolvedFrame,
+            requestedIntermediate: effectiveIntermediate
+        )
     }
 
     private func resolvedOutputSignal() throws -> StudioColorMode {
@@ -7790,7 +7804,7 @@ final class WorkspaceModel: ObservableObject {
             case .complete:
                 guard !setupOwnsViewerPublication,
                       snapshot.parameterRevision == physicalModel.parameterRevision,
-                      snapshot.returnedIntermediate == requestedPhysicalIntermediate,
+                      snapshot.returnedIntermediate == submission.requestedIntermediate,
                       let frame = snapshot.frame,
                       let effective = snapshot.effectiveDimensions
                 else { throw CancellationError() }
