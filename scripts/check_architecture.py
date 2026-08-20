@@ -1054,6 +1054,48 @@ def validate_test_inspector_hierarchy() -> None:
     ):
         if forbidden in mac_ui:
             raise ValidationError("Swift inferred inspector ownership: " + forbidden)
+
+
+def validate_interactive_device_background() -> None:
+    native_root = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative"
+    )
+    background = (native_root / "InteractivePreviewBackground.swift").read_text(
+        encoding="utf-8"
+    )
+    renderer = (native_root / "SetupFramingRenderer.swift").read_text(encoding="utf-8")
+    workspace = (native_root / "WorkspaceModel.swift").read_text(encoding="utf-8")
+    content = (native_root / "ContentView.swift").read_text(encoding="utf-8")
+    for required in (
+        "case reference",
+        "case vfxChecker",
+        "case black",
+        "case white",
+        "case middleGray",
+    ):
+        if required not in background:
+            raise ValidationError("interactive background omits option: " + required)
+    for required in (
+        "interactive_background(",
+        "delivery_pixel / 32.0f",
+        "float4(0.18f, 0.18f, 0.18f, 1)",
+        "value.rgb + background.rgb * (1.0f - matte)",
+    ):
+        if required not in renderer:
+            raise ValidationError("interactive compositor omits contract: " + required)
+    for required in (
+        "interactivePreviewBackground",
+        "changeInteractivePreviewBackground",
+        "publishInteractiveComposite",
+    ):
+        if required not in workspace:
+            raise ValidationError("Workspace omits interactive background: " + required)
+    if "InteractivePreviewBackground.allCases" not in content:
+        raise ValidationError("Preview toolbar omits the background combo")
+    queue_start = workspace.index("private func renderQueuedSceneFrame(")
+    queue_end = workspace.index("func makeFusionPackageRequest(", queue_start)
+    if "interactivePreviewBackground" in workspace[queue_start:queue_end]:
+        raise ValidationError("Render Queue consumes workstation Preview background")
 def main() -> int:
     try:
         paths = repository_paths()
@@ -1072,6 +1114,7 @@ def main() -> int:
         validate_exact_temporal_inputs()
         validate_setup_diagnostic_boundary()
         validate_test_inspector_hierarchy()
+        validate_interactive_device_background()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)

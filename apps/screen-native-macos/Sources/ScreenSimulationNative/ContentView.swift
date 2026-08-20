@@ -2479,6 +2479,18 @@ struct ContentView: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 330)
+                Picker("Fondo", selection: Binding(
+                    get: { model.interactivePreviewBackground },
+                    set: { model.changeInteractivePreviewBackground($0) }
+                )) {
+                    ForEach(InteractivePreviewBackground.allCases) {
+                        Text($0.label).tag($0)
+                    }
+                }
+                .labelsHidden()
+                .accessibilityLabel("Fondo de Preview y Render nativo")
+                .help("Fondo de Preview y Render nativo")
+                .frame(width: 135)
                 if showTestPhasePicker, let presentation = model.testPresentation {
                     TestPreviewControls(
                         state: presentation,

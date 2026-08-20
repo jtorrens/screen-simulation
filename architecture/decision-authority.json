@@ -225,6 +225,22 @@
       ]
     },
     {
+      "id": "ui.interactive-device-background",
+      "scope": "workstation Preview, Setup and Native Render presentation background",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Interactive Device background"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/InteractivePreviewBackground.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SetupFramingRendererTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "ui.native-action-state",
       "scope": "persistent native workstation actions and capability-backed availability",
       "owner": {

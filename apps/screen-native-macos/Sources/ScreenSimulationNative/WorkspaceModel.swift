@@ -330,6 +330,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var previewTransform = StudioColorOutputTransform.catalog.first {
         $0.id == "aces2-srgb-sdr-100"
     }!
+    @Published private(set) var interactivePreviewBackground = InteractivePreviewBackground.reference
     @Published var systemDisplayInfo = StudioColorSystemDisplayInfo.unavailable
     @Published var alphaMode = StudioAlphaMode.ignore
     @Published var signalColorModel = StudioSignalColorModel.rgb
@@ -3048,8 +3049,6 @@ final class WorkspaceModel: ObservableObject {
         referenceRefreshTask?.cancel()
         referenceRefreshTask = nil
         referenceACEScgFrame = nil
-        referenceForegroundFrame = nil
-        referenceForegroundIsDeliveryAligned = false
         referenceSourceURL = nil
         referenceInputTransformID = nil
         referenceSourceHash = nil
@@ -3062,7 +3061,13 @@ final class WorkspaceModel: ObservableObject {
         referenceMatchErrorPixels = nil
         referenceMatchEnabled = false
         applyTimelineAuthority(resetRange: true)
-        rebuildPhysicalSelectedFrame()
+        if setupOwnsViewerPublication {
+            rebuildPhysicalSelectedFrame()
+        } else if let foreground = referenceForegroundFrame {
+            publishInteractiveComposite(foreground)
+        } else {
+            rebuildPhysicalSelectedFrame()
+        }
     }
 
     func setReferenceMatchEnabled(_ enabled: Bool) {
@@ -3075,7 +3080,7 @@ final class WorkspaceModel: ObservableObject {
                 resetTargetsToVisibleFrame: referenceMatchCorners.count != 4
             )
         } else {
-            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            rebuildPhysicalSelectedFrame()
         }
     }
 
@@ -3120,7 +3125,7 @@ final class WorkspaceModel: ObservableObject {
             referenceMatchErrorPixels = nil
             applyTimelineAuthority(resetRange: true)
             try await rebuildReferenceFrame()
-            publishReferenceMatchSetup(resetTargetsToVisibleFrame: true)
+            rebuildPhysicalSelectedFrame()
             status = "Referencia · \(managed.originalFileName) · \(info.detail) · interpretación explícita conservada"
         } catch {
             errorMessage = error.localizedDescription
@@ -3161,7 +3166,11 @@ final class WorkspaceModel: ObservableObject {
 
     func changeReferencePlacement(_ value: SourcePlacement) {
         referencePlacement = value
-        publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+        if referenceMatchEnabled {
+            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+        } else {
+            rebuildPhysicalSelectedFrame()
+        }
     }
 
     private func refreshReferenceInterpretation() {
@@ -3533,6 +3542,18 @@ final class WorkspaceModel: ObservableObject {
         }
         previewTransform = value
         objectWillChange.send()
+    }
+
+    func changeInteractivePreviewBackground(_ value: InteractivePreviewBackground) {
+        guard value != interactivePreviewBackground else { return }
+        interactivePreviewBackground = value
+        if setupOwnsViewerPublication {
+            rebuildPhysicalSelectedFrame()
+        } else if let foreground = referenceForegroundFrame {
+            publishInteractiveComposite(foreground)
+        } else {
+            rebuildPhysicalSelectedFrame()
+        }
     }
 
     func togglePlayback() {
@@ -6176,11 +6197,15 @@ final class WorkspaceModel: ObservableObject {
                 try Task.checkCancellation()
                 guard self.referenceSourceURL == url else { return }
                 if self.referenceMatchEnabled || self.physicalModel.quality == .setup {
-                    self.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+                    if self.referenceMatchEnabled {
+                        self.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+                    } else {
+                        self.publishSetupFraming()
+                    }
                 } else if let foreground = self.referenceForegroundFrame {
-                    self.publishReferenceComposite(foreground)
+                    self.publishInteractiveComposite(foreground)
                 } else {
-                    self.publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+                    self.rebuildPhysicalSelectedFrame()
                 }
             } catch is CancellationError {
             } catch {
@@ -6225,11 +6250,15 @@ final class WorkspaceModel: ObservableObject {
     private func rebuildReferenceFrameAndPublish() async throws {
         try await rebuildReferenceFrame()
         if referenceMatchEnabled || physicalModel.quality == .setup {
-            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            if referenceMatchEnabled {
+                publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            } else {
+                publishSetupFraming()
+            }
         } else if let foreground = referenceForegroundFrame {
-            publishReferenceComposite(foreground)
+            publishInteractiveComposite(foreground)
         } else {
-            publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            rebuildPhysicalSelectedFrame()
         }
     }
 
@@ -6422,21 +6451,13 @@ final class WorkspaceModel: ObservableObject {
         if reflectionEnvironmentEditorEnabled {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
-            if referenceACEScgFrame != nil {
-                publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
-            } else {
-                publishSetupFraming()
-            }
+            publishSetupFraming()
             return
         }
         if physicalModel.quality == .setup {
             _ = physicalInteractiveJob?.cancel()
             physicalInteractiveTask?.cancel()
-            if referenceACEScgFrame != nil {
-                publishReferenceMatchSetup(resetTargetsToVisibleFrame: referenceMatchCorners.count != 4)
-            } else {
-                publishSetupFraming()
-            }
+            publishSetupFraming()
             return
         }
         if physicalModel.quality == .environmentSetup {
@@ -6526,9 +6547,12 @@ final class WorkspaceModel: ObservableObject {
             )
             let result = try setupFramingRenderer!.render(
                 source: sourceACEScgFrame,
+                reference: interactivePreviewBackground == .reference
+                    ? referenceACEScgFrame : nil,
                 sourcePlacement: sourcePlacement,
-                referencePlacement: .stretch,
-                plan: plan
+                referencePlacement: referencePlacement,
+                plan: plan,
+                interactiveBackground: interactivePreviewBackground
             )
             publishSceneFrame(result.frame, scene: resolved)
             setupDeviceBoundary = result.boundary
@@ -6658,11 +6682,10 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    private func publishReferenceComposite(
+    private func publishInteractiveComposite(
         _ foreground: StudioColorMetalFrame,
         resolvedScene: ResolvedSceneFrame? = nil
     ) {
-        guard let reference = referenceACEScgFrame else { return }
         do {
             let resolved: ResolvedSceneFrame
             if let resolvedScene { resolved = resolvedScene }
@@ -6680,12 +6703,14 @@ final class WorkspaceModel: ObservableObject {
                 deliveryPlacementID: testAuthoringSelection?.deliveryPlacementID ?? "fit",
                 deliveryBackgroundID: "black"
             )
-            let result = try setupFramingRenderer!.renderReferenceComposite(
+            let result = try setupFramingRenderer!.renderCameraComposite(
                 cameraResult: foreground,
-                reference: reference,
+                reference: interactivePreviewBackground == .reference
+                    ? referenceACEScgFrame : nil,
                 referencePlacement: referencePlacement,
                 plan: plan,
-                deliveryAligned: referenceForegroundIsDeliveryAligned
+                deliveryAligned: referenceForegroundIsDeliveryAligned,
+                interactiveBackground: interactivePreviewBackground
             )
             publishSceneFrame(result.frame, scene: resolved)
             setupDeviceBoundary = result.boundary
@@ -7025,7 +7050,12 @@ final class WorkspaceModel: ObservableObject {
                 deliveryBackgroundID: "black"
             )
             let result = try setupFramingRenderer!.renderFocus(
-                source: sourceACEScgFrame, plan: plan
+                source: sourceACEScgFrame,
+                reference: interactivePreviewBackground == .reference
+                    ? referenceACEScgFrame : nil,
+                referencePlacement: referencePlacement,
+                plan: plan,
+                interactiveBackground: interactivePreviewBackground
             )
             publishSceneFrame(result.frame, scene: resolved)
             setupDeviceBoundary = result.boundary
@@ -7682,8 +7712,7 @@ final class WorkspaceModel: ObservableObject {
             if result == .deliveryRaster {
                 referenceForegroundFrame = delivery
                 referenceForegroundIsDeliveryAligned = true
-                if referenceACEScgFrame != nil { publishReferenceComposite(delivery) }
-                else { publishCurrentSceneFrame(delivery) }
+                publishInteractiveComposite(delivery)
                 monitorOutput.update(frame: delivery, display: metalDisplay)
                 return
             }
@@ -7719,8 +7748,7 @@ final class WorkspaceModel: ObservableObject {
             }
             referenceForegroundFrame = frame
             referenceForegroundIsDeliveryAligned = true
-            if referenceACEScgFrame != nil { publishReferenceComposite(frame) }
-            else { publishCurrentSceneFrame(frame) }
+            publishInteractiveComposite(frame)
             monitorOutput.update(frame: frame, display: metalDisplay)
         } catch {
             errorMessage = error.localizedDescription
@@ -7780,7 +7808,11 @@ final class WorkspaceModel: ObservableObject {
                 } else {
                     presentationFrame = frame
                 }
-                referenceForegroundFrame = presentationFrame
+                let supportsInteractiveBackground =
+                    snapshot.returnedIntermediate == .deviceVfxTransparency
+                    || snapshot.returnedIntermediate == .cameraRenderedACEScg
+                referenceForegroundFrame = supportsInteractiveBackground
+                    ? presentationFrame : nil
                 referenceForegroundIsDeliveryAligned = false
                 let duration = started.duration(to: .now)
                 let elapsed = Double(duration.components.seconds)
@@ -7805,8 +7837,8 @@ final class WorkspaceModel: ObservableObject {
                         return
                     }
                 }
-                if referenceACEScgFrame != nil {
-                    publishReferenceComposite(
+                if supportsInteractiveBackground {
+                    publishInteractiveComposite(
                         presentationFrame,
                         resolvedScene: submission.scene
                     )
