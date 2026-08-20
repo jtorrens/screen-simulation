@@ -31,7 +31,7 @@ public struct TestAuthoringView: View {
     public var body: some View {
         VStack(spacing: 12) {
             if showsGeneral, !quickControls.isEmpty {
-                TestPhaseCard(label: "General") {
+                TestPhaseCard(label: "General", initiallyExpanded: true) {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         ForEach(quickControls) { control in
                             controlView(control)
@@ -386,7 +386,7 @@ public struct TestPhaseCard<Content: View>: View {
         label: String,
         effectSummary: String = "",
         headerControl: AnyView? = nil,
-        initiallyExpanded: Bool = true,
+        initiallyExpanded: Bool = false,
         @ViewBuilder content: () -> Content
     ) {
         self.label = label
@@ -435,7 +435,7 @@ public struct TestPhaseCard<Content: View>: View {
 private struct TestInspectorSubcard<Content: View>: View {
     let label: String
     let content: Content
-    @State private var expanded = true
+    @State private var expanded = false
 
     init(label: String, @ViewBuilder content: () -> Content) {
         self.label = label

@@ -1042,6 +1042,9 @@ def validate_test_inspector_hierarchy() -> None:
         'Image(systemName: "chevron.right")',
         ".contentShape(Rectangle())",
         "TestInspectorSubcard",
+        'TestPhaseCard(label: "General", initiallyExpanded: true)',
+        "initiallyExpanded: Bool = false",
+        "@State private var expanded = false",
     ):
         if required not in mac_ui:
             raise ValidationError("inspector disclosure contract is incomplete: " + required)
