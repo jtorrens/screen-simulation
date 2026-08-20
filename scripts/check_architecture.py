@@ -1094,9 +1094,13 @@ def validate_interactive_device_background() -> None:
     change_start = workspace.index("func changeInteractivePreviewBackground")
     change_end = workspace.index("func togglePlayback", change_start)
     change_body = workspace[change_start:change_end]
-    if "physicalModel.invalidateExternalParameters()" not in change_body:
+    if "publishInteractiveComposite(foreground)" not in change_body:
         raise ValidationError(
-            "interactive background changes must invalidate Native and return to Setup"
+            "interactive background changes must recompose the current foreground"
+        )
+    if "physicalModel.invalidateExternalParameters()" in change_body:
+        raise ValidationError(
+            "interactive background changes must not invalidate a physical result"
         )
     native_start = workspace.index("func renderSelectedPhysicalFrameNative()")
     native_end = workspace.index("func cancelSelectedPhysicalFrameNative()", native_start)
