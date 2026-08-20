@@ -1207,9 +1207,23 @@ final class SetupFramingRenderer {
             return;
         }
         float4 value = source.sample(linear_sampler, uv);
-        value.a = 1.0f;
-        const float opacity = coverage * (s.modes.w == 3u ? 0.72f : 1.0f);
-        output.write(mix(background, value, opacity), p);
+        const float diagnostic_gain = s.modes.w == 3u ? 0.72f : 1.0f;
+        const bool composite_against_background =
+            s.presentation.x != 0u || referenceComposite;
+        if (composite_against_background) {
+            // StudioColor publishes premultiplied working RGB. Consume alpha as
+            // the visual matte without multiplying RGB by alpha a second time.
+            const float matte = coverage * diagnostic_gain
+                * clamp(value.a, 0.0f, 1.0f);
+            output.write(float4(
+                value.rgb * (coverage * diagnostic_gain)
+                    + background.rgb * (1.0f - matte),
+                1.0f
+            ), p);
+        } else {
+            value.a = 1.0f;
+            output.write(mix(background, value, coverage * diagnostic_gain), p);
+        }
     }
     """#
 }

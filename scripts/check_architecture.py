@@ -1080,6 +1080,7 @@ def validate_interactive_device_background() -> None:
         "delivery_pixel / 32.0f",
         "float4(0.18f, 0.18f, 0.18f, 1)",
         "value.rgb + background.rgb * (1.0f - matte)",
+        "background.rgb * (1.0f - matte)",
     ):
         if required not in renderer:
             raise ValidationError("interactive compositor omits contract: " + required)
@@ -1090,6 +1091,13 @@ def validate_interactive_device_background() -> None:
     ):
         if required not in workspace:
             raise ValidationError("Workspace omits interactive background: " + required)
+    change_start = workspace.index("func changeInteractivePreviewBackground")
+    change_end = workspace.index("func togglePlayback", change_start)
+    change_body = workspace[change_start:change_end]
+    if "physicalModel.invalidateExternalParameters()" not in change_body:
+        raise ValidationError(
+            "interactive background changes must invalidate Native and return to Setup"
+        )
     if "InteractivePreviewBackground.allCases" not in content:
         raise ValidationError("Preview toolbar omits the background combo")
     queue_start = workspace.index("private func renderQueuedSceneFrame(")
