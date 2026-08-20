@@ -3086,6 +3086,7 @@ final class WorkspaceModel: ObservableObject {
         // Keep the Reference phase valid by selecting its built-in VFX plate.
         referencePlate = .vfxChecker
         applyTimelineAuthority(resetRange: true)
+        invalidateNativeResultForSceneContextChange()
         rebuildPhysicalSelectedFrame()
     }
 
@@ -3118,6 +3119,7 @@ final class WorkspaceModel: ObservableObject {
             acknowledgeImportDefaults(resolution, role: "la referencia")
             referencePlacement = .fit
             referencePlate = .videoReference
+            invalidateNativeResultForSceneContextChange()
             let info = isVideo
                 ? try await referenceSession.openVideo(
                     managed.url,
@@ -3155,37 +3157,49 @@ final class WorkspaceModel: ObservableObject {
     func changeReferenceInput(
         _ value: StudioColorInputTransform, undoManager: UndoManager?
     ) {
+        guard referenceInputTransform != value else { return }
         let prior = referenceInputTransform
         registerUndo(with: undoManager, actionName: "Cambiar interpretación de referencia") { target, manager in
             target.changeReferenceInput(prior, undoManager: manager)
         }
         referenceInputTransform = value
         referenceInputTransformID = value.id
+        invalidateNativeResultForSceneContextChange()
         refreshReferenceInterpretation()
     }
 
     func changeReferenceAlpha(_ value: StudioAlphaMode) {
+        guard referenceAlphaMode != value else { return }
         referenceAlphaMode = value
+        invalidateNativeResultForSceneContextChange()
         refreshReferenceInterpretation()
     }
 
     func changeReferenceMatrix(_ value: StudioSignalMatrix) {
+        guard referenceSignalMatrix != value else { return }
         referenceSignalMatrix = value
+        invalidateNativeResultForSceneContextChange()
         refreshReferenceInterpretation()
     }
 
     func changeReferenceRange(_ value: StudioSignalRange) {
+        guard referenceSignalRange != value else { return }
         referenceSignalRange = value
+        invalidateNativeResultForSceneContextChange()
         reconfigureReferenceDecode()
     }
 
     func changeReferenceColorModel(_ value: StudioSignalColorModel) {
+        guard referenceSignalColorModel != value else { return }
         referenceSignalColorModel = value
+        invalidateNativeResultForSceneContextChange()
         reconfigureReferenceDecode()
     }
 
     func changeReferencePlacement(_ value: SourcePlacement) {
+        guard referencePlacement != value else { return }
         referencePlacement = value
+        invalidateNativeResultForSceneContextChange()
         rebuildPhysicalSelectedFrame()
     }
 
@@ -3198,8 +3212,15 @@ final class WorkspaceModel: ObservableObject {
         applyTimelineAuthority(resetRange: true)
         // Reference plate selection changes the final post-physical composition. It is
         // authored scene state, so a completed Native frame can never remain current.
-        physicalModel.invalidateExternalParameters()
+        invalidateNativeResultForSceneContextChange()
         rebuildPhysicalSelectedFrame()
+    }
+
+    /// Reference context is authored scene state outside the physical-model control
+    /// transaction. A complete Native image contains its post-physical plate, so it
+    /// must be invalidated by every change to that context before any async decode.
+    private func invalidateNativeResultForSceneContextChange() {
+        physicalModel.invalidateExternalParameters()
     }
 
     private func refreshReferenceInterpretation() {
