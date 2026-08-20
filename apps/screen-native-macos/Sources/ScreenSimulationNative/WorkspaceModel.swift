@@ -3553,18 +3553,10 @@ final class WorkspaceModel: ObservableObject {
     func changeInteractivePreviewBackground(_ value: InteractivePreviewBackground) {
         guard value != interactivePreviewBackground else { return }
         interactivePreviewBackground = value
-        // This choice substitutes only the Reference-composition plate. It is
-        // not a physical parameter: reuse the last immutable Device/camera
-        // result when one exists, exactly as Reference media refreshing does.
-        // Re-rendering here used to discard a valid Native result and publish
-        // Setup/black while the new job was pending.
-        if setupOwnsViewerPublication {
-            rebuildPhysicalSelectedFrame()
-        } else if let foreground = referenceForegroundFrame {
-            publishInteractiveComposite(foreground)
-        } else {
-            rebuildPhysicalSelectedFrame()
-        }
+        // Native publication includes this workstation Reference-composition
+        // choice. It is not scene authoring, but it still makes the published
+        // inspection stale: cancel it, return to Setup and republish the plate.
+        physicalModel.invalidateExternalParameters()
     }
 
     func togglePlayback() {
