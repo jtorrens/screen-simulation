@@ -3107,7 +3107,7 @@ final class WorkspaceModel: ObservableObject {
             let info = isVideo
                 ? try await referenceSession.openVideo(
                     managed.url,
-                    hasAlpha: referenceDetection.hasAlpha,
+                    preserveAlpha: referenceAlphaMode != .ignore,
                     colorModel: referenceSignalColorModel,
                     matrix: referenceSignalMatrix,
                     decodedRange: referenceSignalRange
@@ -3193,7 +3193,7 @@ final class WorkspaceModel: ObservableObject {
                 if Self.isVideo(url) {
                     _ = try await referenceSession.openVideo(
                         url,
-                        hasAlpha: referenceDetection.hasAlpha,
+                        preserveAlpha: referenceAlphaMode != .ignore,
                         colorModel: referenceSignalColorModel,
                         matrix: referenceSignalMatrix,
                         decodedRange: referenceSignalRange
@@ -3439,7 +3439,7 @@ final class WorkspaceModel: ObservableObject {
             let info = isVideo
                 ? try await session.openVideo(
                     first,
-                    hasAlpha: detection.hasAlpha,
+                    preserveAlpha: alphaMode != .ignore,
                     colorModel: signalColorModel,
                     matrix: signalMatrix,
                     decodedRange: signalRange
@@ -3483,7 +3483,10 @@ final class WorkspaceModel: ObservableObject {
             target.changeAlpha(prior, undoManager: manager)
         }
         alphaMode = value
-        rebuildCurrent()
+        // The selected association also owns whether the decoder must retain a
+        // channel. Reopening is required when an unlabeled alpha movie was
+        // initially decoded through an opaque Y'CbCr format.
+        reconfigureSourceDecode()
     }
 
     func changeMatrix(_ value: StudioSignalMatrix) {
@@ -3518,7 +3521,7 @@ final class WorkspaceModel: ObservableObject {
                 let info = if Self.isVideo(first), urls.count == 1 {
                     try await session.openVideo(
                         first,
-                        hasAlpha: detection.hasAlpha,
+                        preserveAlpha: alphaMode != .ignore,
                         colorModel: signalColorModel,
                         matrix: signalMatrix,
                         decodedRange: signalRange
@@ -6103,7 +6106,7 @@ final class WorkspaceModel: ObservableObject {
         let info = isVideo
             ? try await referenceSession.openVideo(
                 managed.url,
-                hasAlpha: referenceDetection.hasAlpha,
+                preserveAlpha: referenceAlphaMode != .ignore,
                 colorModel: referenceSignalColorModel,
                 matrix: referenceSignalMatrix,
                 decodedRange: referenceSignalRange
@@ -6238,7 +6241,7 @@ final class WorkspaceModel: ObservableObject {
         if isVideo {
             _ = try await referenceSession.openVideo(
                 url,
-                hasAlpha: referenceDetection.hasAlpha,
+                preserveAlpha: referenceAlphaMode != .ignore,
                 colorModel: referenceSignalColorModel,
                 matrix: referenceSignalMatrix,
                 decodedRange: referenceSignalRange

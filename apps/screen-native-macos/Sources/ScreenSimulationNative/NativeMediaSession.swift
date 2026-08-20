@@ -113,7 +113,7 @@ final class NativeMediaSession {
 
     func openVideo(
         _ url: URL,
-        hasAlpha: Bool,
+        preserveAlpha: Bool,
         colorModel: StudioSignalColorModel,
         matrix: StudioSignalMatrix,
         decodedRange: StudioSignalRange
@@ -145,16 +145,11 @@ final class NativeMediaSession {
         )
         let frameRate = exactFrameRate.framesPerSecond
         let audio = try await !asset.loadTracks(withMediaType: .audio).isEmpty
-        let pixelFormat: OSType
-        if colorModel == .rgb {
-            pixelFormat = kCVPixelFormatType_64RGBAHalf
-        } else if hasAlpha {
-            pixelFormat = kCVPixelFormatType_4444AYpCbCr16
-        } else {
-            pixelFormat = decodedRange == .full
-                ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
-                : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-        }
+        let pixelFormat = Self.requestedPixelFormat(
+            preserveAlpha: preserveAlpha,
+            colorModel: colorModel,
+            decodedRange: decodedRange
+        )
         let attributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: pixelFormat),
             kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -182,6 +177,26 @@ final class NativeMediaSession {
         info = result
         output.requestNotificationOfMediaDataChange(withAdvanceInterval: 0.03)
         return result
+    }
+
+    /// Decoder output is selected from explicit authored interpretation, not
+    /// metadata evidence. A user may elect to preserve alpha on a movie whose
+    /// container omitted its alpha declaration; requesting an opaque decoder
+    /// buffer first would irreversibly discard that authored channel.
+    static func requestedPixelFormat(
+        preserveAlpha: Bool,
+        colorModel: StudioSignalColorModel,
+        decodedRange: StudioSignalRange
+    ) -> OSType {
+        if colorModel == .rgb {
+            return kCVPixelFormatType_64RGBAHalf
+        }
+        if preserveAlpha {
+            return kCVPixelFormatType_4444AYpCbCr16
+        }
+        return decodedRange == .full
+            ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+            : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
     }
 
     func openImages(
