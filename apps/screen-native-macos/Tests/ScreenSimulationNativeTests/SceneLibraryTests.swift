@@ -438,6 +438,37 @@ private func scalarControl(
 }
 
 @MainActor
+@Test func openingScenePublishesItsInitialResolvedViewerFrame() async throws {
+    let workspace = WorkspaceModel()
+    let id = UUID()
+    let saved = SavedScene(
+        id: id,
+        name: "Publicación inicial",
+        thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: .init(
+            source: .init(
+                kind: .syntheticPattern,
+                patternRawValue: SyntheticPattern.animatedCheckerboard.rawValue,
+                assets: [],
+                missingMedia: nil
+            ),
+            currentFrame: 11,
+            viewerZoom: 1,
+            viewerPanX: 0,
+            viewerPanY: 0,
+            viewerIsFitted: true,
+            authoring: try sceneAuthoring()
+        )
+    )
+
+    await workspace.openSavedScene(saved, undoManager: nil)
+
+    #expect(workspace.errorMessage == nil)
+    #expect(workspace.metalFrame != nil)
+    #expect(workspace.hasPublishedResolvedSceneFrame)
+}
+
+@MainActor
 @Test func autosaveSurvivesSceneDeletionAndRestoresAsANewScene() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-autosave-\(UUID().uuidString)")

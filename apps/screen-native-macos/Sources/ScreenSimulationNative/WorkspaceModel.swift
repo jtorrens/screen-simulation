@@ -5168,6 +5168,13 @@ final class WorkspaceModel: ObservableObject {
             let staged = WorkspaceModel(globalLibraryStore: globalLibraryStore)
             try await staged.materializeSavedScene(scene)
             try adoptMaterializedSavedScene(from: staged)
+            // `materializeSavedScene` deliberately suppresses Viewer publication while
+            // the isolated workspace is loading its source and external resources.
+            // Re-publish only after that complete state has become the live scene: the
+            // Viewer commit must describe the same resolved frame as the scene-open
+            // success notification, never the staged source checkpoint or an empty
+            // placeholder that happens to precede it.
+            publishMaterializedSceneInitialFrame()
             _ = undoManager // Scene Open deliberately starts a new authoring baseline.
         } catch {
             errorMessage = error.localizedDescription
@@ -5363,9 +5370,34 @@ final class WorkspaceModel: ObservableObject {
         )
         activeSceneID = staged.activeSceneID
         physicalModel.invalidateExternalParameters()
-        rebuildPhysicalSelectedFrame()
         errorMessage = staged.errorMessage
         status = staged.status
+    }
+
+    /// Completes the sole Viewer publication deferred during a transactional scene
+    /// Open.  This intentionally follows the same source/checkpoint route as a
+    /// normal decoded frame, so Setup, focus, environment, Reference and interactive
+    /// physical Preview retain their existing owners.
+    private func publishMaterializedSceneInitialFrame() {
+        guard let sourceACEScgFrame else {
+            publishUnresolvedFrame(nil)
+            return
+        }
+        if !physicalPreviewOwnsViewerPublication {
+            publishCurrentSceneFrame(originACEScgFrame ?? sourceACEScgFrame)
+            monitorOutput.update(
+                frame: originACEScgFrame ?? sourceACEScgFrame,
+                display: metalDisplay
+            )
+        }
+        rebuildPhysicalSelectedFrame()
+        publishSelectedTestPreview()
+    }
+
+    /// Test-visible proof that the Viewer has received a frame carrying the current
+    /// resolved-scene identity, rather than merely a staged source texture.
+    var hasPublishedResolvedSceneFrame: Bool {
+        metalFrame != nil && publishedSceneIdentity != nil
     }
 
     private func restoreTrackingScene(_ saved: SavedTrackingScene?) throws {
