@@ -69,7 +69,7 @@ typedef struct {
     uint32_t timestamp_denominator;
 } ScreenFfmpegDecodedFrameV1;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 40u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 41u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -222,6 +222,12 @@ typedef struct {
     float step;
     bool slider_visible;
     ScreenUTF8View unit;
+    ScreenUTF8View inspector_group_id;
+    ScreenUTF8View inspector_group_label;
+    uint32_t inspector_group_order;
+    ScreenUTF8View inspector_section_id;
+    ScreenUTF8View inspector_section_label;
+    uint32_t inspector_section_order;
 } ScreenTestControlDescriptorV5;
 
 typedef struct {

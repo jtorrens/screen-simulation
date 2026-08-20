@@ -648,6 +648,262 @@ pub enum TestControlRequirement {
     },
 }
 
+impl TestControlRequirement {
+    pub const fn stable_id(&self) -> &'static str {
+        match self {
+            Self::Choice { id, .. }
+            | Self::Scalar { id, .. }
+            | Self::Toggle { id, .. }
+            | Self::Action { id, .. } => id,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TestInspectorLocation {
+    pub group_id: &'static str,
+    pub group_label: &'static str,
+    pub group_order: u32,
+    pub section_id: &'static str,
+    pub section_label: &'static str,
+    pub section_order: u32,
+}
+
+const fn inspector_location(
+    group_id: &'static str,
+    group_label: &'static str,
+    group_order: u32,
+    section_id: &'static str,
+    section_label: &'static str,
+    section_order: u32,
+) -> TestInspectorLocation {
+    TestInspectorLocation {
+        group_id,
+        group_label,
+        group_order,
+        section_id,
+        section_label,
+        section_order,
+    }
+}
+
+/// Application-owned inspector placement. The host must never infer this from
+/// phase labels, control names, list position, or model identity.
+pub fn test_inspector_location(phase_id: &str, control_id: &str) -> Option<TestInspectorLocation> {
+    const DEVICE_SOURCE: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.source-adjustment",
+        "Origen y ajuste de la fuente",
+        0,
+    );
+    const DEVICE_TRANSPARENCY: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.vfx-transparency",
+        "Transparencia VFX",
+        1,
+    );
+    const DEVICE_FEEDER: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.feeder",
+        "Salida del feeder",
+        2,
+    );
+    const DEVICE_EMISSION: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.emission",
+        "Emisión del panel",
+        3,
+    );
+    const DEVICE_STRUCTURE: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.panel-structure",
+        "Estructura del panel",
+        4,
+    );
+    const DEVICE_UNIFORMITY: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.panel-uniformity",
+        "Uniformidad del panel",
+        5,
+    );
+    const DEVICE_SPREAD: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.panel-spread",
+        "Difusión del panel",
+        6,
+    );
+    const DEVICE_GEOMETRY: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.geometry",
+        "Geometría del Device",
+        7,
+    );
+    const DEVICE_GLASS: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.glass",
+        "Cristal",
+        8,
+    );
+    const DEVICE_GLOW: TestInspectorLocation = inspector_location(
+        "device",
+        "Device en escena",
+        0,
+        "device.glow",
+        "Replandor del Device",
+        9,
+    );
+    const ENVIRONMENT: TestInspectorLocation = inspector_location(
+        "environment",
+        "Entorno",
+        1,
+        "environment.main",
+        "Entorno",
+        0,
+    );
+    const CAMERA_GEOMETRY: TestInspectorLocation = inspector_location(
+        "camera",
+        "Cámara",
+        2,
+        "camera.geometry",
+        "Geometría de cámara",
+        0,
+    );
+    const CAMERA_LENS: TestInspectorLocation = inspector_location(
+        "camera",
+        "Cámara",
+        2,
+        "camera.lens",
+        "Objetivo y proyección",
+        1,
+    );
+    const CAMERA_SENSOR: TestInspectorLocation = inspector_location(
+        "camera",
+        "Cámara",
+        2,
+        "camera.exposure",
+        "Exposición y obturador",
+        2,
+    );
+    const CAMERA_COLLECTION: TestInspectorLocation = inspector_location(
+        "camera",
+        "Cámara",
+        2,
+        "camera.sensor-collection",
+        "Fotositos, CFA y ruido",
+        3,
+    );
+    const CAMERA_BLOOM: TestInspectorLocation = inspector_location(
+        "camera",
+        "Cámara",
+        2,
+        "camera.sensor-bloom",
+        "Crosstalk y bloom",
+        4,
+    );
+    const CAMERA_COMPUTATIONAL: TestInspectorLocation = inspector_location(
+        "camera",
+        "Cámara",
+        2,
+        "camera.computational",
+        "Captura computacional",
+        5,
+    );
+    const CAMERA_INTENT: TestInspectorLocation = inspector_location(
+        "camera",
+        "Cámara",
+        2,
+        "camera.intent",
+        "Intención de render",
+        6,
+    );
+    const CAMERA_CODEC: TestInspectorLocation =
+        inspector_location("camera", "Cámara", 2, "camera.codec", "Códec", 7);
+    const DELIVERY: TestInspectorLocation = inspector_location(
+        "delivery",
+        "Raster de entrega",
+        3,
+        "delivery.main",
+        "Raster de entrega",
+        0,
+    );
+
+    match phase_id {
+        SOURCE_ADJUSTMENT_PHASE_ID => Some(DEVICE_SOURCE),
+        DEVICE_VFX_TRANSPARENCY_PHASE_ID => Some(DEVICE_TRANSPARENCY),
+        FEEDER_SIGNAL_PHASE_ID => Some(DEVICE_FEEDER),
+        DEVICE_INTERPRETATION_PHASE_ID => Some(DEVICE_EMISSION),
+        PANEL_STRUCTURE_PHASE_ID => Some(DEVICE_STRUCTURE),
+        PANEL_UNIFORMITY_PHASE_ID => Some(DEVICE_UNIFORMITY),
+        PANEL_LIGHT_SPREAD_PHASE_ID => Some(DEVICE_SPREAD),
+        PANEL_TEMPORAL_PHASE_ID => None,
+        RELATIVE_GEOMETRY_PHASE_ID => match control_id {
+            SCREEN_POSITION_X_CONTROL_ID
+            | SCREEN_POSITION_Y_CONTROL_ID
+            | SCREEN_POSITION_Z_CONTROL_ID
+            | SCREEN_YAW_CONTROL_ID
+            | SCREEN_ROTATION_X_CONTROL_ID
+            | SCREEN_ROTATION_Z_CONTROL_ID => Some(DEVICE_GEOMETRY),
+            _ => Some(CAMERA_GEOMETRY),
+        },
+        COVER_ENVIRONMENT_PHASE_ID => match control_id {
+            ENVIRONMENT_CONTROL_ID
+            | ENVIRONMENT_BROWSE_CONTROL_ID
+            | ENVIRONMENT_AMOUNT_CONTROL_ID
+            | ENVIRONMENT_ROTATION_X_CONTROL_ID
+            | ENVIRONMENT_ROTATION_Y_CONTROL_ID
+            | ENVIRONMENT_ANCHOR_LONGITUDE_CONTROL_ID
+            | ENVIRONMENT_ANCHOR_LATITUDE_CONTROL_ID
+            | ENVIRONMENT_MOBIUS_A_REAL_CONTROL_ID
+            | ENVIRONMENT_MOBIUS_A_IMAG_CONTROL_ID
+            | ENVIRONMENT_MOBIUS_C_REAL_CONTROL_ID
+            | ENVIRONMENT_MOBIUS_C_IMAG_CONTROL_ID
+            | ENVIRONMENT_EXPOSURE_CONTROL_ID
+            | ENVIRONMENT_CONTRAST_CONTROL_ID
+            | ENVIRONMENT_SATURATION_CONTROL_ID
+            | ENVIRONMENT_TEMPERATURE_CONTROL_ID
+            | ENVIRONMENT_TINT_CONTROL_ID
+            | ENVIRONMENT_PROJECTION_CONTROL_ID
+            | ENVIRONMENT_CENTER_X_CONTROL_ID
+            | ENVIRONMENT_CENTER_Y_CONTROL_ID
+            | ENVIRONMENT_CENTER_Z_CONTROL_ID
+            | ENVIRONMENT_RADIUS_CONTROL_ID => Some(ENVIRONMENT),
+            _ => Some(DEVICE_GLASS),
+        },
+        COVER_GLOW_PHASE_ID => Some(DEVICE_GLOW),
+        LENS_PROJECTION_PHASE_ID => Some(CAMERA_LENS),
+        SHUTTER_EXPOSURE_PHASE_ID => Some(CAMERA_SENSOR),
+        SENSOR_COLLECTION_PHASE_ID => Some(CAMERA_COLLECTION),
+        SENSOR_BLOOM_PHASE_ID => Some(CAMERA_BLOOM),
+        COMPUTATIONAL_CAPTURE_PHASE_ID => Some(CAMERA_COMPUTATIONAL),
+        CAMERA_RENDERING_INTENT_PHASE_ID => Some(CAMERA_INTENT),
+        RECORDING_CODEC_PHASE_ID => Some(CAMERA_CODEC),
+        DELIVERY_RASTER_PHASE_ID => Some(DELIVERY),
+        ORIGIN_PHASE_ID
+        | SENSOR_READOUT_RAW_PHASE_ID
+        | DEVELOP_DEMOSAIC_PHASE_ID
+        | RECORDING_OUTPUT_PHASE_ID => None,
+        _ => None,
+    }
+}
+
 fn choice_control(
     id: &'static str,
     label: &'static str,
@@ -4966,6 +5222,47 @@ mod tests {
         assert_eq!(
             apply_test_scalar(asus(), DEVICE_VFX_ALPHA_MODE_CONTROL_ID, 1.0),
             Err(TestAuthoringError::WrongControlType)
+        );
+    }
+
+    #[test]
+    fn every_editable_control_has_one_application_owned_inspector_location() {
+        let page = test_page_descriptor(asus()).unwrap();
+        for phase in &page.phases {
+            for control in &phase.controls {
+                let location = test_inspector_location(phase.id, control.stable_id())
+                    .unwrap_or_else(|| {
+                        panic!("missing inspector location for {}", control.stable_id())
+                    });
+                assert!(!location.group_id.is_empty());
+                assert!(!location.group_label.is_empty());
+                assert!(!location.section_id.is_empty());
+                assert!(!location.section_label.is_empty());
+            }
+        }
+        assert_eq!(
+            test_inspector_location(RELATIVE_GEOMETRY_PHASE_ID, SCREEN_POSITION_X_CONTROL_ID)
+                .unwrap()
+                .section_id,
+            "device.geometry"
+        );
+        assert_eq!(
+            test_inspector_location(RELATIVE_GEOMETRY_PHASE_ID, CAMERA_POSITION_X_CONTROL_ID)
+                .unwrap()
+                .section_id,
+            "camera.geometry"
+        );
+        assert_eq!(
+            test_inspector_location(COVER_ENVIRONMENT_PHASE_ID, COVER_ROUGHNESS_CONTROL_ID)
+                .unwrap()
+                .section_id,
+            "device.glass"
+        );
+        assert_eq!(
+            test_inspector_location(COVER_ENVIRONMENT_PHASE_ID, ENVIRONMENT_AMOUNT_CONTROL_ID)
+                .unwrap()
+                .section_id,
+            "environment.main"
         );
     }
 }

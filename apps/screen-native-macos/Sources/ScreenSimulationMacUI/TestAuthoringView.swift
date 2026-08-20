@@ -6,22 +6,31 @@ public struct TestAuthoringView: View {
     private let onIntent: (TestControlIntent) -> Void
     private let onScalarEditingChanged: (String, Bool) -> Void
     private let excludedControlIDs: Set<String>
+    private let showsGeneral: Bool
+    private let showsInspectorGroups: Bool
+    private let supplementarySectionContent: [String: AnyView]
 
     public init(
         state: TestPagePresentation,
         excludedControlIDs: Set<String> = [],
+        showsGeneral: Bool = true,
+        showsInspectorGroups: Bool = true,
+        supplementarySectionContent: [String: AnyView] = [:],
         onScalarEditingChanged: @escaping (String, Bool) -> Void = { _, _ in },
         onIntent: @escaping (TestControlIntent) -> Void
     ) {
         self.state = state
         self.excludedControlIDs = excludedControlIDs
+        self.showsGeneral = showsGeneral
+        self.showsInspectorGroups = showsInspectorGroups
+        self.supplementarySectionContent = supplementarySectionContent
         self.onScalarEditingChanged = onScalarEditingChanged
         self.onIntent = onIntent
     }
 
     public var body: some View {
         VStack(spacing: 12) {
-            if !quickControls.isEmpty {
+            if showsGeneral, !quickControls.isEmpty {
                 TestPhaseCard(label: "General") {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         ForEach(quickControls) { control in
@@ -30,14 +39,10 @@ public struct TestAuthoringView: View {
                     }
                 }
             }
-            if let featuredPhase {
-                phaseCard(featuredPhase)
-            }
-            ForEach(state.phases.filter { phase in
-                phase.id != state.featuredPhaseID &&
-                phase.sections.contains { !$0.controls.isEmpty }
-            }) { phase in
-                phaseCard(phase)
+            if showsInspectorGroups {
+                ForEach(state.inspectorGroups) { group in
+                    inspectorGroup(group)
+                }
             }
         }
     }
@@ -52,32 +57,28 @@ public struct TestAuthoringView: View {
         state.quickControlIDs.compactMap { id in allControls.first { $0.id == id } }
     }
 
-    private var featuredPhase: TestPhasePresentation? {
-        state.phases.first { $0.id == state.featuredPhaseID && !$0.sections.flatMap(\.controls).isEmpty }
-    }
-
-    private func phaseCard(_ phase: TestPhasePresentation) -> some View {
-        let controls = phase.sections
-            .flatMap(\.controls)
-            .filter { !excludedControlIDs.contains($0.id) }
-        let headerControl = phase.headerControlID.flatMap { id in
-            controls.first(where: { $0.id == id })
-        }
-        return TestPhaseCard(
-            label: phase.label,
-            effectSummary: phase.effectSummary,
-            headerControl: headerControl.map { AnyView(headerControlView($0)) }
-        ) {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(phase.sections) { section in
-                    if !section.label.isEmpty {
-                        Text(section.label).font(.caption).foregroundStyle(.secondary)
+    private func inspectorGroup(_ group: TestInspectorGroupPresentation) -> some View {
+        TestPhaseCard(label: group.label) {
+            VStack(spacing: 8) {
+                ForEach(group.sections) { section in
+                    let controls = section.controls.filter {
+                        !excludedControlIDs.contains($0.id)
                     }
-                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                        ForEach(section.controls.filter {
-                            $0.id != phase.headerControlID && !excludedControlIDs.contains($0.id)
-                        }) {
-                            controlView($0)
+                    let supplement = supplementarySectionContent[section.id]
+                    if !controls.isEmpty || supplement != nil {
+                        TestInspectorSubcard(label: section.label) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if let supplement { supplement }
+                                if !controls.isEmpty {
+                                    Grid(
+                                        alignment: .leading,
+                                        horizontalSpacing: 12,
+                                        verticalSpacing: 8
+                                    ) {
+                                        ForEach(controls) { controlView($0) }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -397,21 +398,70 @@ public struct TestPhaseCard<Content: View>: View {
 
     public var body: some View {
         GroupBox {
-            DisclosureGroup(isExpanded: $expanded) {
-                content
-                    .padding(.top, 10)
-            } label: {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(label).font(.headline)
-                        Spacer(minLength: 8)
-                        if let headerControl { headerControl }
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(label).font(.headline)
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right")
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
+                                .foregroundStyle(.secondary)
+                        }
+                        if !effectSummary.isEmpty {
+                            Text(effectSummary)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    Text(effectSummary)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(expanded ? "Expandido" : "Contraído")
+                if expanded {
+                    if let headerControl {
+                        headerControl.padding(.top, 10)
+                    }
+                    content
+                        .padding(.top, 10)
                 }
             }
         }
+    }
+}
+
+private struct TestInspectorSubcard<Content: View>: View {
+    let label: String
+    let content: Content
+    @State private var expanded = true
+
+    init(label: String, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+            } label: {
+                HStack {
+                    Text(label).font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                content.padding(.top, 8)
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 7))
     }
 }

@@ -168,6 +168,7 @@ public struct TestPhasePresentation: Equatable, Identifiable, Sendable {
 
 public struct TestPagePresentation: Equatable, Sendable {
     public let phases: [TestPhasePresentation]
+    public let inspectorGroups: [TestInspectorGroupPresentation]
     public let selectedPhaseID: String
     public let previewControls: [TestControlDescriptor]
     public let visiblePreviewChoiceIDs: [String]
@@ -176,6 +177,7 @@ public struct TestPagePresentation: Equatable, Sendable {
 
     public init(
         phases: [TestPhasePresentation],
+        inspectorGroups: [TestInspectorGroupPresentation] = [],
         selectedPhaseID: String,
         previewControls: [TestControlDescriptor] = [],
         visiblePreviewChoiceIDs: [String] = [],
@@ -183,6 +185,7 @@ public struct TestPagePresentation: Equatable, Sendable {
         featuredPhaseID: String = ""
     ) throws {
         self.phases = phases
+        self.inspectorGroups = inspectorGroups
         self.selectedPhaseID = selectedPhaseID
         self.previewControls = previewControls
         self.visiblePreviewChoiceIDs = visiblePreviewChoiceIDs
@@ -205,6 +208,21 @@ public struct TestPagePresentation: Equatable, Sendable {
         else { throw TestPresentationError.invalidPhases }
 
         let allControlIDs = Set(phases.flatMap { $0.sections.flatMap(\.controls).map(\.id) })
+        let inspectorControlIDs = inspectorGroups.flatMap { group in
+            group.sections.flatMap { $0.controls.map(\.id) }
+        }
+        guard inspectorGroups.map(\.order) == inspectorGroups.map(\.order).sorted(),
+              Set(inspectorGroups.map(\.id)).count == inspectorGroups.count,
+              inspectorGroups.allSatisfy({ !$0.id.isEmpty && !$0.label.isEmpty }),
+              Set(inspectorControlIDs).count == inspectorControlIDs.count,
+              Set(inspectorControlIDs) == allControlIDs
+        else { throw TestPresentationError.invalidSections("inspector") }
+        for group in inspectorGroups {
+            guard group.sections.map(\.order) == group.sections.map(\.order).sorted(),
+                  Set(group.sections.map(\.id)).count == group.sections.count,
+                  group.sections.allSatisfy({ !$0.id.isEmpty && !$0.label.isEmpty })
+            else { throw TestPresentationError.invalidSections(group.id) }
+        }
         guard Set(quickControlIDs).count == quickControlIDs.count,
               quickControlIDs.allSatisfy(allControlIDs.contains)
         else { throw TestPresentationError.invalidControls("quick-controls") }
@@ -232,6 +250,39 @@ public struct TestPagePresentation: Equatable, Sendable {
               Set(previewControls.map(\.id)).count == previewControls.count
         else { throw TestPresentationError.invalidControls("preview") }
         for control in previewControls { try control.validate() }
+    }
+}
+
+public struct TestInspectorSectionPresentation: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let label: String
+    public let order: Int
+    public let controls: [TestControlDescriptor]
+
+    public init(id: String, label: String, order: Int, controls: [TestControlDescriptor]) {
+        self.id = id
+        self.label = label
+        self.order = order
+        self.controls = controls
+    }
+}
+
+public struct TestInspectorGroupPresentation: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let label: String
+    public let order: Int
+    public let sections: [TestInspectorSectionPresentation]
+
+    public init(
+        id: String,
+        label: String,
+        order: Int,
+        sections: [TestInspectorSectionPresentation]
+    ) {
+        self.id = id
+        self.label = label
+        self.order = order
+        self.sections = sections
     }
 }
 

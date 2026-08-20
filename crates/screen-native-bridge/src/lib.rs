@@ -38,7 +38,8 @@ use screen_application::{
     diagnostic_signal, evaluate_delivery_raster_rgba32f, evaluate_tracking_overlay,
     prepare_capture_render, prepare_recording_execution_request, prepare_setup_diagnostic,
     project_device_focus_target, resolve_physical_stage_contributions,
-    resolve_planar_environment_framing, test_page_descriptor, test_page_descriptor_with_profiles,
+    resolve_planar_environment_framing, test_inspector_location, test_page_descriptor,
+    test_page_descriptor_with_profiles,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -474,7 +475,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 40;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 41;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -624,6 +625,12 @@ pub struct ScreenTestControlDescriptorV5 {
     step: f32,
     slider_visible: bool,
     unit: ScreenUtf8View,
+    inspector_group_id: ScreenUtf8View,
+    inspector_group_label: ScreenUtf8View,
+    inspector_group_order: u32,
+    inspector_section_id: ScreenUtf8View,
+    inspector_section_label: ScreenUtf8View,
+    inspector_section_order: u32,
 }
 
 #[repr(C)]
@@ -5035,21 +5042,29 @@ pub unsafe extern "C" fn screen_test_page_control_descriptor(
     control_index: usize,
     control: *mut ScreenTestControlDescriptorV5,
 ) -> bool {
-    let Some(source) = unsafe { descriptor.as_ref() }
+    let Some((phase_id, source)) = unsafe { descriptor.as_ref() }
         .and_then(|value| value.page.phases.get(phase_index))
-        .and_then(|phase| phase.controls.get(control_index))
+        .and_then(|phase| {
+            phase
+                .controls
+                .get(control_index)
+                .map(|control| (phase.id, control))
+        })
     else {
         return false;
     };
     let Some(destination) = (unsafe { control.as_mut() }) else {
         return false;
     };
-    *destination = test_control_descriptor(source);
+    *destination = test_control_descriptor(phase_id, source);
     true
 }
 
-fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControlDescriptorV5 {
-    match source {
+fn test_control_descriptor(
+    phase_id: &str,
+    source: &TestControlRequirement,
+) -> ScreenTestControlDescriptorV5 {
+    let mut descriptor = match source {
         TestControlRequirement::Choice {
             id,
             label,
@@ -5070,6 +5085,12 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             step: 0.0,
             slider_visible: false,
             unit: utf8_view(""),
+            inspector_group_id: utf8_view(""),
+            inspector_group_label: utf8_view(""),
+            inspector_group_order: 0,
+            inspector_section_id: utf8_view(""),
+            inspector_section_label: utf8_view(""),
+            inspector_section_order: 0,
         },
         TestControlRequirement::Scalar {
             id,
@@ -5095,6 +5116,12 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             step: *step,
             slider_visible: *slider_visible,
             unit: utf8_view(unit),
+            inspector_group_id: utf8_view(""),
+            inspector_group_label: utf8_view(""),
+            inspector_group_order: 0,
+            inspector_section_id: utf8_view(""),
+            inspector_section_label: utf8_view(""),
+            inspector_section_order: 0,
         },
         TestControlRequirement::Toggle {
             id,
@@ -5115,6 +5142,12 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             step: 1.0,
             slider_visible: false,
             unit: utf8_view(""),
+            inspector_group_id: utf8_view(""),
+            inspector_group_label: utf8_view(""),
+            inspector_group_order: 0,
+            inspector_section_id: utf8_view(""),
+            inspector_section_label: utf8_view(""),
+            inspector_section_order: 0,
         },
         TestControlRequirement::Action { id, label } => ScreenTestControlDescriptorV5 {
             abi_version: SCREEN_TEST_AUTHORING_ABI_VERSION,
@@ -5130,8 +5163,23 @@ fn test_control_descriptor(source: &TestControlRequirement) -> ScreenTestControl
             step: 0.0,
             slider_visible: false,
             unit: utf8_view(""),
+            inspector_group_id: utf8_view(""),
+            inspector_group_label: utf8_view(""),
+            inspector_group_order: 0,
+            inspector_section_id: utf8_view(""),
+            inspector_section_label: utf8_view(""),
+            inspector_section_order: 0,
         },
+    };
+    if let Some(location) = test_inspector_location(phase_id, source.stable_id()) {
+        descriptor.inspector_group_id = utf8_view(location.group_id);
+        descriptor.inspector_group_label = utf8_view(location.group_label);
+        descriptor.inspector_group_order = location.group_order;
+        descriptor.inspector_section_id = utf8_view(location.section_id);
+        descriptor.inspector_section_label = utf8_view(location.section_label);
+        descriptor.inspector_section_order = location.section_order;
     }
+    descriptor
 }
 
 #[unsafe(no_mangle)]
@@ -5241,7 +5289,7 @@ pub unsafe extern "C" fn screen_test_page_preview_control_descriptor(
     let Some(destination) = (unsafe { control.as_mut() }) else {
         return false;
     };
-    *destination = test_control_descriptor(source);
+    *destination = test_control_descriptor("", source);
     true
 }
 

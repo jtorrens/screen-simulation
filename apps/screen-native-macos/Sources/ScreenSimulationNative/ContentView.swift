@@ -1868,19 +1868,11 @@ struct ContentView: View {
     private var testSetupPanel: some View {
         ScrollView {
             VStack(spacing: 12) {
-                TestPhaseCard(label: "Origen") {
-                    originAuthoringControls
-                }
-                TestPhaseCard(label: "Referencia") {
-                    referenceAuthoringControls
-                }
-                TestPhaseCard(label: "Device de la escena") {
-                    sceneDeviceControls
-                }
                 if let presentation = model.testPresentation {
                     TestAuthoringView(
                         state: presentation,
                         excludedControlIDs: ["device", "color-mode", "white-luminance"],
+                        showsInspectorGroups: false,
                         onScalarEditingChanged: { controlID, editing in
                             if editing {
                                 model.beginSceneControlEdit(controlID)
@@ -1892,19 +1884,25 @@ struct ContentView: View {
                         },
                         onIntent: { model.handleTestIntent($0, undoManager: undoManager) }
                     )
-                    if !model.environmentSourceEvidence.isEmpty {
-                        TestPhaseCard(label: "Entorno HDRI activo") {
-                            VStack(alignment: .leading, spacing: 5) {
-                                ForEach(model.environmentSourceEvidence, id: \.self) { line in
-                                    Text(line)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                    TestPhaseCard(label: "Referencia") {
+                        referenceAuthoringControls
                     }
+                    TestAuthoringView(
+                        state: presentation,
+                        excludedControlIDs: ["device", "color-mode", "white-luminance"],
+                        showsGeneral: false,
+                        supplementarySectionContent: testInspectorSupplements,
+                        onScalarEditingChanged: { controlID, editing in
+                            if editing {
+                                model.beginSceneControlEdit(controlID)
+                            } else {
+                                model.endSceneControlEdit(
+                                    controlID, undoManager: undoManager
+                                )
+                            }
+                        },
+                        onIntent: { model.handleTestIntent($0, undoManager: undoManager) }
+                    )
                 } else {
                     ContentUnavailableView(
                         "Esperando descriptor de fase",
@@ -1917,6 +1915,27 @@ struct ContentView: View {
             }
             .padding(12)
         }
+    }
+
+    private var testInspectorSupplements: [String: AnyView] {
+        var result: [String: AnyView] = [
+            "device.source-adjustment": AnyView(originAuthoringControls),
+            "device.emission": AnyView(sceneDeviceControls),
+        ]
+        if !model.environmentSourceEvidence.isEmpty {
+            result["environment.main"] = AnyView(
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(model.environmentSourceEvidence, id: \.self) { line in
+                        Text(line)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            )
+        }
+        return result
     }
 
     @ViewBuilder

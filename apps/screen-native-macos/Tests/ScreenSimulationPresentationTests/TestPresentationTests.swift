@@ -88,6 +88,32 @@ import Testing
                 sections: [.init(id: "parameters", label: "Parameters", controls: [fixedWhite])]
             ),
         ],
+        inspectorGroups: [
+            .init(
+                id: "device", label: "Device", order: 0,
+                sections: [
+                    .init(id: "device.white", label: "White", order: 0, controls: [fixedWhite]),
+                ]
+            ),
+        ],
         selectedPhaseID: "device"
     )
+}
+
+@Test func presentationRejectsInspectorThatOmitsOrDuplicatesModelControls() throws {
+    let control = TestControlDescriptor.readOnly(.init(id: "one", label: "One", value: "1"))
+    #expect(throws: TestPresentationError.self) {
+        try TestPagePresentation(
+            phases: [
+                .init(
+                    id: "phase", label: "Phase", effectSummary: "Effect",
+                    inputArtifactID: "in", outputArtifactID: "out",
+                    calculationDomain: "Domain", previewRoute: "Route",
+                    sections: [.init(id: "parameters", label: "Parameters", controls: [control])]
+                ),
+            ],
+            inspectorGroups: [],
+            selectedPhaseID: "phase"
+        )
+    }
 }

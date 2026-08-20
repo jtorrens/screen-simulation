@@ -1001,6 +1001,56 @@ def validate_setup_diagnostic_boundary() -> None:
             )
 
 
+def validate_test_inspector_hierarchy() -> None:
+    application = (ROOT / "crates/screen-application/src/test_authoring.rs").read_text(
+        encoding="utf-8"
+    )
+    presentation = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationPresentation/TestPresentation.swift"
+    ).read_text(encoding="utf-8")
+    mac_ui = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationMacUI/TestAuthoringView.swift"
+    ).read_text(encoding="utf-8")
+    coordinator = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "pub struct TestInspectorLocation",
+        "pub fn test_inspector_location",
+        "every_editable_control_has_one_application_owned_inspector_location",
+    ):
+        if required not in application:
+            raise ValidationError("Application does not own inspector placement: " + required)
+    for required in (
+        "TestInspectorGroupPresentation",
+        "TestInspectorSectionPresentation",
+        "Set(inspectorControlIDs) == allControlIDs",
+    ):
+        if required not in presentation:
+            raise ValidationError("inspector presentation contract is incomplete: " + required)
+    for required in (
+        "rawControl.inspector_group_id",
+        "rawControl.inspector_section_id",
+        "inspectorGroups(from: inspectorPlacements)",
+    ):
+        if required not in coordinator:
+            raise ValidationError("host omitted Application inspector metadata: " + required)
+    for required in (
+        'Image(systemName: "chevron.right")',
+        ".contentShape(Rectangle())",
+        "TestInspectorSubcard",
+    ):
+        if required not in mac_ui:
+            raise ValidationError("inspector disclosure contract is incomplete: " + required)
+    for forbidden in (
+        'phase.id == "relative-geometry"',
+        'control.id.hasPrefix(',
+    ):
+        if forbidden in mac_ui:
+            raise ValidationError("Swift inferred inspector ownership: " + forbidden)
 def main() -> int:
     try:
         paths = repository_paths()
@@ -1018,6 +1068,7 @@ def main() -> int:
         validate_scene_profile_authority()
         validate_exact_temporal_inputs()
         validate_setup_diagnostic_boundary()
+        validate_test_inspector_hierarchy()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)

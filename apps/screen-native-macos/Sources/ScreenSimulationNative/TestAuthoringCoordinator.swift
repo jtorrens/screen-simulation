@@ -142,6 +142,16 @@ struct TestAuthoringSnapshot: Sendable {
     let resolvedSelection: TestAuthoringResolvedSelection
 }
 
+private struct TestInspectorPlacement {
+    let groupID: String
+    let groupLabel: String
+    let groupOrder: Int
+    let sectionID: String
+    let sectionLabel: String
+    let sectionOrder: Int
+    let control: TestControlDescriptor
+}
+
 enum TestAuthoringCoordinatorError: Error, LocalizedError {
     case bridge(String)
     case malformedDescriptor(String)
@@ -512,6 +522,7 @@ enum RustTestAuthoringCoordinator {
             )
             let phaseCount = screen_test_page_phase_count(descriptor)
             var phases: [TestPhasePresentation] = []
+            var inspectorPlacements: [TestInspectorPlacement] = []
             var previewResults: [String: TestPreviewResultKind] = [:]
             var physicalIntermediates: [String: PhysicalIntermediate] = [:]
             phases.reserveCapacity(phaseCount)
@@ -536,10 +547,35 @@ enum RustTestAuthoringCoordinator {
                 var controls: [TestControlDescriptor] = []
                 controls.reserveCapacity(controlCount)
                 for controlIndex in 0..<controlCount {
-                    controls.append(try controlDescriptor(
+                    let control = try controlDescriptor(
                         descriptor: descriptor,
                         phaseIndex: phaseIndex,
                         controlIndex: controlIndex
+                    )
+                    controls.append(control)
+                    var rawControl = ScreenTestControlDescriptorV5()
+                    guard screen_test_page_control_descriptor(
+                        descriptor, phaseIndex, controlIndex, &rawControl
+                    ) else {
+                        throw TestAuthoringCoordinatorError.malformedDescriptor(
+                            "Rust no publicó la ubicación del control \(phaseID):\(controlIndex)."
+                        )
+                    }
+                    let groupID = string(rawControl.inspector_group_id)
+                    let sectionID = string(rawControl.inspector_section_id)
+                    guard !groupID.isEmpty, !sectionID.isEmpty else {
+                        throw TestAuthoringCoordinatorError.malformedDescriptor(
+                            "Rust no asignó el control \(control.id) al inspector."
+                        )
+                    }
+                    inspectorPlacements.append(.init(
+                        groupID: groupID,
+                        groupLabel: string(rawControl.inspector_group_label),
+                        groupOrder: Int(rawControl.inspector_group_order),
+                        sectionID: sectionID,
+                        sectionLabel: string(rawControl.inspector_section_label),
+                        sectionOrder: Int(rawControl.inspector_section_order),
+                        control: control
                     ))
                 }
                 let sections = controls.isEmpty ? [] : [
@@ -589,9 +625,11 @@ enum RustTestAuthoringCoordinator {
                     string(screen_test_page_visible_preview_choice_id(descriptor, $0))
                 }
             let featuredPhaseID = string(screen_test_page_featured_phase_id(descriptor))
+            let inspectorGroups = try inspectorGroups(from: inspectorPlacements)
             return TestAuthoringSnapshot(
                 presentation: try TestPagePresentation(
                     phases: phases,
+                    inspectorGroups: inspectorGroups,
                     selectedPhaseID: selectedPhaseID,
                     previewControls: previewControls,
                     visiblePreviewChoiceIDs: visiblePreviewChoiceIDs,
@@ -603,6 +641,48 @@ enum RustTestAuthoringCoordinator {
                 resolvedSelection: selection
             )
         }
+    }
+
+    private static func inspectorGroups(
+        from placements: [TestInspectorPlacement]
+    ) throws -> [TestInspectorGroupPresentation] {
+        let grouped = Dictionary(grouping: placements, by: \.groupID)
+        return try grouped.map { groupID, groupPlacements in
+            guard let first = groupPlacements.first,
+                  groupPlacements.allSatisfy({
+                      $0.groupLabel == first.groupLabel && $0.groupOrder == first.groupOrder
+                  })
+            else {
+                throw TestAuthoringCoordinatorError.malformedDescriptor(
+                    "Rust publicó un grupo de inspector contradictorio: \(groupID)."
+                )
+            }
+            let sections = try Dictionary(grouping: groupPlacements, by: \.sectionID).map {
+                sectionID, sectionPlacements in
+                guard let sectionFirst = sectionPlacements.first,
+                      sectionPlacements.allSatisfy({
+                          $0.sectionLabel == sectionFirst.sectionLabel
+                              && $0.sectionOrder == sectionFirst.sectionOrder
+                      })
+                else {
+                    throw TestAuthoringCoordinatorError.malformedDescriptor(
+                        "Rust publicó una sección de inspector contradictoria: \(sectionID)."
+                    )
+                }
+                return TestInspectorSectionPresentation(
+                    id: sectionID,
+                    label: sectionFirst.sectionLabel,
+                    order: sectionFirst.sectionOrder,
+                    controls: sectionPlacements.map(\.control)
+                )
+            }.sorted { $0.order < $1.order }
+            return TestInspectorGroupPresentation(
+                id: groupID,
+                label: first.groupLabel,
+                order: first.groupOrder,
+                sections: sections
+            )
+        }.sorted { $0.order < $1.order }
     }
 
     static func snapshot(

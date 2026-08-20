@@ -239,6 +239,25 @@
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeActionStateTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/MonitorOutputControllerTests.swift"
       ]
+    },
+    {
+      "id": "ui.test-inspector-hierarchy",
+      "scope": "Test inspector grouping, nested cards and disclosure interaction",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Test inspector hierarchy"
+      },
+      "enforcement": [
+        "crates/screen-application/src/test_authoring.rs",
+        "crates/screen-native-bridge/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
+        "apps/screen-native-macos/Sources/ScreenSimulationPresentation/TestPresentation.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationMacUI/TestAuthoringView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationPresentationTests/TestPresentationTests.swift",
+        "scripts/check_architecture.py"
+      ]
     }
   ]
 }
