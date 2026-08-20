@@ -484,7 +484,7 @@ struct SceneAutosaveHistoryTarget: Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 22
+    static let currentSchemaVersion = 23
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -732,7 +732,7 @@ struct SceneLibraryStore: Sendable {
                       "sourceInputTransformID", "sourceAlphaMode", "sourceColorModel",
                       "sourceYUVMatrix", "sourceSignalRange", "sourcePlacementID",
                       "previewOutputTransformID", "previewPhaseID", "environmentResource",
-                      "referenceResource",
+                      "referencePlateID", "referenceResource",
                   ],
                   let environmentResource = context["environmentResource"] as? [String: Any],
                   (Set(environmentResource.keys) == ["kind"]
