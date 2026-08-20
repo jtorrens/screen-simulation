@@ -634,6 +634,29 @@ def validate_scene_self_containment() -> None:
                 "Saved Scene external media still exposes a retired placeholder route: "
                 + forbidden
             )
+    for required in (
+        "var hasExternalSourceMedia: Bool",
+        "func removeExternalSourceMedia()",
+        "session.reset()",
+        "choosePattern(selectedPattern, undoManager: nil)",
+    ):
+        if required not in workspace:
+            raise ValidationError(
+                "Source removal does not re-enter the canonical synthetic-source route: "
+                + required
+            )
+
+    content_view = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "if model.hasExternalSourceMedia",
+        'Button("Quitar", action: model.removeExternalSourceMedia)',
+    ):
+        if required not in content_view:
+            raise ValidationError(
+                "Source authoring UI omits explicit external-media removal: " + required
+            )
 
 
 def validate_fusion_scene_color_contract() -> None:

@@ -42,8 +42,9 @@ pub use scene_resolution::{
     SceneFrameResolver,
 };
 pub use setup_diagnostics::{
-    SetupDiagnosticError, SetupDiagnosticIdentity, SetupDiagnosticPlan, SetupEnvironmentGeometry,
-    prepare_setup_diagnostic,
+    PlanarEnvironmentFraming, ResolvedEnvironmentPlacement, SetupDiagnosticError,
+    SetupDiagnosticIdentity, SetupDiagnosticPlan, SetupEnvironmentGeometry,
+    prepare_setup_diagnostic, resolve_planar_environment_framing,
 };
 pub use temporal_cache::{
     CacheArtifact, TemporalArtifactCache, TemporalArtifactIdentity, TemporalArtifactKey,
@@ -1958,8 +1959,7 @@ impl EnvironmentRadianceRaster {
     fn sample_equirectangular(
         &self,
         direction: [f32; 3],
-        rotation_x_degrees: f32,
-        rotation_y_degrees: f32,
+        placement: screen_cover::SphericalEnvironmentPlacement,
         roughness: f32,
         view_cosine: f32,
         refractive_index: f32,
@@ -1986,11 +1986,7 @@ impl EnvironmentRadianceRaster {
                 }),
                 projection,
             );
-            return self.sample_equirectangular_direction(
-                reflected,
-                rotation_x_degrees,
-                rotation_y_degrees,
-            );
+            return self.sample_equirectangular_direction(reflected, placement);
         }
         let outgoing = [-reflected[0], -reflected[1], reflected[2]];
         let alpha = (roughness * roughness).max(1.0e-4);
@@ -2028,11 +2024,7 @@ impl EnvironmentRadianceRaster {
                 }),
                 projection,
             );
-            let radiance = self.sample_equirectangular_direction(
-                source_direction,
-                rotation_x_degrees,
-                rotation_y_degrees,
-            );
+            let radiance = self.sample_equirectangular_direction(source_direction, placement);
             sum[0] += radiance.r * weight;
             sum[1] += radiance.g * weight;
             sum[2] += radiance.b * weight;
@@ -2047,22 +2039,10 @@ impl EnvironmentRadianceRaster {
 
     fn sample_equirectangular_direction(
         &self,
-        mut direction: [f32; 3],
-        rotation_x_degrees: f32,
-        rotation_y_degrees: f32,
+        direction: [f32; 3],
+        placement: screen_cover::SphericalEnvironmentPlacement,
     ) -> LinearRgb {
-        let (sine_y, cosine_y) = rotation_y_degrees.to_radians().sin_cos();
-        direction = [
-            direction[0] * cosine_y + direction[2] * sine_y,
-            direction[1],
-            -direction[0] * sine_y + direction[2] * cosine_y,
-        ];
-        let (sine_x, cosine_x) = rotation_x_degrees.to_radians().sin_cos();
-        direction = [
-            direction[0],
-            direction[1] * cosine_x - direction[2] * sine_x,
-            direction[1] * sine_x + direction[2] * cosine_x,
-        ];
+        let direction = screen_cover::place_environment_direction(direction, placement);
         let u = (direction[0].atan2(direction[2]) / core::f32::consts::TAU + 0.5).rem_euclid(1.0);
         let v =
             (0.5 - direction[1].clamp(-1.0, 1.0).asin() / core::f32::consts::PI).clamp(0.0, 1.0);
@@ -2943,6 +2923,18 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 );
                                 let base_gain = [base_gains.r, base_gains.g, base_gains.b][channel];
                                 let uniform_base = base * base_gain;
+                                let continuous_structured_base = evaluator
+                                    .linear_native_channel_over_device_rect(
+                                        [
+                                            area.linear_native_emission.r,
+                                            area.linear_native_emission.g,
+                                            area.linear_native_emission.b,
+                                        ][channel]
+                                            * area.panel_coverage,
+                                        device_minimum,
+                                        device_maximum,
+                                        channel,
+                                    );
                                 let carrier_area =
                                     placed_feeder.sample_area(carrier_minimum, carrier_maximum);
                                 let carrier_device_minimum = Vec2 {
@@ -3031,15 +3023,17 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                                 y: panel_maximum.y
                                                     * plan.panel.native_height as f32,
                                             };
-                                            evaluator.native_channel_over_device_rect(
-                                                shifted.device_code,
+                                            evaluator.linear_native_channel_over_device_rect(
+                                                [
+                                                    shifted.linear_native_emission.r,
+                                                    shifted.linear_native_emission.g,
+                                                    shifted.linear_native_emission.b,
+                                                ][channel],
                                                 shifted_device_minimum,
                                                 shifted_device_maximum,
                                                 channel,
-                                            ) * resolved_device_alpha(
-                                                shifted.alpha,
-                                                shifted.panel_coverage,
-                                            ) * coverage
+                                            ) * shifted.panel_coverage
+                                                * coverage
                                                 * sample.weight
                                         })
                                         .sum::<f32>()
@@ -3061,7 +3055,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     )
                                 };
                                 let value = if plan.panel_light_spread.character_strength == 0.0 {
-                                    uniform_base * optical_weight
+                                    continuous_structured_base * base_gain * optical_weight
                                 } else {
                                     spread_at([0.0, 0.0]) * base_gain * optical_weight
                                 };
@@ -3392,8 +3386,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         .expect("validated image-backed environment owns its raster");
                     let sampled = raster.sample_equirectangular(
                         reflection_direction_local,
-                        environment.rotation_x_degrees,
-                        environment.rotation_y_degrees,
+                        environment.placement,
                         plan.cover.roughness,
                         cover_sample.view_cosine,
                         plan.cover.refractive_index,
@@ -7722,8 +7715,7 @@ mod tests {
         for roughness in [0.0, 0.46, 1.0] {
             let first = raster.sample_equirectangular(
                 [0.3, -0.2, 0.9],
-                0.0,
-                37.0,
+                screen_cover::SphericalEnvironmentPlacement::IDENTITY,
                 roughness,
                 0.9,
                 1.5,
@@ -7735,8 +7727,7 @@ mod tests {
             );
             let second = raster.sample_equirectangular(
                 [0.3, -0.2, 0.9],
-                0.0,
-                37.0,
+                screen_cover::SphericalEnvironmentPlacement::IDENTITY,
                 roughness,
                 0.9,
                 1.5,

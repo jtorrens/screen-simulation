@@ -65,6 +65,7 @@ import Testing
     if controller.report.devices.isEmpty {
         #expect(!controller.isActive)
         #expect(!controller.isEnabled)
+        #expect(!controller.isAvailable)
         #expect(
             controller.status == "No se ha detectado hardware DeckLink"
                 || controller.status == controller.report.runtime.displayName

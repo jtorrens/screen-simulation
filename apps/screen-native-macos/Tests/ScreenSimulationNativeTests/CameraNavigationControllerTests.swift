@@ -196,6 +196,27 @@ import Testing
     #expect(workspace.physicalModel.parameterRevision == beforeRevision)
 }
 
+@Test func environmentFramingOwnsViewerGesturesIndependentlyOfRenderLifecycle() {
+    #expect(EnvironmentReflectionFraming.capturesViewerNavigation(
+        enabled: true,
+        transformationsLocked: false,
+        referenceMatchEnabled: false,
+        reflectionEditorEnabled: false
+    ))
+    #expect(!EnvironmentReflectionFraming.capturesViewerNavigation(
+        enabled: false,
+        transformationsLocked: false,
+        referenceMatchEnabled: false,
+        reflectionEditorEnabled: false
+    ))
+    #expect(!EnvironmentReflectionFraming.capturesViewerNavigation(
+        enabled: true,
+        transformationsLocked: true,
+        referenceMatchEnabled: false,
+        reflectionEditorEnabled: false
+    ))
+}
+
 @Test @MainActor func previewGizmoVisibilityDoesNotModifyTheScene() {
     let workspace = WorkspaceModel()
     let initialAuthoring = workspace.physicalAuthoringState

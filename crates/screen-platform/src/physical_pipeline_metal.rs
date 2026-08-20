@@ -77,6 +77,9 @@ struct PhysicalPipelineParams {
     environment_key_radius: [f32; 4],
     environment_direction: [f32; 4],
     environment_rotation: [f32; 4],
+    environment_placement_anchor: [f32; 4],
+    environment_placement_source_scale: [f32; 4],
+    environment_placement_tangent: [f32; 4],
     environment_center: [f32; 4],
     camera_position_focal: [f32; 4],
     camera_right_sensor_width: [f32; 4],
@@ -479,7 +482,7 @@ impl MetalPhysicalPipeline {
         &self,
         device_signal: &TextureRef,
         params: &PhysicalPipelineParams,
-    ) -> Result<Vec<Texture>, MetalPhysicalPipelineError> {
+    ) -> Result<(Vec<Texture>, Texture, Texture), MetalPhysicalPipelineError> {
         const PADDING: u32 = 32;
         const TARGET_SIGMA_PIXELS: f32 = 8.0;
         const SCALES: [f32; 4] = [0.3, 1.0, 3.0, 7.5];
@@ -494,12 +497,18 @@ impl MetalPhysicalPipeline {
         let emission_signal = device.new_texture(&source_descriptor);
         source_descriptor.set_width(device_signal.width() + 1);
         let emission_prefix = device.new_texture(&source_descriptor);
+        source_descriptor.set_width(device_signal.width());
+        let native_emission_signal = device.new_texture(&source_descriptor);
+        source_descriptor.set_width(device_signal.width() + 1);
+        let native_emission_prefix = device.new_texture(&source_descriptor);
         let command = self.queue.new_command_buffer();
         let prefix_encoder = command.new_compute_command_encoder();
         prefix_encoder.set_compute_pipeline_state(&self.glow_signal_prefix_pipeline);
         prefix_encoder.set_texture(0, Some(device_signal));
         prefix_encoder.set_texture(1, Some(&emission_signal));
         prefix_encoder.set_texture(2, Some(&emission_prefix));
+        prefix_encoder.set_texture(3, Some(&native_emission_signal));
+        prefix_encoder.set_texture(4, Some(&native_emission_prefix));
         prefix_encoder.set_bytes(
             0,
             size_of::<PhysicalPipelineParams>() as u64,
@@ -605,7 +614,7 @@ impl MetalPhysicalPipeline {
                 "physical Gaussian glow construction did not complete".to_owned(),
             ));
         }
-        Ok(lobes)
+        Ok((lobes, native_emission_signal, native_emission_prefix))
     }
 
     fn read_physical_raster(
@@ -1565,8 +1574,8 @@ impl MetalPhysicalPipeline {
                     0.0,
                 ],
                 IncidentEnvironment::Equirectangular(environment) => [
-                    environment.rotation_x_degrees.to_radians(),
-                    environment.rotation_y_degrees.to_radians(),
+                    0.0,
+                    0.0,
                     match environment.projection {
                         screen_cover::EnvironmentProjection::Distant => 0.0,
                         screen_cover::EnvironmentProjection::FiniteSphere { .. } => 1.0,
@@ -1578,6 +1587,30 @@ impl MetalPhysicalPipeline {
                         } => radius_meters,
                     },
                 ],
+            },
+            environment_placement_anchor: match plan.environment {
+                IncidentEnvironment::Equirectangular(environment) => [
+                    environment.placement.anchor_direction_world[0],
+                    environment.placement.anchor_direction_world[1],
+                    environment.placement.anchor_direction_world[2],
+                    0.0,
+                ],
+                IncidentEnvironment::Procedural(_) => [0.0, 0.0, 1.0, 0.0],
+            },
+            environment_placement_source_scale: match plan.environment {
+                IncidentEnvironment::Equirectangular(environment) => [
+                    environment.placement.source_direction[0],
+                    environment.placement.source_direction[1],
+                    environment.placement.source_direction[2],
+                    0.0,
+                ],
+                IncidentEnvironment::Procedural(_) => [0.0, 0.0, 1.0, 1.0],
+            },
+            environment_placement_tangent: match plan.environment {
+                IncidentEnvironment::Equirectangular(environment) => {
+                    environment.placement.tangent_transform
+                }
+                IncidentEnvironment::Procedural(_) => [1.0, 0.0, 0.0, 0.0],
             },
             environment_center: match plan.environment {
                 IncidentEnvironment::Equirectangular(environment) => match environment.projection {
@@ -1727,7 +1760,8 @@ impl MetalPhysicalPipeline {
             generated_row_prefixes = self.row_prefix_textures(source_acescg, device_signal)?;
             (&*generated_row_prefixes.0, &*generated_row_prefixes.1)
         };
-        let glow_lobes = self.glow_lobe_textures(device_signal, &params)?;
+        let (glow_lobes, native_emission_signal, native_emission_prefix) =
+            self.glow_lobe_textures(device_signal, &params)?;
         let zero_veiling = [0.0_f32; 4];
         let veiling_gate_average = device.new_buffer_with_data(
             zero_veiling.as_ptr().cast(),
@@ -1831,6 +1865,8 @@ impl MetalPhysicalPipeline {
             for (index, lobe) in glow_lobes.iter().enumerate() {
                 encoder.set_texture(6 + index as u64, Some(lobe));
             }
+            encoder.set_texture(10, Some(&native_emission_signal));
+            encoder.set_texture(11, Some(&native_emission_prefix));
             encoder.set_bytes(
                 0,
                 size_of::<PhysicalPipelineParams>() as u64,
@@ -2665,8 +2701,20 @@ mod tests {
                     character_strength: 1.0,
                     source_unit_radiance_candelas_per_square_meter: 100.0,
                     exposure_stops: 0.0,
-                    rotation_x_degrees: 0.0,
-                    rotation_y_degrees: 17.0,
+                    placement: screen_cover::SphericalEnvironmentPlacement {
+                        source_direction: [
+                            17.0_f32.to_radians().sin(),
+                            0.0,
+                            17.0_f32.to_radians().cos(),
+                        ],
+                        tangent_transform: [
+                            13.0_f32.to_radians().cos() / 1.7,
+                            13.0_f32.to_radians().sin() / 1.7,
+                            0.0,
+                            0.0,
+                        ],
+                        ..screen_cover::SphericalEnvironmentPlacement::IDENTITY
+                    },
                     projection,
                 },
             );
@@ -2735,7 +2783,7 @@ mod tests {
             screen_application::LensEvaluationModel::VfxDepthBlur,
         ] {
             for lens_amount in [0.0, 1.0, 2.0] {
-                let (input, mut plan) = fixture(
+                let (mut input, mut plan) = fixture(
                     RasterPlacement::Stretch,
                     FlatPanelQuality::High,
                     StripeLayout::Rgb,
@@ -2755,12 +2803,15 @@ mod tests {
                 plan.scene_geometry_lens.sensor_width_millimeters = 4.0;
                 plan.scene_geometry_lens.sensor_height_millimeters = 2.0;
                 plan.requested_intermediate = PhysicalIntermediate::LensProjection;
+                input.device_signal.alpha = vec![0.0, 0.25, 0.5, 0.75, 1.0, 0.4];
+                plan.device_vfx_alpha_mode = DeviceVfxAlphaMode::DeviceTransparency;
                 let source = texture(&device, input.width, input.height, &input.acescg);
                 let signal_values = input
                     .device_signal
                     .pixels
                     .iter()
-                    .map(|value| [value.r, value.g, value.b, 1.0])
+                    .zip(&input.device_signal.alpha)
+                    .map(|(value, alpha)| [value.r, value.g, value.b, *alpha])
                     .collect::<Vec<_>>();
                 let signal = texture(&device, input.width, input.height, &signal_values);
                 let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {

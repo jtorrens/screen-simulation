@@ -44,6 +44,9 @@ final class SetupFramingRenderer {
         var modes: SIMD4<UInt32>
         var environment: SIMD4<Float>
         var environmentCenter: SIMD4<Float>
+        var environmentPlacementAnchor: SIMD4<Float>
+        var environmentPlacementSourceScale: SIMD4<Float>
+        var environmentPlacementTangent: SIMD4<Float>
         var environmentFraming: SIMD4<Float>
         var lensRadialTangential: SIMD4<Float>
         var lensTangentialFocus: SIMD4<Float>
@@ -167,8 +170,8 @@ final class SetupFramingRenderer {
                 diagnosticMode
             ),
             environment: SIMD4(
-                plan.environment_rotation_radians.0,
-                plan.environment_rotation_radians.1,
+                0,
+                0,
                 plan.environment_finite_sphere ? 1 : 0,
                 plan.environment_sphere_radius_meters
             ),
@@ -176,6 +179,23 @@ final class SetupFramingRenderer {
                 plan.environment_sphere_center_meters.0,
                 plan.environment_sphere_center_meters.1,
                 plan.environment_sphere_center_meters.2, 0
+            ),
+            environmentPlacementAnchor: SIMD4(
+                plan.environment_placement_anchor_direction_world.0,
+                plan.environment_placement_anchor_direction_world.1,
+                plan.environment_placement_anchor_direction_world.2, 0
+            ),
+            environmentPlacementSourceScale: SIMD4(
+                plan.environment_placement_source_direction.0,
+                plan.environment_placement_source_direction.1,
+                plan.environment_placement_source_direction.2,
+                0
+            ),
+            environmentPlacementTangent: SIMD4(
+                plan.environment_placement_tangent_transform.0,
+                plan.environment_placement_tangent_transform.1,
+                plan.environment_placement_tangent_transform.2,
+                plan.environment_placement_tangent_transform.3
             ),
             environmentFraming: environmentFraming,
             lensRadialTangential: SIMD4(
@@ -668,6 +688,9 @@ final class SetupFramingRenderer {
         uint4 modes;
         float4 environment;
         float4 environment_center;
+        float4 environment_placement_anchor;
+        float4 environment_placement_source_scale;
+        float4 environment_placement_tangent;
         float4 environment_framing;
         float4 lens_radial_tangential;
         float4 lens_tangential_focus;
@@ -842,6 +865,50 @@ final class SetupFramingRenderer {
         return float3(d.x, d.y * cx - d.z * sx, d.y * sx + d.z * cx);
     }
 
+    inline void tangent_basis(float3 direction, thread float3& right, thread float3& up) {
+        const float3 reference = abs(direction.y) < 0.999f
+            ? float3(0, 1, 0) : float3(1, 0, 0);
+        right = normalize(cross(reference, direction));
+        up = normalize(cross(direction, right));
+    }
+
+    inline float2 complex_multiply(float2 left, float2 right) {
+        return float2(left.x * right.x - left.y * right.y,
+            left.x * right.y + left.y * right.x);
+    }
+
+    inline float2 complex_divide(float2 numerator, float2 denominator) {
+        const float norm = max(dot(denominator, denominator), 1.0e-20f);
+        return float2(dot(numerator, denominator),
+            numerator.y * denominator.x - numerator.x * denominator.y) / norm;
+    }
+
+    inline float3 place_environment(float3 direction, constant SetupParameters& s) {
+        const float3 anchor = normalize(s.environment_placement_anchor.xyz);
+        const float3 source = normalize(s.environment_placement_source_scale.xyz);
+        const float worldAngle = acos(clamp(dot(anchor, direction), -1.0f, 1.0f));
+        const float worldRadius = tan(worldAngle * 0.5f);
+        if (worldRadius <= 1.0e-7f) return source;
+        float3 anchorRight, anchorUp;
+        tangent_basis(anchor, anchorRight, anchorUp);
+        float3 tangent = direction - anchor * dot(direction, anchor);
+        tangent = dot(tangent, tangent) > 1.0e-12f ? normalize(tangent) : anchorRight;
+        const float2 point = worldRadius * float2(
+            dot(tangent, anchorRight), dot(tangent, anchorUp));
+        const float4 transform = s.environment_placement_tangent;
+        const float2 mappedPoint = complex_divide(
+            complex_multiply(transform.xy, point),
+            float2(1.0f, 0.0f) + complex_multiply(transform.zw, point));
+        const float mappedRadius = length(mappedPoint);
+        if (!isfinite(mappedRadius) || mappedRadius <= 1.0e-8f) return source;
+        const float angle = 2.0f * atan(mappedRadius);
+        float3 sourceRight, sourceUp;
+        tangent_basis(source, sourceRight, sourceUp);
+        const float3 mapped = normalize(
+            sourceRight * mappedPoint.x + sourceUp * mappedPoint.y);
+        return normalize(source * cos(angle) + mapped * sin(angle));
+    }
+
     inline bool environment_uv(float2 camera_uv, constant SetupParameters& s, thread float2& uv) {
         const float3 ray = camera_ray(camera_uv, s);
         const float3 screen_right = rotate_q(s.screen_quaternion, float3(1, 0, 0));
@@ -869,7 +936,7 @@ final class SetupFramingRenderer {
             if (t <= 0.0f) return false;
             reflected = normalize(relative_point + reflected * t);
         }
-        const float3 source = rotate_environment(reflected, s.environment.x, s.environment.y);
+        const float3 source = place_environment(normalize(reflected), s);
         uv = float2(atan2(source.x, source.z) / (2.0f * M_PI_F) + 0.5f,
             0.5f - asin(clamp(source.y, -1.0f, 1.0f)) / M_PI_F);
         return true;
@@ -894,7 +961,9 @@ final class SetupFramingRenderer {
         return (device_uv - 0.5f) * scale + 0.5f;
     }
 
-    inline float2 framed_environment_uv(float2 device_uv, constant SetupParameters& s) {
+    inline bool framed_environment_uv(
+        float2 device_uv, constant SetupParameters& s, thread float2& uv
+    ) {
         const float angle = -s.environment_framing.w;
         const float sn = sin(angle), cs = cos(angle);
         const float2 centered = device_uv - 0.5f;
@@ -902,10 +971,14 @@ final class SetupFramingRenderer {
             centered.x * cs - centered.y * sn,
             centered.x * sn + centered.y * cs
         );
-        float2 uv = s.environment_framing.xy + rotated / s.environment_framing.z;
-        uv.x = fract(uv.x);
-        uv.y = clamp(uv.y, 0.0f, 1.0f);
-        return uv;
+        const float source_aspect = float(s.source_device.x) / float(s.source_device.y);
+        const float device_aspect = float(s.source_device.z) / float(s.source_device.w);
+        const float2 fit_scale = source_aspect > device_aspect
+            ? float2(1.0f, source_aspect / device_aspect)
+            : float2(device_aspect / source_aspect, 1.0f);
+        uv = s.environment_framing.xy
+            + rotated * fit_scale / s.environment_framing.z;
+        return all(uv >= 0.0f) && all(uv <= 1.0f);
     }
 
     inline bool reference_uv(
@@ -1026,18 +1099,18 @@ final class SetupFramingRenderer {
             return;
         }
         if (s.modes.w == 6u) {
-            float2 environmentUV;
-            float4 backgroundEnvironment = float4(0, 0, 0, 1);
-            if (environment_uv(camera, s, environmentUV)) {
-                backgroundEnvironment = source.sample(linear_sampler, environmentUV);
-                backgroundEnvironment.rgb *= 0.20f;
-                backgroundEnvironment.a = 1.0f;
-            }
             float2 panel;
-            if (!screen_uv(camera, s, panel) || !rounded_device_contains(panel, s)) {
-                output.write(backgroundEnvironment, p); return;
+            if (!screen_uv(camera, s, panel)) {
+                output.write(float4(0, 0, 0, 1), p); return;
             }
-            float4 value = source.sample(linear_sampler, framed_environment_uv(panel, s));
+            float2 framedUV;
+            if (!framed_environment_uv(panel, s, framedUV)) {
+                output.write(float4(0, 0, 0, 1), p); return;
+            }
+            float4 value = source.sample(linear_sampler, framedUV);
+            constexpr float OUTSIDE_DEVICE_GAIN = 0.20f;
+            const float coverage = device_coverage(p, false, s);
+            value.rgb *= mix(OUTSIDE_DEVICE_GAIN, 1.0f, coverage);
             value.a = 1.0f;
             output.write(value, p);
             return;

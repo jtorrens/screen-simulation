@@ -71,6 +71,9 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         environmentAmount: 0,
         environmentRotationXDegrees: 0,
         environmentRotationYDegrees: 0,
+        environmentAnchorLongitudeDegrees: 0,
+        environmentAnchorLatitudeDegrees: 0,
+        environmentTangentTransform: [1, 0, 0, 0],
         environmentExposureEV: 0,
         environmentContrast: 1,
         environmentSaturation: 1,
@@ -548,7 +551,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(edited.coverAgMicrotextureAmount == 2.5)
 }
 
-@Test func externalEnvironmentSelectionPublishesIndependentXYRotationAndExposure() throws {
+@Test func externalEnvironmentSelectionPublishesSphericalPlacementAndExposure() throws {
     let current = canonicalTestSelection()
     let selected = try RustTestAuthoringCoordinator.apply(
         .setChoice(controlID: "environment-source", optionID: "environment-image"),
@@ -566,11 +569,26 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         .setScalar(controlID: "environment-exposure-ev", value: -1),
         to: rotatedY
     )
+    let anchored = try RustTestAuthoringCoordinator.apply(
+        .setScalar(controlID: "environment-anchor-longitude-degrees", value: 31),
+        to: exposed
+    )
+    let scaled = try RustTestAuthoringCoordinator.apply(
+        .setScalar(controlID: "environment-mobius-a-real", value: 2.5),
+        to: anchored
+    )
+    let rolled = try RustTestAuthoringCoordinator.apply(
+        .setScalar(controlID: "environment-mobius-a-imag", value: -0.18),
+        to: scaled
+    )
 
     #expect(exposed.environmentSourceID == "environment-image")
     #expect(exposed.environmentRotationXDegrees == -25)
     #expect(abs(exposed.environmentRotationYDegrees + 57.3) < 0.0001)
-    #expect(exposed.environmentExposureEV == -1)
+    #expect(rolled.environmentExposureEV == -1)
+    #expect(rolled.environmentAnchorLongitudeDegrees == 31)
+    #expect(abs(rolled.environmentTangentTransform[0] - 2.5) < 1e-6)
+    #expect(abs(rolled.environmentTangentTransform[1] + 0.18) < 1e-6)
 }
 
 @Test @MainActor func everyTestPhaseSelectsItsOwnCumulativePreviewRoute() throws {

@@ -58,12 +58,12 @@ private func scalarControl(
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 21)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 22)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v21.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v22.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(

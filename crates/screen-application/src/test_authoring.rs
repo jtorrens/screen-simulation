@@ -10,7 +10,8 @@ use screen_color::{
 };
 use screen_contracts::{FrameRate, LinearRgb};
 use screen_cover::{
-    COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, cover_glass_preset, environment_preset,
+    COVER_GLASS_PRESETS, ENVIRONMENT_PRESETS, ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+    ENVIRONMENT_TANGENT_SCALE_MIN, cover_glass_preset, environment_preset,
 };
 use screen_geometry::{LensPreset, lens_preset};
 use screen_panel::{DEVICE_PRESETS, DevicePreset, PanelColorMode};
@@ -21,7 +22,7 @@ use screen_recording::{
     RecordingMedium, bundled_profiles,
 };
 
-pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 34;
+pub const TEST_AUTHORING_SCHEMA_VERSION: u32 = 35;
 
 pub const ORIGIN_PHASE_ID: &str = "origin";
 pub const SOURCE_ADJUSTMENT_PHASE_ID: &str = "source-adjustment";
@@ -100,6 +101,12 @@ pub const ENVIRONMENT_BROWSE_CONTROL_ID: &str = "environment-browse";
 pub const ENVIRONMENT_AMOUNT_CONTROL_ID: &str = "environment-amount";
 pub const ENVIRONMENT_ROTATION_X_CONTROL_ID: &str = "environment-rotation-x-degrees";
 pub const ENVIRONMENT_ROTATION_Y_CONTROL_ID: &str = "environment-rotation-y-degrees";
+pub const ENVIRONMENT_ANCHOR_LONGITUDE_CONTROL_ID: &str = "environment-anchor-longitude-degrees";
+pub const ENVIRONMENT_ANCHOR_LATITUDE_CONTROL_ID: &str = "environment-anchor-latitude-degrees";
+pub const ENVIRONMENT_MOBIUS_A_REAL_CONTROL_ID: &str = "environment-mobius-a-real";
+pub const ENVIRONMENT_MOBIUS_A_IMAG_CONTROL_ID: &str = "environment-mobius-a-imag";
+pub const ENVIRONMENT_MOBIUS_C_REAL_CONTROL_ID: &str = "environment-mobius-c-real";
+pub const ENVIRONMENT_MOBIUS_C_IMAG_CONTROL_ID: &str = "environment-mobius-c-imag";
 pub const ENVIRONMENT_EXPOSURE_CONTROL_ID: &str = "environment-exposure-ev";
 pub const ENVIRONMENT_CONTRAST_CONTROL_ID: &str = "environment-contrast";
 pub const ENVIRONMENT_SATURATION_CONTROL_ID: &str = "environment-saturation";
@@ -440,6 +447,9 @@ pub struct TestAuthoringSelection<'a> {
     pub environment_amount: f32,
     pub environment_rotation_x_degrees: f32,
     pub environment_rotation_y_degrees: f32,
+    pub environment_anchor_longitude_degrees: f32,
+    pub environment_anchor_latitude_degrees: f32,
+    pub environment_tangent_transform: [f32; 4],
     pub environment_exposure_ev: f32,
     pub environment_contrast: f32,
     pub environment_saturation: f32,
@@ -539,6 +549,9 @@ pub struct ResolvedTestAuthoringSelection<'a> {
     pub environment_amount: f32,
     pub environment_rotation_x_degrees: f32,
     pub environment_rotation_y_degrees: f32,
+    pub environment_anchor_longitude_degrees: f32,
+    pub environment_anchor_latitude_degrees: f32,
+    pub environment_tangent_transform: [f32; 4],
     pub environment_exposure_ev: f32,
     pub environment_contrast: f32,
     pub environment_saturation: f32,
@@ -1408,6 +1421,9 @@ pub fn default_test_authoring_selection_with_profiles<'a>(
             environment_amount: 0.0,
             environment_rotation_x_degrees: 0.0,
             environment_rotation_y_degrees: 0.0,
+            environment_anchor_longitude_degrees: 0.0,
+            environment_anchor_latitude_degrees: 0.0,
+            environment_tangent_transform: [1.0, 0.0, 0.0, 0.0],
             environment_exposure_ev: 0.0,
             environment_contrast: 1.0,
             environment_saturation: 1.0,
@@ -1655,6 +1671,19 @@ pub fn resolve_test_authoring_selection_with_profiles<'a>(
         || !(-90.0..=90.0).contains(&selection.environment_rotation_x_degrees)
         || !selection.environment_rotation_y_degrees.is_finite()
         || !(-180.0..=180.0).contains(&selection.environment_rotation_y_degrees)
+        || !selection.environment_anchor_longitude_degrees.is_finite()
+        || !(-180.0..=180.0).contains(&selection.environment_anchor_longitude_degrees)
+        || !selection.environment_anchor_latitude_degrees.is_finite()
+        || !(-90.0..=90.0).contains(&selection.environment_anchor_latitude_degrees)
+        || selection
+            .environment_tangent_transform
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > ENVIRONMENT_TANGENT_COEFFICIENT_MAX)
+        || (selection.environment_tangent_transform[0] * selection.environment_tangent_transform[0]
+            + selection.environment_tangent_transform[1]
+                * selection.environment_tangent_transform[1])
+            .sqrt()
+            < ENVIRONMENT_TANGENT_SCALE_MIN
         || !selection.environment_exposure_ev.is_finite()
         || !(-8.0..=8.0).contains(&selection.environment_exposure_ev)
     {
@@ -1877,6 +1906,9 @@ pub fn resolve_test_authoring_selection_with_profiles<'a>(
         environment_amount: selection.environment_amount,
         environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
         environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
+        environment_anchor_longitude_degrees: selection.environment_anchor_longitude_degrees,
+        environment_anchor_latitude_degrees: selection.environment_anchor_latitude_degrees,
+        environment_tangent_transform: selection.environment_tangent_transform,
         environment_exposure_ev: selection.environment_exposure_ev,
         environment_contrast: selection.environment_contrast,
         environment_saturation: selection.environment_saturation,
@@ -2699,6 +2731,60 @@ pub fn test_page_descriptor_with_profiles<'a>(
                     ];
                     if selection.environment_source_id == IMAGE_ENVIRONMENT_SOURCE_ID {
                         controls.extend([
+                            scalar_control(
+                                ENVIRONMENT_ANCHOR_LONGITUDE_CONTROL_ID,
+                                "Anclaje horizontal",
+                                selection.environment_anchor_longitude_degrees,
+                                -180.0,
+                                180.0,
+                                0.0,
+                                "°",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_ANCHOR_LATITUDE_CONTROL_ID,
+                                "Anclaje vertical",
+                                selection.environment_anchor_latitude_degrees,
+                                -90.0,
+                                90.0,
+                                0.0,
+                                "°",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_MOBIUS_A_REAL_CONTROL_ID,
+                                "Transformación esférica · escala real",
+                                selection.environment_tangent_transform[0],
+                                -ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+                                ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+                                1.0,
+                                "×",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_MOBIUS_A_IMAG_CONTROL_ID,
+                                "Transformación esférica · escala imaginaria",
+                                selection.environment_tangent_transform[1],
+                                -ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+                                ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+                                0.0,
+                                "×",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_MOBIUS_C_REAL_CONTROL_ID,
+                                "Transformación esférica · proyecto real",
+                                selection.environment_tangent_transform[2],
+                                -ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+                                ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+                                0.0,
+                                "×",
+                            ),
+                            scalar_control(
+                                ENVIRONMENT_MOBIUS_C_IMAG_CONTROL_ID,
+                                "Transformación esférica · proyecto imaginario",
+                                selection.environment_tangent_transform[3],
+                                -ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+                                ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+                                0.0,
+                                "×",
+                            ),
                             choice_control(
                                 ENVIRONMENT_PROJECTION_CONTROL_ID,
                                 "Proyección",
@@ -3299,6 +3385,9 @@ pub fn apply_test_choice_with_profiles<'a>(
                 next.environment_amount = 1.0;
                 next.environment_rotation_x_degrees = 0.0;
                 next.environment_rotation_y_degrees = 0.0;
+                next.environment_anchor_longitude_degrees = 0.0;
+                next.environment_anchor_latitude_degrees = 0.0;
+                next.environment_tangent_transform = [1.0, 0.0, 0.0, 0.0];
                 next.environment_exposure_ev = 0.0;
                 next.environment_contrast = 1.0;
                 next.environment_saturation = 1.0;
@@ -3317,6 +3406,9 @@ pub fn apply_test_choice_with_profiles<'a>(
                 next.environment_amount = environment.environment.character_strength;
                 next.environment_rotation_x_degrees = environment.environment.rotation_x_degrees;
                 next.environment_rotation_y_degrees = environment.environment.rotation_y_degrees;
+                next.environment_anchor_longitude_degrees = 0.0;
+                next.environment_anchor_latitude_degrees = 0.0;
+                next.environment_tangent_transform = [1.0, 0.0, 0.0, 0.0];
                 next.environment_exposure_ev = 0.0;
                 next.environment_contrast = 1.0;
                 next.environment_saturation = 1.0;
@@ -3381,6 +3473,12 @@ pub fn apply_test_choice_with_profiles<'a>(
         | ENVIRONMENT_AMOUNT_CONTROL_ID
         | ENVIRONMENT_ROTATION_X_CONTROL_ID
         | ENVIRONMENT_ROTATION_Y_CONTROL_ID
+        | ENVIRONMENT_ANCHOR_LONGITUDE_CONTROL_ID
+        | ENVIRONMENT_ANCHOR_LATITUDE_CONTROL_ID
+        | ENVIRONMENT_MOBIUS_A_REAL_CONTROL_ID
+        | ENVIRONMENT_MOBIUS_A_IMAG_CONTROL_ID
+        | ENVIRONMENT_MOBIUS_C_REAL_CONTROL_ID
+        | ENVIRONMENT_MOBIUS_C_IMAG_CONTROL_ID
         | ENVIRONMENT_EXPOSURE_CONTROL_ID
         | SOURCE_EXPOSURE_CONTROL_ID
         | SOURCE_CONTRAST_CONTROL_ID
@@ -3509,6 +3607,9 @@ fn unresolved_test_selection<'a>(
         environment_amount: current.environment_amount,
         environment_rotation_x_degrees: current.environment_rotation_x_degrees,
         environment_rotation_y_degrees: current.environment_rotation_y_degrees,
+        environment_anchor_longitude_degrees: current.environment_anchor_longitude_degrees,
+        environment_anchor_latitude_degrees: current.environment_anchor_latitude_degrees,
+        environment_tangent_transform: current.environment_tangent_transform,
         environment_exposure_ev: current.environment_exposure_ev,
         environment_contrast: current.environment_contrast,
         environment_saturation: current.environment_saturation,
@@ -3703,6 +3804,14 @@ pub fn apply_test_scalar_with_profiles<'a>(
         ENVIRONMENT_AMOUNT_CONTROL_ID => next.environment_amount = value,
         ENVIRONMENT_ROTATION_X_CONTROL_ID => next.environment_rotation_x_degrees = value,
         ENVIRONMENT_ROTATION_Y_CONTROL_ID => next.environment_rotation_y_degrees = value,
+        ENVIRONMENT_ANCHOR_LONGITUDE_CONTROL_ID => {
+            next.environment_anchor_longitude_degrees = value
+        }
+        ENVIRONMENT_ANCHOR_LATITUDE_CONTROL_ID => next.environment_anchor_latitude_degrees = value,
+        ENVIRONMENT_MOBIUS_A_REAL_CONTROL_ID => next.environment_tangent_transform[0] = value,
+        ENVIRONMENT_MOBIUS_A_IMAG_CONTROL_ID => next.environment_tangent_transform[1] = value,
+        ENVIRONMENT_MOBIUS_C_REAL_CONTROL_ID => next.environment_tangent_transform[2] = value,
+        ENVIRONMENT_MOBIUS_C_IMAG_CONTROL_ID => next.environment_tangent_transform[3] = value,
         ENVIRONMENT_EXPOSURE_CONTROL_ID => next.environment_exposure_ev = value,
         SOURCE_EXPOSURE_CONTROL_ID => next.source_adjustment.exposure_ev = value,
         SOURCE_CONTRAST_CONTROL_ID => next.source_adjustment.contrast = value,
@@ -3867,6 +3976,9 @@ mod tests {
             environment_amount: 0.0,
             environment_rotation_x_degrees: 0.0,
             environment_rotation_y_degrees: 0.0,
+            environment_anchor_longitude_degrees: 0.0,
+            environment_anchor_latitude_degrees: 0.0,
+            environment_tangent_transform: [1.0, 0.0, 0.0, 0.0],
             environment_exposure_ev: 0.0,
             environment_contrast: 1.0,
             environment_saturation: 1.0,
@@ -4183,9 +4295,24 @@ mod tests {
             -1.0,
         )
         .unwrap();
+        let selected = apply_test_scalar(
+            unresolved_test_selection(selected),
+            ENVIRONMENT_MOBIUS_A_REAL_CONTROL_ID,
+            0.5,
+        )
+        .unwrap();
         assert_eq!(selected.environment_rotation_x_degrees, -32.0);
         assert_eq!(selected.environment_rotation_y_degrees, 78.0);
         assert_eq!(selected.environment_exposure_ev, -1.0);
+        assert_eq!(selected.environment_tangent_transform[0], 0.5);
+        assert!(
+            apply_test_scalar(
+                unresolved_test_selection(selected),
+                ENVIRONMENT_MOBIUS_A_REAL_CONTROL_ID,
+                ENVIRONMENT_TANGENT_COEFFICIENT_MAX * 2.0,
+            )
+            .is_err()
+        );
 
         let page = test_page_descriptor(unresolved_test_selection(selected)).unwrap();
         let controls = &page

@@ -395,8 +395,8 @@ fn supported_intermediate_outputs_match_frozen_domain_goldens() {
             10_426_809_767_957_796_336,
             15_321_147_244_573_496_118,
             15_321_147_244_573_496_118,
-            585_697_277_097_709_086,
-            2_555_214_578_077_310_480,
+            10_538_370_793_360_161_742,
+            4_225_586_009_432_484_985,
         ]
     );
 }
@@ -465,8 +465,7 @@ fn image_environment_requires_its_exact_typed_raster_and_changes_cover_output() 
             character_strength: 1.0,
             source_unit_radiance_candelas_per_square_meter: 100.0,
             exposure_stops: 0.0,
-            rotation_x_degrees: 0.0,
-            rotation_y_degrees: 0.0,
+            placement: screen_cover::SphericalEnvironmentPlacement::IDENTITY,
             projection: screen_cover::EnvironmentProjection::Distant,
         },
     );

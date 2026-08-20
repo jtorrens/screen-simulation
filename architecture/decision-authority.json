@@ -34,7 +34,9 @@
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/GlobalLibraryTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalPipelineAuthoringTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
-        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift"
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift",
+        "scripts/migrate_global_library_v13_to_v14.py",
+        "scripts/test_migrate_global_library_v13_to_v14.py"
       ]
     },
     {
@@ -47,7 +49,9 @@
       "enforcement": [
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
         "scripts/check_architecture.py"
       ]
     },
@@ -96,6 +100,20 @@
       },
       "enforcement": [
         "crates/screen-geometry/src/lib.rs"
+      ]
+    },
+    {
+      "id": "lens.vfx-depth-blur",
+      "scope": "VFX 2D depth-of-field footprint, emission integration and CPU/Metal parity",
+      "owner": {
+        "path": "Docs/architecture/camera_time_and_space.md",
+        "anchor": "Time"
+      },
+      "enforcement": [
+        "crates/screen-application/src/lib.rs",
+        "crates/screen-platform/src/physical_pipeline_metal.rs",
+        "crates/screen-platform/shaders/physical_pipeline.metal",
+        "Docs/architecture/validation.md"
       ]
     },
     {
@@ -170,6 +188,29 @@
       ]
     },
     {
+      "id": "environment.spherical-placement",
+      "scope": "non-destructive placement of image-backed Environment radiance",
+      "owner": {
+        "path": "Docs/architecture/color_and_panel.md",
+        "anchor": "Spherical image-environment placement"
+      },
+      "enforcement": [
+        "crates/screen-cover/src/lib.rs",
+        "crates/screen-application/src/lib.rs",
+        "crates/screen-application/src/setup_diagnostics.rs",
+        "crates/screen-platform/src/physical_pipeline_metal.rs",
+        "crates/screen-platform/shaders/physical_pipeline.metal",
+        "crates/screen-native-bridge/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/EnvironmentReflectionFramer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SetupFramingRendererTests.swift",
+        "scripts/migrate_scene_library_v21_to_v22.py",
+        "scripts/test_migrate_scene_library_v21_to_v22.py"
+      ]
+    },
+    {
       "id": "device.physical-corner-radius",
       "scope": "uniform physical Device outline across evaluation and Setup",
       "owner": {
@@ -181,6 +222,22 @@
         "crates/screen-application/src/lib.rs",
         "crates/screen-platform/shaders/physical_pipeline.metal",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift"
+      ]
+    },
+    {
+      "id": "ui.native-action-state",
+      "scope": "persistent native workstation actions and capability-backed availability",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Native action-control states"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeActionState.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/MonitorOutputController.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeActionStateTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/MonitorOutputControllerTests.swift"
       ]
     }
   ]

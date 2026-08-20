@@ -68,6 +68,10 @@ final class MonitorOutputController: ObservableObject {
         selectedDevice?.modes.first { $0.identifier == selectedModeID }
     }
 
+    var isAvailable: Bool {
+        report.canEnumerateDevices && selectedDevice != nil && selectedMode != nil
+    }
+
     func refresh() {
         stop()
         report = DeckLinkRuntimeProbe.inspect()
@@ -111,6 +115,10 @@ final class MonitorOutputController: ObservableObject {
     func toggle(frame: StudioColorMetalFrame?, display: StudioColorMetalDisplay) {
         if isEnabled {
             stop()
+            return
+        }
+        guard isAvailable else {
+            errorMessage = "No se ha detectado una salida DeckLink disponible."
             return
         }
         guard let frame else {

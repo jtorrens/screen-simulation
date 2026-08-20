@@ -29,7 +29,10 @@ struct PhysicalPipelineParams {
     float4 environment_ambient_strength;
     float4 environment_key_radius;
     float4 environment_direction;
-    float4 environment_rotation; // panel-local X and Y radians
+    float4 environment_rotation; // reserved, reserved, finite-sphere flag and radius
+    float4 environment_placement_anchor; // fixed world-space direction
+    float4 environment_placement_source_scale; // source direction and reserved
+    float4 environment_placement_tangent; // Mobius [a.re, a.im, c.re, c.im]
     float4 environment_center; // world-space finite-sphere center in meters
     float4 camera_position_focal;
     float4 camera_right_sensor_width;
@@ -525,6 +528,102 @@ inline float3 physical_environment_to_local(float3 direction, float rotation_x, 
         unpitched.x * sine_y + unpitched.z * cosine_y);
 }
 
+inline void physical_environment_tangent_basis(float3 direction,
+    thread float3& right, thread float3& up) {
+    const float3 reference = abs(direction.y) < 0.999f
+        ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    right = normalize(cross(reference, direction));
+    up = normalize(cross(direction, right));
+}
+
+inline float2 physical_complex_multiply(float2 left, float2 right) {
+    return float2(left.x * right.x - left.y * right.y,
+        left.x * right.y + left.y * right.x);
+}
+
+inline float2 physical_complex_divide(float2 numerator, float2 denominator) {
+    const float norm = max(dot(denominator, denominator), 1.0e-20f);
+    return float2(dot(numerator, denominator),
+        numerator.y * denominator.x - numerator.x * denominator.y) / norm;
+}
+
+inline float3 physical_place_environment_direction(float3 direction,
+    float3 anchor, float3 source, float4 tangent_transform) {
+    direction = normalize(direction);
+    anchor = normalize(anchor);
+    source = normalize(source);
+    const float world_angle = acos(clamp(dot(anchor, direction), -1.0f, 1.0f));
+    const float world_radius = tan(world_angle * 0.5f);
+    if (world_radius <= 1.0e-7f) return source;
+    float3 tangent = direction - anchor * dot(direction, anchor);
+    float3 anchor_right, anchor_up;
+    physical_environment_tangent_basis(anchor, anchor_right, anchor_up);
+    tangent = dot(tangent, tangent) > 1.0e-12f ? normalize(tangent) : anchor_right;
+    const float2 point = world_radius * float2(
+        dot(tangent, anchor_right), dot(tangent, anchor_up));
+    const float2 a = tangent_transform.xy;
+    const float2 c = tangent_transform.zw;
+    const float2 mapped = physical_complex_divide(
+        physical_complex_multiply(a, point),
+        float2(1.0f, 0.0f) + physical_complex_multiply(c, point));
+    const float mapped_radius = length(mapped);
+    if (!isfinite(mapped_radius) || mapped_radius <= 1.0e-8f) return source;
+    const float angle = 2.0f * atan(mapped_radius);
+    float3 source_right, source_up;
+    physical_environment_tangent_basis(source, source_right, source_up);
+    const float3 mapped_tangent = normalize(
+        source_right * mapped.x + source_up * mapped.y);
+    return normalize(source * cos(angle) + mapped_tangent * sin(angle));
+}
+
+inline float3 physical_environment_to_source_placement(float3 direction,
+    constant PhysicalPipelineParams& p) {
+    return physical_place_environment_direction(direction,
+        p.environment_placement_anchor.xyz,
+        p.environment_placement_source_scale.xyz,
+        p.environment_placement_tangent);
+}
+
+inline float3 physical_environment_to_world_placement(float3 direction,
+    constant PhysicalPipelineParams& p) {
+    const float4 transform = p.environment_placement_tangent;
+    const float2 inverse_a = physical_complex_divide(float2(1.0f, 0.0f), transform.xy);
+    const float2 inverse_c = -physical_complex_divide(transform.zw, transform.xy);
+    const float4 inverse = float4(inverse_a, inverse_c);
+    return physical_place_environment_direction(direction,
+        p.environment_placement_source_scale.xyz,
+        p.environment_placement_anchor.xyz,
+        inverse);
+}
+
+inline float physical_environment_placement_jacobian(float3 source_direction,
+    constant PhysicalPipelineParams& p) {
+    const float source_angle = acos(clamp(dot(
+        normalize(p.environment_placement_source_scale.xyz),
+        normalize(source_direction)), -1.0f, 1.0f));
+    const float source_radius = tan(source_angle * 0.5f);
+    float3 source_right, source_up;
+    physical_environment_tangent_basis(
+        normalize(p.environment_placement_source_scale.xyz), source_right, source_up);
+    float3 tangent = source_direction
+        - normalize(p.environment_placement_source_scale.xyz)
+            * dot(normalize(p.environment_placement_source_scale.xyz), source_direction);
+    tangent = dot(tangent, tangent) > 1.0e-12f ? normalize(tangent) : source_right;
+    const float2 source_point = source_radius * float2(
+        dot(tangent, source_right), dot(tangent, source_up));
+    const float4 transform = p.environment_placement_tangent;
+    const float2 a = transform.xy;
+    const float2 c = transform.zw;
+    const float2 inverse_denominator = a - physical_complex_multiply(c, source_point);
+    const float2 world_point = physical_complex_divide(source_point, inverse_denominator);
+    const float derivative_squared = dot(a, a)
+        / max(pow(dot(inverse_denominator, inverse_denominator), 2.0f), 1.0e-20f);
+    const float numerator = derivative_squared
+        * pow(1.0f + dot(source_point, source_point), 2.0f);
+    const float solid_angle_denominator = pow(1.0f + dot(world_point, world_point), 2.0f);
+    return max(1.0e-8f, numerator / solid_angle_denominator);
+}
+
 inline float physical_environment_pdf(float2 uv,
     texture2d<float, access::sample> environment,
     uint2 dimensions,
@@ -660,8 +759,6 @@ inline float3 physical_reference_ggx_environment(
     float3 reflection_direction,
     float2 cover_position_meters,
     texture2d<float, access::sample> environment,
-    float rotation_x,
-    float rotation_y,
     float view_cosine,
     uint2 sample_seed,
     constant PhysicalPipelineParams& p
@@ -688,7 +785,7 @@ inline float3 physical_reference_ggx_environment(
                 mirror = normalize(origin + mirror * (-b + sqrt(discriminant)));
             }
         }
-        mirror = physical_environment_to_source(mirror, rotation_x, rotation_y);
+        mirror = physical_environment_to_source_placement(mirror, p);
         return environment.sample(
             environment_sampler, physical_environment_uv(mirror), level(0.0f)).rgb;
     }
@@ -727,8 +824,8 @@ inline float3 physical_reference_ggx_environment(
             const float3 source_direction = physical_sample_environment(
                 random_sample.x, jitter, environment,
                 environment_top_level, environment_total);
-            const float3 source_direction_world = physical_environment_to_local(
-                source_direction, rotation_x, rotation_y);
+            const float3 source_direction_world =
+                physical_environment_to_world_placement(source_direction, p);
             float sphere_jacobian = 1.0f;
             const float3 incident_world = p.environment_rotation.z > 0.5f
                 ? physical_finite_sphere_incident(source_direction_world, cover_position_world,
@@ -750,7 +847,9 @@ inline float3 physical_reference_ggx_environment(
                     const float2 source_uv = physical_environment_uv(source_direction);
                     const float environment_pdf = physical_environment_pdf(
                         source_uv, environment, environment_dimensions, environment_total)
-                        / max(sphere_jacobian, 1.0e-8f);
+                        / max(sphere_jacobian
+                            * physical_environment_placement_jacobian(
+                                source_direction, p), 1.0e-8f);
                     const float ggx_pdf = distribution
                         / (4.0f * max(outgoing.z * (1.0f + lambda_outgoing), 1.0e-12f));
                     const float mixture_pdf = 0.5f * (environment_pdf + ggx_pdf);
@@ -777,8 +876,8 @@ inline float3 physical_reference_ggx_environment(
                     cover_position_world, p.environment_center.xyz,
                     p.environment_rotation.w, sphere_jacobian)
                 : incident_world;
-            const float3 source_direction = physical_environment_to_source(
-                source_direction_world, rotation_x, rotation_y);
+            const float3 source_direction =
+                physical_environment_to_source_placement(source_direction_world, p);
             if (incident.z > 0.0f) {
                 const float3 micro_normal = normalize(outgoing + incident);
                 const float outgoing_dot_micro = max(0.0f, dot(outgoing, micro_normal));
@@ -789,7 +888,9 @@ inline float3 physical_reference_ggx_environment(
                     const float2 source_uv = physical_environment_uv(source_direction);
                     const float environment_pdf = physical_environment_pdf(
                         source_uv, environment, environment_dimensions, environment_total)
-                        / max(sphere_jacobian, 1.0e-8f);
+                        / max(sphere_jacobian
+                            * physical_environment_placement_jacobian(
+                                source_direction, p), 1.0e-8f);
                     const float ggx_pdf = distribution
                         / (4.0f * max(outgoing.z * (1.0f + lambda_outgoing), 1.0e-12f));
                     const float mixture_pdf = 0.5f * (environment_pdf + ggx_pdf);
@@ -818,7 +919,7 @@ inline float3 flat_environment_radiance(float3 reflection_direction_local,
     if (IMAGE_ENVIRONMENT) {
         return physical_reference_ggx_environment(
             direction, cover_position_meters, environment_acescg,
-            rotation_x, rotation_y, view_cosine, sample_seed, p)
+            view_cosine, sample_seed, p)
             * p.environment_ambient_strength.x * p.environment_ambient_strength.w;
     }
     direction = physical_environment_to_source(direction, rotation_x, rotation_y);
@@ -1259,12 +1360,16 @@ kernel void build_physical_glow_signal_prefix(
     texture2d<float, access::read> device_signal [[texture(0)]],
     texture2d<float, access::write> emission_signal [[texture(1)]],
     texture2d<float, access::write> emission_prefix [[texture(2)]],
+    texture2d<float, access::write> native_emission_signal [[texture(3)]],
+    texture2d<float, access::write> native_emission_prefix [[texture(4)]],
     constant PhysicalPipelineParams& p [[buffer(0)]],
     uint row [[thread_position_in_grid]]
 ) {
     if (row >= device_signal.get_height()) return;
     float4 accumulated = 0.0f;
+    float4 native_accumulated = 0.0f;
     emission_prefix.write(accumulated, uint2(0, row));
+    native_emission_prefix.write(native_accumulated, uint2(0, row));
     for (uint x = 0; x < device_signal.get_width(); ++x) {
         const float4 code = device_signal.read(uint2(x, row));
         const float alpha = resolved_device_alpha(code.a, 1.0f, p);
@@ -1277,9 +1382,13 @@ kernel void build_physical_glow_signal_prefix(
             dot(p.matrix1.xyz, native),
             dot(p.matrix2.xyz, native)) / p.levels.z;
         const float4 emission = float4(rgb, 0.0f);
+        const float4 native_emission = float4(native, 0.0f);
         emission_signal.write(emission, uint2(x, row));
+        native_emission_signal.write(native_emission, uint2(x, row));
         accumulated += emission;
+        native_accumulated += native_emission;
         emission_prefix.write(accumulated, uint2(x + 1, row));
+        native_emission_prefix.write(native_accumulated, uint2(x + 1, row));
     }
 }
 
@@ -1348,8 +1457,8 @@ inline float3 sample_emission_glow_lobe(
 }
 
 inline float native_channel_at_offset(
-    texture2d<float, access::read> device_signal,
-    texture2d<float, access::read> device_row_prefix,
+    texture2d<float, access::read> native_emission_signal,
+    texture2d<float, access::read> native_emission_prefix,
     uint channel,
     float2 device_minimum,
     float2 device_maximum,
@@ -1365,11 +1474,11 @@ inline float native_channel_at_offset(
         min(shifted_minimum, shifted_maximum), 0.0f, 1.0f);
     const float2 panel_maximum = clamp(
         max(shifted_minimum, shifted_maximum), 0.0f, 1.0f);
-    const float4 code = area_sample(
-        device_signal, device_row_prefix, panel_minimum, panel_maximum,
+    const float4 linear_emission = area_sample(
+        native_emission_signal, native_emission_prefix, panel_minimum, panel_maximum,
         prepared_placement_scale, p);
-    return resolved_device_alpha(code.a, coverage, p) * native_channel(
-        code[channel],
+    return coverage * native_channel_from_linear(
+        linear_emission[channel],
         channel,
         panel_minimum * float2(p.source_panel.zw),
         panel_maximum * float2(p.source_panel.zw),
@@ -1378,35 +1487,36 @@ inline float native_channel_at_offset(
 }
 
 inline float spread_native_channel(
-    texture2d<float, access::read> device_signal,
-    texture2d<float, access::read> device_row_prefix,
+    texture2d<float, access::read> native_emission_signal,
+    texture2d<float, access::read> native_emission_prefix,
     uint channel,
     float2 device_minimum,
     float2 device_maximum,
-    float base_native,
+    float identity_native,
     float2 prepared_placement_scale,
     constant PhysicalPipelineParams& p
 ) {
     const float strength = p.spread_core_radius.w;
-    if (strength == 0.0f) {
-        return base_native;
-    }
+    if (strength == 0.0f) return identity_native;
     const float core_weight = p.spread_core_weight[channel];
     const float tail_weight = p.spread_tail_weight[channel];
     const float2 inverse_panel = 1.0f / p.panel_size_meters.xy;
     const float core = p.spread_core_radius[channel] * strength * 1.0e-6f;
     const float tail = p.spread_tail_radius[channel] * strength * 0.7071067811865475f * 1.0e-6f;
-    float value = base_native * (1.0f - core_weight - tail_weight);
+    float value = native_channel_at_offset(
+        native_emission_signal, native_emission_prefix, channel,
+        device_minimum, device_maximum, float2(0.0f),
+        prepared_placement_scale, p) * (1.0f - core_weight - tail_weight);
     const float core_sample = core_weight * 0.25f;
     const float tail_sample = tail_weight * 0.25f;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(core, 0.0f) * inverse_panel, prepared_placement_scale, p) * core_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-core, 0.0f) * inverse_panel, prepared_placement_scale, p) * core_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(0.0f, core) * inverse_panel, prepared_placement_scale, p) * core_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(0.0f, -core) * inverse_panel, prepared_placement_scale, p) * core_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(tail, tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-tail, tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(tail, -tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
-    value += native_channel_at_offset(device_signal, device_row_prefix, channel, device_minimum, device_maximum, float2(-tail, -tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
+    value += native_channel_at_offset(native_emission_signal, native_emission_prefix, channel, device_minimum, device_maximum, float2(core, 0.0f) * inverse_panel, prepared_placement_scale, p) * core_sample;
+    value += native_channel_at_offset(native_emission_signal, native_emission_prefix, channel, device_minimum, device_maximum, float2(-core, 0.0f) * inverse_panel, prepared_placement_scale, p) * core_sample;
+    value += native_channel_at_offset(native_emission_signal, native_emission_prefix, channel, device_minimum, device_maximum, float2(0.0f, core) * inverse_panel, prepared_placement_scale, p) * core_sample;
+    value += native_channel_at_offset(native_emission_signal, native_emission_prefix, channel, device_minimum, device_maximum, float2(0.0f, -core) * inverse_panel, prepared_placement_scale, p) * core_sample;
+    value += native_channel_at_offset(native_emission_signal, native_emission_prefix, channel, device_minimum, device_maximum, float2(tail, tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
+    value += native_channel_at_offset(native_emission_signal, native_emission_prefix, channel, device_minimum, device_maximum, float2(-tail, tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
+    value += native_channel_at_offset(native_emission_signal, native_emission_prefix, channel, device_minimum, device_maximum, float2(tail, -tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
+    value += native_channel_at_offset(native_emission_signal, native_emission_prefix, channel, device_minimum, device_maximum, float2(-tail, -tail) * inverse_panel, prepared_placement_scale, p) * tail_sample;
     return value;
 }
 
@@ -1481,6 +1591,8 @@ kernel void evaluate_physical_pipeline(
     texture2d<float, access::sample> glow_lobe1 [[texture(7)]],
     texture2d<float, access::sample> glow_lobe2 [[texture(8)]],
     texture2d<float, access::sample> glow_lobe3 [[texture(9)]],
+    texture2d<float, access::read> native_emission_signal [[texture(10)]],
+    texture2d<float, access::read> native_emission_prefix [[texture(11)]],
     constant PhysicalPipelineParams& p [[buffer(0)]],
     device const float4* veiling_gate_average [[buffer(1)]],
     uint2 local_position [[thread_position_in_grid]]
@@ -1675,8 +1787,17 @@ kernel void evaluate_physical_pipeline(
                 const float local_alpha = resolved_device_alpha(
                     code.a, local_panel_coverage, p);
                 const float base_linear = panel_linear_channel(code[channel], p) * local_alpha;
+                float4 linear_emission = 0.0f;
+                if (needs_continuous) {
+                    linear_emission = area_sample(
+                        native_emission_signal, native_emission_prefix,
+                        channel_minimum, channel_maximum, prepared_placement_scale, p);
+                }
                 const float base_native = native_channel_from_linear(
                     base_linear, channel, device_minimum, device_maximum, p);
+                const float continuous_structured_native = native_channel_from_linear(
+                    linear_emission[channel] * local_panel_coverage,
+                    channel, device_minimum, device_maximum, p);
                 const float base_gain = panel_uniformity_gains(
                     device_minimum, device_maximum, code.rgb, p)[channel];
                 const float uniform_base_native = base_native * base_gain;
@@ -1706,8 +1827,9 @@ kernel void evaluate_physical_pipeline(
                 }
                 if (needs_spread) {
                     spread_native[channel] += spread_native_channel(
-                        device_signal, device_row_prefix, channel,
-                        channel_minimum, channel_maximum, base_native,
+                        native_emission_signal, native_emission_prefix,
+                        channel, channel_minimum, channel_maximum,
+                        continuous_structured_native,
                         prepared_placement_scale, p) * base_gain * optical_weight;
                 }
                 if (needs_glow) {
@@ -1715,13 +1837,17 @@ kernel void evaluate_physical_pipeline(
                     // the broad Device halo is evaluated once below rather than
                     // being repeated for every PSF/aperture sample.
                     glow_native[channel] += spread_native_channel(
-                        device_signal, device_row_prefix, channel,
-                        channel_minimum, channel_maximum, base_native,
+                        native_emission_signal, native_emission_prefix,
+                        channel, channel_minimum, channel_maximum,
+                        continuous_structured_native,
                         prepared_placement_scale, p) * base_gain * optical_weight;
                 }
                 if (needs_continuous) {
-                    continuous_native[channel] += base_linear * optical_weight;
-                    uniform_continuous_native[channel] += base_linear * base_gain * optical_weight;
+                    const float continuous_linear =
+                        linear_emission[channel] * local_panel_coverage;
+                    continuous_native[channel] += continuous_linear * optical_weight;
+                    uniform_continuous_native[channel] +=
+                        continuous_linear * base_gain * optical_weight;
                 }
             }
             const PhysicalRayHit green_hit = green_footprint.hit;

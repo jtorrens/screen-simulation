@@ -62,7 +62,7 @@ struct GlobalPatternDefinition: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 12
+    static let currentSchemaVersion = 14
     let schemaVersion: Int
     var patterns: [LibraryItem<GlobalPatternDefinition>]
     var testImages: [LibraryItem<GlobalTestImage>]
@@ -248,7 +248,7 @@ struct GlobalLibraryStore: Sendable {
             create: true
         ).appendingPathComponent("SCREEN-SIMULATION", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        self.documentURL = root.appendingPathComponent("GlobalLibrary.v12.json")
+        self.documentURL = root.appendingPathComponent("GlobalLibrary.v14.json")
     }
 
     func load() throws -> GlobalLibraryDocument {

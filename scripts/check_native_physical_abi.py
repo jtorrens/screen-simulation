@@ -31,7 +31,6 @@ RETIRED_TOKENS = (
     "capture_amount",
     "ScreenTestAuthoringSelectionV4",
     "ScreenTestControlDescriptorV2",
-    "SCREEN_TEST_AUTHORING_ABI_VERSION 4",
     "ScreenTestAuthoringSelectionV7",
     "ScreenTestControlDescriptorV3",
     "SCREEN_TEST_AUTHORING_ABI_VERSION 7",
@@ -49,6 +48,8 @@ RETIRED_TOKENS = (
 
 RETIRED_SOURCE_PATTERNS = (
     r"#define\s+SCREEN_PHYSICAL_FRAME_ABI_VERSION\s+(?:1|4|5)u\b",
+    r"#define\s+SCREEN_TEST_AUTHORING_ABI_VERSION\s+4u\b",
+    r"SCREEN_TEST_AUTHORING_ABI_VERSION:\s*u32\s*=\s*4\b",
 )
 
 
@@ -85,7 +86,7 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 33u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 36u",
         "#define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
@@ -100,6 +101,8 @@ def validate_sources() -> None:
         "ScreenPhysicalScreenPoseTrackV2Ref",
         "ScreenTrackingOverlayRequestV1",
         "screen_tracking_overlay_v1_resolve",
+        "ScreenEnvironmentFramingRequestV1",
+        "screen_environment_framing_v1_resolve",
         "ScreenSceneFocusTargetRequestV1",
         "screen_scene_focus_target_v1_project",
         "screen_scene_focus_target_v1_unproject",
@@ -108,11 +111,11 @@ def validate_sources() -> None:
         "ScreenPreparedRenderV1Ref",
         "screen_prepared_render_v1_create",
         "screen_prepared_render_v1_temporal_requirements",
-        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 38u",
+        "#define SCREEN_TEST_AUTHORING_ABI_VERSION 40u",
         "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
-        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 9u",
+        "#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 10u",
         "ScreenCapturePresetParametersV4",
         "#define SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION 2u",
         "ScreenRecordingExecutionPlanV2",
@@ -124,13 +127,15 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 33",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 36",
         "SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1",
         "ScreenPhysicalStageDescriptorV1",
         "screen_physical_stage_descriptor",
         "ScreenPhysicalStageContributionV3",
         "ScreenTrackingOverlayRequestV1",
         "screen_tracking_overlay_v1_resolve",
+        "ScreenEnvironmentFramingRequestV1",
+        "screen_environment_framing_v1_resolve",
         "ScreenSceneFocusTargetRequestV1",
         "screen_scene_focus_target_v1_project",
         "screen_scene_focus_target_v1_unproject",
@@ -139,13 +144,13 @@ def validate_sources() -> None:
         "ScreenPreparedRenderV1",
         "screen_prepared_render_v1_create",
         "screen_prepared_render_v1_temporal_requirements",
-        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 38",
+        "SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 40",
         "ScreenTestAuthoringSelectionV23",
         "ScreenTestPhaseDescriptorV5",
         "ScreenTestControlDescriptorV5",
         "SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION: u32 = 2",
         "ScreenRecordingExecutionPlanV2",
-        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9",
+        "SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 10",
         "ScreenCapturePresetParametersV4",
     ):
         if token not in rust_bridge:
@@ -183,7 +188,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v33 source/header/symbol gate passed")
+    print("native macOS physical ABI v36 source/header/symbol gate passed")
     return 0
 
 

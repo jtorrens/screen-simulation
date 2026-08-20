@@ -84,6 +84,9 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let environmentAmount: Double
     var environmentRotationXDegrees: Double
     var environmentRotationYDegrees: Double
+    var environmentAnchorLongitudeDegrees: Double
+    var environmentAnchorLatitudeDegrees: Double
+    var environmentTangentTransform: [Double]
     let environmentExposureEV: Double
     let environmentContrast: Double
     let environmentSaturation: Double
@@ -352,6 +355,9 @@ final class RustTestAuthoringProfileContext: @unchecked Sendable {
             parameters.key_angular_radius_degrees = Float(environment.keyAngularRadiusDegrees)
             parameters.rotation_x_degrees = Float(environment.rotationXDegrees)
             parameters.rotation_y_degrees = Float(environment.rotationYDegrees)
+            parameters.placement_anchor_direction_world = (0, 0, 1)
+            parameters.placement_source_direction = (0, 0, 1)
+            parameters.placement_tangent_transform = (1, 0, 0, 0)
             parameters.pattern = environment.pattern
             return (try owned(profile.id), try owned(profile.name), parameters)
         }
@@ -855,6 +861,14 @@ enum RustTestAuthoringCoordinator {
             environmentAmount: Double(raw.environment_amount),
             environmentRotationXDegrees: Double(raw.environment_rotation_x_degrees),
             environmentRotationYDegrees: Double(raw.environment_rotation_y_degrees),
+            environmentAnchorLongitudeDegrees: Double(raw.environment_anchor_longitude_degrees),
+            environmentAnchorLatitudeDegrees: Double(raw.environment_anchor_latitude_degrees),
+            environmentTangentTransform: [
+                Double(raw.environment_tangent_transform.0),
+                Double(raw.environment_tangent_transform.1),
+                Double(raw.environment_tangent_transform.2),
+                Double(raw.environment_tangent_transform.3),
+            ],
             environmentExposureEV: Double(raw.environment_exposure_ev),
             environmentContrast: Double(raw.environment_contrast),
             environmentSaturation: Double(raw.environment_saturation),
@@ -997,6 +1011,18 @@ enum RustTestAuthoringCoordinator {
                                             )
                                             raw.environment_rotation_y_degrees = Float(
                                                 selection.environmentRotationYDegrees
+                                            )
+                                            raw.environment_anchor_longitude_degrees = Float(
+                                                selection.environmentAnchorLongitudeDegrees
+                                            )
+                                            raw.environment_anchor_latitude_degrees = Float(
+                                                selection.environmentAnchorLatitudeDegrees
+                                            )
+                                            raw.environment_tangent_transform = (
+                                                Float(selection.environmentTangentTransform[0]),
+                                                Float(selection.environmentTangentTransform[1]),
+                                                Float(selection.environmentTangentTransform[2]),
+                                                Float(selection.environmentTangentTransform[3])
                                             )
                                             raw.environment_exposure_ev = Float(
                                                 selection.environmentExposureEV

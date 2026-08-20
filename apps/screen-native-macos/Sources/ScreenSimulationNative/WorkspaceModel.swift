@@ -371,7 +371,6 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var reflectionEnvironmentEditorEnabled = false
     @Published private(set) var environmentReflectionFramingEnabled = false
     @Published private(set) var environmentReflectionFraming = EnvironmentReflectionFraming()
-    @Published private(set) var environmentReflectionFramingIsGenerating = false
     @Published private(set) var reflectionEmitters: [AuthoredReflectionEmitter] = []
     @Published private(set) var selectedReflectionEmitterID: UUID?
     @Published var reflectionEnvironmentWidth = 2048
@@ -517,7 +516,6 @@ final class WorkspaceModel: ObservableObject {
     private var environmentReflectionFramingStart: EnvironmentReflectionFraming?
     private var environmentReflectionFramingOperation: CameraNavigationOperation?
     private var environmentReflectionFramingViewport = CGSize(width: 1, height: 1)
-    private var environmentReflectionReprojector: EnvironmentReflectionReprojector?
     private var environmentReflectionFramingSourceFrame: StudioColorMetalFrame?
     private var reflectionHandleDragIndex: Int?
 
@@ -528,6 +526,7 @@ final class WorkspaceModel: ObservableObject {
     let outputQueue: NativeOutputQueueController
     private var viewerNavigationSubscription: AnyCancellable?
     private var outputQueueSubscription: AnyCancellable?
+    private var monitorOutputSubscription: AnyCancellable?
 
     var zoom: Double { viewerNavigation.zoom }
     var previewIsFitted: Bool { viewerNavigation.isFitted }
@@ -667,6 +666,9 @@ final class WorkspaceModel: ObservableObject {
             self?.objectWillChange.send()
         }
         outputQueueSubscription = outputQueue.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        monitorOutputSubscription = monitorOutput.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         renderPattern()
@@ -854,6 +856,10 @@ final class WorkspaceModel: ObservableObject {
 
     var sourceKindLabel: String {
         sourceIsPattern ? "Patrón sintético" : "Archivo o secuencia"
+    }
+
+    var hasExternalSourceMedia: Bool {
+        !sourceIsPattern
     }
 
     func selectDevice(
@@ -1289,7 +1295,7 @@ final class WorkspaceModel: ObservableObject {
         viewportSize: CGSize
     ) {
         guard physicalPlacementNavigationEnabled else { return }
-        if physicalModel.quality == .environmentSetup {
+        if environmentReflectionFramingEnabled || physicalModel.quality == .environmentSetup {
             beginEnvironmentNavigation(operation, viewportSize: viewportSize)
             return
         }
@@ -1369,7 +1375,15 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var physicalPlacementNavigationEnabled: Bool {
-        !previewTransformationsLocked
+        if EnvironmentReflectionFraming.capturesViewerNavigation(
+            enabled: environmentReflectionFramingEnabled,
+            transformationsLocked: previewTransformationsLocked,
+            referenceMatchEnabled: referenceMatchEnabled,
+            reflectionEditorEnabled: reflectionEnvironmentEditorEnabled
+        ) {
+            return true
+        }
+        return !previewTransformationsLocked
             && physicalModel.quality != .native
             && physicalModel.frameState != .rendering
             && physicalModel.frameState != .complete
@@ -1539,7 +1553,10 @@ final class WorkspaceModel: ObservableObject {
                 if value.centerX < 0 { value.centerX += 1 }
                 value.centerY = min(1, max(0, value.centerY))
             case .dolly:
-                value.zoom = min(100, max(0.05, start.zoom * exp(Double(delta.width) * 0.01)))
+                value.zoom = min(
+                    65_536, max(1.0 / 65_536.0,
+                        start.zoom * exp(Double(delta.width) * 0.01))
+                )
             case .orbit:
                 value.rollDegrees = start.rollDegrees + Double(delta.width) * 0.2
             case .trackingWorldScale, nil:
@@ -1749,59 +1766,65 @@ final class WorkspaceModel: ObservableObject {
         publishEnvironmentSetup()
     }
 
-    func generateAndUseFramedEnvironment() async {
-        guard !environmentReflectionFramingIsGenerating,
-              let source = environmentReflectionFramingSourceFrame
-                ?? environmentAdjustmentOwner?.frame ?? environmentSourceACEScgFrame,
-              let resolved = try? resolveSceneFrame(currentFrame),
-              let calibration = environmentSourceCalibration
-        else { return }
-        let device = resolved.device.definition
-        let authored = resolved.authored
-        environmentReflectionFramingIsGenerating = true
-        defer { environmentReflectionFramingIsGenerating = false }
+    func applyEnvironmentReflectionFraming() {
+        guard var selection = testAuthoringSelection,
+              let source = environmentReflectionFramingSourceFrame ?? environmentSourceACEScgFrame
+        else {
+            errorMessage = "No hay un HDRI resuelto que colocar."
+            return
+        }
         do {
-            status = "Reproyectando entorno para la pose actual…"
-            if environmentReflectionReprojector == nil {
-                environmentReflectionReprojector = try EnvironmentReflectionReprojector(
-                    device: source.texture.device
-                )
-            }
-            let output = try environmentReflectionReprojector!.render(
-                source: source, device: device, pipeline: authored,
-                framing: environmentReflectionFraming
+            let resolved = try resolveSceneFrame(currentFrame)
+            let placement = try resolved.resolver.resolveEnvironmentFraming(
+                frame: resolved.selection,
+                sourceWidth: source.width,
+                sourceHeight: source.height,
+                framing: environmentReflectionFraming,
+                expectedRevision: resolved.revision
             )
-            let pixels = try metalDisplay.readLinearRGBA(output)
-            let data = try ReflectionEnvironmentCompiler.encodeEXR(
-                pixels, width: output.width, height: output.height
+            let anchor = SIMD3<Double>(
+                Double(placement.anchor_direction_world.0),
+                Double(placement.anchor_direction_world.1),
+                Double(placement.anchor_direction_world.2)
             )
-            let asset: ManagedEnvironmentAsset
-            if let activeSceneID, let persistGeneratedEnvironment {
-                asset = try persistGeneratedEnvironment(activeSceneID, data)
-            } else {
-                asset = try EnvironmentAssetLibrary.storeGeneratedEXR(
-                    data, suggestedName: "Reflejos creados"
-                )
-            }
-            let generatedCalibration = try EnvironmentAssetCalibration(
-                inputTransformID: "acescg",
-                sourceUnitRadianceCandelasPerSquareMeter:
-                    calibration.sourceUnitRadianceCandelasPerSquareMeter,
-                exposureEV: calibration.exposureEV
+            let sourceDirection = SIMD3<Double>(
+                Double(placement.source_direction.0),
+                Double(placement.source_direction.1),
+                Double(placement.source_direction.2)
             )
-            try EnvironmentAssetLibrary.saveCalibration(generatedCalibration, for: asset)
-            generatedReflectionEnvironmentData = data
-            try resetGeneratedEnvironmentPlacement()
-            guard await loadEnvironment(
-                asset.url, inputTransformID: generatedCalibration.inputTransformID,
-                unitRadiance: generatedCalibration.sourceUnitRadianceCandelasPerSquareMeter,
-                exposureStops: generatedCalibration.exposureEV,
-                originalFileName: asset.originalFileName,
-                knownHash: asset.sha256
-            ) else { return }
+            selection.environmentAnchorLongitudeDegrees = atan2(anchor.x, anchor.z) * 180 / .pi
+            selection.environmentAnchorLatitudeDegrees = asin(min(1, max(-1, anchor.y))) * 180 / .pi
+            selection.environmentRotationYDegrees = atan2(sourceDirection.x, sourceDirection.z) * 180 / .pi
+            selection.environmentRotationXDegrees = -asin(min(1, max(-1, sourceDirection.y))) * 180 / .pi
+            selection.environmentTangentTransform = [
+                Double(placement.tangent_transform.0),
+                Double(placement.tangent_transform.1),
+                Double(placement.tangent_transform.2),
+                Double(placement.tangent_transform.3),
+            ]
+            selection.previewQualityID = "environment-setup"
+            try commitSceneAuthoringEdit(
+                selection: selection,
+                setting: [
+                    "environment-anchor-longitude-degrees",
+                    "environment-anchor-latitude-degrees",
+                    "environment-rotation-x-degrees",
+                    "environment-rotation-y-degrees",
+                    "environment-mobius-a-real",
+                    "environment-mobius-a-imag",
+                    "environment-mobius-c-real",
+                    "environment-mobius-c-imag",
+                ],
+                undoManager: nil,
+                actionName: "Colocar entorno"
+            )
             environmentReflectionFramingEnabled = false
-            rebuildPhysicalSelectedFrame()
-            status = "Entorno reproyectado · \(output.width)×\(output.height) · pose actual"
+            environmentReflectionFramingSourceFrame = nil
+            // Applying ends the planar authoring aid. Publish the spherical Setup
+            // explicitly from the newly committed scene instead of relying on a
+            // later mode transition to redispatch the current quality.
+            publishEnvironmentSetup()
+            status = "Entorno colocado en el frame \(currentFrame) · HDRI original"
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1811,6 +1834,15 @@ final class WorkspaceModel: ObservableObject {
         guard var authored = basePhysicalAuthoringState else { return }
         authored.environment.rotationXDegrees = selection.environmentRotationXDegrees
         authored.environment.rotationYDegrees = selection.environmentRotationYDegrees
+        authored.environment.placementAnchorDirectionWorld = Self.environmentDirection(
+            longitudeDegrees: selection.environmentAnchorLongitudeDegrees,
+            latitudeDegrees: selection.environmentAnchorLatitudeDegrees
+        )
+        authored.environment.placementSourceDirection = Self.environmentDirection(
+            longitudeDegrees: selection.environmentRotationYDegrees,
+            latitudeDegrees: -selection.environmentRotationXDegrees
+        )
+        authored.environment.placementTangentTransform = selection.environmentTangentTransform
         authored.environment.projectionMode = selection.environmentProjectionID == "finite-sphere" ? 1 : 0
         authored.environment.sphereCenterMeters = [
             selection.environmentSphereCenterXMeters,
@@ -1828,6 +1860,20 @@ final class WorkspaceModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private static func environmentDirection(
+        longitudeDegrees: Double,
+        latitudeDegrees: Double
+    ) -> [Double] {
+        let longitude = longitudeDegrees * .pi / 180
+        let latitude = latitudeDegrees * .pi / 180
+        let latitudeCosine = cos(latitude)
+        return [
+            sin(longitude) * latitudeCosine,
+            sin(latitude),
+            cos(longitude) * latitudeCosine,
+        ]
     }
 
     private func applyTransientCameraNavigationPose(
@@ -2331,6 +2377,22 @@ final class WorkspaceModel: ObservableObject {
             .setScalar(controlID: "environment-rotation-y-degrees", value: 0),
             to: selection, profileContext: testAuthoringProfileContext
         )
+        for controlID in [
+            "environment-anchor-longitude-degrees",
+            "environment-anchor-latitude-degrees",
+            "environment-mobius-a-imag",
+            "environment-mobius-c-real",
+            "environment-mobius-c-imag",
+        ] {
+            selection = try RustTestAuthoringCoordinator.apply(
+                .setScalar(controlID: controlID, value: 0),
+                to: selection, profileContext: testAuthoringProfileContext
+            )
+        }
+        selection = try RustTestAuthoringCoordinator.apply(
+            .setScalar(controlID: "environment-mobius-a-real", value: 1),
+            to: selection, profileContext: testAuthoringProfileContext
+        )
         selection = try RustTestAuthoringCoordinator.apply(
             .setChoice(controlID: "environment-projection", optionID: "distant"),
             to: selection, profileContext: testAuthoringProfileContext
@@ -2340,6 +2402,12 @@ final class WorkspaceModel: ObservableObject {
             setting: [
                 "environment-rotation-x-degrees",
                 "environment-rotation-y-degrees",
+                "environment-anchor-longitude-degrees",
+                "environment-anchor-latitude-degrees",
+                "environment-mobius-a-real",
+                "environment-mobius-a-imag",
+                "environment-mobius-c-real",
+                "environment-mobius-c-imag",
                 "environment-projection",
             ],
             undoManager: nil,
@@ -2888,8 +2956,10 @@ final class WorkspaceModel: ObservableObject {
             target.choosePattern(prior, undoManager: manager)
         }
         pause()
+        session.reset()
         selectedPattern = pattern
         sourceIsPattern = true
+        includeAudio = false
         sourceName = pattern.label
         sourceDetail = "Patrón SCREEN canónico"
         detection = pattern.sourceDetection
@@ -2944,6 +3014,11 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         renderPattern()
+    }
+
+    func removeExternalSourceMedia() {
+        guard hasExternalSourceMedia else { return }
+        choosePattern(selectedPattern, undoManager: nil)
     }
 
     func openMedia() {
@@ -5637,6 +5712,15 @@ final class WorkspaceModel: ObservableObject {
                 environment.exposureStops = selection.environmentExposureEV
                 environment.rotationXDegrees = selection.environmentRotationXDegrees
                 environment.rotationYDegrees = selection.environmentRotationYDegrees
+                environment.placementAnchorDirectionWorld = Self.environmentDirection(
+                    longitudeDegrees: selection.environmentAnchorLongitudeDegrees,
+                    latitudeDegrees: selection.environmentAnchorLatitudeDegrees
+                )
+                environment.placementSourceDirection = Self.environmentDirection(
+                    longitudeDegrees: selection.environmentRotationYDegrees,
+                    latitudeDegrees: -selection.environmentRotationXDegrees
+                )
+                environment.placementTangentTransform = selection.environmentTangentTransform
                 environment.projectionMode = selection.environmentProjectionID == "finite-sphere"
                     ? 1 : 0
                 environment.sphereCenterMeters = [
@@ -6899,7 +6983,7 @@ final class WorkspaceModel: ObservableObject {
                 ? "Encuadre plano de reflejo · \(width)×\(height)"
                 : "Setup entorno · reflexión ideal 100% · \(width)×\(height)"
             physicalPublicationSummary = environmentReflectionFramingEnabled
-                ? "Autoría inversa · el EXR se genera para la pose actual"
+                ? "Autoría inversa plana · el HDRI original no se modifica"
                 : "Setup entorno · espejo ideal sin cristal, panel ni cámara"
         } catch {
             setupDeviceBoundary = []
@@ -7356,6 +7440,15 @@ final class WorkspaceModel: ObservableObject {
         }
         authored.environment.rotationXDegrees = selection.environmentRotationXDegrees
         authored.environment.rotationYDegrees = selection.environmentRotationYDegrees
+        authored.environment.placementAnchorDirectionWorld = Self.environmentDirection(
+            longitudeDegrees: selection.environmentAnchorLongitudeDegrees,
+            latitudeDegrees: selection.environmentAnchorLatitudeDegrees
+        )
+        authored.environment.placementSourceDirection = Self.environmentDirection(
+            longitudeDegrees: selection.environmentRotationYDegrees,
+            latitudeDegrees: -selection.environmentRotationXDegrees
+        )
+        authored.environment.placementTangentTransform = selection.environmentTangentTransform
         authored.environment.exposureStops = selection.environmentExposureEV
         authored.environment.projectionMode = selection.environmentProjectionID == "finite-sphere" ? 1 : 0
         authored.environment.sphereCenterMeters = [
@@ -7470,6 +7563,11 @@ final class WorkspaceModel: ObservableObject {
         resolvedPhysicalPipeline = try authored.resolvedPipeline()
         baseModelDeviceDefinition = device
         basePhysicalAuthoringState = authored
+        // The resolved-scene cache is keyed by the physical parameter revision.
+        // Some scene edits (poses, environment placement, camera values) do not
+        // change a contribution amount, so they must still advance that revision
+        // before any Setup or physical consumer can resolve the edited scene.
+        physicalModel.invalidateExternalParameters(preservingQuality: true)
         try refreshTestAuthoringDescriptor()
         // The source artifact is replaced above only when its own adjustment
         // changes. Keep the last complete composition visible while a new

@@ -474,7 +474,7 @@ struct ContentView: View {
                             display: model.metalDisplay
                         )
                     }
-                    .disabled(model.monitorOutput.selectedMode == nil)
+                    .disabled(!model.monitorOutput.isAvailable)
                 }
             }
 
@@ -1503,6 +1503,7 @@ struct ContentView: View {
                     systemImage: "sidebar.left"
                 )
             }
+            .nativeActionState(.init(active: sidebarIsVisible))
             .help(sidebarIsVisible ? "Ocultar panel izquierdo" : "Mostrar panel izquierdo")
         }
         ToolbarItemGroup {
@@ -1514,7 +1515,10 @@ struct ContentView: View {
             } label: {
                 Label("Tracking 3D", systemImage: "point.3.connected.trianglepath.dotted")
             }
-            .disabled(page == .settings)
+            .nativeActionState(.init(
+                available: page != .settings,
+                active: trackingScenePanel.isVisible
+            ))
             .help("Importar cámara, point cloud, geometrías y lente desde Fusion")
             Button("Frame", action: model.renderCurrentFrame)
                 .disabled(page != .main || model.metalFrame == nil)
@@ -1537,7 +1541,10 @@ struct ContentView: View {
                     Label("Tracking 3D", systemImage: "point.3.connected.trianglepath.dotted")
                 }
                 .controlSize(.small)
-                .disabled(page == .settings)
+                .nativeActionState(.init(
+                    available: page != .settings,
+                    active: trackingScenePanel.isVisible
+                ))
                 .help("Importar cámara, point cloud, geometrías y lente desde Fusion")
                 Button {
                     saveNewScene()
@@ -2019,7 +2026,12 @@ struct ContentView: View {
                     .accessibilityLabel("Tiempo solicitado en segundos")
                 }
                 originRow("") {
-                    Button("Abrir archivo o secuencia…", action: model.openMedia)
+                    HStack(spacing: 8) {
+                        Button("Abrir archivo o secuencia…", action: model.openMedia)
+                        if model.hasExternalSourceMedia {
+                            Button("Quitar", action: model.removeExternalSourceMedia)
+                        }
+                    }
                 }
                 originRow("Patrón sintético") {
                     Picker("Patrón sintético", selection: Binding(
@@ -2258,6 +2270,7 @@ struct ContentView: View {
                                     ? "viewfinder.circle.fill" : "viewfinder.circle"
                             )
                         }
+                        .nativeActionState(.init(active: referenceMatchPanel.isVisible))
                     }
                 }
             }
@@ -2466,6 +2479,7 @@ struct ContentView: View {
                             Image(systemName: reflectionEnvironmentPanel.isVisible
                                 ? "lightbulb.max.fill" : "lightbulb.max")
                         }
+                        .nativeActionState(.init(active: reflectionEnvironmentPanel.isVisible))
                         .help(reflectionEnvironmentPanel.isVisible
                             ? "Ocultar creación de reflejos" : "Crear reflejos")
                         Button {
@@ -2475,7 +2489,10 @@ struct ContentView: View {
                         } label: {
                             Image(systemName: "viewfinder")
                         }
-                        .disabled(model.environmentSourceName == nil)
+                        .nativeActionState(.init(
+                            available: model.environmentSourceName != nil,
+                            active: model.environmentReflectionFramingEnabled
+                        ))
                         .help("Encuadrar HDRI")
                     }
                 }
@@ -2491,7 +2508,10 @@ struct ContentView: View {
                             ? "rectangle.connected.to.line.below.fill" : "rectangle.connected.to.line.below"
                     )
                 }
-                .foregroundStyle(model.monitorOutput.isActive ? .blue : .secondary)
+                .nativeActionState(.init(
+                    available: model.monitorOutput.isAvailable,
+                    active: model.monitorOutput.isActive
+                ))
                 .help(model.monitorOutput.isActive
                     ? "Detener monitorización DeckLink"
                     : "Iniciar monitorización DeckLink")
@@ -2529,7 +2549,7 @@ struct ContentView: View {
                             ? "lock.fill" : "lock.open"
                     )
                 }
-                .foregroundStyle(model.previewTransformationsLocked ? .orange : .secondary)
+                .nativeActionState(.init(active: model.previewTransformationsLocked))
                 .help(model.previewTransformationsLocked
                     ? "Desbloquear transformaciones de escena y Device"
                     : "Bloquear transformaciones de escena y Device")
@@ -2541,7 +2561,7 @@ struct ContentView: View {
                         "Gizmos", systemImage: model.previewGizmosVisible ? "eye" : "eye.slash"
                     )
                 }
-                .foregroundStyle(model.previewGizmosVisible ? Color.secondary : Color.orange)
+                .nativeActionState(.init(active: model.previewGizmosVisible))
                 .help(model.previewGizmosVisible
                     ? "Ocultar todos los gizmos del Viewer"
                     : "Mostrar todos los gizmos del Viewer")
@@ -2699,7 +2719,7 @@ struct ContentView: View {
                 Button(action: model.togglePlayback) {
                     Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
                 }
-                .foregroundStyle(model.isPlaying ? .blue : .primary)
+                .nativeActionState(.init(active: model.isPlaying))
                 .keyboardShortcut(.space, modifiers: [])
                 Button { model.step(1) } label: { Image(systemName: "forward.frame.fill") }
                 Button { model.jump(5) } label: { Image(systemName: "forward.end.fill") }
@@ -2718,7 +2738,7 @@ struct ContentView: View {
                 } label: {
                     Image(systemName: model.loopPlayback ? "repeat.circle.fill" : "repeat")
                 }
-                .foregroundStyle(model.loopPlayback ? .blue : .secondary)
+                .nativeActionState(.init(active: model.loopPlayback))
                 .help(model.loopPlayback ? "Desactivar repetición" : "Activar repetición")
                 .accessibilityLabel(model.loopPlayback ? "Desactivar repetición" : "Activar repetición")
                 frameField("Entrada", value: Binding(

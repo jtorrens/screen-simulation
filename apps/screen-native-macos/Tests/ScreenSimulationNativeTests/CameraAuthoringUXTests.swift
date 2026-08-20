@@ -198,8 +198,43 @@ import Testing
     #expect(setup.contains("TestPhaseCard(label: \"Origen\")"))
     #expect(setup.contains("TestAuthoringView("))
     #expect(setup.contains("Button(\"Abrir archivo o secuencia…\""))
+    #expect(setup.contains("if model.hasExternalSourceMedia"))
+    #expect(setup.contains("Button(\"Quitar\", action: model.removeExternalSourceMedia)"))
     #expect(setup.contains("Picker(\"Patrón sintético\""))
     #expect(text.contains("TestPreviewControls("))
+}
+
+@Test @MainActor func syntheticSourceCannotBeRemovedAsExternalMedia() {
+    let workspace = WorkspaceModel()
+    #expect(workspace.hasExternalSourceMedia == false)
+
+    workspace.removeExternalSourceMedia()
+
+    #expect(workspace.hasExternalSourceMedia == false)
+    #expect(workspace.sourceKindLabel == "Patrón sintético")
+}
+
+@Test @MainActor func removingExternalSourceActivatesTheSelectedSyntheticPattern() async {
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let media = repositoryRoot
+        .appendingPathComponent("apps/screen-desktop/assets/editorial-text-reference.png")
+    let workspace = WorkspaceModel()
+    workspace.choosePattern(.frequencyMoireReference, undoManager: nil)
+
+    await workspace.load([media], materializeImportInterpretation: false)
+    #expect(workspace.hasExternalSourceMedia)
+
+    workspace.removeExternalSourceMedia()
+
+    #expect(workspace.hasExternalSourceMedia == false)
+    #expect(workspace.selectedPattern == .frequencyMoireReference)
+    #expect(workspace.sourceName == SyntheticPattern.frequencyMoireReference.label)
+    #expect(workspace.sourceKindLabel == "Patrón sintético")
 }
 
 @Test func everySyntheticPatternDeclaresCompleteInputEvidence() {

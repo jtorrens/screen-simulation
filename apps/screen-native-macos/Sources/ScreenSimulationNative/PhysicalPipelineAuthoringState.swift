@@ -21,6 +21,9 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         var keyAngularRadiusDegrees = 20.0
         var rotationXDegrees = 0.0
         var rotationYDegrees = 0.0
+        var placementAnchorDirectionWorld = [0.0, 0.0, 1.0]
+        var placementSourceDirection = [0.0, 0.0, 1.0]
+        var placementTangentTransform = [1.0, 0.0, 0.0, 0.0]
         var projectionMode: UInt32 = 0
         var sphereCenterMeters = [0.0, 0.0, 0.0]
         var sphereRadiusMeters = 5.0
@@ -167,6 +170,15 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
         environmentABI.key_angular_radius_degrees = Float(environment.keyAngularRadiusDegrees)
         environmentABI.rotation_x_degrees = Float(environment.rotationXDegrees)
         environmentABI.rotation_y_degrees = Float(environment.rotationYDegrees)
+        environmentABI.placement_anchor_direction_world = tuple3(
+            environment.placementAnchorDirectionWorld
+        )
+        environmentABI.placement_source_direction = tuple3(
+            environment.placementSourceDirection
+        )
+        environmentABI.placement_tangent_transform = tuple4(
+            environment.placementTangentTransform
+        )
         environmentABI.projection_mode = environment.projectionMode
         environmentABI.sphere_center_meters = tuple3(environment.sphereCenterMeters)
         environmentABI.sphere_radius_meters = Float(environment.sphereRadiusMeters)
@@ -314,6 +326,20 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
             shutterMotion.closeOffsetDenominator > 0,
             sensor.nativeWidth > 0, sensor.nativeHeight > 0,
             environment.projectionMode <= 1,
+            environment.placementAnchorDirectionWorld.count == 3,
+            environment.placementSourceDirection.count == 3,
+            environment.placementAnchorDirectionWorld.allSatisfy(\.isFinite),
+            environment.placementSourceDirection.allSatisfy(\.isFinite),
+            abs(environment.placementAnchorDirectionWorld.reduce(0) { $0 + $1 * $1 } - 1) <= 1e-3,
+            abs(environment.placementSourceDirection.reduce(0) { $0 + $1 * $1 } - 1) <= 1e-3,
+            environment.placementTangentTransform.count == 4,
+            environment.placementTangentTransform.allSatisfy(
+                { $0.isFinite && abs($0) <= 65_536 }
+            ),
+            hypot(
+                environment.placementTangentTransform[0],
+                environment.placementTangentTransform[1]
+            ) >= 1.0 / 65_536.0,
             (0.1 ... 1_000).contains(environment.sphereRadiusMeters),
             environment.sphereCenterMeters.allSatisfy(
                 { (-1_000 ... 1_000).contains($0) }
@@ -514,6 +540,10 @@ private func tuple2(_ values: [Double]) -> (Float, Float) {
 
 private func tuple3(_ values: [Double]) -> (Float, Float, Float) {
     (Float(values[0]), Float(values[1]), Float(values[2]))
+}
+
+private func tuple4(_ values: [Double]) -> (Float, Float, Float, Float) {
+    (Float(values[0]), Float(values[1]), Float(values[2]), Float(values[3]))
 }
 
 private func tuple9(_ values: [Double]) -> (

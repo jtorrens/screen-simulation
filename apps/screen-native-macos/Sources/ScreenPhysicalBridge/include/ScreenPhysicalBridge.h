@@ -21,12 +21,12 @@ typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 typedef struct ScreenTestAuthoringProfileContext *ScreenTestAuthoringProfileContextRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 33u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 36u
 #define SCREEN_DEVICE_VFX_ALPHA_IGNORE 0u
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
-#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 9u
+#define SCREEN_AUTHORING_CATALOG_ABI_VERSION 10u
 #define SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION 2u
 #define SCREEN_FFMPEG_MEDIA_ABI_VERSION 1u
 
@@ -69,7 +69,7 @@ typedef struct {
     uint32_t timestamp_denominator;
 } ScreenFfmpegDecodedFrameV1;
 
-#define SCREEN_TEST_AUTHORING_ABI_VERSION 38u
+#define SCREEN_TEST_AUTHORING_ABI_VERSION 40u
 
 typedef enum {
     SCREEN_TEST_CONTROL_CHOICE = 0,
@@ -142,6 +142,9 @@ typedef struct {
     float environment_amount;
     float environment_rotation_x_degrees;
     float environment_rotation_y_degrees;
+    float environment_anchor_longitude_degrees;
+    float environment_anchor_latitude_degrees;
+    float environment_tangent_transform[4];
     float environment_exposure_ev;
     float environment_contrast;
     float environment_saturation;
@@ -610,6 +613,9 @@ typedef struct {
     float lens_radial_distortion[3];
     float lens_tangential_distortion[2];
     float environment_rotation_radians[2];
+    float environment_placement_anchor_direction_world[3];
+    float environment_placement_source_direction[3];
+    float environment_placement_tangent_transform[4];
     bool environment_finite_sphere;
     float environment_sphere_center_meters[3];
     float environment_sphere_radius_meters;
@@ -620,6 +626,30 @@ typedef struct {
     uint32_t delivery_placement;
     uint32_t delivery_background;
 } ScreenSetupDiagnosticPlanV1;
+
+typedef struct {
+    uint32_t abi_version;
+    int64_t frame_index;
+    int64_t time_numerator;
+    uint32_t time_denominator;
+    uint32_t source_width;
+    uint32_t source_height;
+    float center_x;
+    float center_y;
+    float zoom;
+    float roll_radians;
+} ScreenEnvironmentFramingRequestV1;
+
+typedef struct {
+    uint32_t abi_version;
+    uint64_t revision;
+    int64_t frame_index;
+    int64_t time_numerator;
+    uint32_t time_denominator;
+    float anchor_direction_world[3];
+    float source_direction[3];
+    float tangent_transform[4];
+} ScreenEnvironmentPlacementV1;
 
 typedef struct {
     uint32_t abi_version;
@@ -867,6 +897,9 @@ typedef struct {
     float key_angular_radius_degrees;
     float rotation_x_degrees;
     float rotation_y_degrees;
+    float placement_anchor_direction_world[3];
+    float placement_source_direction[3];
+    float placement_tangent_transform[4];
     uint32_t projection_mode;
     float sphere_center_meters[3];
     float sphere_radius_meters;
@@ -1246,6 +1279,12 @@ bool screen_scene_setup_diagnostic_v1_prepare(
     ScreenSceneFrameResolverV1Ref resolver,
     const ScreenSetupDiagnosticRequestV1 *request,
     ScreenSetupDiagnosticPlanV1 *output,
+    const char **error_message
+);
+bool screen_environment_framing_v1_resolve(
+    ScreenSceneFrameResolverV1Ref resolver,
+    const ScreenEnvironmentFramingRequestV1 *request,
+    ScreenEnvironmentPlacementV1 *output,
     const char **error_message
 );
 bool screen_tracking_overlay_v1_resolve(

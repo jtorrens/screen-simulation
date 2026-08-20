@@ -229,6 +229,141 @@ pub enum EnvironmentProjection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SphericalEnvironmentPlacement {
+    /// World-space reflection direction fixed at the authored calibration frame.
+    pub anchor_direction_world: [f32; 3],
+    /// Direction in the source latitude-longitude map placed at the anchor.
+    pub source_direction: [f32; 3],
+    /// Complex coefficients `[a.re, a.im, c.re, c.im]` of the anchored Mobius map
+    /// `w = a*z/(c*z + 1)` between stereographic tangent planes. Identity is `[1, 0, 0, 0]`.
+    /// Every accepted map is a bijection of the complete sphere and never resamples the source.
+    pub tangent_transform: [f32; 4],
+}
+
+pub const ENVIRONMENT_TANGENT_COEFFICIENT_MAX: f32 = 65_536.0;
+pub const ENVIRONMENT_TANGENT_SCALE_MIN: f32 = 1.0 / 65_536.0;
+
+impl SphericalEnvironmentPlacement {
+    pub const IDENTITY: Self = Self {
+        anchor_direction_world: [0.0, 0.0, 1.0],
+        source_direction: [0.0, 0.0, 1.0],
+        tangent_transform: [1.0, 0.0, 0.0, 0.0],
+    };
+
+    pub fn validate(self) -> Result<Self, CoverError> {
+        let valid_direction = |direction: [f32; 3]| {
+            let length_squared = direction
+                .into_iter()
+                .map(|value| value * value)
+                .sum::<f32>();
+            direction.into_iter().all(f32::is_finite) && (length_squared - 1.0).abs() <= 1.0e-3
+        };
+        if !valid_direction(self.anchor_direction_world) || !valid_direction(self.source_direction)
+        {
+            return Err(CoverError::InvalidEnvironmentDirection);
+        }
+        if self
+            .tangent_transform
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > ENVIRONMENT_TANGENT_COEFFICIENT_MAX)
+            || (self.tangent_transform[0] * self.tangent_transform[0]
+                + self.tangent_transform[1] * self.tangent_transform[1])
+                .sqrt()
+                < ENVIRONMENT_TANGENT_SCALE_MIN
+        {
+            return Err(CoverError::InvalidEnvironmentRotation);
+        }
+        Ok(self)
+    }
+}
+
+/// Maps one world-space reflection direction into the original equirectangular source without
+/// resampling that source. The mapping is exact at the authored anchor and locally preserves
+/// orientation and two-dimensional projective size according to the explicit tangent transform.
+pub fn place_environment_direction(
+    direction_world: [f32; 3],
+    placement: SphericalEnvironmentPlacement,
+) -> [f32; 3] {
+    let anchor = normalize(placement.anchor_direction_world);
+    let source = normalize(placement.source_direction);
+    let direction = normalize(direction_world);
+    let cosine = dot(anchor, direction).clamp(-1.0, 1.0);
+    let world_angle = cosine.acos();
+    let world_radius = (world_angle * 0.5).tan();
+    if world_radius <= 1.0e-7 {
+        return source;
+    }
+    let tangent = normalize_tangent(direction, anchor);
+    let (anchor_right, anchor_up) = tangent_basis(anchor);
+    let x = dot(tangent, anchor_right) * world_radius;
+    let y = dot(tangent, anchor_up) * world_radius;
+    let [a_re, a_im, c_re, c_im] = placement.tangent_transform;
+    let numerator_x = a_re * x - a_im * y;
+    let numerator_y = a_re * y + a_im * x;
+    let denominator_x = 1.0 + c_re * x - c_im * y;
+    let denominator_y = c_re * y + c_im * x;
+    let denominator_norm = denominator_x * denominator_x + denominator_y * denominator_y;
+    if !denominator_norm.is_finite() || denominator_norm <= 1.0e-20 {
+        return [-source[0], -source[1], -source[2]];
+    }
+    let mapped_x = (numerator_x * denominator_x + numerator_y * denominator_y) / denominator_norm;
+    let mapped_y = (numerator_y * denominator_x - numerator_x * denominator_y) / denominator_norm;
+    let mapped_radius = (mapped_x * mapped_x + mapped_y * mapped_y).sqrt();
+    if !mapped_radius.is_finite() || mapped_radius <= 1.0e-8 {
+        return source;
+    }
+    let angle = 2.0 * mapped_radius.atan();
+    let (source_right, source_up) = tangent_basis(source);
+    let mapped_tangent = normalize([
+        source_right[0] * mapped_x + source_up[0] * mapped_y,
+        source_right[1] * mapped_x + source_up[1] * mapped_y,
+        source_right[2] * mapped_x + source_up[2] * mapped_y,
+    ]);
+    normalize([
+        source[0] * angle.cos() + mapped_tangent[0] * angle.sin(),
+        source[1] * angle.cos() + mapped_tangent[1] * angle.sin(),
+        source[2] * angle.cos() + mapped_tangent[2] * angle.sin(),
+    ])
+}
+
+fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+
+fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+fn tangent_basis(direction: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let reference = if direction[1].abs() < 0.999 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let right = normalize(cross(reference, direction));
+    let up = normalize(cross(direction, right));
+    (right, up)
+}
+
+fn normalize_tangent(direction: [f32; 3], normal: [f32; 3]) -> [f32; 3] {
+    let projected = dot(direction, normal);
+    let tangent = [
+        direction[0] - normal[0] * projected,
+        direction[1] - normal[1] * projected,
+        direction[2] - normal[2] * projected,
+    ];
+    let length_squared = dot(tangent, tangent);
+    if length_squared > 1.0e-12 {
+        return normalize(tangent);
+    }
+    tangent_basis(normal).0
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EquirectangularEnvironment {
     /// Zero emits no incident environment radiance, one is the authored calibration.
     pub character_strength: f32,
@@ -236,10 +371,8 @@ pub struct EquirectangularEnvironment {
     pub source_unit_radiance_candelas_per_square_meter: f32,
     /// Photometric adjustment applied before reflection, in stops.
     pub exposure_stops: f32,
-    /// Vertical tilt of the latitude-longitude map around panel-local X.
-    pub rotation_x_degrees: f32,
-    /// Horizontal rotation of the latitude-longitude map around panel-local Y.
-    pub rotation_y_degrees: f32,
+    /// Non-destructive spherical placement of the original latitude-longitude map.
+    pub placement: SphericalEnvironmentPlacement,
     pub projection: EnvironmentProjection,
 }
 
@@ -769,13 +902,7 @@ impl EquirectangularEnvironment {
         {
             return Err(CoverError::InvalidEnvironmentRadiance);
         }
-        if !self.rotation_x_degrees.is_finite()
-            || !(-90.0..=90.0).contains(&self.rotation_x_degrees)
-            || !self.rotation_y_degrees.is_finite()
-            || !(-180.0..=180.0).contains(&self.rotation_y_degrees)
-        {
-            return Err(CoverError::InvalidEnvironmentRotation);
-        }
+        self.placement.validate()?;
         if let EnvironmentProjection::FiniteSphere {
             center_meters,
             radius_meters,
@@ -1626,8 +1753,14 @@ mod tests {
             character_strength: 1.0,
             source_unit_radiance_candelas_per_square_meter: 100.0,
             exposure_stops: -2.0,
-            rotation_x_degrees: 0.0,
-            rotation_y_degrees: 15.0,
+            placement: SphericalEnvironmentPlacement {
+                source_direction: [
+                    15.0_f32.to_radians().sin(),
+                    0.0,
+                    15.0_f32.to_radians().cos(),
+                ],
+                ..SphericalEnvironmentPlacement::IDENTITY
+            },
             projection: EnvironmentProjection::Distant,
         };
         assert_eq!(environment.validate(), Ok(environment));
@@ -1637,6 +1770,43 @@ mod tests {
                 source_unit_radiance_candelas_per_square_meter: 0.0,
                 ..environment
             })
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn spherical_environment_placement_anchors_and_projectively_maps_without_a_new_raster() {
+        let placement = SphericalEnvironmentPlacement {
+            anchor_direction_world: [0.0, 0.0, 1.0],
+            source_direction: [1.0, 0.0, 0.0],
+            tangent_transform: [0.0, 0.5, 0.0, 0.0],
+        };
+        assert_eq!(
+            place_environment_direction([0.0, 0.0, 1.0], placement),
+            [1.0, 0.0, 0.0]
+        );
+        let mapped = place_environment_direction([0.0, 1.0, 0.0], placement);
+        assert!((dot(mapped, placement.source_direction) - 0.6).abs() < 1.0e-5);
+        assert!(mapped[2].abs() > 0.79);
+        for coefficient in [
+            1.0 / ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+            ENVIRONMENT_TANGENT_COEFFICIENT_MAX,
+        ] {
+            assert!(
+                SphericalEnvironmentPlacement {
+                    tangent_transform: [coefficient, 0.0, 0.0, 0.0],
+                    ..placement
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        assert!(
+            SphericalEnvironmentPlacement {
+                tangent_transform: [0.0, 0.0, 0.5, 1.0],
+                ..placement
+            }
             .validate()
             .is_err()
         );

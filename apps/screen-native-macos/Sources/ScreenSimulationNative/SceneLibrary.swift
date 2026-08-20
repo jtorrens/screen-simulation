@@ -262,7 +262,7 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v21"
+    static let schema = "ScreenSimulation.SavedScene.v22"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -473,7 +473,7 @@ struct SceneAutosaveHistoryTarget: Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 21
+    static let currentSchemaVersion = 22
     let schemaVersion: Int
     var scenes: [SavedScene]
 
@@ -534,7 +534,7 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v21.json")
+        documentURL = directory.appendingPathComponent("Scenes.v22.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -588,7 +588,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v21", isDirectory: true)
+            .appendingPathComponent("Autosave.v22", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -936,7 +936,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v21", isDirectory: true)
+            .appendingPathComponent("Autosave.v22", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]

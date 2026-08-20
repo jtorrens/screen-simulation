@@ -61,6 +61,22 @@ private func setupPlan(
         Float(authored.environment.rotationXDegrees * .pi / 180),
         Float(authored.environment.rotationYDegrees * .pi / 180)
     )
+    plan.environment_placement_anchor_direction_world = (
+        Float(authored.environment.placementAnchorDirectionWorld[0]),
+        Float(authored.environment.placementAnchorDirectionWorld[1]),
+        Float(authored.environment.placementAnchorDirectionWorld[2])
+    )
+    plan.environment_placement_source_direction = (
+        Float(authored.environment.placementSourceDirection[0]),
+        Float(authored.environment.placementSourceDirection[1]),
+        Float(authored.environment.placementSourceDirection[2])
+    )
+    plan.environment_placement_tangent_transform = (
+        Float(authored.environment.placementTangentTransform[0]),
+        Float(authored.environment.placementTangentTransform[1]),
+        Float(authored.environment.placementTangentTransform[2]),
+        Float(authored.environment.placementTangentTransform[3])
+    )
     plan.environment_finite_sphere = authored.environment.projectionMode == 1
     plan.environment_sphere_center_meters = (
         Float(authored.environment.sphereCenterMeters[0]),
@@ -822,7 +838,7 @@ private func setupPlan(
     #expect(luminance.contains { index in index > 0 && index < 0.95 })
 }
 
-@Test @MainActor func framedEnvironmentBakeReproducesThePlanarCropForTheCalibratedPose() throws {
+@Test @MainActor func sphericalEnvironmentPlacementMatchesPlanarAidAtCalibrationAnchor() throws {
     let display = try StudioColorMetalDisplay()
     let input = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescg" })
     let width = 64
@@ -837,7 +853,7 @@ private func setupPlan(
         width: width, height: height, encodedRGBA: encoded, input: input, alpha: .straight
     )
     let device = try #require(try RustDeviceCatalog.builtIns().first {
-        $0.name.contains("ASUS ProArt")
+        $0.category == .phone
     })
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
         $0.id == device.defaultCoverGlassPresetID
@@ -852,8 +868,6 @@ private func setupPlan(
     authored.sceneLens.focalLengthMillimeters = 45
     authored.sceneLens.lensShift = [0, 0]
     authored.environment.projectionMode = 0
-    authored.environment.rotationXDegrees = -12
-    authored.environment.rotationYDegrees = 27
     let framing = EnvironmentReflectionFraming(
         centerX: 0.68, centerY: 0.31, zoom: 2.4, rollDegrees: 17
     )
@@ -866,17 +880,22 @@ private func setupPlan(
         environment: environment, plan: plan,
         planarFraming: framing.shaderValue
     )
-    let baked = try EnvironmentReflectionReprojector(device: environment.texture.device).render(
-        source: environment, device: device, pipeline: authored, framing: framing
-    )
-    authored.environment.rotationXDegrees = 0
-    authored.environment.rotationYDegrees = 0
+    let longitude = (framing.centerX - 0.5) * 2 * Double.pi
+    let latitude = (0.5 - framing.centerY) * Double.pi
+    authored.environment.placementAnchorDirectionWorld = [0, 0, 1]
+    authored.environment.placementSourceDirection = [
+        sin(longitude) * cos(latitude), sin(latitude), cos(longitude) * cos(latitude),
+    ]
+    let roll = -framing.rollDegrees * .pi / 180
+    authored.environment.placementTangentTransform = [
+        cos(roll) / framing.zoom, sin(roll) / framing.zoom, 0, 0,
+    ]
     plan = setupPlan(
         authored: authored, device: device,
         deliveryWidth: 320, deliveryHeight: 180, placement: "fill-crop"
     )
     let reflected = try setup.renderEnvironment(
-        environment: baked, plan: plan
+        environment: environment, plan: plan
     )
     let a = try display.readLinearRGBA(planar.frame)
     let b = try display.readLinearRGBA(reflected.frame)
@@ -884,4 +903,37 @@ private func setupPlan(
     for channel in 0 ..< 3 {
         #expect(abs(a[center + channel] - b[center + channel]) < 0.04)
     }
+    let planarBounds = planar.boundary.reduce(
+        (minX: Double.greatestFiniteMagnitude, minY: Double.greatestFiniteMagnitude,
+         maxX: -Double.greatestFiniteMagnitude, maxY: -Double.greatestFiniteMagnitude)
+    ) { bounds, point in
+        (min(bounds.minX, point.x), min(bounds.minY, point.y),
+         max(bounds.maxX, point.x), max(bounds.maxY, point.y))
+    }
+    let navigationY = Int((planarBounds.minY + planarBounds.maxY) * 0.5)
+    let navigationOutsideX = max(0, Int(planarBounds.minX) - 2)
+    let navigationInsideX = min(planar.frame.width - 1, Int(planarBounds.minX) + 2)
+    let navigationOutside = (navigationY * planar.frame.width + navigationOutsideX) * 4
+    let navigationInside = (navigationY * planar.frame.width + navigationInsideX) * 4
+    #expect(a[navigationOutside] > 0)
+    #expect(a[navigationInside] > 0)
+    #expect(a[navigationOutside] < a[navigationInside] * 0.35)
+    let fittedPlanar = try setup.renderEnvironment(
+        environment: environment, plan: plan,
+        planarFraming: EnvironmentReflectionFraming().shaderValue
+    )
+    let fittedValues = try display.readLinearRGBA(fittedPlanar.frame)
+    let bounds = fittedPlanar.boundary.reduce(
+        (minX: Double.greatestFiniteMagnitude, minY: Double.greatestFiniteMagnitude,
+         maxX: -Double.greatestFiniteMagnitude, maxY: -Double.greatestFiniteMagnitude)
+    ) { bounds, point in
+        (min(bounds.minX, point.x), min(bounds.minY, point.y),
+         max(bounds.maxX, point.x), max(bounds.maxY, point.y))
+    }
+    let outsideSourceX = Int((bounds.minX + bounds.maxX) * 0.5)
+    let outsideSourceY = Int(bounds.minY + (bounds.maxY - bounds.minY) * 0.15)
+    let outsideSource = (outsideSourceY * fittedPlanar.frame.width + outsideSourceX) * 4
+    #expect(fittedValues[outsideSource] == 0)
+    #expect(fittedValues[outsideSource + 1] == 0)
+    #expect(fittedValues[outsideSource + 2] == 0)
 }

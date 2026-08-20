@@ -19,16 +19,17 @@ use screen_application::{
     CAPTURE_DEVICE_PRESETS, CameraRadiometricCalibration, DeliveryRasterBackground,
     DeliveryRasterPlacement, DeliveryRasterRequest, DeviceVfxAlphaMode, FullSensorRaster,
     HostRenderContext, PHYSICAL_STAGE_DESCRIPTORS, PhaseSpatialRequirement, PhysicalIntermediate,
-    PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, PhysicalStageControl, PreparedRender,
-    ProceduralTestPattern, RasterExtent, RasterPlacement, RecordingAdapterAvailability,
-    RecordingAdapterKind, ReflectionEmitter, ReflectionEnvironmentRig, ReflectionLightAppearance,
-    ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight, RenderScale, RenderWindow,
-    ResolvedRateControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
-    SceneFocusAuthoring, SceneFrameAuthoring, SceneFrameResolver, SceneRevision,
-    TemporalCacheConfiguration, TestAuthoringError, TestAuthoringProfileSource,
-    TestAuthoringSelection, TestCaptureAuthoringProfile, TestCaptureRasterMode,
-    TestControlRequirement, TestCoverAuthoringProfile, TestDeviceAuthoringProfile,
-    TestEnvironmentAuthoringProfile, TestLensAuthoringProfile, TestOwnedChoiceOption,
+    PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, PhysicalStageControl,
+    PlanarEnvironmentFraming, PreparedRender, ProceduralTestPattern, RasterExtent, RasterPlacement,
+    RecordingAdapterAvailability, RecordingAdapterKind, ReflectionEmitter,
+    ReflectionEnvironmentRig, ReflectionLightAppearance, ReflectionPracticalLight,
+    ReflectionSunLight, ReflectionWindowLight, RenderScale, RenderWindow, ResolvedRateControl,
+    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, SceneFocusAuthoring,
+    SceneFrameAuthoring, SceneFrameResolver, SceneRevision, TemporalCacheConfiguration,
+    TestAuthoringError, TestAuthoringProfileSource, TestAuthoringSelection,
+    TestCaptureAuthoringProfile, TestCaptureRasterMode, TestControlRequirement,
+    TestCoverAuthoringProfile, TestDeviceAuthoringProfile, TestEnvironmentAuthoringProfile,
+    TestLensAuthoringProfile, TestOwnedChoiceOption,
     TestPageDescriptor as ApplicationTestPageDescriptor, WORKSTATION_RESOLVED_SCENE_CACHE_BYTES,
     apply_test_choice, apply_test_choice_with_profiles, apply_test_scalar,
     apply_test_scalar_with_profiles, apply_test_toggle, apply_test_toggle_with_profiles,
@@ -36,8 +37,8 @@ use screen_application::{
     default_test_authoring_selection_with_profiles, device_focus_target_at_preview_pixel,
     diagnostic_signal, evaluate_delivery_raster_rgba32f, evaluate_tracking_overlay,
     prepare_capture_render, prepare_recording_execution_request, prepare_setup_diagnostic,
-    project_device_focus_target, resolve_physical_stage_contributions, test_page_descriptor,
-    test_page_descriptor_with_profiles,
+    project_device_focus_target, resolve_physical_stage_contributions,
+    resolve_planar_environment_framing, test_page_descriptor, test_page_descriptor_with_profiles,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -45,7 +46,7 @@ use screen_contracts::{FrameRate, LinearRgb, Meters, RationalTime, Vec2, Vec3};
 use screen_cover::{
     AcesCgRadiance, COVER_GLASS_PRESETS, CoverGlassPresetAuthority, CoverGlassProfile,
     ENVIRONMENT_PRESETS, EnvironmentPattern, EquirectangularEnvironment, IncidentEnvironment,
-    ProceduralEnvironment,
+    ProceduralEnvironment, SphericalEnvironmentPlacement,
 };
 use screen_geometry::{
     CameraIntrinsicsKeyframe, CameraIntrinsicsTrack, CameraRig, KeyframeInterpolation,
@@ -473,7 +474,7 @@ pub unsafe extern "C" fn screen_geometry_solve_planar_reference_v1(
     true
 }
 
-pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 38;
+pub const SCREEN_TEST_AUTHORING_ABI_VERSION: u32 = 40;
 pub const SCREEN_TEST_CONTROL_CHOICE: u32 = 0;
 pub const SCREEN_TEST_CONTROL_SCALAR: u32 = 1;
 pub const SCREEN_TEST_CONTROL_TOGGLE: u32 = 2;
@@ -539,6 +540,9 @@ pub struct ScreenTestAuthoringSelectionV23 {
     environment_amount: f32,
     environment_rotation_x_degrees: f32,
     environment_rotation_y_degrees: f32,
+    environment_anchor_longitude_degrees: f32,
+    environment_anchor_latitude_degrees: f32,
+    environment_tangent_transform: [f32; 4],
     environment_exposure_ev: f32,
     environment_contrast: f32,
     environment_saturation: f32,
@@ -681,10 +685,10 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 33;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 36;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
-pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 9;
+pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 10;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
 pub const SCREEN_PHYSICAL_RASTER_FILL_CROP: u32 = 1;
@@ -896,6 +900,9 @@ pub struct ScreenSetupDiagnosticPlanV1 {
     lens_radial_distortion: [f32; 3],
     lens_tangential_distortion: [f32; 2],
     environment_rotation_radians: [f32; 2],
+    environment_placement_anchor_direction_world: [f32; 3],
+    environment_placement_source_direction: [f32; 3],
+    environment_placement_tangent_transform: [f32; 4],
     environment_finite_sphere: bool,
     environment_sphere_center_meters: [f32; 3],
     environment_sphere_radius_meters: f32,
@@ -905,6 +912,34 @@ pub struct ScreenSetupDiagnosticPlanV1 {
     preview_height: u32,
     delivery_placement: u32,
     delivery_background: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenEnvironmentFramingRequestV1 {
+    abi_version: u32,
+    frame_index: i64,
+    time_numerator: i64,
+    time_denominator: u32,
+    source_width: u32,
+    source_height: u32,
+    center_x: f32,
+    center_y: f32,
+    zoom: f32,
+    roll_radians: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenEnvironmentPlacementV1 {
+    abi_version: u32,
+    revision: u64,
+    frame_index: i64,
+    time_numerator: i64,
+    time_denominator: u32,
+    anchor_direction_world: [f32; 3],
+    source_direction: [f32; 3],
+    tangent_transform: [f32; 4],
 }
 
 #[repr(C)]
@@ -1888,6 +1923,17 @@ pub unsafe extern "C" fn screen_scene_setup_diagnostic_v1_prepare(
             plan.environment.rotation_x_radians,
             plan.environment.rotation_y_radians,
         ],
+        environment_placement_anchor_direction_world: [
+            plan.environment.placement_anchor_direction_world.x,
+            plan.environment.placement_anchor_direction_world.y,
+            plan.environment.placement_anchor_direction_world.z,
+        ],
+        environment_placement_source_direction: [
+            plan.environment.placement_source_direction.x,
+            plan.environment.placement_source_direction.y,
+            plan.environment.placement_source_direction.z,
+        ],
+        environment_placement_tangent_transform: plan.environment.placement_tangent_transform,
         environment_finite_sphere: plan.environment.finite_sphere,
         environment_sphere_center_meters: [
             plan.environment.sphere_center_meters.x,
@@ -1903,6 +1949,97 @@ pub unsafe extern "C" fn screen_scene_setup_diagnostic_v1_prepare(
         delivery_background: background,
     };
     unsafe { set_error(error_message, b"\0") };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_environment_framing_v1_resolve(
+    resolver: *const ScreenSceneFrameResolverV1,
+    request: *const ScreenEnvironmentFramingRequestV1,
+    output: *mut ScreenEnvironmentPlacementV1,
+    error_message: *mut *const c_char,
+) -> bool {
+    let (Some(resolver), Some(request), Some(output)) = (
+        unsafe { resolver.as_ref() },
+        unsafe { request.as_ref() },
+        unsafe { output.as_mut() },
+    ) else {
+        unsafe { set_error(error_message, b"missing Environment framing argument\0") };
+        return false;
+    };
+    if request.abi_version != SCREEN_PHYSICAL_FRAME_ABI_VERSION || request.time_denominator == 0 {
+        unsafe { set_error(error_message, b"invalid Environment framing request\0") };
+        return false;
+    }
+    let (Ok(time), Ok(source), Ok(unit_raster)) = (
+        RationalTime::new(request.time_numerator, request.time_denominator),
+        RasterExtent::new(request.source_width, request.source_height),
+        RasterExtent::new(1, 1),
+    ) else {
+        unsafe { set_error(error_message, b"invalid Environment framing contract\0") };
+        return false;
+    };
+    let Ok(scene) = resolver.resolver.resolve_at(request.frame_index, time) else {
+        unsafe {
+            set_error(
+                error_message,
+                b"Environment framing scene cannot be resolved\0",
+            )
+        };
+        return false;
+    };
+    let Ok(plan) = prepare_setup_diagnostic(
+        scene,
+        resolver.device.profile,
+        unit_raster,
+        unit_raster,
+        DeliveryRasterPlacement::Fit,
+        DeliveryRasterBackground::Black,
+    ) else {
+        unsafe {
+            set_error(
+                error_message,
+                b"Environment framing plan cannot be prepared\0",
+            )
+        };
+        return false;
+    };
+    let Ok(placement) = resolve_planar_environment_framing(
+        plan,
+        PlanarEnvironmentFraming {
+            center_x: request.center_x,
+            center_y: request.center_y,
+            zoom: request.zoom,
+            roll_radians: request.roll_radians,
+            source,
+        },
+    ) else {
+        unsafe {
+            set_error(
+                error_message,
+                b"Environment framing cannot be materialized\0",
+            )
+        };
+        return false;
+    };
+    *output = ScreenEnvironmentPlacementV1 {
+        abi_version: SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+        revision: plan.identity.revision,
+        frame_index: plan.identity.frame_index,
+        time_numerator: plan.identity.time_numerator,
+        time_denominator: plan.identity.time_denominator,
+        anchor_direction_world: [
+            placement.anchor_direction_world.x,
+            placement.anchor_direction_world.y,
+            placement.anchor_direction_world.z,
+        ],
+        source_direction: [
+            placement.source_direction.x,
+            placement.source_direction.y,
+            placement.source_direction.z,
+        ],
+        tangent_transform: placement.tangent_transform,
+    };
     true
 }
 
@@ -3686,6 +3823,9 @@ pub struct ScreenEnvironmentParametersV2 {
     key_angular_radius_degrees: f32,
     rotation_x_degrees: f32,
     rotation_y_degrees: f32,
+    placement_anchor_direction_world: [f32; 3],
+    placement_source_direction: [f32; 3],
+    placement_tangent_transform: [f32; 4],
     projection_mode: u32,
     sphere_center_meters: [f32; 3],
     sphere_radius_meters: f32,
@@ -3910,6 +4050,9 @@ unsafe fn test_selection<'a>(
         environment_amount: selection.environment_amount,
         environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
         environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
+        environment_anchor_longitude_degrees: selection.environment_anchor_longitude_degrees,
+        environment_anchor_latitude_degrees: selection.environment_anchor_latitude_degrees,
+        environment_tangent_transform: selection.environment_tangent_transform,
         environment_exposure_ev: selection.environment_exposure_ev,
         environment_contrast: selection.environment_contrast,
         environment_saturation: selection.environment_saturation,
@@ -4095,6 +4238,9 @@ fn resolved_test_selection(
         environment_amount: selection.environment_amount,
         environment_rotation_x_degrees: selection.environment_rotation_x_degrees,
         environment_rotation_y_degrees: selection.environment_rotation_y_degrees,
+        environment_anchor_longitude_degrees: selection.environment_anchor_longitude_degrees,
+        environment_anchor_latitude_degrees: selection.environment_anchor_latitude_degrees,
+        environment_tangent_transform: selection.environment_tangent_transform,
         environment_exposure_ev: selection.environment_exposure_ev,
         environment_contrast: selection.environment_contrast,
         environment_saturation: selection.environment_saturation,
@@ -5449,6 +5595,9 @@ pub unsafe extern "C" fn screen_environment_preset_parameters(
         key_angular_radius_degrees: environment.key_angular_radius_degrees,
         rotation_x_degrees: environment.rotation_x_degrees,
         rotation_y_degrees: environment.rotation_y_degrees,
+        placement_anchor_direction_world: [0.0, 0.0, 1.0],
+        placement_source_direction: [0.0, 0.0, 1.0],
+        placement_tangent_transform: [1.0, 0.0, 0.0, 0.0],
         projection_mode: 0,
         sphere_center_meters: [0.0; 3],
         sphere_radius_meters: 5.0,
@@ -5655,8 +5804,11 @@ pub unsafe extern "C" fn screen_physical_pipeline_snapshot_create(
                     .environment
                     .source_unit_radiance_candelas_per_square_meter,
                 exposure_stops: parameters.environment.exposure_stops,
-                rotation_x_degrees: parameters.environment.rotation_x_degrees,
-                rotation_y_degrees: parameters.environment.rotation_y_degrees,
+                placement: SphericalEnvironmentPlacement {
+                    anchor_direction_world: parameters.environment.placement_anchor_direction_world,
+                    source_direction: parameters.environment.placement_source_direction,
+                    tangent_transform: parameters.environment.placement_tangent_transform,
+                },
                 projection: match parameters.environment.projection_mode {
                     0 => screen_cover::EnvironmentProjection::Distant,
                     1 => screen_cover::EnvironmentProjection::FiniteSphere {
@@ -7247,6 +7399,9 @@ mod tests {
                 key_angular_radius_degrees: 20.0,
                 rotation_x_degrees: 0.0,
                 rotation_y_degrees: 0.0,
+                placement_anchor_direction_world: [0.0, 0.0, 1.0],
+                placement_source_direction: [0.0, 0.0, 1.0],
+                placement_tangent_transform: [1.0, 0.0, 0.0, 0.0],
                 projection_mode: 0,
                 sphere_center_meters: [0.0; 3],
                 sphere_radius_meters: 5.0,

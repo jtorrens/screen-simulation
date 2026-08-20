@@ -139,6 +139,41 @@ final class RustSceneFrameResolver: @unchecked Sendable {
         return plan
     }
 
+    func resolveEnvironmentFraming(
+        frame: PhysicalFrameSelection,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        framing: EnvironmentReflectionFraming,
+        expectedRevision: UInt64
+    ) throws -> ScreenEnvironmentPlacementV1 {
+        guard sourceWidth > 0, sourceHeight > 0,
+              sourceWidth == sourceHeight * 2
+        else { throw PhysicalContractError.invalidFrameTime }
+        var request = ScreenEnvironmentFramingRequestV1()
+        request.abi_version = SCREEN_PHYSICAL_FRAME_ABI_VERSION
+        request.frame_index = frame.frameIndex
+        request.time_numerator = frame.timeNumerator
+        request.time_denominator = frame.timeDenominator
+        request.source_width = UInt32(sourceWidth)
+        request.source_height = UInt32(sourceHeight)
+        request.center_x = Float(framing.centerX)
+        request.center_y = Float(framing.centerY)
+        request.zoom = Float(framing.zoom)
+        request.roll_radians = Float(framing.rollDegrees * .pi / 180)
+        var placement = ScreenEnvironmentPlacementV1()
+        var error: UnsafePointer<CChar>?
+        guard screen_environment_framing_v1_resolve(
+            reference, &request, &placement, &error
+        ), placement.abi_version == SCREEN_PHYSICAL_FRAME_ABI_VERSION,
+        placement.revision == expectedRevision,
+        placement.frame_index == frame.frameIndex,
+        placement.time_numerator == frame.timeNumerator,
+        placement.time_denominator == frame.timeDenominator else {
+            throw Self.bridge(error, "Rust no ha materializado el encuadre HDRI del mismo frame.")
+        }
+        return placement
+    }
+
     func resolveTrackingOverlay(
         frame: PhysicalFrameSelection,
         sourcePoints: [SIMD3<Double>],
