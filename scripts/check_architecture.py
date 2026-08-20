@@ -1105,10 +1105,8 @@ def validate_interactive_device_background() -> None:
         raise ValidationError(
             "Native Render must request the final camera checkpoint for plate composition"
         )
-    if content.count("InteractivePreviewBackground.allCases") < 2:
-        raise ValidationError(
-            "Reference card and Preview toolbar must bind the same background combo"
-        )
+    if "InteractivePreviewBackground.allCases" not in content:
+        raise ValidationError("Preview toolbar omits the background combo")
     queue_start = workspace.index("private func renderQueuedSceneFrame(")
     queue_end = workspace.index("func makeFusionPackageRequest(", queue_start)
     if "interactivePreviewBackground" in workspace[queue_start:queue_end]:

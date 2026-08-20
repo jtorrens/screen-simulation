@@ -2177,18 +2177,6 @@ struct ContentView: View {
                 originRow("Medio") {
                     Text(model.referenceFrameName ?? "Sin referencia").lineLimit(1)
                 }
-                originRow("Plate de composición") {
-                    Picker("Plate de composición", selection: Binding(
-                        get: { model.interactivePreviewBackground },
-                        set: { model.changeInteractivePreviewBackground($0) }
-                    )) {
-                        ForEach(InteractivePreviewBackground.allCases) { value in
-                            Text(value.label).tag(value)
-                        }
-                    }
-                    .labelsHidden()
-                    .help("El mismo plate de la barra de Preview para Setup y Render nativo")
-                }
                 if let detail = model.referenceFrameDetail {
                     originRow("Detalle") { Text(detail).lineLimit(2) }
                 }

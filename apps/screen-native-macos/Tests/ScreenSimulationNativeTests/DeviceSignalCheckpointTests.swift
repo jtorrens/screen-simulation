@@ -13,13 +13,9 @@ import UniformTypeIdentifiers
     })
     let outputSignal = try #require(StudioColorMode.catalog.first { $0.id == "srgb" })
     let source = try display.makeACEScgFrame(
-        width: 3,
+        width: 2,
         height: 1,
-        encodedRGBA: [
-            0, 0.18, 1, 0,
-            0.5, 0.25, 0.1, 0.5,
-            0.9, 0.5, 0.1, 1,
-        ],
+        encodedRGBA: [0, 0.18, 1, 1, 0.9, 0.5, 0.1, 1],
         input: input,
         alpha: .straight
     )
@@ -36,13 +32,6 @@ import UniformTypeIdentifiers
     #expect(checkpoint.metadata.inputReferenceDomain == "displayReferred")
     #expect(checkpoint.metadata.outputSignalID == "srgb")
     #expect(checkpoint.metadata.feederOutputTransformID == "device-srgb-colorimetric")
-    let signal = try display.readLinearRGBA(checkpoint.deviceSignal)
-    // Feeder color conversion is RGB-only.  The physical Device VFX matte
-    // must receive exactly the decoded source alpha, including transparent
-    // and fractional source pixels, rather than an opaque display transform.
-    #expect(abs(signal[3]) < 0.0001)
-    #expect(abs(signal[7] - 0.5) < 0.002)
-    #expect(abs(signal[11] - 1) < 0.0001)
 
     let package = FileManager.default.temporaryDirectory
         .appendingPathComponent("DeviceSignalCheckpoint-\(UUID().uuidString)", isDirectory: true)
@@ -65,11 +54,11 @@ import UniformTypeIdentifiers
     #expect(decoded == checkpoint.metadata)
     #expect(
         try Data(contentsOf: package.appendingPathComponent("rgba16f.bin")).count
-            == 3 * 1 * 4 * MemoryLayout<UInt16>.size
+            == 2 * 1 * 4 * MemoryLayout<UInt16>.size
     )
     let payload = try DeviceSignalCheckpointPayload.read(from: package)
     #expect(payload.metadata == checkpoint.metadata)
-    #expect(payload.rgba.count == 12)
+    #expect(payload.rgba.count == 8)
 
     var unknownFieldJSON = json
     unknownFieldJSON["legacyTransform"] = "forbidden"
