@@ -5213,6 +5213,11 @@ final class WorkspaceModel: ObservableObject {
         }
         try await applySceneAuthoring(authoring, undoManager: nil)
         currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
+        // `load` intentionally opens media at zero so metadata and raster facts
+        // can be established first.  A Saved Scene, however, owns an exact current
+        // frame: before the staged scene may be adopted, replace that opening sample
+        // and its optional reference sample with the saved rational time.
+        try await materializeCurrentFrameForSceneOpen()
         try restoreTrackingScene(scene.snapshot.tracking)
         try ensureFiniteEnvironmentEnclosesTimeline()
         viewerNavigation.restore(
@@ -5239,6 +5244,18 @@ final class WorkspaceModel: ObservableObject {
             : "La escena se abrió, pero se descartaron recursos externos no disponibles:\n\n"
                 + savedSceneOpenWarnings.map { "• \($0)" }.joined(separator: "\n")
         status = "Escena abierta · \(scene.name)"
+    }
+
+    private func materializeCurrentFrameForSceneOpen() async throws {
+        if sourceIsPattern {
+            renderPattern()
+        } else {
+            let time = CMTime(seconds: requestedSeconds, preferredTimescale: 60_000)
+            try present(try await session.exactSample(at: time))
+        }
+        if referenceSourceURL != nil {
+            try await rebuildReferenceFrame()
+        }
     }
 
     /// Publishes a fully materialized scene in one synchronous MainActor commit.
