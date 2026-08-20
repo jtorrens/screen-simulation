@@ -50,7 +50,6 @@ final class SetupFramingRenderer {
         var environmentFraming: SIMD4<Float>
         var lensRadialTangential: SIMD4<Float>
         var lensTangentialFocus: SIMD4<Float>
-        var presentation: SIMD4<UInt32>
     }
 
     private let queue: MTLCommandQueue
@@ -85,8 +84,7 @@ final class SetupFramingRenderer {
         referencePlacement: WorkspaceModel.SourcePlacement,
         plan: ScreenSetupDiagnosticPlanV1,
         diagnosticMode: UInt32 = 0,
-        environmentFraming: SIMD4<Float> = SIMD4(0.5, 0.5, 1, 0),
-        interactiveBackground: InteractivePreviewBackground? = nil
+        environmentFraming: SIMD4<Float> = SIMD4(0.5, 0.5, 1, 0)
     ) throws -> Result {
         let deliveryWidth = Int(plan.delivery_width)
         let deliveryHeight = Int(plan.delivery_height)
@@ -107,8 +105,7 @@ final class SetupFramingRenderer {
         else { throw SetupFramingError.invalidContract }
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: source.texture.pixelFormat == .rgba32Float
-                ? .rgba32Float : .rgba16Float,
+            pixelFormat: .rgba16Float,
             width: outputWidth,
             height: outputHeight,
             mipmapped: false
@@ -211,8 +208,7 @@ final class SetupFramingRenderer {
                 plan.lens_tangential_distortion.1,
                 plan.focus_distance_meters,
                 plan.f_stop, 0
-            ),
-            presentation: SIMD4(interactiveBackground?.rendererCode ?? 0, 0, 0, 0)
+            )
         )
         parameters.cameraForward.w = plan.lens_shift.0
 
@@ -300,8 +296,7 @@ final class SetupFramingRenderer {
         reference: StudioColorMetalFrame?,
         referencePlacement: WorkspaceModel.SourcePlacement,
         plan: ScreenSetupDiagnosticPlanV1,
-        deliveryAligned: Bool = false,
-        interactiveBackground: InteractivePreviewBackground? = nil
+        deliveryAligned: Bool = false
     ) throws -> Result {
         try render(
             source: cameraResult,
@@ -309,8 +304,7 @@ final class SetupFramingRenderer {
             sourcePlacement: .stretch,
             referencePlacement: referencePlacement,
             plan: plan,
-            diagnosticMode: deliveryAligned ? 5 : 4,
-            interactiveBackground: interactiveBackground
+            diagnosticMode: deliveryAligned ? 5 : 4
         )
     }
 
@@ -331,17 +325,12 @@ final class SetupFramingRenderer {
 
     func renderFocus(
         source: StudioColorMetalFrame,
-        reference: StudioColorMetalFrame? = nil,
-        referencePlacement: WorkspaceModel.SourcePlacement = .stretch,
-        plan: ScreenSetupDiagnosticPlanV1,
-        interactiveBackground: InteractivePreviewBackground? = nil
+        plan: ScreenSetupDiagnosticPlanV1
     ) throws -> Result {
         try render(
-            source: source, reference: reference,
-            sourcePlacement: .stretch,
-            referencePlacement: referencePlacement, plan: plan,
-            diagnosticMode: 2,
-            interactiveBackground: interactiveBackground
+            source: source, sourcePlacement: .stretch,
+            referencePlacement: .stretch, plan: plan,
+            diagnosticMode: 2
         )
     }
 
@@ -705,7 +694,6 @@ final class SetupFramingRenderer {
         float4 environment_framing;
         float4 lens_radial_tangential;
         float4 lens_tangential_focus;
-        uint4 presentation;
     };
 
     inline float3 rotate_q(float4 q, float3 v) {
@@ -1016,35 +1004,6 @@ final class SetupFramingRenderer {
         return all(uv >= 0.0f) && all(uv <= 1.0f);
     }
 
-    inline float4 interactive_background(
-        uint2 p,
-        bool has_reference,
-        float2 reference_uv_value,
-        texture2d<float, access::sample> reference,
-        sampler linear_sampler,
-        constant SetupParameters& s
-    ) {
-        const uint mode = s.presentation.x;
-        if (mode == 1u) {
-            return has_reference
-                ? reference.sample(linear_sampler, reference_uv_value)
-                : float4(0, 0, 0, 1);
-        }
-        if (mode == 2u) {
-            // Fixed in Delivery Raster pixels so Fit/interactive preview scaling
-            // never changes the authored inspection pattern.
-            const float2 delivery_pixel = (float2(p) + 0.5f)
-                * float2(s.raster.xy) / float2(s.preview_raster.xy);
-            const uint2 tile = uint2(floor(delivery_pixel / 32.0f));
-            const float level = ((tile.x + tile.y) & 1u) == 0u ? 1.0f : 0.18f;
-            return float4(level, level, level, 1);
-        }
-        if (mode == 3u) return float4(0, 0, 0, 1);
-        if (mode == 4u) return float4(1, 1, 1, 1);
-        if (mode == 5u) return float4(0.18f, 0.18f, 0.18f, 1);
-        return float4(0);
-    }
-
     inline bool rounded_device_contains(float2 panel, constant SetupParameters& s) {
         if (any(panel < 0.0f) || any(panel > 1.0f)) return false;
         const float radius_meters = s.screen_height_shift_y.z;
@@ -1095,19 +1054,11 @@ final class SetupFramingRenderer {
         const bool referenceComposite =
             (s.modes.w == 3u || s.modes.w == 4u || s.modes.w == 5u)
             && s.reference_raster.w != 0u;
-        const float4 background = s.presentation.x != 0u
-            ? interactive_background(
-                p,
-                hasReference && s.reference_raster.w != 0u,
-                referenceUV,
-                reference,
-                linear_sampler,
-                s)
-            : (referenceComposite
-                ? (hasReference
-                    ? reference.sample(linear_sampler, referenceUV)
-                    : float4(0, 0, 0, 1))
-                : (s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1)));
+        const float4 background = referenceComposite
+            ? (hasReference
+                ? reference.sample(linear_sampler, referenceUV)
+                : float4(0, 0, 0, 1))
+            : (s.modes.z == 0 ? float4(0) : float4(0, 0, 0, 1));
         float2 camera;
         if (!camera_uv(p, s, camera)) { output.write(background, p); return; }
         if (s.modes.w == 4u || s.modes.w == 5u) {

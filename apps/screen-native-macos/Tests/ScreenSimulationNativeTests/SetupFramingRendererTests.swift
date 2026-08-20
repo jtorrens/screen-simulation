@@ -97,68 +97,6 @@ private func setupPlan(
     return plan
 }
 
-@Test @MainActor func interactiveBackgroundsAreExplicitAndQueueCompositionRemainsIndependent() throws {
-    let display = try StudioColorMetalDisplay()
-    let input = try #require(StudioColorInputTransform.catalog.first {
-        $0.id == "srgb-encoded-rec709"
-    })
-    let width = 64
-    let height = 64
-    let transparent = try display.makeACEScgFrame(
-        width: width, height: height,
-        encodedRGBA: Array(repeating: 0, count: width * height * 4),
-        input: input, alpha: .straight
-    )
-    let device = try #require(try RustDeviceCatalog.builtIns().first)
-    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
-        $0.id == device.defaultCoverGlassPresetID
-    })
-    let authored = try PhysicalPipelineAuthoringState.seeded(
-        device: device, coverGlass: cover
-    )
-    let plan = setupPlan(
-        authored: authored, device: device,
-        deliveryWidth: width, deliveryHeight: height, placement: "fit"
-    )
-    let renderer = try SetupFramingRenderer(device: transparent.texture.device)
-
-    func values(_ background: InteractivePreviewBackground) throws -> [Float] {
-        let result = try renderer.renderCameraComposite(
-            cameraResult: transparent,
-            reference: nil,
-            referencePlacement: .fit,
-            plan: plan,
-            deliveryAligned: true,
-            interactiveBackground: background
-        )
-        return try display.readLinearRGBA(result.frame)
-    }
-
-    let black = try values(.black)
-    let white = try values(.white)
-    let gray = try values(.middleGray)
-    let checker = try values(.vfxChecker)
-    let missingReference = try values(.reference)
-    #expect(abs(black[0]) < 0.0001)
-    #expect(abs(white[0] - 1) < 0.0001)
-    #expect(abs(gray[0] - 0.18) < 0.0001)
-    #expect(abs(checker[0] - 1) < 0.0001)
-    #expect(abs(checker[40 * 4] - 0.18) < 0.0001)
-    #expect(abs(missingReference[0]) < 0.0001)
-
-    // No interactive choice is passed by Render Queue. Its explicit plan remains
-    // the sole owner of that output composition.
-    let queueResult = try renderer.renderCameraComposite(
-        cameraResult: transparent,
-        reference: nil,
-        referencePlacement: .fit,
-        plan: plan,
-        deliveryAligned: true
-    )
-    let queueValues = try display.readLinearRGBA(queueResult.frame)
-    #expect(abs(queueValues[0]) < 0.0001)
-}
-
 @Test func referenceMatchInvertsEveryDeliveryRasterPlacement() throws {
     let cameraWidth: UInt32 = 4_032
     let cameraHeight: UInt32 = 3_024
