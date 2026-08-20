@@ -38,6 +38,7 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
             sourcePlacementID: "fit",
             previewOutputTransformID: output.id,
             previewPhaseID: "recording-codec",
+            referencePlateID: "vfx-checker",
             environmentResource: .init(kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil),
             referenceResource: .init(kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil, alphaMode: nil, signalColorModel: nil, signalMatrix: nil, signalRange: nil, placementID: nil, corners: [])
         ),
@@ -63,7 +64,7 @@ private func scalarControl(
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v22.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v23.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(
@@ -243,6 +244,7 @@ private func scalarControl(
             sourcePlacementID: context.sourcePlacementID,
             previewOutputTransformID: context.previewOutputTransformID,
             previewPhaseID: context.previewPhaseID,
+            referencePlateID: context.referencePlateID,
             environmentResource: context.environmentResource,
             referenceResource: .init(
                 kind: .imageOrVideo,
@@ -313,6 +315,7 @@ private func scalarControl(
             sourcePlacementID: base.context.sourcePlacementID,
             previewOutputTransformID: base.context.previewOutputTransformID,
             previewPhaseID: base.context.previewPhaseID,
+            referencePlateID: base.context.referencePlateID,
             environmentResource: .init(
                 kind: .image,
                 fileName: "environment.exr",

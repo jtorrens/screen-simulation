@@ -2174,6 +2174,19 @@ struct ContentView: View {
     private var referenceAuthoringControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                originRow("Plate de composición") {
+                    Picker("Plate de composición", selection: Binding(
+                        get: { model.referencePlate },
+                        set: { model.changeReferencePlate($0) }
+                    )) {
+                        ForEach(WorkspaceModel.ReferencePlate.allCases) { plate in
+                            Text(plate.label).tag(plate)
+                                .disabled(plate == .videoReference
+                                    && model.referenceFrameName == nil)
+                        }
+                    }
+                    .labelsHidden()
+                }
                 originRow("Medio") {
                     Text(model.referenceFrameName ?? "Sin referencia").lineLimit(1)
                 }

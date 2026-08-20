@@ -4,7 +4,9 @@ Status: normative.
 
 <!-- decision-ref: architecture.decision-coherence -->
 
-For v22 Saved Scene and Queue tests, “tracks” refers only to the separately typed embedded 3D animation record. No validation may imply that v21 has a generic parameter-track collection.
+For v23 Saved Scene and Queue tests, “tracks” refers only to the separately typed embedded 3D animation record. No validation may imply that v21 has a generic parameter-track collection.
+
+Reference plate coverage proves that each synthetic plate is opaque linear ACEScg at the requested Delivery Raster, that the selected video uses its persisted authored interpretation and placement, and that Setup, Native and `Device + referencia` Queue composition use the same resulting frame and explicit `DeviceRGB + plateRGB × (1 − physicalMatte)` equation. It rejects a persisted video-plate selection without an external reference resource and proves Fusion Scene Package does not request a Reference plate.
 
 Every cross-boundary product decision touched by a change first resolves through `architecture/decision-authority.json`. The registry has one owner marker and one bounded scope per decision, while marked secondary documents are references only. Validation rejects duplicate, missing or inactive owners, unknown references and absent focused enforcement. A semantic conflict cannot be repaired by selecting one statement automatically: implementation remains blocked until the product decision and its canonical owner agree.
 

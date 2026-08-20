@@ -188,6 +188,26 @@
       ]
     },
     {
+      "id": "reference.plate-composition",
+      "scope": "selected Reference plate delivery and post-physical Device composition",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Reference plate composition"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalSettingsExchange.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SetupFramingRendererTests.swift",
+        "scripts/migrate_scene_library_v22_to_v23.py",
+        "scripts/test_migrate_scene_library_v22_to_v23.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "environment.spherical-placement",
       "scope": "non-destructive placement of image-backed Environment radiance",
       "owner": {

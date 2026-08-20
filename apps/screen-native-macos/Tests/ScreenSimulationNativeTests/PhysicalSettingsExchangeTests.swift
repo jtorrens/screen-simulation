@@ -203,6 +203,7 @@ private func canonicalFrameContext(
         sourcePlacementID: "fit",
         previewOutputTransformID: "aces2-srgb-sdr-100",
         previewPhaseID: "recording-codec",
+        referencePlateID: "vfx-checker",
         environmentResource: .init(
             kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil
         ),

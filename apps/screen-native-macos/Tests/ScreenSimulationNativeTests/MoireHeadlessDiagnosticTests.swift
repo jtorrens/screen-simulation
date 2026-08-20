@@ -1020,6 +1020,7 @@ private func moireFrameContext(
             "SCREEN_MOIRE_OUTPUT_TRANSFORM_ID"
         ]),
         previewPhaseID: previewPhaseID,
+        referencePlateID: "vfx-checker",
         environmentResource: environmentResource,
         referenceResource: .init(
             kind: .none,

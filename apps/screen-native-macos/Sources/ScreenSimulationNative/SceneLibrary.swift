@@ -217,12 +217,23 @@ struct SceneAuthoringContext: Codable, Equatable, Sendable {
     let sourcePlacementID: String
     let previewOutputTransformID: String
     let previewPhaseID: String
+    let referencePlateID: String
     let environmentResource: PhysicalSettingsExchange.EnvironmentResource
     let referenceResource: PhysicalSettingsExchange.ReferenceResource
+
+    func validate() throws {
+        guard ["video-reference", "vfx-checker", "black", "white", "middle-gray"]
+            .contains(referencePlateID)
+        else { throw SceneLibraryError.invalidDocument("La placa de referencia no es válida.") }
+        try environmentResource.validate()
+        try referenceResource.validate()
+        guard referencePlateID != "video-reference" || referenceResource.kind == .imageOrVideo
+        else { throw SceneLibraryError.invalidDocument("La placa de vídeo requiere una referencia.") }
+    }
 }
 
 struct SceneAuthoringDocument: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SceneAuthoring.v3"
+    static let schema = "ScreenSimulation.SceneAuthoring.v4"
 
     let schema: String
     let profiles: SceneProfileSelection
@@ -256,13 +267,12 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
         }
         try overrides.forEach { try $0.validate() }
         try modelOverrides.validate()
-        try context.environmentResource.validate()
-        try context.referenceResource.validate()
+        try context.validate()
     }
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v22"
+    static let schema = "ScreenSimulation.SavedScene.v23"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -377,6 +387,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             sourcePlacementID: previous.sourcePlacementID,
             previewOutputTransformID: previous.previewOutputTransformID,
             previewPhaseID: previous.previewPhaseID,
+            referencePlateID: previous.referencePlateID,
             environmentResource: .init(
                 kind: .image, fileName: asset.fileName,
                 absolutePath: resolvedAbsolutePath, inputTransformID: "acescg"
@@ -534,7 +545,7 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v22.json")
+        documentURL = directory.appendingPathComponent("Scenes.v23.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -588,7 +599,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v22", isDirectory: true)
+            .appendingPathComponent("Autosave.v23", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -936,7 +947,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v22", isDirectory: true)
+            .appendingPathComponent("Autosave.v23", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]

@@ -35,8 +35,20 @@ enum PhysicalSettingsExchange {
         let sourcePlacementID: String
         let previewOutputTransformID: String
         let previewPhaseID: String
+        let referencePlateID: String
         let environmentResource: EnvironmentResource
         let referenceResource: ReferenceResource
+
+        func validate() throws {
+            guard ["video-reference", "vfx-checker", "black", "white", "middle-gray"]
+                .contains(referencePlateID)
+            else { throw ImportError.invalidReferenceResource }
+            try environmentResource.validate()
+            try referenceResource.validate()
+            guard referencePlateID != "video-reference"
+                    || referenceResource.kind == .imageOrVideo
+            else { throw ImportError.invalidReferenceResource }
+        }
     }
 
     struct ReferenceResource: Codable, Equatable, Sendable {
@@ -143,8 +155,7 @@ enum PhysicalSettingsExchange {
         _ = try device.resolved()
         _ = try pipeline.resolvedPipeline()
         let context = try decodeRequired(FrameContext.self, key: "context", in: settings)
-        try context.environmentResource.validate()
-        try context.referenceResource.validate()
+        try context.validate()
         guard pipeline.deviceVfxAlphaMode == context.selection.deviceVfxAlphaModeID else {
             throw ImportError.inconsistentDeviceVfxAlphaMode
         }

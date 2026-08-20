@@ -291,6 +291,23 @@ final class SetupFramingRenderer {
         )
     }
 
+    func renderSetupComposite(
+        source: StudioColorMetalFrame,
+        plate: StudioColorMetalFrame,
+        sourcePlacement: WorkspaceModel.SourcePlacement,
+        platePlacement: WorkspaceModel.SourcePlacement,
+        plan: ScreenSetupDiagnosticPlanV1
+    ) throws -> Result {
+        try render(
+            source: source,
+            reference: plate,
+            sourcePlacement: sourcePlacement,
+            referencePlacement: platePlacement,
+            plan: plan,
+            diagnosticMode: 7
+        )
+    }
+
     func renderCameraComposite(
         cameraResult: StudioColorMetalFrame,
         reference: StudioColorMetalFrame?,
@@ -1052,7 +1069,7 @@ final class SetupFramingRenderer {
         float2 referenceUV;
         const bool hasReference = reference_uv(p, s, referenceUV);
         const bool referenceComposite =
-            (s.modes.w == 3u || s.modes.w == 4u || s.modes.w == 5u)
+            (s.modes.w == 3u || s.modes.w == 4u || s.modes.w == 5u || s.modes.w == 7u)
             && s.reference_raster.w != 0u;
         const float4 background = referenceComposite
             ? (hasReference
@@ -1083,6 +1100,20 @@ final class SetupFramingRenderer {
                 value.rgb + background.rgb * (1.0f - matte),
                 1.0f
             ), p);
+            return;
+        }
+        if (s.modes.w == 7u) {
+            float2 panel;
+            if (!screen_uv(camera, s, panel) || !rounded_device_contains(panel, s)) {
+                output.write(background, p); return;
+            }
+            const float2 uv = source_uv(clamp(panel, 0.0f, 1.0f), s);
+            if (any(uv < 0.0f) || any(uv > 1.0f)) {
+                output.write(background, p); return;
+            }
+            const float4 value = source.sample(linear_sampler, uv);
+            const float matte = clamp(value.a, 0.0f, 1.0f);
+            output.write(float4(value.rgb + background.rgb * (1.0f - matte), 1.0f), p);
             return;
         }
         if (s.modes.w == 1u) {

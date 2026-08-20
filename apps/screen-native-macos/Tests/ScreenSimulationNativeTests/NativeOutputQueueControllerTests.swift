@@ -319,6 +319,7 @@ private func outputQueueTestScene(name: String) -> SavedScene {
             sourceSignalRange: StudioSignalRange.full.rawValue,
             sourcePlacementID: "fit", previewOutputTransformID: output.id,
             previewPhaseID: "recording-codec",
+            referencePlateID: "vfx-checker",
             environmentResource: .init(kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil),
             referenceResource: .init(kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil, alphaMode: nil, signalColorModel: nil, signalMatrix: nil, signalRange: nil, placementID: nil, corners: [])
         ), environmentCalibration: nil
