@@ -341,7 +341,7 @@ private func movieRoundtrip(
     let session = NativeMediaSession()
     let info = try await session.openVideo(
         url,
-        preserveAlpha: detection.hasAlpha,
+        hasAlpha: detection.hasAlpha,
         colorModel: .ycbcr,
         matrix: .bt709,
         decodedRange: .video
@@ -436,7 +436,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     let detectedRange = try #require(detection.range)
     let sourceInfo = try await sourceSession.openVideo(
         sourceURL,
-        preserveAlpha: detection.hasAlpha,
+        hasAlpha: detection.hasAlpha,
         colorModel: colorModel,
         matrix: .bt709,
         decodedRange: detectedRange
@@ -492,7 +492,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
     let outputSession = NativeMediaSession()
     let outputInfo = try await outputSession.openVideo(
         renderedURL,
-        preserveAlpha: outputDetection.hasAlpha,
+        hasAlpha: outputDetection.hasAlpha,
         colorModel: try #require(outputDetection.colorModel),
         matrix: try #require(outputDetection.matrix),
         decodedRange: try #require(outputDetection.range)
