@@ -1,7 +1,8 @@
 import Foundation
 
-/// Workstation-only background used to inspect the resolved Device contribution.
-/// It is never part of Saved Scene authoring or a Render Queue request.
+/// Workstation-only plate owned by Reference composition when inspecting the
+/// resolved Device contribution. It is never Saved Scene authoring or a Render
+/// Queue request, even though both the Reference card and Preview toolbar bind it.
 enum InteractivePreviewBackground: String, CaseIterable, Identifiable {
     case reference
     case vfxChecker

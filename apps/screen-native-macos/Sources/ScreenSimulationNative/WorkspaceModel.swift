@@ -3553,9 +3553,9 @@ final class WorkspaceModel: ObservableObject {
     func changeInteractivePreviewBackground(_ value: InteractivePreviewBackground) {
         guard value != interactivePreviewBackground else { return }
         interactivePreviewBackground = value
-        // Native publication includes this workstation choice, so changing it
-        // follows the same lifecycle as every render-affecting authoring edit:
-        // stale/cancel Native, return to Setup and publish the new inspection.
+        // Native publication includes this workstation Reference-composition
+        // choice. It is not scene authoring, but it still makes the published
+        // inspection stale: cancel it, return to Setup and republish the plate.
         physicalModel.invalidateExternalParameters()
     }
 
