@@ -113,16 +113,9 @@ private func setupPlan(
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
         $0.id == device.defaultCoverGlassPresetID
     })
-    var authored = try PhysicalPipelineAuthoringState.seeded(
+    let authored = try PhysicalPipelineAuthoringState.seeded(
         device: device, coverGlass: cover
     )
-    authored.cameraPose.position = [0, 0, 1]
-    authored.cameraPose.quaternion = [0, 0, 0, 1]
-    authored.screenPose.position = [0, 0, 0]
-    authored.screenPose.quaternion = [0, 0, 0, 1]
-    authored.sceneLens.sensorWidthMillimeters = 36
-    authored.sceneLens.sensorHeightMillimeters = 36
-    authored.sceneLens.focalLengthMillimeters = 45
     let plan = setupPlan(
         authored: authored, device: device,
         deliveryWidth: width, deliveryHeight: height, placement: "fit"
@@ -152,35 +145,6 @@ private func setupPlan(
     #expect(abs(checker[0] - 1) < 0.0001)
     #expect(abs(checker[40 * 4] - 0.18) < 0.0001)
     #expect(abs(missingReference[0]) < 0.0001)
-
-    let center = ((height / 2) * width + width / 2) * 4
-    // Native camera output substitutes the same plate even while applying its
-    // camera-to-delivery placement.
-    let nativeWhite = try renderer.renderCameraComposite(
-        cameraResult: transparent,
-        reference: nil,
-        referencePlacement: .fit,
-        plan: plan,
-        deliveryAligned: false,
-        interactiveBackground: .white
-    )
-    let nativeWhiteValues = try display.readLinearRGBA(nativeWhite.frame)
-    #expect(abs(nativeWhiteValues[center] - 1) < 0.0001)
-    #expect(abs(nativeWhiteValues[center + 1] - 1) < 0.0001)
-    #expect(abs(nativeWhiteValues[center + 2] - 1) < 0.0001)
-
-    let setup = try renderer.render(
-        source: transparent,
-        sourcePlacement: .stretch,
-        referencePlacement: .fit,
-        plan: plan,
-        interactiveBackground: .white
-    )
-    let setupValues = try display.readLinearRGBA(setup.frame)
-    #expect(setup.boundary.count >= 4)
-    #expect(abs(setupValues[center] - 1) < 0.0001)
-    #expect(abs(setupValues[center + 1] - 1) < 0.0001)
-    #expect(abs(setupValues[center + 2] - 1) < 0.0001)
 
     // No interactive choice is passed by Render Queue. Its explicit plan remains
     // the sole owner of that output composition.

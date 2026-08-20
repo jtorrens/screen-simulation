@@ -3547,10 +3547,13 @@ final class WorkspaceModel: ObservableObject {
     func changeInteractivePreviewBackground(_ value: InteractivePreviewBackground) {
         guard value != interactivePreviewBackground else { return }
         interactivePreviewBackground = value
-        // Native publication includes this workstation choice, so changing it
-        // follows the same lifecycle as every render-affecting authoring edit:
-        // stale/cancel Native, return to Setup and publish the new inspection.
-        physicalModel.invalidateExternalParameters()
+        if setupOwnsViewerPublication {
+            rebuildPhysicalSelectedFrame()
+        } else if let foreground = referenceForegroundFrame {
+            publishInteractiveComposite(foreground)
+        } else {
+            rebuildPhysicalSelectedFrame()
+        }
     }
 
     func togglePlayback() {

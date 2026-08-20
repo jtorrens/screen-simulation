@@ -132,25 +132,6 @@ import Testing
     #expect(workspace.testNativeRenderButtonState == .outdated)
 }
 
-@Test @MainActor func changingInteractiveBackgroundInvalidatesNativeAndReturnsToSetup() throws {
-    let workspace = WorkspaceModel()
-    let dimensions = try PhysicalDimensions(width: 8064, height: 6048)
-    try workspace.physicalModel.beginNative()
-    workspace.physicalModel.completeNative(
-        nativeDimensions: dimensions,
-        effectiveDimensions: dimensions
-    )
-    #expect(workspace.testNativeRenderButtonState == .complete)
-    #expect(workspace.physicalModel.quality == .native)
-
-    workspace.changeInteractivePreviewBackground(.white)
-
-    #expect(workspace.interactivePreviewBackground == .white)
-    #expect(workspace.physicalModel.quality == .setup)
-    #expect(workspace.physicalModel.frameState == .stale)
-    #expect(workspace.testNativeRenderButtonState == .outdated)
-}
-
 @Test @MainActor func editingAnyParameterReturnsTheViewerToDeviceSetup() throws {
     let model = PhysicalModelController()
 
