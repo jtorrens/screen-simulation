@@ -7835,7 +7835,14 @@ final class WorkspaceModel: ObservableObject {
                     || snapshot.returnedIntermediate == .cameraRenderedACEScg
                 referenceForegroundFrame = supportsInteractiveBackground
                     ? presentationFrame : nil
-                referenceForegroundIsDeliveryAligned = false
+                // CameraRenderedACEScg is already the complete active-camera
+                // raster.  It must be composited over the interactive plate
+                // directly; treating it as a flat Device image projects it a
+                // second time and loses the same Reference plate that Setup
+                // uses. Device-VFX checkpoints are the only foregrounds that
+                // still require the Device-to-camera projection here.
+                referenceForegroundIsDeliveryAligned =
+                    snapshot.returnedIntermediate == .cameraRenderedACEScg
                 let duration = started.duration(to: .now)
                 let elapsed = Double(duration.components.seconds)
                     + Double(duration.components.attoseconds) / 1e18

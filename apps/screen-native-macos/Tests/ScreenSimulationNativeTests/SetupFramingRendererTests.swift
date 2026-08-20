@@ -154,20 +154,42 @@ private func setupPlan(
     #expect(abs(missingReference[0]) < 0.0001)
 
     let center = ((height / 2) * width + width / 2) * 4
-    // Native camera output substitutes the same plate even while applying its
-    // camera-to-delivery placement.
+    // Native camera output is already a camera raster. It substitutes the
+    // same plate directly, without a second Device-to-camera projection.
     let nativeWhite = try renderer.renderCameraComposite(
         cameraResult: transparent,
         reference: nil,
         referencePlacement: .fit,
         plan: plan,
-        deliveryAligned: false,
+        deliveryAligned: true,
         interactiveBackground: .white
     )
     let nativeWhiteValues = try display.readLinearRGBA(nativeWhite.frame)
     #expect(abs(nativeWhiteValues[center] - 1) < 0.0001)
     #expect(abs(nativeWhiteValues[center + 1] - 1) < 0.0001)
     #expect(abs(nativeWhiteValues[center + 2] - 1) < 0.0001)
+
+    let blueReference = try display.makeACEScgFrame(
+        width: width,
+        height: height,
+        encodedRGBA: Array(repeating: [0.0, 0.0, 1.0, 1.0], count: width * height)
+            .flatMap { $0 },
+        input: input,
+        alpha: .straight
+    )
+    let nativeReference = try renderer.renderCameraComposite(
+        cameraResult: transparent,
+        reference: blueReference,
+        referencePlacement: .fit,
+        plan: plan,
+        deliveryAligned: true,
+        interactiveBackground: .reference
+    )
+    let nativeReferenceValues = try display.readLinearRGBA(nativeReference.frame)
+    let blueReferenceValues = try display.readLinearRGBA(blueReference)
+    #expect(abs(nativeReferenceValues[center] - blueReferenceValues[center]) < 0.0001)
+    #expect(abs(nativeReferenceValues[center + 1] - blueReferenceValues[center + 1]) < 0.0001)
+    #expect(abs(nativeReferenceValues[center + 2] - blueReferenceValues[center + 2]) < 0.0001)
 
     let setup = try renderer.render(
         source: transparent,
