@@ -113,7 +113,7 @@ def main() -> int:
         "CFBundleDevelopmentRegion": "en",
         "CFBundleDisplayName": "SCREEN-SIMULATION",
         "CFBundleExecutable": "ScreenSimulationNative",
-        "CFBundleIconFile": "AppIcon",
+        "CFBundleIconFile": "AppIcon.icns",
         "CFBundleIdentifier": "com.jtorrens.screensimulation.native",
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleName": "SCREEN-SIMULATION",
