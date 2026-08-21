@@ -9,7 +9,6 @@ public struct TestAuthoringView: View {
     private let showsGeneral: Bool
     private let showsInspectorGroups: Bool
     private let supplementarySectionContent: [String: AnyView]
-    private let expandedCardIDs: Binding<Set<String>>?
 
     public init(
         state: TestPagePresentation,
@@ -17,7 +16,6 @@ public struct TestAuthoringView: View {
         showsGeneral: Bool = true,
         showsInspectorGroups: Bool = true,
         supplementarySectionContent: [String: AnyView] = [:],
-        expandedCardIDs: Binding<Set<String>>? = nil,
         onScalarEditingChanged: @escaping (String, Bool) -> Void = { _, _ in },
         onIntent: @escaping (TestControlIntent) -> Void
     ) {
@@ -26,7 +24,6 @@ public struct TestAuthoringView: View {
         self.showsGeneral = showsGeneral
         self.showsInspectorGroups = showsInspectorGroups
         self.supplementarySectionContent = supplementarySectionContent
-        self.expandedCardIDs = expandedCardIDs
         self.onScalarEditingChanged = onScalarEditingChanged
         self.onIntent = onIntent
     }
@@ -34,12 +31,7 @@ public struct TestAuthoringView: View {
     public var body: some View {
         VStack(spacing: 12) {
             if showsGeneral, !quickControls.isEmpty {
-                TestPhaseCard(
-                    label: "General",
-                    identifier: "general",
-                    expandedCardIDs: expandedCardIDs,
-                    initiallyExpanded: true
-                ) {
+                TestPhaseCard(label: "General", initiallyExpanded: true) {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         ForEach(quickControls) { control in
                             controlView(control)
@@ -66,11 +58,7 @@ public struct TestAuthoringView: View {
     }
 
     private func inspectorGroup(_ group: TestInspectorGroupPresentation) -> some View {
-        TestPhaseCard(
-            label: group.label,
-            identifier: group.id,
-            expandedCardIDs: expandedCardIDs
-        ) {
+        TestPhaseCard(label: group.label) {
             VStack(spacing: 8) {
                 ForEach(group.sections) { section in
                     let controls = section.controls.filter {
@@ -78,11 +66,7 @@ public struct TestAuthoringView: View {
                     }
                     let supplement = supplementarySectionContent[section.id]
                     if !controls.isEmpty || supplement != nil {
-                        TestInspectorSubcard(
-                            label: section.label,
-                            identifier: section.id,
-                            expandedCardIDs: expandedCardIDs
-                        ) {
+                        TestInspectorSubcard(label: section.label) {
                             VStack(alignment: .leading, spacing: 10) {
                                 if let supplement { supplement }
                                 if !controls.isEmpty {
@@ -393,57 +377,37 @@ public struct TestPreviewControls: View {
 
 public struct TestPhaseCard<Content: View>: View {
     private let label: String
-    private let identifier: String?
     private let effectSummary: String
     private let headerControl: AnyView?
     private let content: Content
-    private let expandedCardIDs: Binding<Set<String>>?
     @State private var expanded: Bool
 
     public init(
         label: String,
-        identifier: String? = nil,
         effectSummary: String = "",
         headerControl: AnyView? = nil,
-        expandedCardIDs: Binding<Set<String>>? = nil,
         initiallyExpanded: Bool = false,
         @ViewBuilder content: () -> Content
     ) {
         self.label = label
-        self.identifier = identifier
         self.effectSummary = effectSummary
         self.headerControl = headerControl
         self.content = content()
-        self.expandedCardIDs = expandedCardIDs
         _expanded = State(initialValue: initiallyExpanded)
-    }
-
-    private var isExpanded: Binding<Bool> {
-        guard let identifier, let expandedCardIDs else { return $expanded }
-        return Binding(
-            get: { expandedCardIDs.wrappedValue.contains(identifier) },
-            set: { isExpanded in
-                if isExpanded {
-                    expandedCardIDs.wrappedValue.insert(identifier)
-                } else {
-                    expandedCardIDs.wrappedValue.remove(identifier)
-                }
-            }
-        )
     }
 
     public var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 0) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.16)) { isExpanded.wrappedValue.toggle() }
+                    withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
                 } label: {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(label).font(.headline)
                             Spacer(minLength: 8)
                             Image(systemName: "chevron.right")
-                                .rotationEffect(.degrees(isExpanded.wrappedValue ? 90 : 0))
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
                                 .foregroundStyle(.secondary)
                         }
                         if !effectSummary.isEmpty {
@@ -455,8 +419,8 @@ public struct TestPhaseCard<Content: View>: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityValue(isExpanded.wrappedValue ? "Expandido" : "Contraído")
-                if isExpanded.wrappedValue {
+                .accessibilityValue(expanded ? "Expandido" : "Contraído")
+                if expanded {
                     if let headerControl {
                         headerControl.padding(.top, 10)
                     }
@@ -470,53 +434,30 @@ public struct TestPhaseCard<Content: View>: View {
 
 private struct TestInspectorSubcard<Content: View>: View {
     let label: String
-    let identifier: String?
     let content: Content
-    let expandedCardIDs: Binding<Set<String>>?
     @State private var expanded = false
 
-    init(
-        label: String,
-        identifier: String? = nil,
-        expandedCardIDs: Binding<Set<String>>? = nil,
-        @ViewBuilder content: () -> Content
-    ) {
+    init(label: String, @ViewBuilder content: () -> Content) {
         self.label = label
-        self.identifier = identifier
         self.content = content()
-        self.expandedCardIDs = expandedCardIDs
-    }
-
-    private var isExpanded: Binding<Bool> {
-        guard let identifier, let expandedCardIDs else { return $expanded }
-        return Binding(
-            get: { expandedCardIDs.wrappedValue.contains(identifier) },
-            set: { isExpanded in
-                if isExpanded {
-                    expandedCardIDs.wrappedValue.insert(identifier)
-                } else {
-                    expandedCardIDs.wrappedValue.remove(identifier)
-                }
-            }
-        )
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.16)) { isExpanded.wrappedValue.toggle() }
+                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
             } label: {
                 HStack {
                     Text(label).font(.subheadline.weight(.semibold))
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(isExpanded.wrappedValue ? 90 : 0))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
                         .foregroundStyle(.secondary)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if isExpanded.wrappedValue {
+            if expanded {
                 content.padding(.top, 8)
             }
         }

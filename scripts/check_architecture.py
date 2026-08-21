@@ -1042,8 +1042,7 @@ def validate_test_inspector_hierarchy() -> None:
         'Image(systemName: "chevron.right")',
         ".contentShape(Rectangle())",
         "TestInspectorSubcard",
-        'identifier: "general"',
-        "expandedCardIDs: Binding<Set<String>>? = nil",
+        'TestPhaseCard(label: "General", initiallyExpanded: true)',
         "initiallyExpanded: Bool = false",
         "@State private var expanded = false",
     ):

@@ -106,9 +106,6 @@ struct ContentView: View {
     @State private var pendingScene: SavedScene?
     @State private var pendingRenderScene: SavedScene?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
-    // Card expansion is UI-only state.  Parameter publication may replace the
-    // presentation descriptor, but never changes this authored-inspector layout.
-    @State private var expandedTestInspectorCards: Set<String> = ["general"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1876,7 +1873,6 @@ struct ContentView: View {
                         state: presentation,
                         excludedControlIDs: ["device", "color-mode", "white-luminance"],
                         showsInspectorGroups: false,
-                        expandedCardIDs: $expandedTestInspectorCards,
                         onScalarEditingChanged: { controlID, editing in
                             if editing {
                                 model.beginSceneControlEdit(controlID)
@@ -1888,11 +1884,7 @@ struct ContentView: View {
                         },
                         onIntent: { model.handleTestIntent($0, undoManager: undoManager) }
                     )
-                    TestPhaseCard(
-                        label: "Referencia",
-                        identifier: "reference",
-                        expandedCardIDs: $expandedTestInspectorCards
-                    ) {
+                    TestPhaseCard(label: "Referencia") {
                         referenceAuthoringControls
                     }
                     TestAuthoringView(
@@ -1900,7 +1892,6 @@ struct ContentView: View {
                         excludedControlIDs: ["device", "color-mode", "white-luminance"],
                         showsGeneral: false,
                         supplementarySectionContent: testInspectorSupplements,
-                        expandedCardIDs: $expandedTestInspectorCards,
                         onScalarEditingChanged: { controlID, editing in
                             if editing {
                                 model.beginSceneControlEdit(controlID)
