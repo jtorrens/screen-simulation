@@ -134,6 +134,7 @@ struct PhysicalRowBatch<'a> {
     command: &'a CommandBufferRef,
     output: &'a TextureRef,
     veiling_gate_average: &'a BufferRef,
+    veiling_offset: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,6 +196,10 @@ pub struct MetalPhysicalPipeline {
     thin_lens_image_pipeline: ComputePipelineState,
     vfx_depth_blur_procedural_pipeline: ComputePipelineState,
     vfx_depth_blur_image_pipeline: ComputePipelineState,
+    temporal_thin_lens_procedural_pipeline: ComputePipelineState,
+    temporal_thin_lens_image_pipeline: ComputePipelineState,
+    temporal_vfx_depth_blur_procedural_pipeline: ComputePipelineState,
+    temporal_vfx_depth_blur_image_pipeline: ComputePipelineState,
     vfx_frontal_thin_lens_procedural_pipeline: ComputePipelineState,
     vfx_frontal_thin_lens_image_pipeline: ComputePipelineState,
     vfx_frontal_depth_blur_procedural_pipeline: ComputePipelineState,
@@ -217,6 +222,8 @@ pub struct MetalPhysicalPipeline {
     veiling_mean_preparation_count: AtomicUsize,
     #[cfg(test)]
     temporal_batch_submission_count: AtomicUsize,
+    #[cfg(test)]
+    temporal_fused_dispatch_count: AtomicUsize,
 }
 
 pub struct MetalPhysicalPipelineResult {
@@ -269,39 +276,58 @@ impl MetalPhysicalPipeline {
         let library = device
             .new_library_with_data(SHADER_LIBRARY)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let specialized_pipeline =
-            |vfx_depth_blur: bool, image_environment: bool, device_vfx_frontal: bool| {
-                let constants = FunctionConstantValues::new();
-                constants.set_constant_value_at_index(
-                    (&raw const vfx_depth_blur).cast(),
-                    MTLDataType::Bool,
-                    0,
-                );
-                constants.set_constant_value_at_index(
-                    (&raw const image_environment).cast(),
-                    MTLDataType::Bool,
-                    1,
-                );
-                constants.set_constant_value_at_index(
-                    (&raw const device_vfx_frontal).cast(),
-                    MTLDataType::Bool,
-                    2,
-                );
-                let function = library
-                    .get_function("evaluate_physical_pipeline", Some(constants))
-                    .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-                device
-                    .new_compute_pipeline_state_with_function(&function)
-                    .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))
-            };
-        let thin_lens_procedural_pipeline = specialized_pipeline(false, false, false)?;
-        let thin_lens_image_pipeline = specialized_pipeline(false, true, false)?;
-        let vfx_depth_blur_procedural_pipeline = specialized_pipeline(true, false, false)?;
-        let vfx_depth_blur_image_pipeline = specialized_pipeline(true, true, false)?;
-        let vfx_frontal_thin_lens_procedural_pipeline = specialized_pipeline(false, false, true)?;
-        let vfx_frontal_thin_lens_image_pipeline = specialized_pipeline(false, true, true)?;
-        let vfx_frontal_depth_blur_procedural_pipeline = specialized_pipeline(true, false, true)?;
-        let vfx_frontal_depth_blur_image_pipeline = specialized_pipeline(true, true, true)?;
+        let specialized_pipeline = |function_name: &str,
+                                    vfx_depth_blur: bool,
+                                    image_environment: bool,
+                                    device_vfx_frontal: bool| {
+            let constants = FunctionConstantValues::new();
+            constants.set_constant_value_at_index(
+                (&raw const vfx_depth_blur).cast(),
+                MTLDataType::Bool,
+                0,
+            );
+            constants.set_constant_value_at_index(
+                (&raw const image_environment).cast(),
+                MTLDataType::Bool,
+                1,
+            );
+            constants.set_constant_value_at_index(
+                (&raw const device_vfx_frontal).cast(),
+                MTLDataType::Bool,
+                2,
+            );
+            let function = library
+                .get_function(function_name, Some(constants))
+                .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+            device
+                .new_compute_pipeline_state_with_function(&function)
+                .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))
+        };
+        let physical_function = "evaluate_physical_pipeline";
+        let temporal_function = "evaluate_physical_pipeline_temporal";
+        let thin_lens_procedural_pipeline =
+            specialized_pipeline(physical_function, false, false, false)?;
+        let thin_lens_image_pipeline = specialized_pipeline(physical_function, false, true, false)?;
+        let vfx_depth_blur_procedural_pipeline =
+            specialized_pipeline(physical_function, true, false, false)?;
+        let vfx_depth_blur_image_pipeline =
+            specialized_pipeline(physical_function, true, true, false)?;
+        let temporal_thin_lens_procedural_pipeline =
+            specialized_pipeline(temporal_function, false, false, false)?;
+        let temporal_thin_lens_image_pipeline =
+            specialized_pipeline(temporal_function, false, true, false)?;
+        let temporal_vfx_depth_blur_procedural_pipeline =
+            specialized_pipeline(temporal_function, true, false, false)?;
+        let temporal_vfx_depth_blur_image_pipeline =
+            specialized_pipeline(temporal_function, true, true, false)?;
+        let vfx_frontal_thin_lens_procedural_pipeline =
+            specialized_pipeline(physical_function, false, false, true)?;
+        let vfx_frontal_thin_lens_image_pipeline =
+            specialized_pipeline(physical_function, false, true, true)?;
+        let vfx_frontal_depth_blur_procedural_pipeline =
+            specialized_pipeline(physical_function, true, false, true)?;
+        let vfx_frontal_depth_blur_image_pipeline =
+            specialized_pipeline(physical_function, true, true, true)?;
         let environment_importance_function = library
             .get_function("build_environment_importance", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -380,6 +406,10 @@ impl MetalPhysicalPipeline {
             thin_lens_image_pipeline,
             vfx_depth_blur_procedural_pipeline,
             vfx_depth_blur_image_pipeline,
+            temporal_thin_lens_procedural_pipeline,
+            temporal_thin_lens_image_pipeline,
+            temporal_vfx_depth_blur_procedural_pipeline,
+            temporal_vfx_depth_blur_image_pipeline,
             vfx_frontal_thin_lens_procedural_pipeline,
             vfx_frontal_thin_lens_image_pipeline,
             vfx_frontal_depth_blur_procedural_pipeline,
@@ -402,6 +432,8 @@ impl MetalPhysicalPipeline {
             veiling_mean_preparation_count: AtomicUsize::new(0),
             #[cfg(test)]
             temporal_batch_submission_count: AtomicUsize::new(0),
+            #[cfg(test)]
+            temporal_fused_dispatch_count: AtomicUsize::new(0),
         })
     }
 
@@ -1123,6 +1155,7 @@ impl MetalPhysicalPipeline {
                     None,
                     Some((&accumulated, *weight / weight_sum, index == 0)),
                     None,
+                    None,
                     |progress| report_progress(base + progress * span),
                     &is_cancelled,
                 )?;
@@ -1166,16 +1199,23 @@ impl MetalPhysicalPipeline {
             }
 
             let scratch = samples[0].0.device().new_texture(&descriptor);
-            let zero_veiling = [0.0_f32; 4];
-            let veiling_gate_averages = (0..samples.len())
-                .map(|_| {
-                    samples[0].0.device().new_buffer_with_data(
-                        zero_veiling.as_ptr().cast(),
-                        size_of::<[f32; 4]>() as u64,
-                        MTLResourceOptions::StorageModeShared,
-                    )
-                })
+            let zero_veiling = vec![[0.0_f32; 4]; samples.len()];
+            let veiling_gate_averages = samples[0].0.device().new_buffer_with_data(
+                zero_veiling.as_ptr().cast(),
+                size_of_val(zero_veiling.as_slice()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+            let normalized_weights = samples
+                .iter()
+                .map(|sample| [sample.3 / weight_sum, 0.0, 0.0, 0.0])
                 .collect::<Vec<_>>();
+            let weights_buffer = samples[0].0.device().new_buffer_with_data(
+                normalized_weights.as_ptr().cast(),
+                size_of_val(normalized_weights.as_slice()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+            let mut captured_params: Vec<Option<PhysicalPipelineParams>> =
+                vec![None; samples.len()];
             let tile_count = first_sampling.effective_height.div_ceil(TILE_ROWS);
             for tile in 0..tile_count {
                 if is_cancelled() {
@@ -1184,31 +1224,112 @@ impl MetalPhysicalPipeline {
                 let origin_y = tile * TILE_ROWS;
                 let height = TILE_ROWS.min(first_sampling.effective_height - origin_y);
                 let command = self.queue.new_command_buffer();
-                for (index, (((source, signal, _, weight), physical_plan), veiling)) in samples
-                    .iter()
-                    .zip(&physical_plans)
-                    .zip(&veiling_gate_averages)
-                    .enumerate()
-                {
-                    let evaluated = self.evaluate_rows(
-                        source,
-                        signal,
-                        environment_acescg,
-                        *physical_plan,
-                        Some((origin_y, height)),
-                        Some(&mut signal_preparations),
-                        None,
-                        Some((&accumulated, *weight / weight_sum, index == 0)),
-                        Some(PhysicalRowBatch {
-                            command: &command,
-                            output: &scratch,
-                            veiling_gate_average: veiling,
-                        }),
-                        |_| {},
-                        &is_cancelled,
-                    )?;
-                    final_geometry = Some(evaluated.geometry);
-                    final_sampling = Some(evaluated.sampling);
+                let shared_inputs = tile > 0
+                    && signal_preparations.len() == 1
+                    && samples.iter().all(|sample| {
+                        core::ptr::eq(sample.0, samples[0].0)
+                            && core::ptr::eq(sample.1, samples[0].1)
+                    })
+                    && physical_plans.iter().all(|plan| {
+                        plan.lens_evaluation_model == physical_plans[0].lens_evaluation_model
+                            && matches!(plan.environment, IncidentEnvironment::Equirectangular(_))
+                                == matches!(
+                                    physical_plans[0].environment,
+                                    IncidentEnvironment::Equirectangular(_)
+                                )
+                    });
+                if shared_inputs {
+                    #[cfg(test)]
+                    self.temporal_fused_dispatch_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    let mut params = captured_params
+                        .iter()
+                        .map(|params| params.expect("first stripe captures temporal parameters"))
+                        .collect::<Vec<_>>();
+                    for params in &mut params {
+                        params.output_tile[2] = origin_y;
+                    }
+                    let params_buffer = samples[0].0.device().new_buffer_with_data(
+                        params.as_ptr().cast(),
+                        size_of_val(params.as_slice()) as u64,
+                        MTLResourceOptions::StorageModeShared,
+                    );
+                    let preparation = &signal_preparations[0];
+                    let pipeline = match (
+                        physical_plans[0].lens_evaluation_model,
+                        physical_plans[0].environment,
+                    ) {
+                        (LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
+                            &self.temporal_thin_lens_procedural_pipeline
+                        }
+                        (
+                            LensEvaluationModel::ThinLens,
+                            IncidentEnvironment::Equirectangular(_),
+                        ) => &self.temporal_thin_lens_image_pipeline,
+                        (LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Procedural(_)) => {
+                            &self.temporal_vfx_depth_blur_procedural_pipeline
+                        }
+                        (
+                            LensEvaluationModel::VfxDepthBlur,
+                            IncidentEnvironment::Equirectangular(_),
+                        ) => &self.temporal_vfx_depth_blur_image_pipeline,
+                    };
+                    let encoder = command.new_compute_command_encoder();
+                    encoder.set_compute_pipeline_state(pipeline);
+                    encoder.set_texture(0, Some(samples[0].0));
+                    encoder.set_texture(1, Some(samples[0].1));
+                    encoder.set_texture(2, Some(&accumulated));
+                    encoder.set_texture(3, Some(&preparation.source_row_prefix));
+                    encoder.set_texture(4, Some(&preparation.device_row_prefix));
+                    encoder.set_texture(5, environment_acescg);
+                    for (index, lobe) in preparation.glow_lobes.iter().enumerate() {
+                        encoder.set_texture(6 + index as u64, Some(lobe));
+                    }
+                    encoder.set_texture(10, Some(&preparation.native_emission_signal));
+                    encoder.set_texture(11, Some(&preparation.native_emission_prefix));
+                    encoder.set_buffer(0, Some(&params_buffer), 0);
+                    encoder.set_buffer(1, Some(&veiling_gate_averages), 0);
+                    encoder.set_buffer(2, Some(&weights_buffer), 0);
+                    let sample_count = samples.len() as u32;
+                    encoder.set_bytes(3, size_of::<u32>() as u64, (&raw const sample_count).cast());
+                    let thread_width = pipeline.thread_execution_width();
+                    let thread_height =
+                        (pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
+                    encoder.dispatch_threads(
+                        MTLSize::new(
+                            u64::from(first_sampling.effective_width),
+                            u64::from(height),
+                            1,
+                        ),
+                        MTLSize::new(thread_width, thread_height, 1),
+                    );
+                    encoder.end_encoding();
+                } else {
+                    for (index, ((source, signal, _, weight), physical_plan)) in
+                        samples.iter().zip(&physical_plans).enumerate()
+                    {
+                        let evaluated = self.evaluate_rows(
+                            source,
+                            signal,
+                            environment_acescg,
+                            *physical_plan,
+                            Some((origin_y, height)),
+                            Some(&mut signal_preparations),
+                            None,
+                            Some((&accumulated, *weight / weight_sum, index == 0)),
+                            Some(PhysicalRowBatch {
+                                command: &command,
+                                output: &scratch,
+                                veiling_gate_average: &veiling_gate_averages,
+                                veiling_offset: (index * size_of::<[f32; 4]>()) as u64,
+                            }),
+                            Some(&mut captured_params[index]),
+                            |_| {},
+                            &is_cancelled,
+                        )?;
+                        final_geometry = Some(evaluated.geometry);
+                        final_sampling = Some(evaluated.sampling);
+                    }
                 }
                 command.commit();
                 #[cfg(test)]
@@ -1284,6 +1405,7 @@ impl MetalPhysicalPipeline {
             device_signal,
             environment_acescg,
             physical_plan,
+            None,
             None,
             None,
             None,
@@ -1369,6 +1491,7 @@ impl MetalPhysicalPipeline {
             Some(raster),
             None,
             None,
+            None,
             |progress| report_progress(progress * 0.9),
             &is_cancelled,
         )?;
@@ -1391,6 +1514,7 @@ impl MetalPhysicalPipeline {
         vfx_raster: Option<VfxTransparencyRaster>,
         temporal_accumulation: Option<(&TextureRef, f32, bool)>,
         row_batch: Option<PhysicalRowBatch<'_>>,
+        capture_params: Option<&mut Option<PhysicalPipelineParams>>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -1980,6 +2104,9 @@ impl MetalPhysicalPipeline {
             ],
         };
         params.levels[3] = plan.temporal_emission_gain;
+        if let Some(captured) = capture_params {
+            *captured = Some(params);
+        }
         let preparation_key = PhysicalSignalPreparationKey {
             source: core::ptr::from_ref(source_acescg),
             signal: core::ptr::from_ref(device_signal),
@@ -2096,7 +2223,11 @@ impl MetalPhysicalPipeline {
             if origin_y == 0 && params.lens_veiling_glare[0] != 0.0 {
                 encoder.set_compute_pipeline_state(&self.veiling_finalize_pipeline);
                 encoder.set_buffer(0, Some(veiling_mean_native), 0);
-                encoder.set_buffer(1, Some(veiling_gate_average), 0);
+                encoder.set_buffer(
+                    1,
+                    Some(veiling_gate_average),
+                    row_batch.as_ref().map_or(0, |batch| batch.veiling_offset),
+                );
                 encoder.set_bytes(
                     2,
                     size_of::<PhysicalPipelineParams>() as u64,
@@ -2122,7 +2253,11 @@ impl MetalPhysicalPipeline {
                 size_of::<PhysicalPipelineParams>() as u64,
                 (&raw const params).cast(),
             );
-            encoder.set_buffer(1, Some(veiling_gate_average), 0);
+            encoder.set_buffer(
+                1,
+                Some(veiling_gate_average),
+                row_batch.as_ref().map_or(0, |batch| batch.veiling_offset),
+            );
             let thread_width = physical_pipeline.thread_execution_width();
             let thread_height =
                 (physical_pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
@@ -3386,6 +3521,185 @@ mod tests {
         assert!(
             maximum <= 1.0e-7,
             "stripe batching changed the physical result: {maximum}"
+        );
+    }
+
+    #[test]
+    fn fused_temporal_kernel_matches_sequential_animated_geometry() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut first_plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        first_plan.requested_width = 12;
+        first_plan.requested_height = TILE_ROWS * 2 + 4;
+        first_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+        first_plan.sensor_enabled = false;
+        first_plan.scene_geometry_amount = 1.0;
+        first_plan.lens_amount = 1.0;
+        let mut second_plan = first_plan;
+        first_plan.camera_position.x = -0.015;
+        second_plan.camera_position.x = 0.02;
+        second_plan.screen_translation.y = 0.01;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let first = backend
+            .evaluate(&source, &signal, first_plan, |_| {}, || false)
+            .expect("first sequential geometry");
+        let second = backend
+            .evaluate(&source, &signal, second_plan, |_| {}, || false)
+            .expect("second sequential geometry");
+        let fused = backend
+            .evaluate_temporal(
+                &[
+                    (&*source, &*signal, first_plan, 1.0_f32),
+                    (&*source, &*signal, second_plan, 2.0_f32),
+                ],
+                |_| {},
+                || false,
+            )
+            .expect("fused animated geometry");
+
+        assert_eq!(
+            backend
+                .temporal_fused_dispatch_count
+                .load(Ordering::Relaxed),
+            2,
+            "the first stripe prepares resources and the remaining two use the fused kernel"
+        );
+        let maximum = read(&fused.texture)
+            .iter()
+            .zip(read(&first.texture).into_iter().zip(read(&second.texture)))
+            .flat_map(|(fused, (first, second))| {
+                fused
+                    .iter()
+                    .zip(first.into_iter().zip(second))
+                    .map(|(fused, (first, second))| {
+                        (fused - (first * (1.0 / 3.0) + second * (2.0 / 3.0))).abs()
+                    })
+            })
+            .fold(0.0_f32, f32::max);
+        eprintln!("fused/sequential animated geometry maximum deviation: {maximum}");
+        assert!(
+            maximum <= 2.0e-6,
+            "fused temporal kernel changed animated geometry: {maximum}"
+        );
+    }
+
+    #[test]
+    fn fused_temporal_kernel_matches_sequential_finite_environment_ggx() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let environment_values = (0..32)
+            .map(|index| {
+                let x = (index % 8) as f32 / 7.0;
+                let y = (index / 8) as f32 / 3.0;
+                [0.1 + 1.7 * x, 0.2 + 0.8 * y, 1.1 - 0.6 * x, 1.0]
+            })
+            .collect::<Vec<_>>();
+        let environment_source = texture(&device, 8, 4, &environment_values);
+        let environment = backend
+            .prepare_equirectangular_environment(&environment_source)
+            .expect("prepared finite environment");
+        let (input, mut first_plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        first_plan.requested_width = 3;
+        first_plan.requested_height = TILE_ROWS + 1;
+        first_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+        first_plan.sensor_enabled = false;
+        first_plan.scene_geometry_amount = 1.0;
+        first_plan.lens_amount = 1.0;
+        first_plan.lens_evaluation_model = LensEvaluationModel::VfxDepthBlur;
+        first_plan.cover = screen_cover::COVER_GLASS_PRESETS[2].profile;
+        first_plan.environment =
+            IncidentEnvironment::Equirectangular(screen_cover::EquirectangularEnvironment {
+                character_strength: 1.0,
+                source_unit_radiance_candelas_per_square_meter: 100.0,
+                exposure_stops: 0.0,
+                placement: screen_cover::SphericalEnvironmentPlacement::IDENTITY,
+                projection: screen_cover::EnvironmentProjection::FiniteSphere {
+                    center_meters: [0.0; 3],
+                    radius_meters: 2.0,
+                },
+            });
+        let mut second_plan = first_plan;
+        first_plan.camera_position.x = -0.015;
+        second_plan.camera_position.x = 0.02;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let first = backend
+            .evaluate_with_environment(
+                &source,
+                &signal,
+                Some(&environment),
+                first_plan,
+                |_| {},
+                || false,
+            )
+            .expect("first sequential GGX geometry");
+        let second = backend
+            .evaluate_with_environment(
+                &source,
+                &signal,
+                Some(&environment),
+                second_plan,
+                |_| {},
+                || false,
+            )
+            .expect("second sequential GGX geometry");
+        let fused = backend
+            .evaluate_temporal_with_environment(
+                &[
+                    (&*source, &*signal, first_plan, 1.0_f32),
+                    (&*source, &*signal, second_plan, 1.0_f32),
+                ],
+                Some(&environment),
+                |_| {},
+                || false,
+            )
+            .expect("fused finite-environment GGX");
+
+        assert_eq!(
+            backend
+                .temporal_fused_dispatch_count
+                .load(Ordering::Relaxed),
+            1
+        );
+        let maximum = read(&fused.texture)
+            .iter()
+            .zip(read(&first.texture).into_iter().zip(read(&second.texture)))
+            .flat_map(|(fused, (first, second))| {
+                fused
+                    .iter()
+                    .zip(first.into_iter().zip(second))
+                    .map(|(fused, (first, second))| (fused - (first + second) * 0.5).abs())
+            })
+            .fold(0.0_f32, f32::max);
+        eprintln!("fused/sequential finite GGX maximum deviation: {maximum}");
+        assert!(
+            maximum <= 2.0e-6,
+            "fused temporal kernel changed finite-environment GGX: {maximum}"
         );
     }
 

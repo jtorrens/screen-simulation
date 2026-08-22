@@ -1618,25 +1618,24 @@ kernel void finalize_physical_veiling_source(
     gate_average[0] = float4(acescg, 0.0f);
 }
 
-kernel void evaluate_physical_pipeline(
-    texture2d<float, access::read> source_acescg [[texture(0)]],
-    texture2d<float, access::read> device_signal [[texture(1)]],
-    texture2d<float, access::write> output [[texture(2)]],
-    texture2d<float, access::read> source_row_prefix [[texture(3)]],
-    texture2d<float, access::read> device_row_prefix [[texture(4)]],
-    texture2d<float, access::sample> environment_acescg [[texture(5)]],
-    texture2d<float, access::sample> glow_lobe0 [[texture(6)]],
-    texture2d<float, access::sample> glow_lobe1 [[texture(7)]],
-    texture2d<float, access::sample> glow_lobe2 [[texture(8)]],
-    texture2d<float, access::sample> glow_lobe3 [[texture(9)]],
-    texture2d<float, access::read> native_emission_signal [[texture(10)]],
-    texture2d<float, access::read> native_emission_prefix [[texture(11)]],
-    constant PhysicalPipelineParams& p [[buffer(0)]],
-    device const float4* veiling_gate_average [[buffer(1)]],
-    uint2 local_position [[thread_position_in_grid]]
+inline float4 evaluate_physical_pipeline_pixel(
+    texture2d<float, access::read> source_acescg,
+    texture2d<float, access::read> device_signal,
+    texture2d<float, access::read> source_row_prefix,
+    texture2d<float, access::read> device_row_prefix,
+    texture2d<float, access::sample> environment_acescg,
+    texture2d<float, access::sample> glow_lobe0,
+    texture2d<float, access::sample> glow_lobe1,
+    texture2d<float, access::sample> glow_lobe2,
+    texture2d<float, access::sample> glow_lobe3,
+    texture2d<float, access::read> native_emission_signal,
+    texture2d<float, access::read> native_emission_prefix,
+    constant PhysicalPipelineParams& p,
+    float3 veiling_gate_average,
+    uint2 local_position
 ) {
     const uint2 position = uint2(local_position.x, local_position.y + p.output_tile.z);
-    if (position.x >= p.output_tile.x || position.y >= p.output_tile.y) return;
+    if (position.x >= p.output_tile.x || position.y >= p.output_tile.y) return 0.0f;
     const uint side = p.output_tile.w;
     float4 ideal = 0.0f;
     float3 native = 0.0f;
@@ -2049,7 +2048,7 @@ kernel void evaluate_physical_pipeline(
     }
     const float3 lens_resolved
         = moire_free_covered + moire_intensity * interference;
-    const float3 glared = mix(lens_resolved, veiling_gate_average[0].xyz * temporal_gain,
+    const float3 glared = mix(lens_resolved, veiling_gate_average * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);
     const float3 shuttered = glared * shutter_scale;
@@ -2077,7 +2076,67 @@ kernel void evaluate_physical_pipeline(
         default: selected = p.strengths.x == 0.0f ? float3(0.0f) : p.strengths.x * shuttered; break;
     }
     const float selected_alpha = ideal.a;
-    output.write(float4(selected, selected_alpha), position);
+    return float4(selected, selected_alpha);
+}
+
+kernel void evaluate_physical_pipeline(
+    texture2d<float, access::read> source_acescg [[texture(0)]],
+    texture2d<float, access::read> device_signal [[texture(1)]],
+    texture2d<float, access::write> output [[texture(2)]],
+    texture2d<float, access::read> source_row_prefix [[texture(3)]],
+    texture2d<float, access::read> device_row_prefix [[texture(4)]],
+    texture2d<float, access::sample> environment_acescg [[texture(5)]],
+    texture2d<float, access::sample> glow_lobe0 [[texture(6)]],
+    texture2d<float, access::sample> glow_lobe1 [[texture(7)]],
+    texture2d<float, access::sample> glow_lobe2 [[texture(8)]],
+    texture2d<float, access::sample> glow_lobe3 [[texture(9)]],
+    texture2d<float, access::read> native_emission_signal [[texture(10)]],
+    texture2d<float, access::read> native_emission_prefix [[texture(11)]],
+    constant PhysicalPipelineParams& p [[buffer(0)]],
+    device const float4* veiling_gate_average [[buffer(1)]],
+    uint2 local_position [[thread_position_in_grid]])
+{
+    const uint2 position = uint2(local_position.x, local_position.y + p.output_tile.z);
+    if (position.x >= p.output_tile.x || position.y >= p.output_tile.y) return;
+    output.write(evaluate_physical_pipeline_pixel(
+        source_acescg, device_signal, source_row_prefix, device_row_prefix,
+        environment_acescg, glow_lobe0, glow_lobe1, glow_lobe2, glow_lobe3,
+        native_emission_signal, native_emission_prefix, p,
+        veiling_gate_average[0].xyz, local_position), position);
+}
+
+kernel void evaluate_physical_pipeline_temporal(
+    texture2d<float, access::read> source_acescg [[texture(0)]],
+    texture2d<float, access::read> device_signal [[texture(1)]],
+    texture2d<float, access::write> accumulated [[texture(2)]],
+    texture2d<float, access::read> source_row_prefix [[texture(3)]],
+    texture2d<float, access::read> device_row_prefix [[texture(4)]],
+    texture2d<float, access::sample> environment_acescg [[texture(5)]],
+    texture2d<float, access::sample> glow_lobe0 [[texture(6)]],
+    texture2d<float, access::sample> glow_lobe1 [[texture(7)]],
+    texture2d<float, access::sample> glow_lobe2 [[texture(8)]],
+    texture2d<float, access::sample> glow_lobe3 [[texture(9)]],
+    texture2d<float, access::read> native_emission_signal [[texture(10)]],
+    texture2d<float, access::read> native_emission_prefix [[texture(11)]],
+    constant PhysicalPipelineParams* params [[buffer(0)]],
+    device const float4* veiling_gate_averages [[buffer(1)]],
+    constant float4* weights [[buffer(2)]],
+    constant uint& sample_count [[buffer(3)]],
+    uint2 local_position [[thread_position_in_grid]])
+{
+    const uint2 position = uint2(
+        local_position.x, local_position.y + params[0].output_tile.z);
+    if (position.x >= params[0].output_tile.x
+        || position.y >= params[0].output_tile.y) return;
+    float4 value = 0.0f;
+    for (uint sample = 0; sample < sample_count; ++sample) {
+        value += evaluate_physical_pipeline_pixel(
+            source_acescg, device_signal, source_row_prefix, device_row_prefix,
+            environment_acescg, glow_lobe0, glow_lobe1, glow_lobe2, glow_lobe3,
+            native_emission_signal, native_emission_prefix, params[sample],
+            veiling_gate_averages[sample].xyz, local_position) * weights[sample].x;
+    }
+    accumulated.write(value, position);
 }
 
 kernel void accumulate_physical_pipeline(

@@ -216,10 +216,14 @@ once. Tests prove that the authored number of motion samples creates the same nu
 complete-frame temporal samples and that CPU-oracle RAW codes, clipping masks and Developed ACEScg
 remain within their declared tolerances.
 
-Complete-frame temporal plans are submitted through the batch port. Plans that share procedural or
-static raster storage use one parameter array, one signal upload and one Metal dispatch; distinct
-animated raster samples retain their exact authored source and may require separate dispatches. The
-batch changes command granularity only and never drops a motion sample.
+Complete-frame temporal plans are submitted through the batch port. Plans that share exact Source,
+Feeder Signal, Environment and physical-signal preparation use one parameter array, one signal upload
+and one fused Metal temporal dispatch per prepared product stripe; the kernel evaluates every
+authored moving camera/Device plan and accumulates it in authored order. The first stripe establishes
+and verifies the typed preparation identities and per-sample veiling factors through the ordinary
+ordered dispatches before later stripes may use the fused kernel. Distinct animated raster samples
+or preparation parameters retain their exact authored sources and use separate dispatches. The batch
+changes command granularity only and never drops a motion sample.
 
 For distinct moving spatial samples, Metal batches by product stripe: one command buffer encodes each
 authored sample's physical dispatch followed immediately by its ordered weighted accumulation, then
