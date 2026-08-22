@@ -231,7 +231,8 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
     case unexpectedFusionCustomResolution
     case fusionConfigurationRequired
     case fusionConfigurationForbidden
-    case fusionRequiresOpenEXRACEScg
+    case fusionDeliveryConfigurationInvalid
+    case separatedDeviceSpillDeliveryInvalid
 
     public var errorDescription: String? {
         switch self {
@@ -247,8 +248,10 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
             "Fusion Scene Package requiere su configuración explícita."
         case .fusionConfigurationForbidden:
             "Una salida estándar no puede contener configuración Fusion."
-        case .fusionRequiresOpenEXRACEScg:
-            "Fusion Scene Package requiere OpenEXR RGBA float16 ACEScg lineal, alpha independiente y sin audio."
+        case .fusionDeliveryConfigurationInvalid:
+            "Fusion Scene Package requiere un formato implementado con alpha straight, preset compatible, Device + Spill y sin audio."
+        case .separatedDeviceSpillDeliveryInvalid:
+            "Device y Spill separados requiere un formato con alpha, Device straight y sin audio."
         }
     }
 }
@@ -414,13 +417,22 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             guard fusionScene == nil else {
                 throw StudioOutputContractError.fusionConfigurationForbidden
             }
+            if composition == .deviceAndSpillSeparate {
+                guard format.supportsAlpha, alpha == .straight, !includeAudio else {
+                    throw StudioOutputContractError.separatedDeviceSpillDeliveryInvalid
+                }
+            }
         case .fusionScenePackage:
-            guard format == .openEXR, target == .acescg,
-                  pixelEncoding == .rgba16Float, signalRange == .full,
+            let nativeFusionColor = target == .acescg
+                || (pipeline == .aces && target == .sdr
+                    && display == "Rec.1886 Rec.709 - Display"
+                    && view == "ACES 2.0 - SDR 100 nits (Rec.709)")
+            guard nativeFusionColor,
+                  format.supports(target: target), format.supportsAlpha,
                   alpha == .straight, !includeAudio,
-                  composition == .deviceOnly,
+                  composition == .deviceAndSpillTogether,
                   motionBlurEnabled == false else {
-                throw StudioOutputContractError.fusionRequiresOpenEXRACEScg
+                throw StudioOutputContractError.fusionDeliveryConfigurationInvalid
             }
             guard let fusionScene else {
                 throw StudioOutputContractError.fusionConfigurationRequired
@@ -447,14 +459,16 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
 }
 
 public enum StudioRenderComposition: String, CaseIterable, Identifiable, Codable, Sendable {
-    case deviceOnly
-    case deviceWithReference
+    case deviceAndSpillTogether
+    case deviceAndSpillSeparate
+    case fullComposite
 
     public var id: String { rawValue }
     public var label: String {
         switch self {
-        case .deviceOnly: "Solo Device"
-        case .deviceWithReference: "Device + referencia"
+        case .deviceAndSpillTogether: "Device + Spill"
+        case .deviceAndSpillSeparate: "Device y Spill separados"
+        case .fullComposite: "Device + Spill + Plate"
         }
     }
 }

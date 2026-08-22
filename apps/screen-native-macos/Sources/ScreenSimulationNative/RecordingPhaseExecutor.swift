@@ -3,6 +3,14 @@ import Metal
 import ScreenPhysicalBridge
 import StudioColor
 
+/// Typed Delivery Raster boundary. The authored output alpha and the physical
+/// occlusion matte are different artifacts and must never be inferred from one another.
+struct DeliveryRasterExecution: Sendable {
+    let frame: StudioColorMetalFrame
+    let compositionFrame: StudioColorMetalFrame
+    let physicalMatte: [Float]
+}
+
 struct RecordingOutputExecution: Sendable {
     let frame: StudioColorMetalFrame
     let encodedRGBA: [Float]
@@ -48,10 +56,8 @@ enum RecordingPhaseExecutor {
         placementID: String,
         backgroundID: String,
         display: StudioColorMetalDisplay
-    ) throws -> StudioColorMetalFrame {
+    ) throws -> DeliveryRasterExecution {
         let input = try display.readLinearRGBA(cameraRendered)
-        var output = [Float](repeating: 0, count: width * height * 4)
-        var bridgeError: UnsafePointer<CChar>?
         let placement: UInt32 = switch placementID {
         case "fit": 0
         case "one-to-one": 1
@@ -60,16 +66,23 @@ enum RecordingPhaseExecutor {
             "Colocación Delivery Raster desconocida: \(placementID)"
         )
         }
-        let background: UInt32 = backgroundID == "transparent" ? 0 : 1
+        var output = [Float](repeating: 0, count: width * height * 4)
+        var physicalMatte = [Float](repeating: 0, count: width * height)
+        var bridgeError: UnsafePointer<CChar>?
         let succeeded = input.withUnsafeBufferPointer { inputBuffer in
             output.withUnsafeMutableBufferPointer { outputBuffer in
-                screen_delivery_raster_rgba32f(
-                    inputBuffer.baseAddress,
-                    UInt32(cameraRendered.width), UInt32(cameraRendered.height),
-                    outputBuffer.baseAddress,
-                    UInt32(width), UInt32(height),
-                    placement, background, &bridgeError
-                )
+                physicalMatte.withUnsafeMutableBufferPointer { matteBuffer in
+                    screen_delivery_raster_rgba32f_with_physical_matte(
+                        inputBuffer.baseAddress,
+                        UInt32(cameraRendered.width), UInt32(cameraRendered.height),
+                        outputBuffer.baseAddress,
+                        matteBuffer.baseAddress,
+                        UInt32(width), UInt32(height),
+                        placement,
+                        backgroundID == "transparent" ? 0 : 1,
+                        &bridgeError
+                    )
+                }
             }
         }
         guard succeeded else {
@@ -77,22 +90,35 @@ enum RecordingPhaseExecutor {
                 bridgeError.map(String.init(cString:)) ?? "Delivery Raster ha fallado."
             )
         }
-        return try display.makeACEScgFrame(
+        let frame = try display.makeACEScgFrame(
             width: width,
             height: height,
             encodedRGBA: output,
             input: try acescgInput(),
             alpha: backgroundID == "transparent" ? .premultiplied : .ignore
         )
+        var compositionRGBA = output
+        try restorePhysicalMatte(physicalMatte, to: &compositionRGBA)
+        let compositionFrame = try makeIndependentLinearFrame(
+            width: width,
+            height: height,
+            rgba: compositionRGBA,
+            device: cameraRendered.texture.device
+        )
+        return DeliveryRasterExecution(
+            frame: frame,
+            compositionFrame: compositionFrame,
+            physicalMatte: physicalMatte
+        )
     }
 
     static func output(
-        cameraRendered: StudioColorMetalFrame,
+        delivery: DeliveryRasterExecution,
         transformID: String,
         display: StudioColorMetalDisplay
     ) throws -> RecordingOutputExecution {
-        let input = try display.readLinearRGBA(cameraRendered)
-        let physicalMatte = stride(from: 3, to: input.count, by: 4).map { input[$0] }
+        let input = try display.readLinearRGBA(delivery.frame)
+        let physicalMatte = delivery.physicalMatte
         var encoded = [Float](repeating: 0, count: input.count)
         var bridgeError: UnsafePointer<CChar>?
         let succeeded = transformID.utf8CString.withUnsafeBufferPointer { id in
@@ -106,8 +132,8 @@ enum RecordingPhaseExecutor {
                         view,
                         inputBuffer.baseAddress,
                         outputBuffer.baseAddress,
-                        UInt32(cameraRendered.width),
-                        UInt32(cameraRendered.height),
+                        UInt32(delivery.frame.width),
+                        UInt32(delivery.frame.height),
                         &bridgeError
                     )
                 }
@@ -123,13 +149,18 @@ enum RecordingPhaseExecutor {
         for alpha in stride(from: 3, to: encoded.count, by: 4) { encoded[alpha] = 1 }
         let rgba8 = encoded.map { UInt8((min(max($0, 0), 1) * 255).rounded()) }
         var preview = encoded
-        try inverse(&preview, transformID: transformID, width: cameraRendered.width, height: cameraRendered.height)
+        try inverse(
+            &preview,
+            transformID: transformID,
+            width: delivery.frame.width,
+            height: delivery.frame.height
+        )
         try restorePhysicalMatte(physicalMatte, to: &preview)
         let frame = try makeIndependentLinearFrame(
-            width: cameraRendered.width,
-            height: cameraRendered.height,
+            width: delivery.frame.width,
+            height: delivery.frame.height,
             rgba: preview,
-            device: cameraRendered.texture.device
+            device: delivery.frame.texture.device
         )
         return RecordingOutputExecution(
             frame: frame,

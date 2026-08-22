@@ -167,6 +167,30 @@ import Testing
     #expect(text.contains("Divider()\n            transport\n            Divider()"))
 }
 
+@Test func nativeWorkspaceOwnsSceneRenderAndGeneralOutputSettings() throws {
+    let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let source = tests.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
+    let text = try String(contentsOf: source, encoding: .utf8)
+
+    #expect(text.contains("case scene = \"Escena\""))
+    #expect(text.contains("case render = \"Render\""))
+    #expect(text.contains("case settings = \"Settings\""))
+    #expect(text.contains("case .render: renderWorkspace"))
+    #expect(text.contains("model.setTestPageActive(destination == .scene)"))
+    #expect(text.contains("outputSettingsSections"))
+    #expect(text.contains("outputInspectorSections"))
+    #expect(!text.contains("case main = \"Principal\""))
+    #expect(!text.contains("enum SidebarTab"))
+
+    let workspace = source.deletingLastPathComponent()
+        .appendingPathComponent("WorkspaceModel.swift")
+    let workspaceText = try String(contentsOf: workspace, encoding: .utf8)
+    #expect(workspaceText.contains("refreshTestAuthoringDescriptor(publishPreview: false)"))
+    #expect(workspaceText.contains("restoreSceneViewerPublication()"))
+    #expect(workspaceText.contains("publishReferenceComposite(foreground)"))
+}
+
 @Test func setupNavigationRejectsWheelMomentumAndKeepsTheDeviceBoundary() throws {
     let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     let source = tests.deletingLastPathComponent().deletingLastPathComponent()

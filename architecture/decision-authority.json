@@ -31,6 +31,8 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderQueueStore.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputQueueController.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/GlobalLibraryTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalPipelineAuthoringTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
@@ -167,8 +169,40 @@
         "anchor": "Product boundary"
       },
       "enforcement": [
+        "crates/screen-application/src/lib.rs",
+        "crates/screen-native-bridge/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionScenePackageTests.swift"
+      ]
+    },
+    {
+      "id": "output.device-spill-composition",
+      "scope": "standard Device, Spill and full-Plate output composition contracts",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderOutputPlanning.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputSmokeTests.swift"
+      ]
+    },
+    {
+      "id": "color.aces-output-parity",
+      "scope": "named Viewer and output transforms shared with Fusion and Resolve",
+      "owner": {
+        "path": "Docs/architecture/color_and_panel.md",
+        "anchor": "ACES output parity"
+      },
+      "enforcement": [
+        "packages/StudioColor/Tests/StudioColorTests/StudioColorTests.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionScenePackageTests.swift",
+        "scripts/check_architecture.py"
       ]
     },
     {
@@ -198,10 +232,12 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalSettingsExchange.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RecordingPhaseExecutor.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SetupFramingRendererTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/ImageIOHeicRecordingAdapterTests.swift",
         "scripts/migrate_scene_library_v22_to_v23.py",
         "scripts/test_migrate_scene_library_v22_to_v23.py",
         "scripts/check_architecture.py"
@@ -242,6 +278,20 @@
         "crates/screen-application/src/lib.rs",
         "crates/screen-platform/shaders/physical_pipeline.metal",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift"
+      ]
+    },
+    {
+      "id": "ui.workspace-navigation",
+      "scope": "native workstation primary pages and ownership of Scene, Render Queue and general Output settings surfaces",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Native workspace navigation"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
+        "scripts/check_architecture.py"
       ]
     },
     {

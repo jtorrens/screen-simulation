@@ -358,7 +358,7 @@ private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration
         jobName: "QueueTest",
         overwritePolicy: .failIfExists,
         fusionScene: nil,
-        composition: .deviceOnly,
+        composition: .deviceAndSpillTogether,
         motionBlurEnabled: true,
         motionSamples: 8,
         format: .proRes4444,

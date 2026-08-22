@@ -1384,6 +1384,31 @@ bool screen_delivery_raster_rgba32f(
     uint32_t background,
     const char **error_message
 );
+bool screen_delivery_raster_rgba32f_with_physical_matte(
+    const float *input_rgba,
+    uint32_t input_width,
+    uint32_t input_height,
+    float *output_rgba,
+    float *physical_matte,
+    uint32_t output_width,
+    uint32_t output_height,
+    uint32_t placement,
+    uint32_t background,
+    const char **error_message
+);
+bool screen_device_vfx_passes_rgba32f(
+    const float *physical_rgba,
+    uint32_t width,
+    uint32_t height,
+    uint32_t active_x,
+    uint32_t active_y,
+    uint32_t active_width,
+    uint32_t active_height,
+    float corner_radius_pixels,
+    float *device_rgba,
+    float *spill_rgba,
+    const char **error_message
+);
 bool screen_recording_output_transform_rgba32f(
     ScreenUTF8View transform_id,
     const float *input_rgba,

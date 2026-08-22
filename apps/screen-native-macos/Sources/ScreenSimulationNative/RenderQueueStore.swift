@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v2"
+    static let schema = "ScreenSimulation.RenderQueue.v3"
 
     let schema: String
     let isPaused: Bool
@@ -39,9 +39,14 @@ struct RenderQueueDocument: Codable {
                   !job.detail.isEmpty else {
                 throw RenderQueueStoreError.invalidDocument("Un trabajo persistido de Render Queue no es válido.")
             }
-            let expectedKind: RenderOutputPlan.Kind = job.configuration.outputType == .fusionScenePackage
-                ? .fusionScenePackage
-                : (job.configuration.format.isMovie ? .singleFile : .imageSequence)
+            let expectedKind: RenderOutputPlan.Kind
+            if job.configuration.outputType == .fusionScenePackage {
+                expectedKind = .fusionScenePackage
+            } else if job.configuration.composition == .deviceAndSpillSeparate {
+                expectedKind = .deviceSpillDelivery
+            } else {
+                expectedKind = job.configuration.format.isMovie ? .singleFile : .imageSequence
+            }
             guard job.outputPlan.kind == expectedKind else {
                 throw RenderQueueStoreError.invalidDocument("El destino persistido no corresponde al tipo de render.")
             }
@@ -70,7 +75,7 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v2.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v3.json")
     }
 
     func load() throws -> RenderQueueDocument {

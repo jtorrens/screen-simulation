@@ -16,7 +16,7 @@ import UniformTypeIdentifiers
 enum NativeRenderButtonState: Equatable {
     case outdated
     case rendering(progress: Double)
-    case cancelling
+    case cancelling(progress: Double)
     case complete
 
     static func resolve(
@@ -26,7 +26,7 @@ enum NativeRenderButtonState: Equatable {
         cancellationRequested: Bool
     ) -> Self {
         if hasActiveTask, cancellationRequested || frameState != .rendering {
-            return .cancelling
+            return .cancelling(progress: min(0.99, max(0, progress)))
         }
         if hasActiveTask {
             // A worker may finish its kernels before its result texture and
@@ -387,7 +387,9 @@ final class WorkspaceModel: ObservableObject {
         testAuthoringSelection?.focalLengthMillimeters
     }
     @Published var referenceMatchEnabled = false
-    @Published private(set) var previewTransformationsLocked = false
+    // Scene manipulation is opt-in. A newly opened workspace therefore starts with the
+    // Preview lock engaged and presents the closed-lock affordance until the user unlocks it.
+    @Published private(set) var previewTransformationsLocked = true
     @Published private(set) var reflectionEnvironmentEditorEnabled = false
     @Published private(set) var environmentReflectionFramingEnabled = false
     @Published private(set) var environmentReflectionFraming = EnvironmentReflectionFraming()
@@ -412,7 +414,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var renderRange = StudioRenderRange.all
     @Published var renderOutputType = StudioOutputType.standard
     @Published var renderJobName = "ScreenSimulation"
-    @Published var renderComposition = StudioRenderComposition.deviceOnly
+    @Published var renderComposition = StudioRenderComposition.deviceAndSpillTogether
     @Published var renderMotionBlurEnabled = true
     @Published var renderMotionSamples: UInt16 = 8
     @Published var fusionDOFMode = StudioFusionDOFMode.fusion
@@ -473,7 +475,7 @@ final class WorkspaceModel: ObservableObject {
     private var globalLibraryDocument: GlobalLibraryDocument
     private var testAuthoringProfileContext: RustTestAuthoringProfileContext
     private var recordingCameraCheckpoint: StudioColorMetalFrame?
-    private var deliveryRasterCheckpoint: StudioColorMetalFrame?
+    private var deliveryRasterCheckpoint: DeliveryRasterExecution?
     private var recordingOutputExecution: RecordingOutputExecution?
     private var setupFramingRenderer: SetupFramingRenderer?
     private var environmentRadianceFrame: EnvironmentRadianceFrame?
@@ -673,7 +675,13 @@ final class WorkspaceModel: ObservableObject {
             library: library
         )
         metalDisplay = try! StudioColorMetalDisplay()
-        outputQueue = try! NativeOutputQueueController(store: RenderQueueStore())
+        do {
+            outputQueue = try NativeOutputQueueController(store: RenderQueueStore())
+        } catch {
+            outputQueue = NativeOutputQueueController(
+                rejectedStoreError: "Render Queue rechazada: \(error.localizedDescription)"
+            )
+        }
         physicalModel.interactiveInvalidation = { [weak self] in
             self?.rebuildPhysicalSelectedFrame()
         }
@@ -1178,22 +1186,16 @@ final class WorkspaceModel: ObservableObject {
 
     func setTestPageActive(_ active: Bool) {
         isTestPageActive = active
-        if active {
-            pause()
-            do {
-                try reloadTestAuthoringProfileContext()
-                try refreshTestAuthoringDescriptor()
-            } catch {
-                errorMessage = error.localizedDescription
-                return
-            }
+        guard active else { return }
+        pause()
+        do {
+            try reloadTestAuthoringProfileContext()
+            try refreshTestAuthoringDescriptor(publishPreview: false)
+        } catch {
+            errorMessage = error.localizedDescription
+            return
         }
-        if active, let intermediate = selectedTestPhysicalIntermediate {
-            updateRequestedPhysicalIntermediate(intermediate)
-            rebuildPhysicalSelectedFrame()
-        } else if active {
-            publishSelectedTestPreview()
-        }
+        restoreSceneViewerPublication()
     }
 
     func handleTestIntent(
@@ -2279,6 +2281,9 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func markActiveScene(_ id: UUID?) {
+        if activeSceneID != id {
+            previewTransformationsLocked = true
+        }
         activeSceneID = id
     }
 
@@ -4291,6 +4296,32 @@ final class WorkspaceModel: ObservableObject {
         if !format.isMovie { includeAudio = false }
     }
 
+    func changeRenderOutputType(_ type: StudioOutputType) {
+        renderOutputType = type
+        guard type == .fusionScenePackage else {
+            ensureRenderOptionsCompatible()
+            return
+        }
+        let currentIsNativeFusionColor = renderPreset.target == .acescg
+            || (renderPreset.pipeline == .aces && renderPreset.target == .sdr
+                && renderPreset.display == "Rec.1886 Rec.709 - Display"
+                && renderPreset.view == "ACES 2.0 - SDR 100 nits (Rec.709)")
+        if !currentIsNativeFusionColor,
+           let preset = globalLibraryDocument.renderPresets.map(\.value).first(where: {
+               $0.pipeline == .aces && $0.target == .sdr
+           }) {
+            applyRenderPreset(preset)
+        }
+        if !outputFormat.supportsAlpha,
+           let format = StudioOutputFormat.allCases.first(where: {
+               $0.supportsAlpha && $0.supports(target: renderPreset.target)
+           }) {
+            changeOutputFormat(format)
+        }
+        outputAlphaMode = .straight
+        includeAudio = false
+    }
+
     func applyRenderPreset(_ preset: StudioRenderPreset) {
         renderPreset = preset
         peakNits = preset.peakNits
@@ -4367,7 +4398,8 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         let url: URL?
-        if renderOutputType == .standard && outputFormat.isMovie {
+        if renderOutputType == .standard && outputFormat.isMovie
+            && renderComposition != .deviceAndSpillSeparate {
             let panel = NSSavePanel()
             panel.canCreateDirectories = true
             panel.nameFieldStringValue = sourceName.replacingOccurrences(of: ".", with: "-")
@@ -4406,22 +4438,24 @@ final class WorkspaceModel: ObservableObject {
             jobName: renderJobName,
             overwritePolicy: .failIfExists,
             fusionScene: fusion,
-            composition: renderOutputType == .fusionScenePackage ? .deviceOnly : renderComposition,
+            composition: renderOutputType == .fusionScenePackage
+                ? .deviceAndSpillTogether : renderComposition,
             motionBlurEnabled: renderOutputType == .fusionScenePackage ? false : renderMotionBlurEnabled,
             motionSamples: renderMotionSamples,
-            format: renderOutputType == .fusionScenePackage ? .openEXR : outputFormat,
-            pipeline: renderOutputType == .fusionScenePackage ? .aces : renderPreset.pipeline,
-            target: renderOutputType == .fusionScenePackage ? .acescg : renderPreset.target,
-            peakNits: renderOutputType == .fusionScenePackage ? 0 : peakNits,
-            display: renderOutputType == .fusionScenePackage ? nil : renderPreset.display,
-            view: renderOutputType == .fusionScenePackage ? nil : renderPreset.view,
+            format: outputFormat,
+            pipeline: renderPreset.pipeline,
+            target: renderPreset.target,
+            peakNits: peakNits,
+            display: renderPreset.display,
+            view: renderPreset.view,
             vfxInterchangeEncodingID: renderOutputType == .standard && renderPreset.target == .vfxLog
                 ? vfxInterchangeEncodingID : nil,
-            pixelEncoding: renderOutputType == .fusionScenePackage ? .rgba16Float : outputPixelEncoding,
-            signalRange: renderOutputType == .fusionScenePackage ? .full : outputSignalRange,
-            alpha: renderOutputType == .fusionScenePackage
+            pixelEncoding: outputPixelEncoding,
+            signalRange: outputSignalRange,
+            alpha: renderComposition == .deviceAndSpillSeparate
                 ? .straight : (outputFormat.supportsAlpha ? outputAlphaMode : .ignore),
-            includeAudio: renderOutputType == .standard && outputFormat.isMovie && includeAudio,
+            includeAudio: renderOutputType == .standard && outputFormat.isMovie
+                && renderComposition != .deviceAndSpillSeparate && includeAudio,
             frameRate: exactFrameRate,
             firstFrame: range.lowerBound,
             lastFrame: range.upperBound
@@ -4502,6 +4536,7 @@ final class WorkspaceModel: ObservableObject {
                     let package = try executor.makeFusionPackageRequest(job: job)
                     return try await FusionScenePackageWriter.render(
                         request: package.request,
+                        display: executor.metalDisplay,
                         frameProvider: { frame in
                             try await executor.renderFusionPhysicalFrame(
                                 frame, request: package.request,
@@ -4617,7 +4652,7 @@ final class WorkspaceModel: ObservableObject {
                     )
                 }
                 let reference: StudioColorMetalFrame?
-                if configuration.composition == .deviceWithReference {
+                if configuration.composition == .fullComposite {
                     if referencePlate == .videoReference { try await rebuildReferenceFrame() }
                     reference = try referencePlateFrame(
                         width: Int(selection.deliveryWidth), height: Int(selection.deliveryHeight)
@@ -4879,19 +4914,65 @@ final class WorkspaceModel: ObservableObject {
             case .complete:
                 guard snapshot.returnedIntermediate == .deviceVfxTransparency,
                       let output = snapshot.frame,
-                      output.width == width, output.height == height else {
+                      output.width == width, output.height == height,
+                      let deviceDefinition = resolvedDevice?.definition else {
                     throw PhysicalMetalFrameEngineError.invalidSnapshot
                 }
+                let activeRect = FusionRasterRect(
+                    x: sourceOverscan, y: sourceOverscan,
+                    width: active.activeWidth, height: active.activeHeight
+                )
+                let passes = try publishFusionPasses(
+                    from: metalDisplay.readLinearRGBA(output),
+                    width: width,
+                    height: height,
+                    activeRect: activeRect,
+                    cornerRadiusPixels: Float(
+                        deviceDefinition.cornerRadiusMeters * Double(active.activeWidth)
+                            / deviceDefinition.activeWidthMeters
+                    )
+                )
                 return FusionRawPhysicalFrame(
                     width: width, height: height,
-                    activeRect: .init(
-                        x: sourceOverscan, y: sourceOverscan,
-                        width: active.activeWidth, height: active.activeHeight
-                    ),
-                    rgba: try metalDisplay.readLinearRGBA(output)
+                    activeRect: activeRect,
+                    deviceRGBA: passes.device,
+                    spillRGBA: passes.spill
                 )
             }
         }
+    }
+
+    private func publishFusionPasses(
+        from physical: [Float],
+        width: Int,
+        height: Int,
+        activeRect: FusionRasterRect,
+        cornerRadiusPixels: Float
+    ) throws -> (device: [Float], spill: [Float]) {
+        var device = [Float](repeating: 0, count: physical.count)
+        var spill = [Float](repeating: 0, count: physical.count)
+        var error: UnsafePointer<CChar>?
+        let accepted = physical.withUnsafeBufferPointer { input in
+            device.withUnsafeMutableBufferPointer { deviceOutput in
+                spill.withUnsafeMutableBufferPointer { spillOutput in
+                    screen_device_vfx_passes_rgba32f(
+                        input.baseAddress,
+                        UInt32(width), UInt32(height),
+                        UInt32(activeRect.x), UInt32(activeRect.y),
+                        UInt32(activeRect.width), UInt32(activeRect.height),
+                        cornerRadiusPixels,
+                        deviceOutput.baseAddress, spillOutput.baseAddress,
+                        &error
+                    )
+                }
+            }
+        }
+        guard accepted else {
+            throw PhysicalMetalFrameEngineError.bridge(
+                error.map(String.init(cString:)) ?? "No se publicaron Device y Spill."
+            )
+        }
+        return (device, spill)
     }
 
     func cancelRender() {
@@ -4919,7 +5000,7 @@ final class WorkspaceModel: ObservableObject {
         switch job.outputPlan.kind {
         case .singleFile:
             directory = job.destination.deletingLastPathComponent()
-        case .imageSequence, .fusionScenePackage:
+        case .imageSequence, .deviceSpillDelivery, .fusionScenePackage:
             directory = job.destination
         }
         guard FileManager.default.fileExists(atPath: directory.path) else {
@@ -5269,6 +5350,7 @@ final class WorkspaceModel: ObservableObject {
         // transfers and cannot leave a partially decoded external resource behind.
         try physicalModel.restoreAuthoringState(staged.physicalModel.authoringState)
         physicalModel.setQuality(staged.physicalModel.quality)
+        previewTransformationsLocked = true
 
         pause()
         referenceRefreshTask?.cancel()
@@ -6598,6 +6680,46 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    /// Workspace navigation has no authority to select or evaluate a physical
+    /// checkpoint. Returning to Scene restores the publication already owned by
+    /// the active mode and routes any cached physical foreground through the
+    /// canonical Reference provider.
+    private func restoreSceneViewerPublication() {
+        if referenceMatchEnabled, referencePlateUsesVideo {
+            publishReferenceMatchSetup(
+                resetTargetsToVisibleFrame: referenceMatchCorners.count != 4
+            )
+            return
+        }
+        if reflectionEnvironmentEditorEnabled {
+            if referencePlateUsesVideo {
+                publishReferenceMatchSetup(resetTargetsToVisibleFrame: false)
+            } else {
+                publishSetupFraming()
+            }
+            return
+        }
+        switch physicalModel.quality {
+        case .setup:
+            if referencePlateUsesVideo {
+                publishReferenceMatchSetup(
+                    resetTargetsToVisibleFrame: referenceMatchCorners.count != 4
+                )
+            } else {
+                publishSetupFraming()
+            }
+        case .environmentSetup:
+            publishEnvironmentSetup()
+        case .focusSetup:
+            publishFocusSetup()
+        case .draft, .medium, .high, .native:
+            guard let foreground = referenceForegroundFrame else { return }
+            if referencePlateIsAvailable {
+                publishReferenceComposite(foreground)
+            }
+        }
+    }
+
     private func publishSetupFraming(
         interactiveViewportSize: CGSize? = nil,
         authoredOverride: PhysicalPipelineAuthoringState? = nil
@@ -7420,7 +7542,9 @@ final class WorkspaceModel: ObservableObject {
         testAuthoringSelection
     }
 
-    private func refreshTestAuthoringDescriptor() throws {
+    private func refreshTestAuthoringDescriptor(
+        publishPreview: Bool = true
+    ) throws {
         guard let device = modelDeviceDefinition ?? resolvedDevice?.definition else { return }
         let exactFrameRate = ReferenceTimelineAuthority.resolve(
             source: sourceTimelineInfo,
@@ -7456,7 +7580,9 @@ final class WorkspaceModel: ObservableObject {
         testPresentation = snapshot.presentation
         testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
         testPhysicalIntermediateByPhaseID = snapshot.physicalIntermediateByPhaseID
-        publishSelectedTestPreview()
+        if publishPreview {
+            publishSelectedTestPreview()
+        }
     }
 
     private func applyTestAuthoringSelection(
@@ -7863,7 +7989,7 @@ final class WorkspaceModel: ObservableObject {
               let selection = testAuthoringSelection
         else { return }
         do {
-            let delivery: StudioColorMetalFrame
+            let delivery: DeliveryRasterExecution
             if let cached = deliveryRasterCheckpoint {
                 delivery = cached
             } else {
@@ -7878,11 +8004,12 @@ final class WorkspaceModel: ObservableObject {
                 deliveryRasterCheckpoint = delivery
             }
             if result == .deliveryRaster {
-                referenceForegroundFrame = delivery
+                let frame = delivery.compositionFrame
+                referenceForegroundFrame = frame
                 referenceForegroundIsDeliveryAligned = true
-                if referencePlateIsAvailable { publishReferenceComposite(delivery) }
-                else { publishCurrentSceneFrame(delivery) }
-                monitorOutput.update(frame: delivery, display: metalDisplay)
+                if referencePlateIsAvailable { publishReferenceComposite(frame) }
+                else { publishCurrentSceneFrame(frame) }
+                monitorOutput.update(frame: frame, display: metalDisplay)
                 return
             }
             let output: RecordingOutputExecution
@@ -7890,7 +8017,7 @@ final class WorkspaceModel: ObservableObject {
                 output = cached
             } else {
                 output = try RecordingPhaseExecutor.output(
-                    cameraRendered: delivery,
+                    delivery: delivery,
                     transformID: selection.recordingOutputTransformID,
                     display: metalDisplay
                 )

@@ -30,8 +30,12 @@ import UniformTypeIdentifiers
         )
     }
     let camera = StudioColorMetalFrame(texture: texture)
+    let delivery = try RecordingPhaseExecutor.delivery(
+        cameraRendered: camera, width: 64, height: 32,
+        placementID: "one-to-one", backgroundID: "transparent", display: display
+    )
     let output = try RecordingPhaseExecutor.output(
-        cameraRendered: camera,
+        delivery: delivery,
         transformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
         display: display
     )
@@ -74,8 +78,12 @@ import UniformTypeIdentifiers
             withBytes: $0.baseAddress!, bytesPerRow: width * 4 * MemoryLayout<Float>.size
         )
     }
+    let delivery = try RecordingPhaseExecutor.delivery(
+        cameraRendered: StudioColorMetalFrame(texture: texture), width: width, height: height,
+        placementID: "one-to-one", backgroundID: "black", display: display
+    )
     let output = try RecordingPhaseExecutor.output(
-        cameraRendered: StudioColorMetalFrame(texture: texture),
+        delivery: delivery,
         transformID: "generic-rec2100-pq-recording-full-v1",
         display: display
     )
@@ -86,10 +94,17 @@ import UniformTypeIdentifiers
         outputTransformID: "generic-rec2100-pq-recording-full-v1",
         display: display
     )
+    let authoredDeliveryPixels = try display.readLinearRGBA(delivery.frame)
+    let compositeDeliveryPixels = try display.readLinearRGBA(delivery.compositionFrame)
     let outputPixels = try display.readLinearRGBA(output.frame)
     let decodedPixels = try display.readLinearRGBA(codec.frame)
     for pixel in 0 ..< width * height {
         let expected = mattes[pixel % mattes.count]
+        // A black Delivery background owns opaque output alpha, but it cannot replace
+        // the physical occlusion matte used by Reference composition.
+        #expect(authoredDeliveryPixels[pixel * 4 + 3] == 1)
+        #expect(delivery.physicalMatte[pixel] == expected)
+        #expect(compositeDeliveryPixels[pixel * 4 + 3] == expected)
         #expect(outputPixels[pixel * 4 + 3] == expected)
         #expect(decodedPixels[pixel * 4 + 3] == expected)
     }
@@ -207,8 +222,12 @@ import UniformTypeIdentifiers
             withBytes: $0.baseAddress!, bytesPerRow: 4 * MemoryLayout<Float>.size
         )
     }
+    let delivery = try RecordingPhaseExecutor.delivery(
+        cameraRendered: StudioColorMetalFrame(texture: texture), width: 1, height: 1,
+        placementID: "one-to-one", backgroundID: "transparent", display: display
+    )
     let output = try RecordingPhaseExecutor.output(
-        cameraRendered: StudioColorMetalFrame(texture: texture),
+        delivery: delivery,
         transformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
         display: display
     )
@@ -308,8 +327,12 @@ import UniformTypeIdentifiers
         )
     }
     let display = try StudioColorMetalDisplay()
+    let delivery = try RecordingPhaseExecutor.delivery(
+        cameraRendered: StudioColorMetalFrame(texture: texture), width: width, height: height,
+        placementID: "one-to-one", backgroundID: "transparent", display: display
+    )
     let output = try RecordingPhaseExecutor.output(
-        cameraRendered: StudioColorMetalFrame(texture: texture),
+        delivery: delivery,
         transformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
         display: display
     )

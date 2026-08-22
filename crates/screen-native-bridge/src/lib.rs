@@ -35,11 +35,12 @@ use screen_application::{
     apply_test_scalar_with_profiles, apply_test_toggle, apply_test_toggle_with_profiles,
     compile_reflection_environment, default_test_authoring_selection,
     default_test_authoring_selection_with_profiles, device_focus_target_at_preview_pixel,
-    diagnostic_signal, evaluate_delivery_raster_rgba32f, evaluate_tracking_overlay,
+    diagnostic_signal, evaluate_delivery_raster_rgba32f,
+    evaluate_delivery_raster_with_physical_matte_rgba32f, evaluate_tracking_overlay,
     prepare_capture_render, prepare_recording_execution_request, prepare_setup_diagnostic,
-    project_device_focus_target, resolve_physical_stage_contributions,
-    resolve_planar_environment_framing, test_inspector_location, test_page_descriptor,
-    test_page_descriptor_with_profiles,
+    project_device_focus_target, publish_device_vfx_passes_rgba32f,
+    resolve_physical_stage_contributions, resolve_planar_environment_framing,
+    test_inspector_location, test_page_descriptor, test_page_descriptor_with_profiles,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -6918,6 +6919,115 @@ pub unsafe extern "C" fn screen_delivery_raster_rgba32f(
         unsafe { std::slice::from_raw_parts_mut(output_rgba.cast::<[f32; 4]>(), output_count) };
     output.copy_from_slice(&result);
     unsafe { set_error(error_message, b"\0") };
+    true
+}
+
+/// Evaluates Delivery Raster once and returns its authored RGBA output together
+/// with the separately transported physical occlusion matte.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_delivery_raster_rgba32f_with_physical_matte(
+    input_rgba: *const f32,
+    input_width: u32,
+    input_height: u32,
+    output_rgba: *mut f32,
+    physical_matte: *mut f32,
+    output_width: u32,
+    output_height: u32,
+    placement: u32,
+    background: u32,
+    error_message: *mut *const c_char,
+) -> bool {
+    let input_count = input_width as usize * input_height as usize;
+    let output_count = output_width as usize * output_height as usize;
+    if input_rgba.is_null()
+        || output_rgba.is_null()
+        || physical_matte.is_null()
+        || input_count == 0
+        || output_count == 0
+    {
+        unsafe { set_error(error_message, b"invalid Delivery Raster buffers\0") };
+        return false;
+    }
+    let input = unsafe { std::slice::from_raw_parts(input_rgba.cast::<[f32; 4]>(), input_count) };
+    let request = DeliveryRasterRequest {
+        width: output_width,
+        height: output_height,
+        placement: match placement {
+            0 => DeliveryRasterPlacement::Fit,
+            1 => DeliveryRasterPlacement::OneToOne,
+            2 => DeliveryRasterPlacement::FillCrop,
+            _ => {
+                unsafe { set_error(error_message, b"invalid Delivery Raster placement\0") };
+                return false;
+            }
+        },
+        background: match background {
+            0 => DeliveryRasterBackground::Transparent,
+            1 => DeliveryRasterBackground::Black,
+            _ => {
+                unsafe { set_error(error_message, b"invalid Delivery Raster background\0") };
+                return false;
+            }
+        },
+    };
+    let Ok(result) = evaluate_delivery_raster_with_physical_matte_rgba32f(
+        input,
+        input_width,
+        input_height,
+        request,
+    ) else {
+        unsafe { set_error(error_message, b"Delivery Raster evaluation failed\0") };
+        return false;
+    };
+    let output =
+        unsafe { std::slice::from_raw_parts_mut(output_rgba.cast::<[f32; 4]>(), output_count) };
+    let matte = unsafe { std::slice::from_raw_parts_mut(physical_matte, output_count) };
+    output.copy_from_slice(&result.rgba);
+    matte.copy_from_slice(&result.physical_matte);
+    unsafe { set_error(error_message, b"\0") };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_device_vfx_passes_rgba32f(
+    physical_rgba: *const f32,
+    width: u32,
+    height: u32,
+    active_x: u32,
+    active_y: u32,
+    active_width: u32,
+    active_height: u32,
+    corner_radius_pixels: f32,
+    device_rgba: *mut f32,
+    spill_rgba: *mut f32,
+    error_message: *mut *const c_char,
+) -> bool {
+    let count = width as usize * height as usize;
+    if physical_rgba.is_null() || device_rgba.is_null() || spill_rgba.is_null() || count == 0 {
+        unsafe { set_error(error_message, b"invalid Device/Spill buffers\0") };
+        return false;
+    }
+    let physical = unsafe { std::slice::from_raw_parts(physical_rgba.cast::<[f32; 4]>(), count) };
+    let Ok(result) = publish_device_vfx_passes_rgba32f(
+        physical,
+        width,
+        height,
+        active_x,
+        active_y,
+        active_width,
+        active_height,
+        corner_radius_pixels,
+    ) else {
+        unsafe { set_error(error_message, b"Device/Spill publication failed\0") };
+        return false;
+    };
+    unsafe {
+        std::slice::from_raw_parts_mut(device_rgba.cast::<[f32; 4]>(), count)
+            .copy_from_slice(&result.device_rgba);
+        std::slice::from_raw_parts_mut(spill_rgba.cast::<[f32; 4]>(), count)
+            .copy_from_slice(&result.spill_rgba);
+        set_error(error_message, b"\0");
+    }
     true
 }
 

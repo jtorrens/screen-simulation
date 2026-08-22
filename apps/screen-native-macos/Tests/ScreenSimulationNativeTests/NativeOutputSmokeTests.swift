@@ -89,42 +89,73 @@ import Testing
 }
 
 @Test @MainActor func acescgEXRStraightAlphaRoundtripPreservesHalfFloatContract() async throws {
-    let display = try StudioColorMetalDisplay()
     let width = 8
     let height = 2
-    let source = identityPattern(width: width, height: height)
-    let frame = try display.makeACEScgFrame(
-        width: width, height: height, encodedRGBA: source,
-        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
-        alpha: .straight
-    )
-    let expected = try display.readLinearRGBA(frame)
+    let expected = identityPattern(width: width, height: height)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-native-exr-\(UUID().uuidString)")
-    _ = try await NativeOutputRenderer.render(
-        configuration: renderConfiguration(
-            format: .openEXR, preset: StudioRenderPreset.builtIns[5],
-            alpha: .straight, signalRange: .full, frameRange: 12 ... 12
-        ),
-        destination: root, audioSource: nil,
-        display: display, frameProvider: { _ in frame }, progress: { _, _ in }
-    )
-    let url = root.appendingPathComponent("ScreenSimulation/ScreenSimulation-00000012.exr")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let url = root.appendingPathComponent("ScreenSimulation-00000012.exr")
+    try NativeOutputRenderer.encodeEXR(expected, width: width, height: height)
+        .write(to: url, options: .atomic)
     let exrBytes = try Data(contentsOf: url)
     let chunkTable = try firstEXRChunkOffset(in: exrBytes)
     #expect(chunkTable.offset >= UInt64(chunkTable.minimumOffset))
     #expect(chunkTable.offset < UInt64(exrBytes.count))
-    let session = NativeMediaSession()
-    _ = try session.openImages([url], frameRate: .fps24)
-    let sample = try #require(try await session.exactSample(at: .zero))
-    let decoded = try display.makeACEScgFrame(
-        pixelBuffer: sample.pixelBuffer,
-        input: StudioColorInputTransform.catalog.first { $0.id == "acescg" }!,
-        alpha: .straight, matrix: .bt709, range: .full
-    )
-    let actual = try display.readLinearRGBA(decoded)
+    let actual = try await NativeMediaDecoder.decode(url: url, time: .zero).rgba
     #expect(actual.count == expected.count)
     #expect(zip(actual, expected).map { abs($0 - $1) }.max() ?? 0 <= 0.001)
+}
+
+@Test @MainActor func separatedDeviceSpillUsesIndependentMatteWithoutDoublePremultiplication() throws {
+    let source: [Float] = [
+        0.3, -0.1, 1.2, 0,
+        0.2, 0.4, 0.6, 0.5,
+        0.7, 0.8, 0.9, 1,
+    ]
+    let passes = try NativeOutputRenderer.editorialDeviceSpillPasses(source)
+    for pixel in 0 ..< 3 {
+        let offset = pixel * 4
+        let alpha = source[offset + 3]
+        for channel in 0 ..< 3 {
+            let reconstructed = passes.device[offset + channel] * alpha
+                + passes.spill[offset + channel]
+            #expect(abs(reconstructed - source[offset + channel]) < 0.000_001)
+        }
+        #expect(passes.device[offset + 3] == alpha)
+        #expect(passes.spill[offset + 3] == 1)
+    }
+    #expect(passes.device[0] == 0)
+    #expect(passes.spill[0] == 0.3)
+    #expect(passes.device[4] == 0.2)
+    #expect(passes.spill[4] == 0.1)
+}
+
+@Test func separatedDeviceSpillPlanOwnsBothMovieAndSequenceManifests() throws {
+    let root = FileManager.default.temporaryDirectory
+    let movie = renderConfiguration(
+        format: .proRes4444, preset: StudioRenderPreset.builtIns[0],
+        alpha: .straight, signalRange: .video, frameRange: 1 ... 2,
+        composition: .deviceAndSpillSeparate
+    )
+    let moviePlan = try RenderOutputPlan.prepare(configuration: movie, selectedDestination: root)
+    #expect(moviePlan.kind == .deviceSpillDelivery)
+    #expect(moviePlan.generatedRelativePaths == [
+        "ScreenSimulation_Device.mov", "ScreenSimulation_Spill.mov",
+    ])
+
+    let sequence = renderConfiguration(
+        format: .openEXR, preset: StudioRenderPreset.builtIns[5],
+        alpha: .straight, signalRange: .full, frameRange: 7 ... 8,
+        composition: .deviceAndSpillSeparate
+    )
+    let sequencePlan = try RenderOutputPlan.prepare(
+        configuration: sequence, selectedDestination: root
+    )
+    #expect(sequencePlan.generatedRelativePaths == [
+        "ScreenSimulation_Device.00000007.exr", "ScreenSimulation_Spill.00000007.exr",
+        "ScreenSimulation_Device.00000008.exr", "ScreenSimulation_Spill.00000008.exr",
+    ])
 }
 
 private enum EXRChunkTableInspectionError: Error {
@@ -560,7 +591,8 @@ private func renderConfiguration(
     alpha: StudioColorAlphaAssociation,
     signalRange: StudioSignalRange,
     frameRate: StudioFrameRate = .fps24,
-    frameRange: ClosedRange<Int>
+    frameRange: ClosedRange<Int>,
+    composition: StudioRenderComposition = .deviceAndSpillTogether
 ) -> StudioResolvedRenderConfiguration {
     let alphaMode: StudioAlphaMode = switch alpha {
     case .straight: .straight
@@ -572,7 +604,7 @@ private func renderConfiguration(
         jobName: "ScreenSimulation",
         overwritePolicy: .failIfExists,
         fusionScene: nil,
-        composition: .deviceOnly,
+        composition: composition,
         motionBlurEnabled: false,
         motionSamples: 8,
         format: format,

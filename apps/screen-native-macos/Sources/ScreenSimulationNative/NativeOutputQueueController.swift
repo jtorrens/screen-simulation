@@ -40,7 +40,7 @@ final class NativeOutputQueueController: ObservableObject {
     @Published private(set) var jobs: [RenderJob]
     @Published private(set) var isPaused: Bool
     @Published private(set) var persistenceError: String?
-    private let store: RenderQueueStore
+    private let store: RenderQueueStore?
     private var activeTask: Task<Void, Never>?
 
     init(store: RenderQueueStore) throws {
@@ -63,6 +63,13 @@ final class NativeOutputQueueController: ObservableObject {
         if resumedInterruptedJob { persist() }
     }
 
+    init(rejectedStoreError message: String) {
+        store = nil
+        jobs = []
+        isPaused = true
+        persistenceError = message
+    }
+
     var hasPendingJobs: Bool { jobs.contains { $0.state == .pending } }
     var isRendering: Bool { activeTask != nil }
 
@@ -72,6 +79,7 @@ final class NativeOutputQueueController: ObservableObject {
         outputPlan: RenderOutputPlan,
         configuration: StudioResolvedRenderConfiguration
     ) {
+        guard persistenceError == nil else { return }
         jobs.append(RenderJob(
             scene: scene,
             generatedEnvironmentEXR: generatedEnvironmentEXR,
@@ -85,7 +93,7 @@ final class NativeOutputQueueController: ObservableObject {
         operation: @escaping RenderOperation,
         onFailure: @escaping @MainActor (String) -> Void
     ) {
-        guard !isPaused, activeTask == nil,
+        guard persistenceError == nil, !isPaused, activeTask == nil,
               let index = jobs.firstIndex(where: { $0.state == .pending })
         else { return }
         jobs[index].state = .rendering
@@ -138,6 +146,7 @@ final class NativeOutputQueueController: ObservableObject {
     }
 
     func resume() {
+        guard persistenceError == nil else { return }
         isPaused = false
         persist()
     }
@@ -174,6 +183,7 @@ final class NativeOutputQueueController: ObservableObject {
     }
 
     private func persist() {
+        guard let store else { return }
         do {
             try store.save(.init(isPaused: isPaused, jobs: jobs))
             persistenceError = nil

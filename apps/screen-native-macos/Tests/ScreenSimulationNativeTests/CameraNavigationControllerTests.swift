@@ -159,7 +159,7 @@ import Testing
     workspace.selectModelDevice(device, coverGlass: cover)
     let before = try #require(workspace.physicalAuthoringState).cameraPose.position
 
-    workspace.togglePreviewTransformationsLock()
+    #expect(workspace.previewTransformationsLocked)
     workspace.beginCameraNavigation(.pan, viewportSize: CGSize(width: 1_200, height: 800))
     workspace.updateCameraNavigation(delta: CGSize(width: 300, height: 120))
     workspace.endCameraNavigation(undoManager: nil)
@@ -168,6 +168,18 @@ import Testing
     #expect(workspace.physicalAuthoringState?.cameraPose.position == before)
     workspace.pan = CGSize(width: 40, height: -20)
     #expect(workspace.pan == CGSize(width: 40, height: -20))
+}
+
+@Test @MainActor func everySceneIdentityStartsWithPreviewTransformationsLocked() {
+    let workspace = WorkspaceModel()
+    #expect(workspace.previewTransformationsLocked)
+    workspace.togglePreviewTransformationsLock()
+    #expect(!workspace.previewTransformationsLocked)
+    workspace.markActiveScene(UUID())
+    #expect(workspace.previewTransformationsLocked)
+    workspace.togglePreviewTransformationsLock()
+    workspace.markActiveScene(nil)
+    #expect(workspace.previewTransformationsLocked)
 }
 
 @Test @MainActor func nativePreviewRoutesInteractionToViewerWithoutInvalidatingRender() throws {

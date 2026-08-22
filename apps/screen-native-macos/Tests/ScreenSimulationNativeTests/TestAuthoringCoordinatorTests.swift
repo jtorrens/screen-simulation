@@ -164,7 +164,7 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         progress: 0.42,
         hasActiveTask: true,
         cancellationRequested: true
-    ) == .cancelling)
+    ) == .cancelling(progress: 0.42))
     #expect(NativeRenderButtonState.resolve(
         frameState: .stale,
         progress: 0,
@@ -381,26 +381,21 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
         } / Float(checkpoint.deviceSignal.width * checkpoint.deviceSignal.height)
     }
     #expect(feederMeans.allSatisfy { $0 > 0.1 })
-    let texture = try #require(workspace.metalFrame?.texture)
-    #expect(texture.pixelFormat == .rgba32Float)
-    let publishedTexture = try #require(workspace.metalFrame?.texture)
+    let publishedFrame = try #require(workspace.metalFrame)
+    #expect(publishedFrame.texture.pixelFormat == .rgba16Float)
+    let publishedTexture = publishedFrame.texture
     workspace.setTestPageActive(false)
     #expect(workspace.metalFrame?.texture === publishedTexture)
     workspace.setTestPageActive(true)
-    var values = [Float](repeating: 0, count: texture.width * texture.height * 4)
-    texture.getBytes(
-        &values,
-        bytesPerRow: texture.width * 4 * MemoryLayout<Float>.size,
-        from: MTLRegionMake2D(0, 0, texture.width, texture.height),
-        mipmapLevel: 0
-    )
+    let restoredFrame = try #require(workspace.metalFrame)
+    let values = try workspace.metalDisplay.readLinearRGBA(restoredFrame)
     let rgb = values.enumerated().compactMap { index, value in
         index % 4 == 3 ? nil : value
     }
     let channelMeans = (0..<3).map { channel in
         stride(from: channel, to: values.count, by: 4).reduce(Float.zero) {
             $0 + max(0, values[$1])
-        } / Float(texture.width * texture.height)
+        } / Float(restoredFrame.width * restoredFrame.height)
     }
     #expect(rgb.allSatisfy { $0.isFinite })
     #expect(channelMeans.allSatisfy { $0 > 0 })

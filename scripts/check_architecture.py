@@ -665,6 +665,7 @@ def validate_fusion_scene_color_contract() -> None:
         / "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift"
     ).read_text(encoding="utf-8")
     for forbidden in (
+        "ColorSpaceTransform",
         "OCIOColorSpace",
         "OCIOConfig",
         "studio-fusion-ocio",
@@ -676,12 +677,24 @@ def validate_fusion_scene_color_contract() -> None:
                 f"Fusion Scene Package retains an OCIO composition route: {forbidden}"
             )
     for required in (
-        "ReferenceToACEScg = ColorSpaceTransform",
-        'InputGamma = Input { Value = FuID { \"REC709_GAMMA\" } }',
-        'OutputColorSpace = Input { Value = FuID { \"ACES_AP1_COLORSPACE\" } }',
-        "UseHDRStandardConversions = Input { Value = 1 }",
-        "IsRec2390ScalingEnabled = Input { Value = 1 }",
+        "ReferenceToACEScg = AcesTransform",
+        'AcesVersion = Input { Value = FuID { \"ACES_VERSION_2_0_0\" } }',
+        'InputTransform200 = Input { Value = FuID { \"IDT_REC709_100_INV_ODT\" } }',
+        'OutputTransform200 = Input { Value = FuID { \"ODT_ACESCG\" } }',
         '"  PassThrough = true,\\n"',
+        "ColorPipelineGuide = Note",
+        "ViewInfo = StickyNoteInfo",
+        "DEVICE MEDIA",
+        "SPILL MEDIA",
+        "DeviceToACEScg = AcesTransform",
+        "SpillToACEScg = AcesTransform",
+        "AddProjectedDeviceSpill = Custom",
+        "resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)",
+        "IDT_ACESCG",
+        "ODT_REC709_100",
+        "Gamut compression: None",
+        "Pre-Divide/Post-Multiply: enabled",
+        "Fusion Viewer UI state is not stored by this composition",
     ):
         if required not in fusion:
             raise ValidationError(
@@ -1054,6 +1067,87 @@ def validate_test_inspector_hierarchy() -> None:
     ):
         if forbidden in mac_ui:
             raise ValidationError("Swift inferred inspector ownership: " + forbidden)
+
+
+def validate_native_workspace_navigation() -> None:
+    content = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift"
+    ).read_text(encoding="utf-8")
+    for required in (
+        'case scene = "Escena"',
+        'case render = "Render"',
+        'case settings = "Settings"',
+        "case .scene: testWorkspace",
+        "case .render: renderWorkspace",
+        "case .settings: settingsWorkspace",
+        "model.setTestPageActive(destination == .scene)",
+        "outputSettingsSections",
+        "outputInspectorSections",
+    ):
+        if required not in content:
+            raise ValidationError("native workspace navigation is incomplete: " + required)
+    for forbidden in (
+        'case main = "Principal"',
+        "enum SidebarTab",
+        "mainWorkspace",
+    ):
+        if forbidden in content:
+            raise ValidationError("retired native workspace navigation remains: " + forbidden)
+    workspace = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "refreshTestAuthoringDescriptor(publishPreview: false)",
+        "restoreSceneViewerPublication()",
+        "publishReferenceComposite(foreground)",
+    ):
+        if required not in workspace:
+            raise ValidationError(
+                "native Scene publication restoration is incomplete: " + required
+            )
+    render = re.search(
+        r"private var renderWorkspace: some View \{.*?\n    \}\n\n    private var settingsWorkspace",
+        content,
+        flags=re.DOTALL,
+    )
+    if not render:
+        raise ValidationError("native Render workspace is not bounded")
+    for required in ("sceneLibraryPanel", "queuePanel"):
+        if required not in render.group(0):
+            raise ValidationError("native Render workspace omits " + required)
+    for forbidden in ("preview(", "outputPanel", "contextualInspector"):
+        if forbidden in render.group(0):
+            raise ValidationError("native Render workspace owns a retired panel: " + forbidden)
+
+
+def validate_reference_matte_transport() -> None:
+    executor = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/RecordingPhaseExecutor.swift"
+    ).read_text(encoding="utf-8")
+    workspace = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "struct DeliveryRasterExecution",
+        "let compositionFrame: StudioColorMetalFrame",
+        "let physicalMatte: [Float]",
+        "static func output(\n        delivery: DeliveryRasterExecution",
+        "let physicalMatte = delivery.physicalMatte",
+    ):
+        if required not in executor:
+            raise ValidationError("typed physical matte transport is incomplete: " + required)
+    if "stride(from: 3, to: input.count" in executor:
+        raise ValidationError("Recording Output inferred the physical matte from Delivery alpha")
+    for required in (
+        "private var deliveryRasterCheckpoint: DeliveryRasterExecution?",
+        "let frame = delivery.compositionFrame",
+        "delivery: delivery",
+    ):
+        if required not in workspace:
+            raise ValidationError("native Reference composition bypasses typed matte: " + required)
+
+
 def main() -> int:
     try:
         paths = repository_paths()
@@ -1072,6 +1166,8 @@ def main() -> int:
         validate_exact_temporal_inputs()
         validate_setup_diagnostic_boundary()
         validate_test_inspector_hierarchy()
+        validate_native_workspace_navigation()
+        validate_reference_matte_transport()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)

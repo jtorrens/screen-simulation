@@ -66,6 +66,12 @@ enum NativeOutputRenderer {
         let frames = Array(frameRange)
         guard let firstIndex = frames.first else { throw NativeOutputError.invalidFrame }
         try validate(format: format, configuration: configuration)
+        if configuration.composition == .deviceAndSpillSeparate {
+            return try await renderDeviceSpillDelivery(
+                configuration: configuration, outputPlan: outputPlan,
+                display: display, frameProvider: frameProvider, progress: progress
+            )
+        }
         let first = try await frameProvider(firstIndex)
         let output = try outputTransform(for: configuration)
         if format.isMovie {
@@ -153,7 +159,7 @@ enum NativeOutputRenderer {
                 try encodeTIFF16(
                     try display.renderRGBAFloat(frame, output: output),
                     width: frame.width, height: frame.height,
-                    colorSpace: output.colorSpace
+                    colorSpace: output.colorSpace, alpha: alpha
                 ).write(to: url, options: .atomic)
             default:
                 throw NativeOutputError.unsupported(format.displayName)
@@ -161,6 +167,164 @@ enum NativeOutputRenderer {
             progress(position + 1, frames.count)
         }
         return directory
+    }
+
+    private static func renderDeviceSpillDelivery(
+        configuration: StudioResolvedRenderConfiguration,
+        outputPlan: RenderOutputPlan,
+        display: StudioColorMetalDisplay,
+        frameProvider: FrameProvider,
+        progress: Progress
+    ) async throws -> URL {
+        guard outputPlan.kind == .deviceSpillDelivery else {
+            throw NativeOutputError.invalidFrame
+        }
+        try outputPlan.prepareDirectories()
+        let frames = Array(configuration.frameRange)
+        guard !frames.isEmpty else { throw NativeOutputError.invalidFrame }
+        let output = try outputTransform(for: configuration)
+        var deviceMovie: MovieWriter?
+        var spillMovie: MovieWriter?
+        for (position, index) in frames.enumerated() {
+            try Task.checkCancellation()
+            let frame = try await frameProvider(index)
+            let source = try display.readLinearRGBA(frame)
+            let passes = try editorialDeviceSpillPasses(source)
+            let deviceURL = outputPlan.destination.appendingPathComponent(
+                configuration.format.isMovie
+                    ? "\(configuration.jobName)_Device.\(configuration.format.fileExtension)"
+                    : String(format: "%@_Device.%08d.%@", configuration.jobName, index, configuration.format.fileExtension)
+            )
+            let spillURL = outputPlan.destination.appendingPathComponent(
+                configuration.format.isMovie
+                    ? "\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
+                    : String(format: "%@_Spill.%08d.%@", configuration.jobName, index, configuration.format.fileExtension)
+            )
+            try outputPlan.authorizeWrite(to: deviceURL, policy: configuration.overwritePolicy)
+            try outputPlan.authorizeWrite(to: spillURL, policy: configuration.overwritePolicy)
+            if configuration.format.isMovie {
+                guard let output else {
+                    throw NativeOutputError.unsupported("las películas requieren encoding de entrega")
+                }
+                let deviceFrame = try makeACEScgFrame(
+                    passes.device, width: frame.width, height: frame.height, display: display
+                )
+                let spillFrame = try makeACEScgFrame(
+                    passes.spill, width: frame.width, height: frame.height, display: display
+                )
+                if deviceMovie == nil {
+                    for url in [deviceURL, spillURL] where FileManager.default.fileExists(atPath: url.path) {
+                        try FileManager.default.removeItem(at: url)
+                    }
+                    deviceMovie = try MovieWriter(
+                        url: deviceURL, width: frame.width, height: frame.height,
+                        frameRate: configuration.frameRate, format: configuration.format,
+                        peakNits: configuration.peakNits, signalRange: configuration.signalRange,
+                        alpha: .straight, output: output
+                    )
+                    spillMovie = try MovieWriter(
+                        url: spillURL, width: frame.width, height: frame.height,
+                        frameRate: configuration.frameRate, format: configuration.format,
+                        peakNits: configuration.peakNits, signalRange: configuration.signalRange,
+                        alpha: .ignore, output: output
+                    )
+                }
+                try await deviceMovie!.append(
+                    frame: deviceFrame, presentationFrame: position,
+                    display: display, output: output
+                )
+                try await spillMovie!.append(
+                    frame: spillFrame, presentationFrame: position,
+                    display: display, output: output
+                )
+            } else {
+                try writeDeviceSpillStill(
+                    passes.device, to: deviceURL, width: frame.width, height: frame.height,
+                    configuration: configuration, display: display, output: output,
+                    alpha: .straight
+                )
+                try writeDeviceSpillStill(
+                    passes.spill, to: spillURL, width: frame.width, height: frame.height,
+                    configuration: configuration, display: display, output: output,
+                    alpha: .ignore
+                )
+            }
+            progress(position + 1, frames.count)
+        }
+        try await deviceMovie?.finish()
+        try await spillMovie?.finish()
+        return outputPlan.destination
+    }
+
+    static func editorialDeviceSpillPasses(
+        _ rgba: [Float]
+    ) throws -> (device: [Float], spill: [Float]) {
+        guard rgba.count.isMultiple(of: 4), rgba.allSatisfy({ $0.isFinite }) else {
+            throw NativeOutputError.invalidFrame
+        }
+        var device = rgba
+        var spill = [Float](repeating: 0, count: rgba.count)
+        for offset in stride(from: 0, to: rgba.count, by: 4) {
+            let matte = min(1, max(0, rgba[offset + 3]))
+            if matte == 0 {
+                device[offset] = 0
+                device[offset + 1] = 0
+                device[offset + 2] = 0
+            }
+            device[offset + 3] = matte
+            spill[offset] = rgba[offset] * (1 - matte)
+            spill[offset + 1] = rgba[offset + 1] * (1 - matte)
+            spill[offset + 2] = rgba[offset + 2] * (1 - matte)
+            spill[offset + 3] = 1
+        }
+        return (device, spill)
+    }
+
+    private static func makeACEScgFrame(
+        _ rgba: [Float], width: Int, height: Int,
+        display: StudioColorMetalDisplay
+    ) throws -> StudioColorMetalFrame {
+        guard let identity = StudioColorInputTransform.catalog.first(where: { $0.id == "acescg" }) else {
+            throw NativeOutputError.unsupported("falta el Input Transform ACEScg")
+        }
+        return try display.makeACEScgFrame(
+            width: width, height: height, encodedRGBA: rgba,
+            input: identity, alpha: .ignore
+        )
+    }
+
+    private static func writeDeviceSpillStill(
+        _ rgba: [Float], to url: URL, width: Int, height: Int,
+        configuration: StudioResolvedRenderConfiguration,
+        display: StudioColorMetalDisplay,
+        output: StudioColorOutputTransform?,
+        alpha: StudioColorAlphaAssociation
+    ) throws {
+        switch configuration.format {
+        case .openEXR:
+            var values = rgba
+            if configuration.target == .aces2065 {
+                let processor = try StudioColorEngine.bundled().cachedColorSpaceProcessor(
+                    source: "ACEScg", destination: "ACES2065-1"
+                )
+                try processor.apply(toRGBA: &values)
+            }
+            try encodeEXR(values, width: width, height: height).write(to: url, options: .atomic)
+        case .dpx10RGB, .tiff16:
+            guard let output else { throw NativeOutputError.unsupported("el still requiere ODT") }
+            let frame = try makeACEScgFrame(rgba, width: width, height: height, display: display)
+            let rendered = try display.renderRGBAFloat(frame, output: output)
+            if configuration.format == .dpx10RGB {
+                try encodeDPX(rendered, width: width, height: height).write(to: url, options: .atomic)
+            } else {
+                try encodeTIFF16(
+                    rendered, width: width, height: height,
+                    colorSpace: output.colorSpace, alpha: alpha
+                ).write(to: url, options: .atomic)
+            }
+        default:
+            throw NativeOutputError.unsupported(configuration.format.displayName)
+        }
     }
 
     static func renderCurrentFrame(
@@ -178,7 +342,7 @@ enum NativeOutputRenderer {
         ).write(to: destination, options: .atomic)
     }
 
-    private static func outputTransform(
+    static func outputTransform(
         for configuration: StudioResolvedRenderConfiguration
     ) throws -> StudioColorOutputTransform? {
         if configuration.target == .vfxLog {
@@ -211,7 +375,7 @@ enum NativeOutputRenderer {
         )
     }
 
-    private static func validate(
+    static func validate(
         format: StudioOutputFormat,
         configuration: StudioResolvedRenderConfiguration
     ) throws {
@@ -332,15 +496,21 @@ enum NativeOutputRenderer {
         return Data(bytes: bytes, count: count)
     }
 
-    private static func encodeTIFF16(
-        _ values: [Float], width: Int, height: Int, colorSpace: CGColorSpace?
+    static func encodeTIFF16(
+        _ values: [Float], width: Int, height: Int, colorSpace: CGColorSpace?,
+        alpha: StudioColorAlphaAssociation = .premultiplied
     ) throws -> Data {
         var words = values.map { UInt16((min(1, max(0, $0)) * 65_535).rounded()) }
+        let alphaInfo: CGImageAlphaInfo = switch alpha {
+        case .straight: .last
+        case .premultiplied: .premultipliedLast
+        case .ignore: .noneSkipLast
+        }
         guard let provider = words.withUnsafeMutableBytes({ CGDataProvider(data: Data($0) as CFData) }),
               let image = CGImage(
                 width: width, height: height, bitsPerComponent: 16, bitsPerPixel: 64,
                 bytesPerRow: width * 8, space: colorSpace ?? CGColorSpace(name: CGColorSpace.itur_709)!,
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+                bitmapInfo: CGBitmapInfo(rawValue: alphaInfo.rawValue)
                     .union(.byteOrder16Little),
                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
               )
@@ -355,7 +525,7 @@ enum NativeOutputRenderer {
     }
 
     /// SMPTE ST 268 RGB 10-bit, big-endian, filled method A; extracted from CREDITOS-HDR.
-    private static func encodeDPX(_ values: [Float], width: Int, height: Int) throws -> Data {
+    static func encodeDPX(_ values: [Float], width: Int, height: Int) throws -> Data {
         guard values.count == width * height * 4 else { throw NativeOutputError.invalidFrame }
         var output = Data(count: 2_048)
         putUInt32(0x5344_5058, at: 0, in: &output)
@@ -400,7 +570,7 @@ enum NativeOutputRenderer {
 }
 
 @MainActor
-private final class MovieWriter {
+final class MovieWriter {
     private let writer: AVAssetWriter
     private let input: AVAssetWriterInput
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor

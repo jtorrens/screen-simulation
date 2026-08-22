@@ -156,6 +156,43 @@ import Metal
     #expect(zip(result, expected).map { abs(Int($0) - Int($1)) }.max() ?? 0 <= 1)
 }
 
+@Test func aces2Rec709OutputMatchesOfficialCTLReferenceWithinOneCodeValue() throws {
+    let pipeline = StudioColorPipeline()
+    let input = StudioColorInputTransform.catalog.first { $0.id == "acescg" }!
+    let output = StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-rec709-sdr-100"
+    }!
+    let samples: [Float] = [
+        0, 0, 0, 1,
+        0.18, 0.18, 0.18, 1,
+        1, 1, 1, 1,
+        4, 1, 0.2, 1,
+        -0.05, 0.2, 1.5, 1,
+        0.01, 0.5, 0.03, 1,
+        0.115475342, 0.050812997, 0.030212998, 1,
+        1.7, -0.28, 0.4, 1,
+    ]
+    let expectedCTL: [UInt8] = [
+        0, 0, 0, 255,
+        98, 98, 98, 255,
+        184, 184, 184, 255,
+        255, 176, 142, 255,
+        0, 120, 200, 255,
+        0, 148, 78, 255,
+        88, 41, 29, 255,
+        255, 29, 136, 255,
+    ]
+    let frame = try pipeline.prepareInput(
+        width: samples.count / 4,
+        height: 1,
+        encodedRGBA: samples,
+        input: input,
+        alpha: .straight
+    )
+    let actual = try pipeline.cpuOracleRGBA8(frame, output: output)
+    #expect(zip(actual, expectedCTL).allSatisfy { abs(Int($0) - Int($1)) <= 1 })
+}
+
 @Test func acesHDRInverseRoundTripsThroughMatchingACESOutput() throws {
     try assertDisplayRoundtrip(
         inputID: "display-rec2100-pq-aces2-hdr-1000",

@@ -369,9 +369,12 @@ private func scalarControl(
         )
     )
     let workspace = WorkspaceModel()
+    workspace.togglePreviewTransformationsLock()
+    #expect(!workspace.previewTransformationsLocked)
 
     await workspace.openSavedScene(scene, undoManager: nil)
 
+    #expect(workspace.previewTransformationsLocked)
     let opened = try workspace.captureSavedScene().snapshot
     #expect(workspace.errorMessage?.contains("Fuente descartada") == true)
     #expect(workspace.errorMessage?.contains("Referencia descartada") == true)

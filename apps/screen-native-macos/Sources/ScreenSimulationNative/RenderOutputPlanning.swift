@@ -35,6 +35,7 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
     enum Kind: String, Codable, Equatable, Sendable {
         case singleFile
         case imageSequence
+        case deviceSpillDelivery
         case fusionScenePackage
     }
 
@@ -54,13 +55,49 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
             let destination = selectedDestination.appendingPathComponent(
                 packageName, isDirectory: true
             )
-            var relative = configuration.frameRange.map { frame in
-                String(format: "media/%@.%08d.exr", configuration.jobName, frame)
+            let mediaNames: [String]
+            if configuration.format.isMovie {
+                mediaNames = [
+                    "media/\(configuration.jobName)_Device.\(configuration.format.fileExtension)",
+                    "media/\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
+                ]
+            } else {
+                mediaNames = configuration.frameRange.flatMap { frame in
+                    [
+                        String(format: "media/%@_Device.%08d.%@", configuration.jobName, frame, configuration.format.fileExtension),
+                        String(format: "media/%@_Spill.%08d.%@", configuration.jobName, frame, configuration.format.fileExtension)
+                    ]
+                }
             }
+            var relative = mediaNames
             relative.append("fusion/\(configuration.jobName).comp")
             relative.append("metadata/\(configuration.jobName)_FusionScene.json")
             return Self(
                 kind: .fusionScenePackage,
+                destination: destination,
+                generatedRelativePaths: relative
+            )
+        }
+        if configuration.composition == .deviceAndSpillSeparate {
+            let destination = selectedDestination.appendingPathComponent(
+                "\(configuration.jobName)_DeviceSpill", isDirectory: true
+            )
+            let relative: [String]
+            if configuration.format.isMovie {
+                relative = [
+                    "\(configuration.jobName)_Device.\(configuration.format.fileExtension)",
+                    "\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
+                ]
+            } else {
+                relative = configuration.frameRange.flatMap { frame in
+                    [
+                        String(format: "%@_Device.%08d.%@", configuration.jobName, frame, configuration.format.fileExtension),
+                        String(format: "%@_Spill.%08d.%@", configuration.jobName, frame, configuration.format.fileExtension)
+                    ]
+                }
+            }
+            return Self(
+                kind: .deviceSpillDelivery,
                 destination: destination,
                 generatedRelativePaths: relative
             )
@@ -97,7 +134,7 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
         case .singleFile:
             return fileManager.fileExists(atPath: destination.path)
                 ? .singleFile(destination) : .none
-        case .imageSequence, .fusionScenePackage:
+        case .imageSequence, .deviceSpillDelivery, .fusionScenePackage:
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(
                 atPath: destination.path, isDirectory: &isDirectory
@@ -134,7 +171,7 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-        case .imageSequence:
+        case .imageSequence, .deviceSpillDelivery:
             try fileManager.createDirectory(
                 at: destination, withIntermediateDirectories: true
             )
@@ -166,7 +203,7 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
         switch kind {
         case .singleFile:
             [destination.standardizedFileURL]
-        case .imageSequence, .fusionScenePackage:
+        case .imageSequence, .deviceSpillDelivery, .fusionScenePackage:
             Set(generatedRelativePaths.map {
                 destination.appendingPathComponent($0).standardizedFileURL
             })

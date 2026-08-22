@@ -29,23 +29,17 @@ struct ContentView: View {
         case environment = "perfil de entorno"
     }
     enum WorkspacePage: String, CaseIterable, Identifiable {
-        case main = "Principal"
-        case test = "Escena"
+        case scene = "Escena"
+        case render = "Render"
         case settings = "Settings"
         var id: String { rawValue }
         var systemImage: String {
             switch self {
-            case .main: "rectangle.on.rectangle"
-            case .test: "checklist.checked"
+            case .scene: "checklist.checked"
+            case .render: "list.bullet.rectangle"
             case .settings: "gearshape"
             }
         }
-    }
-
-    enum SidebarTab: String, CaseIterable, Identifiable {
-        case output = "Output"
-        case queue = "Render Queue"
-        var id: String { rawValue }
     }
 
     enum SettingsSection: String, CaseIterable, Identifiable {
@@ -96,8 +90,7 @@ struct ContentView: View {
     @StateObject private var reflectionEnvironmentPanel = ReflectionEnvironmentPanelController()
     @StateObject private var environmentReflectionFramingPanel = EnvironmentReflectionFramingPanelController()
     @StateObject private var trackingScenePanel = TrackingScenePanelController()
-    @State private var tab = SidebarTab.output
-    @State private var page = WorkspacePage.test
+    @State private var page = WorkspacePage.scene
     @State private var settingsSection = SettingsSection.application
     @State private var libraryCollection = LibraryCollection.patterns
     @State private var pendingLibraryDeletion: LibraryDeletion?
@@ -111,8 +104,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             Group {
                 switch page {
-                case .main: mainWorkspace
-                case .test: testWorkspace
+                case .scene: testWorkspace
+                case .render: renderWorkspace
                 case .settings: settingsWorkspace
                 }
             }
@@ -157,13 +150,13 @@ struct ContentView: View {
                ) {
                 model.selectDevice(first.value, coverGlass: cover.value, amount: 0)
             }
+            activateWorkspacePage(page)
         }
         .onChange(of: library.document) { _, _ in
             model.refreshActiveSceneFromGlobalLibrary()
         }
         .onChange(of: page) { _, destination in
-            model.setModelPageActive(false)
-            model.setTestPageActive(destination == .test)
+            activateWorkspacePage(destination)
         }
         .alert(
             "SCREEN-SIMULATION",
@@ -248,28 +241,21 @@ struct ContentView: View {
         }
     }
 
-    private var mainWorkspace: some View {
+    private func activateWorkspacePage(_ destination: WorkspacePage) {
+        model.setModelPageActive(false)
+        model.setTestPageActive(destination == .scene)
+    }
+
+    private var renderWorkspace: some View {
         HSplitView {
             if sidebarIsVisible {
-                VSplitView {
-                    sceneLibraryPanel
-                        .frame(minHeight: 170, idealHeight: 230, maxHeight: 360)
-                    VStack(spacing: 0) {
-                        TabView(selection: $tab) {
-                            outputPanel.tabItem { Label("Output", systemImage: "square.and.arrow.up") }.tag(SidebarTab.output)
-                            queuePanel.tabItem { Label("Queue", systemImage: "list.bullet.rectangle") }.tag(SidebarTab.queue)
-                        }
-                        Divider()
-                        contextualInspector
-                    }
-                }
+                sceneLibraryPanel
                 .frame(minWidth: 360, idealWidth: 400, maxWidth: 560)
             }
-
-            preview()
+            queuePanel
                 .frame(minWidth: 640, minHeight: 480)
         }
-        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Workspace"))
+        .background(SplitAutosaveProbe(name: "ScreenSimulation.Native.Render"))
     }
 
     private var settingsWorkspace: some View {
@@ -346,6 +332,8 @@ struct ContentView: View {
                 LabeledContent("OCIO", value: StudioColorBuildIdentity.ocioVersion)
                 LabeledContent("ACES", value: StudioColorBuildIdentity.acesConfigVersion)
             }
+            outputSettingsSections
+            outputInspectorSections
         }
         .formStyle(.grouped)
     }
@@ -1508,7 +1496,7 @@ struct ContentView: View {
         }
         ToolbarItemGroup {
             Button("Abrir", action: model.openMedia)
-                .disabled(page == .settings)
+                .disabled(page != .scene)
                 .help("Abrir un vídeo o una imagen")
             Button {
                 trackingScenePanel.toggle(model: model)
@@ -1516,15 +1504,15 @@ struct ContentView: View {
                 Label("Tracking 3D", systemImage: "point.3.connected.trianglepath.dotted")
             }
             .nativeActionState(.init(
-                available: page != .settings,
+                available: page == .scene,
                 active: trackingScenePanel.isVisible
             ))
             .help("Importar cámara, point cloud, geometrías y lente desde Fusion")
             Button("Frame", action: model.renderCurrentFrame)
-                .disabled(page != .main || model.metalFrame == nil)
+                .disabled(page != .scene || model.metalFrame == nil)
                 .help("Renderizar el frame actual horneando la transformación del visor")
             Button("Render", action: model.runQueue)
-                .disabled(page != .main || !model.jobs.contains { $0.state == .pending })
+                .disabled(page != .render || !model.jobs.contains { $0.state == .pending })
                 .help("Procesar los trabajos en cola")
         }
     }
@@ -1542,7 +1530,7 @@ struct ContentView: View {
                 }
                 .controlSize(.small)
                 .nativeActionState(.init(
-                    available: page != .settings,
+                    available: page == .scene,
                     active: trackingScenePanel.isVisible
                 ))
                 .help("Importar cámara, point cloud, geometrías y lente desde Fusion")
@@ -1705,18 +1693,26 @@ struct ContentView: View {
             Divider()
             Form {
                 Section("Salida") {
-                    Picker("Tipo de salida", selection: $model.renderOutputType) {
+                    Picker("Tipo de salida", selection: Binding(
+                        get: { model.renderOutputType },
+                        set: { model.changeRenderOutputType($0) }
+                    )) {
                         ForEach(StudioOutputType.allCases) { type in
                             Text(type.label).tag(type)
                         }
                     }
                     TextField("Nombre del trabajo", text: $model.renderJobName)
-                    if model.renderOutputType == .standard {
                     Picker("Preset", selection: Binding(
                         get: { model.renderPreset },
                         set: { model.applyRenderPreset($0) }
                     )) {
-                        ForEach(library.allRenderPresets) { preset in
+                        ForEach(library.allRenderPresets.filter { preset in
+                            model.renderOutputType == .standard
+                                || preset.target == .acescg
+                                || (preset.pipeline == .aces && preset.target == .sdr
+                                    && preset.display == "Rec.1886 Rec.709 - Display"
+                                    && preset.view == "ACES 2.0 - SDR 100 nits (Rec.709)")
+                        }) { preset in
                             Text(preset.name).tag(preset)
                         }
                     }
@@ -1726,6 +1722,7 @@ struct ContentView: View {
                     )) {
                         ForEach(StudioOutputFormat.allCases.filter {
                             $0.supports(target: model.renderPreset.target)
+                                && (model.renderOutputType == .standard || $0.supportsAlpha)
                         }) { format in
                             Text(format.displayName).tag(format)
                         }
@@ -1748,6 +1745,7 @@ struct ContentView: View {
                             }
                         }
                     }
+                    if model.renderOutputType == .standard {
                     Picker("Composición", selection: $model.renderComposition) {
                         ForEach(StudioRenderComposition.allCases) { composition in
                             Text(composition.label).tag(composition)
@@ -1778,7 +1776,7 @@ struct ContentView: View {
                             TextField("px", value: $model.fusionSpillFadeWidthPixels, format: .number)
                                 .frame(width: 90)
                         }
-                        Text("OpenEXR RGBA half-float ACEScg lineal. Perspectiva, distorsión SynthEyes DE4 y motion blur se reconstruyen en Fusion.")
+                        Text("Device y Spill usan el mismo preset y formato. La comp aplica AcesTransform explícito hacia ACEScg antes de reconstruir cámara, distorsión y motion blur.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1816,7 +1814,7 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     } else {
-                        Text("El motion blur no se hornea en los EXR; Fusion recibe el shutter y las curvas animadas de cámara.")
+                        Text("El motion blur no se hornea en los media; Fusion recibe el shutter y las curvas animadas de cámara.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1841,8 +1839,8 @@ struct ContentView: View {
                     Toggle("Audio", isOn: $model.includeAudio)
                         .disabled(!model.outputFormat.isMovie)
                     } else {
-                        LabeledContent("Píxel", value: "RGBA float16")
-                        LabeledContent("Espacio", value: "ACEScg scene-linear")
+                        LabeledContent("Píxel", value: model.outputPixelEncoding.label)
+                        LabeledContent("Encoding", value: model.renderPreset.target == .acescg ? "ACEScg scene-linear" : "ACES 2.0 Rec.709 D65 100 nit")
                         LabeledContent("Alpha", value: "Matte de oclusión independiente")
                     }
                 }
@@ -2314,9 +2312,9 @@ struct ContentView: View {
             .fontWeight(annotation == nil ? .regular : .semibold)
     }
 
-    private var outputPanel: some View {
-        Form {
-            Section("Preset / ODT") {
+    @ViewBuilder
+    private var outputSettingsSections: some View {
+            Section("Output · Preset / ODT") {
                 Picker("Preset", selection: Binding(
                     get: { model.renderPreset },
                     set: { model.applyRenderPreset($0) }
@@ -2397,8 +2395,6 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        }
-        .formStyle(.grouped)
     }
 
     private var queuePanel: some View {
@@ -2458,9 +2454,9 @@ struct ContentView: View {
         }
     }
 
-    private var contextualInspector: some View {
-        Form {
-            Section("Inspector · \(tab.rawValue)") {
+    @ViewBuilder
+    private var outputInspectorSections: some View {
+            Section("Inspector · Output") {
                 LabeledContent("Estado") { Text(model.status).lineLimit(2) }
                 LabeledContent("OCIO") { Text(StudioColorBuildIdentity.ocioVersion) }
                 LabeledContent("ACES") { Text(StudioColorBuildIdentity.acesConfigVersion) }
@@ -2476,9 +2472,6 @@ struct ContentView: View {
                 LabeledContent("Pantalla", value: model.systemDisplayInfo.displayName)
                 LabeledContent("Perfil ColorSync", value: model.systemDisplayInfo.profileName)
             }
-        }
-        .formStyle(.grouped)
-        .frame(minHeight: 180, idealHeight: 220)
     }
 
     private func preview(showTestPhasePicker: Bool = false) -> some View {
@@ -4092,7 +4085,8 @@ private struct NativeRenderButton: View {
         case .outdated: "desactualizado"
         case let .rendering(progress):
             "renderizando \(Int((progress * 100).rounded())) %, pulsar para cancelar"
-        case .cancelling: "cancelando y esperando a Metal"
+        case let .cancelling(progress):
+            "esperando el final de Metal al \(Int((progress * 100).rounded())) %"
         case .complete: "completo y actualizado"
         }
     }
@@ -4117,12 +4111,15 @@ private struct NativeRenderButton: View {
             }
             .font(.system(size: 11, weight: .semibold))
             .accessibilityLabel("Render nativo, \(statusLabel)")
-        case .cancelling:
+        case let .cancelling(progress):
             HStack(spacing: 7) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Cancelando…")
+                ProgressView(value: progress, total: 1)
+                    .progressViewStyle(.linear)
+                    .frame(width: 120)
+                Text("\(Int((progress * 100).rounded())) %")
+                    .monospacedDigit()
                     .foregroundStyle(.orange)
+                    .frame(width: 36, alignment: .trailing)
             }
             .font(.system(size: 11, weight: .semibold))
             .accessibilityLabel("Render nativo, \(statusLabel)")

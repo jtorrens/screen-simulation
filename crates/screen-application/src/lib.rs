@@ -267,12 +267,111 @@ pub struct DeliveryRasterRequest {
     pub background: DeliveryRasterBackground,
 }
 
+/// Delivery Raster has two distinct outputs: the authored RGBA delivery frame and
+/// the physical occlusion matte that follows the same placement without inheriting
+/// the delivery background alpha.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeliveryRasterEvaluation {
+    pub rgba: Vec<[f32; 4]>,
+    pub physical_matte: Vec<f32>,
+}
+
+/// Typed Device-VFX publication used by delivery and host package adapters.
+/// The physical raster is separated by the resolved Device carrier geometry,
+/// never by testing its transported matte for zero/non-zero values. Device RGB
+/// and additive Spill RGB therefore sum exactly to the evaluated physical RGB,
+/// while Device retains the complete (including fractional) occlusion matte.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeviceVfxPassEvaluation {
+    pub device_rgba: Vec<[f32; 4]>,
+    pub spill_rgba: Vec<[f32; 4]>,
+}
+
+pub fn publish_device_vfx_passes_rgba32f(
+    physical: &[[f32; 4]],
+    width: u32,
+    height: u32,
+    active_x: u32,
+    active_y: u32,
+    active_width: u32,
+    active_height: u32,
+    corner_radius_pixels: f32,
+) -> Result<DeviceVfxPassEvaluation, ApplicationError> {
+    let pixel_count = width as usize * height as usize;
+    if width == 0
+        || height == 0
+        || physical.len() != pixel_count
+        || active_width == 0
+        || active_height == 0
+        || active_x.saturating_add(active_width) > width
+        || active_y.saturating_add(active_height) > height
+        || !corner_radius_pixels.is_finite()
+        || corner_radius_pixels < 0.0
+        || corner_radius_pixels > active_width.min(active_height) as f32 * 0.5
+        || physical.iter().flatten().any(|value| !value.is_finite())
+    {
+        return Err(ApplicationError::InvalidDeviceVfxPasses);
+    }
+    let mut device = vec![[0.0; 4]; pixel_count];
+    let mut spill = vec![[0.0, 0.0, 0.0, 1.0]; pixel_count];
+    let radius = corner_radius_pixels;
+    let left = active_x as f32;
+    let top = active_y as f32;
+    let right = (active_x + active_width) as f32;
+    let bottom = (active_y + active_height) as f32;
+    for y in 0..height {
+        for x in 0..width {
+            let index = (y * width + x) as usize;
+            let sample = physical[index];
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let inside_rect = px >= left && px < right && py >= top && py < bottom;
+            let inside = if !inside_rect {
+                false
+            } else if radius == 0.0 {
+                true
+            } else {
+                let center_x = px.clamp(left + radius, right - radius);
+                let center_y = py.clamp(top + radius, bottom - radius);
+                let dx = px - center_x;
+                let dy = py - center_y;
+                dx * dx + dy * dy <= radius * radius
+            };
+            device[index][3] = sample[3];
+            if inside {
+                device[index][0..3].copy_from_slice(&sample[0..3]);
+            } else {
+                spill[index][0..3].copy_from_slice(&sample[0..3]);
+            }
+        }
+    }
+    Ok(DeviceVfxPassEvaluation {
+        device_rgba: device,
+        spill_rgba: spill,
+    })
+}
+
 pub fn evaluate_delivery_raster_rgba32f(
     source: &[[f32; 4]],
     source_width: u32,
     source_height: u32,
     request: DeliveryRasterRequest,
 ) -> Result<Vec<[f32; 4]>, ApplicationError> {
+    Ok(evaluate_delivery_raster_with_physical_matte_rgba32f(
+        source,
+        source_width,
+        source_height,
+        request,
+    )?
+    .rgba)
+}
+
+pub fn evaluate_delivery_raster_with_physical_matte_rgba32f(
+    source: &[[f32; 4]],
+    source_width: u32,
+    source_height: u32,
+    request: DeliveryRasterRequest,
+) -> Result<DeliveryRasterEvaluation, ApplicationError> {
     if source_width == 0
         || source_height == 0
         || request.width == 0
@@ -286,7 +385,9 @@ pub fn evaluate_delivery_raster_rgba32f(
         DeliveryRasterBackground::Transparent => [0.0; 4],
         DeliveryRasterBackground::Black => [0.0, 0.0, 0.0, 1.0],
     };
-    let mut output = vec![clear; request.width as usize * request.height as usize];
+    let pixel_count = request.width as usize * request.height as usize;
+    let mut output = vec![clear; pixel_count];
+    let mut physical_matte = vec![0.0; pixel_count];
     let (scale, placed_width, placed_height) = match request.placement {
         DeliveryRasterPlacement::Fit => {
             let scale = (request.width as f64 / source_width as f64)
@@ -352,10 +453,15 @@ pub fn evaluate_delivery_raster_rgba32f(
                 let bottom = c[channel] + (d[channel] - c[channel]) * fx;
                 pixel[channel] = top + (bottom - top) * fy;
             }
-            output[(y * request.width + x) as usize] = pixel;
+            let index = (y * request.width + x) as usize;
+            output[index] = pixel;
+            physical_matte[index] = pixel[3];
         }
     }
-    Ok(output)
+    Ok(DeliveryRasterEvaluation {
+        rgba: output,
+        physical_matte,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -7225,6 +7331,7 @@ fn diagnostic_area_signal(
 #[derive(Clone, Debug, PartialEq)]
 pub enum ApplicationError {
     InvalidDeliveryRaster,
+    InvalidDeviceVfxPasses,
     InvalidRenderContext,
     UnsupportedRenderContext,
     InvalidViewportAspect,
@@ -7319,6 +7426,27 @@ mod delivery_raster_tests {
     }
 
     #[test]
+    fn black_delivery_keeps_the_placed_physical_matte_independent() {
+        let source = vec![[0.25, 0.5, 0.75, 0.5]; 4];
+        let output = evaluate_delivery_raster_with_physical_matte_rgba32f(
+            &source,
+            2,
+            2,
+            DeliveryRasterRequest {
+                width: 4,
+                height: 2,
+                placement: DeliveryRasterPlacement::Fit,
+                background: DeliveryRasterBackground::Black,
+            },
+        )
+        .unwrap();
+        assert_eq!(output.rgba[0], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(output.physical_matte[0], 0.0);
+        assert_eq!(output.rgba[1][3], 0.5);
+        assert_eq!(output.physical_matte[1], 0.5);
+    }
+
+    #[test]
     fn fill_crop_covers_the_delivery_raster_and_crops_from_the_center() {
         let source = (0..8)
             .map(|value| [value as f32, 0.0, 0.0, 1.0])
@@ -7348,6 +7476,9 @@ impl fmt::Display for ApplicationError {
         match self {
             Self::InvalidDeliveryRaster => formatter.write_str(
                 "delivery raster requires finite RGBA and positive source/output dimensions",
+            ),
+            Self::InvalidDeviceVfxPasses => formatter.write_str(
+                "Device/Spill publication requires finite RGBA and valid resolved Device carrier geometry",
             ),
             Self::InvalidRenderContext => formatter.write_str(
                 "render context requires a positive bounded window and positive exact ratios",
@@ -7456,6 +7587,36 @@ mod tests {
     use std::collections::HashSet;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn device_vfx_passes_use_carrier_geometry_and_preserve_fractional_matte() {
+        let physical = vec![
+            [-0.2, 0.1, 1.4, 0.0],
+            [0.2, 0.4, 0.6, 0.5],
+            [0.7, 0.8, 0.9, 1.0],
+            [0.3, 0.2, 0.1, 0.0],
+        ];
+        let passes = publish_device_vfx_passes_rgba32f(&physical, 4, 1, 1, 0, 2, 1, 0.0).unwrap();
+        assert_eq!(passes.device_rgba[0], [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(passes.spill_rgba[0], [-0.2, 0.1, 1.4, 1.0]);
+        assert_eq!(passes.device_rgba[1], [0.2, 0.4, 0.6, 0.5]);
+        assert_eq!(passes.device_rgba[2], [0.7, 0.8, 0.9, 1.0]);
+        // Alpha zero inside the resolved carrier remains Device, proving the split
+        // does not classify samples by A == 0 / A != 0.
+        let transparent_inside =
+            publish_device_vfx_passes_rgba32f(&[[0.9, 0.4, 0.2, 0.0]], 1, 1, 0, 0, 1, 1, 0.0)
+                .unwrap();
+        assert_eq!(transparent_inside.device_rgba[0], [0.9, 0.4, 0.2, 0.0]);
+        assert_eq!(transparent_inside.spill_rgba[0], [0.0, 0.0, 0.0, 1.0]);
+        for index in 0..physical.len() {
+            for channel in 0..3 {
+                assert_eq!(
+                    passes.device_rgba[index][channel] + passes.spill_rgba[index][channel],
+                    physical[index][channel]
+                );
+            }
+        }
+    }
 
     #[test]
     fn moire_saturation_scales_only_chroma_of_the_interference_residual() {

@@ -1317,8 +1317,16 @@ private func writeMoireRecordingDiagnostic(
         $0.id == "aces2-display-p3-sdr-100"
     })
     let cameraP3 = try context.display.renderRGBA16(cameraRendered, output: p3Output)
-    let output = try RecordingPhaseExecutor.output(
+    let delivery = try RecordingPhaseExecutor.delivery(
         cameraRendered: cameraRendered,
+        width: cameraRendered.width,
+        height: cameraRendered.height,
+        placementID: "one-to-one",
+        backgroundID: "transparent",
+        display: context.display
+    )
+    let output = try RecordingPhaseExecutor.output(
+        delivery: delivery,
         transformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
         display: context.display
     )
