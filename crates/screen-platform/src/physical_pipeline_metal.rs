@@ -999,7 +999,33 @@ impl MetalPhysicalPipeline {
                 "temporal weights must have a positive finite sum".to_owned(),
             ));
         }
-        let mut accumulated: Option<Texture> = None;
+        let first_sampling = samples[0]
+            .2
+            .panel
+            .flat_panel_sampling(
+                samples[0].2.quality,
+                samples[0].2.requested_width,
+                samples[0].2.requested_height,
+            )
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+        let first_plan = samples[0].2.stopped_at_requested_intermediate();
+        let (accumulated_width, accumulated_height) =
+            if first_plan.requested_intermediate == PhysicalIntermediate::SourceAcesCg {
+                (samples[0].0.width(), samples[0].0.height())
+            } else {
+                (
+                    u64::from(first_sampling.effective_width),
+                    u64::from(first_sampling.effective_height),
+                )
+            };
+        descriptor.set_width(accumulated_width);
+        descriptor.set_height(accumulated_height);
+        descriptor.set_storage_mode(MTLStorageMode::Shared);
+        descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+        let accumulated = samples[0].0.device().new_texture(&descriptor);
         let mut final_geometry = None;
         let mut final_sampling = None;
         let mut stage_elapsed_nanoseconds = [0_u64; 16];
@@ -1027,51 +1053,15 @@ impl MetalPhysicalPipeline {
                 None,
                 Some(&mut signal_preparations),
                 None,
+                Some((&accumulated, *weight / weight_sum, index == 0)),
                 |progress| report_progress(base + progress * span),
                 &is_cancelled,
             )?;
-            let output = accumulated.get_or_insert_with(|| {
-                let descriptor = TextureDescriptor::new();
-                descriptor.set_texture_type(MTLTextureType::D2);
-                descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
-                descriptor.set_width(evaluated.texture.width());
-                descriptor.set_height(evaluated.texture.height());
-                descriptor.set_storage_mode(MTLStorageMode::Shared);
-                descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
-                evaluated.texture.device().new_texture(&descriptor)
-            });
-            if output.width() != evaluated.texture.width()
-                || output.height() != evaluated.texture.height()
+            if accumulated.width() != evaluated.texture.width()
+                || accumulated.height() != evaluated.texture.height()
             {
                 return Err(MetalPhysicalPipelineError::InvalidPlan(
                     "temporal samples changed output geometry".to_owned(),
-                ));
-            }
-            let reset = index == 0;
-            let weight_reset = [*weight / weight_sum, if reset { 1.0 } else { 0.0 }];
-            let command = self.queue.new_command_buffer();
-            let encoder = command.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&self.accumulator);
-            encoder.set_texture(0, Some(&evaluated.texture));
-            encoder.set_texture(1, Some(output));
-            encoder.set_bytes(
-                0,
-                size_of::<[f32; 2]>() as u64,
-                weight_reset.as_ptr().cast(),
-            );
-            let thread_width = self.accumulator.thread_execution_width();
-            let thread_height =
-                (self.accumulator.max_total_threads_per_threadgroup() / thread_width).max(1);
-            encoder.dispatch_threads(
-                MTLSize::new(output.width(), output.height(), 1),
-                MTLSize::new(thread_width, thread_height, 1),
-            );
-            encoder.end_encoding();
-            command.commit();
-            command.wait_until_completed();
-            if command.status() != MTLCommandBufferStatus::Completed {
-                return Err(MetalPhysicalPipelineError::Backend(
-                    "temporal accumulation did not complete".to_owned(),
                 ));
             }
             final_geometry = Some(evaluated.geometry);
@@ -1084,7 +1074,7 @@ impl MetalPhysicalPipeline {
             }
         }
         let physical = MetalPhysicalPipelineResult {
-            texture: accumulated.expect("non-empty schedule allocates output"),
+            texture: accumulated,
             geometry: final_geometry.expect("non-empty schedule resolves geometry"),
             sampling: final_sampling.expect("non-empty schedule resolves sampling"),
             stage_elapsed_nanoseconds,
@@ -1142,6 +1132,7 @@ impl MetalPhysicalPipeline {
             device_signal,
             environment_acescg,
             physical_plan,
+            None,
             None,
             None,
             None,
@@ -1223,6 +1214,7 @@ impl MetalPhysicalPipeline {
             None,
             None,
             Some(raster),
+            None,
             |progress| report_progress(progress * 0.9),
             &is_cancelled,
         )?;
@@ -1243,6 +1235,7 @@ impl MetalPhysicalPipeline {
         row_range: Option<(u32, u32)>,
         mut signal_preparations: Option<&mut Vec<PhysicalSignalPreparation>>,
         vfx_raster: Option<VfxTransparencyRaster>,
+        temporal_accumulation: Option<(&TextureRef, f32, bool)>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -1390,6 +1383,34 @@ impl MetalPhysicalPipeline {
             ));
         }
         if plan.requested_intermediate == PhysicalIntermediate::SourceAcesCg {
+            if let Some((accumulated, weight, reset)) = temporal_accumulation {
+                let command = self.queue.new_command_buffer();
+                let encoder = command.new_compute_command_encoder();
+                encoder.set_compute_pipeline_state(&self.accumulator);
+                encoder.set_texture(0, Some(source_acescg));
+                encoder.set_texture(1, Some(accumulated));
+                let weight_reset_origin = [weight, if reset { 1.0 } else { 0.0 }, 0.0, 0.0];
+                encoder.set_bytes(
+                    0,
+                    size_of::<[f32; 4]>() as u64,
+                    weight_reset_origin.as_ptr().cast(),
+                );
+                let thread_width = self.accumulator.thread_execution_width();
+                let thread_height =
+                    (self.accumulator.max_total_threads_per_threadgroup() / thread_width).max(1);
+                encoder.dispatch_threads(
+                    MTLSize::new(source_acescg.width(), source_acescg.height(), 1),
+                    MTLSize::new(thread_width, thread_height, 1),
+                );
+                encoder.end_encoding();
+                command.commit();
+                command.wait_until_completed();
+                if command.status() != MTLCommandBufferStatus::Completed {
+                    return Err(MetalPhysicalPipelineError::Backend(
+                        "source temporal accumulation did not complete".to_owned(),
+                    ));
+                }
+            }
             report_progress(1.0);
             return Ok(MetalPhysicalPipelineResult {
                 texture: source_acescg.to_owned(),
@@ -1958,6 +1979,26 @@ impl MetalPhysicalPipeline {
                 MTLSize::new(u64::from(sampling.effective_width), u64::from(height), 1),
                 MTLSize::new(thread_width, thread_height, 1),
             );
+            if let Some((accumulated, weight, reset)) = temporal_accumulation {
+                encoder.memory_barrier_with_resources(&[&output]);
+                encoder.set_compute_pipeline_state(&self.accumulator);
+                encoder.set_texture(0, Some(&output));
+                encoder.set_texture(1, Some(accumulated));
+                let weight_reset_origin =
+                    [weight, if reset { 1.0 } else { 0.0 }, origin_y as f32, 0.0];
+                encoder.set_bytes(
+                    0,
+                    size_of::<[f32; 4]>() as u64,
+                    weight_reset_origin.as_ptr().cast(),
+                );
+                let thread_width = self.accumulator.thread_execution_width();
+                let thread_height =
+                    (self.accumulator.max_total_threads_per_threadgroup() / thread_width).max(1);
+                encoder.dispatch_threads(
+                    MTLSize::new(u64::from(sampling.effective_width), u64::from(height), 1),
+                    MTLSize::new(thread_width, thread_height, 1),
+                );
+            }
             encoder.end_encoding();
             command.commit();
             command.wait_until_completed();

@@ -211,6 +211,12 @@ static raster storage use one parameter array, one signal upload and one Metal d
 animated raster samples retain their exact authored source and may require separate dispatches. The
 batch changes command granularity only and never drops a motion sample.
 
+Until all spatial samples can share that one dispatch, each independently dispatched sample encodes
+its ordered weighted accumulation immediately after every physical stripe in the same Metal command
+buffer. It never publishes an intermediate full-frame sample or schedules a second full-frame
+accumulation command. The accumulated texture retains the authored sample order and is the sole input
+to Sensor/RAW evaluation.
+
 Application reuses a spatial result only when the source is explicitly static and camera transform,
 camera intrinsics and screen transform each contain exactly one authored keyframe. It still
 constructs and integrates every requested global-shutter interval; only the identical
