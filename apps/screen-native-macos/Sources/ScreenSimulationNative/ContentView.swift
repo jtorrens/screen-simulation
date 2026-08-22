@@ -2091,7 +2091,7 @@ struct ContentView: View {
                             Text(mode.label).tag(mode)
                         }
                     }
-                    .disabled(!model.outputFormat.supportsAlpha)
+                    .disabled(!model.outputFormat.supportsAlpha || model.renderWIPReviewPreset != nil)
                     Toggle("Audio", isOn: $model.includeAudio)
                         .disabled(!model.outputFormat.isMovie)
                     } else {
@@ -2642,7 +2642,7 @@ struct ContentView: View {
                 Picker("Alpha", selection: $model.outputAlphaMode) {
                     ForEach(StudioAlphaMode.allCases) { Text($0.label).tag($0) }
                 }
-                    .disabled(!model.outputFormat.supportsAlpha)
+                    .disabled(!model.outputFormat.supportsAlpha || model.renderWIPReviewPreset != nil)
                 Toggle("Audio", isOn: $model.includeAudio)
                     .disabled(!model.outputFormat.isMovie)
             }

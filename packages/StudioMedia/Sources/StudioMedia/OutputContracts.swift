@@ -436,7 +436,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             if let wipReview {
                 guard composition != .deviceAndSpillSeparate,
                       target == .sdr || target == .hdr,
-                      format != .openEXR else {
+                      format != .openEXR,
+                      alpha == .ignore else {
                     throw StudioOutputContractError.wipReviewDeliveryInvalid
                 }
                 try wipReview.validate()

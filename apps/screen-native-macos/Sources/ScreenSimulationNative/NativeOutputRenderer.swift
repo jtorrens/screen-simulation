@@ -91,7 +91,7 @@ enum NativeOutputRenderer {
                     .appendingPathExtension(format.fileExtension)
                 : finalURL
             let firstWIP = configuration.wipReview == nil ? nil : try await wipProcessedRGBA(
-                try display.renderRGBAFloat(first, output: output, alpha: .straight),
+                try display.renderRGBAFloat(first, output: output, alpha: .ignore),
                 sourceWidth: first.width, sourceHeight: first.height,
                 frameNumber: firstIndex, outputFilename: finalURL.lastPathComponent,
                 configuration: configuration
@@ -109,7 +109,7 @@ enum NativeOutputRenderer {
                 let frame = index == firstIndex ? first : try await frameProvider(index)
                 if configuration.wipReview != nil {
                     let processed = index == firstIndex ? firstWIP! : try await wipProcessedRGBA(
-                        try display.renderRGBAFloat(frame, output: output, alpha: .straight),
+                        try display.renderRGBAFloat(frame, output: output, alpha: .ignore),
                         sourceWidth: frame.width, sourceHeight: frame.height,
                         frameNumber: index, outputFilename: finalURL.lastPathComponent,
                         configuration: configuration
@@ -172,7 +172,7 @@ enum NativeOutputRenderer {
                 let encoded = try await wipProcessedRGBA(
                     try display.renderRGBAFloat(
                         frame, output: output,
-                        alpha: configuration.wipReview == nil ? .ignore : .straight
+                        alpha: .ignore
                     ),
                     sourceWidth: frame.width, sourceHeight: frame.height,
                     frameNumber: index, outputFilename: url.lastPathComponent,
@@ -183,18 +183,15 @@ enum NativeOutputRenderer {
                 ).write(to: url, options: .atomic)
             case .tiff16:
                 guard let output else { throw NativeOutputError.unsupported("TIFF requiere ODT") }
-                var encoded = try await wipProcessedRGBA(
+                let encoded = try await wipProcessedRGBA(
                     try display.renderRGBAFloat(
                         frame, output: output,
-                        alpha: configuration.wipReview == nil ? alpha : .straight
+                        alpha: configuration.wipReview == nil ? alpha : .ignore
                     ),
                     sourceWidth: frame.width, sourceHeight: frame.height,
                     frameNumber: index, outputFilename: url.lastPathComponent,
                     configuration: configuration
                 )
-                if configuration.wipReview != nil {
-                    associateStraightRGBA(&encoded.rgba, as: alpha)
-                }
                 try encodeTIFF16(
                     encoded.rgba, width: encoded.width, height: encoded.height,
                     colorSpace: output.colorSpace, alpha: alpha
@@ -218,8 +215,9 @@ enum NativeOutputRenderer {
         guard let preset = configuration.wipReview else {
             return (encodedRGBA, sourceWidth, sourceHeight)
         }
+        let opaqueRGBA = try opaqueWIPRGBA(encodedRGBA)
         let result = try await WIPReviewOFXAdapter().render(
-            encodedRGBA: encodedRGBA,
+            encodedRGBA: opaqueRGBA,
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
             frame: frameNumber,
@@ -228,6 +226,17 @@ enum NativeOutputRenderer {
             preset: preset
         )
         return (result.rgba, result.raster.width, result.raster.height)
+    }
+
+    static func opaqueWIPRGBA(_ rgba: [Float]) throws -> [Float] {
+        guard rgba.count.isMultiple(of: 4), rgba.allSatisfy(\.isFinite) else {
+            throw NativeOutputError.invalidFrame
+        }
+        var result = rgba
+        for offset in stride(from: 0, to: result.count, by: 4) {
+            result[offset + 3] = 1
+        }
+        return result
     }
 
     private static func associateStraightRGBA(

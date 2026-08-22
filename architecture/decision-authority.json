@@ -44,6 +44,8 @@
         "scripts/test_migrate_global_library_v14_to_v15.py",
         "scripts/migrate_render_queue_v3_to_v4.py",
         "scripts/test_migrate_render_queue_v3_to_v4.py",
+        "scripts/migrate_render_queue_v4_to_v5.py",
+        "scripts/test_migrate_render_queue_v4_to_v5.py",
         "scripts/check_architecture.py"
       ]
     },
@@ -212,7 +214,9 @@
         ".gitmodules",
         "scripts/build_native_macos.py",
         "scripts/migrate_global_library_v14_to_v15.py",
-        "scripts/test_migrate_global_library_v14_to_v15.py"
+        "scripts/test_migrate_global_library_v14_to_v15.py",
+        "scripts/migrate_render_queue_v4_to_v5.py",
+        "scripts/test_migrate_render_queue_v4_to_v5.py"
       ]
     },
     {
@@ -230,7 +234,9 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/RenderDerivationTests.swift",
         "scripts/migrate_render_queue_v3_to_v4.py",
-        "scripts/test_migrate_render_queue_v3_to_v4.py"
+        "scripts/test_migrate_render_queue_v3_to_v4.py",
+        "scripts/migrate_render_queue_v4_to_v5.py",
+        "scripts/test_migrate_render_queue_v4_to_v5.py"
       ]
     },
     {

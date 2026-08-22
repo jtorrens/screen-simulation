@@ -1,4 +1,4 @@
-// Narrow CPU OpenFX host for the packaged WIP Review effect.
+// Narrow Metal OpenFX host for the packaged WIP Review effect.
 // Host infrastructure is the official ASWF OpenFX HostSupport submodule;
 // no WIP Review renderer source is linked or reproduced here.
 
@@ -16,6 +16,8 @@
 #include <ofxhPluginCache.h>
 #include <ofxhHost.h>
 #include <ofxhImageEffectAPI.h>
+
+#import <Metal/Metal.h>
 
 #include <array>
 #include <cstdarg>
@@ -51,6 +53,10 @@ struct RenderContext {
   double frameRate = 24;
   std::vector<float> source;
   std::vector<float> output;
+  id<MTLDevice> metalDevice = nil;
+  id<MTLCommandQueue> metalCommandQueue = nil;
+  id<MTLBuffer> sourceBuffer = nil;
+  id<MTLBuffer> outputBuffer = nil;
   std::unordered_map<std::string, ParameterValue> parameters;
 };
 
@@ -69,13 +75,12 @@ class FloatImage final : public OFX::Host::ImageEffect::Image {
       : OFX::Host::ImageEffect::Image(clip) {
     const int width = output ? gRender.outputWidth : gRender.sourceWidth;
     const int height = output ? gRender.outputHeight : gRender.sourceHeight;
-    float* base = output ? gRender.output.data() : gRender.source.data();
+    id<MTLBuffer> buffer = output ? gRender.outputBuffer : gRender.sourceBuffer;
     const int stride = width * 4 * static_cast<int>(sizeof(float));
     setDoubleProperty(kOfxImageEffectPropRenderScale, 1, 0);
     setDoubleProperty(kOfxImageEffectPropRenderScale, 1, 1);
-    // Raw exchange is top-down; a negative OFX row stride preserves image orientation.
-    setPointerProperty(kOfxImagePropData, base + static_cast<size_t>(height - 1) * width * 4);
-    setIntProperty(kOfxImagePropRowBytes, -stride);
+    setPointerProperty(kOfxImagePropData, (__bridge void*)buffer);
+    setIntProperty(kOfxImagePropRowBytes, stride);
     for (const char* property : {kOfxImagePropBounds, kOfxImagePropRegionOfDefinition}) {
       setIntProperty(property, 0, 0);
       setIntProperty(property, 0, 1);
@@ -259,6 +264,35 @@ class EffectInstance final : public OFX::Host::ImageEffect::Instance {
   double timeLineGetTime() override { return gRender.time; }
   void timeLineGotoTime(double time) override { gRender.time=time; }
   void timeLineGetBounds(double& first, double& last) override { first=last=gRender.time; }
+  OfxStatus renderAction(OfxTime time, const std::string& field,
+                         const OfxRectI& renderRoI, OfxPointD renderScale,
+                         bool sequentialRender, bool interactiveRender,
+                         bool draftRender) override {
+    static const OFX::Host::Property::PropSpec properties[] = {
+      {kOfxPropTime, OFX::Host::Property::eDouble, 1, true, "0"},
+      {kOfxImageEffectPropFieldToRender, OFX::Host::Property::eString, 1, true, ""},
+      {kOfxImageEffectPropRenderWindow, OFX::Host::Property::eInt, 4, true, "0"},
+      {kOfxImageEffectPropRenderScale, OFX::Host::Property::eDouble, 2, true, "0"},
+      {kOfxImageEffectPropSequentialRenderStatus, OFX::Host::Property::eInt, 1, true, "0"},
+      {kOfxImageEffectPropInteractiveRenderStatus, OFX::Host::Property::eInt, 1, true, "0"},
+      {kOfxImageEffectPropRenderQualityDraft, OFX::Host::Property::eInt, 1, true, "0"},
+      {kOfxImageEffectPropMetalEnabled, OFX::Host::Property::eInt, 1, true, "0"},
+      {kOfxImageEffectPropMetalCommandQueue, OFX::Host::Property::ePointer, 1, true, nullptr},
+      OFX::Host::Property::propSpecEnd
+    };
+    OFX::Host::Property::Set inArgs(properties);
+    inArgs.setStringProperty(kOfxImageEffectPropFieldToRender, field);
+    inArgs.setDoubleProperty(kOfxPropTime, time);
+    inArgs.setIntPropertyN(kOfxImageEffectPropRenderWindow, &renderRoI.x1, 4);
+    inArgs.setDoublePropertyN(kOfxImageEffectPropRenderScale, &renderScale.x, 2);
+    inArgs.setIntProperty(kOfxImageEffectPropSequentialRenderStatus, sequentialRender);
+    inArgs.setIntProperty(kOfxImageEffectPropInteractiveRenderStatus, interactiveRender);
+    inArgs.setIntProperty(kOfxImageEffectPropRenderQualityDraft, draftRender);
+    inArgs.setIntProperty(kOfxImageEffectPropMetalEnabled, 1);
+    inArgs.setPointerProperty(kOfxImageEffectPropMetalCommandQueue,
+                              (__bridge void*)gRender.metalCommandQueue);
+    return mainEntry(kOfxImageEffectActionRender, getHandle(), &inArgs, nullptr);
+  }
 };
 
 ClipInstance::ClipInstance(EffectInstance* effect,
@@ -296,8 +330,8 @@ class Host final : public OFX::Host::ImageEffect::Host {
     _properties.setIntProperty(kOfxParamHostPropSupportsCustomAnimation, 0);
     _properties.setIntProperty(kOfxParamHostPropMaxParameters, -1);
     _properties.setIntProperty(kOfxParamHostPropMaxPages, -1);
-    _properties.setStringProperty(kOfxImageEffectPropCPURenderSupported, "true");
-    _properties.setStringProperty(kOfxImageEffectPropMetalRenderSupported, "false");
+    _properties.setStringProperty(kOfxImageEffectPropCPURenderSupported, "false");
+    _properties.setStringProperty(kOfxImageEffectPropMetalRenderSupported, "true");
   }
   OFX::Host::ImageEffect::Instance* newInstance(
       void*, OFX::Host::ImageEffect::ImageEffectPlugin* plugin,
@@ -383,6 +417,19 @@ int main(int argc, char** argv) {
     loadRaw(input, gRender.source,
             static_cast<size_t>(gRender.sourceWidth) * gRender.sourceHeight * 4);
     gRender.output.assign(static_cast<size_t>(gRender.outputWidth) * gRender.outputHeight * 4, 0);
+    gRender.metalDevice = MTLCreateSystemDefaultDevice();
+    if (!gRender.metalDevice) throw std::runtime_error("Metal device is unavailable");
+    gRender.metalCommandQueue = [gRender.metalDevice newCommandQueue];
+    if (!gRender.metalCommandQueue) throw std::runtime_error("Metal command queue is unavailable");
+    gRender.sourceBuffer = [gRender.metalDevice
+        newBufferWithBytes:gRender.source.data()
+                  length:gRender.source.size() * sizeof(float)
+                 options:MTLResourceStorageModeShared];
+    gRender.outputBuffer = [gRender.metalDevice
+        newBufferWithLength:gRender.output.size() * sizeof(float)
+                    options:MTLResourceStorageModeShared];
+    if (!gRender.sourceBuffer || !gRender.outputBuffer)
+      throw std::runtime_error("Metal image buffer allocation failed");
 
     const auto pluginRoot = bundle.parent_path();
     auto* sharedCache = OFX::Host::PluginCache::getPluginCache();
@@ -412,6 +459,14 @@ int main(int argc, char** argv) {
     status=instance->renderAction(gRender.time,kOfxImageFieldNone,window,scale,true,false,false);
     if (status!=kOfxStatOK) throw std::runtime_error("WIP Review render action failed");
     instance->endRenderAction(gRender.time,gRender.time,1,false,scale,true,false);
+    id<MTLCommandBuffer> completion = [gRender.metalCommandQueue commandBuffer];
+    if (!completion) throw std::runtime_error("Metal completion command buffer is unavailable");
+    [completion commit];
+    [completion waitUntilCompleted];
+    if (completion.status == MTLCommandBufferStatusError)
+      throw std::runtime_error("WIP Review Metal command buffer failed");
+    std::memcpy(gRender.output.data(), gRender.outputBuffer.contents,
+                gRender.output.size() * sizeof(float));
     saveRaw(output,gRender.output);
     instance.reset();
     OFX::Host::PluginCache::clearPluginCache();

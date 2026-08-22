@@ -104,7 +104,9 @@ struct WIPReviewOFXAdapter: Sendable {
     ) throws -> (rgba: [Float], raster: Raster) {
         try preset.validate()
         guard encodedRGBA.count == sourceWidth * sourceHeight * 4,
-              encodedRGBA.allSatisfy(\.isFinite), frameRate.isFinite, frameRate > 0 else {
+              encodedRGBA.allSatisfy(\.isFinite),
+              stride(from: 3, to: encodedRGBA.count, by: 4).allSatisfy({ encodedRGBA[$0] == 1 }),
+              frameRate.isFinite, frameRate > 0 else {
             throw WIPReviewOFXError.invalidPayload
         }
         let raster = try Self.raster(
@@ -148,7 +150,9 @@ struct WIPReviewOFXAdapter: Sendable {
         }
         var rgba = [Float](repeating: 0, count: count)
         _ = rgba.withUnsafeMutableBytes { destination in data.copyBytes(to: destination) }
-        guard rgba.allSatisfy(\.isFinite) else { throw WIPReviewOFXError.invalidPayload }
+        guard rgba.allSatisfy(\.isFinite),
+              stride(from: 3, to: rgba.count, by: 4).allSatisfy({ rgba[$0] == 1 })
+        else { throw WIPReviewOFXError.invalidPayload }
         return (rgba, raster)
     }
 

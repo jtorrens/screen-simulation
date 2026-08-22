@@ -47,7 +47,7 @@ import Testing
     #expect(zip(result.rgba, input).map { abs($0 - $1) }.max() ?? 1 < 0.000_001)
 }
 
-@Test func directOFXHostPreservesStraightAlphaWithoutDoublePremultiplication() async throws {
+@Test func directOFXMetalHostPreservesOpaqueRGB() async throws {
     let repository = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent()
         .deletingLastPathComponent().deletingLastPathComponent()
@@ -56,9 +56,9 @@ import Testing
     preset.placement = .identity
     for index in preset.zones.indices { preset.zones[index].enabled = false }
     let input: [Float] = [
-        0.8, 0.4, 0.2, 0,
-        0.8, 0.4, 0.2, 0.5,
         0.8, 0.4, 0.2, 1,
+        0.7, 0.3, 0.1, 1,
+        0.6, 0.2, 0.9, 1,
         0.2, 0.6, 0.9, 1,
     ]
     let result = try await WIPReviewOFXAdapter(
@@ -74,6 +74,78 @@ import Testing
         preset: preset
     )
     #expect(zip(result.rgba, input).map { abs($0 - $1) }.max() ?? 1 < 0.000_001)
+}
+
+@Test @MainActor func wipOpaqueBoundaryPreservesRGBWithoutPremultiplying() throws {
+    let source: [Float] = [
+        0.8, 0.4, 0.2, 0,
+        0.8, 0.4, 0.2, 0.5,
+        0.8, 0.4, 0.2, 1,
+    ]
+    let opaque = try NativeOutputRenderer.opaqueWIPRGBA(source)
+    #expect(opaque == [
+        0.8, 0.4, 0.2, 1,
+        0.8, 0.4, 0.2, 1,
+        0.8, 0.4, 0.2, 1,
+    ])
+}
+
+@Test func wipOFXAdapterRejectsNonOpaqueInputBeforePublication() async throws {
+    let repository = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+    var preset = StudioWIPReviewPreset.builtIns[0]
+    for index in preset.zones.indices { preset.zones[index].enabled = false }
+    await #expect(throws: WIPReviewOFXError.self) {
+        try await WIPReviewOFXAdapter(
+            hostExecutableURL: repository.appendingPathComponent(
+                "target/wip-ofx-host-build/screen-wip-ofx-host"
+            ),
+            pluginBundleURL: URL(
+                fileURLWithPath: "/Library/OFX/Plugins/WIPReviewProbe.ofx.bundle"
+            )
+        ).render(
+            encodedRGBA: [0.8, 0.4, 0.2, 0.5],
+            sourceWidth: 1, sourceHeight: 1,
+            frame: 1_001, frameRate: 24, outputFilename: "alpha.mov",
+            preset: preset
+        )
+    }
+}
+
+@Test func wipContractRequiresOpaqueOutputAlpha() throws {
+    let preset = StudioWIPReviewPreset.builtIns[0]
+    let straight = StudioResolvedRenderConfiguration(
+        outputType: .standard, jobName: "WIP", overwritePolicy: .failIfExists,
+        fusionScene: nil, composition: .deviceAndSpillTogether,
+        motionBlurEnabled: false, motionSamples: 2, format: .tiff16,
+        pipeline: .aces, target: .sdr, peakNits: 100,
+        display: "Rec.1886 Rec.709 - Display",
+        view: "ACES 2.0 - SDR 100 nits (Rec.709)",
+        vfxInterchangeEncodingID: nil, pixelEncoding: .rgb16,
+        signalRange: .full, alpha: .straight, includeAudio: false,
+        frameRate: try StudioFrameRate(numerator: 24, denominator: 1),
+        firstFrame: 1_001, lastFrame: 1_001, wipReview: preset
+    )
+    #expect(throws: StudioOutputContractError.wipReviewDeliveryInvalid) {
+        try straight.validate()
+    }
+}
+
+@Test @MainActor func selectingWIPMakesTheEditableOutputContractOpaque() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-wip-workspace-\(UUID().uuidString)")
+    let model = WorkspaceModel(globalLibraryStore: try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("GlobalLibrary.v15.json")
+    ))
+    model.changeOutputFormat(.tiff16)
+    model.outputAlphaMode = .straight
+    model.changeWIPReviewPreset(StudioWIPReviewPreset.builtIns[0])
+    #expect(model.outputAlphaMode == .ignore)
+    model.outputAlphaMode = .premultiplied
+    model.ensureRenderOptionsCompatible()
+    #expect(model.outputAlphaMode == .ignore)
 }
 
 @Test @MainActor func hlgWIPUsesHLGTransformAndRejectsPQSignaling() throws {

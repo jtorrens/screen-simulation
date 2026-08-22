@@ -1157,6 +1157,41 @@ def validate_reference_matte_transport() -> None:
             raise ValidationError("native Reference composition bypasses typed matte: " + required)
 
 
+def validate_wip_review_metal_contract() -> None:
+    output_contracts = (
+        ROOT / "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift"
+    ).read_text(encoding="utf-8")
+    renderer = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift"
+    ).read_text(encoding="utf-8")
+    adapter = (
+        ROOT / "apps/screen-native-macos/Sources/ScreenSimulationNative/WIPReviewOFXAdapter.swift"
+    ).read_text(encoding="utf-8")
+    host = (ROOT / "tools/wip-ofx-host/main.cpp").read_text(encoding="utf-8")
+    cmake = (ROOT / "tools/wip-ofx-host/CMakeLists.txt").read_text(encoding="utf-8")
+    for required in (
+        "format != .openEXR,\n                      alpha == .ignore",
+        "static func opaqueWIPRGBA(",
+        "result[offset + 3] = 1",
+    ):
+        if required not in output_contracts + renderer:
+            raise ValidationError("WIP Review opaque contract is incomplete: " + required)
+    if "encodedRGBA[$0] == 1" not in adapter or "rgba[$0] == 1" not in adapter:
+        raise ValidationError("WIP Review adapter does not enforce opaque input and output")
+    for required in (
+        'kOfxImageEffectPropCPURenderSupported, "false"',
+        'kOfxImageEffectPropMetalRenderSupported, "true"',
+        "kOfxImageEffectPropMetalEnabled, 1",
+        "kOfxImageEffectPropMetalCommandQueue",
+        "waitUntilCompleted",
+    ):
+        if required not in host:
+            raise ValidationError("WIP Review Metal-only host is incomplete: " + required)
+    for required in ("LANGUAGES CXX OBJCXX", '"-framework Metal"'):
+        if required not in cmake:
+            raise ValidationError("WIP Review Metal build is incomplete: " + required)
+
+
 def validate_migration_backup_contract() -> None:
     migration_io = (ROOT / "scripts/migration_io.py").read_text(encoding="utf-8")
     for required in (
@@ -1173,6 +1208,7 @@ def validate_migration_backup_contract() -> None:
     for relative in (
         "scripts/migrate_global_library_v14_to_v15.py",
         "scripts/migrate_render_queue_v3_to_v4.py",
+        "scripts/migrate_render_queue_v4_to_v5.py",
     ):
         migration = (ROOT / relative).read_text(encoding="utf-8")
         if "publish_with_source_backup(source, destination, document)" not in migration:
@@ -1201,6 +1237,7 @@ def main() -> int:
         validate_test_inspector_hierarchy()
         validate_native_workspace_navigation()
         validate_reference_matte_transport()
+        validate_wip_review_metal_contract()
         validate_migration_backup_contract()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:

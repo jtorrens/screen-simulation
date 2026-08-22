@@ -102,7 +102,7 @@ private func derivationConfiguration(
         vfxInterchangeEncodingID: nil,
         pixelEncoding: format == .tiff16 ? .rgb16 : .yuv4208,
         signalRange: format == .tiff16 ? .full : .video,
-        alpha: format.supportsAlpha ? .straight : .ignore,
+        alpha: .ignore,
         includeAudio: false,
         frameRate: try StudioFrameRate(numerator: 24, denominator: 1),
         firstFrame: 1, lastFrame: 2,

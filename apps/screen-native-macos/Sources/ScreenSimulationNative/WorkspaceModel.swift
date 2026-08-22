@@ -4309,6 +4309,7 @@ final class WorkspaceModel: ObservableObject {
 
     func changeWIPReviewPreset(_ preset: StudioWIPReviewPreset?) {
         renderWIPReviewPreset = preset
+        if preset != nil { outputAlphaMode = .ignore }
         guard !outputFormat.supports(target: effectiveRenderTarget) else { return }
         if let replacement = StudioOutputFormat.allCases.first(where: {
             $0.supports(target: effectiveRenderTarget) && $0 != .openEXR
@@ -4378,6 +4379,7 @@ final class WorkspaceModel: ObservableObject {
             includeAudio = false
             return
         }
+        if renderWIPReviewPreset != nil { outputAlphaMode = .ignore }
         let target = effectiveRenderTarget
         guard !outputFormat.supports(target: target) else { return }
         let replacement = renderPreset.format.supports(target: target)
@@ -4497,8 +4499,10 @@ final class WorkspaceModel: ObservableObject {
                 ? vfxInterchangeEncodingID : nil,
             pixelEncoding: outputPixelEncoding,
             signalRange: outputSignalRange,
-            alpha: renderComposition == .deviceAndSpillSeparate
-                ? .straight : (outputFormat.supportsAlpha ? outputAlphaMode : .ignore),
+            alpha: renderWIPReviewPreset != nil
+                ? .ignore
+                : (renderComposition == .deviceAndSpillSeparate
+                    ? .straight : (outputFormat.supportsAlpha ? outputAlphaMode : .ignore)),
             includeAudio: renderOutputType == .standard && outputFormat.isMovie
                 && renderComposition != .deviceAndSpillSeparate && includeAudio,
             frameRate: exactFrameRate,
