@@ -5129,7 +5129,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func showRenderDestinationInFinder(_ job: NativeOutputQueueController.RenderJob) {
-        guard job.state == .completed else { return }
+        guard job.state.isTerminal else { return }
         let directory: URL
         switch job.outputPlan.kind {
         case .singleFile:

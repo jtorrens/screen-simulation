@@ -2674,7 +2674,7 @@ struct ContentView: View {
                 }
                 .accessibilityElement(children: .combine)
                 .contextMenu {
-                    if [.pending, .failed, .completed].contains(job.state) {
+                    if job.state != .rendering {
                         Button("Eliminar de la cola", role: .destructive) {
                             model.removeInactiveRender(job)
                         }
@@ -2688,6 +2688,8 @@ struct ContentView: View {
                                 model.refreshFusionComposition(job)
                             }
                         }
+                    }
+                    if job.state.isTerminal {
                         Button("Volver a renderizar esta versión") {
                             model.rerenderHistoricalJob(job)
                         }

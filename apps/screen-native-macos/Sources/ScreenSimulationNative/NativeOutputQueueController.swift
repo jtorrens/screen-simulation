@@ -9,7 +9,16 @@ final class NativeOutputQueueController: ObservableObject {
     }
 
     struct RenderJob: Codable, Identifiable {
-        enum State: String, Codable { case pending, rendering, completed, failed, cancelled }
+        enum State: String, Codable {
+            case pending, rendering, completed, failed, cancelled
+
+            var isTerminal: Bool {
+                switch self {
+                case .completed, .failed, .cancelled: true
+                case .pending, .rendering: false
+                }
+            }
+        }
         let id: UUID
         let derivedFromJobID: UUID?
         let scene: SavedScene
@@ -175,7 +184,7 @@ final class NativeOutputQueueController: ObservableObject {
     }
 
     func clearTerminalJobs() {
-        jobs.removeAll { ![.pending, .rendering].contains($0.state) }
+        jobs.removeAll { $0.state.isTerminal }
         persist()
     }
 
@@ -183,7 +192,7 @@ final class NativeOutputQueueController: ObservableObject {
     @discardableResult
     func removeInactiveJob(id: RenderJob.ID) -> Bool {
         guard let index = jobs.firstIndex(where: { $0.id == id }),
-              [.pending, .failed, .completed].contains(jobs[index].state)
+              jobs[index].state != .rendering
         else { return false }
         jobs.remove(at: index)
         persist()

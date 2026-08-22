@@ -289,6 +289,15 @@ import Testing
     #expect(controller.removeInactiveJob(id: jobs[0].id))
 }
 
+@Test func completedFailedAndCancelledAreTheOnlyHistoricalRerenderStates() {
+    typealias State = NativeOutputQueueController.RenderJob.State
+    #expect(State.completed.isTerminal)
+    #expect(State.failed.isTerminal)
+    #expect(State.cancelled.isTerminal)
+    #expect(!State.pending.isTerminal)
+    #expect(!State.rendering.isTerminal)
+}
+
 @Test @MainActor func renderingJobRestoresAsPendingWithoutAutoRun() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("render-queue-interrupted-\(UUID().uuidString)")
