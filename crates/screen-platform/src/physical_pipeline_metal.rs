@@ -19,7 +19,7 @@ use screen_geometry::{project_screen, projected_screen_gate_coverage};
 use screen_panel::{FlatPanelGeometry, FlatPanelSampling, StripeLayout};
 
 const SHADER_LIBRARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/native_camera.metallib"));
-const TILE_ROWS: u32 = 64;
+const TILE_ROWS: u32 = 128;
 
 fn inverse3(matrix: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
     let determinant = matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
@@ -2597,6 +2597,11 @@ mod tests {
             evaluate(disabled, no_environment),
             evaluate(amount_four, no_environment)
         );
+    }
+
+    #[test]
+    fn product_spatial_scheduler_uses_contractual_128_row_stripes() {
+        assert_eq!(TILE_ROWS, 128);
     }
 
     #[test]
