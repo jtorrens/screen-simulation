@@ -2761,16 +2761,15 @@ unsafe fn physical_frame_submit_impl(
         }
     };
     let frame_time = prepared.prepared.center().time();
-    let expected_sample_count = if amounts.shutter_motion == 0.0 {
-        1
-    } else {
-        usize::from(pipeline.shutter_motion.temporal_samples)
-    };
-    if prepared.prepared.samples().len() != expected_sample_count {
+    // PreparedRender owns the attempt's explicit temporal sampling. An output request may
+    // intentionally override the camera's authored interactive sample count, so comparing the
+    // prepared samples with `pipeline.shutter_motion.temporal_samples` would reject a valid
+    // Render Queue attempt. Only the zero-contribution collapse remains contribution-dependent.
+    if amounts.shutter_motion == 0.0 && prepared.prepared.samples().len() != 1 {
         unsafe {
             set_error(
                 error_message,
-                b"prepared temporal sample count does not match resolved contributions\0",
+                b"zero shutter contribution requires one prepared temporal sample\0",
             )
         };
         return std::ptr::null_mut();
@@ -7761,6 +7760,9 @@ mod tests {
         );
         let profile = unsafe { screen_device_profile_create(&parameters, std::ptr::null_mut()) };
         let mut pipeline_parameters = pipeline_parameters();
+        // The explicit output attempt below requests one sample even though interactive camera
+        // authoring retains eight. The PreparedRender count is authoritative for this attempt.
+        pipeline_parameters.shutter_motion.temporal_samples = 8;
         pipeline_parameters.sensor_noise.native_width = 4;
         pipeline_parameters.sensor_noise.native_height = 2;
         pipeline_parameters.environment.character_strength = 1.0;
