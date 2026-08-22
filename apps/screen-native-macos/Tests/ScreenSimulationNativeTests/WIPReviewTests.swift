@@ -76,6 +76,82 @@ import Testing
     #expect(zip(result.rgba, input).map { abs($0 - $1) }.max() ?? 1 < 0.000_001)
 }
 
+@Test func oneOFXProcessAndMetalInstanceServeTheCompleteFrameRange() async throws {
+    let repository = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+    var preset = StudioWIPReviewPreset.builtIns[0]
+    preset.placement = .identity
+    for index in preset.zones.indices { preset.zones[index].enabled = false }
+    let adapter = WIPReviewOFXAdapter(
+        hostExecutableURL: repository.appendingPathComponent(
+            "target/wip-ofx-host-build/screen-wip-ofx-host"
+        ),
+        pluginBundleURL: URL(
+            fileURLWithPath: "/Library/OFX/Plugins/WIPReviewProbe.ofx.bundle"
+        )
+    )
+    let session = try adapter.makeSession(
+        sourceWidth: 2, sourceHeight: 1, frameRate: 24,
+        firstFrame: 1_001, lastFrame: 1_002, preset: preset
+    )
+    let processIdentifier = session.processIdentifier
+    let first: [Float] = [0.1, 0.2, 0.3, 1, 0.4, 0.5, 0.6, 1]
+    let second: [Float] = [0.7, 0.6, 0.5, 1, 0.4, 0.3, 0.2, 1]
+    let firstResult = try await session.render(
+        encodedRGBA: first, frame: 1_001, outputFilename: "shot.00001001.tiff"
+    )
+    let secondResult = try await session.render(
+        encodedRGBA: second, frame: 1_002, outputFilename: "shot.00001002.tiff"
+    )
+    #expect(zip(firstResult.rgba, first).map { abs($0 - $1) }.max() ?? 1 < 0.000_001)
+    #expect(zip(secondResult.rgba, second).map { abs($0 - $1) }.max() ?? 1 < 0.000_001)
+    #expect(session.processIdentifier == processIdentifier)
+    #expect(session.isRunning)
+    try await session.finish()
+    #expect(!session.isRunning)
+}
+
+@Test func persistentOFXSessionRefreshesCalculatedFilenamePerFrame() async throws {
+    let repository = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+    var preset = StudioWIPReviewPreset.builtIns[0]
+    preset.reviewRaster = .output
+    preset.placement = .identity
+    for index in preset.zones.indices { preset.zones[index].enabled = false }
+    preset.zones[0].enabled = true
+    preset.zones[0].prefix = ""
+    preset.zones[0].calculatedField = .outputFilename
+    let adapter = WIPReviewOFXAdapter(
+        hostExecutableURL: repository.appendingPathComponent(
+            "target/wip-ofx-host-build/screen-wip-ofx-host"
+        ),
+        pluginBundleURL: URL(
+            fileURLWithPath: "/Library/OFX/Plugins/WIPReviewProbe.ofx.bundle"
+        )
+    )
+    let session = try adapter.makeSession(
+        sourceWidth: 640, sourceHeight: 360, frameRate: 24,
+        firstFrame: 1_001, lastFrame: 1_002, preset: preset
+    )
+    let input = [Float](repeating: 0, count: 640 * 360 * 4).enumerated().map {
+        $0.offset % 4 == 3 ? 1 : $0.element
+    }
+    let first = try await session.render(
+        encodedRGBA: input, frame: 1_001, outputFilename: "SHOT_A.mov"
+    )
+    let second = try await session.render(
+        encodedRGBA: input, frame: 1_002, outputFilename: "SHOT_B.mov"
+    )
+    try await session.finish()
+    #expect(zip(first.rgba, second.rgba).contains { abs($0 - $1) > 0.000_001 })
+    #expect(stride(from: 3, to: first.rgba.count, by: 4).allSatisfy { first.rgba[$0] == 1 })
+    #expect(stride(from: 3, to: second.rgba.count, by: 4).allSatisfy { second.rgba[$0] == 1 })
+}
+
 @Test @MainActor func wipOpaqueBoundaryPreservesRGBWithoutPremultiplying() throws {
     let source: [Float] = [
         0.8, 0.4, 0.2, 0,

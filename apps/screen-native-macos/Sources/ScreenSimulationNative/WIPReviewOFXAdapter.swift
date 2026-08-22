@@ -80,83 +80,261 @@ struct WIPReviewOFXAdapter: Sendable {
         outputFilename: String,
         preset: StudioWIPReviewPreset
     ) async throws -> (rgba: [Float], raster: Raster) {
-        try await Task.detached {
-            try renderSynchronously(
+        let session = try makeSession(
+            sourceWidth: sourceWidth, sourceHeight: sourceHeight,
+            frameRate: frameRate, firstFrame: frame, lastFrame: frame,
+            preset: preset
+        )
+        do {
+            let result = try await session.render(
                 encodedRGBA: encodedRGBA,
-                sourceWidth: sourceWidth,
-                sourceHeight: sourceHeight,
                 frame: frame,
-                frameRate: frameRate,
-                outputFilename: outputFilename,
-                preset: preset
+                outputFilename: outputFilename
             )
-        }.value
+            try await session.finish()
+            return result
+        } catch {
+            session.terminate()
+            throw error
+        }
     }
 
-    private func renderSynchronously(
-        encodedRGBA: [Float],
+    func makeSession(
         sourceWidth: Int,
         sourceHeight: Int,
-        frame: Int,
         frameRate: Double,
-        outputFilename: String,
+        firstFrame: Int,
+        lastFrame: Int,
         preset: StudioWIPReviewPreset
-    ) throws -> (rgba: [Float], raster: Raster) {
+    ) throws -> Session {
         try preset.validate()
-        guard encodedRGBA.count == sourceWidth * sourceHeight * 4,
-              encodedRGBA.allSatisfy(\.isFinite),
-              stride(from: 3, to: encodedRGBA.count, by: 4).allSatisfy({ encodedRGBA[$0] == 1 }),
-              frameRate.isFinite, frameRate > 0 else {
+        guard sourceWidth > 0, sourceHeight > 0,
+              frameRate.isFinite, frameRate > 0, firstFrame <= lastFrame else {
             throw WIPReviewOFXError.invalidPayload
         }
         let raster = try Self.raster(
             for: preset, sourceWidth: sourceWidth, sourceHeight: sourceHeight
         )
-        let temporary = FileManager.default.temporaryDirectory
-            .appendingPathComponent("screen-wip-ofx-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        let input = temporary.appendingPathComponent("input.rgba32f")
-        let output = temporary.appendingPathComponent("output.rgba32f")
-        let inputData = encodedRGBA.withUnsafeBufferPointer { buffer in
-            Data(buffer: buffer)
-        }
-        try inputData.write(to: input, options: .atomic)
-
-        let process = Process()
-        process.executableURL = hostExecutableURL
-        process.arguments = [
-            pluginBundleURL.path, input.path, output.path,
-            String(sourceWidth), String(sourceHeight),
-            String(raster.width), String(raster.height),
-            String(frame), String(frameRate),
-        ] + parameters(for: preset, outputFilename: outputFilename)
-        let diagnostic = Pipe()
-        process.standardOutput = diagnostic
-        process.standardError = diagnostic
-        try process.run()
-        process.waitUntilExit()
-        let message = String(
-            data: diagnostic.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard process.terminationStatus == 0 else {
-            throw WIPReviewOFXError.hostFailed(message.isEmpty ? "status \(process.terminationStatus)" : message)
-        }
-        let data = try Data(contentsOf: output, options: .mappedIfSafe)
-        let count = raster.width * raster.height * 4
-        guard data.count == count * MemoryLayout<Float>.size else {
-            throw WIPReviewOFXError.invalidPayload
-        }
-        var rgba = [Float](repeating: 0, count: count)
-        _ = rgba.withUnsafeMutableBytes { destination in data.copyBytes(to: destination) }
-        guard rgba.allSatisfy(\.isFinite),
-              stride(from: 3, to: rgba.count, by: 4).allSatisfy({ rgba[$0] == 1 })
-        else { throw WIPReviewOFXError.invalidPayload }
-        return (rgba, raster)
+        return try Session(
+            hostExecutableURL: hostExecutableURL,
+            pluginBundleURL: pluginBundleURL,
+            sourceWidth: sourceWidth, sourceHeight: sourceHeight,
+            raster: raster, frameRate: frameRate,
+            firstFrame: firstFrame, lastFrame: lastFrame,
+            preset: preset
+        )
     }
 
-    private func parameters(
+    final class Session: @unchecked Sendable {
+        private static let requestMagic: UInt32 = 0x3150_4957
+        private static let responseMagic: UInt32 = 0x3152_4f57
+
+        let raster: Raster
+        private let sourceWidth: Int
+        private let sourceHeight: Int
+        private let preset: StudioWIPReviewPreset
+        private let process: Process
+        private let input: FileHandle
+        private let output: FileHandle
+        private let diagnostic: FileHandle
+        private let stateLock = NSLock()
+        private var isFinished = false
+
+        var processIdentifier: Int32 { process.processIdentifier }
+        var isRunning: Bool { process.isRunning }
+
+        fileprivate init(
+            hostExecutableURL: URL, pluginBundleURL: URL,
+            sourceWidth: Int, sourceHeight: Int, raster: Raster,
+            frameRate: Double, firstFrame: Int, lastFrame: Int,
+            preset: StudioWIPReviewPreset
+        ) throws {
+            self.sourceWidth = sourceWidth
+            self.sourceHeight = sourceHeight
+            self.raster = raster
+            self.preset = preset
+            let standardInput = Pipe()
+            let standardOutput = Pipe()
+            let standardError = Pipe()
+            process = Process()
+            process.executableURL = hostExecutableURL
+            process.arguments = [
+                pluginBundleURL.path,
+                String(sourceWidth), String(sourceHeight),
+                String(raster.width), String(raster.height),
+                String(frameRate), String(firstFrame), String(lastFrame),
+            ]
+            process.standardInput = standardInput
+            process.standardOutput = standardOutput
+            process.standardError = standardError
+            input = standardInput.fileHandleForWriting
+            output = standardOutput.fileHandleForReading
+            diagnostic = standardError.fileHandleForReading
+            try process.run()
+        }
+
+        deinit {
+            if process.isRunning { process.terminate() }
+        }
+
+        func render(
+            encodedRGBA: [Float], frame: Int, outputFilename: String
+        ) async throws -> (rgba: [Float], raster: Raster) {
+            try await withTaskCancellationHandler {
+                try await Task.detached { [self] in
+                    try renderSynchronously(
+                        encodedRGBA: encodedRGBA, frame: frame,
+                        outputFilename: outputFilename
+                    )
+                }.value
+            } onCancel: { [self] in
+                terminate()
+            }
+        }
+
+        func finish() async throws {
+            try await Task.detached { [self] in try finishSynchronously() }.value
+        }
+
+        func terminate() {
+            stateLock.lock()
+            let shouldTerminate = !isFinished
+            isFinished = true
+            stateLock.unlock()
+            if shouldTerminate, process.isRunning { process.terminate() }
+        }
+
+        private func renderSynchronously(
+            encodedRGBA: [Float], frame: Int, outputFilename: String
+        ) throws -> (rgba: [Float], raster: Raster) {
+            guard sessionIsOpen(),
+                  encodedRGBA.count == sourceWidth * sourceHeight * 4,
+                  encodedRGBA.allSatisfy(\.isFinite),
+                  stride(from: 3, to: encodedRGBA.count, by: 4)
+                    .allSatisfy({ encodedRGBA[$0] == 1 })
+            else { throw WIPReviewOFXError.invalidPayload }
+
+            let parameters = WIPReviewOFXAdapter.parameters(
+                for: preset, outputFilename: outputFilename
+            )
+            guard parameters.count.isMultiple(of: 3) else {
+                throw WIPReviewOFXError.invalidPayload
+            }
+            var header = Data()
+            append(Self.requestMagic, to: &header)
+            append(Double(frame), to: &header)
+            append(UInt32(parameters.count / 3), to: &header)
+            for index in stride(from: 0, to: parameters.count, by: 3) {
+                try append(parameters[index], to: &header)
+                try append(parameters[index + 1], to: &header)
+                try append(parameters[index + 2], to: &header)
+            }
+            append(UInt64(encodedRGBA.count), to: &header)
+            try input.write(contentsOf: header)
+            try encodedRGBA.withUnsafeBytes { bytes in
+                guard let address = bytes.baseAddress else {
+                    throw WIPReviewOFXError.invalidPayload
+                }
+                try input.write(contentsOf: Data(
+                    bytesNoCopy: UnsafeMutableRawPointer(mutating: address),
+                    count: bytes.count, deallocator: .none
+                ))
+            }
+
+            let magic: UInt32 = try readValue()
+            let status: UInt32 = try readValue()
+            let messageLength: UInt32 = try readValue()
+            let floatCount: UInt64 = try readValue()
+            guard magic == Self.responseMagic, messageLength <= 1_048_576 else {
+                throw WIPReviewOFXError.invalidPayload
+            }
+            let messageData = try readExactly(Int(messageLength))
+            let message = String(data: messageData, encoding: .utf8) ?? ""
+            guard status == 0 else {
+                throw WIPReviewOFXError.hostFailed(message.isEmpty ? "session render failed" : message)
+            }
+            let expectedCount = raster.width * raster.height * 4
+            guard floatCount == UInt64(expectedCount) else {
+                throw WIPReviewOFXError.invalidPayload
+            }
+            var rgba = [Float](repeating: 0, count: expectedCount)
+            try rgba.withUnsafeMutableBytes { destination in
+                var offset = 0
+                while offset < destination.count {
+                    let count = min(1_048_576, destination.count - offset)
+                    let chunk = try readExactly(count)
+                    chunk.copyBytes(to: UnsafeMutableRawBufferPointer(
+                        rebasing: destination[offset ..< offset + count]
+                    ))
+                    offset += count
+                }
+            }
+            guard rgba.allSatisfy(\.isFinite),
+                  stride(from: 3, to: rgba.count, by: 4)
+                    .allSatisfy({ rgba[$0] == 1 })
+            else { throw WIPReviewOFXError.invalidPayload }
+            return (rgba, raster)
+        }
+
+        private func finishSynchronously() throws {
+            stateLock.lock()
+            let shouldFinish = !isFinished
+            isFinished = true
+            stateLock.unlock()
+            guard shouldFinish else { return }
+            try input.close()
+            process.waitUntilExit()
+            let message = String(
+                data: diagnostic.readDataToEndOfFile(), encoding: .utf8
+            )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard process.terminationStatus == 0 else {
+                throw WIPReviewOFXError.hostFailed(
+                    message.isEmpty ? "status \(process.terminationStatus)" : message
+                )
+            }
+        }
+
+        private func readExactly(_ count: Int) throws -> Data {
+            var result = Data()
+            result.reserveCapacity(count)
+            while result.count < count {
+                guard let chunk = try output.read(
+                    upToCount: count - result.count
+                ), !chunk.isEmpty else {
+                    throw WIPReviewOFXError.invalidPayload
+                }
+                result.append(chunk)
+            }
+            return result
+        }
+
+        private func sessionIsOpen() -> Bool {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return !isFinished
+        }
+
+        private func readValue<T>() throws -> T {
+            let data = try readExactly(MemoryLayout<T>.size)
+            return data.withUnsafeBytes { $0.loadUnaligned(as: T.self) }
+        }
+
+        private func append<T>(_ value: T, to data: inout Data) {
+            var value = value
+            withUnsafeBytes(of: &value) { data.append(contentsOf: $0) }
+        }
+
+        private func append(_ value: String, to data: inout Data) throws {
+            let bytes = Data(value.utf8)
+            guard bytes.count <= 1_048_576 else {
+                throw WIPReviewOFXError.invalidPayload
+            }
+            append(UInt32(bytes.count), to: &data)
+            data.append(bytes)
+        }
+    }
+
+    fileprivate static func parameters(
         for preset: StudioWIPReviewPreset,
         outputFilename: String
     ) -> [String] {

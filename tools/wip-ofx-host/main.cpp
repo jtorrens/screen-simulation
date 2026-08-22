@@ -22,6 +22,7 @@
 #include <array>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -143,80 +144,85 @@ class IntegerParam final : public OFX::Host::Param::IntegerInstance {
  public:
   IntegerParam(const std::string& name, OFX::Host::Param::Descriptor& descriptor,
                OFX::Host::Param::SetInstance* owner)
-      : IntegerInstance(descriptor, owner), value_(configured(name) ? configured(name)->integer : defaultInt(descriptor)) {}
-  OfxStatus get(int& value) override { value = value_; return kOfxStatOK; }
+      : IntegerInstance(descriptor, owner), name_(name), value_(configured(name) ? configured(name)->integer : defaultInt(descriptor)) {}
+  OfxStatus get(int& value) override { value = configured(name_) ? configured(name_)->integer : value_; return kOfxStatOK; }
   OfxStatus get(OfxTime, int& value) override { return get(value); }
   OfxStatus set(int value) override { value_ = value; return kOfxStatOK; }
   OfxStatus set(OfxTime, int value) override { return set(value); }
- private: int value_;
+ private: std::string name_; int value_;
 };
 
 class ChoiceParam final : public OFX::Host::Param::ChoiceInstance {
  public:
   ChoiceParam(const std::string& name, OFX::Host::Param::Descriptor& descriptor,
               OFX::Host::Param::SetInstance* owner)
-      : ChoiceInstance(descriptor, owner), value_(configured(name) ? configured(name)->integer : defaultInt(descriptor)) {}
-  OfxStatus get(int& value) override { value = value_; return kOfxStatOK; }
+      : ChoiceInstance(descriptor, owner), name_(name), value_(configured(name) ? configured(name)->integer : defaultInt(descriptor)) {}
+  OfxStatus get(int& value) override { value = configured(name_) ? configured(name_)->integer : value_; return kOfxStatOK; }
   OfxStatus get(OfxTime, int& value) override { return get(value); }
   OfxStatus set(int value) override { value_ = value; return kOfxStatOK; }
   OfxStatus set(OfxTime, int value) override { return set(value); }
- private: int value_;
+ private: std::string name_; int value_;
 };
 
 class BooleanParam final : public OFX::Host::Param::BooleanInstance {
  public:
   BooleanParam(const std::string& name, OFX::Host::Param::Descriptor& descriptor,
                OFX::Host::Param::SetInstance* owner)
-      : BooleanInstance(descriptor, owner), value_(configured(name) ? configured(name)->integer != 0 : defaultInt(descriptor) != 0) {}
-  OfxStatus get(bool& value) override { value = value_; return kOfxStatOK; }
+      : BooleanInstance(descriptor, owner), name_(name), value_(configured(name) ? configured(name)->integer != 0 : defaultInt(descriptor) != 0) {}
+  OfxStatus get(bool& value) override { value = configured(name_) ? configured(name_)->integer != 0 : value_; return kOfxStatOK; }
   OfxStatus get(OfxTime, bool& value) override { return get(value); }
   OfxStatus set(bool value) override { value_ = value; return kOfxStatOK; }
   OfxStatus set(OfxTime, bool value) override { return set(value); }
- private: bool value_;
+ private: std::string name_; bool value_;
 };
 
 class DoubleParam final : public OFX::Host::Param::DoubleInstance {
  public:
   DoubleParam(const std::string& name, OFX::Host::Param::Descriptor& descriptor,
               OFX::Host::Param::SetInstance* owner)
-      : DoubleInstance(descriptor, owner), value_(configured(name) ? configured(name)->number : defaultDouble(descriptor)) {}
-  OfxStatus get(double& value) override { value = value_; return kOfxStatOK; }
+      : DoubleInstance(descriptor, owner), name_(name), value_(configured(name) ? configured(name)->number : defaultDouble(descriptor)) {}
+  OfxStatus get(double& value) override { value = configured(name_) ? configured(name_)->number : value_; return kOfxStatOK; }
   OfxStatus get(OfxTime, double& value) override { return get(value); }
   OfxStatus set(double value) override { value_ = value; return kOfxStatOK; }
   OfxStatus set(OfxTime, double value) override { return set(value); }
   OfxStatus derive(OfxTime, double& value) override { value = 0; return kOfxStatOK; }
-  OfxStatus integrate(OfxTime a, OfxTime b, double& value) override { value = value_ * (b - a); return kOfxStatOK; }
- private: double value_;
+  OfxStatus integrate(OfxTime a, OfxTime b, double& value) override {
+    double current = 0; get(current); value = current * (b - a); return kOfxStatOK;
+  }
+ private: std::string name_; double value_;
 };
 
 class StringParam final : public OFX::Host::Param::StringInstance {
  public:
   StringParam(const std::string& name, OFX::Host::Param::Descriptor& descriptor,
               OFX::Host::Param::SetInstance* owner)
-      : StringInstance(descriptor, owner), value_(configured(name) ? configured(name)->text : defaultString(descriptor)) {}
-  OfxStatus get(std::string& value) override { value = value_; return kOfxStatOK; }
+      : StringInstance(descriptor, owner), name_(name), value_(configured(name) ? configured(name)->text : defaultString(descriptor)) {}
+  OfxStatus get(std::string& value) override { value = configured(name_) ? configured(name_)->text : value_; return kOfxStatOK; }
   OfxStatus get(OfxTime, std::string& value) override { return get(value); }
   OfxStatus set(const char* value) override { value_ = value ? value : ""; return kOfxStatOK; }
   OfxStatus set(OfxTime, const char* value) override { return set(value); }
- private: std::string value_;
+ private: std::string name_; std::string value_;
 };
 
 class RGBAParam final : public OFX::Host::Param::RGBAInstance {
  public:
   RGBAParam(const std::string& name, OFX::Host::Param::Descriptor& descriptor,
             OFX::Host::Param::SetInstance* owner)
-      : RGBAInstance(descriptor, owner) {
+      : RGBAInstance(descriptor, owner), name_(name) {
     if (const auto* value = configured(name)) values_ = value->rgba;
     else for (int i = 0; i < 4; ++i) {
       try { values_[i] = descriptor.getProperties().getDoubleProperty(kOfxParamPropDefault, i); }
       catch (...) { values_[i] = i == 3 ? 1 : 0; }
     }
   }
-  OfxStatus get(double& r,double& g,double& b,double& a) override { r=values_[0];g=values_[1];b=values_[2];a=values_[3];return kOfxStatOK; }
+  OfxStatus get(double& r,double& g,double& b,double& a) override {
+    const auto values = configured(name_) ? configured(name_)->rgba : values_;
+    r=values[0];g=values[1];b=values[2];a=values[3];return kOfxStatOK;
+  }
   OfxStatus get(OfxTime,double& r,double& g,double& b,double& a) override { return get(r,g,b,a); }
   OfxStatus set(double r,double g,double b,double a) override { values_={r,g,b,a};return kOfxStatOK; }
   OfxStatus set(OfxTime,double r,double g,double b,double a) override { return set(r,g,b,a); }
- private: std::array<double,4> values_{};
+ private: std::string name_; std::array<double,4> values_{};
 };
 
 class EffectInstance final : public OFX::Host::ImageEffect::Instance {
@@ -358,27 +364,43 @@ class Host final : public OFX::Host::ImageEffect::Host {
   OfxStatus clearPersistentMessage() override { return kOfxStatOK; }
 };
 
-void loadRaw(const std::filesystem::path& path, std::vector<float>& pixels, size_t count) {
-  std::ifstream input(path, std::ios::binary);
-  pixels.resize(count);
-  input.read(reinterpret_cast<char*>(pixels.data()), static_cast<std::streamsize>(count * sizeof(float)));
-  if (!input || input.gcount() != static_cast<std::streamsize>(count * sizeof(float))) {
-    throw std::runtime_error("invalid input RGBA32F payload");
+constexpr uint32_t kRequestMagic = 0x31504957;   // WIP1
+constexpr uint32_t kResponseMagic = 0x31524f57;  // WOR1
+
+bool readExact(void* destination, size_t count, bool allowCleanEOF = false) {
+  auto* bytes = static_cast<char*>(destination);
+  size_t offset = 0;
+  while (offset < count) {
+    std::cin.read(bytes + offset, static_cast<std::streamsize>(count - offset));
+    const auto consumed = static_cast<size_t>(std::cin.gcount());
+    if (consumed == 0) {
+      if (allowCleanEOF && offset == 0 && std::cin.eof()) return false;
+      throw std::runtime_error("truncated WIP session request");
+    }
+    offset += consumed;
   }
+  return true;
 }
 
-void saveRaw(const std::filesystem::path& path, const std::vector<float>& pixels) {
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  output.write(reinterpret_cast<const char*>(pixels.data()),
-               static_cast<std::streamsize>(pixels.size() * sizeof(float)));
-  if (!output) throw std::runtime_error("cannot write output RGBA32F payload");
+template <typename T> bool readValue(T& value, bool allowCleanEOF = false) {
+  return readExact(&value, sizeof(T), allowCleanEOF);
 }
 
-void parseParameter(int& index, int argc, char** argv) {
-  if (index + 2 >= argc) throw std::runtime_error("incomplete parameter argument");
-  const std::string type = argv[index++];
-  const std::string name = argv[index++];
-  const std::string value = argv[index++];
+template <typename T> void writeValue(const T& value) {
+  std::cout.write(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+std::string readString() {
+  uint32_t length = 0;
+  readValue(length);
+  if (length > 1'048'576) throw std::runtime_error("WIP session string is too large");
+  std::string value(length, '\0');
+  if (length) readExact(value.data(), length);
+  return value;
+}
+
+void parseParameter(const std::string& type, const std::string& name,
+                    const std::string& value) {
   ParameterValue parameter;
   if (type == "i") { parameter.kind=ParameterValue::Kind::Integer; parameter.integer=std::stoi(value); }
   else if (type == "d") { parameter.kind=ParameterValue::Kind::Double; parameter.number=std::stod(value); }
@@ -395,27 +417,98 @@ void parseParameter(int& index, int argc, char** argv) {
   gRender.parameters[name] = parameter;
 }
 
+bool readFrameRequest() {
+  uint32_t magic = 0;
+  if (!readValue(magic, true)) return false;
+  if (magic != kRequestMagic) throw std::runtime_error("invalid WIP session request magic");
+  readValue(gRender.time);
+  uint32_t parameterCount = 0;
+  readValue(parameterCount);
+  if (parameterCount > 512) throw std::runtime_error("too many WIP session parameters");
+  gRender.parameters.clear();
+  for (uint32_t index = 0; index < parameterCount; ++index) {
+    const std::string type = readString();
+    const std::string name = readString();
+    const std::string value = readString();
+    parseParameter(type, name, value);
+  }
+  uint64_t floatCount = 0;
+  readValue(floatCount);
+  const uint64_t expected = static_cast<uint64_t>(gRender.sourceWidth) *
+                            gRender.sourceHeight * 4;
+  if (floatCount != expected) throw std::runtime_error("invalid WIP session RGBA32F count");
+  gRender.source.resize(static_cast<size_t>(floatCount));
+  readExact(gRender.source.data(), gRender.source.size() * sizeof(float));
+  return true;
+}
+
+void writeFrameResponse(const std::vector<float>& pixels) {
+  writeValue(kResponseMagic);
+  const uint32_t status = 0;
+  const uint32_t messageLength = 0;
+  const uint64_t floatCount = pixels.size();
+  writeValue(status);
+  writeValue(messageLength);
+  writeValue(floatCount);
+  std::cout.write(reinterpret_cast<const char*>(pixels.data()),
+                  static_cast<std::streamsize>(pixels.size() * sizeof(float)));
+  std::cout.flush();
+  if (!std::cout) throw std::runtime_error("cannot publish WIP session response");
+}
+
+void writeErrorResponse(const std::string& message) {
+  writeValue(kResponseMagic);
+  const uint32_t status = 1;
+  const uint32_t messageLength = static_cast<uint32_t>(message.size());
+  const uint64_t floatCount = 0;
+  writeValue(status);
+  writeValue(messageLength);
+  writeValue(floatCount);
+  std::cout.write(message.data(), static_cast<std::streamsize>(message.size()));
+  std::cout.flush();
+}
+
+void renderCurrentFrame(OFX::Host::ImageEffect::Instance& instance) {
+  std::memcpy(gRender.sourceBuffer.contents, gRender.source.data(),
+              gRender.source.size() * sizeof(float));
+  std::memset(gRender.outputBuffer.contents, 0,
+              gRender.output.size() * sizeof(float));
+  const OfxPointD scale{1, 1};
+  const OfxRectI window{0, 0, gRender.outputWidth, gRender.outputHeight};
+  const OfxStatus status = instance.renderAction(
+      gRender.time, kOfxImageFieldNone, window, scale, true, false, false);
+  if (status != kOfxStatOK) throw std::runtime_error("WIP Review render action failed");
+  id<MTLCommandBuffer> completion = [gRender.metalCommandQueue commandBuffer];
+  if (!completion) throw std::runtime_error("Metal completion command buffer is unavailable");
+  [completion commit];
+  [completion waitUntilCompleted];
+  if (completion.status == MTLCommandBufferStatusError)
+    throw std::runtime_error("WIP Review Metal command buffer failed");
+  std::memcpy(gRender.output.data(), gRender.outputBuffer.contents,
+              gRender.output.size() * sizeof(float));
+}
+
 }  // namespace ScreenWIPHost
 
 int main(int argc, char** argv) {
   using namespace ScreenWIPHost;
+  bool protocolStarted = false;
   try {
-    if (argc < 10) throw std::runtime_error(
-        "usage: screen-wip-ofx-host BUNDLE INPUT OUTPUT SW SH OW OH TIME FPS [TYPE NAME VALUE]...");
+    if (argc != 9) throw std::runtime_error(
+        "usage: screen-wip-ofx-host BUNDLE SW SH OW OH FPS FIRST LAST");
     const std::filesystem::path bundle = argv[1];
-    const std::filesystem::path input = argv[2];
-    const std::filesystem::path output = argv[3];
-    gRender.sourceWidth=std::stoi(argv[4]); gRender.sourceHeight=std::stoi(argv[5]);
-    gRender.outputWidth=std::stoi(argv[6]); gRender.outputHeight=std::stoi(argv[7]);
-    gRender.time=std::stod(argv[8]); gRender.frameRate=std::stod(argv[9]);
-    int argument=10;
-    while (argument < argc) parseParameter(argument, argc, argv);
+    gRender.sourceWidth=std::stoi(argv[2]); gRender.sourceHeight=std::stoi(argv[3]);
+    gRender.outputWidth=std::stoi(argv[4]); gRender.outputHeight=std::stoi(argv[5]);
+    gRender.frameRate=std::stod(argv[6]);
+    const double firstFrame=std::stod(argv[7]);
+    const double lastFrame=std::stod(argv[8]);
     if (gRender.sourceWidth<=0 || gRender.sourceHeight<=0 ||
-        gRender.outputWidth<=0 || gRender.outputHeight<=0 || gRender.frameRate<=0) {
+        gRender.outputWidth<=0 || gRender.outputHeight<=0 || gRender.frameRate<=0 ||
+        firstFrame>lastFrame) {
       throw std::runtime_error("invalid render context");
     }
-    loadRaw(input, gRender.source,
-            static_cast<size_t>(gRender.sourceWidth) * gRender.sourceHeight * 4);
+    if (!readFrameRequest()) throw std::runtime_error("WIP session requires at least one frame");
+    protocolStarted = true;
     gRender.output.assign(static_cast<size_t>(gRender.outputWidth) * gRender.outputHeight * 4, 0);
     gRender.metalDevice = MTLCreateSystemDefaultDevice();
     if (!gRender.metalDevice) throw std::runtime_error("Metal device is unavailable");
@@ -452,26 +545,21 @@ int main(int argc, char** argv) {
     if (!instance->getClipPreferences())
       throw std::runtime_error("WIP Review clip preferences failed");
     const OfxPointD scale{1,1};
-    const OfxRectI window{0,0,gRender.outputWidth,gRender.outputHeight};
-    status=instance->beginRenderAction(gRender.time,gRender.time,1,false,scale,true,false);
+    status=instance->beginRenderAction(firstFrame,lastFrame,1,false,scale,true,false);
     if (status!=kOfxStatOK && status!=kOfxStatReplyDefault)
       throw std::runtime_error("WIP Review begin-render action failed");
-    status=instance->renderAction(gRender.time,kOfxImageFieldNone,window,scale,true,false,false);
-    if (status!=kOfxStatOK) throw std::runtime_error("WIP Review render action failed");
-    instance->endRenderAction(gRender.time,gRender.time,1,false,scale,true,false);
-    id<MTLCommandBuffer> completion = [gRender.metalCommandQueue commandBuffer];
-    if (!completion) throw std::runtime_error("Metal completion command buffer is unavailable");
-    [completion commit];
-    [completion waitUntilCompleted];
-    if (completion.status == MTLCommandBufferStatusError)
-      throw std::runtime_error("WIP Review Metal command buffer failed");
-    std::memcpy(gRender.output.data(), gRender.outputBuffer.contents,
-                gRender.output.size() * sizeof(float));
-    saveRaw(output,gRender.output);
+    do {
+      renderCurrentFrame(*instance);
+      writeFrameResponse(gRender.output);
+    } while (readFrameRequest());
+    status=instance->endRenderAction(firstFrame,lastFrame,1,false,scale,true,false);
+    if (status!=kOfxStatOK && status!=kOfxStatReplyDefault)
+      throw std::runtime_error("WIP Review end-render action failed");
     instance.reset();
     OFX::Host::PluginCache::clearPluginCache();
     return 0;
   } catch (const std::exception& error) {
+    if (protocolStarted) writeErrorResponse(error.what());
     std::cerr << error.what() << '\n';
     return 1;
   }

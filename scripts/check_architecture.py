@@ -1179,11 +1179,25 @@ def validate_wip_review_metal_contract() -> None:
     if "encodedRGBA[$0] == 1" not in adapter or "rgba[$0] == 1" not in adapter:
         raise ValidationError("WIP Review adapter does not enforce opaque input and output")
     for required in (
+        "func makeSession(",
+        "let wipSession = try configuration.wipReview.map",
+        "try await wipSession?.finish()",
+        "bytesNoCopy:",
+        "withTaskCancellationHandler",
+    ):
+        if required not in adapter + renderer:
+            raise ValidationError("WIP Review persistent session is incomplete: " + required)
+    if "temporaryDirectory" in adapter or "input.rgba32f" in adapter:
+        raise ValidationError("WIP Review still exchanges per-frame temporary rasters")
+    for required in (
         'kOfxImageEffectPropCPURenderSupported, "false"',
         'kOfxImageEffectPropMetalRenderSupported, "true"',
         "kOfxImageEffectPropMetalEnabled, 1",
         "kOfxImageEffectPropMetalCommandQueue",
         "waitUntilCompleted",
+        "readFrameRequest()",
+        "writeFrameResponse(gRender.output)",
+        "do {\n      renderCurrentFrame(*instance);",
     ):
         if required not in host:
             raise ValidationError("WIP Review Metal-only host is incomplete: " + required)

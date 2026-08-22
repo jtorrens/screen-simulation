@@ -74,6 +74,15 @@ enum NativeOutputRenderer {
         }
         let first = try await frameProvider(firstIndex)
         let output = try outputTransform(for: configuration)
+        let wipSession = try configuration.wipReview.map { preset in
+            try WIPReviewOFXAdapter().makeSession(
+                sourceWidth: first.width, sourceHeight: first.height,
+                frameRate: frameRate.framesPerSecond,
+                firstFrame: configuration.firstFrame,
+                lastFrame: configuration.lastFrame,
+                preset: preset
+            )
+        }
         if format.isMovie {
             guard let output else {
                 throw NativeOutputError.unsupported("los masters scene-linear requieren secuencia OpenEXR")
@@ -94,7 +103,7 @@ enum NativeOutputRenderer {
                 try display.renderRGBAFloat(first, output: output, alpha: .ignore),
                 sourceWidth: first.width, sourceHeight: first.height,
                 frameNumber: firstIndex, outputFilename: finalURL.lastPathComponent,
-                configuration: configuration
+                configuration: configuration, session: wipSession
             )
             let writer = try MovieWriter(
                 url: writerURL, width: firstWIP?.width ?? first.width,
@@ -112,7 +121,7 @@ enum NativeOutputRenderer {
                         try display.renderRGBAFloat(frame, output: output, alpha: .ignore),
                         sourceWidth: frame.width, sourceHeight: frame.height,
                         frameNumber: index, outputFilename: finalURL.lastPathComponent,
-                        configuration: configuration
+                        configuration: configuration, session: wipSession
                     )
                     try await writer.appendEncodedRGBA(
                         processed.rgba, presentationFrame: position
@@ -125,6 +134,7 @@ enum NativeOutputRenderer {
                 }
                 progress(position + 1, frames.count)
             }
+            try await wipSession?.finish()
             try await writer.finish()
             if configuration.includeAudio, let audioSource {
                 try await muxAudio(
@@ -176,7 +186,7 @@ enum NativeOutputRenderer {
                     ),
                     sourceWidth: frame.width, sourceHeight: frame.height,
                     frameNumber: index, outputFilename: url.lastPathComponent,
-                    configuration: configuration
+                    configuration: configuration, session: wipSession
                 )
                 try encodeDPX(
                     encoded.rgba, width: encoded.width, height: encoded.height
@@ -190,7 +200,7 @@ enum NativeOutputRenderer {
                     ),
                     sourceWidth: frame.width, sourceHeight: frame.height,
                     frameNumber: index, outputFilename: url.lastPathComponent,
-                    configuration: configuration
+                    configuration: configuration, session: wipSession
                 )
                 try encodeTIFF16(
                     encoded.rgba, width: encoded.width, height: encoded.height,
@@ -201,6 +211,7 @@ enum NativeOutputRenderer {
             }
             progress(position + 1, frames.count)
         }
+        try await wipSession?.finish()
         return directory
     }
 
@@ -210,20 +221,18 @@ enum NativeOutputRenderer {
         sourceHeight: Int,
         frameNumber: Int,
         outputFilename: String,
-        configuration: StudioResolvedRenderConfiguration
+        configuration: StudioResolvedRenderConfiguration,
+        session: WIPReviewOFXAdapter.Session?
     ) async throws -> (rgba: [Float], width: Int, height: Int) {
-        guard let preset = configuration.wipReview else {
+        guard configuration.wipReview != nil else {
             return (encodedRGBA, sourceWidth, sourceHeight)
         }
         let opaqueRGBA = try opaqueWIPRGBA(encodedRGBA)
-        let result = try await WIPReviewOFXAdapter().render(
+        guard let session else { throw NativeOutputError.invalidFrame }
+        let result = try await session.render(
             encodedRGBA: opaqueRGBA,
-            sourceWidth: sourceWidth,
-            sourceHeight: sourceHeight,
             frame: frameNumber,
-            frameRate: configuration.frameRate.framesPerSecond,
-            outputFilename: outputFilename,
-            preset: preset
+            outputFilename: outputFilename
         )
         return (result.rgba, result.raster.width, result.raster.height)
     }
