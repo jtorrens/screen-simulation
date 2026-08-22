@@ -1542,9 +1542,9 @@ kernel void reduce_physical_veiling_source(
     partials[index] = float4(sum, 0.0f);
 }
 
-kernel void finalize_physical_veiling_source(
+kernel void finalize_physical_veiling_mean(
     device const float4* partials [[buffer(0)]],
-    device float4* gate_average [[buffer(1)]],
+    device float4* mean_output [[buffer(1)]],
     constant PhysicalPipelineParams& p [[buffer(2)]],
     uint index [[thread_position_in_grid]]
 ) {
@@ -1555,6 +1555,17 @@ kernel void finalize_physical_veiling_source(
         mean_native += partials[partial].xyz;
     }
     mean_native /= float(p.source_panel.x * p.source_panel.y);
+    mean_output[0] = float4(mean_native, 0.0f);
+}
+
+kernel void finalize_physical_veiling_source(
+    device const float4* mean_input [[buffer(0)]],
+    device float4* gate_average [[buffer(1)]],
+    constant PhysicalPipelineParams& p [[buffer(2)]],
+    uint index [[thread_position_in_grid]]
+) {
+    if (index != 0) return;
+    const float3 mean_native = mean_input[0].xyz;
     const float facing = p.lens_veiling_glare.z;
     const float3 angular = float3(
         pow(clamp(facing, 0.0f, 1.0f), p.panel_angular_scene.x),

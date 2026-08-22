@@ -120,6 +120,11 @@ irradiance. Every tile receives that immutable value and mixes the authored lens
 local cover evaluation and before shutter integration. CPU and Metal must agree within the optical
 tolerance. Zero is exact identity and bypasses the reduction rather than evaluating a value that
 would later be multiplied away.
+Within one temporal request, equal prepared Device-signal identity reduces the native-emission mean
+exactly once. Each sample then applies only its own camera-facing angular response, gate projection,
+cover transmission and irradiance conversion before its first stripe. This factorization retains the
+same reduction and floating-point order while preventing scene motion from rescanning an unchanged
+Device raster.
 
 Within one temporal evaluation, Media first reuses the decoded ACEScg and Feeder Signal textures
 only for an equal exact retained source-frame identity. Metal then reuses source/Device row-prefixes,

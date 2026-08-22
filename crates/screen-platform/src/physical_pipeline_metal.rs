@@ -117,6 +117,7 @@ struct PhysicalSignalPreparationKey {
     panel_size_meters: [f32; 4],
     cover_glow: [f32; 4],
     glow_threshold: [f32; 4],
+    veiling_mean_required: bool,
 }
 
 struct PhysicalSignalPreparation {
@@ -126,6 +127,7 @@ struct PhysicalSignalPreparation {
     glow_lobes: Vec<Texture>,
     native_emission_signal: Texture,
     native_emission_prefix: Texture,
+    veiling_mean_native: metal::Buffer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,6 +199,7 @@ pub struct MetalPhysicalPipeline {
     glow_base_pipeline: ComputePipelineState,
     glow_blur_pipeline: ComputePipelineState,
     veiling_reduce_pipeline: ComputePipelineState,
+    veiling_mean_finalize_pipeline: ComputePipelineState,
     veiling_finalize_pipeline: ComputePipelineState,
     accumulator: ComputePipelineState,
     publish_raw_pipeline: ComputePipelineState,
@@ -204,6 +207,8 @@ pub struct MetalPhysicalPipeline {
     develop_pipeline: ComputePipelineState,
     #[cfg(test)]
     signal_preparation_count: AtomicUsize,
+    #[cfg(test)]
+    veiling_mean_preparation_count: AtomicUsize,
 }
 
 pub struct MetalPhysicalPipelineResult {
@@ -325,6 +330,12 @@ impl MetalPhysicalPipeline {
         let veiling_reduce_pipeline = device
             .new_compute_pipeline_state_with_function(&veiling_reduce_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let veiling_mean_finalize_function = library
+            .get_function("finalize_physical_veiling_mean", None)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let veiling_mean_finalize_pipeline = device
+            .new_compute_pipeline_state_with_function(&veiling_mean_finalize_function)
+            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
         let veiling_finalize_function = library
             .get_function("finalize_physical_veiling_source", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -371,6 +382,7 @@ impl MetalPhysicalPipeline {
             glow_base_pipeline,
             glow_blur_pipeline,
             veiling_reduce_pipeline,
+            veiling_mean_finalize_pipeline,
             veiling_finalize_pipeline,
             accumulator,
             publish_raw_pipeline,
@@ -378,6 +390,8 @@ impl MetalPhysicalPipeline {
             develop_pipeline,
             #[cfg(test)]
             signal_preparation_count: AtomicUsize::new(0),
+            #[cfg(test)]
+            veiling_mean_preparation_count: AtomicUsize::new(0),
         })
     }
 
@@ -663,6 +677,55 @@ impl MetalPhysicalPipeline {
             self.row_prefix_textures(source_acescg, device_signal)?;
         let (glow_lobes, native_emission_signal, native_emission_prefix) =
             self.glow_lobe_textures(device_signal, params)?;
+        let zero_veiling = [0.0_f32; 4];
+        let veiling_mean_native = device_signal.device().new_buffer_with_data(
+            zero_veiling.as_ptr().cast(),
+            size_of::<[f32; 4]>() as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        if key.veiling_mean_required {
+            #[cfg(test)]
+            self.veiling_mean_preparation_count
+                .fetch_add(1, Ordering::Relaxed);
+            let veiling_partials = device_signal.device().new_buffer(
+                (256 * size_of::<[f32; 4]>()) as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+            let command = self.queue.new_command_buffer();
+            let encoder = command.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&self.veiling_reduce_pipeline);
+            encoder.set_texture(0, Some(device_signal));
+            encoder.set_buffer(0, Some(&veiling_partials), 0);
+            encoder.set_bytes(
+                1,
+                size_of::<PhysicalPipelineParams>() as u64,
+                (params as *const PhysicalPipelineParams).cast(),
+            );
+            let width = self
+                .veiling_reduce_pipeline
+                .thread_execution_width()
+                .min(256)
+                .max(1);
+            encoder.dispatch_threads(MTLSize::new(256, 1, 1), MTLSize::new(width, 1, 1));
+            encoder.memory_barrier_with_resources(&[&veiling_partials]);
+            encoder.set_compute_pipeline_state(&self.veiling_mean_finalize_pipeline);
+            encoder.set_buffer(0, Some(&veiling_partials), 0);
+            encoder.set_buffer(1, Some(&veiling_mean_native), 0);
+            encoder.set_bytes(
+                2,
+                size_of::<PhysicalPipelineParams>() as u64,
+                (params as *const PhysicalPipelineParams).cast(),
+            );
+            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            encoder.end_encoding();
+            command.commit();
+            command.wait_until_completed();
+            if command.status() != MTLCommandBufferStatus::Completed {
+                return Err(MetalPhysicalPipelineError::Backend(
+                    "veiling-glare invariant reduction did not complete".to_owned(),
+                ));
+            }
+        }
         Ok(PhysicalSignalPreparation {
             key,
             source_row_prefix,
@@ -670,6 +733,7 @@ impl MetalPhysicalPipeline {
             glow_lobes,
             native_emission_signal,
             native_emission_prefix,
+            veiling_mean_native,
         })
     }
 
@@ -1829,6 +1893,7 @@ impl MetalPhysicalPipeline {
             panel_size_meters: params.panel_size_meters,
             cover_glow: params.cover_glow,
             glow_threshold: params.glow_threshold,
+            veiling_mean_required: params.lens_veiling_glare[0] != 0.0,
         };
         let owned_preparation;
         let preparation = if let Some(cache) = signal_preparations.as_deref_mut() {
@@ -1861,52 +1926,13 @@ impl MetalPhysicalPipeline {
         let glow_lobes = &preparation.glow_lobes;
         let native_emission_signal = &preparation.native_emission_signal;
         let native_emission_prefix = &preparation.native_emission_prefix;
+        let veiling_mean_native = &preparation.veiling_mean_native;
         let zero_veiling = [0.0_f32; 4];
         let veiling_gate_average = device.new_buffer_with_data(
             zero_veiling.as_ptr().cast(),
             size_of::<[f32; 4]>() as u64,
             MTLResourceOptions::StorageModeShared,
         );
-        if params.lens_veiling_glare[0] != 0.0 {
-            let veiling_partials = device.new_buffer(
-                (256 * size_of::<[f32; 4]>()) as u64,
-                MTLResourceOptions::StorageModeShared,
-            );
-            let command = self.queue.new_command_buffer();
-            let encoder = command.new_compute_command_encoder();
-            encoder.set_compute_pipeline_state(&self.veiling_reduce_pipeline);
-            encoder.set_texture(0, Some(device_signal));
-            encoder.set_buffer(0, Some(&veiling_partials), 0);
-            encoder.set_bytes(
-                1,
-                size_of::<PhysicalPipelineParams>() as u64,
-                (&raw const params).cast(),
-            );
-            let width = self
-                .veiling_reduce_pipeline
-                .thread_execution_width()
-                .min(256)
-                .max(1);
-            encoder.dispatch_threads(MTLSize::new(256, 1, 1), MTLSize::new(width, 1, 1));
-            encoder.memory_barrier_with_resources(&[&veiling_partials]);
-            encoder.set_compute_pipeline_state(&self.veiling_finalize_pipeline);
-            encoder.set_buffer(0, Some(&veiling_partials), 0);
-            encoder.set_buffer(1, Some(&veiling_gate_average), 0);
-            encoder.set_bytes(
-                2,
-                size_of::<PhysicalPipelineParams>() as u64,
-                (&raw const params).cast(),
-            );
-            encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
-            encoder.end_encoding();
-            command.commit();
-            command.wait_until_completed();
-            if command.status() != MTLCommandBufferStatus::Completed {
-                return Err(MetalPhysicalPipelineError::Backend(
-                    "veiling-glare source reduction did not complete".to_owned(),
-                ));
-            }
-        }
 
         let (work_origin, work_height) = row_range.unwrap_or((0, sampling.effective_height));
         if work_height == 0 || work_origin.saturating_add(work_height) > sampling.effective_height {
@@ -1954,6 +1980,18 @@ impl MetalPhysicalPipeline {
             params.output_tile[2] = origin_y;
             let command = self.queue.new_command_buffer();
             let encoder = command.new_compute_command_encoder();
+            if tile == 0 && params.lens_veiling_glare[0] != 0.0 {
+                encoder.set_compute_pipeline_state(&self.veiling_finalize_pipeline);
+                encoder.set_buffer(0, Some(veiling_mean_native), 0);
+                encoder.set_buffer(1, Some(&veiling_gate_average), 0);
+                encoder.set_bytes(
+                    2,
+                    size_of::<PhysicalPipelineParams>() as u64,
+                    (&raw const params).cast(),
+                );
+                encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+                encoder.memory_barrier_with_resources(&[&veiling_gate_average]);
+            }
             encoder.set_compute_pipeline_state(physical_pipeline);
             encoder.set_texture(0, Some(source_acescg));
             encoder.set_texture(1, Some(device_signal));
@@ -3070,6 +3108,9 @@ mod tests {
             1.0,
         );
         plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
+        plan.scene_geometry_amount = 1.0;
+        plan.lens_amount = 1.0;
+        plan.scene_geometry_lens.lens.veiling_glare_fraction = 0.05;
         let source = texture(&device, input.width, input.height, &input.acescg);
         let signal_values = input
             .device_signal
@@ -3097,6 +3138,13 @@ mod tests {
             backend.signal_preparation_count.load(Ordering::Relaxed),
             2,
             "one standalone evaluation plus one shared temporal preparation"
+        );
+        assert_eq!(
+            backend
+                .veiling_mean_preparation_count
+                .load(Ordering::Relaxed),
+            2,
+            "the temporal schedule reduces the invariant Device mean only once"
         );
 
         let maximum = read(&single.texture)
