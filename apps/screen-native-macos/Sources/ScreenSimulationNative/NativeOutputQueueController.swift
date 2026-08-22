@@ -174,8 +174,8 @@ final class NativeOutputQueueController: ObservableObject {
         persist()
     }
 
-    func clearCompletedAndFailed() {
-        jobs.removeAll { $0.state == .completed || $0.state == .failed }
+    func clearTerminalJobs() {
+        jobs.removeAll { ![.pending, .rendering].contains($0.state) }
         persist()
     }
 

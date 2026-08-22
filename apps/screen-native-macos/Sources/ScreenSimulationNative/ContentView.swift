@@ -2706,9 +2706,9 @@ struct ContentView: View {
                 } else if model.jobs.contains(where: { $0.state == .pending || $0.state == .rendering }) {
                     Button("Pausa", action: model.pauseRenderQueue)
                 }
-                Button("Limpiar terminados", action: model.clearCompletedAndFailedRenders)
+                Button("Limpiar terminados", action: model.clearTerminalRenders)
                     .disabled(!model.jobs.contains {
-                        $0.state == .completed || $0.state == .failed
+                        $0.state == .completed || $0.state == .failed || $0.state == .cancelled
                     })
                 Spacer()
                 Button("Render Queue", action: model.runQueue)

@@ -1,8 +1,8 @@
 use core::fmt;
 use core::mem::size_of;
-use std::time::Instant;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use metal::{
     ComputePipelineState, DeviceRef, FunctionConstantValues, MTLCommandBufferStatus, MTLDataType,
@@ -657,7 +657,8 @@ impl MetalPhysicalPipeline {
         key: PhysicalSignalPreparationKey,
     ) -> Result<PhysicalSignalPreparation, MetalPhysicalPipelineError> {
         #[cfg(test)]
-        self.signal_preparation_count.fetch_add(1, Ordering::Relaxed);
+        self.signal_preparation_count
+            .fetch_add(1, Ordering::Relaxed);
         let (source_row_prefix, device_row_prefix) =
             self.row_prefix_textures(source_acescg, device_signal)?;
         let (glow_lobes, native_emission_signal, native_emission_prefix) =

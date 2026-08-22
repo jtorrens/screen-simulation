@@ -1784,15 +1784,17 @@ kernel void evaluate_physical_pipeline(
                 // Only displaced spread/glow taps and the narrow carrier remain distinct.
                 const float local_panel_coverage = device_rectangle_coverage(
                     channel_minimum, channel_maximum, p);
-                const float local_alpha = resolved_device_alpha(
-                    code.a, local_panel_coverage, p);
-                const float base_linear = panel_linear_channel(code[channel], p) * local_alpha;
                 float4 linear_emission = 0.0f;
-                if (needs_continuous) {
+                if (needs_continuous || needs_physical || needs_uniform || needs_carrier) {
                     linear_emission = area_sample(
                         native_emission_signal, native_emission_prefix,
                         channel_minimum, channel_maximum, prepared_placement_scale, p);
                 }
+                // Device interpretation and authored-alpha attenuation belong
+                // to the prepared Panel artifact. Geometry integrates that
+                // linear emission; it never runs EOTF again after averaging a
+                // projected footprint.
+                const float base_linear = linear_emission[channel] * local_panel_coverage;
                 const float base_native = native_channel_from_linear(
                     base_linear, channel, device_minimum, device_maximum, p);
                 const float continuous_structured_native = native_channel_from_linear(
@@ -1807,10 +1809,11 @@ kernel void evaluate_physical_pipeline(
                         carrier_minimum, carrier_maximum, prepared_placement_scale, p);
                     const float carrier_panel_coverage = device_rectangle_coverage(
                         carrier_minimum, carrier_maximum, p);
-                    const float preserved_carrier = resolved_device_alpha(
-                        carrier_code.a, carrier_panel_coverage, p)
-                        * native_channel(
-                        carrier_code[channel], channel,
+                    const float4 carrier_emission = area_sample(
+                        native_emission_signal, native_emission_prefix,
+                        carrier_minimum, carrier_maximum, prepared_placement_scale, p);
+                    const float preserved_carrier = native_channel_from_linear(
+                        carrier_emission[channel] * carrier_panel_coverage, channel,
                         carrier_minimum * float2(p.source_panel.zw),
                         carrier_maximum * float2(p.source_panel.zw), p);
                     const float carrier_gain = panel_uniformity_gains(

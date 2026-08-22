@@ -259,7 +259,7 @@ import Testing
     #expect(!controller.removeInactiveJob(id: job.id))
 }
 
-@Test @MainActor func terminalCleanupRemovesCompletedAndFailedButKeepsOtherStates() throws {
+@Test @MainActor func terminalCleanupRetainsOnlyPendingAndRenderingStates() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("render-queue-terminal-cleanup-\(UUID().uuidString)")
     let store = try RenderQueueStore(directoryURL: root)
@@ -283,9 +283,9 @@ import Testing
     let controller = try NativeOutputQueueController(store: store)
 
     // A persisted rendering record is restored as pending before cleanup.
-    controller.clearCompletedAndFailed()
-    #expect(controller.jobs.map(\.state) == [.pending, .pending, .cancelled])
-    #expect(!controller.removeInactiveJob(id: jobs[4].id))
+    controller.clearTerminalJobs()
+    #expect(controller.jobs.map(\.state) == [.pending, .pending])
+    #expect(!controller.jobs.contains { $0.id == jobs[4].id })
     #expect(controller.removeInactiveJob(id: jobs[0].id))
 }
 

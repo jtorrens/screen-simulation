@@ -3014,13 +3014,21 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     x: channel_maximum.x * plan.panel.native_width as f32,
                                     y: channel_maximum.y * plan.panel.native_height as f32,
                                 };
-                                let base =
-                                    evaluator.native_channel_over_device_rect(
-                                        area.device_code,
-                                        device_minimum,
-                                        device_maximum,
-                                        channel,
-                                    ) * resolved_device_alpha(area.alpha, area.panel_coverage);
+                                // Device interpretation and authored-alpha attenuation are
+                                // resolved once in the prepared linear Panel emission. The
+                                // moving optical footprint integrates that accepted artifact;
+                                // it cannot reinterpret an averaged Device code through EOTF.
+                                let base = evaluator.linear_native_channel_over_device_rect(
+                                    [
+                                        area.linear_native_emission.r,
+                                        area.linear_native_emission.g,
+                                        area.linear_native_emission.b,
+                                    ][channel]
+                                        * area.panel_coverage,
+                                    device_minimum,
+                                    device_maximum,
+                                    channel,
+                                );
                                 let base_gains = plan.panel_uniformity.channel_gains(
                                     plan.panel,
                                     device_minimum,
@@ -3051,14 +3059,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     x: carrier_maximum.x * plan.panel.native_width as f32,
                                     y: carrier_maximum.y * plan.panel.native_height as f32,
                                 };
-                                let carrier = evaluator.native_channel_over_device_rect(
-                                    carrier_area.device_code,
+                                let carrier = evaluator.linear_native_channel_over_device_rect(
+                                    [
+                                        carrier_area.linear_native_emission.r,
+                                        carrier_area.linear_native_emission.g,
+                                        carrier_area.linear_native_emission.b,
+                                    ][channel]
+                                        * carrier_area.panel_coverage,
                                     carrier_device_minimum,
                                     carrier_device_maximum,
                                     channel,
-                                ) * resolved_device_alpha(
-                                    carrier_area.alpha,
-                                    carrier_area.panel_coverage,
                                 );
                                 let carrier_gains = plan.panel_uniformity.channel_gains(
                                     plan.panel,

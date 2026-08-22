@@ -5118,9 +5118,9 @@ final class WorkspaceModel: ObservableObject {
         status = "Render Queue en pausa"
     }
 
-    func clearCompletedAndFailedRenders() {
-        outputQueue.clearCompletedAndFailed()
-        status = "Renders completados y fallidos eliminados de la cola"
+    func clearTerminalRenders() {
+        outputQueue.clearTerminalJobs()
+        status = "Renders terminados eliminados de la cola"
     }
 
     func removeInactiveRender(_ job: NativeOutputQueueController.RenderJob) {

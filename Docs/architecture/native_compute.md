@@ -110,7 +110,7 @@ plan contains the validated camera and screen samples, sensor window, panel geom
 colorimetry, cover, its single-radius keyed emission-glow approximation and exactly one analytic or exact single-level equirectangular HDR environment with explicit panel-local X/Y rotation. Cover-local impact coordinates and the projected optical footprint evaluate the same deterministic multiscale cellular anti-glare height field in CPU and Metal; its filtered normal reorients the existing reflection without multiplying radiance. Image-backed rough reflection uses deterministic view-dependent GGX integration with exact dielectric Fresnel and Smith masking. The Metal estimator balances visible-normal samples with solid-angle-correct source-luminance samples. Platform prepares a private RGBA32F weight hierarchy once per accepted environment texture; its level-zero RGB remains the exact input radiance and higher levels contain only summed selection weights. Quality selects 32, 64, 96 or 128 samples of that same evaluator. The plan also carries either the
 procedural signal or prepared raster signal plus linear post-EOTF emission. It deliberately cannot
 represent panel temporal modulation. The macOS adapter inverts each distinct Brown-Conrady observed coordinate once and reuses that immutable unscaled ideal coordinate across RGB channels, aperture rays, irradiance and the VFX sensor footprint; channel-specific lateral chromatic scaling remains on a private copy. Each pupil sample similarly prepares its world and screen-local origin once, while the inverse screen rotation and the two VFX rim origins are invariant for the complete output thread. The direct-pupil route prepares each channel's ideal-point irradiance weight once per sensor-footprint/PSF sample and reuses that same value for every pupil ray. It then executes aperture
-and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, EOTF, cover
+and thin-lens rays, chromatic offsets, resolved or area-integrated panel structure, cover
 Fresnel/transmission/reflection, one centered Device-emission soft-glow evaluation, spherical analytic or direct equirectangular-HDR sampling and native-to-ACEScg conversion in one Metal kernel. The Metal execution plan prepares the HDR rotation and fixed sample count once; every reflection sample reads the exact level-zero radiance source. Physical
 domains contain no Metal dependency, and a future Windows adapter can implement the same port.
 
@@ -128,7 +128,12 @@ identities and every preparation parameter are exactly equal. Camera pose, Devic
 lens/cover evaluation, veiling projection, temporal emission gain and interval accumulation remain
 per sample. A distinct source/Device identity or preparation parameter builds an independent
 preparation; dimensions, filenames and pixel similarity never imply reuse. The preparation lifetime
-ends with that immutable temporal request and cannot cross into another output-frame identity.
+ends with that immutable temporal request and cannot cross into another output-frame identity. The
+prepared native emission is premultiplied once by the resolved authored Device alpha before its
+summed-area representation is built. Every continuous, carrier and subpixel optical footprint
+integrates that linear artifact; neither CPU nor Metal reapplies EOTF or alpha after averaging a
+moving projected footprint. Subpixel stripe coverage and the footprint-filtered uniformity gain
+remain per sample because their support is defined by that sample's resolved projection.
 
 The native-shell physical-frame ABI has one earlier flat-panel compute slice with no camera,
 lens, sensor, temporal, cover or environment operation. Application prepares one immutable
