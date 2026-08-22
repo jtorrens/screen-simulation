@@ -142,6 +142,33 @@ inline float2 physical_distort(float2 point, constant PhysicalPipelineParams& p)
 
 inline bool physical_inverse_distortion(float2 observed, constant PhysicalPipelineParams& p,
                                         thread float2& ideal) {
+    const float k1 = p.lens_shift_radial01.z;
+    const bool radial_degree_two_only = p.lens_shift_radial01.w == 0.0f
+        && p.lens_radial2_tangential.x == 0.0f
+        && p.lens_radial2_tangential.y == 0.0f
+        && p.lens_radial2_tangential.z == 0.0f;
+    if (radial_degree_two_only) {
+        const float observed_radius = length(observed);
+        if (observed_radius == 0.0f || k1 == 0.0f) {
+            ideal = observed;
+            return true;
+        }
+        float radius = observed_radius;
+        for (uint iteration = 0; iteration < 12; ++iteration) {
+            const float radius2 = radius * radius;
+            const float projected_radius = radius * (1.0f + k1 * radius2);
+            const float derivative = 1.0f + 3.0f * k1 * radius2;
+            if (!isfinite(derivative) || derivative <= 1.0e-8f) return false;
+            ideal = observed * (radius / observed_radius);
+            const float2 residual = observed - physical_distort(ideal, p);
+            if (max(abs(residual.x), abs(residual.y)) < 1.0e-6f) return true;
+            radius += (observed_radius - projected_radius) / derivative;
+            if (!isfinite(radius) || radius < 0.0f) return false;
+        }
+        ideal = observed * (radius / observed_radius);
+        const float2 residual = physical_distort(ideal, p) - observed;
+        return max(abs(residual.x), abs(residual.y)) < 1.0e-5f;
+    }
     ideal = observed;
     for (uint iteration = 0; iteration < 12; ++iteration) {
         const float2 projected = physical_distort(ideal, p);
@@ -149,7 +176,6 @@ inline bool physical_inverse_distortion(float2 observed, constant PhysicalPipeli
         if (max(abs(residual.x), abs(residual.y)) < 1.0e-6f) return true;
         const float radius2 = dot(ideal, ideal);
         const float radius4 = radius2 * radius2;
-        const float k1 = p.lens_shift_radial01.z;
         const float k2 = p.lens_shift_radial01.w;
         const float k3 = p.lens_radial2_tangential.x;
         const float p1 = p.lens_radial2_tangential.y;

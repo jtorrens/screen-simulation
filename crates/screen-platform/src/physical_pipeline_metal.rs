@@ -3006,6 +3006,55 @@ mod tests {
     }
 
     #[test]
+    fn radial_degree_two_inverse_matches_the_general_cpu_lens_oracle() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        plan.scene_geometry_amount = 1.0;
+        plan.lens_amount = 1.0;
+        plan.lens_evaluation_model = screen_application::LensEvaluationModel::VfxDepthBlur;
+        plan.scene_geometry_lens.lens.radial_distortion = [-0.002_905_907_6, 0.0, 0.0];
+        plan.scene_geometry_lens.lens.tangential_distortion = [0.0, 0.0];
+        plan.requested_intermediate = PhysicalIntermediate::LensProjection;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+            input,
+            render_context: screen_application::PhysicalRenderContext::full_frame(
+                plan.requested_width,
+                plan.requested_height,
+            ),
+            plan,
+        })
+        .expect("general CPU radial inverse");
+        let gpu = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("specialized Metal radial inverse");
+        let maximum = read(&gpu.texture)
+            .iter()
+            .zip(cpu.presentation_rgba())
+            .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+            .fold(0.0_f32, f32::max);
+        eprintln!("radial degree-two specialized/general maximum deviation: {maximum}");
+        assert!(
+            maximum <= 3.0e-3,
+            "radial degree-two specialized/general deviation {maximum}"
+        );
+    }
+
+    #[test]
     fn half_float_contract_input_matches_oracle_without_output_requantization() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
