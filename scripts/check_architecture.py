@@ -1157,6 +1157,30 @@ def validate_reference_matte_transport() -> None:
             raise ValidationError("native Reference composition bypasses typed matte: " + required)
 
 
+def validate_migration_backup_contract() -> None:
+    migration_io = (ROOT / "scripts/migration_io.py").read_text(encoding="utf-8")
+    for required in (
+        "def publish_with_source_backup(",
+        "shutil.copy2(source, backup)",
+        "if backup.read_bytes() != source_bytes:",
+        "if destination.exists():",
+        "os.replace(temporary, destination)",
+    ):
+        if required not in migration_io:
+            raise ValidationError(
+                "persisted-state migrations omit recoverable publication: " + required
+            )
+    for relative in (
+        "scripts/migrate_global_library_v14_to_v15.py",
+        "scripts/migrate_render_queue_v3_to_v4.py",
+    ):
+        migration = (ROOT / relative).read_text(encoding="utf-8")
+        if "publish_with_source_backup(source, destination, document)" not in migration:
+            raise ValidationError(
+                "current migration bypasses the mandatory source backup: " + relative
+            )
+
+
 def main() -> int:
     try:
         paths = repository_paths()
@@ -1177,6 +1201,7 @@ def main() -> int:
         validate_test_inspector_hierarchy()
         validate_native_workspace_navigation()
         validate_reference_matte_transport()
+        validate_migration_backup_contract()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)

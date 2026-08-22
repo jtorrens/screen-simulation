@@ -24,6 +24,24 @@ import Testing
     #expect(!loaded.renderPresets.contains { StudioRenderPreset.builtIns.map(\.id).contains($0.id) })
 }
 
+@Test func explicitlySelectedMigratedGlobalLibraryLoadsWithUserDevices() throws {
+    guard let path = ProcessInfo.processInfo.environment[
+        "SCREEN_MIGRATED_GLOBAL_LIBRARY_SMOKE"
+    ] else { return }
+    let document = try GlobalLibraryStore(
+        documentURL: URL(fileURLWithPath: path)
+    ).load()
+    #expect(document.schemaVersion == 15)
+    #expect(document.wipReviewPresets.count == 4)
+    let expectedUserDeviceIDs = Set(
+        ProcessInfo.processInfo.environment["SCREEN_EXPECTED_USER_DEVICE_IDS"]?
+            .split(separator: ",").map(String.init) ?? []
+    )
+    #expect(!expectedUserDeviceIDs.isEmpty)
+    #expect(Set(document.devices.filter { !$0.isLocked }.map(\.id))
+        .isSuperset(of: expectedUserDeviceIDs))
+}
+
 @Test func incompatibleGlobalLibraryIsBlockedWithoutLegacyParsingOrDeletion() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-global-library-invalid-\(UUID().uuidString)")

@@ -15,11 +15,15 @@ class RenderQueueMigrationTests(unittest.TestCase):
             document = {"schema": "ScreenSimulation.RenderQueue.v3", "isPaused": True, "jobs": [{"id": "a"}]}
             source.write_text(json.dumps(document), encoding="utf-8")
             before = source.read_bytes()
-            migrate(source, output)
+            backup = migrate(source, output)
             result = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(result["schema"], "ScreenSimulation.RenderQueue.v4")
             self.assertIsNone(result["jobs"][0]["derivedFromJobID"])
             self.assertEqual(source.read_bytes(), before)
+            self.assertEqual(backup.read_bytes(), before)
+            self.assertEqual(
+                list(root.glob("v3.backup-*.json")), [backup]
+            )
 
 
 if __name__ == "__main__":

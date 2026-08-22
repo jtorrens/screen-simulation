@@ -14,7 +14,7 @@ class GlobalLibraryMigrationTests(unittest.TestCase):
             output = root / "v15.json"
             source.write_text(json.dumps({"schemaVersion": 14, "patterns": []}), encoding="utf-8")
             before = source.read_bytes()
-            migrate(source, output)
+            backup = migrate(source, output)
             result = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(result["schemaVersion"], 15)
             self.assertEqual(len(result["wipReviewPresets"]), 4)
@@ -24,6 +24,10 @@ class GlobalLibraryMigrationTests(unittest.TestCase):
                 {"topLeft", "topCenter", "topRight", "bottomLeft", "bottomCenter", "bottomRight"},
             )
             self.assertEqual(source.read_bytes(), before)
+            self.assertEqual(backup.read_bytes(), before)
+            self.assertEqual(
+                list(root.glob("v14.backup-*.json")), [backup]
+            )
 
 
 if __name__ == "__main__":

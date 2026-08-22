@@ -5,8 +5,10 @@ import json
 import pathlib
 import sys
 
+from migration_io import publish_with_source_backup
 
-def migrate(source: pathlib.Path, destination: pathlib.Path) -> None:
+
+def migrate(source: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
     document = json.loads(source.read_text(encoding="utf-8"))
     if document.get("schema") != "ScreenSimulation.RenderQueue.v3":
         raise ValueError("source must be ScreenSimulation.RenderQueue.v3")
@@ -17,13 +19,11 @@ def migrate(source: pathlib.Path, destination: pathlib.Path) -> None:
             raise ValueError("v3 job unexpectedly contains derivedFromJobID")
         job["derivedFromJobID"] = None
     document["schema"] = "ScreenSimulation.RenderQueue.v4"
-    destination.write_text(
-        json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    return publish_with_source_backup(source, destination, document)
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         raise SystemExit("usage: migrate_render_queue_v3_to_v4.py SOURCE DESTINATION")
-    migrate(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
+    backup = migrate(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
+    print(f"backup: {backup}")

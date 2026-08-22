@@ -38,7 +38,13 @@
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift",
         "scripts/migrate_global_library_v13_to_v14.py",
-        "scripts/test_migrate_global_library_v13_to_v14.py"
+        "scripts/test_migrate_global_library_v13_to_v14.py",
+        "scripts/migration_io.py",
+        "scripts/migrate_global_library_v14_to_v15.py",
+        "scripts/test_migrate_global_library_v14_to_v15.py",
+        "scripts/migrate_render_queue_v3_to_v4.py",
+        "scripts/test_migrate_render_queue_v3_to_v4.py",
+        "scripts/check_architecture.py"
       ]
     },
     {
