@@ -1,6 +1,8 @@
 use core::fmt;
 use core::mem::size_of;
 use std::time::Instant;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use metal::{
     ComputePipelineState, DeviceRef, FunctionConstantValues, MTLCommandBufferStatus, MTLDataType,
@@ -100,6 +102,32 @@ struct PhysicalPipelineParams {
     vfx_raster: [f32; 4],
 }
 
+#[derive(Clone, PartialEq)]
+struct PhysicalSignalPreparationKey {
+    source: *const TextureRef,
+    signal: *const TextureRef,
+    source_panel: [u32; 4],
+    placement: u32,
+    stripe_layout: u32,
+    alpha_mode: f32,
+    levels: [f32; 3],
+    matrix0: [f32; 4],
+    matrix1: [f32; 4],
+    matrix2: [f32; 4],
+    panel_size_meters: [f32; 4],
+    cover_glow: [f32; 4],
+    glow_threshold: [f32; 4],
+}
+
+struct PhysicalSignalPreparation {
+    key: PhysicalSignalPreparationKey,
+    source_row_prefix: Texture,
+    device_row_prefix: Texture,
+    glow_lobes: Vec<Texture>,
+    native_emission_signal: Texture,
+    native_emission_prefix: Texture,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VfxTransparencyRaster {
     pub active_width: u32,
@@ -174,6 +202,8 @@ pub struct MetalPhysicalPipeline {
     publish_raw_pipeline: ComputePipelineState,
     reconstruct_green_pipeline: ComputePipelineState,
     develop_pipeline: ComputePipelineState,
+    #[cfg(test)]
+    signal_preparation_count: AtomicUsize,
 }
 
 pub struct MetalPhysicalPipelineResult {
@@ -346,6 +376,8 @@ impl MetalPhysicalPipeline {
             publish_raw_pipeline,
             reconstruct_green_pipeline,
             develop_pipeline,
+            #[cfg(test)]
+            signal_preparation_count: AtomicUsize::new(0),
         })
     }
 
@@ -615,6 +647,29 @@ impl MetalPhysicalPipeline {
             ));
         }
         Ok((lobes, native_emission_signal, native_emission_prefix))
+    }
+
+    fn prepare_physical_signal(
+        &self,
+        source_acescg: &TextureRef,
+        device_signal: &TextureRef,
+        params: &PhysicalPipelineParams,
+        key: PhysicalSignalPreparationKey,
+    ) -> Result<PhysicalSignalPreparation, MetalPhysicalPipelineError> {
+        #[cfg(test)]
+        self.signal_preparation_count.fetch_add(1, Ordering::Relaxed);
+        let (source_row_prefix, device_row_prefix) =
+            self.row_prefix_textures(source_acescg, device_signal)?;
+        let (glow_lobes, native_emission_signal, native_emission_prefix) =
+            self.glow_lobe_textures(device_signal, params)?;
+        Ok(PhysicalSignalPreparation {
+            key,
+            source_row_prefix,
+            device_row_prefix,
+            glow_lobes,
+            native_emission_signal,
+            native_emission_prefix,
+        })
     }
 
     fn read_physical_raster(
@@ -947,8 +1002,7 @@ impl MetalPhysicalPipeline {
         let mut final_geometry = None;
         let mut final_sampling = None;
         let mut stage_elapsed_nanoseconds = [0_u64; 16];
-        let mut prefix_cache: Vec<(*const TextureRef, *const TextureRef, Texture, Texture)> =
-            Vec::new();
+        let mut signal_preparations = Vec::new();
         for (index, (source, signal, plan, weight)) in samples.iter().enumerate() {
             if is_cancelled() {
                 return Err(MetalPhysicalPipelineError::Cancelled);
@@ -964,27 +1018,13 @@ impl MetalPhysicalPipeline {
             } else {
                 physical_plan.sensor_enabled = false;
             }
-            let source_key = core::ptr::from_ref(*source);
-            let signal_key = core::ptr::from_ref(*signal);
-            let prefix_index = if let Some(index) =
-                prefix_cache
-                    .iter()
-                    .position(|(cached_source, cached_signal, _, _)| {
-                        *cached_source == source_key && *cached_signal == signal_key
-                    }) {
-                index
-            } else {
-                let (source_prefix, signal_prefix) = self.row_prefix_textures(source, signal)?;
-                prefix_cache.push((source_key, signal_key, source_prefix, signal_prefix));
-                prefix_cache.len() - 1
-            };
             let evaluated = self.evaluate_rows(
                 source,
                 signal,
                 environment_acescg,
                 physical_plan,
                 None,
-                Some((&prefix_cache[prefix_index].2, &prefix_cache[prefix_index].3)),
+                Some(&mut signal_preparations),
                 None,
                 |progress| report_progress(base + progress * span),
                 &is_cancelled,
@@ -1200,7 +1240,7 @@ impl MetalPhysicalPipeline {
         environment_acescg: Option<&TextureRef>,
         plan: PhysicalPipelineExecutionPlan,
         row_range: Option<(u32, u32)>,
-        row_prefixes: Option<(&TextureRef, &TextureRef)>,
+        mut signal_preparations: Option<&mut Vec<PhysicalSignalPreparation>>,
         vfx_raster: Option<VfxTransparencyRaster>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
@@ -1753,15 +1793,52 @@ impl MetalPhysicalPipeline {
             ],
         };
         params.levels[3] = plan.temporal_emission_gain;
-        let generated_row_prefixes;
-        let (source_row_prefix, device_row_prefix) = if let Some(prefixes) = row_prefixes {
-            prefixes
-        } else {
-            generated_row_prefixes = self.row_prefix_textures(source_acescg, device_signal)?;
-            (&*generated_row_prefixes.0, &*generated_row_prefixes.1)
+        let preparation_key = PhysicalSignalPreparationKey {
+            source: core::ptr::from_ref(source_acescg),
+            signal: core::ptr::from_ref(device_signal),
+            source_panel: params.source_panel,
+            placement: params.semantics[0],
+            stripe_layout: params.semantics[1],
+            alpha_mode: params.geometry[2],
+            levels: [params.levels[0], params.levels[1], params.levels[2]],
+            matrix0: params.matrix0,
+            matrix1: params.matrix1,
+            matrix2: params.matrix2,
+            panel_size_meters: params.panel_size_meters,
+            cover_glow: params.cover_glow,
+            glow_threshold: params.glow_threshold,
         };
-        let (glow_lobes, native_emission_signal, native_emission_prefix) =
-            self.glow_lobe_textures(device_signal, &params)?;
+        let owned_preparation;
+        let preparation = if let Some(cache) = signal_preparations.as_deref_mut() {
+            let index = if let Some(index) = cache
+                .iter()
+                .position(|prepared| prepared.key == preparation_key)
+            {
+                index
+            } else {
+                cache.push(self.prepare_physical_signal(
+                    source_acescg,
+                    device_signal,
+                    &params,
+                    preparation_key,
+                )?);
+                cache.len() - 1
+            };
+            &cache[index]
+        } else {
+            owned_preparation = self.prepare_physical_signal(
+                source_acescg,
+                device_signal,
+                &params,
+                preparation_key,
+            )?;
+            &owned_preparation
+        };
+        let source_row_prefix = &preparation.source_row_prefix;
+        let device_row_prefix = &preparation.device_row_prefix;
+        let glow_lobes = &preparation.glow_lobes;
+        let native_emission_signal = &preparation.native_emission_signal;
+        let native_emission_prefix = &preparation.native_emission_prefix;
         let zero_veiling = [0.0_f32; 4];
         let veiling_gate_average = device.new_buffer_with_data(
             zero_veiling.as_ptr().cast(),
@@ -2968,6 +3045,12 @@ mod tests {
                 || false,
             )
             .expect("repeated static physical samples");
+
+        assert_eq!(
+            backend.signal_preparation_count.load(Ordering::Relaxed),
+            2,
+            "one standalone evaluation plus one shared temporal preparation"
+        );
 
         let maximum = read(&single.texture)
             .iter()

@@ -121,10 +121,14 @@ local cover evaluation and before shutter integration. CPU and Metal must agree 
 tolerance. Zero is exact identity and bypasses the reduction rather than evaluating a value that
 would later be multiplied away.
 
-Within one temporal evaluation, source and Device row-prefix textures are reused only when both
-borrowed Metal texture identities are exactly the same. A distinct source or Device texture builds
-its own prefixes; dimensions, filenames and pixel similarity never imply reuse. The cache lifetime
-ends with that immutable temporal request and cannot cross into another frame identity.
+Within one temporal evaluation, Media first reuses the decoded ACEScg and Feeder Signal textures
+only for an equal exact retained source-frame identity. Metal then reuses source/Device row-prefixes,
+post-EOTF native-emission preparation and keyed Device-glow lobes when both borrowed texture
+identities and every preparation parameter are exactly equal. Camera pose, Device pose, projection,
+lens/cover evaluation, veiling projection, temporal emission gain and interval accumulation remain
+per sample. A distinct source/Device identity or preparation parameter builds an independent
+preparation; dimensions, filenames and pixel similarity never imply reuse. The preparation lifetime
+ends with that immutable temporal request and cannot cross into another output-frame identity.
 
 The native-shell physical-frame ABI has one earlier flat-panel compute slice with no camera,
 lens, sensor, temporal, cover or environment operation. Application prepares one immutable

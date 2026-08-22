@@ -12,6 +12,10 @@ struct NativeMediaSample: @unchecked Sendable {
     let time: CMTime
 }
 
+struct NativeMediaSampleIdentity: Hashable, Sendable {
+    let frameIndex: Int
+}
+
 struct NativeSourceInfo: Sendable {
     let name: String
     let detail: String
@@ -282,16 +286,16 @@ final class NativeMediaSession {
     }
 
     func exactSample(at requested: CMTime) async throws -> NativeMediaSample? {
+        let decodeTime = resolvedSampleTime(at: requested)
         if case .images = source {
-            guard let sample = try currentSample(at: retainedDecodeTime(requested)) else {
+            guard let sample = try currentSample(at: decodeTime) else {
                 return nil
             }
             return NativeMediaSample(pixelBuffer: sample.pixelBuffer, time: requested)
         }
         if case let .ffmpeg(source) = source {
-            let bounded = retainedDecodeTime(requested)
             let decoded = try NativeFFmpegMedia.decode(
-                url: source.url, time: bounded, colorModel: source.colorModel,
+                url: source.url, time: decodeTime, colorModel: source.colorModel,
                 matrix: source.matrix, range: source.range
             )
             return NativeMediaSample(
@@ -313,7 +317,7 @@ final class NativeMediaSession {
             value: CMTimeValue(rate.denominator),
             timescale: CMTimeScale(rate.numerator)
         )
-        reader.timeRange = CMTimeRange(start: retainedDecodeTime(requested), duration: duration)
+        reader.timeRange = CMTimeRange(start: decodeTime, duration: duration)
         guard reader.startReading(),
               let sample = output.copyNextSampleBuffer(),
               let buffer = CMSampleBufferGetImageBuffer(sample)
@@ -331,6 +335,26 @@ final class NativeMediaSession {
         return CMTime(
             value: CMTimeValue(max(0, frame)) * CMTimeValue(rate.denominator),
             timescale: CMTimeScale(rate.numerator)
+        )
+    }
+
+    func sampleIdentity(at requested: CMTime) -> NativeMediaSampleIdentity? {
+        guard let info else { return nil }
+        return Self.sampleIdentity(
+            at: requested,
+            frameCount: info.frameCount,
+            exactFrameRate: info.exactFrameRate
+        )
+    }
+
+    private func resolvedSampleTime(at requested: CMTime) -> CMTime {
+        guard let identity = sampleIdentity(at: requested), let info else {
+            return max(.zero, requested)
+        }
+        return CMTime(
+            value: CMTimeValue(identity.frameIndex)
+                * CMTimeValue(info.exactFrameRate.denominator),
+            timescale: CMTimeScale(info.exactFrameRate.numerator)
         )
     }
 
@@ -359,6 +383,28 @@ final class NativeMediaSession {
             timescale: CMTimeScale(exactFrameRate.numerator)
         )
         return min(max(.zero, requested), lastFrame)
+    }
+
+    static func sampleIdentity(
+        at requested: CMTime,
+        frameCount: Int,
+        exactFrameRate: ExactFrameRate
+    ) -> NativeMediaSampleIdentity {
+        let retained = retainedDecodeTime(
+            requested,
+            frameCount: frameCount,
+            exactFrameRate: exactFrameRate
+        )
+        let cadenceTicks = CMTimeConvertScale(
+            retained,
+            timescale: CMTimeScale(exactFrameRate.numerator),
+            method: .roundTowardNegativeInfinity
+        ).value
+        let frame = min(
+            max(0, frameCount - 1),
+            max(0, Int(cadenceTicks / CMTimeValue(exactFrameRate.denominator)))
+        )
+        return NativeMediaSampleIdentity(frameIndex: frame)
     }
 
     private static func imagePixelBuffer(_ url: URL) throws -> CVPixelBuffer {

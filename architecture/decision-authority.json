@@ -93,10 +93,12 @@
         "crates/screen-native-bridge/src/lib.rs",
         "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalMetalFrameEngine.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeMediaSession.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/RustSceneFrameResolver.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalPipelineAuthoringTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeMediaSessionTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SetupFramingRendererTests.swift",
         "scripts/check_architecture.py"
       ]
@@ -233,6 +235,7 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/RenderDerivationTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift",
         "scripts/migrate_render_queue_v3_to_v4.py",
         "scripts/test_migrate_render_queue_v3_to_v4.py",
         "scripts/migrate_render_queue_v4_to_v5.py",

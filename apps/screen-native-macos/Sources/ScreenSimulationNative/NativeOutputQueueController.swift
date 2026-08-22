@@ -3,6 +3,11 @@ import StudioMedia
 
 @MainActor
 final class NativeOutputQueueController: ObservableObject {
+    struct RenderTiming: Equatable, Sendable {
+        let elapsedSeconds: TimeInterval
+        let approximateRemainingSeconds: TimeInterval?
+    }
+
     struct RenderJob: Codable, Identifiable {
         enum State: String, Codable { case pending, rendering, completed, failed, cancelled }
         let id: UUID
@@ -43,8 +48,13 @@ final class NativeOutputQueueController: ObservableObject {
     @Published private(set) var jobs: [RenderJob]
     @Published private(set) var isPaused: Bool
     @Published private(set) var persistenceError: String?
+    @Published private(set) var activeTiming: [UUID: RenderTiming] = [:]
     private let store: RenderQueueStore?
     private var activeTask: Task<Void, Never>?
+    private var timingTask: Task<Void, Never>?
+    private var activeStartedAt: ContinuousClock.Instant?
+    private var activeCompletedFrames = 0
+    private var activeTotalFrames = 0
 
     init(store: RenderQueueStore) throws {
         self.store = store
@@ -104,6 +114,7 @@ final class NativeOutputQueueController: ObservableObject {
         jobs[index].detail = "Preparando grafo Metal"
         persist()
         let job = jobs[index]
+        beginTiming(jobID: job.id)
         activeTask = Task {
             do {
                 let url = try await operation(job) { [weak self] completed, total in
@@ -113,6 +124,9 @@ final class NativeOutputQueueController: ObservableObject {
                     else { return }
                     self.jobs[live].progress = min(1, max(0, Double(completed) / Double(total)))
                     self.jobs[live].detail = "\(completed) / \(total)"
+                    self.activeCompletedFrames = completed
+                    self.activeTotalFrames = total
+                    self.publishTiming(jobID: job.id)
                     self.persist()
                 }
                 if let live = jobs.firstIndex(where: { $0.id == job.id }) {
@@ -135,6 +149,7 @@ final class NativeOutputQueueController: ObservableObject {
                 }
                 onFailure(error.localizedDescription)
             }
+            endTiming(jobID: job.id)
             activeTask = nil
             run(operation: operation, onFailure: onFailure)
         }
@@ -142,6 +157,10 @@ final class NativeOutputQueueController: ObservableObject {
 
     func cancel() {
         activeTask?.cancel()
+    }
+
+    func timing(for jobID: UUID) -> RenderTiming? {
+        activeTiming[jobID]
     }
 
     func pause() {
@@ -179,5 +198,51 @@ final class NativeOutputQueueController: ObservableObject {
         } catch {
             persistenceError = error.localizedDescription
         }
+    }
+
+    private func beginTiming(jobID: UUID) {
+        timingTask?.cancel()
+        activeStartedAt = .now
+        activeCompletedFrames = 0
+        activeTotalFrames = 0
+        publishTiming(jobID: jobID)
+        timingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                self.publishTiming(jobID: jobID)
+            }
+        }
+    }
+
+    private func publishTiming(jobID: UUID) {
+        guard let activeStartedAt else { return }
+        let elapsed = max(0, activeStartedAt.duration(to: .now).secondsMagnitude)
+        let remaining: TimeInterval?
+        if activeCompletedFrames > 0, activeTotalFrames >= activeCompletedFrames {
+            remaining = elapsed * Double(activeTotalFrames - activeCompletedFrames)
+                / Double(activeCompletedFrames)
+        } else {
+            remaining = nil
+        }
+        activeTiming[jobID] = RenderTiming(
+            elapsedSeconds: elapsed,
+            approximateRemainingSeconds: remaining
+        )
+    }
+
+    private func endTiming(jobID: UUID) {
+        timingTask?.cancel()
+        timingTask = nil
+        activeStartedAt = nil
+        activeTiming.removeValue(forKey: jobID)
+    }
+}
+
+private extension Duration {
+    var secondsMagnitude: TimeInterval {
+        let components = self.components
+        return Double(components.seconds)
+            + Double(components.attoseconds) / 1_000_000_000_000_000_000
     }
 }

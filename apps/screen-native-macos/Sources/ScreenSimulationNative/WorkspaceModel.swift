@@ -4737,7 +4737,12 @@ final class WorkspaceModel: ObservableObject {
             resolvedSceneFrameOverride: resolvedSceneFrame
         )
         while true {
-            try Task.checkCancellation()
+            do {
+                try Task.checkCancellation()
+            } catch {
+                await cancelAndDrainPhysicalJob(submission.job)
+                throw error
+            }
             let snapshot = try submission.job.snapshot()
             switch snapshot.state {
             case .idle, .stale, .rendering:
@@ -4792,6 +4797,25 @@ final class WorkspaceModel: ObservableObject {
                     referencePlacement: referencePlacement,
                     plan: plan
                 ).frame
+            }
+        }
+    }
+
+    private func cancelAndDrainPhysicalJob(_ job: PhysicalMetalFrameJob) async {
+        _ = job.cancel()
+        while true {
+            guard let snapshot = try? job.snapshot() else { return }
+            switch snapshot.state {
+            case .idle, .stale, .rendering:
+                await withCheckedContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                        deadline: .now() + .milliseconds(8)
+                    ) {
+                        continuation.resume()
+                    }
+                }
+            case .complete, .cancelled, .failed:
+                return
             }
         }
     }
@@ -5007,7 +5031,10 @@ final class WorkspaceModel: ObservableObject {
         )
         while true {
             do { try Task.checkCancellation() }
-            catch { _ = submission.job.cancel(); throw error }
+            catch {
+                await cancelAndDrainPhysicalJob(submission.job)
+                throw error
+            }
             let snapshot = try submission.job.snapshot()
             switch snapshot.state {
             case .idle, .stale, .rendering:
@@ -7572,6 +7599,8 @@ final class WorkspaceModel: ObservableObject {
         )
         var temporalInputs: [PhysicalTemporalInput] = []
         temporalInputs.reserveCapacity(requirements.count)
+        var preparedMediaSamples: [NativeMediaSampleIdentity: DeviceSignalCheckpoint] = [:]
+        let nominalMediaIdentity = sourceIsPattern ? nil : session.sampleIdentity(at: nominalTime)
         var publishedExactCheckpoint = false
         for requirement in requirements {
             try Task.checkCancellation()
@@ -7579,26 +7608,33 @@ final class WorkspaceModel: ObservableObject {
                 value: CMTimeValue(requirement.time.numerator),
                 timescale: CMTimeScale(requirement.time.denominator)
             )
-            let source = CMTimeCompare(requestedTime, nominalTime) == 0
-                ? nominalSourceFrame
-                : try await renderFrame(at: requirement.time)
-            let checkpoint = try DeviceSignalCheckpoint.prepare(
-                sourceACEScg: source,
-                inputTransform: inputTransform,
-                outputSignal: outputSignal,
-                alphaInterpretation: String(describing: effectiveAlpha),
-                sourceAdjustment: .init(
-                    exposureEV: authoringSelection?.sourceExposureEV ?? 0,
-                    contrast: authoringSelection?.sourceContrast ?? 1,
-                    saturation: authoringSelection?.sourceSaturation ?? 1,
-                    temperatureKelvin: authoringSelection?.sourceTemperatureKelvin ?? 6500,
-                    tint: authoringSelection?.sourceTint ?? 0
-                ),
-                display: metalDisplay
-            )
+            let mediaIdentity = sourceIsPattern ? nil : session.sampleIdentity(at: requestedTime)
+            let checkpoint: DeviceSignalCheckpoint
+            if let mediaIdentity, let prepared = preparedMediaSamples[mediaIdentity] {
+                checkpoint = prepared
+            } else {
+                let source = mediaIdentity != nil && mediaIdentity == nominalMediaIdentity
+                    ? nominalSourceFrame
+                    : try await renderFrame(at: requirement.time)
+                checkpoint = try DeviceSignalCheckpoint.prepare(
+                    sourceACEScg: source,
+                    inputTransform: inputTransform,
+                    outputSignal: outputSignal,
+                    alphaInterpretation: String(describing: effectiveAlpha),
+                    sourceAdjustment: .init(
+                        exposureEV: authoringSelection?.sourceExposureEV ?? 0,
+                        contrast: authoringSelection?.sourceContrast ?? 1,
+                        saturation: authoringSelection?.sourceSaturation ?? 1,
+                        temperatureKelvin: authoringSelection?.sourceTemperatureKelvin ?? 6500,
+                        tint: authoringSelection?.sourceTint ?? 0
+                    ),
+                    display: metalDisplay
+                )
+                if let mediaIdentity { preparedMediaSamples[mediaIdentity] = checkpoint }
+            }
             temporalInputs.append(.init(
                 time: requirement.time,
-                sourceACEScg: source,
+                sourceACEScg: checkpoint.sourceACEScg,
                 deviceSignal: checkpoint.deviceSignal
             ))
             if publishesPreviewState,

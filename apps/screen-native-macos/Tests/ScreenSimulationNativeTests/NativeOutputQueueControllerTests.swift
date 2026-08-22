@@ -54,6 +54,41 @@ import Testing
     #expect(failure == "fallo controlado")
 }
 
+@Test @MainActor func outputQueuePublishesElapsedEstimateAndCancelsWithoutLosingItsOwner() async throws {
+    let controller = try queueTestController()
+    controller.enqueue(
+        scene: outputQueueTestScene(name: "Cancelar"),
+        generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/cancel.mov"),
+        configuration: outputQueueTestConfiguration()
+    )
+    var cancellationWasObserved = false
+    controller.run(operation: { job, progress in
+        progress(1, 4)
+        do {
+            try await Task.sleep(for: .seconds(10))
+            return job.destination
+        } catch is CancellationError {
+            cancellationWasObserved = true
+            throw CancellationError()
+        }
+    }, onFailure: { _ in })
+
+    while controller.jobs.first?.progress != 0.25 { await Task.yield() }
+    try await Task.sleep(for: .milliseconds(20))
+    let job = try #require(controller.jobs.first)
+    let timing = try #require(controller.timing(for: job.id))
+    #expect(timing.elapsedSeconds > 0)
+    #expect((timing.approximateRemainingSeconds ?? 0) > timing.elapsedSeconds)
+
+    controller.cancel()
+    while controller.isRendering { await Task.yield() }
+    #expect(cancellationWasObserved)
+    #expect(controller.jobs.first?.state == .cancelled)
+    #expect(controller.jobs.first?.detail == "Cancelado")
+    #expect(controller.timing(for: job.id) == nil)
+}
+
 @Test @MainActor func outputQueueFreezesTheSavedSceneAtEnqueueTime() throws {
     let controller = try queueTestController()
     var scene = outputQueueTestScene(name: "Guardada")

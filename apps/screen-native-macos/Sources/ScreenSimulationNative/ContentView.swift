@@ -2666,6 +2666,11 @@ struct ContentView: View {
                     Text(job.scene.name).font(.caption).foregroundStyle(.secondary)
                     Text("\(job.configuration.firstFrame)–\(job.configuration.lastFrame) · \(job.configuration.pixelEncoding.label) · \(job.configuration.signalRange.label) · \(job.detail)")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let timing = model.outputQueue.timing(for: job.id) {
+                        Text(renderTimingLabel(timing))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .accessibilityElement(children: .combine)
                 .contextMenu {
@@ -2711,6 +2716,24 @@ struct ContentView: View {
             }
             .padding(8)
         }
+    }
+
+    private func renderTimingLabel(
+        _ timing: NativeOutputQueueController.RenderTiming
+    ) -> String {
+        let elapsed = queueDuration(timing.elapsedSeconds)
+        guard let remaining = timing.approximateRemainingSeconds else {
+            return "Transcurrido \(elapsed) · Restante aprox. calculando…"
+        }
+        return "Transcurrido \(elapsed) · Restante aprox. \(queueDuration(remaining))"
+    }
+
+    private func queueDuration(_ seconds: TimeInterval) -> String {
+        let whole = max(0, Int(seconds.rounded()))
+        let hours = whole / 3_600
+        let minutes = (whole % 3_600) / 60
+        let remainder = whole % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, remainder)
     }
 
     private func renderCurrentSavedScene(
