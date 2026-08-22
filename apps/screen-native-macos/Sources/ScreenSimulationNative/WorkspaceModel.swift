@@ -5145,7 +5145,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func rerenderHistoricalJob(_ job: NativeOutputQueueController.RenderJob) {
-        guard job.state == .completed else { return }
+        guard Self.isHistoricalRerenderEligible(job.state) else { return }
         do {
             var configuration = job.configuration.replacingOverwritePolicy(.failIfExists)
             var plan = job.outputPlan
@@ -5176,6 +5176,12 @@ final class WorkspaceModel: ObservableObject {
             )
             status = "Versión histórica añadida · \(job.scene.name)"
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    static func isHistoricalRerenderEligible(
+        _ state: NativeOutputQueueController.RenderJob.State
+    ) -> Bool {
+        state.isTerminal
     }
 
     /// Regenerates only the Fusion composition for a completed package. The queued scene and

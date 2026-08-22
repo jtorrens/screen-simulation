@@ -3,6 +3,15 @@ import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
 
+@MainActor @Test func historicalRerenderAcceptsEveryTerminalQueueState() {
+    typealias State = NativeOutputQueueController.RenderJob.State
+    #expect(WorkspaceModel.isHistoricalRerenderEligible(State.completed))
+    #expect(WorkspaceModel.isHistoricalRerenderEligible(State.failed))
+    #expect(WorkspaceModel.isHistoricalRerenderEligible(State.cancelled))
+    #expect(!WorkspaceModel.isHistoricalRerenderEligible(State.pending))
+    #expect(!WorkspaceModel.isHistoricalRerenderEligible(State.rendering))
+}
+
 @Test func wholeDeliverableVersioningStartsAtV002AndSkipsCollisions() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-versioning-\(UUID().uuidString)")
