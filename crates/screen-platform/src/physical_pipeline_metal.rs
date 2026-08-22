@@ -2855,6 +2855,7 @@ mod tests {
     fn panel_uniformity_matches_cpu_for_identity_calibrated_and_artistic_amounts() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let mut suite_maximum = 0.0_f32;
         for layout in [StripeLayout::Rgb, StripeLayout::Bgr] {
             for (placement, amount, intermediate) in [
                 (
@@ -2912,12 +2913,14 @@ mod tests {
                     .zip(cpu.presentation_rgba())
                     .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
                     .fold(0.0_f32, f32::max);
+                suite_maximum = suite_maximum.max(maximum);
                 assert!(
                     maximum <= 2.0e-3,
                     "uniformity CPU/Metal deviation {maximum}; layout={layout:?}; placement={placement:?}; amount={amount}; intermediate={intermediate:?}"
                 );
             }
         }
+        eprintln!("panel uniformity CPU/Metal maximum deviation: {suite_maximum}");
     }
 
     #[test]

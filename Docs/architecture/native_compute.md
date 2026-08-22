@@ -104,6 +104,9 @@ diffuse RGB with zero matte outside it; it cannot create separated replicas or r
 pixels, and it introduces no post-sensor path.
 
 Panel Uniformity is evaluated in the same fused optical kernel immediately after native subpixel emission. Immutable Device parameters carry explicit amplitudes, physical scales and seed; no texture name, preset lookup or frame-derived seed crosses the compute boundary. CPU and Metal evaluate the same deterministic broad and band-limited fields in device coordinates. The accepted uniformity gain at the central per-channel optical footprint is reused by the micrometre-scale Panel Light Spread and Device Emission Glow supports because every supported uniformity wavelength is materially larger than those supports. This is a declared scale-separation approximation, not a screen-space blur or temporal noise source. Character zero selects the exact pre-existing arithmetic composition so the inserted phase is bit-identical when disabled.
+Metal evaluates only the requested channel component of that gain inside a channel branch; it does not
+construct the two unobserved RGB components. The scalar branch retains the same lattice samples,
+opponent equation, drive response and operation order as the corresponding CPU-owned component.
 
 Application also owns a modulation-free `SpatialOpticalPlan` and `SpatialOpticalBackend` port. The
 plan contains the validated camera and screen samples, sensor window, panel geometry and

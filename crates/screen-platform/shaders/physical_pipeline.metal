@@ -1293,10 +1293,11 @@ inline float panel_uniformity_filtered_noise(
         - panel_uniformity_noise(mirror.x, mirror.y, seed)) * 0.5f * attenuation;
 }
 
-inline float3 panel_uniformity_gains(
+inline float panel_uniformity_gain(
     float2 device_minimum,
     float2 device_maximum,
     float3 code,
+    uint channel,
     constant PhysicalPipelineParams& p
 ) {
     if (p.uniformity_scales.w == 0.0f) return 1.0f;
@@ -1314,12 +1315,12 @@ inline float3 panel_uniformity_gains(
         uv, footprint_millimeters, p.uniformity_scales.y, seed ^ 0x9E3779B9u, p);
     const float luminance = dot(p.uniformity_amplitudes.xyz, float3(broad, mid, fine));
     const float chroma = p.uniformity_amplitudes.w;
-    const float3 opponent = chroma * float3(
-        0.5f * mid - 0.25f * fine,
-        -0.5f * mid - 0.25f * fine,
-        0.5f * fine);
-    const float3 drive = clamp(abs(code), 0.0f, 1.0f);
-    const float3 drive_scale = 1.0f + p.uniformity_scales.z * (1.0f - drive) * (1.0f - drive);
+    const float opponent = chroma * (channel == 0u
+        ? 0.5f * mid - 0.25f * fine
+        : channel == 1u ? -0.5f * mid - 0.25f * fine : 0.5f * fine);
+    const float drive = clamp(abs(code[channel]), 0.0f, 1.0f);
+    const float drive_scale = 1.0f
+        + p.uniformity_scales.z * (1.0f - drive) * (1.0f - drive);
     return 1.0f + p.uniformity_scales.w * drive_scale * (luminance + opponent);
 }
 
@@ -1837,8 +1838,8 @@ kernel void evaluate_physical_pipeline(
                 const float continuous_structured_native = native_channel_from_linear(
                     linear_emission[channel] * local_panel_coverage,
                     channel, device_minimum, device_maximum, p);
-                const float base_gain = panel_uniformity_gains(
-                    device_minimum, device_maximum, code.rgb, p)[channel];
+                const float base_gain = panel_uniformity_gain(
+                    device_minimum, device_maximum, code.rgb, channel, p);
                 const float uniform_base_native = base_native * base_gain;
                 if (needs_carrier) {
                     const float4 carrier_code = area_sample(
@@ -1853,9 +1854,10 @@ kernel void evaluate_physical_pipeline(
                         carrier_emission[channel] * carrier_panel_coverage, channel,
                         carrier_minimum * float2(p.source_panel.zw),
                         carrier_maximum * float2(p.source_panel.zw), p);
-                    const float carrier_gain = panel_uniformity_gains(
+                    const float carrier_gain = panel_uniformity_gain(
                         carrier_minimum * float2(p.source_panel.zw),
-                        carrier_maximum * float2(p.source_panel.zw), carrier_code.rgb, p)[channel];
+                        carrier_maximum * float2(p.source_panel.zw),
+                        carrier_code.rgb, channel, p);
                     carrier_detail_native[channel] +=
                         (preserved_carrier * carrier_gain - uniform_base_native) * optical_weight;
                 }
